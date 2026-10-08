@@ -247,6 +247,37 @@ async def get_mcp_server(
     return MCPServerResponse.model_validate(server)
 
 
+async def _evict_mcp_client(server_id: UUID) -> None:
+    """Drop this process's pooled client so the next call uses the new row.
+
+    Other pods rebuild on their next call because the pool compares the
+    connection config it is handed with the cached one.
+    """
+    from preloop.services.mcp_client_pool import get_mcp_client_pool
+
+    try:
+        await get_mcp_client_pool().close_client(str(server_id))
+    except Exception:
+        logger.warning("Could not evict pooled MCP client", exc_info=True)
+
+
+def _unregister_proxied_tools(
+    account_id: str, server_id: UUID, tool_names: List[str]
+) -> None:
+    """Remove this process's MCP wrappers for a deleted server's tools."""
+    if not tool_names:
+        return
+    from preloop.services import mcp_http
+
+    mcp = getattr(mcp_http, "_mcp_server_instance", None)
+    if mcp is None or not hasattr(mcp, "unregister_proxied_tools"):
+        return
+    try:
+        mcp.unregister_proxied_tools(account_id, str(server_id), tool_names)
+    except Exception:
+        logger.warning("Could not unregister proxied MCP tools", exc_info=True)
+
+
 @router.put("/mcp-servers/{server_id}", response_model=MCPServerResponse)
 @require_permission("edit_mcp_servers")
 async def update_mcp_server(
@@ -300,6 +331,7 @@ async def update_mcp_server(
 
         db.commit()
         db.refresh(server)
+        await _evict_mcp_client(server_id)
 
         log_config_change(
             db,
@@ -376,10 +408,17 @@ async def delete_mcp_server(
                 db.delete(config)
 
         server_name = server.name  # capture before delete
+        from preloop.models.crud import crud_mcp_tool
+
+        tool_names = [
+            tool.name for tool in crud_mcp_tool.get_by_server(db, server_id=server_id)
+        ]
 
         # Delete the MCP server
         db.delete(server)
         db.commit()
+        await _evict_mcp_client(server_id)
+        _unregister_proxied_tools(str(current_user.account_id), server_id, tool_names)
 
         log_config_change(
             db,

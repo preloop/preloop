@@ -76,6 +76,44 @@ def _hash_arguments(arguments: Optional[dict[str, Any]]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _reference_only_in_scope(
+    account_id: Any,
+    *,
+    tool_name: str,
+    server_name: Optional[str],
+    managed_agent_id: Optional[str],
+    config: Any = None,
+) -> bool:
+    """True when a reference-only rule covers this call (#1124).
+
+    Fails toward privacy: when the account block cannot be read the call
+    is treated as covered, so no unsalted argument hash is stored.
+    """
+    try:
+        from preloop.services.sensitive_data import reference as reference_module
+        from preloop.services.sensitive_data import storage as storage_module
+
+        if config is None:
+            if storage_module.has_cached_config(account_id):
+                config = storage_module.cached_config(account_id)
+            else:
+                config = storage_module._load_config(account_id)
+                storage_module.prime_cache(account_id, config)
+        if config is None:
+            return False
+        return (
+            reference_module.reference_rule_for(
+                config,
+                tool_name=tool_name,
+                server_name=server_name,
+                managed_agent_id=managed_agent_id,
+            )
+            is not None
+        )
+    except Exception:  # noqa: BLE001 - never store the hash on doubt
+        return True
+
+
 # A usage row is a timeline entry, not an audit log of contents: keep the
 # per-key argument sizes bounded and never store the values themselves.
 MAX_ARGUMENT_SUMMARY_KEYS = 50
@@ -293,8 +331,28 @@ def _proxied_upstream_result(text: str, upstream: Any) -> Any:
     )
 
 
+def _resolve_proxied_tool_server(db: Any, account_id: str, tool_name: str) -> Any:
+    """Return the MCP server that serves ``tool_name`` for the account now.
+
+    Proxied wrappers are registered once per ``account_<id>_<tool>`` on the
+    process-wide server, so they must not carry a server id from the time
+    they were created: a server deleted and recreated under the same name
+    gets a new id. Resolving on every call reads the same rows as
+    ``list_tools`` (own and shared active servers, disabled tools skipped),
+    so every pod routes to the current server. When two servers expose the
+    same name, the last one wins, which matches the listing (see #1135).
+    """
+    from preloop.services.mcp_tool_discovery import _get_proxied_tools_sync
+
+    resolved = None
+    for server, tool in _get_proxied_tools_sync(account_id, db):
+        if tool.name == tool_name:
+            resolved = server
+    return resolved
+
+
 def _proxied_exception_outcome(
-    cause: BaseException, *, server_id: str, unavailable: bool
+    cause: BaseException, *, server_id: Optional[str], unavailable: bool
 ) -> str:
     """Classify a raised proxied call, stamp audit detail, record last_error.
 
@@ -311,7 +369,7 @@ def _proxied_exception_outcome(
         outcome = TOOL_CALL_STATUS_FAILED
         code = "unavailable" if unavailable else type(cause).__name__
     _tool_error_detail_var.set((code, reason))
-    if unavailable or status_code in (401, 403):
+    if server_id and (unavailable or status_code in (401, 403)):
         _record_mcp_server_error(server_id, f"{code}: {reason}")
     return outcome
 
@@ -770,7 +828,7 @@ _WRAPPER_NAMESPACE_KEYS = (
     "self",
     "account_id",
     "tool_name",
-    "server_id",
+    "_resolve_proxied_tool_server",
     "param_names",
     "logger",
     "get_db",
@@ -795,7 +853,7 @@ _WRAPPER_NAMESPACE_KEYS = (
 #: Colliding parameter names would make ``locals().get(param_name)`` forward
 #: the body's own object instead of the caller-supplied argument.
 _RESERVED_WRAPPER_BODY_LOCALS = frozenset(
-    {"ctx", "arguments", "user_context", "param_name", "value"}
+    {"ctx", "arguments", "user_context", "param_name", "value", "server_id"}
 )
 
 #: Builtins the generated wrapper body calls. An upstream property with one
@@ -899,6 +957,36 @@ class DynamicFastMCP(FastMCP):
         # original schema key -> generated wrapper parameter name
         self._proxied_param_aliases: Dict[str, Dict[str, str]] = {}
         logger.info("DynamicFastMCP initialized")
+
+    def unregister_proxied_tools(
+        self, account_id: str, server_id: str, tool_names: List[str]
+    ) -> int:
+        """Drop this process's wrappers for a deleted MCP server's tools.
+
+        Wrappers resolve their server at call time, so this is cleanup, not
+        a routing fix: other pods keep a wrapper that answers "no active MCP
+        server" until another server in the account exposes the same name
+        again. The next ``list_tools`` re-registers a name that is still
+        served. Returns the number of wrappers removed.
+        """
+        safe_account_id = str(account_id).replace("-", "_")
+        removed = 0
+        for tool_name in tool_names:
+            internal_name = f"account_{safe_account_id}_{tool_name}"
+            if internal_name in self._registered_proxied_tools:
+                self._registered_proxied_tools.discard(internal_name)
+                self._proxied_param_aliases.pop(internal_name, None)
+                try:
+                    self.local_provider.remove_tool(internal_name)
+                except Exception:
+                    logger.debug("Proxied wrapper already absent", exc_info=True)
+                removed += 1
+            # The name maps are process-wide and keyed by tool name; only
+            # clear entries that still point at the deleted server.
+            if self._proxied_tool_servers.get(tool_name) == str(server_id):
+                self._proxied_tool_servers.pop(tool_name, None)
+                self._proxied_tool_server_names.pop(tool_name, None)
+        return removed
 
     def set_user_context_provider(self, provider: Callable[[], Optional[UserContext]]):
         """Set a function that provides current user context.
@@ -1078,7 +1166,6 @@ class DynamicFastMCP(FastMCP):
                     try:
                         wrapper = self._create_proxied_tool_wrapper(
                             tool_name=mcp_tool.name,
-                            server_id=str(mcp_server.id),
                             account_id=user_context.account_id,
                             description=mcp_tool.description or "",
                             input_schema=mcp_tool.input_schema,
@@ -1296,7 +1383,6 @@ class DynamicFastMCP(FastMCP):
     def _create_proxied_tool_wrapper(
         self,
         tool_name: str,
-        server_id: str,
         account_id: str,
         description: str,
         input_schema: dict,
@@ -1307,8 +1393,9 @@ class DynamicFastMCP(FastMCP):
         FastMCP doesn't support **kwargs, so we need to build the function dynamically.
 
         Args:
-            tool_name: Name of the tool
-            server_id: MCP server ID
+            tool_name: Name of the tool. The serving MCP server is resolved
+                from ``(account_id, tool_name)`` on every call, never bound
+                here, so a recreated server is picked up without a restart.
             account_id: Owner account ID
             description: Tool description
             input_schema: Tool input schema (JSON Schema)
@@ -1447,17 +1534,17 @@ async def {internal_name}({params_str}):
         db_dependency = get_db()
         db = next(db_dependency)
         try:
-            # Use CRUD layer to get MCP server
-            # Own server, or one shared here (account hook H3).
-            mcp_server = crud_mcp_server.get_visible(
-                db, id=server_id, account_id=account_id
-            )
+            # Resolve the server at call time from (account, tool name):
+            # own servers or ones shared here (account hook H3). A baked id
+            # would keep pointing at a deleted server after a recreate.
+            mcp_server = _resolve_proxied_tool_server(db, account_id, tool_name)
 
             if not mcp_server:
                 return _wrapper_tool_error(
-                    f"Error: MCP server {{server_id}} not found",
+                    f"Error: no active MCP server provides tool '{{tool_name}}'",
                     status="failed",
                 )
+            server_id = str(mcp_server.id)
 
             # Snapshot configuration before releasing the database connection.
             # Connecting, approvals and remote tools can wait indefinitely.
@@ -1531,7 +1618,7 @@ async def {internal_name}({params_str}):
         )
         unavailable = is_mcp_unavailable_error(cause)
         outcome = _proxied_exception_outcome(
-            cause, server_id=server_id, unavailable=unavailable
+            cause, server_id=locals().get("server_id"), unavailable=unavailable
         )
         if unavailable:
             return _wrapper_tool_error(
@@ -1552,7 +1639,7 @@ async def {internal_name}({params_str}):
             "self": self,
             "account_id": account_id,
             "tool_name": tool_name,
-            "server_id": server_id,
+            "_resolve_proxied_tool_server": _resolve_proxied_tool_server,
             "param_names": param_names,
             "logger": logger,
             "get_db": get_db,
@@ -1717,7 +1804,14 @@ async def {internal_name}({params_str}):
         _tool_outcome_var.set(None)
 
         async def _refuse(text: str) -> ToolResult:
-            """Record a refused call as a usage row, then return its error."""
+            """Record a refused call (usage and audit rows), return its error."""
+            self._audit_refused_tool_call(
+                user_context,
+                client_tool_name=name,
+                arguments=arguments,
+                reason=text,
+                correlation_id=correlation_id,
+            )
             try:
                 self._persist_tool_call_activity(
                     user_context,
@@ -2460,7 +2554,19 @@ async def {internal_name}({params_str}):
             )
         )
         arguments_summary = _summarize_arguments(arguments)
-        arguments_hash = _hash_arguments(arguments)
+        # An unsalted hash of the arguments can be confirmed offline from a
+        # guessed value, so a call under a reference-only rule keeps none.
+        arguments_hash = (
+            None
+            if _reference_only_in_scope(
+                user_context.account_id,
+                tool_name=client_tool_name,
+                server_name=server_name,
+                managed_agent_id=getattr(user_context, "managed_agent_id", None),
+                config=storage_config,
+            )
+            else _hash_arguments(arguments)
+        )
         from datetime import datetime, timedelta, timezone
 
         ended_at = datetime.now(timezone.utc)
@@ -2749,6 +2855,87 @@ async def {internal_name}({params_str}):
             return name[len(prefix) :]
         return name
 
+    def _audit_refused_tool_call(
+        self,
+        user_context: UserContext,
+        *,
+        client_tool_name: str,
+        arguments: Optional[dict[str, Any]],
+        reason: str,
+        correlation_id: Optional[str],
+    ) -> None:
+        """Write the audit ``tool_call`` row for a call refused before dispatch.
+
+        Status is ``declined`` with a short reason and the call's
+        ``correlation_id``, for every caller type. Arguments go through the
+        same credential scrub, redact rules and reference-only record as an
+        executed call. When the sensitive data block cannot be read (one of
+        the refusal causes) only the argument key names are stored, never
+        the values. Best effort: an audit failure never changes the refusal.
+        """
+        try:
+            from preloop.plugins.base import get_plugin_manager
+            from preloop.services.sensitive_data import storage as storage_module
+
+            audit_service = get_plugin_manager().get_service("audit_service")
+            if not audit_service:
+                return
+            account_id = user_context.account_id
+            server_name = self._proxied_tool_server_names.get(
+                client_tool_name, BUILTIN_SERVER_NAME
+            )
+            scope_agent_id = getattr(user_context, "managed_agent_id", None)
+            tool_args: Any
+            try:
+                if storage_module.has_cached_config(account_id):
+                    config = storage_module.cached_config(account_id)
+                else:
+                    # Strict read: ``resolve_config`` would degrade to "no
+                    # rules" and store raw values on a failed read.
+                    config = storage_module._load_config(account_id)
+                    storage_module.prime_cache(account_id, config)
+                tool_args = apply_storage_redaction(
+                    account_id,
+                    redact_dict(arguments or {}),
+                    scope=StorageScope(
+                        target="tool.args",
+                        tool_name=client_tool_name,
+                        server_name=server_name,
+                        managed_agent_id=scope_agent_id,
+                    ),
+                    config=config,
+                )
+            except Exception:
+                logger.warning(
+                    "Sensitive data policy unavailable; refused call audited "
+                    "with argument names only"
+                )
+                tool_args = {
+                    "arguments_withheld": True,
+                    "arg_keys": sorted(str(k) for k in (arguments or {})),
+                }
+            audit_service.log_tool_call_async(
+                db_factory=lambda: next(get_db()),
+                account_id=uuid.UUID(str(account_id)),
+                user_id=uuid.UUID(str(user_context.user_id)),
+                tool_name=client_tool_name,
+                tool_args=tool_args,
+                result=AUDIT_TOOL_CALL_DECLINED,
+                duration_ms=0,
+                policy_decision=None,
+                rule_matched=None,
+                correlation_id=correlation_id,
+                runtime_session_id=user_context.runtime_session_id,
+                runtime_principal_type=user_context.runtime_principal_type,
+                runtime_principal_id=user_context.runtime_principal_id,
+                runtime_principal_name=user_context.runtime_principal_name,
+                api_key_id=user_context.api_key_id,
+                api_key_name=user_context.api_key_name,
+                **_audit_error_kwargs(audit_service, "refused", _short_reason(reason)),
+            )
+        except Exception as audit_err:
+            logger.debug(f"Failed to audit refused tool call: {audit_err}")
+
     def _record_attributed_refusal(
         self,
         name: str,
@@ -2767,15 +2954,24 @@ async def {internal_name}({params_str}):
         if user_context is None:
             return
         owner = account_id or getattr(user_context, "account_id", None)
+        client_tool_name = self._client_visible_registered_name(name, owner)
+        correlation_id = _correlation_id_var.get(None) or str(uuid.uuid4())
+        self._audit_refused_tool_call(
+            user_context,
+            client_tool_name=client_tool_name,
+            arguments=arguments,
+            reason=text,
+            correlation_id=correlation_id,
+        )
         try:
             self._persist_tool_call_activity(
                 user_context,
                 tool_name=name,
-                client_tool_name=self._client_visible_registered_name(name, owner),
+                client_tool_name=client_tool_name,
                 status=TOOL_CALL_STATUS_REFUSED,
                 summary=text,
                 arguments=arguments,
-                correlation_id=None,
+                correlation_id=correlation_id,
             )
         except Exception as exc:  # pragma: no cover - best effort only
             logger.debug("Failed to persist refused tool call '%s': %s", name, exc)

@@ -100,6 +100,14 @@ The tool list is filtered per subject. Check, in order:
 2. Built-in tracker tools (`get_issue`, `create_issue`, …) only appear when a tracker is connected to the account.
 3. Subject-scoped governance can hide tools for a specific API key or managed agent: check the key's or agent's governance settings in the console.
 4. External MCP server tools require a successful **Scan Tools** on the server entry under **Tools**.
+5. A runtime-session token (`flow_...`, minted with `POST /api/v1/auth/runtime-sessions/token`) only sees the tools named when it was minted. `allowed_mcp_servers` (MCP server entry names) and `allowed_mcp_tools` (tool names) both default to empty, and an empty restriction means **no tools**, built-ins included. It is not widened to "all tools". The list is resolved at mint time: a server added or scanned later, or a name that is missing or inactive, is not included. Mint again after the change. When the restriction resolves to zero tools, the mint response carries a `warnings` entry and the managed agent's session timeline gets a `session_warning` row. The `preloop` CLI passes the servers it manages from the agent's local config, so a server added only in the console or by API needs to be named explicitly. Durable agent credentials (`agt_...`) are not restricted this way.
+
+```bash
+curl -X POST "$PRELOOP_URL/api/v1/auth/runtime-sessions/token" \
+  -H "Authorization: Bearer $USER_TOKEN" -H "Content-Type: application/json" \
+  -d '{"session_source_type": "claude_code", "session_source_id": "my-session",
+       "allowed_mcp_servers": ["my-upstream-server"]}'
+```
 
 ### Approval-gated calls time out
 
