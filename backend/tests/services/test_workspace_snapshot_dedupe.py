@@ -237,3 +237,40 @@ def test_closed_execution_is_still_refused(db_session, scope) -> None:
     db_session.commit()
     with pytest.raises(ValueError, match="artifact_execution_closed"):
         put_artifact(db_session, **scope, kind="workspace", archive=snapshot())
+
+
+def test_reuse_never_selects_the_payload(db_session, scope) -> None:
+    """No statement on the reuse path reads ciphertext back (tens of MB)."""
+    from sqlalchemy import event, inspect as sa_inspect
+
+    put_artifact(db_session, **scope, kind="workspace", archive=snapshot())
+    row = rows(db_session, scope["account_id"])[0]
+    metadata = row.manifest["metadata"]
+    db_session.expire_all()
+    statements: list[str] = []
+    engine = db_session.get_bind()
+
+    def record(conn, cursor, statement, *args) -> None:
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        reused = crud.reuse_identical_workspace(
+            db_session,
+            **scope,
+            metadata=metadata,
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+        assert reused is not None
+        reference = (reused.id, reused.execution_id, reused.manifest_sha256)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert all(reference)
+    reads = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+    assert reads
+    # The lookup only tests "ciphertext IS NOT NULL"; nothing selects the column.
+    assert not any(
+        "flow_artifact.ciphertext," in s or "flow_artifact.ciphertext AS" in s
+        for s in reads
+    )
+    assert "ciphertext" in sa_inspect(reused).unloaded

@@ -34,7 +34,10 @@ def test_large_compressible_member_is_streamed(tmp_path: Path) -> None:
     for _ in range(256):
         expected_hash.update(payload)
     expected_state = hashlib.sha256(
-        b"generated.bin\0" + expected_hash.digest()
+        b"generated.bin\0"
+        + oct((workspace / "generated.bin").stat().st_mode & 0o777).encode()
+        + b"\0"
+        + expected_hash.digest()
     ).hexdigest()
     assert metadata["file_state_sha256"] == expected_state
     assert (tmp_path / "restored/generated.bin").stat().st_size == 16 * 1024**2
@@ -87,3 +90,14 @@ def test_short_read_is_classified_without_a_tarfile_error_message() -> None:
     reader = cc._CheckpointReader(io.BytesIO(b"short"), expected_size=10)
     with pytest.raises(ValueError, match="checkpoint_workspace_busy"):
         reader.read(10)
+
+
+def test_mode_only_change_is_a_new_file_state(tmp_path: Path) -> None:
+    """A chmod-only change must not be deduplicated against the old capture."""
+    script = tmp_path / "script.sh"
+    script.write_bytes(b"echo hi\n")
+    script.chmod(0o644)
+    before = restore(capture(tmp_path, max_bytes=100_000), tmp_path / "r1")
+    script.chmod(0o755)
+    after = restore(capture(tmp_path, max_bytes=100_000), tmp_path / "r2")
+    assert before["file_state_sha256"] != after["file_state_sha256"]

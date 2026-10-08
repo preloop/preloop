@@ -71,7 +71,8 @@ def reuse_identical_workspace(
     commit. When the newest available workspace artifact of this execution
     and thread has the same ``file_state_sha256`` and the same repository
     ``head_sha`` list, nothing new is stored and the existing row's expiry
-    moves to ``expires_at`` (never earlier). The scope stays inside one
+    moves to ``expires_at`` (never earlier). The manifest and payload stay
+    unchanged; ``updated_at`` advances through its ``onupdate`` default. The scope stays inside one
     execution because ``latest`` looks recovery snapshots up by execution.
     Returns None, with the locks still held, when a new row must be stored.
     """
@@ -118,9 +119,9 @@ def reuse_identical_workspace(
         return None
     if newest.expires_at is None or newest.expires_at < expires_at:
         newest.expires_at = expires_at
-    newest.updated_at = datetime.now()
     db.commit()
-    db.refresh(newest)
+    # Reload only what artifact_reference reads; the payload must stay unloaded.
+    db.refresh(newest, attribute_names=["id", "execution_id", "manifest_sha256"])
     return newest
 
 

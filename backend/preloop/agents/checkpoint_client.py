@@ -230,7 +230,14 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
                 after.st_mtime_ns,
             ):
                 raise ValueError("checkpoint_workspace_busy")
-            digest.update(relative.encode() + b"\0" + reader.digest.digest())
+            # Restore applies the mode, so a chmod-only change is a new state.
+            digest.update(
+                relative.encode()
+                + b"\0"
+                + oct(info.mode).encode()
+                + b"\0"
+                + reader.digest.digest()
+            )
         metadata = json.dumps(
             {
                 "version": 1,
