@@ -117,12 +117,15 @@ def manifest_digest(manifest: dict[str, Any]) -> str:
     ).hexdigest()
 
 
-def artifact_reference(artifact: Any) -> ArtifactReference:
+def artifact_reference(
+    artifact: Any, *, deduplicated: bool = False
+) -> ArtifactReference:
     """Build the shared reference without exposing storage credentials."""
     return ArtifactReference(
         artifact_id=artifact.id,
         execution_id=artifact.execution_id,
         manifest_sha256=artifact.manifest_sha256,
+        deduplicated=deduplicated,
     )
 
 
@@ -756,6 +759,22 @@ def put_artifact(
     expires_at = now + timedelta(hours=max(0, ttl))
     if native_expiry is not None:
         expires_at = min(expires_at, native_expiry)
+    if kind == "workspace":
+        # A periodic and a prepublication capture of an unchanged checkout
+        # are the same snapshot; keep one copy and extend its retention.
+        # Checked before encryption so a duplicate never meets the quota.
+        existing = crud.reuse_identical_workspace(
+            db,
+            account_id=account_id,
+            flow_id=flow_id,
+            thread_id=thread_id,
+            execution_id=execution_id,
+            metadata=metadata,
+            expires_at=expires_at,
+            require_execution_open=require_execution_open,
+        )
+        if existing is not None:
+            return artifact_reference(existing, deduplicated=True)
     manifest = ArtifactManifest(
         kind=kind,
         execution_id=execution_id,
