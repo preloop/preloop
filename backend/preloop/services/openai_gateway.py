@@ -1077,6 +1077,9 @@ class OpenAIGatewayService:
         # an X-Preloop-Warning response header) so a silent misroute like the
         # zai/glm-5.3 collision is visible at the client, not just in logs.
         self.alias_collision_warning: Optional[str] = None
+        # Set when a flow-execution credential was served by a model row
+        # other than the flow's bound ``ai_model_id``. Surfaced the same way.
+        self.flow_model_warning: Optional[str] = None
         # Human-readable warning set when a configured budget could not be
         # enforced for this request (the model has no known price, so the
         # hard limit has nothing to compare against). Surfaced beside the
@@ -1137,7 +1140,11 @@ class OpenAIGatewayService:
         """
         warnings = [
             warning
-            for warning in (self.budget_warning, self.alias_collision_warning)
+            for warning in (
+                self.budget_warning,
+                self.alias_collision_warning,
+                self.flow_model_warning,
+            )
             if warning
         ]
         return " | ".join(warnings) if warnings else None
@@ -3803,6 +3810,7 @@ class OpenAIGatewayService:
     ) -> GatewayModel:
         """Resolve authorization and copy only immutable execution values."""
         model = self._resolve_requested_model_row(requested_model, provider=provider)
+        self._note_flow_model_mismatch(model, requested_model)
         return (
             GatewayModelSnapshot.from_model(model) if self._owns_db_session else model
         )
@@ -3830,8 +3838,12 @@ class OpenAIGatewayService:
                 gateway_enabled_models.append(
                     (ai_model, runtime.model_gateway_model_alias)
                 )
-                if ai_model.is_default:
+                # The inventory lists the account's own rows first, so the
+                # first default wins: an account default is never replaced by
+                # a system default that happens to sort later.
+                if ai_model.is_default and default_gateway_model is None:
                     default_gateway_model = ai_model
+        bound_model_id = self._flow_bound_model_id()
 
         if requested_model:
             # Explicit registry IDs avoid alias collisions for first-party
@@ -3895,10 +3907,7 @@ class OpenAIGatewayService:
                     continue
                 if len(candidates) == 1:
                     return candidates[0]
-                user_created = [
-                    model for model in candidates if not is_agent_managed_model(model)
-                ]
-                chosen = (user_created or candidates)[0]
+                chosen = self._preferred_alias_candidate(candidates, bound_model_id)
                 shadowed = [
                     f"{model.id} ({model.name!r})"
                     for model in candidates
@@ -3963,6 +3972,10 @@ class OpenAIGatewayService:
                 message="Requested model not found",
             )
 
+        if bound_model_id is not None:
+            for ai_model, _alias in gateway_enabled_models:
+                if str(ai_model.id) == bound_model_id:
+                    return ai_model
         if default_gateway_model:
             return default_gateway_model
 
@@ -3970,6 +3983,88 @@ class OpenAIGatewayService:
             provider=provider,
             status_code=404,
             message="No gateway-enabled default model configured",
+        )
+
+    def _preferred_alias_candidate(
+        self, candidates: List[models.AIModel], bound_model_id: Optional[str]
+    ) -> models.AIModel:
+        """Pick one row among several answering to the same alias.
+
+        Precedence, each rule breaking ties left by the previous one:
+
+        1. The model bound to the calling flow (its ``ai_model_id``).
+        2. The account's own rows, then rows shared from another account,
+           then system rows (``account_id`` NULL, e.g. operator-paid hosted
+           models). An account that registered its own key for an alias must
+           never be silently served, and billed, by a system row.
+        3. Explicitly user-created rows over agent-onboarding imports.
+        4. The stable inventory order of ``get_all_for_account``.
+        """
+        own_account = str(self.auth_context.account_id)
+
+        def rank(model: models.AIModel) -> tuple[int, int, int]:
+            owner = getattr(model, "account_id", None)
+            ownership = 2 if owner is None else 0 if str(owner) == own_account else 1
+            return (
+                0 if str(model.id) == bound_model_id else 1,
+                ownership,
+                1 if is_agent_managed_model(model) else 0,
+            )
+
+        # ``sorted`` is stable, so equal ranks keep the inventory order.
+        return sorted(candidates, key=rank)[0]
+
+    def _flow_bound_model_id(self) -> Optional[str]:
+        """Return the ``ai_model_id`` bound to the calling flow, if any.
+
+        Flow-execution credentials carry ``flow_id`` (and, when minted after
+        this change, ``ai_model_id``) in their API key context. Agent and
+        user credentials have no flow binding and return ``None``.
+        """
+        if not hasattr(self, "_flow_bound_model_id_cache"):
+            self._flow_bound_model_id_cache = self._lookup_flow_bound_model_id()
+        return self._flow_bound_model_id_cache
+
+    def _lookup_flow_bound_model_id(self) -> Optional[str]:
+        api_key = getattr(self.auth_context, "api_key", None)
+        context_data = getattr(api_key, "context_data", None)
+        if not isinstance(context_data, dict):
+            return None
+        bound = context_data.get("ai_model_id")
+        if bound:
+            return str(bound)
+        flow_id = context_data.get("flow_id")
+        if not flow_id:
+            return None
+        from preloop.models.crud import crud_flow
+
+        try:
+            flow = crud_flow.get(self.db, id=flow_id)
+        except Exception:
+            logger.debug("Flow lookup for model binding failed", exc_info=True)
+            return None
+        if flow is None or str(flow.account_id) != str(self.auth_context.account_id):
+            return None
+        return str(flow.ai_model_id) if flow.ai_model_id else None
+
+    def _note_flow_model_mismatch(
+        self, model: Any, requested_model: Optional[str]
+    ) -> None:
+        """Warn when a flow is served by a row other than its bound model."""
+        bound_model_id = self._flow_bound_model_id()
+        if bound_model_id is None or str(model.id) == bound_model_id:
+            return
+        self.flow_model_warning = (
+            f"flow model mismatch: '{requested_model}' was served by "
+            f"{model.id} ({model.name!r}), not the flow's bound model "
+            f"{bound_model_id}."
+        )
+        logger.warning(
+            "gateway_flow_model_mismatch account=%s requested=%r served=%s bound=%s",
+            self.auth_context.account_id,
+            requested_model,
+            model.id,
+            bound_model_id,
         )
 
     @staticmethod

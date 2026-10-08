@@ -164,6 +164,10 @@ def create_flow_runtime_token(
                 str(runtime_session_id) if runtime_session_id is not None else None
             ),
             "flow_id": str(flow_id),
+            # The gateway prefers this row when an alias matches several.
+            "ai_model_id": (
+                str(flow.ai_model_id) if getattr(flow, "ai_model_id", None) else None
+            ),
             "allowed_mcp_tools": getattr(flow, "allowed_mcp_tools", None) or [],
             "allowed_mcp_servers": getattr(flow, "allowed_mcp_servers", None) or [],
             "runtime_principal": {
