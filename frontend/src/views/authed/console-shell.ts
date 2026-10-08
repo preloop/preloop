@@ -46,11 +46,6 @@ import '../../components/plan-choice-screen';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import { LOCATION_CHANGED, Router } from '../../router';
 import { planPageUrl, premiumFeatureLabel } from '../../utils/premium-features';
-import {
-  ATTENTION_SUMMARY_EVENT,
-  readAttentionSummary,
-  type AttentionSummary,
-} from '../../utils/attention-summary';
 
 /** Nav items that require at least one of the listed permissions when RBAC is on. */
 const NAV_PERMISSIONS: Record<string, string[]> = {
@@ -197,13 +192,6 @@ export class ConsoleShell extends LitElement {
   /** Unexpired pending approvals, published by the header for the badge. */
   @state()
   private _pendingApprovalsCount = 0;
-
-  /**
-   * Attention counts published by the Overview strip or the Attention page.
-   * Null until one of them has run, mirroring the header's behaviour.
-   */
-  @state()
-  private _attentionSummary: AttentionSummary | null = null;
 
   private _mediaQuery?: MediaQueryList;
   private _mediaQueryHandler?: (e: MediaQueryListEvent) => void;
@@ -517,8 +505,62 @@ export class ConsoleShell extends LitElement {
         padding: 0.5em;
       }
 
-      sl-details {
-        padding-left: 1em;
+      /* One icon column and one label column for every top-level row:
+         links, the Audit and Settings group headers, and Emergency. A link
+         row is the anchor's 3px rule, the item's inset, then the icon; a
+         group header gets the same 3px and the same inset, so the two kinds
+         line up. Shoelace reserves a check-mark column at the start of every
+         menu item; top-level rows never show a check, so they drop it
+         instead of carrying a hidden 1.5em gutter. */
+      #console-nav > sl-menu > .sidebar-link > sl-menu-item {
+        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
+      }
+
+      #console-nav
+        > sl-menu
+        > .sidebar-link
+        > sl-menu-item::part(checked-icon) {
+        display: none;
+      }
+
+      #console-nav {
+        --nav-row-inset: 1.25rem;
+      }
+
+      sl-details.nav-section::part(header) {
+        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
+        border-left: 3px solid transparent;
+      }
+
+      /* Centre icon and label on one axis; an inline icon sat on the text
+         baseline, a few pixels above the label's middle. */
+      sl-details.nav-section [slot='summary'] {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        /* A menu item's line box, so group rows are as tall as link rows. */
+        min-height: calc(
+          var(--sl-font-size-medium) * var(--sl-line-height-normal)
+        );
+      }
+
+      sl-details.nav-section [slot='summary'] sl-icon {
+        flex: 0 0 auto;
+      }
+
+      /* A menu item puts the prefix gap (x-small) between icon and label;
+         the summary has no prefix slot, so it adds the same gap here. */
+      sl-details.nav-section [slot='summary'] .sidebar-label {
+        margin-left: calc(0.5rem + var(--sl-spacing-x-small));
+      }
+
+      .nav-section-badge {
+        margin-left: auto;
+        margin-right: var(--sl-spacing-x-small);
+      }
+
+      sl-details.nav-section[open] .nav-section-badge {
+        display: none;
       }
 
       sl-details.nav-section[open]::part(summary) {
@@ -611,14 +653,9 @@ export class ConsoleShell extends LitElement {
     window.addEventListener('show-toast', this._handleShowToast);
     this.addEventListener('keydown', this._handleKeydown);
     window.addEventListener(LOCATION_CHANGED, this._handleLocationChanged);
-    this._attentionSummary = readAttentionSummary();
     window.addEventListener(
       PENDING_APPROVALS_EVENT,
       this._handlePendingApprovals
-    );
-    window.addEventListener(
-      ATTENTION_SUMMARY_EVENT,
-      this._handleAttentionSummary
     );
     this._mediaQuery = window.matchMedia(
       `(max-width: ${SIDEBAR_BREAKPOINT}px)`
@@ -855,10 +892,6 @@ export class ConsoleShell extends LitElement {
     this._pendingApprovalsCount = (event as CustomEvent<number>).detail ?? 0;
   };
 
-  private _handleAttentionSummary = (event: Event) => {
-    this._attentionSummary = (event as CustomEvent<AttentionSummary>).detail;
-  };
-
   private _normalizePath(path: string): string {
     if (path.length > 1 && path.endsWith('/')) {
       return path.slice(0, -1);
@@ -903,6 +936,8 @@ export class ConsoleShell extends LitElement {
   /** True when any Audit child is visible for this user/edition. */
   private _hasAuditSection(): boolean {
     return (
+      this._canAccess('/console/approvals') ||
+      this._canAccess('/console/runtime-sessions') ||
       this._canShowAuditEvents() ||
       this._canAccess('/console/artifacts') ||
       this._canAccess('/console/settings/records')
@@ -919,6 +954,8 @@ export class ConsoleShell extends LitElement {
 
   private _isAuditActive(): boolean {
     return (
+      this._isNavActive('/console/approvals') ||
+      this._isNavActive('/console/runtime-sessions') ||
       this._isNavActive('/console/audit') ||
       this._isNavActive('/console/artifacts') ||
       this._isNavActive('/console/settings/records')
@@ -986,10 +1023,6 @@ export class ConsoleShell extends LitElement {
     window.removeEventListener(
       PENDING_APPROVALS_EVENT,
       this._handlePendingApprovals
-    );
-    window.removeEventListener(
-      ATTENTION_SUMMARY_EVENT,
-      this._handleAttentionSummary
     );
     this._mediaQuery?.removeEventListener('change', this._mediaQueryHandler!);
     super.disconnectedCallback();
@@ -1090,57 +1123,6 @@ export class ConsoleShell extends LitElement {
                       true
                     )}
                     ${this._renderNavLink(
-                      '/console/attention',
-                      html`
-                        <sl-menu-item>
-                          <sl-icon
-                            name="exclamation-triangle"
-                            slot="prefix"
-                          ></sl-icon>
-                          <span class="sidebar-label">Needs attention</span>
-                          ${
-                            this._attentionSummary &&
-                            this._attentionSummary.total > 0
-                              ? html`<sl-badge
-                                  slot="suffix"
-                                  variant="primary"
-                                  pill
-                                  >${this._attentionSummary.total}</sl-badge
-                                >`
-                              : nothing
-                          }
-                        </sl-menu-item>
-                      `
-                    )}
-                    ${this._renderNavLink(
-                      '/console/approvals',
-                      html`
-                        <sl-menu-item>
-                          <sl-icon name="shield-check" slot="prefix"></sl-icon>
-                          <span class="sidebar-label">Approvals</span>
-                          ${
-                            this._pendingApprovalsCount > 0
-                              ? html`<sl-badge
-                                  slot="suffix"
-                                  variant="primary"
-                                  pill
-                                  >${this._pendingApprovalsCount}</sl-badge
-                                >`
-                              : nothing
-                          }
-                        </sl-menu-item>
-                      `
-                    )}
-                    ${this._renderNavLink(
-                      '/console/runtime-sessions',
-                      html`
-                        <sl-menu-item>
-                          <sl-icon name="clock-history" slot="prefix"></sl-icon>
-                          <span class="sidebar-label">Sessions</span>
-                        </sl-menu-item>
-                      `
-                    )}
-                    ${this._renderNavLink(
                       '/console/agents',
                       html`
                         <sl-menu-item>
@@ -1224,13 +1206,43 @@ export class ConsoleShell extends LitElement {
                               ?open=${this._isAuditActive()}
                             >
                               <span slot="summary">
-                                <sl-icon
-                                  name="journal-text"
-                                  style="padding-right: 6px;"
-                                ></sl-icon>
+                                <sl-icon name="journal-text"></sl-icon>
                                 <span class="sidebar-label">Audit</span>
+                                ${
+                                  // The Approvals badge sits inside the
+                                  // group, so a closed group repeats the
+                                  // count on its header.
+                                  this._pendingApprovalsCount > 0 &&
+                                  this._canAccess('/console/approvals')
+                                    ? html`<sl-badge
+                                        class="nav-section-badge"
+                                        variant="primary"
+                                        pill
+                                        >${this._pendingApprovalsCount}</sl-badge
+                                      >`
+                                    : nothing
+                                }
                               </span>
                               <sl-menu>
+                                ${this._renderNavLink(
+                                  '/console/approvals',
+                                  html`<sl-menu-item
+                                    >Approvals${
+                                      this._pendingApprovalsCount > 0
+                                        ? html`<sl-badge
+                                            slot="suffix"
+                                            variant="primary"
+                                            pill
+                                            >${this._pendingApprovalsCount}</sl-badge
+                                          >`
+                                        : nothing
+                                    }</sl-menu-item
+                                  >`
+                                )}
+                                ${this._renderNavLink(
+                                  '/console/runtime-sessions',
+                                  html`<sl-menu-item>Sessions</sl-menu-item>`
+                                )}
                                 ${
                                   this._canShowAuditEvents()
                                     ? this._renderNavLink(
@@ -1265,10 +1277,7 @@ export class ConsoleShell extends LitElement {
                       ?open=${this._isSettingsActive()}
                     >
                       <span slot="summary">
-                        <sl-icon
-                          name="gear"
-                          style="padding-right: 6px;"
-                        ></sl-icon>
+                        <sl-icon name="gear"></sl-icon>
                         <span class="sidebar-label">Settings</span>
                       </span>
                       <sl-menu>
