@@ -312,6 +312,7 @@ def _get(value: Any, *names: str) -> Any:
 
 
 def _first_json_text(content: Any) -> Any:
+    """The first text block that parses as JSON; non-JSON blocks are skipped."""
     if not isinstance(content, list):
         return None
     for block in content:
@@ -321,7 +322,7 @@ def _first_json_text(content: Any) -> Any:
         try:
             return json.loads(text)
         except (TypeError, ValueError):
-            return None
+            continue
     return None
 
 
@@ -330,7 +331,8 @@ def result_payloads(result: Any) -> List[Any]:
 
     ``structuredContent`` when the result has one (MCP ``CallToolResult``,
     FastMCP ``ToolResult.structured_content`` or the dict forms), then the
-    first text content block parsed as JSON. A path missing from the first
+    first text content block that parses as JSON (non-JSON blocks are
+    skipped). A path missing from the first
     is looked up in the second: FastMCP wraps a tool that returns a JSON
     string as ``{"result": "<string>"}``, and the text block holds the
     object. A plain dict or list without those keys is used as is.
@@ -459,9 +461,28 @@ def _key_names(value: Any) -> List[str]:
     return []
 
 
+class ReferenceRecord(dict):
+    """A reference record this process built.
+
+    Only :func:`build_reference_record` makes one. Tool arguments arrive as
+    plain dicts, so a caller who sends ``{"_preloop_reference": true}`` cannot
+    pass as a server-built record and skip storage redaction.
+    """
+
+
 def is_reference_record(value: Any) -> bool:
-    """True for a record built by :func:`build_reference_record`."""
+    """True for a dict carrying the reference marker (stored rows included).
+
+    Use for reading stored rows. Decisions that skip redaction must use
+    :func:`is_built_reference_record`, because the marker is caller-supplied
+    data until the server builds the record.
+    """
     return isinstance(value, dict) and value.get(REFERENCE_MARKER) is True
+
+
+def is_built_reference_record(value: Any) -> bool:
+    """True only for a record :func:`build_reference_record` returned."""
+    return isinstance(value, ReferenceRecord) and is_reference_record(value)
 
 
 def build_reference_record(
@@ -485,27 +506,29 @@ def build_reference_record(
     account's redact rules so a kept field cannot smuggle a value a redact
     rule would have masked.
     """
-    record: Dict[str, Any] = {
-        REFERENCE_MARKER: True,
-        "schema": RECORD_SCHEMA,
-        "rule_id": rule.id,
-        "tool_name": tool_name,
-        "server_name": server_name,
-        "principal": principal or {},
-        "decision": decision,
-        "kept": {},
-        "kept_result": {},
-        "args_hmac": None,
-        "result_hmac": None,
-        "fingerprint_algo": "scrypt",
-        "salt_id": None,
-        "args_bytes": _byte_size(arguments),
-        "result_bytes": _byte_size(result_fingerprint_payload(result)),
-        "arg_keys": _key_names(arguments),
-        "timing_ms": timing_ms,
-        "cost": cost,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-    }
+    record: Dict[str, Any] = ReferenceRecord(
+        {
+            REFERENCE_MARKER: True,
+            "schema": RECORD_SCHEMA,
+            "rule_id": rule.id,
+            "tool_name": tool_name,
+            "server_name": server_name,
+            "principal": principal or {},
+            "decision": decision,
+            "kept": {},
+            "kept_result": {},
+            "args_hmac": None,
+            "result_hmac": None,
+            "fingerprint_algo": "scrypt",
+            "salt_id": None,
+            "args_bytes": _byte_size(arguments),
+            "result_bytes": _byte_size(result_fingerprint_payload(result)),
+            "arg_keys": _key_names(arguments),
+            "timing_ms": timing_ms,
+            "cost": cost,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
     if arguments is not None:
         kept = extract_keep_fields(arguments, rule.keep_fields)
         if kept and kept_redactor is not None:

@@ -229,7 +229,7 @@ def reference_record_for_storage(
 
     if scope is None or not scope.tool_name:
         return None
-    if reference_module.is_reference_record(obj):
+    if reference_module.is_built_reference_record(obj):
         return obj
     rule = reference_module.reference_rule_for(
         config,
@@ -295,7 +295,7 @@ def attach_result_to_reference(
 
     if result is None or scope is None or not scope.tool_name:
         return stored
-    if not reference_module.is_reference_record(stored):
+    if not reference_module.is_built_reference_record(stored):
         return stored
     if config is None:
         config = resolve_config(account_id)
