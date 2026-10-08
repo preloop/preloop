@@ -223,7 +223,10 @@ checkpoint survives process/pod loss; writes after that checkpoint can be lost.
 Controlled exits attempt a final checkpoint. Before legacy wrapper publication,
 a failed checkpoint blocks publication, except when the archive exceeds the
 storage cap: that case logs `PRELOOP_CHECKPOINT skipped checkpoint_oversized`,
-exits 0, and leaves the last completed checkpoint as the resume point. A
+exits 0, and leaves the last completed checkpoint as the resume point.
+A successful capture logs `PRELOOP_CHECKPOINT committed <artifact_id>`; a
+trailing `deduplicated` token means the workspace was unchanged, so the
+existing artifact was reused and no new storage quota was used. A
 trusted external publisher must make this checkpoint barrier part of its
 handoff as well.
 
