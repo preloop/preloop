@@ -56,7 +56,7 @@ The installer verifies the binary against the release checksums and adds it to
 your user `PATH`. See [Windows CLI install](../windows-cli.md) for pinning a
 version, building from source, and Defender guidance.
 
-### Inside WSL
+### Inside WSL {#inside-wsl-recommended}
 
 Use the standard installer, it is an ordinary Linux install:
 
@@ -71,7 +71,7 @@ curl -fsSL https://preloop.ai/install/cli | sh
     WSL, or add its Windows install directory to your WSL `PATH`. See
     [CLI Reference → WSL](../guide/cli.md#wsl).
 
-### Manual download of the Windows binary
+### Manual download of the Windows binary {#native-windows-binary}
 
 Download `preloop-windows-amd64.exe` or `preloop-windows-arm64.exe` from the
 [GitHub releases page](https://github.com/preloop/preloop/releases/latest)
@@ -121,7 +121,7 @@ CLI installed inside WSL behaves exactly as on Linux.
 
 | Area | Behaviour on native Windows |
 |------|-----------------------------|
-| Claude Desktop discovery | The CLI looks for `claude_desktop_config.json` under `%USERPROFILE%\.claude\` and `%USERPROFILE%\.config\claude\`, not under `%APPDATA%\Claude\`. |
+| Claude Desktop discovery | Supported: the CLI reads `%APPDATA%\Claude\claude_desktop_config.json` (and also checks `%USERPROFILE%\.claude\` and `%USERPROFILE%\.config\claude\`). |
 | Credential probing | Auth probes that read POSIX keychains and shell-based credential helpers do not resolve on Windows; some agents will report an unverified credential and need manual re-verification. |
 | OpenClaw runtime management | Runtime install and lifecycle management assume POSIX process and path semantics; manage OpenClaw from inside WSL. |
 | Managed agent launchers | Not available. Onboarding can generate a wrapper script that launches an agent with Preloop's environment pre-applied; it is emitted as a `bash` script into `~/.local/bin`, which Windows cannot execute. MCP firewall and model-gateway routing still work, only the generated launcher is skipped. |

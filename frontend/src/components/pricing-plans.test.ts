@@ -108,6 +108,23 @@ describe('pricing-plan-comparison', () => {
     expect(el.textContent).to.contain('Governance never stops.');
   });
 
+  it('renders the optional note link next to the note', async () => {
+    const el = (await fixture(html`
+      <pricing-plan-comparison
+        .comparison=${{
+          ...COMPARISON,
+          note_link: { label: 'Your data', url: '/docs/your-data' },
+        }}
+        .plans=${PLANS}
+        .fallbackTitle=${'Compare plans'}
+      ></pricing-plan-comparison>
+    `)) as PricingPlanComparison;
+    await el.updateComplete;
+    const link = el.querySelector('.comparison-note a');
+    expect(link?.getAttribute('href')).to.equal('/docs/your-data');
+    expect(link?.textContent).to.equal('Your data');
+  });
+
   it("names the account's own column, and only on a page that knows it", async () => {
     const anonymous = await render();
     expect(anonymous.querySelector('th.current')).to.not.exist;

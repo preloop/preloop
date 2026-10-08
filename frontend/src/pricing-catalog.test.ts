@@ -105,6 +105,10 @@ describe('Public pricing from billing catalog', () => {
       )
       .and.include('No training, no sharing.')
       .and.include('Self-host to keep everything in your network.');
+    expect(result.comparison!.note_link).to.deep.equal({
+      label: 'Your data: Security & Privacy',
+      url: 'https://docs.preloop.ai/security/security-privacy/#your-data',
+    });
   });
   it('states the agent cap the catalog carries, never "unlimited" by habit', () => {
     const result = applyPricingCatalog(config, catalog());
