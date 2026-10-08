@@ -394,9 +394,11 @@ function quoteYaml11Booleans(doc: Document) {
 
 /**
  * JSONPath subset accepted by reference-only logging. Same pattern as
- * KEEP_FIELD_RE in the server's policy schema: dotted keys, [n] and [*].
+ * KEEP_FIELD_RE in the server's policy schema: dotted keys, [n] and [*],
+ * rooted at $ (tool arguments) or $result (tool result).
  */
-const JSON_PATH_RE = /^\$(?:\.[A-Za-z_][A-Za-z0-9_-]*|\[\d+\]|\[\*\])+$/;
+const JSON_PATH_RE =
+  /^\$(?:result)?(?:\.[A-Za-z_][A-Za-z0-9_-]*|\[\d+\]|\[\*\])+$/;
 
 /** Server cap on keep_fields per reference-only entry. */
 export const MAX_KEEP_FIELDS = 32;
@@ -437,7 +439,7 @@ export function formErrors(
     entry.keepFields.forEach((field, fieldIndex) => {
       if (field.trim() && !isValidJsonPath(field)) {
         errors[`ref-${index}-field-${fieldIndex}`] =
-          'Use a path like $.consent_id, $.call.id or $.items[0].id.';
+          'Use a path like $.consent_id, $.items[0].id or $result.consent_id.';
       }
     });
   });
@@ -520,7 +522,12 @@ export function summarize(
     ];
     if (!targets.length) continue;
     const fields = entry.keepFields
-      .map((field) => field.trim().replace(/^\$\.?/, ''))
+      .map((field) => {
+        const trimmed = field.trim();
+        const fromResult = /^\$result[.[]/.test(trimmed);
+        const path = trimmed.replace(/^\$(?:result)?\.?/, '');
+        return fromResult && path ? `${path} (from the result)` : path;
+      })
       .filter(Boolean);
     const keep = fields.length
       ? `only ${list(fields)} and a fingerprint`

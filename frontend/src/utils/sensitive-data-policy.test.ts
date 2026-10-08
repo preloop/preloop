@@ -204,12 +204,18 @@ describe('sensitive-data-policy', () => {
       '$.call.id',
       '$.items[0].id',
       '$.a[*]',
+      '$result.consent_id',
+      '$result.grant.scope',
+      '$result.items[0].id',
     ]) {
       expect(isValidJsonPath(path), path).to.equal(true);
     }
     for (const path of [
       'consent_id',
       '$',
+      '$result',
+      '$results.id',
+      'result.id',
       '$..id',
       '$.a b',
       '$.[0]',
@@ -222,13 +228,13 @@ describe('sensitive-data-policy', () => {
       {
         id: 'r',
         scope: { agents: [], tools: ['t'], servers: [] },
-        keepFields: ['$.ok', 'not a path'],
+        keepFields: ['$.ok', 'not a path', '$result.consent_id'],
         approverView: 'redacted',
       },
     ];
     expect(formErrors(form)).to.deep.equal({
       'ref-0-field-1':
-        'Use a path like $.consent_id, $.call.id or $.items[0].id.',
+        'Use a path like $.consent_id, $.items[0].id or $result.consent_id.',
     });
   });
 
@@ -275,7 +281,7 @@ describe('sensitive-data-policy', () => {
       {
         id: 'r',
         scope: { agents: [], tools: ['get_patient_record'], servers: [] },
-        keepFields: ['$.consent_id'],
+        keepFields: ['$.consent_id', '$result.grant_id'],
         approverView: 'redacted',
       },
     ];
@@ -288,7 +294,8 @@ describe('sensitive-data-policy', () => {
     ).to.equal(
       'Card number and IBAN matches in tool inputs are blocked. ' +
         'Email address matches in tool inputs are stored as [REDACTED:email]. ' +
-        'Calls to get_patient_record keep only consent_id and a fingerprint.'
+        'Calls to get_patient_record keep only consent_id and ' +
+        'grant_id (from the result) and a fingerprint.'
     );
   });
 
