@@ -2,6 +2,7 @@
 
 import os
 import threading
+from urllib.parse import quote, quote_plus
 from typing import Any, AsyncGenerator, Generator, Optional
 from contextlib import asynccontextmanager
 
@@ -69,15 +70,26 @@ def redact_secrets_in_text(text_value: Any, url: Any) -> str:
     message = str(text_value)
     if not url:
         return message
-    raw = str(url)
-    if raw in message:
-        message = message.replace(raw, redact_url(raw))
     try:
-        password = make_url(url).password
+        parsed = make_url(url)
     except Exception:
-        password = None
+        parsed = None
+    raw_forms = {str(url)}
+    if parsed is not None:
+        raw_forms.add(parsed.render_as_string(hide_password=False))
+    for raw in raw_forms:
+        if raw and raw in message:
+            message = message.replace(raw, redact_url(url))
+    password = parsed.password if parsed is not None else None
     if password:
-        message = message.replace(str(password), "***")
+        password = str(password)
+        # URLs carry the percent-encoded form; errors may quote either one.
+        for form in sorted(
+            {password, quote(password, safe=""), quote_plus(password)},
+            key=len,
+            reverse=True,
+        ):
+            message = message.replace(form, "***")
     return message
 
 
@@ -227,7 +239,9 @@ def get_engine(database_url: Optional[str] = None):
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
         logger.error(f"Database connection failed: {safe_error}")
-        raise Exception(f"Database connection failed: {safe_error}") from None
+    # Raised outside the except block so the original error, whose message
+    # may quote the URL, is neither the cause nor the context of this one.
+    raise Exception(f"Database connection failed: {safe_error}")
 
 
 def get_engine_if_initialized() -> Optional[Engine]:
@@ -351,7 +365,9 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
     except (ImportError, SQLAlchemyError) as e:
         safe_error = redact_secrets_in_text(e, url)
         logger.error(f"Async database connection failed: {safe_error}")
-        raise Exception(f"Async database connection failed: {safe_error}") from None
+    # Raised outside the except block so the original error, whose message
+    # may quote the URL, is neither the cause nor the context of this one.
+    raise Exception(f"Async database connection failed: {safe_error}")
 
 
 def get_async_session_factory(
