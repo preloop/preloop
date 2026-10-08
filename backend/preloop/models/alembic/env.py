@@ -72,7 +72,7 @@ if not database_url:
     # but ideally, migrations should fail if the URL isn't explicitly set.
     print(
         "Warning: DATABASE_URL not found in environment. "
-        "Using default postgresql+psycopg://postgres:postgres@localhost/preloop. "
+        "Using default postgresql+psycopg://postgres:***@localhost/preloop. "
         "Ensure DATABASE_URL is set in your .env file or environment."
     )
     database_url = "postgresql+psycopg://postgres:postgres@localhost/preloop"
