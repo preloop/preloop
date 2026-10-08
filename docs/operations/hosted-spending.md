@@ -108,3 +108,34 @@ not re-enable it against an old baseline without reconciling that gap. Never
 replace the durable ledger with a sum over retained analytics. Recovery supplies
 verified actual cost through the account-scoped idempotent settlement CRUD; a
 missing response is not proof of zero cost.
+
+## Recovering reservations from measured usage
+
+`scripts/recover_hosted_reservations.py` settles `recovery_required`
+reservations whose provider usage the gateway did record in `api_usage` but
+settlement never saw (for example a stream whose terminal usage chunk was
+missed). Run it from a backend pod, dry run first:
+
+```bash
+python scripts/recover_hosted_reservations.py \
+    --account-id <account-uuid> --hosted-model-id <system-hosted-model-uuid>
+# after reviewing the table:
+python scripts/recover_hosted_reservations.py \
+    --account-id <account-uuid> --hosted-model-id <system-hosted-model-uuid> --apply
+```
+
+No stored key links a reservation to its usage row (`operation_key` is a
+random identifier minted at reservation time), so the match is temporal and
+one-to-one: the reservation must fall inside exactly one successful usage
+row's request window (`created_at - duration` to `created_at`, widened by
+`--slack-seconds`, default 5) on the hosted model, and that window must
+contain no other reservation of the account, settled ones included. The cost
+uses the hosted tariff with the same formula as live settlement, and
+`--apply` settles each match through the idempotent recovery CRUD with a
+`hosted_recovery` audit.
+
+Rows are listed as "needs manual review" and never released when there is no
+usage row, several usage rows overlap, a usage row covers several
+reservations (retried attempts, concurrent calls), the usage row has no
+token counts, the measured cost exceeds the reservation bound, or the
+reservation is still `reserved`/`dispatched`.

@@ -231,3 +231,73 @@ def test_imported_own_row_still_beats_system_row(db_session, test_user):
     service = _service(db_session, test_user)
 
     assert service._resolve_requested_model(ALIAS, provider="openai").id == own.id
+
+
+def _routed_execution(db_session, flow, routed_model_id):
+    from preloop.models.models.flow_execution import ROUTING_RECORD_KEY
+
+    execution = models.FlowExecution(
+        flow_id=flow.id,
+        trigger_event_details={
+            ROUTING_RECORD_KEY: {"source": "rule", "ai_model_id": str(routed_model_id)}
+        },
+    )
+    db_session.add(execution)
+    db_session.flush()
+    return execution
+
+
+def test_runtime_token_records_the_routed_execution_model(db_session, test_user):
+    from preloop.services.flow_runtime_token import create_flow_runtime_token
+
+    flow_default = _own_row(db_session, test_user.account_id)
+    routed = _own_row(
+        db_session, test_user.account_id, name="Routed", alias="acme/routed"
+    )
+    flow = _flow(db_session, test_user.account_id, ai_model_id=flow_default.id)
+    execution = _routed_execution(db_session, flow, routed.id)
+
+    _token, api_key_id = create_flow_runtime_token(
+        db_session, flow=flow, execution_id=execution.id
+    )
+    assert crud_api_key.get(db_session, id=api_key_id).context_data[
+        "ai_model_id"
+    ] == str(routed.id)
+
+    _token, api_key_id = create_flow_runtime_token(
+        db_session, flow=flow, execution_id=execution.id, ai_model_id=flow_default.id
+    )
+    assert crud_api_key.get(db_session, id=api_key_id).context_data[
+        "ai_model_id"
+    ] == str(flow_default.id)
+
+
+def test_older_execution_key_follows_execution_routing(db_session, test_user):
+    """Keys without ``ai_model_id`` resolve the routed model, not the default."""
+    flow_default = _own_row(db_session, test_user.account_id)
+    routed = _own_row(
+        db_session, test_user.account_id, name="Routed", alias="acme/routed"
+    )
+    flow = _flow(db_session, test_user.account_id, ai_model_id=flow_default.id)
+    execution = _routed_execution(db_session, flow, routed.id)
+
+    service = _service(
+        db_session,
+        test_user,
+        {"flow_id": str(flow.id), "flow_execution_id": str(execution.id)},
+    )
+    resolved = service._resolve_requested_model("acme/routed", provider="openai")
+
+    assert resolved.id == routed.id
+    assert service.flow_model_warning is None
+
+
+def test_flow_mismatch_warning_survives_the_header_cap(db_session, test_user):
+    from preloop.api.endpoints.openai_gateway import _sanitize_header_value
+
+    own = _own_row(db_session, test_user.account_id)
+    service = _service(db_session, test_user, {"ai_model_id": str(own.id)})
+    service.alias_collision_warning = "gateway alias collision: " + "x" * 300
+    service.flow_model_warning = "flow model mismatch: short"
+
+    assert "flow model mismatch" in _sanitize_header_value(service.response_warning)

@@ -1142,8 +1142,10 @@ class OpenAIGatewayService:
             warning
             for warning in (
                 self.budget_warning,
-                self.alias_collision_warning,
+                # Before the collision warning: it names a billing-relevant
+                # model substitution and must survive the header length cap.
                 self.flow_model_warning,
+                self.alias_collision_warning,
             )
             if warning
         ]
@@ -4045,7 +4047,19 @@ class OpenAIGatewayService:
             return None
         if flow is None or str(flow.account_id) != str(self.auth_context.account_id):
             return None
-        return str(flow.ai_model_id) if flow.ai_model_id else None
+        from preloop.services.flow_runtime_token import execution_model_id
+
+        execution_id = context_data.get("flow_execution_id")
+        try:
+            return execution_model_id(
+                self.db,
+                flow=flow,
+                execution_id=execution_id if execution_id else None,
+                ai_model_id=None,
+            )
+        except Exception:
+            logger.debug("Execution model lookup failed", exc_info=True)
+            return str(flow.ai_model_id) if flow.ai_model_id else None
 
     def _note_flow_model_mismatch(
         self, model: Any, requested_model: Optional[str]
