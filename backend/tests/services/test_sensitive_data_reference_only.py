@@ -420,7 +420,7 @@ def proxied(monkeypatch, user_context):
         AsyncMock(return_value=(True, None)),
     )
     monkeypatch.setattr(
-        "preloop.services.dynamic_fastmcp.crud_mcp_server.get_visible",
+        "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
         MagicMock(
             return_value=MagicMock(
                 name="ehr",
@@ -451,7 +451,6 @@ def proxied(monkeypatch, user_context):
     )
     wrapper = mcp._create_proxied_tool_wrapper(
         tool_name="get_patient_record",
-        server_id="server-1",
         account_id=user_context.account_id,
         description="Read",
         input_schema={

@@ -280,7 +280,7 @@ async def test_halt_during_approval_blocks_proxied_dispatch(db_session, test_use
         ),
         patch.object(db_session, "close"),
         patch(
-            "preloop.services.dynamic_fastmcp.crud_mcp_server.get",
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
             return_value=MagicMock(),
         ),
         patch(
@@ -289,7 +289,6 @@ async def test_halt_during_approval_blocks_proxied_dispatch(db_session, test_use
     ):
         wrapper = mcp._create_proxied_tool_wrapper(
             "external_write",
-            "server",
             str(test_user.account_id),
             "write",
             {"type": "object"},

@@ -178,6 +178,39 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         self._index_tool_call_chunks(db, activity=db_obj, commit=commit)
         return db_obj
 
+    def log_session_warning(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        code: str,
+        summary: str,
+        commit: bool = True,
+    ) -> RuntimeSessionActivity:
+        """Record a configuration warning on the session timeline.
+
+        Used when a runtime-session token is minted with a restriction that
+        leaves it no tools, so the managed agent page shows why the agent
+        sees nothing.
+        """
+        db_obj = RuntimeSessionActivity(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            activity_type="session_warning",
+            status="warning",
+            summary=summary,
+            metadata_=sanitize_for_jsonb({"code": code}),
+            timestamp=datetime.now(timezone.utc),
+        )
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj
+
     def log_artifact_evicted(
         self,
         db: Session,

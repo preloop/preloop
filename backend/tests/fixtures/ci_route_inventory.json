@@ -37,6 +37,7 @@
   "GET /api/v1/account/details": "deny",
   "GET /api/v1/account/gateway-usage/rate-limits": "deny",
   "GET /api/v1/account/gateway-usage/search": "deny",
+  "GET /api/v1/account/flow-artifacts/usage": "deny",
   "GET /api/v1/account/gateway-usage/summary": "deny",
   "GET /api/v1/account/governance-defaults": "deny",
   "GET /api/v1/account/governance/flows/{flow_id}": "deny",

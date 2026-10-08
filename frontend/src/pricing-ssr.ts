@@ -183,7 +183,11 @@ export function generatePricingComparisonBlock(
     .join('');
 
   const note = comparison?.note
-    ? `<p class="comparison-note">${escapeHtml(comparison.note)}</p>`
+    ? `<p class="comparison-note">${escapeHtml(comparison.note)}${
+        comparison.note_link
+          ? ` <a href="${escapeAttr(comparison.note_link.url)}">${escapeHtml(comparison.note_link.label)}</a>`
+          : ''
+      }</p>`
     : '';
 
   return `

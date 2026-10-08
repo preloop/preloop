@@ -8,7 +8,7 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from .session import get_engine
+from .session import get_engine, redact_secrets_in_text
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,10 @@ def setup_database(database_url: Optional[str] = None) -> None:
                     conn.commit()
                 logger.info("PGVector extension created successfully")
             except Exception as e:
-                logger.warning(f"Failed to create vector extension: {e}")
+                logger.warning(
+                    "Failed to create vector extension: "
+                    f"{redact_secrets_in_text(e, database_url)}"
+                )
 
         # Get the models directory (one level up from db/)
         # alembic.ini is in backend/preloop/models/
@@ -46,12 +49,18 @@ def setup_database(database_url: Optional[str] = None) -> None:
         )
 
         if result.returncode != 0:
-            logger.error(f"Alembic migration failed: {result.stderr}")
-            raise RuntimeError(f"Alembic migration failed: {result.stderr}")
+            stderr = redact_secrets_in_text(
+                result.stderr, database_url or os.getenv("DATABASE_URL")
+            )
+            logger.error(f"Alembic migration failed: {stderr}")
+            raise RuntimeError(f"Alembic migration failed: {stderr}")
 
         logger.info("Database schema created successfully via Alembic")
     except SQLAlchemyError as e:
-        logger.error(f"Error setting up database: {e}")
+        logger.error(
+            "Error setting up database: "
+            f"{redact_secrets_in_text(e, database_url or os.getenv('DATABASE_URL'))}"
+        )
         raise
 
 
@@ -74,15 +83,21 @@ def reset_database(database_url: Optional[str] = None) -> None:
         )
 
         if result.returncode != 0:
-            logger.error(f"Alembic downgrade failed: {result.stderr}")
-            raise RuntimeError(f"Alembic downgrade failed: {result.stderr}")
+            stderr = redact_secrets_in_text(
+                result.stderr, database_url or os.getenv("DATABASE_URL")
+            )
+            logger.error(f"Alembic downgrade failed: {stderr}")
+            raise RuntimeError(f"Alembic downgrade failed: {stderr}")
 
         logger.info("Database schema dropped successfully")
 
         # Recreate tables
         setup_database(database_url)
     except SQLAlchemyError as e:
-        logger.error(f"Error resetting database: {e}")
+        logger.error(
+            "Error resetting database: "
+            f"{redact_secrets_in_text(e, database_url or os.getenv('DATABASE_URL'))}"
+        )
         raise
 
 

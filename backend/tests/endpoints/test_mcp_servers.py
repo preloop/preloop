@@ -1,7 +1,7 @@
 """Tests for MCP server management endpoints."""
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -430,3 +430,72 @@ def test_schema_serialization_with_real_model(db_session, test_user):
     assert isinstance(response_dict["account_id"], str)
     assert response_dict["id"] == str(server.id)
     assert response_dict["account_id"] == str(server.account_id)
+
+
+def _server_row(db_session, test_user, name="Evict Server", token="TOKEN-A"):
+    server = MCPServer(
+        name=name,
+        url="http://localhost:8080/mcp",
+        transport="http-streaming",
+        auth_type="bearer",
+        auth_config={"token": token},
+        account_id=test_user.account_id,
+        status="active",
+    )
+    db_session.add(server)
+    db_session.commit()
+    db_session.refresh(server)
+    return server
+
+
+def test_update_mcp_server_evicts_pooled_client(
+    client: TestClient, db_session, test_user
+):
+    """PUT drops this process's pooled client so the new token is used (#1365)."""
+    server = _server_row(db_session, test_user)
+    pool = AsyncMock()
+    with patch(
+        "preloop.services.mcp_client_pool.get_mcp_client_pool", return_value=pool
+    ):
+        response = client.put(
+            f"/api/v1/mcp-servers/{server.id}",
+            json={"auth_config": {"token": "TOKEN-B"}},
+        )
+    assert response.status_code == 200
+    pool.close_client.assert_awaited_once_with(str(server.id))
+    db_session.refresh(server)
+    assert server.auth_config == {"token": "TOKEN-B"}
+
+
+def test_delete_mcp_server_evicts_client_and_unregisters_tools(
+    client: TestClient, db_session, test_user
+):
+    """DELETE evicts the pooled client and removes local wrappers (#1365, #1366)."""
+    from preloop.services import mcp_http
+
+    server = _server_row(db_session, test_user, name="Delete Evict")
+    db_session.add(
+        MCPTool(
+            mcp_server_id=server.id,
+            name="read_scope",
+            description="d",
+            input_schema={"type": "object", "properties": {}},
+            discovered_at="2026-01-01T00:00:00Z",
+        )
+    )
+    db_session.commit()
+    pool = AsyncMock()
+    fake_mcp = MagicMock()
+    with (
+        patch(
+            "preloop.services.mcp_client_pool.get_mcp_client_pool",
+            return_value=pool,
+        ),
+        patch.object(mcp_http, "_mcp_server_instance", fake_mcp),
+    ):
+        response = client.delete(f"/api/v1/mcp-servers/{server.id}")
+    assert response.status_code == 200
+    pool.close_client.assert_awaited_once_with(str(server.id))
+    fake_mcp.unregister_proxied_tools.assert_called_once_with(
+        str(test_user.account_id), str(server.id), ["read_scope"]
+    )
