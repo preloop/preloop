@@ -158,6 +158,17 @@ Evidence retention is independent of workspace checkpoint TTL. Cleanup
 nulls ciphertext after expiry once any restore/download lease has lapsed,
 and records `availability=expired`. It does not cross account rows.
 
+A run captures its workspace periodically and again before publication. When
+a capture's checkpoint metadata has the same `file_state_sha256` and the same
+repository `head_sha` list as the newest available workspace snapshot of the
+same execution and thread, nothing new is stored: the existing row's expiry
+moves to the new capture's expiry (never earlier), and the receipt names the
+existing artifact with `deduplicated: true`. A duplicate therefore never
+counts against the quota. Snapshots are never shared across executions,
+threads or accounts, because recovery looks a snapshot up by execution.
+The archive still crosses the wire: the runner cannot prove to the API that
+an earlier upload committed, so the API decides.
+
 ## Receipts and retrieval
 
 `GET /api/v1/flows/executions/{id}/evidence-status` and the `evidence`

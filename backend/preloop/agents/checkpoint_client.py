@@ -711,8 +711,13 @@ def main() -> None:
                 Path("/tmp/preloop-checkpoint-reference.json").write_text(
                     json.dumps(reference)
                 )
+                # The server keeps one copy of an unchanged workspace (#1339).
                 print(
-                    "PRELOOP_CHECKPOINT committed " + reference["artifact_id"],
+                    "PRELOOP_CHECKPOINT committed "
+                    + reference["artifact_id"]
+                    + (
+                        " deduplicated" if reference.get("deduplicated") is True else ""
+                    ),
                     flush=True,
                 )
         except Exception as exc:
