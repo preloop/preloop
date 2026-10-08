@@ -107,9 +107,16 @@ def test_artifact_store_serializes_writers_and_rechecks_quota(
         contender.rollback()
         owner.rollback()
         flow_artifact.store(contender, values=artifact_values, quota_bytes=10)
-        with pytest.raises(ValueError, match="artifact_quota_exceeded"):
+        with pytest.raises(ValueError, match="artifact_quota_exceeded") as refused:
             flow_artifact.store(contender, values=artifact_values, quota_bytes=10)
         contender.rollback()
+        # The refusal carries the numbers admission compared (#1339).
+        assert isinstance(refused.value, flow_artifact.ArtifactQuotaExceeded)
+        assert refused.value.numbers() == {
+            "retained_bytes": len(b"synthetic"),
+            "quota_bytes": 10,
+            "incoming_bytes": len(b"synthetic"),
+        }
 
 
 def test_lock_refreshes_stale_running_identity_after_concurrent_close(
@@ -128,3 +135,102 @@ def test_lock_refreshes_stale_running_identity_after_concurrent_close(
         with pytest.raises(ValueError, match="artifact_execution_closed"):
             crud_flow_execution.lock_for_artifact_put(loader, execution_id=execution_id)
         assert loaded.status == "FAILED"
+
+
+def test_quota_refusal_reports_exact_retained_quota_and_incoming(
+    db_engine: Engine, artifact_values: dict[str, Any]
+) -> None:
+    """A known retained total is reported exactly; the comparison is unchanged."""
+    with Session(db_engine) as db:
+        flow_artifact.store(
+            db, values={**artifact_values, "ciphertext": b"a" * 40}, quota_bytes=100
+        )
+        flow_artifact.store(
+            db,
+            values={**artifact_values, "kind": "evidence", "ciphertext": b"b" * 25},
+            quota_bytes=100,
+        )
+        # Exactly at the quota is still admitted: 65 + 35 == 100.
+        flow_artifact.store(
+            db, values={**artifact_values, "ciphertext": b"c" * 35}, quota_bytes=100
+        )
+        with pytest.raises(flow_artifact.ArtifactQuotaExceeded) as refused:
+            flow_artifact.store(
+                db, values={**artifact_values, "ciphertext": b"d"}, quota_bytes=100
+            )
+        db.rollback()
+        assert str(refused.value) == "artifact_quota_exceeded"
+        assert refused.value.numbers() == {
+            "retained_bytes": 100,
+            "quota_bytes": 100,
+            "incoming_bytes": 1,
+        }
+
+
+def test_usage_matches_admission_aggregate(
+    db_engine: Engine, artifact_values: dict[str, Any]
+) -> None:
+    """usage() reports bytes by kind, pending cleanup and the next expiry."""
+    now = datetime.now(UTC)
+    soon = now + timedelta(hours=2)
+    with Session(db_engine) as db:
+        assert flow_artifact.usage(db, account_id=artifact_values["account_id"]) == {
+            "retained_bytes": 0,
+            "by_kind": {},
+            "expired_pending_cleanup": 0,
+            "next_expiry_at": None,
+        }
+        flow_artifact.store(
+            db,
+            values={**artifact_values, "ciphertext": b"a" * 40, "expires_at": soon},
+            quota_bytes=1000,
+        )
+        flow_artifact.store(
+            db,
+            values={
+                **artifact_values,
+                "ciphertext": b"b" * 30,
+                "expires_at": now + timedelta(hours=5),
+            },
+            quota_bytes=1000,
+        )
+        flow_artifact.store(
+            db,
+            values={
+                **artifact_values,
+                "kind": "evidence",
+                "ciphertext": b"e" * 7,
+                "expires_at": now - timedelta(minutes=1),
+            },
+            quota_bytes=1000,
+        )
+        cleared = flow_artifact.store(
+            db,
+            values={
+                **artifact_values,
+                "ciphertext": b"x",
+                "expires_at": now - timedelta(hours=1),
+            },
+            quota_bytes=1000,
+        )
+        cleared.ciphertext = None
+        cleared.availability = "expired"
+        db.commit()
+        report = flow_artifact.usage(db, account_id=artifact_values["account_id"])
+        assert report["retained_bytes"] == 77
+        assert report["by_kind"] == {
+            "workspace": {"bytes": 70, "count": 3},
+            "evidence": {"bytes": 7, "count": 1},
+        }
+        # Past expires_at with ciphertext still present: the evidence row only.
+        assert report["expired_pending_cleanup"] == 1
+        assert report["next_expiry_at"] == now - timedelta(minutes=1)
+        # The same total admission compares: 77 + 24 > 100 refuses.
+        with pytest.raises(flow_artifact.ArtifactQuotaExceeded) as refused:
+            flow_artifact.store(
+                db, values={**artifact_values, "ciphertext": b"z" * 24}, quota_bytes=100
+            )
+        db.rollback()
+        assert refused.value.retained_bytes == report["retained_bytes"]
+        other = flow_artifact.usage(db, account_id=uuid4())
+        assert other["retained_bytes"] == 0 and other["by_kind"] == {}

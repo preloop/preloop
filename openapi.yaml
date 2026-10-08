@@ -1422,6 +1422,29 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/account/flow-artifacts/usage:
+    get:
+      tags:
+      - Account
+      summary: Get Flow Artifact Usage
+      description: Return retained flow-artifact bytes against the account quota (#1339).
+      operationId: get_flow_artifact_usage_api_v1_account_flow_artifacts_usage_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowArtifactUsageResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/session-artifacts/settings:
     get:
       tags:
@@ -26342,6 +26365,61 @@ components:
         never added together: "this run cost X, the work it delegated cost Y" is
 
         the question the tree exists to answer, and one number would hide it.'
+    FlowArtifactKindUsage:
+      properties:
+        bytes:
+          type: integer
+          title: Bytes
+          default: 0
+        count:
+          type: integer
+          title: Count
+          default: 0
+      type: object
+      title: FlowArtifactKindUsage
+      description: Retained ciphertext bytes and row count for one flow-artifact kind.
+    FlowArtifactUsageResponse:
+      properties:
+        retained_bytes:
+          type: integer
+          title: Retained Bytes
+          description: Retained ciphertext bytes, the total a capture is admitted
+            against.
+        quota_bytes:
+          type: integer
+          title: Quota Bytes
+          description: Configured account flow-artifact quota.
+        by_kind:
+          additionalProperties:
+            $ref: '#/components/schemas/FlowArtifactKindUsage'
+          type: object
+          title: By Kind
+          description: Retained bytes and row counts per kind (workspace, evidence...).
+        expired_pending_cleanup:
+          type: integer
+          title: Expired Pending Cleanup
+          description: Rows past their expiry whose payload is not cleared yet; their
+            bytes still count.
+        next_expiry_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Next Expiry At
+          description: 'Earliest expiry among available rows: when space next frees.'
+      type: object
+      required:
+      - retained_bytes
+      - quota_bytes
+      - by_kind
+      - expired_pending_cleanup
+      title: FlowArtifactUsageResponse
+      description: 'Account flow-artifact retained bytes against the quota (#1339).
+
+
+        A separate pool from session artifacts: this is what a checkpoint or
+
+        evidence capture is admitted against.'
     FlowCreate:
       properties:
         name:

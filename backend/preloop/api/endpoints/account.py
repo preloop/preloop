@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.config import settings
 from preloop.models.crud import (
     crud_discovered_agent_candidate,
     crud_account,
@@ -1110,6 +1111,41 @@ class SessionArtifactUsageResponse(BaseModel):
     evicted_count_30d: int
 
 
+class FlowArtifactKindUsage(BaseModel):
+    """Retained ciphertext bytes and row count for one flow-artifact kind."""
+
+    bytes: int = 0
+    count: int = 0
+
+
+class FlowArtifactUsageResponse(BaseModel):
+    """Account flow-artifact retained bytes against the quota (#1339).
+
+    A separate pool from session artifacts: this is what a checkpoint or
+    evidence capture is admitted against.
+    """
+
+    retained_bytes: int = Field(
+        description=(
+            "Retained ciphertext bytes, the total a capture is admitted against."
+        )
+    )
+    quota_bytes: int = Field(description="Configured account flow-artifact quota.")
+    by_kind: dict[str, FlowArtifactKindUsage] = Field(
+        description="Retained bytes and row counts per kind (workspace, evidence...)."
+    )
+    expired_pending_cleanup: int = Field(
+        description=(
+            "Rows past their expiry whose payload is not cleared yet; "
+            "their bytes still count."
+        )
+    )
+    next_expiry_at: Optional[datetime] = Field(
+        default=None,
+        description="Earliest expiry among available rows: when space next frees.",
+    )
+
+
 class AccountDetailsUpdate(BaseModel):
     """Account details update request."""
 
@@ -1178,6 +1214,23 @@ def get_session_artifact_usage(
 
     return SessionArtifactUsageResponse.model_validate(
         account_usage(db, account_id=account.id)
+    )
+
+
+@router.get(
+    "/account/flow-artifacts/usage",
+    response_model=FlowArtifactUsageResponse,
+)
+def get_flow_artifact_usage(
+    account: Annotated[Account, Depends(get_account_for_user)],
+    db: Session = Depends(get_db_session),
+) -> FlowArtifactUsageResponse:
+    """Return retained flow-artifact bytes against the account quota (#1339)."""
+    from preloop.models.crud import flow_artifact
+
+    usage = flow_artifact.usage(db, account_id=account.id)
+    return FlowArtifactUsageResponse(
+        quota_bytes=settings.flow_artifact_account_quota_bytes, **usage
     )
 
 

@@ -253,3 +253,86 @@ def test_rejection_row_commits_on_a_real_session(
     assert row.status == "failure"
     assert row.details["status_code"] == 409
     assert row.details["reason"] == "artifact_execution_closed"
+
+
+@pytest.mark.asyncio
+async def test_quota_refusal_reports_the_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 422 body and audit row carry retained, quota and incoming bytes (#1339)."""
+    from preloop.models.crud.flow_artifact import ArtifactQuotaExceeded
+
+    app, rows, _ = build(monkeypatch, capability())
+    monkeypatch.setattr(flow_artifacts, "authorize", lambda *args: None)
+
+    def reject(*args: Any, **kwargs: Any) -> None:
+        raise ArtifactQuotaExceeded(
+            retained_bytes=4_250_000_000,
+            quota_bytes=4_294_967_296,
+            incoming_bytes=41_000_000,
+        )
+
+    monkeypatch.setattr(flow_artifacts, "put_artifact", reject)
+    execution_id = uuid4()
+    response = await put(app, execution_id)
+    assert response.status_code == 422
+    # Exactly the code plus three byte totals: no ids, names or contents.
+    assert response.json() == {
+        "detail": {
+            "error": "artifact_quota_exceeded",
+            "retained_bytes": 4_250_000_000,
+            "quota_bytes": 4_294_967_296,
+            "incoming_bytes": 41_000_000,
+        }
+    }
+    assert rows[0]["details"] == {
+        "status_code": 422,
+        "reason": "artifact_quota_exceeded",
+        "kind": "workspace",
+        "flow_id": str(FLOW),
+        "execution_id": str(execution_id),
+        "retained_bytes": 4_250_000_000,
+        "quota_bytes": 4_294_967_296,
+        "incoming_bytes": 41_000_000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_plain_quota_value_error_keeps_the_bare_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A plain ValueError still maps to a 422 with the code and no numbers."""
+    app, rows, _ = build(monkeypatch, capability())
+    monkeypatch.setattr(flow_artifacts, "authorize", lambda *args: None)
+
+    def reject(*args: Any, **kwargs: Any) -> None:
+        raise ValueError("artifact_quota_exceeded")
+
+    monkeypatch.setattr(flow_artifacts, "put_artifact", reject)
+    response = await put(app, uuid4())
+    assert response.status_code == 422
+    assert response.json() == {"detail": "artifact_quota_exceeded"}
+    assert "retained_bytes" not in rows[0]["details"]
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "artifact_quota_exceeded",
+        {"error": "artifact_quota_exceeded", "retained_bytes": 1, "quota_bytes": 2},
+        {
+            "error": "artifact_quota_exceeded",
+            "retained_bytes": "1",
+            "quota_bytes": 2,
+            "incoming_bytes": 3,
+        },
+        {
+            "error": "artifact_quota_exceeded",
+            "retained_bytes": True,
+            "quota_bytes": 2,
+            "incoming_bytes": 3,
+        },
+    ],
+)
+def test_partial_or_non_integer_numbers_are_not_recorded(detail: Any) -> None:
+    assert flow_artifacts.quota_numbers(detail) == {}
