@@ -12,10 +12,12 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import (
     crud_account,
     crud_api_key,
+    crud_flow_execution,
     crud_managed_agent,
     crud_runtime_session,
     crud_user,
 )
+from preloop.models.models.flow_execution import resolve_execution_agent_selection
 from preloop.services.event_webhooks.emitters import emit_session_ended
 
 logger = logging.getLogger(__name__)
@@ -122,14 +124,44 @@ def end_flow_execution_runtime_session(
         return False
 
 
+def execution_model_id(
+    db: Session, *, flow: Any, execution_id: Optional[UUID], ai_model_id: Any
+) -> Optional[str]:
+    """The model this execution runs: explicit, routed, else the flow default."""
+    if ai_model_id:
+        return str(ai_model_id)
+    flow_model_id = getattr(flow, "ai_model_id", None)
+    execution = (
+        crud_flow_execution.get(db, id=execution_id)
+        if execution_id is not None
+        else None
+    )
+    if execution is not None:
+        _agent_type, routed = resolve_execution_agent_selection(
+            getattr(execution, "trigger_event_details", None),
+            flow_agent_type=getattr(flow, "agent_type", None),
+            flow_ai_model_id=flow_model_id,
+        )
+        if routed:
+            return str(routed)
+    return str(flow_model_id) if flow_model_id else None
+
+
 def create_flow_runtime_token(
     db: Session,
     *,
     flow: Any,
     execution_id: Optional[UUID],
     runtime_session_id: Optional[UUID] = None,
+    ai_model_id: Any = None,
 ) -> tuple[Optional[str], Optional[UUID]]:
-    """Mint a two-hour MCP token scoped to one flow execution."""
+    """Mint a two-hour MCP token scoped to one flow execution.
+
+    ``ai_model_id`` is the model this execution actually runs (after matrix
+    overrides and routing records). When omitted it is resolved from the
+    execution's routing details, falling back to the flow's default. The
+    gateway prefers this row when a requested alias matches several.
+    """
     account_id = getattr(flow, "account_id", None)
     try:
         account = crud_account.get(db, id=account_id)
@@ -164,6 +196,10 @@ def create_flow_runtime_token(
                 str(runtime_session_id) if runtime_session_id is not None else None
             ),
             "flow_id": str(flow_id),
+            # The gateway prefers this row when an alias matches several.
+            "ai_model_id": execution_model_id(
+                db, flow=flow, execution_id=execution_id, ai_model_id=ai_model_id
+            ),
             "allowed_mcp_tools": getattr(flow, "allowed_mcp_tools", None) or [],
             "allowed_mcp_servers": getattr(flow, "allowed_mcp_servers", None) or [],
             "runtime_principal": {
