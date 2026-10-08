@@ -232,5 +232,43 @@ def test_usage_matches_admission_aggregate(
             )
         db.rollback()
         assert refused.value.retained_bytes == report["retained_bytes"]
+        # Held rows are never cleared while held, and leased rows not before
+        # the lease ends, so neither may report an earlier "next expiry".
+        held = flow_artifact.store(
+            db,
+            values={
+                **artifact_values,
+                "ciphertext": b"h",
+                "expires_at": now - timedelta(hours=2),
+            },
+            quota_bytes=1000,
+        )
+        held.legal_hold = True
+        leased = flow_artifact.store(
+            db,
+            values={
+                **artifact_values,
+                "ciphertext": b"l",
+                "expires_at": now - timedelta(hours=3),
+            },
+            quota_bytes=1000,
+        )
+        leased.lease_until = now + timedelta(minutes=30)
+        db.commit()
+        report = flow_artifact.usage(db, account_id=artifact_values["account_id"])
+        assert report["next_expiry_at"] == now - timedelta(minutes=1)
+        # Without the plain expired row, the lease end is the next free time.
+        db.query(models.FlowArtifact).filter(
+            models.FlowArtifact.account_id == artifact_values["account_id"],
+            models.FlowArtifact.kind == "evidence",
+        ).delete()
+        db.query(models.FlowArtifact).filter(
+            models.FlowArtifact.account_id == artifact_values["account_id"],
+            models.FlowArtifact.expires_at.in_([soon, now + timedelta(hours=5)]),
+        ).delete(synchronize_session=False)
+        db.commit()
+        report = flow_artifact.usage(db, account_id=artifact_values["account_id"])
+        assert report["next_expiry_at"] == now + timedelta(minutes=30)
+        assert held.id != leased.id
         other = flow_artifact.usage(db, account_id=uuid4())
         assert other["retained_bytes"] == 0 and other["by_kind"] == {}

@@ -587,11 +587,6 @@ def http_error_details(exc: urllib.error.HTTPError) -> tuple[str, str]:
     return "unrecognized", ""
 
 
-def http_error_reason(exc: urllib.error.HTTPError) -> str:
-    """The short reason code alone; see ``http_error_details``."""
-    return http_error_details(exc)[0]
-
-
 def http_error_suffix(exc: Exception, operation: str) -> str:
     """`` status=<code> detail=<reason> op=<operation>`` for HTTP errors, else ''.
 

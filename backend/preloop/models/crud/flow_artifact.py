@@ -53,8 +53,10 @@ def usage(
     was already cleared count as rows with zero bytes).
     ``expired_pending_cleanup`` counts rows past ``expires_at`` whose
     ciphertext the janitor has not cleared yet: those bytes still count.
-    ``next_expiry_at`` is the earliest ``expires_at`` among available rows,
-    so a caller can see when space frees.
+    ``next_expiry_at`` is the earliest time cleanup may clear a payload:
+    ``expires_at``, or a later ``lease_until``, among available rows not
+    under a legal hold. A past value means a payload is due and awaits the
+    janitor.
     """
     now = now or datetime.now(UTC)
     rows = (
@@ -80,12 +82,24 @@ def usage(
         )
         .scalar()
     )
+    # When cleanup can next clear bytes: a held row is never cleared while
+    # held, and a leased row not before its lease lapses (see ``cleanup``).
     next_expiry = (
-        db.query(func.min(models.FlowArtifact.expires_at))
+        db.query(
+            func.min(
+                func.greatest(
+                    models.FlowArtifact.expires_at,
+                    func.coalesce(
+                        models.FlowArtifact.lease_until, models.FlowArtifact.expires_at
+                    ),
+                )
+            )
+        )
         .filter(
             models.FlowArtifact.account_id == account_id,
             models.FlowArtifact.availability == "available",
             models.FlowArtifact.ciphertext.isnot(None),
+            models.FlowArtifact.legal_hold.is_(False),
         )
         .scalar()
     )

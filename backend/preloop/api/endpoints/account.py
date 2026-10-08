@@ -1142,7 +1142,11 @@ class FlowArtifactUsageResponse(BaseModel):
     )
     next_expiry_at: Optional[datetime] = Field(
         default=None,
-        description="Earliest expiry among available rows: when space next frees.",
+        description=(
+            "Earliest time cleanup may clear a payload: expiry, or a later lease "
+            "end, among rows not under a legal hold. A past value means a "
+            "payload is due and awaits cleanup."
+        ),
     )
 
 
