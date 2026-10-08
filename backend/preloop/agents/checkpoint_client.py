@@ -230,7 +230,14 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
                 after.st_mtime_ns,
             ):
                 raise ValueError("checkpoint_workspace_busy")
-            digest.update(relative.encode() + b"\0" + reader.digest.digest())
+            # Restore applies the mode, so a chmod-only change is a new state.
+            digest.update(
+                relative.encode()
+                + b"\0"
+                + oct(info.mode).encode()
+                + b"\0"
+                + reader.digest.digest()
+            )
         metadata = json.dumps(
             {
                 "version": 1,
@@ -739,8 +746,13 @@ def main() -> None:
                 Path("/tmp/preloop-checkpoint-reference.json").write_text(
                     json.dumps(reference)
                 )
+                # The server keeps one copy of an unchanged workspace (#1339).
                 print(
-                    "PRELOOP_CHECKPOINT committed " + reference["artifact_id"],
+                    "PRELOOP_CHECKPOINT committed "
+                    + reference["artifact_id"]
+                    + (
+                        " deduplicated" if reference.get("deduplicated") is True else ""
+                    ),
                     flush=True,
                 )
         except Exception as exc:
