@@ -241,7 +241,12 @@ execution id). Three refusals that do come from the API leave no row: a 401
 audit write itself failed (that failure is logged by the API). So a PUT
 marker with `detail=not_json` and no matching row points at a proxy; read the
 marker's status and detail before drawing that conclusion from a missing row
-alone. The proxy body limit (`gateway.proxy.bodySize`, which sets both the
+alone. A quota refusal (`detail=artifact_quota_exceeded`) also carries the
+byte totals, in the 422 body, the audit row and the marker
+(`... op=capture retained=<n> quota=<n> incoming=<n>`); compare them, or read
+`GET /api/v1/account/flow-artifacts/usage` at any time, as described in
+[Evidence storage](evidence-storage.md#when-a-capture-is-refused-for-quota).
+The proxy body limit (`gateway.proxy.bodySize`, which sets both the
 ingress `proxy-body-size` annotation and the console nginx
 `client_max_body_size`) must stay above both `WORKSPACE_SNAPSHOT_MAX_BYTES`
 and `FLOW_EVIDENCE_MAX_BYTES`. The client sends each archive as the request

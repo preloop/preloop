@@ -158,6 +158,44 @@ Evidence retention is independent of workspace checkpoint TTL. Cleanup
 nulls ciphertext after expiry once any restore/download lease has lapsed,
 and records `availability=expired`. It does not cross account rows.
 
+### When a capture is refused for quota
+
+Admission sums the account's retained ciphertext (every row whose payload
+is not yet cleared, whatever its kind) and refuses the upload when that
+total plus the incoming ciphertext exceeds `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES`.
+Bytes are counted after encryption, so they are slightly larger than the
+compressed archive. The refusal is an HTTP 422 whose body carries the
+numbers it compared, and nothing else:
+
+```json
+{"detail": {"error": "artifact_quota_exceeded",
+            "retained_bytes": 4250000000,
+            "quota_bytes": 4294967296,
+            "incoming_bytes": 41000000}}
+```
+
+The same three fields are added to the `flow_artifact_rejected` audit row,
+and the runner marker appends them after the stable code:
+`PRELOOP_CHECKPOINT failed HTTPError status=422 detail=artifact_quota_exceeded op=capture retained=4250000000 quota=4294967296 incoming=41000000`.
+A large `incoming` against a small `retained` points at one oversized
+checkpoint; a `retained` close to `quota` points at accumulated artifacts.
+
+To see the position before a capture is refused, read
+`GET /api/v1/account/flow-artifacts/usage` (any account member, like
+`/account/session-artifacts/usage`, which reports a separate pool):
+
+| Field | Meaning |
+| --- | --- |
+| `retained_bytes` | The total admission compares, all kinds |
+| `quota_bytes` | The configured `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` |
+| `by_kind` | `{"workspace": {"bytes": n, "count": n}, ...}`; cleared rows count with zero bytes |
+| `expired_pending_cleanup` | Rows past `expires_at` whose payload the janitor has not cleared yet; their bytes still count. A persistent non-zero value with no legal hold or lease points at cleanup lag |
+| `next_expiry_at` | When space can next free: the earliest `expires_at` (or a later `lease_until`) among available rows not under a legal hold. A past value means a payload is due and waits for the janitor. Null when every retained row is held |
+
+Space frees only by expiry: workspace checkpoints after
+`WORKSPACE_SNAPSHOT_TTL_HOURS`, evidence after `FLOW_EVIDENCE_RETENTION_HOURS`.
+Rows under a legal hold or a live lease are not cleared until it ends.
+
 ## Receipts and retrieval
 
 `GET /api/v1/flows/executions/{id}/evidence-status` and the `evidence`

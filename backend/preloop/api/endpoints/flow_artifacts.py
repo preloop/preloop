@@ -189,6 +189,21 @@ def rejection_reason(detail: Any) -> str:
     return "unrecognized"
 
 
+QUOTA_FIELDS = ("retained_bytes", "quota_bytes", "incoming_bytes")
+
+
+def quota_numbers(detail: Any) -> dict[str, int]:
+    """The quota byte totals from a 422 detail, or {} when absent (#1339)."""
+    if not isinstance(detail, dict):
+        return {}
+    numbers = {
+        name: detail[name]
+        for name in QUOTA_FIELDS
+        if isinstance(detail.get(name), int) and not isinstance(detail[name], bool)
+    }
+    return numbers if len(numbers) == len(QUOTA_FIELDS) else {}
+
+
 def record_artifact_rejection(
     db: Session,
     claims: dict[str, Any],
@@ -208,6 +223,14 @@ def record_artifact_rejection(
     account_id = claims.get("account_id")
     if account_id is None:
         return
+    details: dict[str, Any] = {
+        "status_code": int(status_code),
+        "reason": rejection_reason(detail),
+        "kind": str(claims.get("kind") or ""),
+        "flow_id": str(claims.get("flow_id") or ""),
+        "execution_id": str(execution_id),
+    }
+    details.update(quota_numbers(detail))
     try:
         flow_artifact.rollback(db)
         crud_audit_log.log_action(
@@ -217,13 +240,7 @@ def record_artifact_rejection(
             resource_type="flow_execution",
             resource_id=str(execution_id),
             status="failure",
-            details={
-                "status_code": int(status_code),
-                "reason": rejection_reason(detail),
-                "kind": str(claims.get("kind") or ""),
-                "flow_id": str(claims.get("flow_id") or ""),
-                "execution_id": str(execution_id),
-            },
+            details=details,
         )
     except Exception:
         logger.warning(
@@ -268,6 +285,12 @@ def _upload_artifact(
             kind=claims["kind"],
             archive=archive,
         )
+    except flow_artifact.ArtifactQuotaExceeded as exc:
+        flow_artifact.rollback(db)
+        # Byte totals only: no artifact ids, names or contents (#1339).
+        raise HTTPException(
+            422, {"error": flow_artifact.QUOTA_EXCEEDED, **exc.numbers()}
+        ) from exc
     except ValueError as exc:
         flow_artifact.rollback(db)
         code = str(exc)

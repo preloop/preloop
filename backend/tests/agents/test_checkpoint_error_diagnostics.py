@@ -197,3 +197,64 @@ def test_a_body_that_cannot_be_read_reports_unreadable(
     assert out == (
         "PRELOOP_CHECKPOINT failed HTTPError status=502 detail=unreadable op=capture"
     )
+
+
+@pytest.mark.parametrize("operation", ["capture", "evidence"])
+def test_quota_refusal_marker_appends_byte_totals(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+) -> None:
+    """The stable code stays; the numbers explain it in the runner log (#1339)."""
+    body = json.dumps(
+        {
+            "detail": {
+                "error": "artifact_quota_exceeded",
+                "retained_bytes": 4250000000,
+                "quota_bytes": 4294967296,
+                "incoming_bytes": 41000000,
+            }
+        }
+    ).encode()
+    arm(monkeypatch, tmp_path, operation, http_error(422, body))
+    code, out = run(capsys)
+    assert code == 1
+    assert out == (
+        f"{MARKERS[operation]} status=422 detail=artifact_quota_exceeded"
+        f" op={operation} retained=4250000000 quota=4294967296 incoming=41000000"
+    )
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "artifact_quota_exceeded",
+        {"error": "artifact_quota_exceeded"},
+        {"error": "artifact_quota_exceeded", "retained_bytes": 1, "quota_bytes": 2},
+        {
+            "error": "artifact_quota_exceeded",
+            "retained_bytes": "1; rm -rf",
+            "quota_bytes": 2,
+            "incoming_bytes": 3,
+        },
+    ],
+)
+def test_quota_marker_without_all_numbers_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    detail: object,
+) -> None:
+    arm(
+        monkeypatch,
+        tmp_path,
+        "capture",
+        http_error(422, json.dumps({"detail": detail}).encode()),
+    )
+    code, out = run(capsys)
+    assert code == 1
+    assert out == (
+        "PRELOOP_CHECKPOINT failed HTTPError status=422"
+        " detail=artifact_quota_exceeded op=capture"
+    )
