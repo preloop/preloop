@@ -305,6 +305,7 @@ async def test_kill_switch_refusal_is_audited(monkeypatch, user_context):
     kwargs = _assert_declined(audit, persist, "safe_tool")
     assert kwargs["error_code"] == "refused"
     assert kwargs["error_reason"]
+    assert kwargs["rule_matched"] == kwargs["error_reason"]
 
 
 async def test_kill_switch_check_failure_is_audited(monkeypatch, user_context):

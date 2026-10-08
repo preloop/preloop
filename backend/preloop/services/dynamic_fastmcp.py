@@ -2923,7 +2923,10 @@ async def {internal_name}({params_str}):
                 result=AUDIT_TOOL_CALL_DECLINED,
                 duration_ms=0,
                 policy_decision=None,
-                rule_matched=None,
+                # The guard that refused the call (kill switch, availability,
+                # justification, ...). Audit services without error_reason
+                # support (#1280) still show why the call was declined.
+                rule_matched=_short_reason(reason),
                 correlation_id=correlation_id,
                 runtime_session_id=user_context.runtime_session_id,
                 runtime_principal_type=user_context.runtime_principal_type,
