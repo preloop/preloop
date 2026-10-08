@@ -4,6 +4,20 @@ Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this pa
 
 This page explains what Preloop sees and stores, and how to deploy it securely.
 
+## Your data
+
+Preloop is open source under [Apache 2.0](https://github.com/preloop/preloop/blob/main/LICENSE). You can read every line that touches your data, and you can run it on your own infrastructure ([Deployment Options](#deployment-options)).
+
+**Self-hosted (open source or Enterprise):** your tool calls, model traffic and audit records stay in your network. The only thing sent to us is an optional daily version check (instance id, version, edition and instance metadata, listed in full under [Self-Hosted](#self-hosted-open-source)), and `PRELOOP_DISABLE_TELEMETRY=true` turns it off.
+
+**Preloop Cloud:** we store your sessions to give you search, audit trails, cost reports and policy enforcement. We use them for nothing else. We do not train models on them, and we do not sell or share them.
+
+**You decide what is stored.** Message content is stored with [pattern redaction](redaction.md#pattern-redaction), or not at all if you turn content capture off ([Reducing what Preloop stores](#reducing-what-preloop-stores)). Retention is yours to set ([Data Retention](#data-retention)), and [legal holds](../guide/artifacts.md#retention-legal-hold-budget-and-eviction) keep records longer only when you place them.
+
+**When content goes to a model for AI approvals, you chose the model**: the request goes only to that model's provider ([AI-Driven Approvals](#ai-driven-approvals)). Semantic search embeddings are off until an account opts in ([session embedding](../operations/session-embedding.md)).
+
+Credentials for your MCP servers and model providers are encrypted at the application level. Cloud data is encrypted in transit and at rest ([Encryption](#encryption)).
+
 ## How the MCP Proxy Works
 
 Preloop sits between your AI agent and your MCP servers:

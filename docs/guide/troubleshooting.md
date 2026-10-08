@@ -64,7 +64,7 @@ Running under WSL: agents installed on Windows are not on the WSL PATH - install
 Prefer installing the agents inside WSL; mixing Windows binaries with a WSL-side Preloop CLI leaves the launcher step permanently skipped.
 
 For Docker Desktop setup, the native Windows CLI binaries, and the current
-Windows limitations, see [Windows (WSL2)](../operations/windows-wsl2.md).
+Windows limitations, see [Windows](../operations/windows-wsl2.md).
 
 ### Agent has an "unverified" badge in the console
 
