@@ -1315,21 +1315,17 @@ export class ConsoleShell extends LitElement {
                               )
                             : nothing,
                           // Served by an extension plugin; the capability in
-                          // /features is the only switch.
-                          ...(hasCapability(this.features, 'account_hierarchy')
-                            ? [
-                                this._renderNavLink(
-                                  '/console/settings/subaccounts',
-                                  html`<sl-menu-item>Subaccounts</sl-menu-item>`
-                                ),
-                                this._renderNavLink(
-                                  '/console/settings/access-grants',
-                                  html`<sl-menu-item
-                                    >Access grants</sl-menu-item
-                                  >`
-                                ),
-                              ]
-                            : []),
+                          // /features is the only switch. Subaccounts have no
+                          // entry: they are created from the Account page,
+                          // and people and teams get access to them from the
+                          // Users and Teams pages. This page is the overview
+                          // of every grant.
+                          hasCapability(this.features, 'account_hierarchy')
+                            ? this._renderNavLink(
+                                '/console/settings/access-grants',
+                                html`<sl-menu-item>Access grants</sl-menu-item>`
+                              )
+                            : nothing,
                         ])}
                         ${this._renderNavGroup('Developers', [
                           this._ciSetupAvailable

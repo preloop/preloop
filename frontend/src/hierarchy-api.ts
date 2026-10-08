@@ -106,6 +106,26 @@ export async function getMemberships(): Promise<Membership[]> {
   );
 }
 
+export interface CreatedAccount {
+  account: { id: string; name: string; parent_account_id?: string | null };
+  membership: Membership;
+}
+
+/**
+ * Create a new root account owned by the signed-in person
+ * (`POST /api/v1/me/accounts`, account hierarchy extension). The caller is
+ * still signed in to the current account afterwards; switch with
+ * {@link switchAccount}.
+ */
+export async function createRootAccount(name: string): Promise<CreatedAccount> {
+  return request<CreatedAccount>(
+    '/api/v1/me/accounts',
+    { method: 'POST', body: JSON.stringify({ name }) },
+    'capability-off',
+    'Could not create the account'
+  );
+}
+
 export interface TokenPair {
   access_token: string;
   refresh_token: string;

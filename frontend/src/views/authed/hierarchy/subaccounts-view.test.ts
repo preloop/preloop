@@ -151,4 +151,98 @@ describe('subaccounts-view', () => {
     expect(el.shadowRoot!.querySelector('view-header')).to.exist;
     expect(toastCount()).to.equal(before);
   });
+
+  describe('as the Account page card (embedded)', () => {
+    async function card(memberships: unknown[] | null) {
+      api = mockApi({
+        capabilities: ['account_hierarchy', 'multi_account'],
+        routes: [
+          ...(memberships
+            ? [{ path: '/api/v1/me/memberships', body: memberships }]
+            : []),
+          {
+            path: LIST,
+            body: { items: [{ id: 'sub-a', name: 'North', tags: {} }] },
+          },
+          {
+            method: 'POST',
+            path: '/api/v1/auth/switch-account',
+            body: { access_token: 'sub-access', refresh_token: 'sub-refresh' },
+          },
+        ],
+      });
+      const navigated: string[] = [];
+      const el = await fixture<SubaccountsView>(
+        html`<subaccounts-view
+          embedded
+          .navigate=${(url: string) => navigated.push(url)}
+        ></subaccounts-view>`
+      );
+      await waitUntil(() => !(el as any).loading, 'card did not load');
+      await el.updateComplete;
+      return { el, navigated };
+    }
+
+    it('renders a Subaccounts card with create, list and a link to Access grants', async () => {
+      const { el } = await card([
+        { account_id: 'acc-root', account_name: 'Root' },
+      ]);
+      const sl = el.shadowRoot!.querySelector('sl-card#subaccounts');
+      expect(sl).to.exist;
+      expect(sl!.textContent).to.contain('Subaccounts');
+      expect(el.shadowRoot!.querySelector('view-header')).to.equal(null);
+      expect(rows(el)).to.eql(['sub-a']);
+      expect(button(el, 'Create subaccount')).to.exist;
+      for (const label of ['Open', 'Edit', 'Detach', 'Delete']) {
+        expect(button(el, label), label).to.exist;
+      }
+      expect(
+        el.shadowRoot!.querySelector(
+          'a[href="/console/settings/access-grants"]'
+        )?.textContent
+      ).to.contain('Access grants');
+    });
+
+    it('treats the account as a root when memberships are unavailable', async () => {
+      const { el } = await card(null);
+      expect(el.shadowRoot!.querySelector('sl-card#subaccounts')).to.exist;
+    });
+
+    it('is absent on a subaccount', async () => {
+      const { el } = await card([
+        {
+          account_id: 'acc-root',
+          account_name: 'EU',
+          parent_account_id: 'acc-parent',
+        },
+      ]);
+      expect(el.shadowRoot!.querySelector('sl-card')).to.equal(null);
+      expect(api.calls.some((c) => c.path === LIST)).to.equal(false);
+    });
+
+    it('is absent without the extension, and says nothing', async () => {
+      const before = toastCount();
+      api = mockApi({ capabilities: [] });
+      const el = await fixture<SubaccountsView>(
+        html`<subaccounts-view embedded></subaccounts-view>`
+      );
+      await waitUntil(() => !(el as any).loading, 'card did not load');
+      await el.updateComplete;
+      expect(el.shadowRoot!.querySelector('sl-card')).to.equal(null);
+      expect(el.shadowRoot!.textContent?.trim()).to.equal('');
+      expect(toastCount()).to.equal(before);
+    });
+
+    it('opens a subaccount by switching to it', async () => {
+      const { el, navigated } = await card([
+        { account_id: 'acc-root', account_name: 'Root' },
+      ]);
+      button(el, 'Open').click();
+      await waitUntil(() => navigated.length === 1, 'did not navigate');
+      const call = api.calls.find(
+        (c) => c.path === '/api/v1/auth/switch-account'
+      );
+      expect(call?.body).to.eql({ account_id: 'sub-a' });
+    });
+  });
 });

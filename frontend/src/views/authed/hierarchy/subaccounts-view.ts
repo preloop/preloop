@@ -1,7 +1,8 @@
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
-import { customElement, state } from 'lit/decorators.js';
+import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
+import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../../components/view-header.ts';
@@ -13,7 +14,9 @@ import {
   currentAccountId,
   deleteSubaccount,
   detachSubaccount,
+  getMemberships,
   listSubaccounts,
+  switchAccount,
   updateSubaccount,
   type Subaccount,
   isNotFound,
@@ -24,8 +27,14 @@ const HIERARCHY_DOCS_URL =
   'https://docs.preloop.ai/guide/accounts-and-profiles';
 
 /**
- * Settings > Subaccounts (capability `account_hierarchy`): create, rename,
- * tag, detach and delete the subaccounts of the current account.
+ * The subaccounts of the current account (capability `account_hierarchy`):
+ * create, open, rename, tag, detach and delete.
+ *
+ * Settings > Account renders it as a card (`embedded`). The card shows only
+ * on a root account: a subaccount creates subaccounts of its own only when
+ * its parent allowed it, which the console cannot read, so it does not
+ * offer what the server would refuse. `/console/settings/subaccounts` still
+ * renders the full page for deep links, with no nav entry pointing at it.
  */
 @customElement('subaccounts-view')
 export class SubaccountsView extends LitElement {
@@ -65,10 +74,21 @@ export class SubaccountsView extends LitElement {
       .table-scroll {
         overflow-x: auto;
       }
+      .subaccounts-card {
+        display: block;
+        margin-bottom: 2rem;
+      }
     `,
   ];
 
+  /** Render as the Subaccounts card of the Account page. */
+  @property({ type: Boolean }) embedded = false;
+  /** For tests: where "Open" goes after the switch. */
+  @property({ attribute: false }) navigate?: (url: string) => void;
+
   @state() private accountId = '';
+  /** The current account sits below another one (embedded card hides). */
+  @state() private nonRoot = false;
   @state() private subaccounts: Subaccount[] = [];
   @state() private loading = true;
   /** The endpoint is missing: the capability is off on this server. */
@@ -87,6 +107,17 @@ export class SubaccountsView extends LitElement {
     this.error = '';
     try {
       this.accountId = await currentAccountId();
+      if (this.embedded) {
+        // Memberships name the current account's parent. Without the
+        // multi-account capability the list is unavailable; the account is
+        // then treated as a root and the server has the last word.
+        const memberships = await getMemberships().catch(() => []);
+        const current = memberships.find(
+          (m) => m.account_id === this.accountId
+        );
+        this.nonRoot = !!current?.parent_account_id;
+        if (this.nonRoot) return;
+      }
       this.subaccounts = await listSubaccounts(this.accountId);
     } catch (error) {
       if (isCapabilityOff(error)) {
@@ -166,6 +197,17 @@ export class SubaccountsView extends LitElement {
     });
   }
 
+  private async open(sub: Subaccount) {
+    try {
+      await switchAccount(sub.id, this.navigate);
+    } catch (error) {
+      this.error =
+        error instanceof Error
+          ? error.message
+          : 'Could not open the subaccount';
+    }
+  }
+
   private async detach(sub: Subaccount) {
     const ok = await confirmDialog({
       title: `Detach ${sub.name}?`,
@@ -230,6 +272,12 @@ export class SubaccountsView extends LitElement {
         )}
       </td>
       <td class="actions">
+        <sl-button
+          size="small"
+          data-testid="open-subaccount"
+          @click=${() => this.open(sub)}
+          >Open</sl-button
+        >
         <sl-button size="small" @click=${() => (this.editingId = sub.id)}
           >Edit</sl-button
         >
@@ -247,26 +295,8 @@ export class SubaccountsView extends LitElement {
     </tr>`;
   }
 
-  render() {
-    if (this.off) {
-      // A bookmarked link on a server without the extension: say so rather
-      // than leave a blank page, and raise no error toast.
-      return html`
-        <view-header headerText="Subaccounts"></view-header>
-        <p class="off-state">
-          Subaccounts aren't available on this deployment: the server does not
-          have the account hierarchy extension enabled.
-          <a href=${HIERARCHY_DOCS_URL} target="_blank" rel="noopener"
-            >Learn about subaccounts</a
-          >
-        </p>
-      `;
-    }
+  private renderBody() {
     return html`
-      <view-header
-        headerText="Subaccounts"
-        description="Accounts below this one. They share your resources only where you share them, and never see each other."
-      ></view-header>
       ${
         this.loading
           ? html`<sl-spinner></sl-spinner>`
@@ -312,6 +342,47 @@ export class SubaccountsView extends LitElement {
               }
             `
       }
+    `;
+  }
+
+  render() {
+    if (this.embedded) {
+      // On the Account page the card is simply absent where it does not
+      // apply: no extension, or an account below another one.
+      if (this.off || this.nonRoot || this.loading) return nothing;
+      return html`<sl-card id="subaccounts" class="subaccounts-card">
+        <h2 slot="header" style="margin: 0; font-size: 1.25rem;">
+          Subaccounts
+        </h2>
+        <p class="hint">
+          Accounts below this one. They share your resources only where you
+          share them, and never see each other. Give people and teams access
+          from the Users and Teams pages, or see every grant on
+          <a href="/console/settings/access-grants">Access grants</a>.
+        </p>
+        ${this.renderBody()}
+      </sl-card>`;
+    }
+    if (this.off) {
+      // A bookmarked link on a server without the extension: say so rather
+      // than leave a blank page, and raise no error toast.
+      return html`
+        <view-header headerText="Subaccounts"></view-header>
+        <p class="off-state">
+          Subaccounts aren't available on this deployment: the server does not
+          have the account hierarchy extension enabled.
+          <a href=${HIERARCHY_DOCS_URL} target="_blank" rel="noopener"
+            >Learn about subaccounts</a
+          >
+        </p>
+      `;
+    }
+    return html`
+      <view-header
+        headerText="Subaccounts"
+        description="Accounts below this one. They share your resources only where you share them, and never see each other."
+      ></view-header>
+      ${this.renderBody()}
     `;
   }
 }
