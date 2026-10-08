@@ -580,10 +580,12 @@ export class PreloopFlowForm extends LitElement {
    */
   private triggerUnchangedSinceLoad(): boolean {
     const flowId = this.flow?.id;
+    const saved = this.savedTrigger;
     return Boolean(
       flowId &&
-      this.savedTrigger?.flowId === flowId &&
-      this.savedTrigger.fingerprint === this.triggerFingerprint()
+      saved &&
+      saved.flowId === flowId &&
+      saved.fingerprint === this.triggerFingerprint()
     );
   }
 
