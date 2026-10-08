@@ -106,6 +106,7 @@ func TestInstallDesktopWritesManifestAndKeepsPassword(t *testing.T) {
 	var password string
 	randomCalls := 0
 	opts := desktopInstallOptions{
+		ProbeVNC:      vncReady,
 		Runtime:       "hermes",
 		HomeDir:       home,
 		OSReleasePath: release,
@@ -212,6 +213,7 @@ func TestInstallDesktopFallsBackToChromiumBrowserAndNohup(t *testing.T) {
 	var output bytes.Buffer
 	var calls []string
 	err := installDesktop(context.Background(), desktopInstallOptions{
+		ProbeVNC:      vncReady,
 		Runtime:       "openclaw",
 		HomeDir:       home,
 		OSReleasePath: release,
@@ -277,6 +279,7 @@ func TestInstallDesktopUsesSudoWhenNotRoot(t *testing.T) {
 	release := writeOSRelease(t, "ID=ubuntu\nID_LIKE=debian\n")
 	var calls []string
 	err := installDesktop(context.Background(), desktopInstallOptions{
+		ProbeVNC:      vncReady,
 		Runtime:       "hermes",
 		HomeDir:       home,
 		OSReleasePath: release,
@@ -568,6 +571,7 @@ func captureCommandStdout(t *testing.T, fn func() error) string {
 func desktopTestOptions(t *testing.T, calls *[]string, run func(name string, args []string) ([]byte, error)) desktopInstallOptions {
 	t.Helper()
 	return desktopInstallOptions{
+		ProbeVNC:      vncReady,
 		Runtime:       "hermes",
 		HomeDir:       t.TempDir(),
 		OSReleasePath: writeOSRelease(t, "ID=ubuntu\nID_LIKE=debian\n"),
@@ -690,5 +694,38 @@ func TestInstallDesktopWaitsForVNC(t *testing.T) {
 	}
 	if probes != 2 {
 		t.Fatalf("probes = %d, want 2", probes)
+	}
+}
+
+func vncReady(context.Context) error { return nil }
+
+// The readiness probe must not depend on whether Run is injected.
+func TestWaitDesktopVNCDialsByDefaultEvenWithInjectedRun(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	opts := desktopInstallOptions{
+		Run: func(context.Context, string, ...string) ([]byte, error) { return nil, nil },
+	}
+	if err := waitDesktopVNC(ctx, opts); err == nil {
+		t.Fatal("nil ProbeVNC skipped the loopback dial")
+	}
+}
+
+func TestInstallDesktopWarnsWhenLingerFails(t *testing.T) {
+	t.Setenv("USER", "deployer")
+	var calls []string
+	opts := desktopTestOptions(t, &calls, func(name string, args []string) ([]byte, error) {
+		if name == "sudo" && len(args) > 1 && args[1] == "loginctl" {
+			return nil, errors.New("exit status 1")
+		}
+		return nil, nil
+	})
+	var output bytes.Buffer
+	opts.Output = &output
+	if err := installDesktop(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "enable-linger failed") {
+		t.Fatalf("output = %q, want linger warning", output.String())
 	}
 }

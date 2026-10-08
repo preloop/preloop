@@ -221,7 +221,7 @@ cp "$work/desktop.log" "$HOME/.local/state/preloop/desktop.log" 2>/dev/null || t
 MAX_REMOTE_OUTPUT = 65536
 
 
-async def read_bounded_output(stream, limit: int) -> str:
+async def read_bounded_output(stream: "asyncssh.SSHReader[str]", limit: int) -> str:
     """Read to EOF, stopping once more than ``limit`` characters arrived.
 
     ``SSHReader.read(n)`` returns as soon as any data is available, so a single

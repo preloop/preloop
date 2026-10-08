@@ -40,8 +40,7 @@ type desktopInstallOptions struct {
 	// EUID overrides os.Geteuid. Nil uses the real user id.
 	EUID func() int
 	// ProbeVNC reports whether the loopback VNC server accepts connections.
-	// Nil dials 127.0.0.1:5900 when Run is the real runner, and is skipped
-	// when tests inject Run without a probe.
+	// Nil always dials 127.0.0.1:5900; tests inject a probe explicitly.
 	ProbeVNC func(ctx context.Context) error
 }
 
@@ -98,7 +97,7 @@ func installDesktop(ctx context.Context, opts desktopInstallOptions) error {
 	if err := writeDesktopFile(unitPath, renderDesktopUnit(), 0o644); err != nil {
 		return err
 	}
-	enableDesktopLinger(ctx, opts)
+	enableDesktopLinger(ctx, opts, out)
 	if err := enableDesktopService(ctx, opts, out, startScript); err != nil {
 		return err
 	}
@@ -290,7 +289,7 @@ func lastLines(text string, n int) string {
 // installing SSH session ends. Without lingering the deployment's
 // preloop-desktop.service stops with the session. Best effort: hosts without
 // loginctl or sudo still get the nohup fallback.
-func enableDesktopLinger(ctx context.Context, opts desktopInstallOptions) {
+func enableDesktopLinger(ctx context.Context, opts desktopInstallOptions, out io.Writer) {
 	if opts.euid() == 0 {
 		return
 	}
@@ -298,7 +297,9 @@ func enableDesktopLinger(ctx context.Context, opts desktopInstallOptions) {
 	if user == "" {
 		user = strconv.Itoa(opts.euid())
 	}
-	_, _ = opts.run(ctx, "sudo", "-n", "loginctl", "enable-linger", user)
+	if _, err := opts.run(ctx, "sudo", "-n", "loginctl", "enable-linger", user); err != nil {
+		fmt.Fprintf(out, "warning: loginctl enable-linger failed (%v); the desktop may stop when this session ends\n", err) //nolint:errcheck
+	}
 }
 
 // waitDesktopVNC fails the install when the VNC server never comes up, so a
@@ -306,9 +307,6 @@ func enableDesktopLinger(ctx context.Context, opts desktopInstallOptions) {
 func waitDesktopVNC(ctx context.Context, opts desktopInstallOptions) error {
 	probe := opts.ProbeVNC
 	if probe == nil {
-		if opts.Run != nil {
-			return nil
-		}
 		probe = dialDesktopVNC
 	}
 	deadline := time.Now().Add(15 * time.Second)
