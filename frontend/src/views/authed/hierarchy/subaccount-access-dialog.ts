@@ -11,6 +11,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 import { isCapabilityOff } from '../../../capabilities';
+import { confirmDialog } from '../../../components/confirm-dialog';
 import {
   createAccessGrant,
   currentAccountId,
@@ -162,6 +163,20 @@ export class SubaccountAccessDialog extends LitElement {
     }
   }
 
+  /** Revoking is destructive: confirm with who, what and where, as Access grants does. */
+  private async confirmRevoke(grant: AccessGrant) {
+    const level = (GRANT_LEVELS[grant.level] ?? grant.level).toLowerCase();
+    const ok = await confirmDialog({
+      title: 'Revoke access?',
+      message: `Revoke ${this.subject?.label ?? 'this'}'s ${level} access?`,
+      detail: `Where: ${this.where(grant)}. They lose that access right away.`,
+      confirmLabel: 'Revoke',
+      variant: 'danger',
+    });
+    if (!ok) return;
+    await this.act(() => deleteAccessGrant(this.accountId, grant.id));
+  }
+
   private submit = (event: Event) => {
     event.preventDefault();
     const subject = this.subject;
@@ -212,10 +227,7 @@ export class SubaccountAccessDialog extends LitElement {
                     <sl-button
                       size="small"
                       ?disabled=${this.busy}
-                      @click=${() =>
-                        this.act(() =>
-                          deleteAccessGrant(this.accountId, grant.id)
-                        )}
+                      @click=${() => this.confirmRevoke(grant)}
                       >Revoke</sl-button
                     >
                   </li>`

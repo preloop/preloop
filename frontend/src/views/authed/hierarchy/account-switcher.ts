@@ -66,6 +66,12 @@ export class AccountSwitcher extends LitElement {
   @state() private newAccountName = '';
   @state() private creating = false;
   @state() private createError = '';
+  /**
+   * The account this dialog already created. A failed switch after a
+   * successful create retries only the switch: running the create again
+   * would make a second account and leave the first unseen.
+   */
+  @state() private createdAccountId = '';
 
   connectedCallback() {
     super.connectedCallback();
@@ -114,30 +120,41 @@ export class AccountSwitcher extends LitElement {
   private openNewAccount = () => {
     this.newAccountName = '';
     this.createError = '';
+    this.createdAccountId = '';
     this.newAccountDialog?.show();
   };
 
   private createAccount = async (event?: Event) => {
     event?.preventDefault();
     const name = this.newAccountName.trim();
-    if (!name) {
+    if (!name && !this.createdAccountId) {
       this.createError = 'Give the account a name.';
       return;
     }
     this.creating = true;
     this.createError = '';
     try {
-      const created = await createRootAccount(name);
+      if (!this.createdAccountId) {
+        const created = await createRootAccount(name);
+        this.createdAccountId = created.account.id;
+        // Listed right away, so the account is reachable from the menu even
+        // if the switch below fails and the dialog is closed.
+        this.memberships = [...this.memberships, created.membership];
+      }
       // The person owns the new account now; sign in to it the same way a
       // pick from the list does.
-      await switchAccount(created.account.id, this.navigate);
+      await switchAccount(this.createdAccountId, this.navigate);
       this.newAccountDialog?.hide();
     } catch (error) {
-      this.createError = isCapabilityOff(error)
-        ? 'This server cannot create accounts from the console yet.'
-        : error instanceof Error
-          ? error.message
-          : 'Could not create the account';
+      this.createError = this.createdAccountId
+        ? `The account was created, but switching to it failed: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }. Try again, or pick it from the menu.`
+        : isCapabilityOff(error)
+          ? 'This server cannot create accounts from the console yet.'
+          : error instanceof Error
+            ? error.message
+            : 'Could not create the account';
     } finally {
       this.creating = false;
     }
@@ -159,6 +176,7 @@ export class AccountSwitcher extends LitElement {
           data-testid="new-account-name"
           label="Account name"
           required
+          ?disabled=${!!this.createdAccountId}
           maxlength="255"
           .value=${this.newAccountName}
           @sl-input=${(e: Event) =>
@@ -180,7 +198,7 @@ export class AccountSwitcher extends LitElement {
         data-testid="create-account"
         ?loading=${this.creating}
         @click=${() => this.createAccount()}
-        >Create account</sl-button
+        >${this.createdAccountId ? 'Switch to it' : 'Create account'}</sl-button
       >
     </sl-dialog>`;
   }

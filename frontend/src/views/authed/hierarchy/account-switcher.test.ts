@@ -214,6 +214,66 @@ describe('account-switcher', () => {
     );
   });
 
+  it('retries only the switch when it fails after the account was created', async () => {
+    const { el, navigated } = await render([m('acc-root', 'Root')]);
+    api!.restore();
+    let switches = 0;
+    api = mockApi({
+      capabilities: ['multi_account'],
+      routes: [
+        {
+          method: 'POST',
+          path: '/api/v1/me/accounts',
+          status: 201,
+          body: {
+            account: { id: 'acc-new', name: 'Side project' },
+            membership: m('acc-new', 'Side project'),
+          },
+        },
+        {
+          method: 'POST',
+          path: '/api/v1/auth/switch-account',
+          status: 200,
+          body: () =>
+            ++switches === 1
+              ? {}
+              : { access_token: 'new-access', refresh_token: 'new-refresh' },
+        },
+      ],
+    });
+    await openNewAccount(el);
+    await typeName(el, 'Side project');
+    const create = () =>
+      (
+        el.shadowRoot!.querySelector(
+          '[data-testid="create-account"]'
+        ) as HTMLElement
+      ).click();
+    create();
+    await waitUntil(
+      () =>
+        el.shadowRoot!.querySelector('sl-dialog.new-account [role="alert"]'),
+      'no error shown'
+    );
+    expect(
+      el.shadowRoot!.querySelector('sl-dialog.new-account [role="alert"]')
+        ?.textContent
+    ).to.contain('The account was created');
+    // The new account is in the menu already.
+    expect(el.shadowRoot!.querySelector('sl-menu-item[data-account="acc-new"]'))
+      .to.exist;
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="create-account"]')
+        ?.textContent
+    ).to.contain('Switch to it');
+
+    create();
+    await waitUntil(() => navigated.length === 1, 'did not navigate');
+    const creates = api!.calls.filter((c) => c.path === '/api/v1/me/accounts');
+    expect(creates).to.have.length(1);
+    expect(switches).to.equal(2);
+  });
+
   it('keeps the dialog open with the reason when the server refuses', async () => {
     const { el, navigated } = await render([m('acc-root', 'Root')]);
     api!.restore();

@@ -390,6 +390,10 @@ describe('TeamManagementView subaccount access', () => {
       (b) => b.textContent?.trim() === 'Revoke'
     ) as HTMLElement;
     revoke.click();
+    // Revoking asks first, naming who and where, as Access grants does.
+    const asked = await answerConfirmDialog(true);
+    expect(asked).to.contain('Revoke');
+    expect(asked).to.contain('North');
     await waitUntil(
       () =>
         api!.calls.some(

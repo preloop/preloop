@@ -40,10 +40,7 @@ import '../../../components/view-header.ts';
 import consoleStyles from '../../../styles/console-styles.css?inline';
 import { hasCapability } from '../../../capabilities';
 import type { Subaccount } from '../../../hierarchy-api';
-import {
-  subaccountsOfCurrentAccount,
-  type SubaccountAccessDialog,
-} from '../hierarchy/subaccount-access-dialog';
+import type { SubaccountAccessDialog } from '../hierarchy/subaccount-access-dialog';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import { roleLabel } from '../../../utils/role-label';
@@ -306,9 +303,12 @@ export class TeamManagementView extends LitElement {
         return;
       }
       if (hasCapability(featuresResponse.features, 'account_hierarchy')) {
-        void subaccountsOfCurrentAccount().then(
-          (subaccounts) => (this.subaccounts = subaccounts)
-        );
+        // Loaded on demand, so the gated hierarchy code stays out of this
+        // chunk where the capability is off.
+        void import('../hierarchy/subaccount-access-dialog')
+          .then((module) => module.subaccountsOfCurrentAccount())
+          .then((subaccounts) => (this.subaccounts = subaccounts))
+          .catch(() => undefined);
       }
     } catch {
       // If features endpoint fails, proceed optimistically
