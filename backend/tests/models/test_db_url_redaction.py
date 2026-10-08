@@ -140,3 +140,25 @@ def test_setup_database_redacts_sqlalchemy_error_log(monkeypatch, loguru_caplog)
         db_setup.setup_database(URL)
     assert "Error setting up database" in loguru_caplog.text
     assert PASSWORD not in loguru_caplog.text
+
+
+def test_reset_database_redacts_alembic_stderr(monkeypatch, loguru_caplog):
+    monkeypatch.setattr(
+        db_setup.subprocess,
+        "run",
+        MagicMock(return_value=MagicMock(returncode=1, stderr=f"boom {URL}")),
+    )
+    with pytest.raises(RuntimeError) as exc_info:
+        db_setup.reset_database(URL)
+    assert "Alembic downgrade failed" in str(exc_info.value)
+    assert PASSWORD not in str(exc_info.value)
+    assert PASSWORD not in loguru_caplog.text
+
+
+def test_reset_database_redacts_sqlalchemy_error_log(monkeypatch, loguru_caplog):
+    error = OperationalError("SELECT 1", {}, Exception(f"bad {URL}"))
+    monkeypatch.setattr(db_setup.subprocess, "run", MagicMock(side_effect=error))
+    with pytest.raises(OperationalError):
+        db_setup.reset_database(URL)
+    assert "Error resetting database" in loguru_caplog.text
+    assert PASSWORD not in loguru_caplog.text
