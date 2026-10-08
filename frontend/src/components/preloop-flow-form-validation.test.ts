@@ -100,8 +100,79 @@ describe('PreloopFlowForm submit validation', () => {
       'Choose at least one event'
     );
     const events = element.shadowRoot!.querySelector('[data-field="events"]');
-    expect(events?.hasAttribute('required')).to.equal(true);
     expect(element.shadowRoot!.activeElement).to.equal(events);
+  });
+
+  const SAVED_REVIEWER = {
+    id: 'flow-1',
+    name: 'Pull Request Reviewer',
+    trigger_event_source: TRACKER.id,
+    trigger_project_ids: ['project-1'],
+    trigger_config: { draft: false, state: 'open' },
+    agent_type: 'deepseek',
+    ai_model_id: 'model-old',
+  };
+
+  it('saves a model change on a flow saved with no events', async () => {
+    const element = await mount({
+      ...SAVED_REVIEWER,
+      trigger_event_types: [],
+    });
+    expect((element as any).triggerType).to.equal('tracker');
+    const events = element.shadowRoot!.querySelector<HTMLElement>(
+      '[data-field="events"]'
+    );
+    expect(events?.hasAttribute('required'), 'native required').to.equal(false);
+    expect(events?.getAttribute('help-text')).to.include(
+      'saved with no events'
+    );
+    const form = element.shadowRoot!.querySelector('form')!;
+    expect(form.checkValidity(), 'native form validity').to.equal(true);
+
+    element.flow.ai_model_id = 'model-new';
+    const listener = await submit(element);
+
+    expect(banner(element)).to.equal(null);
+    expect(listener.calledOnce, 'flow-submit').to.equal(true);
+    const payload = listener.firstCall.args[0].detail.flow;
+    expect(payload.ai_model_id).to.equal('model-new');
+    expect(payload.trigger_event_source).to.equal(TRACKER.id);
+    expect(payload.trigger_event_types).to.deep.equal([]);
+  });
+
+  it('saves a flow with events unchanged', async () => {
+    const element = await mount({
+      ...SAVED_REVIEWER,
+      trigger_event_types: ['pull_request_opened', 'pull_request_updated'],
+    });
+    const events = element.shadowRoot!.querySelector('[data-field="events"]');
+    expect(events?.getAttribute('help-text') || '').to.equal('');
+
+    const listener = await submit(element);
+
+    expect(listener.calledOnce).to.equal(true);
+    const payload = listener.firstCall.args[0].detail.flow;
+    expect(payload.trigger_event_types).to.deep.equal([
+      'pull_request_opened',
+      'pull_request_updated',
+    ]);
+  });
+
+  it('refuses clearing every event on a saved flow', async () => {
+    const element = await mount({
+      ...SAVED_REVIEWER,
+      trigger_event_types: ['pull_request_opened'],
+    });
+    element.flow.trigger_event_types = [];
+    element.requestUpdate();
+    await element.updateComplete;
+
+    const listener = await submit(element);
+
+    expect(listener.called).to.equal(false);
+    expect(banner(element)?.textContent).to.include(
+      'Choose at least one event that triggers this flow.'
+    );
   });
 
   it('submits a complete tracker trigger with its own source, never webhook', async () => {
