@@ -97,6 +97,15 @@ describe('Public pricing from billing catalog', () => {
       .and.include('Older analytics are periodically removed')
       .and.include('longer grandfathered commitments remain protected');
   });
+  it('states the session-content commitment next to the retention note', () => {
+    const result = applyPricingCatalog(config, catalog());
+    expect(result.comparison!.note)
+      .to.include(
+        'Your sessions are used only for your own search, audit, cost reports and policy enforcement.'
+      )
+      .and.include('No training, no sharing.')
+      .and.include('Self-host to keep everything in your network.');
+  });
   it('states the agent cap the catalog carries, never "unlimited" by habit', () => {
     const result = applyPricingCatalog(config, catalog());
     const row = result.comparison!.groups[0].rows.find(

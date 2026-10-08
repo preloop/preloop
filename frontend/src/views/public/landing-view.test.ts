@@ -353,7 +353,7 @@ describe('LandingView hero CTA row and footer disclaimer', () => {
       title: 'Hero',
       lead: 'Lead',
       install_command: 'curl -fsSL https://example.com/install | sh',
-      install_caption: 'macOS, Linux, and WSL.',
+      install_caption: 'macOS, Windows or Linux.',
       cta_secondary: 'Book a Demo',
       cta_secondary_url: '/request-demo',
       trust_tags: ['Apache-2.0', 'Self-hostable'],

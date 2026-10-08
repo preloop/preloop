@@ -258,7 +258,7 @@ nav:
 
   - Self-hosting and operations:
       - Install the OSS stack: operations/installation.md
-      - Windows (WSL2): operations/windows-wsl2.md
+      - Windows: operations/windows-wsl2.md
       - TLS reverse proxy: operations/tls.md
       - Upgrading Preloop: operations/upgrade.md
       - Schema migrations: operations/schema-migrations.md

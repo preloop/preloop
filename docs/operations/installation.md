@@ -12,7 +12,7 @@ After this page you have the full Preloop control plane (API, console, MCP firew
 ## Prerequisites
 
 - Docker with the Compose v2 plugin (the installer checks and tells you exactly what is wrong, see [Troubleshooting](../guide/troubleshooting.md#installer))
-- macOS, Linux, or Windows with [WSL2](windows-wsl2.md): run the installer from inside your WSL shell
+- macOS, Linux, or Windows: on Windows the server stack runs under Docker Desktop with the [WSL2 backend](windows-wsl2.md), so run this installer from inside your WSL shell (the CLI itself also runs natively on Windows)
 
 ## 1. Install and start the stack
 
@@ -76,10 +76,13 @@ command targets your deployment. You can also set it per-command:
 `PRELOOP_URL=http://localhost:3000 preloop login`.
 
 !!! info "Windows"
-    Windows CLI binaries (`amd64` and `arm64`) ship with every release. Do not
-    use the shell installer under Git Bash, it silently installs to a directory
-    that is not on the Windows `PATH`. See [Windows (WSL2)](windows-wsl2.md) for the
-    binary download, `PATH` setup, and current limitations.
+    The CLI runs natively on Windows (`amd64` and `arm64` binaries ship with
+    every release). Install it from PowerShell with
+    `irm https://preloop.ai/install/cli.ps1 | iex`, see
+    [Windows CLI install](../windows-cli.md). Do not use the shell installer
+    under Git Bash, it silently installs to a directory that is not on the
+    Windows `PATH`. See [Windows](windows-wsl2.md) for WSL, manual download,
+    and current limits.
 
 ## Managing the stack
 
@@ -96,7 +99,7 @@ Re-running the installer upgrades in place and preserves your configuration, see
 
 ## Next steps
 
-- [Windows (WSL2)](windows-wsl2.md): Docker Desktop setup, Windows CLI binaries, and known limits
+- [Windows](windows-wsl2.md): native CLI, Docker Desktop with WSL2 for the stack, and known limits
 - [Expose Preloop with TLS](tls.md): manual reverse-proxy setup if you did not use the installer's TLS overlay
 - [Onboard local agents with the CLI](../guide/quickstart-cli.md)
 - [Troubleshooting](../guide/troubleshooting.md): docker preflight messages, registration reopen semantics, install.log
