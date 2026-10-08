@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -37,6 +39,9 @@ type desktopInstallOptions struct {
 	Random        func(n int) ([]byte, error)
 	// EUID overrides os.Geteuid. Nil uses the real user id.
 	EUID func() int
+	// ProbeVNC reports whether the loopback VNC server accepts connections.
+	// Nil always dials 127.0.0.1:5900; tests inject a probe explicitly.
+	ProbeVNC func(ctx context.Context) error
 }
 
 var errDesktopPrivilegeRequired = errors.New("desktop_privilege_required")
@@ -92,7 +97,11 @@ func installDesktop(ctx context.Context, opts desktopInstallOptions) error {
 	if err := writeDesktopFile(unitPath, renderDesktopUnit(), 0o644); err != nil {
 		return err
 	}
+	enableDesktopLinger(ctx, opts, out)
 	if err := enableDesktopService(ctx, opts, out, startScript); err != nil {
+		return err
+	}
+	if err := waitDesktopVNC(ctx, opts); err != nil {
 		return err
 	}
 	if err := writeDesktopManifest(home, browser, opts.now()); err != nil {
@@ -114,11 +123,13 @@ func installDesktop(ctx context.Context, opts desktopInstallOptions) error {
 func desktopDryRunText() string {
 	return strings.Join([]string{
 		"Would install a loopback-only headless desktop:",
-		"  apt-get install -y xvfb x11vnc xdotool chromium (sudo -n when not root; fall back to chromium-browser)",
+		"  apt-get update, then apt-get install -y xvfb x11vnc xdotool chromium (sudo -n when not root; fall back to chromium-browser)",
 		"  x11vnc -storepasswd (password not printed) ~/.preloop/desktop/vncpasswd",
 		"  write ~/.preloop/desktop/start.sh with Xvfb :99 and x11vnc -localhost -rfbport 5900",
 		"  write ~/.config/systemd/user/preloop-desktop.service (Restart=on-failure)",
+		"  loginctl enable-linger (so the user service survives the SSH session)",
 		"  systemctl --user enable --now preloop-desktop, or nohup if systemd --user is unavailable",
+		"  wait until VNC accepts connections on 127.0.0.1:5900",
 		"  write ~/.preloop/desktop.json",
 		"  export DISPLAY=:99 for the runtime",
 		"",
@@ -216,6 +227,13 @@ func (o desktopInstallOptions) euid() int {
 
 func installDesktopPackages(ctx context.Context, opts desktopInstallOptions) error {
 	packages := []string{"xvfb", "x11vnc", "xdotool", "chromium"}
+	// Fresh cloud images ship partial package lists (GCE Ubuntu 24.04 has no
+	// universe index at first boot), so install fails with exit 100 unless
+	// the lists are refreshed first. A failed refresh is not fatal: the
+	// install below reports the real error.
+	if err := aptGetRun(ctx, opts, []string{"update", "-q"}); errors.Is(err, errDesktopPrivilegeRequired) {
+		return err
+	}
 	err := aptGetInstall(ctx, opts, packages)
 	if err == nil {
 		return nil
@@ -234,7 +252,10 @@ func installDesktopPackages(ctx context.Context, opts desktopInstallOptions) err
 }
 
 func aptGetInstall(ctx context.Context, opts desktopInstallOptions, packages []string) error {
-	args := append([]string{"install", "-y"}, packages...)
+	return aptGetRun(ctx, opts, append([]string{"install", "-y"}, packages...))
+}
+
+func aptGetRun(ctx context.Context, opts desktopInstallOptions, args []string) error {
 	command := "apt-get"
 	// GCP deployment SSHes in as the non-root metadata user. Ubuntu images
 	// grant that user passwordless sudo; apt-get itself still needs root.
@@ -247,10 +268,67 @@ func aptGetInstall(ctx context.Context, opts desktopInstallOptions, packages []s
 		command = "sudo"
 		args = append([]string{"-n", "apt-get"}, args...)
 	}
-	if _, err := opts.run(ctx, command, args...); err != nil {
+	if output, err := opts.run(ctx, command, args...); err != nil {
+		if tail := lastLines(string(output), 5); tail != "" {
+			return fmt.Errorf("%w: %s", err, tail)
+		}
 		return err
 	}
 	return nil
+}
+
+func lastLines(text string, n int) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.TrimSpace(strings.Join(lines, " | "))
+}
+
+// enableDesktopLinger keeps the systemd user manager alive after the
+// installing SSH session ends. Without lingering the deployment's
+// preloop-desktop.service stops with the session. Best effort: hosts without
+// loginctl or sudo still get the nohup fallback.
+func enableDesktopLinger(ctx context.Context, opts desktopInstallOptions, out io.Writer) {
+	if opts.euid() == 0 {
+		return
+	}
+	user := os.Getenv("USER")
+	if user == "" {
+		user = strconv.Itoa(opts.euid())
+	}
+	if _, err := opts.run(ctx, "sudo", "-n", "loginctl", "enable-linger", user); err != nil {
+		fmt.Fprintf(out, "warning: loginctl enable-linger failed (%v); the desktop may stop when this session ends\n", err) //nolint:errcheck
+	}
+}
+
+// waitDesktopVNC fails the install when the VNC server never comes up, so a
+// crashed service is reported instead of a false "installed".
+func waitDesktopVNC(ctx context.Context, opts desktopInstallOptions) error {
+	probe := opts.ProbeVNC
+	if probe == nil {
+		probe = dialDesktopVNC
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	var err error
+	for {
+		if err = probe(ctx); err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return fmt.Errorf("desktop VNC did not start on %s:%d (see journalctl --user -u %s): %w", desktopVNCHost, desktopVNCPort, desktopService, err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+}
+
+func dialDesktopVNC(ctx context.Context) error {
+	d := net.Dialer{Timeout: time.Second}
+	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(desktopVNCHost, strconv.Itoa(desktopVNCPort)))
+	if err != nil {
+		return err
+	}
+	return conn.Close()
 }
 
 func findDesktopBrowser(opts desktopInstallOptions) (string, error) {
@@ -324,7 +402,7 @@ func renderDesktopStartScript(passwdPath string) string {
 		"Xvfb :99 -screen 0 1920x1080x24 &\n" +
 		"exec x11vnc -display :99 -localhost -rfbport 5900 -rfbauth " +
 		shellSingleQuote(passwdPath) +
-		" -forever -shared=0 -noipv6\n"
+		" -forever -nevershared -noipv6\n"
 }
 
 func renderDesktopUnit() string {
