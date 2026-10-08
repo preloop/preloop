@@ -310,6 +310,9 @@ class RuntimeSessionTokenResponse(BaseModel):
     session_source_type: str
     session_source_id: str
     session_reference: Optional[str] = None
+    #: Non-fatal problems with the request, e.g. a tool restriction that
+    #: resolved to zero tools. The token is still valid.
+    warnings: List[str] = Field(default_factory=list)
 
 
 class ApiUsageStatistics(BaseModel):

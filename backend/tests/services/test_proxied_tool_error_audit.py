@@ -71,7 +71,7 @@ def _setup(monkeypatch, user_context, *, upstream=None, raises=None, approve=Tru
         f"{mod}.crud_mcp_server.get", MagicMock(return_value=server_row)
     )
     monkeypatch.setattr(
-        f"{mod}.crud_mcp_server.get_visible", MagicMock(return_value=server_row)
+        f"{mod}._resolve_proxied_tool_server", MagicMock(return_value=server_row)
     )
     monkeypatch.setattr(
         f"{mod}.get_mcp_client_pool",
@@ -103,7 +103,6 @@ def _setup(monkeypatch, user_context, *, upstream=None, raises=None, approve=Tru
 
     wrapper = mcp._create_proxied_tool_wrapper(
         tool_name="safe_tool",
-        server_id=SERVER_ID,
         account_id=user_context.account_id,
         description="Safe tool",
         input_schema={"properties": {"ok": {"type": "string"}}},
