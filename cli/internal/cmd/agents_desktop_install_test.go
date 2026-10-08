@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -300,7 +301,7 @@ func TestInstallDesktopUsesSudoWhenNotRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) == 0 || calls[0] != "sudo -n apt-get install -y xvfb x11vnc xdotool chromium" {
+	if len(calls) < 2 || calls[0] != "sudo -n apt-get update -q" || calls[1] != "sudo -n apt-get install -y xvfb x11vnc xdotool chromium" {
 		t.Fatalf("package command = %#v", calls)
 	}
 }
@@ -562,4 +563,132 @@ func captureCommandStdout(t *testing.T, fn func() error) string {
 		t.Fatal(runErr)
 	}
 	return buf.String()
+}
+
+func desktopTestOptions(t *testing.T, calls *[]string, run func(name string, args []string) ([]byte, error)) desktopInstallOptions {
+	t.Helper()
+	return desktopInstallOptions{
+		Runtime:       "hermes",
+		HomeDir:       t.TempDir(),
+		OSReleasePath: writeOSRelease(t, "ID=ubuntu\nID_LIKE=debian\n"),
+		GOOS:          "linux",
+		EUID:          func() int { return 1000 },
+		Output:        io.Discard,
+		Now:           func() time.Time { return time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC) },
+		Random:        func(n int) ([]byte, error) { return bytes.Repeat([]byte{3}, n), nil },
+		LookPath:      func(string) (string, error) { return "/snap/bin/chromium", nil },
+		Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			*calls = append(*calls, name+" "+strings.Join(args, " "))
+			if run != nil {
+				if out, err := run(name, args); out != nil || err != nil {
+					return out, err
+				}
+			}
+			if name == "x11vnc" {
+				return nil, os.WriteFile(args[len(args)-1], []byte("hashed"), 0o600)
+			}
+			return nil, nil
+		},
+	}
+}
+
+// x11vnc 0.9.16 (Ubuntu 24.04) rejects -shared=0 and exits, which left the
+// GCP desktop unit in a restart loop.
+func TestDesktopStartScriptUsesValidX11VNCFlags(t *testing.T) {
+	script := renderDesktopStartScript("/home/example/.preloop/desktop/vncpasswd")
+	if strings.Contains(script, "-shared=0") || !strings.Contains(script, " -nevershared ") {
+		t.Fatalf("start.sh has invalid sharing flag:\n%s", script)
+	}
+}
+
+// Fresh GCE Ubuntu 24.04 images lack the universe index: install exits 100
+// with "Unable to locate package xvfb" unless apt-get update runs first.
+func TestInstallDesktopRefreshesPackageListsBeforeInstall(t *testing.T) {
+	var calls []string
+	if err := installDesktop(context.Background(), desktopTestOptions(t, &calls, nil)); err != nil {
+		t.Fatal(err)
+	}
+	update, install := -1, -1
+	for i, call := range calls {
+		if call == "sudo -n apt-get update -q" && update < 0 {
+			update = i
+		}
+		if strings.HasPrefix(call, "sudo -n apt-get install") && install < 0 {
+			install = i
+		}
+	}
+	if update < 0 || install < 0 || update > install {
+		t.Fatalf("apt-get update must precede install:\n%s", strings.Join(calls, "\n"))
+	}
+}
+
+func TestInstallDesktopPackageErrorIncludesAptOutput(t *testing.T) {
+	var calls []string
+	opts := desktopTestOptions(t, &calls, func(name string, args []string) ([]byte, error) {
+		if name == "sudo" && len(args) > 2 && args[2] == "install" {
+			return []byte("Reading package lists...\nE: Unable to locate package xvfb\n"), errors.New("exit status 100")
+		}
+		return nil, nil
+	})
+	err := installDesktop(context.Background(), opts)
+	if err == nil || !strings.Contains(err.Error(), "Unable to locate package xvfb") {
+		t.Fatalf("error = %v, want apt output", err)
+	}
+}
+
+// Without lingering the user service stops when the deployment SSH session ends.
+func TestInstallDesktopEnablesLingerForNonRoot(t *testing.T) {
+	t.Setenv("USER", "deployer")
+	var calls []string
+	if err := installDesktop(context.Background(), desktopTestOptions(t, &calls, nil)); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	linger := strings.Index(joined, "sudo -n loginctl enable-linger deployer")
+	enable := strings.Index(joined, "systemctl --user enable --now")
+	if linger < 0 || enable < 0 || linger > enable {
+		t.Fatalf("enable-linger must precede the user service:\n%s", joined)
+	}
+}
+
+// A unit that crashes after start must not be reported as installed.
+func TestInstallDesktopFailsWhenVNCNeverListens(t *testing.T) {
+	var calls []string
+	opts := desktopTestOptions(t, &calls, nil)
+	probes := 0
+	opts.ProbeVNC = func(context.Context) error {
+		probes++
+		return errors.New("connection refused")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	err := installDesktop(ctx, opts)
+	if err == nil || !strings.Contains(err.Error(), "desktop VNC did not start") {
+		t.Fatalf("error = %v, want VNC start failure", err)
+	}
+	if probes == 0 {
+		t.Fatal("VNC was never probed")
+	}
+	if _, statErr := os.Stat(filepath.Join(opts.HomeDir, ".preloop", "desktop.json")); !os.IsNotExist(statErr) {
+		t.Fatal("desktop.json written for a desktop that never started")
+	}
+}
+
+func TestInstallDesktopWaitsForVNC(t *testing.T) {
+	var calls []string
+	opts := desktopTestOptions(t, &calls, nil)
+	probes := 0
+	opts.ProbeVNC = func(context.Context) error {
+		probes++
+		if probes < 2 {
+			return errors.New("connection refused")
+		}
+		return nil
+	}
+	if err := installDesktop(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if probes != 2 {
+		t.Fatalf("probes = %d, want 2", probes)
+	}
 }

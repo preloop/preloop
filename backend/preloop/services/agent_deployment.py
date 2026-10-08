@@ -210,10 +210,46 @@ if preloop agents install-runtime "$deploy_runtime" --install-only --skip-instal
 else
   echo PRELOOP_DEPLOY_DESKTOP_FAILED
 fi
+# Keep the desktop log for diagnosis; $work is removed on exit.
+cp "$work/desktop.log" "$HOME/.local/state/preloop/desktop.log" 2>/dev/null || true
 """
         needle = "deploy_stage=PRELOOP_DEPLOY_VERSION_UNAVAILABLE\n"
         script = script.replace(needle, desktop_stage + needle, 1)
     return script
+
+
+MAX_REMOTE_OUTPUT = 65536
+
+
+async def read_bounded_output(stream, limit: int) -> str:
+    """Read to EOF, stopping once more than ``limit`` characters arrived.
+
+    ``SSHReader.read(n)`` returns as soon as any data is available, so a single
+    call can return only the first line (for example a desktop marker) and
+    drop the evidence JSON that follows.
+    """
+    chunks: list[str] = []
+    size = 0
+    while size <= limit:
+        chunk = await stream.read(limit + 1 - size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    return "".join(chunks)
+
+
+def parse_evidence(output: str) -> dict:
+    """Return the last JSON object line; stage markers may precede it."""
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        evidence = json.loads(line)
+        if not isinstance(evidence, dict):
+            raise ValueError("Evidence is not an object")
+        return evidence
+    raise ValueError("No evidence line in remote output")
 
 
 async def install_over_ssh(
@@ -264,8 +300,8 @@ async def install_over_ssh(
                 process.stdin.write_eof()
                 # The fixed script suppresses installer output. Bound remote output
                 # anyway: a compromised target must not fill API memory.
-                output = await process.stdout.read(65537)
-                if len(output) > 65536:
+                output = await read_bounded_output(process.stdout, MAX_REMOTE_OUTPUT)
+                if len(output) > MAX_REMOTE_OUTPUT:
                     process.terminate()
                     raise DeploymentError(
                         "SSH target returned excessive deployment output"
@@ -301,7 +337,7 @@ async def install_over_ssh(
             "SSH authentication, host-key verification, or connection failed"
         ) from exc
     try:
-        evidence = json.loads(output.strip().splitlines()[-1])
+        evidence = parse_evidence(output)
         agent_id = str(UUID(evidence["agent_id"]))
         version_match = re.search(
             r"\b(v?\d+\.\d+\.\d+)\b",
