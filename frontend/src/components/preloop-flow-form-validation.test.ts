@@ -175,6 +175,42 @@ describe('PreloopFlowForm submit validation', () => {
     );
   });
 
+  it('refuses a changed tracker on a flow saved with no events', async () => {
+    const element = await mount({
+      ...SAVED_REVIEWER,
+      trigger_event_types: [],
+    });
+    // Only the source changes; the events stay the saved empty list.
+    element.flow.trigger_event_source = 'tracker-2';
+    element.requestUpdate();
+    await element.updateComplete;
+
+    const listener = await submit(element);
+
+    expect(listener.called).to.equal(false);
+    expect(banner(element)?.textContent).to.include(
+      'Choose at least one event that triggers this flow.'
+    );
+  });
+
+  it('refuses picking a tracker in the form on a flow saved with no events', async () => {
+    const element = await mount({
+      ...SAVED_REVIEWER,
+      trigger_event_types: [],
+    });
+    await (element as any).handleTrackerChange({
+      target: { value: 'tracker-2' },
+    });
+    await element.updateComplete;
+
+    const listener = await submit(element);
+
+    expect(listener.called).to.equal(false);
+    expect(banner(element)?.textContent).to.include(
+      'Choose at least one event that triggers this flow.'
+    );
+  });
+
   it('submits a complete tracker trigger with its own source, never webhook', async () => {
     const element = await mount({ name: 'Issue triage' });
     await chooseTrackerTrigger(element);
