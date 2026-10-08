@@ -23,6 +23,7 @@ import {
   type Subaccount,
   isNotFound,
 } from '../../../hierarchy-api';
+import { GRANT_LEVELS } from './grant-levels';
 
 interface SubjectOption {
   type: 'user' | 'team';
@@ -33,11 +34,7 @@ interface SubjectOption {
 const HIERARCHY_DOCS_URL =
   'https://docs.preloop.ai/guide/accounts-and-profiles';
 
-const LEVELS: Record<GrantLevel, string> = {
-  read: 'Read (viewer)',
-  operate: 'Operate (executor)',
-  admin: 'Admin',
-};
+const LEVELS = GRANT_LEVELS;
 
 /**
  * Settings > Access grants (capability `account_hierarchy`): give a user or
@@ -291,7 +288,7 @@ export class AccessGrantsView extends LitElement {
                   this.target === 'selected' && this.subaccounts.length === 0
                     ? html`<p class="hint" data-testid="no-subaccounts">
                         This account has no subaccounts yet.
-                        <a href="/console/settings/subaccounts"
+                        <a href="/console/settings/account"
                           >Create a subaccount first</a
                         >, or grant access in all subaccounts.
                       </p>`

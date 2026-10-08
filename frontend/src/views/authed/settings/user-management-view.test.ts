@@ -6,6 +6,13 @@ import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
 import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 import './user-management-view';
 import { UserManagementView } from './user-management-view';
+import {
+  mockApi,
+  signInForTest,
+  type MockApi,
+} from '../../../test-helpers/capability-api';
+import type { Capability } from '../../../capabilities';
+import type { SubaccountAccessDialog } from '../hierarchy/subaccount-access-dialog';
 
 describe('UserManagementView', () => {
   let fetchStub: sinon.SinonStub;
@@ -345,5 +352,164 @@ describe('UserManagementView', () => {
       'sl-dialog[label="Manage roles"] sl-checkbox'
     );
     expect(box?.textContent?.trim()).to.equal('Admin');
+  });
+});
+
+describe('UserManagementView subaccount access', () => {
+  let api: MockApi | undefined;
+  beforeEach(() => signInForTest());
+  afterEach(() => {
+    api?.restore();
+    api = undefined;
+    localStorage.clear();
+  });
+
+  const SUBS = '/api/v1/accounts/acc-root/subaccounts';
+  const GRANTS = '/api/v1/accounts/acc-root/access-grants';
+
+  async function renderView(subaccounts: unknown[], grants: unknown[] = []) {
+    api = mockApi({
+      capabilities: ['account_hierarchy', 'user_management'] as Capability[],
+      routes: [
+        { path: SUBS, body: { items: subaccounts } },
+        { path: GRANTS, body: { items: grants } },
+        {
+          method: 'POST',
+          path: GRANTS,
+          status: 201,
+          body: (call) => ({ id: 'grant-new', ...(call.body as object) }),
+        },
+        {
+          method: 'DELETE',
+          path: /^\/api\/v1\/accounts\/acc-root\/access-grants\//,
+          status: 204,
+        },
+        {
+          path: '/api/v1/users',
+          body: {
+            users: [
+              {
+                id: 'user-1',
+                username: 'alice',
+                email: 'alice@example.com',
+                full_name: 'Alice Example',
+                is_active: true,
+                user_source: 'local',
+                email_verified: true,
+              },
+            ],
+            total: 1,
+          },
+        },
+        { path: /^\/api\/v1\/(users|teams)$/, body: { users: [], total: 0 } },
+        { path: /^\/api\/v1\/roles/, body: { roles: [] } },
+      ],
+      fallback: { status: 200, body: [] },
+    });
+    const el = await fixture<UserManagementView>(
+      html`<user-management-view></user-management-view>`
+    );
+    await waitUntil(
+      () => el.shadowRoot!.querySelector('[data-id], sl-card'),
+      'rows did not render'
+    );
+    await waitUntil(() => api!.callsTo(SUBS).length > 0, 'no subaccount read');
+    await new Promise((r) => setTimeout(r, 0));
+    await el.updateComplete;
+    return el;
+  }
+
+  it('offers no Subaccount access action without subaccounts', async () => {
+    const el = await renderView([]);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="subaccount-access"]')
+    ).to.equal(null);
+    expect(el.shadowRoot!.querySelector('subaccount-access-dialog')).to.equal(
+      null
+    );
+  });
+
+  it('grants and revokes access to a subaccount from the row', async () => {
+    const el = await renderView(
+      [{ id: 'sub-a', name: 'North' }],
+      [
+        {
+          id: 'grant-1',
+          subject_type: 'user',
+          subject_id: 'user-1',
+          level: 'operate',
+          target: 'selected',
+          subaccount_ids: ['sub-a'],
+        },
+        {
+          id: 'grant-other',
+          subject_type: 'user',
+          subject_id: 'someone-else',
+          level: 'admin',
+          target: 'all',
+        },
+      ]
+    );
+    const action = el.shadowRoot!.querySelector(
+      '[data-testid="subaccount-access"]'
+    ) as HTMLElement;
+    expect(action).to.exist;
+    action.click();
+    const dialog = el.shadowRoot!.querySelector(
+      'subaccount-access-dialog'
+    ) as SubaccountAccessDialog;
+    await waitUntil(
+      () => dialog.shadowRoot?.querySelector('[data-testid="subject-grants"]'),
+      'grants did not load'
+    );
+    const listed = [
+      ...dialog.shadowRoot!.querySelectorAll(
+        '[data-testid="subject-grants"] li'
+      ),
+    ];
+    // Only this user's grants, named by subaccount.
+    expect(listed.map((li) => li.getAttribute('data-id'))).to.eql(['grant-1']);
+    expect(listed[0].textContent).to.contain('North');
+
+    const grant = [...dialog.shadowRoot!.querySelectorAll('sl-button')].find(
+      (b) => b.textContent?.trim() === 'Grant access'
+    ) as HTMLElement;
+    grant.click();
+    await waitUntil(
+      () => api!.calls.some((c) => c.method === 'POST' && c.path === GRANTS),
+      'no grant created'
+    );
+    const post = api!.calls.find(
+      (c) => c.method === 'POST' && c.path === GRANTS
+    )!;
+    expect(post.body).to.eql({
+      subject_type: 'user',
+      subject_id: 'user-1',
+      level: 'read',
+      target: 'all',
+    });
+
+    await waitUntil(() => !(dialog as any).busy, 'grant did not settle');
+    await dialog.updateComplete;
+    const revoke = [...dialog.shadowRoot!.querySelectorAll('sl-button')].find(
+      (b) => b.textContent?.trim() === 'Revoke'
+    ) as HTMLElement;
+    revoke.click();
+    // Revoking asks first, naming who and where, as Access grants does.
+    const asked = await answerConfirmDialog(true);
+    expect(asked).to.contain('Revoke');
+    expect(asked).to.contain('North');
+    await waitUntil(
+      () =>
+        api!.calls.some(
+          (c) => c.method === 'DELETE' && c.path === `${GRANTS}/grant-1`
+        ),
+      'no grant revoked'
+    );
+    expect(
+      dialog.shadowRoot!.querySelector(
+        'a[href="/console/settings/access-grants"]'
+      )
+    ).to.exist;
   });
 });

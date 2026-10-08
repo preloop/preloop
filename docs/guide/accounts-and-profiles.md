@@ -9,13 +9,14 @@ console and the CLI show the related views and commands only when
 
 | Capability | Console | CLI |
 |---|---|---|
-| `multi_account` | Header account switcher, account chooser at sign-in | `accounts` works against the server's memberships |
-| `account_hierarchy` | Settings > Subaccounts, Settings > Access grants, sharing on resource pages, read-only shared views, usage and attention by subaccount | `subaccounts`, `share` |
+| `multi_account` | Header account switcher (with "New account…"), account chooser at sign-in | `accounts` works against the server's memberships |
+| `account_hierarchy` | Subaccounts card on Settings > Account, "Subaccount access" on Users and Teams, Settings > Access grants, sharing on resource pages, read-only shared views, usage and attention by subaccount | `subaccounts`, `share` |
 | `abac_rules` | Tags on resource pages, Policies > Access rules | `tags`, `access` |
 
 All three are `false` unless a plugin sets them. With all three off, none of
 the gated routes, nav items or panels is registered and their code is never
-downloaded. If an account endpoint answers 404 anyway (for example after the
+downloaded. `/console/settings/subaccounts` still renders the subaccounts
+page for old links, but no nav item points at it. If an account endpoint answers 404 anyway (for example after the
 plugin was removed), the Subaccounts and Access grants pages say the feature
 is not available on this deployment and other gated panels hide, without an
 error toast. A 404 on one item, such as a sibling's subaccount id, shows "not
@@ -94,6 +95,7 @@ and for `policy` it is the id of the active baseline version.
 |---|---|---|
 | GET | `/me/memberships` | `{items:[{account_id, account_name, slug, parent_account_id, last_used_at}]}` |
 | POST | `/auth/switch-account` | `{account_id}`, returns `{access_token, refresh_token}` |
+| POST | `/me/accounts` | `{name}`; creates a root account owned by the caller and returns `{account:{id, name, parent_account_id}, membership}`. The console then calls `/auth/switch-account`. 404 means the server predates it |
 | GET, POST | `/accounts/{id}/subaccounts` | POST `{name, tags}` |
 | GET, PATCH, DELETE | `/accounts/{id}/subaccounts/{sub_id}` | PATCH `{name, tags}`; 404 when `sub_id` is not a child of `id` |
 | POST | `/accounts/{id}/subaccounts/{sub_id}/detach` | |

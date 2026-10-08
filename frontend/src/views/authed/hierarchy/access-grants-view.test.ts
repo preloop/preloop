@@ -199,8 +199,9 @@ describe('access-grants-view', () => {
     await el.updateComplete;
     const hint = el.shadowRoot!.querySelector('[data-testid="no-subaccounts"]');
     expect(hint?.textContent).to.contain('Create a subaccount first');
+    // Subaccounts are created on the Account page now.
     expect(hint?.querySelector('a')?.getAttribute('href')).to.equal(
-      '/console/settings/subaccounts'
+      '/console/settings/account'
     );
   });
 });
