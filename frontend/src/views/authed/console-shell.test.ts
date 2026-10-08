@@ -638,7 +638,7 @@ describe('ConsoleShell', () => {
     });
   });
 
-  it('promotes Approvals and Sessions to top-level links when audit_logs is off', async () => {
+  it('keeps Approvals and Sessions under Audit, not top-level', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
     )) as ConsoleShell;
@@ -656,50 +656,103 @@ describe('ConsoleShell', () => {
     const sessions = el.shadowRoot?.querySelector(
       'a[href="/console/runtime-sessions"]'
     );
-    expect(approvals).to.exist;
-    expect(sessions).to.exist;
-    // One click from any page: top-level, not under a collapsed group.
-    expect(approvals?.closest('sl-details.nav-section')).to.not.exist;
-    expect(sessions?.closest('sl-details.nav-section')).to.not.exist;
-    // The Audit group no longer promises an audit log that is not installed.
+    const audit = approvals?.closest('sl-details.nav-section');
+    expect(audit?.textContent).to.contain('Audit');
+    expect(sessions?.closest('sl-details.nav-section')).to.equal(audit);
+    // Without audit_logs there is no All events entry.
     expect(el.shadowRoot?.querySelector('a[href="/console/audit"]')).to.not
       .exist;
-    expect(el.shadowRoot?.querySelector('a[href="/console/cost"]')).to.exist;
   });
 
-  it('keeps Artifacts and Records in the Audit group when audit_logs is off', async () => {
+  it('orders the top level as Overview, the product pages, Audit, Settings, Emergency', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(
+          JSON.stringify({
+            plugins: [],
+            features: { audit_logs: true, policies_console: true },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('a[href="/console/policies"]'),
+      'Policies link did not render'
+    );
+
+    const menu = el.shadowRoot!.querySelector('#console-nav > sl-menu')!;
+    const rows = Array.from(menu.children)
+      .map((child) =>
+        child.matches('sl-details.nav-section')
+          ? child.querySelector('[slot="summary"] .sidebar-label')?.textContent
+          : child.querySelector('.sidebar-label')?.textContent
+      )
+      .filter((label): label is string => !!label)
+      .map((label) => label.trim());
+    expect(rows).to.deep.equal([
+      'Overview',
+      'Agents',
+      'Flows',
+      'Models',
+      'Tools',
+      'Policies',
+      'Trackers',
+      'Cost',
+      'Audit',
+      'Settings',
+      'Emergency',
+    ]);
+  });
+
+  it('orders the Audit group Approvals, Sessions, All events, Artifacts, Records', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(
+          JSON.stringify({ plugins: [], features: { audit_logs: true } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
     const el = (await fixture(
       html`<console-shell></console-shell>`
     )) as ConsoleShell;
     await waitUntil(
       () =>
-        el.shadowRoot?.querySelector('a[href="/console/settings/records"]') !==
-        null,
-      'Records link did not render'
+        el.shadowRoot?.querySelector('a[href="/console/audit"]') &&
+        el.shadowRoot?.querySelector('a[href="/console/settings/records"]'),
+      'Audit links did not render'
     );
 
-    const link = el.shadowRoot!.querySelector('a[href="/console/artifacts"]')!;
-    expect(link.textContent).to.contain('Artifacts');
-    const audit = link.closest('sl-details.nav-section');
-    expect(audit?.textContent).to.contain('Audit');
-
-    const records = el.shadowRoot!.querySelector(
-      'a[href="/console/settings/records"]'
-    );
-    expect(records?.closest('sl-details.nav-section')).to.equal(audit);
-
-    // The group carries All events, Artifacts and Records only.
-    const hrefs = Array.from(audit!.querySelectorAll('a.sidebar-link')).map(
+    const audit = el
+      .shadowRoot!.querySelector('a[href="/console/audit"]')!
+      .closest('sl-details.nav-section')!;
+    const hrefs = Array.from(audit.querySelectorAll('a.sidebar-link')).map(
       (a) => a.getAttribute('href')
     );
-    expect(hrefs).to.include('/console/artifacts');
-    expect(hrefs).to.include('/console/settings/records');
-    expect(hrefs).to.not.include('/console/approvals');
-    expect(hrefs).to.not.include('/console/runtime-sessions');
-    expect(hrefs).to.not.include('/console/audit');
+    expect(hrefs).to.deep.equal([
+      '/console/approvals',
+      '/console/runtime-sessions',
+      '/console/audit',
+      '/console/artifacts',
+      '/console/settings/records',
+    ]);
   });
 
-  it('adds a Needs attention entry directly after Overview with the count', async () => {
+  it('has no Needs attention entry; the Overview banner links there', async () => {
     publishAttentionSummary([
       {
         id: 'flow:flow-1',
@@ -717,26 +770,16 @@ describe('ConsoleShell', () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
     )) as ConsoleShell;
-
     await waitUntil(
-      () =>
-        el.shadowRoot?.querySelector('a[href="/console/attention"]') !== null,
-      'Needs attention link did not render'
+      () => el.shadowRoot?.querySelector('a[href="/console/cost"]') !== null,
+      'nav did not render'
     );
 
-    const attentionLink = el.shadowRoot?.querySelector(
-      'a[href="/console/attention"]'
-    );
-    expect(attentionLink?.textContent).to.contain('Needs attention');
-    const hrefs = Array.from(
-      el.shadowRoot!.querySelectorAll('a.sidebar-link')
-    ).map((a) => a.getAttribute('href'));
-    expect(hrefs.indexOf('/console/attention')).to.equal(
-      hrefs.indexOf('/console') + 1
-    );
-    expect(attentionLink?.querySelector('sl-badge')?.textContent).to.contain(
-      '1'
-    );
+    expect(el.shadowRoot?.querySelector('a[href="/console/attention"]')).to.not
+      .exist;
+    expect(
+      el.shadowRoot?.querySelector('#console-nav')?.textContent
+    ).to.not.contain('Needs attention');
   });
 
   it('badges Approvals with the pending count published by the header', async () => {
@@ -777,6 +820,21 @@ describe('ConsoleShell', () => {
       ?.querySelector('a[href="/console/approvals"]')
       ?.querySelector('sl-badge');
     expect(badge?.textContent).to.contain('3');
+
+    // The closed Audit group repeats the count on its header, so it stays
+    // visible without opening the group; an open group hides the copy.
+    const audit = el
+      .shadowRoot!.querySelector('a[href="/console/approvals"]')!
+      .closest('sl-details.nav-section') as HTMLElement & { open: boolean };
+    const headerBadge = audit.querySelector(
+      '[slot="summary"] sl-badge.nav-section-badge'
+    ) as HTMLElement;
+    expect(headerBadge?.textContent).to.contain('3');
+    expect(audit.open).to.equal(false);
+    expect(getComputedStyle(headerBadge).display).to.not.equal('none');
+    audit.open = true;
+    await el.updateComplete;
+    expect(getComputedStyle(headerBadge).display).to.equal('none');
   });
 
   it('highlights Approvals for a single approval route', async () => {
@@ -1287,17 +1345,19 @@ describe('ConsoleShell', () => {
       return el;
     }
 
-    it('highlights the top-level Approvals item on a single approval', async () => {
+    it('highlights Approvals and opens Audit on a single approval', async () => {
       // The deep-link target of every approval notification, Slack and email.
-      // Approvals is a top-level item, so the Audit group stays closed.
+      // Approvals lives under Audit, so the group opens to show where you are.
       window.history.replaceState({}, '', '/console/approval/req-123');
       const el = await loaded();
       const approvals = el.shadowRoot!.querySelector(
         'a.sidebar-link.active[href="/console/approvals"]'
       );
       expect(approvals).to.exist;
-      expect(approvals?.closest('sl-details.nav-section')).to.equal(null);
-      expect(auditSection(el)?.hasAttribute('open')).to.be.false;
+      expect(approvals?.closest('sl-details.nav-section')).to.equal(
+        auditSection(el)
+      );
+      expect(auditSection(el)?.hasAttribute('open')).to.be.true;
     });
 
     it('highlights Cost on the API usage page', async () => {
