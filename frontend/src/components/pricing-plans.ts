@@ -42,6 +42,7 @@ export interface ComparisonGroup {
 export interface Comparison {
   title?: string;
   note?: string;
+  note_link?: { label: string; url: string };
   groups: ComparisonGroup[];
 }
 
@@ -199,7 +200,15 @@ export class PricingPlanComparison extends LitElement {
           </div>
           ${
             comparison.note
-              ? html`<p class="comparison-note">${comparison.note}</p>`
+              ? html`<p class="comparison-note">
+                  ${comparison.note}${
+                    comparison.note_link
+                      ? html` <a href=${comparison.note_link.url}
+                          >${comparison.note_link.label}</a
+                        >`
+                      : ''
+                  }
+                </p>`
               : ''
           }
         </div>

@@ -1,15 +1,18 @@
-# Windows (WSL2)
+# Windows
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
-**Windows binaries are available; WSL is the recommended way to run Preloop.**
+This page used to be titled "Windows (WSL2)". The path and section anchors are
+unchanged, so existing links keep working.
 
-Every Preloop release publishes Windows CLI binaries for `amd64` and `arm64`,
-and the OSS stack runs on Docker Desktop with the WSL2 backend. What we do not
-claim is *native* Windows support: the `.exe` is built and published by CI but
-is not yet covered by an end-to-end Windows test suite, and several
-host-integration features degrade (see [Known limits](#known-limits)). Run the
-CLI inside WSL and everything behaves exactly as it does on Linux.
+**The Preloop CLI runs natively on Windows.** Every release publishes Windows
+CLI binaries for `amd64` and `arm64`, installable with a PowerShell one-liner
+(see [Windows CLI install](../windows-cli.md)). Release binaries pass a
+required Microsoft Defender scan before publication.
+
+To run the full OSS server stack on a Windows machine, use Docker Desktop with
+the WSL2 backend, described below. WSL2 also remains fully supported for the
+CLI if you prefer a Linux environment.
 
 ## Run the OSS stack
 
@@ -43,7 +46,17 @@ From here, follow [Install the OSS Stack](installation.md); nothing else differs
 
 ## Install the CLI
 
-### Inside WSL (recommended)
+### Native Windows (PowerShell)
+
+```powershell
+irm https://preloop.ai/install/cli.ps1 | iex
+```
+
+The installer verifies the binary against the release checksums and adds it to
+your user `PATH`. See [Windows CLI install](../windows-cli.md) for pinning a
+version, building from source, and Defender guidance.
+
+### Inside WSL {#inside-wsl-recommended}
 
 Use the standard installer, it is an ordinary Linux install:
 
@@ -58,7 +71,7 @@ curl -fsSL https://preloop.ai/install/cli | sh
     WSL, or add its Windows install directory to your WSL `PATH`. See
     [CLI Reference → WSL](../guide/cli.md#wsl).
 
-### Native Windows binary
+### Manual download of the Windows binary {#native-windows-binary}
 
 Download `preloop-windows-amd64.exe` or `preloop-windows-arm64.exe` from the
 [GitHub releases page](https://github.com/preloop/preloop/releases/latest)
@@ -101,12 +114,14 @@ preloop version
 
 ## Known limits
 
-These affect the **native Windows binary only**. Running the CLI inside WSL
-avoids all of them.
+These are the current limits of the native Windows binary. Core use (sign-in,
+agent discovery and onboarding, MCP firewall and model-gateway routing) works
+natively; the rows below are specific integrations that behave differently. A
+CLI installed inside WSL behaves exactly as on Linux.
 
 | Area | Behaviour on native Windows |
 |------|-----------------------------|
-| Claude Desktop discovery | Supported: the CLI reads `%APPDATA%\Claude\claude_desktop_config.json`. |
+| Claude Desktop discovery | Supported: the CLI reads `%APPDATA%\Claude\claude_desktop_config.json` (and also checks `%USERPROFILE%\.claude\` and `%USERPROFILE%\.config\claude\`). |
 | Credential probing | Auth probes that read POSIX keychains and shell-based credential helpers do not resolve on Windows; some agents will report an unverified credential and need manual re-verification. |
 | OpenClaw runtime management | Runtime install and lifecycle management assume POSIX process and path semantics; manage OpenClaw from inside WSL. |
 | Managed agent launchers | Not available. Onboarding can generate a wrapper script that launches an agent with Preloop's environment pre-applied; it is emitted as a `bash` script into `~/.local/bin`, which Windows cannot execute. MCP firewall and model-gateway routing still work, only the generated launcher is skipped. |
@@ -119,13 +134,13 @@ avoids all of them.
     silently does not apply: the token file inherits whatever ACL its parent
     directory grants.
 
-    If you use the native Windows binary, keep Preloop's config directory on a
-    volume only your user account can read, or run the CLI inside WSL where the
-    `0600` mode is enforced. Proper ACL hardening is tracked for a future
-    release.
+    The config directory lives under your user profile (`%USERPROFILE%\.preloop`
+    by default), which normally grants access only to your account. Keep it
+    there, on a volume only your user account can read. Inside WSL the `0600`
+    mode is enforced.
 
 ## Reporting Windows issues
 
-Windows is newly supported and we want the bug reports. Please include your
+We want the bug reports. Please include your
 Windows version, whether you are on WSL or the native binary, and the output of
 `preloop version` in a [GitHub issue](https://github.com/preloop/preloop/issues).

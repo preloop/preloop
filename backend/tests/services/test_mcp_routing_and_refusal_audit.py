@@ -16,6 +16,7 @@ from mcp import types
 
 from preloop.models.models.mcp_server import MCPServer
 from preloop.models.models.mcp_tool import MCPTool
+from preloop.models.models.tool_configuration import ToolConfiguration
 from preloop.services.dynamic_fastmcp import (
     AUDIT_TOOL_CALL_DECLINED,
     DynamicFastMCP,
@@ -94,10 +95,13 @@ def _proxied_setup(monkeypatch, user_context, proxied_rows):
     monkeypatch.setattr(
         f"{MOD}.crud_tool_configuration.get_multi_by_account", lambda *a, **k: []
     )
-    monkeypatch.setattr(
-        "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
-        lambda account_id, db: proxied_rows(),
-    )
+
+    def resolve(db, account_id, tool_name):
+        matches = [s for s, t in proxied_rows() if t.name == tool_name]
+        return matches[-1] if matches else None
+
+    monkeypatch.setattr(f"{MOD}._resolve_proxied_tool_server", resolve)
+    # Bound into the wrapper namespace at creation, like every other helper.
     monkeypatch.setattr(f"{MOD}.get_mcp_client_pool", lambda: pool)
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=MagicMock())
@@ -140,9 +144,7 @@ def _proxied_setup(monkeypatch, user_context, proxied_rows):
 async def test_wrapper_source_has_no_baked_server_id(monkeypatch, user_context):
     _, _, wrapper = _proxied_setup(monkeypatch, user_context, lambda: [])
     assert "server_id" not in wrapper.__globals__
-    assert wrapper.__globals__["_resolve_proxied_tool_server"] is (
-        _resolve_proxied_tool_server
-    )
+    assert callable(wrapper.__globals__["_resolve_proxied_tool_server"])
 
 
 async def test_call_routes_to_recreated_server_without_restart(
@@ -239,6 +241,58 @@ def test_resolver_reads_current_rows_after_delete_and_recreate(db_session, test_
         second.id
     )
     assert _resolve_proxied_tool_server(db_session, str(uuid4()), "read_scope") is None
+
+    # A tool disabled on the server is not routed to, like list_tools.
+    db_session.add(
+        ToolConfiguration(
+            account_id=test_user.account_id,
+            tool_name="read_scope",
+            tool_source="mcp",
+            mcp_server_id=second.id,
+            is_enabled=False,
+        )
+    )
+    db_session.commit()
+    assert _resolve_proxied_tool_server(db_session, account_id, "read_scope") is None
+
+
+def test_resolver_includes_servers_shared_with_the_account(
+    db_session, test_user, monkeypatch
+):
+    """Account hook H3: a shared server is routed to, an unshared one is not."""
+    from preloop.models.models.account import Account
+
+    other = Account(organization_name=f"owner-{uuid4().hex[:8]}")
+    db_session.add(other)
+    db_session.commit()
+    shared = MCPServer(
+        name="shared-source",
+        url="http://localhost:9001/mcp",
+        transport="http-streaming",
+        auth_type="none",
+        account_id=other.id,
+        status="active",
+    )
+    db_session.add(shared)
+    db_session.commit()
+    db_session.add(
+        MCPTool(
+            mcp_server_id=shared.id,
+            name="shared_tool",
+            description="d",
+            input_schema={"type": "object", "properties": {}},
+            discovered_at="2026-01-01T00:00:00Z",
+        )
+    )
+    db_session.commit()
+    account_id = str(test_user.account_id)
+    assert _resolve_proxied_tool_server(db_session, account_id, "shared_tool") is None
+    monkeypatch.setattr(
+        "preloop.plugins.account_hooks.extra_visible_ids",
+        lambda db, acc, kind: [shared.id] if acc == account_id else [],
+    )
+    resolved = _resolve_proxied_tool_server(db_session, account_id, "shared_tool")
+    assert resolved is not None and resolved.id == shared.id
 
 
 async def test_unregister_proxied_tools_removes_wrapper(monkeypatch, user_context):

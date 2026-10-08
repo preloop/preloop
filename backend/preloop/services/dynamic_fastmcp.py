@@ -342,14 +342,14 @@ def _resolve_proxied_tool_server(db: Any, account_id: str, tool_name: str) -> An
     ``list_tools`` (own and shared active servers, disabled tools skipped),
     so every pod routes to the current server. When two servers expose the
     same name, the last one wins, which matches the listing (see #1135).
-    """
-    from preloop.services.mcp_tool_discovery import _get_proxied_tools_sync
 
-    resolved = None
-    for server, tool in _get_proxied_tools_sync(account_id, db):
-        if tool.name == tool_name:
-            resolved = server
-    return resolved
+    One indexed query for this tool name, not a full tool discovery, so it
+    stays as cheap as the single-row lookup it replaces.
+    """
+    servers = crud_mcp_server.get_active_visible_for_tool(
+        db, account_id=account_id, tool_name=tool_name
+    )
+    return servers[-1] if servers else None
 
 
 def _proxied_exception_outcome(

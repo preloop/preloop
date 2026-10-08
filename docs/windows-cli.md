@@ -2,6 +2,12 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
+The Preloop CLI runs natively on Windows. Every release publishes `amd64` and
+`arm64` binaries, and release binaries pass a required Microsoft Defender scan
+before publication. Running the CLI inside WSL is also supported; see
+[Windows](operations/windows-wsl2.md) for WSL, the OSS server stack under
+Docker Desktop, and the current limits of the native binary.
+
 ## Recommended install (PowerShell)
 
 ```powershell

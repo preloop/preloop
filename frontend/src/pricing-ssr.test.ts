@@ -290,6 +290,20 @@ describe('Server-rendered pricing (light DOM)', () => {
     expect(text).to.not.contain('$292');
   });
 
+  it('renders the comparison note link as a real anchor', () => {
+    const config = structuredClone(CONFIG) as any;
+    config.landing.pricing.comparison.note_link = {
+      label: 'Your data: Security & Privacy',
+      url: 'https://docs.preloop.ai/security/security-privacy/#your-data',
+    };
+    const { doc } = render(config);
+    const link = doc.querySelector('.comparison-note a');
+    expect(link?.getAttribute('href')).to.equal(
+      'https://docs.preloop.ai/security/security-privacy/#your-data'
+    );
+    expect(link?.textContent).to.equal('Your data: Security & Privacy');
+  });
+
   it('renders both comparison tables as real tables', () => {
     const { doc, text } = render();
     expect(text).to.contain('Compare cloud plans');

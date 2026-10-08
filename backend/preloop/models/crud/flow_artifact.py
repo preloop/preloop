@@ -1,6 +1,6 @@
 """Scoped recovery artifact persistence and retention transactions."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -8,6 +8,107 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+
+QUOTA_EXCEEDED = "artifact_quota_exceeded"
+
+
+# Name fixed by the #1339 spec; the stable code, not the class, is the contract.
+class ArtifactQuotaExceeded(ValueError):  # noqa: N818
+    """Admission refused: retained plus incoming ciphertext exceeds the quota.
+
+    ``str(exc)`` stays the stable code ``artifact_quota_exceeded`` so every
+    ``except ValueError`` caller keeps working; the byte totals ride alongside
+    for the 422 body, the audit row and the runner marker (#1339).
+    """
+
+    def __init__(
+        self, *, retained_bytes: int, quota_bytes: int, incoming_bytes: int
+    ) -> None:
+        super().__init__(QUOTA_EXCEEDED)
+        self.retained_bytes = int(retained_bytes)
+        self.quota_bytes = int(quota_bytes)
+        self.incoming_bytes = int(incoming_bytes)
+
+    def numbers(self) -> dict[str, int]:
+        """The three byte totals, without any artifact identity."""
+        return {
+            "retained_bytes": self.retained_bytes,
+            "quota_bytes": self.quota_bytes,
+            "incoming_bytes": self.incoming_bytes,
+        }
+
+
+def _retained_bytes_expr() -> Any:
+    """The retained-ciphertext aggregate shared by admission and usage."""
+    return func.coalesce(func.sum(func.octet_length(models.FlowArtifact.ciphertext)), 0)
+
+
+def usage(
+    db: Session, *, account_id: UUID, now: datetime | None = None
+) -> dict[str, Any]:
+    """Account retained flow-artifact bytes, as admission counts them.
+
+    ``retained_bytes`` is the same aggregate ``store`` compares against the
+    quota. ``by_kind`` gives bytes and row counts per kind (rows whose payload
+    was already cleared count as rows with zero bytes).
+    ``expired_pending_cleanup`` counts rows past ``expires_at`` whose
+    ciphertext the janitor has not cleared yet: those bytes still count.
+    ``next_expiry_at`` is the earliest time cleanup may clear a payload:
+    ``expires_at``, or a later ``lease_until``, among available rows not
+    under a legal hold. A past value means a payload is due and awaits the
+    janitor.
+    """
+    now = now or datetime.now(UTC)
+    rows = (
+        db.query(
+            models.FlowArtifact.kind,
+            _retained_bytes_expr(),
+            func.count(models.FlowArtifact.id),
+        )
+        .filter(models.FlowArtifact.account_id == account_id)
+        .group_by(models.FlowArtifact.kind)
+        .all()
+    )
+    by_kind = {
+        str(kind): {"bytes": int(size), "count": int(count)}
+        for kind, size, count in rows
+    }
+    pending = (
+        db.query(func.count(models.FlowArtifact.id))
+        .filter(
+            models.FlowArtifact.account_id == account_id,
+            models.FlowArtifact.expires_at <= now,
+            models.FlowArtifact.ciphertext.isnot(None),
+        )
+        .scalar()
+    )
+    # When cleanup can next clear bytes: a held row is never cleared while
+    # held, and a leased row not before its lease lapses (see ``cleanup``).
+    next_expiry = (
+        db.query(
+            func.min(
+                func.greatest(
+                    models.FlowArtifact.expires_at,
+                    func.coalesce(
+                        models.FlowArtifact.lease_until, models.FlowArtifact.expires_at
+                    ),
+                )
+            )
+        )
+        .filter(
+            models.FlowArtifact.account_id == account_id,
+            models.FlowArtifact.availability == "available",
+            models.FlowArtifact.ciphertext.isnot(None),
+            models.FlowArtifact.legal_hold.is_(False),
+        )
+        .scalar()
+    )
+    return {
+        "retained_bytes": sum(entry["bytes"] for entry in by_kind.values()),
+        "by_kind": by_kind,
+        "expired_pending_cleanup": int(pending or 0),
+        "next_expiry_at": next_expiry,
+    }
 
 
 def store(
@@ -40,16 +141,15 @@ def store(
         models.Account.id == values["account_id"]
     ).with_for_update(key_share=True).one()
     size = (
-        db.query(
-            func.coalesce(
-                func.sum(func.octet_length(models.FlowArtifact.ciphertext)), 0
-            )
-        )
+        db.query(_retained_bytes_expr())
         .filter(models.FlowArtifact.account_id == values["account_id"])
         .scalar()
     )
-    if size + len(values["ciphertext"]) > quota_bytes:
-        raise ValueError("artifact_quota_exceeded")
+    incoming = len(values["ciphertext"])
+    if size + incoming > quota_bytes:
+        raise ArtifactQuotaExceeded(
+            retained_bytes=size, quota_bytes=quota_bytes, incoming_bytes=incoming
+        )
     artifact = models.FlowArtifact(**values)
     db.add(artifact)
     db.commit()

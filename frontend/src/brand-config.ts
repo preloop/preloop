@@ -173,6 +173,8 @@ export interface PricingComparisonGroup {
 export interface PricingComparison {
   title?: string;
   note?: string;
+  /** Optional link rendered right after `note` (for example the data commitment details). */
+  note_link?: { label: string; url: string };
   groups: PricingComparisonGroup[];
 }
 

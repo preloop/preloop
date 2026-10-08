@@ -327,13 +327,14 @@ class CRUDAIModel(CRUDBase[AIModel]):
         Raises:
             ValueError: When a non-import write would create a collision.
         """
-        if account_id is None:
-            return
         meta_data = obj_data.get("meta_data")
         alias = _effective_gateway_alias_from_fields(
             provider_name, model_identifier, meta_data
         )
         if not alias:
+            return
+        if account_id is None:
+            self._warn_system_alias_shadowed(db, alias=alias, exclude_id=exclude_id)
             return
 
         from preloop.services.model_runtime_resolver import effective_gateway_alias
@@ -381,6 +382,35 @@ class CRUDAIModel(CRUDBase[AIModel]):
             alias,
             suffixed,
         )
+
+    def _warn_system_alias_shadowed(
+        self, db: Session, *, alias: str, exclude_id: Optional[uuid.UUID]
+    ) -> None:
+        """Warn when a system row takes an alias account rows already use.
+
+        A system row (``account_id`` NULL) may share an alias with account
+        rows: the gateway serves each account its own row first. The write
+        is allowed, but it is logged so an operator notices that those
+        accounts will not reach the new system row by that alias.
+        """
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        shadowing = [
+            existing
+            for existing in db.query(self.model)
+            .filter(self.model.account_id.is_not(None))
+            .all()
+            if existing.id != exclude_id and effective_gateway_alias(existing) == alias
+        ]
+        if shadowing:
+            logger.warning(
+                "gateway_system_alias_shadowed alias=%r account_rows=%d "
+                "accounts=%d: those accounts keep resolving the alias to "
+                "their own model",
+                alias,
+                len(shadowing),
+                len({str(row.account_id) for row in shadowing}),
+            )
 
     def create_with_account(
         self,
