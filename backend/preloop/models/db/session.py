@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from loguru import logger
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -30,6 +30,55 @@ _health_engine = None
 # threadpool), and a plain check-then-create global would let two of them each
 # build an engine, leaking a connection pool the code then forgets about.
 _health_engine_lock = threading.Lock()
+
+
+def redact_url(value: Any) -> str:
+    """Render a database URL with its password masked.
+
+    Accepts a URL string or a SQLAlchemy ``URL``. Anything that cannot be
+    parsed as a URL is not echoed back, because the raw string may still
+    carry a secret.
+
+    Args:
+        value: A database URL as ``str`` or ``sqlalchemy.engine.URL``.
+
+    Returns:
+        The URL with the password replaced by ``***``, or a placeholder.
+    """
+    if value is None:
+        return "<no url>"
+    try:
+        return make_url(value).render_as_string(hide_password=True)
+    except Exception:
+        return "<unparseable database url>"
+
+
+def redact_secrets_in_text(text_value: Any, url: Any) -> str:
+    """Strip a database URL and its password from free text.
+
+    Driver and SQLAlchemy errors may quote the URL they were given, so error
+    messages are passed through this before being logged or re-raised.
+
+    Args:
+        text_value: The message (or exception) to sanitise.
+        url: The URL whose secrets must not appear in the output.
+
+    Returns:
+        The message with the raw URL and password replaced.
+    """
+    message = str(text_value)
+    if not url:
+        return message
+    raw = str(url)
+    if raw in message:
+        message = message.replace(raw, redact_url(raw))
+    try:
+        password = make_url(url).password
+    except Exception:
+        password = None
+    if password:
+        message = message.replace(str(password), "***")
+    return message
 
 
 def _env_int(name: str, default: int) -> int:
@@ -172,12 +221,13 @@ def get_engine(database_url: Optional[str] = None):
         if not check_pgvector_extension(engine):
             install_pgvector_extension(engine)
 
-        logger.debug(f"Connected to database using {url}")
+        logger.debug(f"Connected to database using {redact_url(url)}")
         _engine = engine
         return _engine
     except (ImportError, SQLAlchemyError) as e:
-        logger.error(f"Database connection failed: {e}")
-        raise Exception(f"Database connection failed: {e}")
+        safe_error = redact_secrets_in_text(e, url)
+        logger.error(f"Database connection failed: {safe_error}")
+        raise Exception(f"Database connection failed: {safe_error}") from None
 
 
 def get_engine_if_initialized() -> Optional[Engine]:
@@ -295,12 +345,13 @@ def get_async_engine(database_url: Optional[str] = None) -> AsyncEngine:
         )
 
         install_pool_hold_diagnostics(engine.sync_engine)
-        logger.debug(f"Connected to async database using {url}")
+        logger.debug(f"Connected to async database using {redact_url(url)}")
         _async_engine = engine
         return _async_engine
     except (ImportError, SQLAlchemyError) as e:
-        logger.error(f"Async database connection failed: {e}")
-        raise Exception(f"Async database connection failed: {e}")
+        safe_error = redact_secrets_in_text(e, url)
+        logger.error(f"Async database connection failed: {safe_error}")
+        raise Exception(f"Async database connection failed: {safe_error}") from None
 
 
 def get_async_session_factory(
