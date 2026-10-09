@@ -1327,7 +1327,7 @@ async def update_issue(
 
 
 @_with_tool_db
-async def search(
+async def search_issues(
     query: str,
     project: Optional[str] = None,
     target_type: Literal["issue", "comment", "all"] = "all",
@@ -1335,7 +1335,7 @@ async def search(
     limit: int = 10,
 ) -> ApiSearchResponse:
     """
-    Handles the 'search' tool call.
+    Handles the 'search_issues' tool call.
     """
     db = _get_tool_db()
     current_user = None
@@ -1369,6 +1369,24 @@ async def search(
     except Exception as e:
         logger.error(f"Failed to perform search for query '{query}': {e}")
         raise HTTPException(status_code=500, detail="Failed to perform search.")
+
+
+@_with_tool_db
+async def search(
+    query: str,
+    project: Optional[str] = None,
+    target_type: Literal["issue", "comment", "all"] = "all",
+    search_type: Literal["similarity", "fulltext"] = "similarity",
+    limit: int = 10,
+) -> ApiSearchResponse:
+    """Deprecated alias for search_issues. Removed in 0.18.0."""
+    return await search_issues(
+        query=query,
+        project=project,
+        target_type=target_type,
+        search_type=search_type,
+        limit=limit,
+    )
 
 
 @_with_tool_db
