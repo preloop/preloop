@@ -71,11 +71,13 @@ def job_database_name(run_id: str, attempt: str, shard: str) -> str:
     return name
 
 
-def database_url(user: str, password: str, host: str, port: int, name: str) -> str:
-    """Build a SQLAlchemy URL for one database on the CI server."""
-    return (
-        f"postgresql://{quote_plus(user)}:{quote_plus(password)}@{host}:{port}/{name}"
-    )
+def database_url(user: str, host: str, port: int, name: str) -> str:
+    """Build a SQLAlchemy URL for one database on the CI server.
+
+    The password stays in ``PGPASSWORD``. A URL that contains it is a second
+    copy of the credential in the log and in ``GITHUB_ENV``.
+    """
+    return f"postgresql://{quote_plus(user)}@{host}:{port}/{name}"
 
 
 def _is_rejection(exc: BaseException) -> bool:
@@ -181,15 +183,21 @@ def _start_ephemeral_server(user: str, password: str, port: int) -> None:
             "-p",
             f"127.0.0.1:{port}:5432",
             "-e",
-            f"POSTGRES_USER={user}",
+            "POSTGRES_USER",
             "-e",
-            f"POSTGRES_PASSWORD={password}",
+            "POSTGRES_PASSWORD",
             "-e",
-            "POSTGRES_DB=postgres",
+            "POSTGRES_DB",
             POSTGRES_IMAGE,
         ],
         check=True,
         text=True,
+        env={
+            **os.environ,
+            "POSTGRES_USER": user,
+            "POSTGRES_PASSWORD": password,
+            "POSTGRES_DB": "postgres",
+        },
     )
     print(f"started {POSTGRES_IMAGE} as {EPHEMERAL_CONTAINER}")
 
@@ -253,7 +261,7 @@ def prepare(
     finally:
         connection.close()
 
-    url = database_url(user, password, host, port, name)
+    url = database_url(user, host, port, name)
     _write_marker(
         {
             "database": name,

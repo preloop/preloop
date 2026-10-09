@@ -471,6 +471,9 @@ jobs:
       PRELOOP_DISABLE_TELEMETRY: "true"
       COVERAGE_FILE: coverage-data.${{ matrix.group }}
       PRELOOP_CI_SHARD: ${{ matrix.group }}
+      # Fixture role from .github/self-hosted-runners.md. The database URL
+      # omits it; libpq reads PGPASSWORD. Not a production credential.
+      PGPASSWORD: test_password
 
     steps:
       # clean: true is the default, but a self-hosted workspace is reused

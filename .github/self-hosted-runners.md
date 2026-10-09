@@ -50,6 +50,7 @@ From a checkout with the dev extra installed (`pip install -e ".[dev]"` so
 docker inspect -f '{{.State.Running}}' preloop-postgres
 # true
 
+export PGPASSWORD=test_password
 GITHUB_RUN_ID=1 GITHUB_RUN_ATTEMPT=1 PRELOOP_CI_SHARD=99 \
   python scripts/ci_postgres.py prepare
 ```

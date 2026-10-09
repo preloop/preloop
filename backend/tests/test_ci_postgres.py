@@ -212,8 +212,9 @@ def test_prepare_publishes_the_three_ci_urls(
     )
     published = env_file.read_text(encoding="utf-8")
     assert (
-        "DATABASE_URL=postgresql://test_user:test_password@127.0.0.1:5432/preloop_ci_9_1_2"
+        "DATABASE_URL=postgresql://test_user@127.0.0.1:5432/preloop_ci_9_1_2"
         in published
     )
+    assert "test_password" not in published
     assert "FLOW_FEEDBACK_TEST_DATABASE_URL=" in published
     assert "CHAT_TEST_DATABASE_URL=" in published
