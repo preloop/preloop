@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
+from preloop.schemas.discovery_evidence import DiscoveryEvidence
 from pydantic import BaseModel, ConfigDict, Field
 
 HEX_SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -54,6 +55,7 @@ class DiscoveryReportRequest(BaseModel):
     workstation_fingerprint: str = Field(pattern=HEX_SHA256_PATTERN)
     cli_version: Optional[str] = Field(default=None, pattern=VERSION_PATTERN)
     os: Optional[OsFamily] = None
+    evidence: Optional[DiscoveryEvidence] = None
     candidates: list[DiscoveryReportCandidate] = Field(
         default_factory=list, max_length=MAX_CANDIDATES_PER_REPORT
     )

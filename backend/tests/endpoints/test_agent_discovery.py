@@ -271,6 +271,9 @@ def test_purge_sweeper_pass_uses_the_crud_purge(monkeypatch):
     calls = []
 
     class _Db:
+        def commit(self):
+            calls.append("committed")
+
         def close(self):
             calls.append("closed")
 
@@ -280,8 +283,13 @@ def test_purge_sweeper_pass_uses_the_crud_purge(monkeypatch):
         "purge_stale",
         lambda db: calls.append("purged") or 3,
     )
-    assert purge.run_discovery_candidate_purge_once() == 3
-    assert calls == ["purged", "closed"]
+    monkeypatch.setattr(
+        purge.crud_discovery_observation,
+        "purge_all_expired",
+        lambda db: calls.append("observations purged") or 2,
+    )
+    assert purge.run_discovery_candidate_purge_once() == 5
+    assert calls == ["purged", "observations purged", "committed", "closed"]
 
 
 @pytest.fixture

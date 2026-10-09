@@ -92,3 +92,20 @@ status: `new`, `onboarded` or `ignored`.
 `items` is the newest 500 matching rows. `total` counts every match, and
 `truncated` is true when the fleet is larger than that page, so the console
 can say it is showing the first 500.
+
+## Versioned source observations
+
+The existing report accepts an optional `evidence` envelope with
+`schema_version: 1`. An installed evidence service consumes it within the same
+report transaction; without that service the extension returns 503, while
+legacy reports continue unchanged. No second collector endpoint is introduced.
+
+Observations preserve enumerated scan scope/errors, timezone-aware collection
+windows, completeness, safe app/version facts and independent control
+assertions. Exact replay is idempotent per authenticated source and workstation;
+changed replay conflicts. Sources and collection windows remain separate,
+including empty scans. Retention is 90 days from receipt; the always-on
+discovery sweeper purges expired observations even if the evidence plugin is
+disabled or the source stops reporting. None of these records
+prove device identity, app runtime enforcement or use. Collector assertions
+cannot carry effective or successful runtime-verification fields.

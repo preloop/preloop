@@ -363,6 +363,88 @@ class TestAuditLogCRUD:
         )
         assert count == 1
 
+    def test_consent_ref_filters_list_count_and_timeline(
+        self, db_session: Session, test_account, test_user_for_audit
+    ):
+        """``details.grant.consent_ref`` matches one account's exact reference.
+
+        A different reference, a row with no grant, and the same reference
+        on another account must all stay out of the three readers.
+        """
+        other = crud_account.create(
+            db_session,
+            obj_in={"organization_name": "Other consent org", "is_active": True},
+        )
+        match = crud_audit_log.log_action(
+            db_session,
+            account_id=test_account.id,
+            user_id=test_user_for_audit.id,
+            action="tool_call",
+            resource_type="tool",
+            resource_id="search",
+            status="success",
+            details={
+                "correlation_id": "c-match",
+                "grant": {"consent_ref": "consent-a"},
+            },
+        )
+        crud_audit_log.log_action(
+            db_session,
+            account_id=test_account.id,
+            user_id=test_user_for_audit.id,
+            action="tool_call",
+            resource_type="tool",
+            resource_id="search",
+            status="success",
+            details={
+                "correlation_id": "c-other-ref",
+                "grant": {"consent_ref": "consent-b"},
+            },
+        )
+        crud_audit_log.log_action(
+            db_session,
+            account_id=test_account.id,
+            user_id=test_user_for_audit.id,
+            action="tool_call",
+            resource_type="tool",
+            resource_id="search",
+            status="success",
+            details={"correlation_id": "c-no-grant"},
+        )
+        crud_audit_log.log_action(
+            db_session,
+            account_id=other.id,
+            user_id=test_user_for_audit.id,
+            action="tool_call",
+            resource_type="tool",
+            resource_id="search",
+            status="success",
+            details={
+                "correlation_id": "c-foreign",
+                "grant": {"consent_ref": "consent-a"},
+            },
+        )
+
+        listed = crud_audit_log.get_by_account(
+            db_session, account_id=test_account.id, consent_ref="consent-a"
+        )
+        assert [row.id for row in listed] == [match.id]
+
+        assert (
+            crud_audit_log.count_by_account(
+                db_session, account_id=test_account.id, consent_ref="consent-a"
+            )
+            == 1
+        )
+
+        groups, total = crud_audit_log.get_grouped_by_correlation(
+            db_session, account_id=test_account.id, consent_ref="consent-a"
+        )
+        assert total == 1
+        assert len(groups) == 1
+        assert groups[0]["correlation_id"] == "c-match"
+        assert groups[0]["primary_event"].id == match.id
+
     def test_account_isolation(self, db_session: Session, test_user_for_audit):
         """Test that audit logs are properly isolated by account."""
         # Create two accounts
