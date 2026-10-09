@@ -13,7 +13,7 @@
  * wrapper around one.
  */
 
-import { historyStateForNavigation } from '../utils/in-app-history';
+import { historyStateForNavigation, inAppDepth } from '../utils/in-app-history';
 
 /** The `location` object handed to actions, guards and routed elements. */
 export interface RouterLocation {
@@ -313,6 +313,8 @@ export class Router {
    */
   #elements: (RoutedElement | null)[] = [];
   #renderId = 0;
+  #renderedHistoryState: unknown = null;
+  #restoringHistoryUrl: string | null = null;
   #listening = false;
   #loading: LoadingRenderer | null = null;
   #loaded = new WeakMap<Route, Promise<unknown>>();
@@ -488,7 +490,12 @@ export class Router {
         }
         return;
       }
-      if (outcome.stale || outcome.cancelled) return;
+      if (outcome.stale) return;
+      if (outcome.cancelled) {
+        if (renderId === this.#renderId && options.history === 'none')
+          this.#restoreCancelledHistory();
+        return;
+      }
       if (outcome.redirect) {
         current = splitUrl(outcome.redirect);
         continue;
@@ -657,6 +664,7 @@ export class Router {
     this.#chain = hit.chain.slice(0, next.length);
     this.#elements = next;
     this.location = context;
+    this.#renderedHistoryState = window.history.state;
     rendered.onAfterEnter?.(context, commands, this);
     return { location: context };
   }
@@ -793,8 +801,32 @@ export class Router {
     document.removeEventListener('click', this.#onClick);
   }
 
+  #restoreCancelledHistory(): void {
+    if (!this.location) return;
+    const previous =
+      this.location.pathname + this.location.search + this.location.hash;
+    const current =
+      window.location.pathname + window.location.search + window.location.hash;
+    if (previous === current) return;
+    const delta = inAppDepth(this.#renderedHistoryState) - inAppDepth();
+    if (Number.isInteger(delta) && delta !== 0) {
+      // Reverse the browser traversal so its history entry remains usable.
+      // The returning popstate needs no guard: its view is already mounted.
+      this.#restoringHistoryUrl = previous;
+      window.history.go(delta);
+    } else {
+      // Older/unmarked entries have no usable traversal index.
+      window.history.replaceState(this.#renderedHistoryState, '', previous);
+    }
+  }
+
   #onPopstate = (): void => {
     const { pathname, search, hash } = window.location;
+    if (this.#restoringHistoryUrl !== null) {
+      const expected = this.#restoringHistoryUrl;
+      this.#restoringHistoryUrl = null;
+      if (pathname + search + hash === expected) return;
+    }
     void this.render({ pathname, search, hash }, { history: 'none' });
   };
 
