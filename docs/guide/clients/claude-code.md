@@ -187,3 +187,57 @@ preloop agents offboard "claude code"   # restore config and remove managed enro
 - [Safety Layer & Access Rules](../concepts/safety-layer.md): how rules are evaluated
 - [AI Model Gateway](../concepts/model-gateway.md): what gateway routing gives you
 - [Mobile Apps](mobile-apps.md): approve on the go
+
+## Export a managed hook overlay
+
+For an already onboarded device, operators can generate a reviewable, secret-free
+hook overlay offline:
+
+```bash
+PRELOOP_DISABLE_TELEMETRY=true preloop agents managed-config claude-code \
+  --output ./review-bundle --platform darwin \
+  --cli-path /opt/preloop/bin/preloop --timeout 300
+```
+
+The output parent must already exist. The command creates only the requested
+output directory and its `managed-settings.json`, `manifest.json`, and
+`preview.txt`. Existing artifacts require `--overwrite`; symlink artifacts and
+managed system target directories are refused. It does not read discovered
+configuration or credentials, authenticate, contact a server, emit telemetry,
+check for updates, enroll a device, or install the overlay. The command accepts
+`darwin`, `windows`, and `linux` targets independently of the exporting host.
+Use an absolute executable path on the target device; Windows requires a local
+`.exe` path and the documented PowerShell hook support. The host timeout must
+exceed the separately provisioned approval wait budget plus process headroom;
+the exporter accepts 30–3600 seconds and does not query account defaults.
+
+The overlay emits only `hooks.PreToolUse`, with matcher `*`, invoking the existing
+`agents permission-hook --source claude-code` adapter. Provision each executing
+user/device's hook credential separately through the current
+`preloop agents onboard "Claude Code" --approvals` workflow under an approved
+credential-custody policy. Do not package a token or capture a subscription OAuth
+credential for unattended rollout. Missing credentials deny under the existing
+hook contract; this artifact supplies no model route, MCP allowlist, permission
+rules, OTel settings, enrollment, Codex adapter, or Desktop bootstrap.
+
+The vendor documents these file locations and hook behavior:
+
+| Target | Managed settings location |
+| --- | --- |
+| macOS | `/Library/Application Support/ClaudeCode/managed-settings.json` |
+| Linux / WSL | `/etc/claude-code/managed-settings.json` |
+| Windows | `C:\Program Files\ClaudeCode\managed-settings.json` |
+
+Review the [managed-settings delivery and precedence documentation](https://code.claude.com/docs/en/managed-settings)
+and [command hook reference](https://code.claude.com/docs/en/hooks) against your
+pinned app version. Lower user/project settings cannot remove managed hooks, but
+another managed source can supersede this file. The manifest records vendor
+semantics separately from runtime verification, which remains `unverified`.
+Restart the application, inspect its effective managed source, and test harmless
+allow/deny actions, missing/revoked credentials, outage behavior, conflicts,
+alternate routes and rollback in staging before expanding rollout.
+
+Synthetic export and adapter tests do not prove live application enforcement on
+any OS or plan. Managed configuration is not device attestation: ordinary local
+software remains controllable by local administrators. Protected resources need
+independent enforcement when that threat is in scope.

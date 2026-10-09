@@ -49,12 +49,14 @@ daily version check-in and conversion events). Update notifications are
 suppressed too, as they depend on the check-in response.`,
 
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		// Inventory is explicitly offline, including when validation rejects
+		// Inventory and managed exports are offline, even when validation rejects
 		// conflicting flags. Skip telemetry counters and version/cache work.
-		if isOfflineInventoryCommand(cmd) {
+		if isOfflineInventoryCommand(cmd) || isManagedConfigCommand(cmd) {
 			silenceUsageForRuntimeErrors(cmd)
 			return
 		}
+
+		initializeCommandSelection(cmd)
 
 		// Count top-level command-category usage locally (names only, never
 		// arguments); merged into the daily check-in and reset on success.
@@ -121,17 +123,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&FlagURL, "url", "", "API base URL (overrides PRELOOP_URL env var and config file)")
 	rootCmd.PersistentFlags().StringVar(&FlagProfile, "profile", "", "config profile to use (overrides PRELOOP_PROFILE and the file's current profile)")
 	rootCmd.PersistentFlags().StringVar(&FlagAccount, "account", "", "account slug to act in for this command (overrides PRELOOP_ACCOUNT and the profile's current account)")
-	cobra.OnInitialize(func() {
-		if inventory, _ := agentsDiscoverCmd.Flags().GetBool("inventory"); inventory {
-			return
-		}
-		if asJSON, _ := agentsDiscoverCmd.Flags().GetBool("json"); asJSON {
-			// Select the profile without emitting free-form selection diagnostics.
-			config.Select(FlagProfile, FlagAccount)
-		} else {
-			applySelection()
-		}
-	})
 
 	// Add subcommands
 	rootCmd.AddCommand(loginCmd)
@@ -164,4 +155,15 @@ func init() {
 	rootCmd.AddCommand(newTagsCmd())
 	rootCmd.AddCommand(newAccessCmd())
 	installCapabilityHelp(rootCmd)
+}
+
+// initializeCommandSelection runs only after offline commands have been excluded.
+func initializeCommandSelection(cmd *cobra.Command) {
+	if cmd == agentsDiscoverCmd {
+		if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
+			config.Select(FlagProfile, FlagAccount)
+			return
+		}
+	}
+	applySelection()
 }

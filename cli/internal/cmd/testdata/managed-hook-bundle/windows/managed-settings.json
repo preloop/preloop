@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\u0026 'C:\\Program Files\\Preloop\\preloop.exe' agents permission-hook --source claude-code",
+            "timeout": 300,
+            "shell": "powershell"
+          }
+        ]
+      }
+    ]
+  }
+}
