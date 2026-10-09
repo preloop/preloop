@@ -485,11 +485,11 @@ def test_warnings_for_all_servers_read_the_account_once(
     assert warnings[str(b.id)][0].startswith("Tool 'x' on MCP server 'b'")
 
 
-def test_account_tool_warnings_include_invalid_names_without_shadowing(
+def test_loaded_tool_warnings_include_invalid_names_without_shadowing(
     db_session, test_user
 ):
     server = _server(db_session, test_user, "a", prefix="toolong", tools=["t" * 121])
     [tool] = crud_mcp_tool.get_by_server(db_session, server_id=server.id)
-    warnings = collisions.account_tool_warnings(db_session, str(test_user.account_id))
+    warnings = collisions.warnings_from_loaded([server], {str(server.id): [tool]})
     assert tool.shadowed is False
     assert "is not exposed" in warnings[str(tool.id)][0]
