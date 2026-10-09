@@ -116,13 +116,15 @@ func TestClaudeDesktopDirectGoldenWindows(t *testing.T) {
 }
 
 type fakeAPIKeyServer struct {
-	mu      sync.Mutex
-	created []map[string]interface{}
-	gets    []string
-	missing map[string]bool
-	scopes  []string
-	nextID  int
-	srv     *httptest.Server
+	mu         sync.Mutex
+	created    []map[string]interface{}
+	gets       []string
+	missing    map[string]bool
+	scopes     []string
+	nextID     int
+	unenforced bool
+	deleted    []string
+	srv        *httptest.Server
 }
 
 func newFakeAPIKeyServer(t *testing.T) *fakeAPIKeyServer {
@@ -147,6 +149,15 @@ func newFakeAPIKeyServer(t *testing.T) *fakeAPIKeyServer {
 			}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "key-" + string(rune('0'+f.nextID)), "key": "plk_secret_" + string(rune('0'+f.nextID)), "scopes": scopes})
+		case r.Method == http.MethodGet && r.URL.Path == "/anthropic/v1/models":
+			if f.unenforced || r.Header.Get("x-preloop-upstream-secret") == "upstream-secret-value" {
+				_, _ = w.Write([]byte(`{"data":[]}`))
+				return
+			}
+			http.Error(w, `{"type":"error"}`, http.StatusUnauthorized)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v1/auth/api-keys/"):
+			f.deleted = append(f.deleted, strings.TrimPrefix(r.URL.Path, "/api/v1/auth/api-keys/"))
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/auth/api-keys/"):
 			id := strings.TrimPrefix(r.URL.Path, "/api/v1/auth/api-keys/")
 			f.gets = append(f.gets, id)
@@ -496,5 +507,99 @@ func TestAuthGatewayCredentialNotSignedIn(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout must be empty: %q", stdout.String())
+	}
+}
+
+func TestClaudeDesktopAppsGatewayRevokesKeyWhenSecretNotEnforced(t *testing.T) {
+	fake := newFakeAPIKeyServer(t)
+	fake.unenforced = true
+	client := api.NewClientWithToken(fake.srv.URL, "session-token")
+	var stdout bytes.Buffer
+	err := runClaudeDesktopModelRoute(&stdout, client, fixedRouteOptions(claudeDesktopRouteAppsGateway, "linux"))
+	if err == nil || !strings.Contains(err.Error(), "does not enforce") {
+		t.Fatalf("want enforcement error, got %v", err)
+	}
+	if len(fake.deleted) != 1 || fake.deleted[0] != "key-1" {
+		t.Fatalf("unenforced key must be revoked: %v", fake.deleted)
+	}
+	if strings.Contains(stdout.String(), "plk_secret") || strings.Contains(stdout.String(), "upstream-secret-value") {
+		t.Fatalf("secrets printed for an unenforced key")
+	}
+}
+
+func TestClaudeDesktopDirectHelperPathPerOS(t *testing.T) {
+	opts := fixedRouteOptions(claudeDesktopRouteDirect, "linux", "windows")
+	opts.HelperPath = "/opt/preloop/bin/preloop"
+	artifacts, _ := claudeDesktopDirectArtifacts(opts)
+	reg := artifactByName(t, artifacts, "claude-desktop.reg").Content
+	if strings.Contains(reg, "/opt/preloop") {
+		t.Fatalf("POSIX helper path leaked into the Windows artifact:\n%s", reg)
+	}
+	if !strings.Contains(artifactByName(t, artifacts, "managed-settings.json").Content, `"/opt/preloop/bin/preloop"`) {
+		t.Fatal("linux artifact must use --helper-path")
+	}
+	opts.HelperPathWindows = `D:\Tools\preloop.exe`
+	artifacts, _ = claudeDesktopDirectArtifacts(opts)
+	if !strings.Contains(artifactByName(t, artifacts, "claude-desktop.reg").Content, `"inferenceCredentialHelper"="D:\\Tools\\preloop.exe"`) {
+		t.Fatal("windows artifact must use --helper-path-windows")
+	}
+}
+
+// Generated plist, .reg and Linux values parse back to the same
+// string-encoded values, so object and bool keys survive the round trip.
+// The fixtures keep the other encodings Desktop also accepts (a native
+// <dict> in a profile, REG_DWORD for booleans) to cover the parser.
+func TestClaudeDesktopGeneratedConfigRoundTrips(t *testing.T) {
+	settings := claudeDesktopDirectSettings(routeTestPreloopURL, "/usr/local/bin/preloop", true)
+	plistValues, err := parseDesktopPlist([]byte(renderDesktopPlist(settings)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	regValues := parseRegQueryOutput(regFileAsQueryOutput(renderDesktopReg(settings)))
+	linuxValues, err := parseDesktopManagedJSON([]byte(orderedJSON(settings)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range settings {
+		want := desktopStringValue(s.Value)
+		for name, got := range map[string]string{"plist": plistValues[s.Key], "reg": regValues[s.Key], "linux": linuxValues[s.Key]} {
+			if got != want {
+				t.Fatalf("%s %s: got %q want %q", name, s.Key, got, want)
+			}
+		}
+	}
+	for name, values := range map[string]map[string]string{"plist": plistValues, "reg": regValues, "linux": linuxValues} {
+		if classifyClaudeDesktopModelRoute(values, routeTestPreloopURL) != claudeDesktopRouteDirect {
+			t.Fatalf("%s round trip does not classify as direct", name)
+		}
+	}
+}
+
+// regFileAsQueryOutput converts a generated .reg file to the `reg query`
+// output shape Windows prints after importing it.
+func regFileAsQueryOutput(reg string) string {
+	var b strings.Builder
+	unescape := strings.NewReplacer(`\\`, `\`, `\"`, `"`)
+	for _, line := range strings.Split(reg, "\r\n") {
+		if !strings.HasPrefix(line, `"`) {
+			continue
+		}
+		parts := strings.SplitN(line, `"="`, 2)
+		name := strings.TrimPrefix(parts[0], `"`)
+		value := unescape.Replace(strings.TrimSuffix(parts[1], `"`))
+		b.WriteString("    " + name + "    REG_SZ    " + value + "\r\n")
+	}
+	return b.String()
+}
+
+func TestRouteOnlyFlagsNeedModelRoute(t *testing.T) {
+	_ = agentsEnrollCmd.Flags().Set("out", t.TempDir())
+	t.Cleanup(func() {
+		_ = agentsEnrollCmd.Flags().Set("out", "")
+		agentsEnrollCmd.Flags().Lookup("out").Changed = false
+	})
+	err := rejectRouteOnlyFlagsWithoutModelRoute(agentsEnrollCmd)
+	if err == nil || !strings.Contains(err.Error(), "--out only applies with --model-route") {
+		t.Fatalf("got %v", err)
 	}
 }

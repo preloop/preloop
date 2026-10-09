@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -79,6 +80,9 @@ type claudeDesktopRouteOptions struct {
 	PreloopURL   string
 	OS           []string
 	HelperPath   string
+	// HelperPathWindows is the helper path for the Windows artifact;
+	// HelperPath applies to macOS and Linux only.
+	HelperPathWindows string
 	GatewayURL   string
 	ChatTab      bool
 	KeyID        string
@@ -110,16 +114,34 @@ func registerClaudeDesktopRouteFlags(cmd *cobra.Command) {
 	cmd.Flags().Lookup("model-route").NoOptDefVal = claudeDesktopRouteDirect
 	cmd.Flags().String("out", "", "with --model-route: write the generated files (mode 0600) to this directory instead of printing them")
 	cmd.Flags().String("os", "all", "with --model-route: which managed config to generate: macos, windows, linux or all")
-	cmd.Flags().String("helper-path", "", "with --model-route direct: absolute path of the preloop executable on managed devices (default: this executable on this OS)")
+	cmd.Flags().String("helper-path", "", "with --model-route direct: absolute path of the preloop executable on managed macOS and Linux devices (default: this executable on this OS, else /usr/local/bin/preloop)")
+	cmd.Flags().String("helper-path-windows", "", "with --model-route direct: absolute path of preloop.exe on managed Windows devices (default: this executable on Windows, else C:\\Program Files\\Preloop\\preloop.exe)")
 	cmd.Flags().String("gateway-url", "", "with --model-route apps-gateway: public URL of your Claude apps gateway (listen.public_url)")
 	cmd.Flags().Bool("chat-tab", false, "with --model-route: also enable the Desktop Chat tab (chatTabEnabled)")
 	cmd.Flags().String("key-id", "", "with --model-route apps-gateway: reuse an existing trusted upstream API key instead of creating one")
 	cmd.Flags().String("key-name", "", "with --model-route apps-gateway: name for the new trusted upstream API key")
 }
 
+// claudeDesktopRouteOnlyFlags only take effect together with --model-route.
+var claudeDesktopRouteOnlyFlags = []string{"out", "os", "helper-path", "helper-path-windows", "gateway-url", "chat-tab", "key-id", "key-name"}
+
 func modelRouteRequested(cmd *cobra.Command) bool {
 	flag := cmd.Flags().Lookup("model-route")
 	return flag != nil && flag.Changed
+}
+
+// rejectRouteOnlyFlagsWithoutModelRoute stops a run that passes model-route
+// flags without --model-route, which would otherwise silently ignore them.
+func rejectRouteOnlyFlagsWithoutModelRoute(cmd *cobra.Command) error {
+	if modelRouteRequested(cmd) {
+		return nil
+	}
+	for _, name := range claudeDesktopRouteOnlyFlags {
+		if flag := cmd.Flags().Lookup(name); flag != nil && flag.Changed {
+			return fmt.Errorf("--%s only applies with --model-route (for example: preloop agents onboard \"Claude Desktop\" --model-route direct --%s ...)", name, name)
+		}
+	}
+	return nil
 }
 
 func runClaudeDesktopModelRouteCmd(cmd *cobra.Command, args []string) error {
@@ -130,6 +152,7 @@ func runClaudeDesktopModelRouteCmd(cmd *cobra.Command, args []string) error {
 	osFlag, _ := cmd.Flags().GetString("os")
 	opts := claudeDesktopRouteOptions{Route: strings.TrimSpace(route), Now: time.Now, RandomSecret: newUpstreamSecret}
 	opts.HelperPath, _ = cmd.Flags().GetString("helper-path")
+	opts.HelperPathWindows, _ = cmd.Flags().GetString("helper-path-windows")
 	opts.GatewayURL, _ = cmd.Flags().GetString("gateway-url")
 	opts.ChatTab, _ = cmd.Flags().GetBool("chat-tab")
 	opts.KeyID, _ = cmd.Flags().GetString("key-id")
@@ -250,6 +273,9 @@ func claudeDesktopDirectArtifacts(opts claudeDesktopRouteOptions) ([]routeArtifa
 	var artifacts []routeArtifact
 	for _, goos := range opts.OS {
 		helper := strings.TrimSpace(opts.HelperPath)
+		if goos == "windows" {
+			helper = strings.TrimSpace(opts.HelperPathWindows)
+		}
 		if helper == "" {
 			helper = defaultCredentialHelperPath(goos)
 		}
@@ -259,7 +285,7 @@ func claudeDesktopDirectArtifacts(opts claudeDesktopRouteOptions) ([]routeArtifa
 		"Route: direct. Claude Desktop sends model requests to " + opts.PreloopURL + "/anthropic with a per-user Preloop API key.",
 		"Each user signs in once with `preloop login`; Desktop then runs `preloop " + strings.Join(claudeDesktopCredentialHelperArgs, " ") + "`, which prints that user's key.",
 		"Deploy the configuration with your MDM (Jamf, Intune, Kandji, or a root-owned file on Linux). This command never writes managed configuration itself.",
-		"The helper path must exist on every managed device; pass --helper-path if preloop is installed elsewhere.",
+		"The helper path must exist on every managed device; pass --helper-path (macOS, Linux) or --helper-path-windows if preloop is installed elsewhere.",
 		"Tool governance stays on MCP: run `preloop agents onboard \"Claude Desktop\"` (without --model-route) for the MCP bridge.",
 	}
 	return artifacts, notes
@@ -407,7 +433,60 @@ func ensureTrustedUpstreamKey(client *api.Client, opts claudeDesktopRouteOptions
 	if !key.hasTrustedScope() || key.Key == "" {
 		return key, "", fmt.Errorf("the server did not grant the %s scope to key %s; this needs account admin and a Preloop server with trusted upstream support", trustedUpstreamScope, key.ID)
 	}
+	// An echoed scope does not prove the server enforces it: an older server
+	// stores any scope and drops context_data. Prove the secret is enforced
+	// before handing out the key, and revoke it if not.
+	if err := verifyTrustedUpstreamSecretEnforced(client.BaseURL(), key.Key, secret); err != nil {
+		if delErr := client.Delete("/api/v1/auth/api-keys/"+url.PathEscape(key.ID), nil); delErr != nil {
+			return trustedUpstreamKey{}, "", fmt.Errorf("%w; revoking key %s also failed: %v (delete it in the console)", err, key.ID, delErr)
+		}
+		return trustedUpstreamKey{}, "", fmt.Errorf("%w; key %s was revoked", err, key.ID)
+	}
 	return key, secret, nil
+}
+
+// trustedUpstreamProbeHTTP is the HTTP client for the enforcement probe.
+var trustedUpstreamProbeHTTP = &http.Client{Timeout: 30 * time.Second}
+
+// verifyTrustedUpstreamSecretEnforced calls GET /anthropic/v1/models with the
+// new key: without the upstream secret the server must answer 401, and with
+// it 200. Anything else means this server does not enforce the secret.
+func verifyTrustedUpstreamSecretEnforced(baseURL, apiKey, secret string) error {
+	endpoint := strings.TrimRight(baseURL, "/") + "/anthropic/v1/models"
+	probe := func(withSecret bool) (int, error) {
+		req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+		if err != nil {
+			return 0, err
+		}
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		if withSecret {
+			req.Header.Set(trustedUpstreamSecretHeader, secret)
+		}
+		resp, err := trustedUpstreamProbeHTTP.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+		_ = resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	unsupported := "this Preloop server does not enforce the trusted upstream secret (it needs trusted upstream support from a newer Preloop release)"
+	without, err := probe(false)
+	if err != nil {
+		return fmt.Errorf("could not verify trusted upstream support: %w", err)
+	}
+	if without != http.StatusUnauthorized {
+		return fmt.Errorf("%s: a request without %s got HTTP %d, want 401", unsupported, trustedUpstreamSecretHeader, without)
+	}
+	with, err := probe(true)
+	if err != nil {
+		return fmt.Errorf("could not verify trusted upstream support: %w", err)
+	}
+	if with != http.StatusOK {
+		return fmt.Errorf("%s: a request with %s got HTTP %d, want 200", unsupported, trustedUpstreamSecretHeader, with)
+	}
+	return nil
 }
 
 // desktopManagedArtifacts renders the managed configuration for one OS.

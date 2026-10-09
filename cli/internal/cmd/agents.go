@@ -1343,6 +1343,9 @@ func isAutoApprove(cmd *cobra.Command) bool {
 }
 
 func runAgentsEnroll(cmd *cobra.Command, args []string) error {
+	if err := rejectRouteOnlyFlagsWithoutModelRoute(cmd); err != nil {
+		return err
+	}
 	if modelRouteRequested(cmd) {
 		return runClaudeDesktopModelRouteCmd(cmd, args)
 	}

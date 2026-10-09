@@ -43,7 +43,7 @@ Per OS:
 
 Object and array values (`inferenceCustomHeaders`, `inferenceCredentialHelperArgs`) are JSON strings in the plist and the registry, and native JSON in the Linux file, as Desktop expects.
 
-Pass `--helper-path` when `preloop` is installed somewhere other than the default on managed devices (the current executable on this OS, `/usr/local/bin/preloop` elsewhere, `C:\Program Files\Preloop\preloop.exe` on Windows).
+Pass `--helper-path` (macOS and Linux) or `--helper-path-windows` when `preloop` is installed somewhere other than the default on managed devices: the current executable on this OS, otherwise `/usr/local/bin/preloop`, or `C:\Program Files\Preloop\preloop.exe` on Windows.
 
 ### The credential helper
 
@@ -62,7 +62,9 @@ preloop agents onboard "Claude Desktop" --model-route apps-gateway \
   --gateway-url https://claude-gateway.internal.example.com --out ./gateway-config
 ```
 
-This creates a Preloop API key with the scope `model_gateway:trusted_upstream` (account admin only) and a random upstream secret. Preloop stores only the secret's sha256. With `--key-id <id>` it reuses an existing trusted key and generates no new secrets.
+This creates a Preloop API key with the scope `model_gateway:trusted_upstream` and a random upstream secret. Preloop stores only the secret's sha256. With `--key-id <id>` it reuses an existing trusted key and generates no new secrets.
+
+Trusted upstream keys need a Preloop server with trusted upstream support, which also restricts creating them to account admins. Before printing anything, the CLI checks that the server enforces the secret (a request to `/anthropic/v1/models` with the new key must get 401 without `x-preloop-upstream-secret` and 200 with it). If the server does not, the CLI revokes the new key and stops.
 
 The secrets (`PRELOOP_UPSTREAM_KEY`, `PRELOOP_UPSTREAM_SECRET`) are shown once: in `preloop-upstream.env` (mode 0600) when you pass `--out`, otherwise on the terminal. Put them in the gateway's environment, not its config file.
 
