@@ -194,4 +194,55 @@ describe('flow-governance-card', () => {
       'search_issues',
     ]);
   });
+  for (const succeeds of [true, false]) {
+    it(`settles a scoped rule save after persistence (${succeeds ? 'success' : 'failure'})`, async () => {
+      const el = await mount();
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      fetchStub.callsFake(
+        async (_input: RequestInfo | URL, init?: RequestInit) => {
+          if (init?.method === 'PUT') {
+            await gate;
+            if (!succeeds)
+              return new Response(JSON.stringify({ detail: 'Save failed' }), {
+                status: 500,
+              });
+            return json(
+              governance({
+                has_override: true,
+                config: JSON.parse(String(init.body)),
+              })
+            );
+          }
+          return json(current);
+        }
+      );
+      const resolve = sinon.spy();
+      const reject = sinon.spy();
+      el.shadowRoot!.querySelector('tools-editor-component')!.dispatchEvent(
+        new CustomEvent('save-rule', {
+          detail: {
+            tool: { name: 'read_record' },
+            formData: {
+              action: 'deny',
+              condition_expression: null,
+              condition_type: 'simple',
+              is_enabled: true,
+            },
+            resolve,
+            reject,
+          },
+        })
+      );
+      await new Promise((r) => setTimeout(r, 10));
+      expect(resolve.called).to.equal(false);
+      expect(reject.called).to.equal(false);
+      release();
+      await waitUntil(() => resolve.called || reject.called);
+      expect(resolve.calledOnce).to.equal(succeeds);
+      expect(reject.calledOnce).to.equal(!succeeds);
+      if (!succeeds)
+        expect((el as any).scopedToolRules.read_record).to.equal(undefined);
+    });
+  }
 });

@@ -1640,4 +1640,48 @@ describe('AuditView', () => {
     expect(marks).to.deep.equal(['Sealed 12', 'Unsealed']);
     element.remove();
   });
+  it('shows upstream error code and reason in the expanded story', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(() => !(element as any)._loading);
+    (element as any)._groups = [
+      {
+        correlation_id: null,
+        outcome: 'upstream_error',
+        primary_event: {
+          id: 'upstream-failure',
+          account_id: 'account-1',
+          user_id: 'user-1',
+          action: 'tool_call',
+          resource_type: 'tool',
+          resource_id: 'read_record',
+          status: 'upstream_error',
+          timestamp: '2026-03-10T10:00:00Z',
+          details: {
+            tool_name: 'read_record',
+            error_code: 'insufficient_scope',
+            error_reason: 'scope not granted',
+          },
+        },
+        sub_events: [
+          {
+            id: 'policy-check',
+            action: 'policy_allow',
+            status: 'allow',
+            timestamp: '2026-03-10T10:00:00Z',
+            details: { rule_description: 'Read policy' },
+          },
+        ],
+      },
+    ];
+    await element.updateComplete;
+    (element.shadowRoot!.querySelector('.primary-row') as HTMLElement).click();
+    await element.updateComplete;
+    const story =
+      element.shadowRoot!.querySelector('.story-summary')!.textContent!;
+    expect(story.replace(/\s+/g, ' ')).to.contain(
+      'The upstream server returned an error (insufficient_scope): scope not granted.'
+    );
+    element.remove();
+  });
 });

@@ -462,3 +462,27 @@ describe('ApiKeyView', () => {
     expect(total.getAttribute('title')).to.equal('$1.23');
   });
 });
+
+describe('scoped rule save settlement', () => {
+  afterEach(() => sinon.restore());
+  it('retains the scoped rules and rejects the dialog on a failed persistence', async () => {
+    const el = await fixture<ApiKeyView>(html`<api-key-view></api-key-view>`);
+    const view = el as any;
+    const previous = { read_file: [] };
+    view.scopedToolRules = previous;
+    sinon
+      .stub(view, 'handleGovernanceUpdate')
+      .rejects(new Error('Invalid scoped rule'));
+    const resolve = sinon.spy();
+    const reject = sinon.spy();
+    await view.saveScopedToolRule(
+      'read_file',
+      null,
+      { action: 'deny' },
+      { resolve, reject }
+    );
+    expect(resolve.called).to.equal(false);
+    expect(reject.firstCall.args[0]).to.equal('Invalid scoped rule');
+    expect(view.scopedToolRules).to.equal(previous);
+  });
+});

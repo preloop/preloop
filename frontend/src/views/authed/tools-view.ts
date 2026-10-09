@@ -1299,9 +1299,20 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleSaveRule(e: CustomEvent) {
+    const { resolve, reject } = e.detail;
     if (!this.toolsSchemasReady) {
-      await this.loadToolSchemas();
-      if (!this.toolsSchemasReady) return;
+      try {
+        await this.loadToolSchemas();
+      } catch (err: any) {
+        reject?.(
+          err.message || 'Could not load tool schemas. Please try again.'
+        );
+        return;
+      }
+      if (!this.toolsSchemasReady) {
+        reject?.('Could not load tool schemas. Please try again.');
+        return;
+      }
     }
     const { tool, existingRule, formData } = e.detail as {
       tool: ToolWithRules;
@@ -1355,8 +1366,17 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       }
 
       await this.loadData();
+      resolve?.();
+      this.dispatchEvent(
+        new CustomEvent('show-toast', {
+          detail: { message: 'Rule saved.' },
+          bubbles: true,
+          composed: true,
+        })
+      );
     } catch (err: any) {
       this.error = err.message || 'Failed to save rule';
+      reject?.(this.error);
     }
   }
 

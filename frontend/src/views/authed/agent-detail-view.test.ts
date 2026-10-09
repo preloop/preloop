@@ -1957,3 +1957,38 @@ describe('AgentDetailView', () => {
     });
   });
 });
+
+describe('agent scoped rule save settlement', () => {
+  afterEach(() => sinon.restore());
+  it('settles the editor only after governance persistence and restores rules on error', async () => {
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view></agent-detail-view>`
+    );
+    const view = el as any;
+    const previous = { read_file: [] };
+    view.scopedToolRules = previous;
+    const save = sinon
+      .stub(view, 'saveGovernance')
+      .rejects(new Error('Invalid scoped condition'));
+    const resolve = sinon.spy();
+    const reject = sinon.spy();
+    await view.saveScopedToolRule(
+      'read_file',
+      null,
+      { action: 'deny' },
+      { resolve, reject }
+    );
+    expect(resolve.called).to.equal(false);
+    expect(reject.firstCall.args[0]).to.equal('Invalid scoped condition');
+    expect(view.scopedToolRules).to.equal(previous);
+    save.resolves();
+    await view.saveScopedToolRule(
+      'read_file',
+      null,
+      { action: 'deny' },
+      { resolve, reject }
+    );
+    expect(resolve.calledOnce).to.equal(true);
+    expect(view.scopedToolRules.read_file).to.have.length(1);
+  });
+});

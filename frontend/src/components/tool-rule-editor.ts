@@ -13,6 +13,7 @@ import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import './approval-workflow-dialog';
+import './policy-simulator';
 import type { ApprovalWorkflow } from './tool-card';
 import type { AccessRule } from '../api';
 import { consoleDialogStyles } from '../styles/console-dialog';
@@ -858,7 +859,23 @@ export class ToolRuleEditor extends LitElement {
     return null;
   }
 
+  private _draftForTest(): Record<string, unknown> {
+    const expression = this._hasAdvancedConditions
+      ? this._useCelEditor
+        ? this._conditionExpression.trim()
+        : this._buildMultiConditionExpression()
+      : this._buildSimpleExpression();
+    return {
+      action: this._action,
+      condition_expression: expression || null,
+      condition_type: expression ? 'cel' : 'simple',
+      description: this._description,
+      is_enabled: this._isEnabled,
+    };
+  }
+
   private _handleSave() {
+    if (this._saving) return;
     const patternError = this._invalidPatternMessage();
     if (patternError) {
       this._error = patternError;
@@ -900,11 +917,28 @@ export class ToolRuleEditor extends LitElement {
       approval_workflow_id: approvalWorkflowId,
     };
 
+    this._saving = true;
+    this._error = null;
+    let settled = false;
+    const resolve = () => {
+      if (settled) return;
+      settled = true;
+      this._saving = false;
+      this._handleClose();
+    };
+    const reject = (message: string) => {
+      if (settled) return;
+      settled = true;
+      this._saving = false;
+      this._error = message;
+    };
     this.dispatchEvent(
       new CustomEvent('save-rule', {
         detail: {
           rule: this.rule,
           formData,
+          resolve,
+          reject,
         },
         bubbles: true,
         composed: true,
@@ -912,7 +946,11 @@ export class ToolRuleEditor extends LitElement {
     );
   }
 
-  private _handleClose() {
+  private _handleClose(e?: Event) {
+    if (this._saving) {
+      e?.preventDefault();
+      return;
+    }
     this.dispatchEvent(
       new CustomEvent('close', { bubbles: true, composed: true })
     );
@@ -1457,7 +1495,15 @@ export class ToolRuleEditor extends LitElement {
               `
             : ''
         }
-
+        ${
+          this.features.policy_simulation
+            ? html`<policy-simulator
+                .toolName=${this.toolName}
+                .draftRule=${this._draftForTest()}
+                .toolSchema=${this.toolSchema}
+              ></policy-simulator>`
+            : ''
+        }
         <div class="dialog-footer">
           <sl-button variant="default" @click=${this._handleClose}>
             Cancel

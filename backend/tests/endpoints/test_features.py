@@ -57,6 +57,7 @@ class TestGetFeatures:
                 "session_optimization": True,
                 "chat_connections": True,
                 "policies_console": True,
+                "policy_simulation": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
                 "multi_account": False,
@@ -94,6 +95,7 @@ class TestGetFeatures:
                 "session_optimization": True,
                 "chat_connections": True,
                 "policies_console": True,
+                "policy_simulation": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
                 "multi_account": False,
@@ -129,7 +131,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 15
+        assert len(result["features"]) == 16
         assert result["features"]["session_optimization"] is True
         assert result["features"]["chat_connections"] is True
 

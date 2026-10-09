@@ -15573,6 +15573,42 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/policies/evaluate:
+    post:
+      tags:
+      - Policies
+      summary: Evaluate Policy Sample
+      description: Evaluate a stored policy or unsaved draft without recording or
+        dispatch.
+      operationId: evaluate_policy_sample_api_v1_policies_evaluate_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicyEvaluationRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEvaluationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/policies/validate:
     post:
       tags:
@@ -25751,6 +25787,43 @@ components:
       - retention_days
       title: DiscoverySaltResponse
       description: The per-account salt the CLI keys its hashes with.
+    DraftToolRule:
+      properties:
+        action:
+          type: string
+          enum:
+          - allow
+          - deny
+          - require_approval
+          title: Action
+        condition_expression:
+          anyOf:
+          - type: string
+            maxLength: 10000
+          - type: 'null'
+          title: Condition Expression
+        condition_type:
+          type: string
+          enum:
+          - simple
+          - cel
+          title: Condition Type
+          default: simple
+        description:
+          anyOf:
+          - type: string
+            maxLength: 10000
+          - type: 'null'
+          title: Description
+        is_enabled:
+          type: boolean
+          title: Is Enabled
+          default: true
+      type: object
+      required:
+      - action
+      title: DraftToolRule
+      description: Unsaved rule with the same actions as a tool access rule.
     EffectivePublicationPolicy:
       properties:
         mode:
@@ -32782,6 +32855,99 @@ components:
       - summary
       title: PolicyDiffResult
       description: Result of comparing two policies.
+    PolicyEvaluationRequest:
+      properties:
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        server:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Server
+          default: builtin
+        args:
+          additionalProperties: true
+          type: object
+          title: Args
+        context:
+          additionalProperties: true
+          type: object
+          title: Context
+        draft_rule:
+          anyOf:
+          - $ref: '#/components/schemas/DraftToolRule'
+          - type: 'null'
+        draft_yaml:
+          anyOf:
+          - type: string
+            maxLength: 1000000
+          - type: 'null'
+          title: Draft Yaml
+        stored:
+          type: boolean
+          title: Stored
+          default: false
+        model_target:
+          type: string
+          enum:
+          - model.request
+          - model.response
+          title: Model Target
+          default: model.request
+        model_text:
+          anyOf:
+          - type: string
+            maxLength: 100000
+          - type: 'null'
+          title: Model Text
+      type: object
+      required:
+      - name
+      title: PolicyEvaluationRequest
+      description: One sample tool call and exactly one policy source.
+    PolicyEvaluationResponse:
+      properties:
+        decision:
+          type: string
+          title: Decision
+        matched_rule:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Matched Rule
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        checked_rules:
+          items:
+            $ref: '#/components/schemas/RuleCheck'
+          type: array
+          title: Checked Rules
+        also_matched_rule_ids:
+          items:
+            type: string
+          type: array
+          title: Also Matched Rule Ids
+        sensitive_data_decision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sensitive Data Decision
+        model_decision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Decision
+      type: object
+      required:
+      - decision
+      title: PolicyEvaluationResponse
+      description: Simulation outcome; never dispatches a tool or creates an approval.
     PolicyImportResult:
       properties:
         success:
@@ -34332,6 +34498,30 @@ components:
       - success
       title: RollbackResponse
       description: Response from a rollback operation.
+    RuleCheck:
+      properties:
+        id:
+          type: string
+          title: Id
+        expression:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expression
+        matched:
+          type: boolean
+          title: Matched
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - id
+      - matched
+      title: RuleCheck
+      description: Condition result in evaluation order, including fail-closed errors.
     RuleType:
       type: string
       enum:

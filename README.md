@@ -116,6 +116,10 @@ tools:
         action: require_approval
 ```
 
+Before saving, use **Test this rule** in the tool rule dialog or **Simulate** in
+the Policies YAML editor to check a sample call without running it. Results show
+the decision, rule order and condition errors.
+
 Ship it with `preloop policy apply <file>` (`validate` / `diff` / `export` also exist).
 
 <p align="center">
