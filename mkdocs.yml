@@ -172,6 +172,7 @@ nav:
       - External MCP tools: guide/tools/external-mcp.md
       - Policy generation: guide/tools/policy-generation.md
       - Model content policies: guide/model-content-policies.md
+      - Delegated grants: guide/grant-introspection.md
       - Account kill switch: guide/account-kill-switch.md
       - Operator notes: guide/operator-notes.md
       - Attaching to a session: guide/sessions-attach.md

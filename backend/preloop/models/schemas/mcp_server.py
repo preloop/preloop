@@ -4,8 +4,9 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from preloop.models.schemas.grant_introspection import IntrospectionConfig
 from preloop.utils.redaction import REDACTED_STRING, _is_sensitive_key
 
 #: auth_config keys that look sensitive by name but hold no secret. They stay
@@ -153,6 +154,16 @@ class MCPServerBase(BaseModel):
     status: Optional[str] = Field(
         "active", description="Server status: 'active', 'error', 'disabled'"
     )
+
+    @field_validator("auth_config")
+    @classmethod
+    def validate_introspection(
+        cls, value: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Validate nested grant configuration without changing write-only secrets."""
+        if value and value.get("introspection") is not None:
+            IntrospectionConfig.model_validate(value["introspection"])
+        return value
 
 
 class MCPServerCreate(MCPServerBase):
