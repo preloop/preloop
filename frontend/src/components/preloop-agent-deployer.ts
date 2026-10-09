@@ -279,7 +279,12 @@ export class PreloopAgentDeployer extends LitElement {
 
   private get supportUrl(): string {
     try {
-      return getBrandConfig().report_issue_url || 'mailto:support@preloop.ai';
+      const brand = getBrandConfig();
+      return (
+        brand.support_url ||
+        brand.report_issue_url ||
+        'mailto:support@preloop.ai'
+      );
     } catch {
       return 'mailto:support@preloop.ai';
     }

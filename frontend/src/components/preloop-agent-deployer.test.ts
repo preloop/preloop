@@ -394,6 +394,30 @@ describe('PreloopAgentDeployer', () => {
     });
   }
 
+  it('uses a separate branded support destination for Cloud', async () => {
+    const original = (window as any).BRAND_CONFIG;
+    (window as any).BRAND_CONFIG = {
+      support_url: 'https://example.com/support',
+      report_issue_url: 'https://example.com/issues',
+    };
+    try {
+      const el = await mount();
+      el.edition = 'cloud';
+      (el as any).gcpConfigured = false;
+      await el.updateComplete;
+      cardByText(el, 'Deploy on a fresh cloud VM')!.click();
+      await el.updateComplete;
+      const button = el.shadowRoot!.querySelector(
+        'sl-dialog[label="Contact support"] sl-button'
+      )!;
+      expect(button.getAttribute('href')).to.equal(
+        'https://example.com/support'
+      );
+    } finally {
+      (window as any).BRAND_CONFIG = original;
+    }
+  });
+
   it('does not overflow horizontally at 390px on any step', async () => {
     const steps = [
       'agent-host',

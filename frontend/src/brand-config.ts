@@ -265,6 +265,7 @@ export interface RegulationNavLink {
 // Runtime config - minimal metadata injected into window.BRAND_CONFIG
 export interface BrandRuntimeConfig {
   docs_url?: string;
+  support_url?: string;
   report_issue_url?: string;
   changelog_url?: string;
   name: string;
