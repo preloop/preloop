@@ -99,7 +99,7 @@ export class PreloopAgentDeployer extends LitElement {
   @property({ type: Boolean })
   computeFeatureEnabled = false;
 
-  @property({ type: Boolean })
+  @property({ type: String })
   edition: Edition = 'oss';
 
   @property({ type: Boolean })
@@ -637,7 +637,7 @@ export class PreloopAgentDeployer extends LitElement {
             slot="footer"
             variant="primary"
             @click=${() => (this.showComputeSetupHelp = false)}
-            href="/console/settings"
+            href="/console/settings/account"
             >Open settings</sl-button
           >
         </sl-dialog>

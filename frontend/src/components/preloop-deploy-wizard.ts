@@ -65,7 +65,7 @@ export class PreloopDeployWizard extends LitElement {
   @property({ type: Boolean })
   computeFeatureEnabled = false;
 
-  @property({ type: Boolean })
+  @property({ type: String })
   edition: Edition = 'oss';
 
   @property({ type: Boolean })

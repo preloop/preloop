@@ -366,6 +366,13 @@ describe('PreloopAgentDeployer', () => {
     expect((el as any).deploySubStep).to.equal('fresh-vm-premium');
   });
 
+  it('accepts a cloud edition through the public string attribute', async () => {
+    const el = await mount();
+    el.setAttribute('edition', 'cloud');
+    await el.updateComplete;
+    expect(el.edition).to.equal('cloud');
+  });
+
   for (const edition of ['oss', 'cloud', 'enterprise'] as const) {
     it(`shows the correct unconfigured VM dialog for ${edition}`, async () => {
       const el = await mount();
