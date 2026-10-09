@@ -2466,7 +2466,7 @@ export class AIModelDetailView extends LitElement {
                   size="small"
                   data-testid="fetch-price"
                   ?disabled=${!this.canEditPrice}
-                  title=${!this.canEditPrice ? 'Requires edit_ai_models' : ''}
+                  title=${!this.priceOverridesEnabled ? 'Price overrides are part of Preloop Cloud and Enterprise' : !this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
                   ?loading=${this.pricingFetching}
                   @click=${() => void this.fetchProviderPrice()}
                   >Fetch from provider</sl-button
@@ -2621,7 +2621,7 @@ export class AIModelDetailView extends LitElement {
             size="small"
             data-testid="save-price"
             ?disabled=${!this.canEditPrice}
-            title=${!this.canEditPrice ? 'Requires edit_ai_models' : ''}
+            title=${!this.priceOverridesEnabled ? 'Price overrides are part of Preloop Cloud and Enterprise' : !this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
             ?loading=${this.pricingSaving}
             @click=${() => void this.savePrice()}
             >Save price</sl-button
