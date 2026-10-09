@@ -75,6 +75,18 @@ export class AppFooter extends LitElement {
         cursor: pointer;
       }
 
+      .footer-nav-heading {
+        margin: 0 0 10px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        color: rgb(212, 212, 216);
+      }
+
+      .footer-compare ul {
+        columns: 2;
+        column-gap: 24px;
+      }
+
       .footer-nav a:hover {
         color: rgb(178, 178, 182);
       }
@@ -149,6 +161,8 @@ export class AppFooter extends LitElement {
     // without the markdown file gets no link, because nginx would serve the
     // homepage for that route with a 200 and the SPA fetch would then 404.
     const regulationPages = config.regulation_pages ?? [];
+    // Same build-time discovery for the /vs/<slug> comparison pages.
+    const comparePages = isSaaS() ? (config.vs_pages ?? []) : [];
     const hasAboutPage = (config.static_markdown_pages ?? []).some(
       (page) => page.path === '/about'
     );
@@ -206,6 +220,22 @@ export class AppFooter extends LitElement {
               }
             </ul>
           </nav>
+          ${
+            comparePages.length > 0
+              ? html`<nav
+                  class="footer-nav footer-compare"
+                  aria-label="Compare"
+                >
+                  <p class="footer-nav-heading">Compare</p>
+                  <ul>
+                    ${comparePages.map(
+                      (page) =>
+                        html`<li><a href="${page.href}">${page.label}</a></li>`
+                    )}
+                  </ul>
+                </nav>`
+              : ''
+          }
         </div>
         <div class="divider"></div>
         ${

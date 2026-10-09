@@ -940,3 +940,27 @@ describe('FlowView saving from the form', () => {
     }
   });
 });
+
+describe('FlowView leave guard', () => {
+  it('prevents route leave when the mounted form declines discard', async () => {
+    const element = document.createElement('flow-view') as FlowView;
+    const root = element.shadowRoot || element.attachShadow({ mode: 'open' });
+    const form = document.createElement('preloop-flow-form') as any;
+    root.append(form);
+    const confirm = sinon.stub(form, 'confirmLeave').resolves(false);
+    const prevent = sinon.stub().returns({ prevented: true });
+    try {
+      expect(
+        await element.onBeforeLeave({} as any, { prevent } as any)
+      ).to.deep.equal({ prevented: true });
+      expect(prevent.calledOnce).to.equal(true);
+      confirm.resolves(true);
+      expect(
+        await element.onBeforeLeave({} as any, { prevent } as any)
+      ).to.equal(undefined);
+      expect(prevent.calledOnce).to.equal(true);
+    } finally {
+      confirm.restore();
+    }
+  });
+});

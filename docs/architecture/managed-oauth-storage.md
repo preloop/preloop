@@ -12,7 +12,8 @@ Create an account-scoped `OAuthProviderConfiguration` with provider, canonical
 HTTPS instance (including a DC context path), context, client ID, optional client
 secret, exact callback URI and selected permissions. Consumer secrets use dedicated tenant-owned encrypted `SecretReference` rows.
 Grant tokens remain encrypted in `OAuthToken`, never copied into tracker
-`api_key` or `SecretReference`. Configuration metadata excludes the secret reference.
+`api_key` or `SecretReference`. Configuration metadata excludes the secret reference and reports only a
+`has_client_secret` readiness boolean.
 Provider/instance/context are immutable consumer identity; use a new configuration
 to change them. Credential/callback/permission replacement increments the version,
 invalidates old handshakes (including completed callback retries), erases old grant
@@ -47,6 +48,11 @@ The lock order is configuration, connection transaction, tracker, grant. Ordinar
 operations use a shared configuration row lock; replacement uses an exclusive
 lock. Rotation locks and rereads the grant before invoking the provider callback,
 then atomically persists both encrypted tokens and an incremented version.
+`TokenPair.issued_at` records the provider response receipt anchor separately
+from mutable row timestamps. Services compute bounded expiry skew from
+`expires_at - issued_at` without inventing refresh-token lifetimes. This nullable
+field preserves legacy consumer behavior, rotates with the pair, survives
+metadata-only updates, and is erased on disconnect or configuration replacement.
 Competing calls with the old version fail before provider I/O. Different grants
 can rotate independently, including under one configuration.
 

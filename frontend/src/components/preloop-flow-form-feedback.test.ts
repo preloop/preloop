@@ -124,10 +124,12 @@ describe('PreloopFlowForm PR feedback controls', () => {
       max_age_hours: 72,
       debounce_seconds: 0,
     });
-    expect(element.shadowRoot!.textContent).to.include(
+    expect(element.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.include(
       'starts fresh from the issue and PR context'
     );
-    expect(element.shadowRoot!.textContent).to.include('Merge remains manual');
+    expect(element.shadowRoot!.textContent!.replace(/\s+/g, ' ')).to.include(
+      'Merge remains manual'
+    );
   });
 
   it('hydrates JSON configuration and preserves routing, execution and advanced feedback keys', async () => {

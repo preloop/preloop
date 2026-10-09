@@ -31,6 +31,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Transcript evaluation preset.** A scheduled flow (hourly, disabled by
+  default) reads the transcripts deposited since its last run with
+  `search_artifacts` / `get_artifact`, batches suggestions into one
+  `ask_user` question, gates every action behind `request_approval` with
+  the transcript excerpt and artifact link, and deposits one labelled
+  report artifact. Same-agent mode reads the flow's own runs; cross-agent
+  mode needs the `artifact_search.account_scope` grant. The preset picker
+  now lists schedule-triggered presets under **Scheduled** with a
+  Scheduled chip, and shows a scope note on presets that read artifacts
+  (#1106).
 - **Native restricted CI setup.** An account administrator can bind a machine
   identity to one project and hosted flow, then issue, rotate and revoke its
   keys and create its completion subscription. Setup is ten authenticated
@@ -401,6 +411,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Renamed tracker built-in `search` to `search_issues`. The legacy name `search`
+  is retained as a deprecated alias (disabled by default on fresh accounts,
+  available when explicitly referenced by a flow allow-list or policy) and will
+  be removed in 0.18.0 (#1044).
+- Reduced `search_sessions` description and schema to under 250 tokens (was 633
+  tokens), preserving model context budget during tool definitions (#1044).
 - **Console: Shoelace assets ship with the console.** The theme
   stylesheets, autoloader, lazily loaded components and icons are served
   from `/vendor/shoelace/` on the console's own origin instead of a public

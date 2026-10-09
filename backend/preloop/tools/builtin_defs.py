@@ -655,22 +655,9 @@ LIST_SESSIONS_TOOL: Dict[str, Any] = {
 SEARCH_SESSIONS_TOOL: Dict[str, Any] = {
     "name": "search_sessions",
     "description": (
-        "Search what past sessions did, ranked by relevance, before "
-        "repeating the work: whether that migration already ran, what the "
-        "last run concluded, what this user was already asked. Scope is "
-        "your own sessions unless you say otherwise. Asking for scope "
-        "'account' without the operator grant is refused by name "
-        "(account_scope_not_granted), never quietly narrowed, so a result "
-        "set always means what you asked for. Results are compact on "
-        "purpose: per session its reference, when the match happened, one "
-        "snippet with the matching words marked, and why it matched. The "
-        "whole answer is capped so a search cannot flood your context; when "
-        "it is, truncated is true, results_omitted says how many were "
-        "dropped and total says how many sessions matched, so narrow the "
-        "query or the time range rather than paging. The degraded block "
-        "says what the ranking could not do: with semantic ranking off, a "
-        "miss is a keyword miss and not proof the work was never done. No "
-        "match is an empty results list, not an error."
+        "Search past sessions before repeating work. Scope defaults "
+        "to own sessions; account scope requires an operator grant. "
+        "Results are compact, relevance-ranked, and capped."
     ),
     "source": "builtin",
     # Default-off, like the other read tools added since #128: an agent that
@@ -687,63 +674,35 @@ SEARCH_SESSIONS_TOOL: Dict[str, Any] = {
         "properties": {
             "query": {
                 "type": "string",
-                "description": (
-                    "What to look for, parsed the way a search box is: a "
-                    'quoted phrase ("rolling restart") stays a phrase, `or` '
-                    "alternates and a leading `-` excludes. Terms, not a "
-                    "sentence: the corpus is transcript text, so the words "
-                    "an earlier run would have used beat a description of "
-                    "what you want."
-                ),
+                "description": "Keywords or quoted phrases to search.",
                 "minLength": 1,
                 "maxLength": 512,
             },
             "scope": {
                 "type": "string",
                 "enum": list(SEARCH_SESSIONS_SCOPES),
-                "description": (
-                    "Whose sessions to search. 'own' (the default) is the "
-                    "sessions you ran. 'account' is every session of the "
-                    "account and is refused unless an operator has granted "
-                    "it to you."
-                ),
+                "description": "Scope: 'own' (default) or 'account'.",
             },
             "mode": {
                 "type": "string",
                 "enum": ["keyword", "semantic", "hybrid"],
-                "description": (
-                    "Requested ranking. Anything other than keyword is "
-                    "answered with keyword results and a degraded marker "
-                    "saying semantic ranking is not enabled, rather than an "
-                    "error."
-                ),
+                "description": "Ranking: keyword, semantic, or hybrid.",
             },
             "start_date": {
                 "type": "string",
                 "format": "date-time",
-                "description": (
-                    "Only content at or after this instant. ISO 8601 with a "
-                    "timezone offset; a value without one is refused."
-                ),
+                "description": "Earliest ISO 8601 timestamp.",
             },
             "end_date": {
                 "type": "string",
                 "format": "date-time",
-                "description": (
-                    "Only content strictly before this instant. ISO 8601 "
-                    "with a timezone offset; a value without one is refused."
-                ),
+                "description": "Latest ISO 8601 timestamp.",
             },
             "limit": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": SEARCH_SESSIONS_MAX_LIMIT,
-                "description": (
-                    "Sessions to return, at most "
-                    f"{SEARCH_SESSIONS_MAX_LIMIT} and "
-                    f"{SEARCH_SESSIONS_DEFAULT_LIMIT} by default. The "
-                    "response size cap can still return fewer."
-                ),
+                "description": f"Max sessions to return (default {SEARCH_SESSIONS_DEFAULT_LIMIT}).",
             },
         },
         "required": ["query"],
@@ -1066,4 +1025,9 @@ GET_ARTIFACT_TOOL: Dict[str, Any] = {
         },
         "required": ["artifact_id"],
     },
+}
+
+TOOL_NAME_ALIASES: Dict[str, str] = {
+    "search": "search_issues",
+    "search_issues": "search",
 }

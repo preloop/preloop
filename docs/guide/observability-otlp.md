@@ -2,6 +2,9 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
+For what tool/model record stores retain under redaction and reference-only
+policies, see [Sensitive-data handling](sensitive-data.md#what-is-stored).
+
 Preloop can export OpenTelemetry traces (and duration metrics) for
 governed model calls and MCP tool calls to any OTLP-compatible backend.
 Export is **disabled by default**. Turning it on does not replace the

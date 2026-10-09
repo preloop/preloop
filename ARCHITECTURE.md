@@ -387,3 +387,12 @@ notification hooks. Simulation does not dispatch tools, create approvals or
 record usage. The console's `policy_simulation` capability exposes draft testing
 in the rule dialog and YAML editor. Paths are evaluated as submitted, without
 normalization, so operators can test traversal and repeated-slash samples.
+
+The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
+`enterprise` edition and the running backend `server_version`. Hosted instances
+are Cloud; self-hosted proprietary installations are Enterprise; other installs
+are OSS. Runtime deployment detection wins over static plugin declarations; plugin counts
+never determine the edition.
+Feature flags remain the authority for individual capability gates. The console
+reuses its cached features payload for the header help menu; documentation,
+release notes, and issue/support destinations come from brand URL configuration.

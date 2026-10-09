@@ -322,30 +322,32 @@ tools:
 
 ---
 
-### `search`
+### `search_issues`
 
-Search for issues and comments in connected trackers using similarity or fulltext search.
+Search issues and comments across connected trackers using similarity or fulltext search. Read-only.
+
+> Compatibility note: The legacy name `search` is supported as a deprecated alias and will be removed in version 0.18.0. Existing access rules, approval policies, flow allow-lists, tool configurations, and `tool_enabled_overrides` written against `search` continue to match through the alias during the deprecation window. A tool configuration or override that disables either name disables both. A required justification on either name is required on both.
 
 **Arguments:**
 
-- `query` (string, required) - Search query
-- `project` (string, optional) - Limit search to one project
-- `limit` (number, optional) - Max results (default: 10)
+- `query` (string, required): Search query
+- `project` (string, optional): Limit search to one project identifier or slug
+- `limit` (number, optional): Max results (default: 10)
 
 **Example:**
 
 ```python
-results = search(
+results = search_issues(
     query="authentication bug",
     project="acme/repo",
-    limit=10
+    limit=10,
 )
 ```
 
 **When to preloop:**
 
 - ⚪ Usually NOT needed (read-only)
-- ✅ Preloop if searching sensitive/confidential data
+- ✅ Preloop if searching sensitive or confidential data
 
 ---
 
@@ -544,7 +546,7 @@ improvements = improve_compliance(issues=["PROJ-123"])
 | `get_issue` | ❌ | ✅ Any | ✅ | ⚪ Usually no |
 | `create_issue` | ❌ | ✅ Any | ❌ | ✅ Yes |
 | `update_issue` | ❌ | ✅ Any | ❌ | ✅ Conditionally |
-| `search` | ❌ | ✅ Any | ✅ | ⚪ Usually no |
+| `search_issues` | ❌ | ✅ Any | ✅ | ⚪ Usually no |
 | `estimate_compliance` | ❌ | ✅ Any | ✅ | ⚪ No |
 | `improve_compliance` | ❌ | ✅ Any | ✅ | ⚪ No |
 | `add_comment` | ❌ | ✅ Any | ❌ | ✅ Conditionally |
@@ -559,7 +561,7 @@ improvements = improve_compliance(issues=["PROJ-123"])
 
 ### Read-Only Tools (Low Risk)
 
-**Tools:** `get_issue`, `search`, `get_pull_request`, `estimate_compliance`, `improve_compliance`
+**Tools:** `get_issue`, `search_issues`, `get_pull_request`, `estimate_compliance`, `improve_compliance`
 
 **Strategy:** Usually don't preloop
 

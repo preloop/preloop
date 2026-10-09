@@ -66,6 +66,7 @@ from preloop.tools.builtin_defs import (
     LIST_SESSIONS_TOOL,
     SEARCH_SESSIONS_TOOL,
     SEND_NOTE_TOOL,
+    TOOL_NAME_ALIASES as TOOL_NAME_ALIASES,
     UPDATE_ISSUE_DESCRIPTION,
     UPDATE_ISSUE_SCHEMA,
 )
@@ -130,11 +131,38 @@ BUILTIN_TOOLS = [
         "schema": UPDATE_ISSUE_SCHEMA,
     },
     {
-        "name": "search",
-        "description": "Search for issues and comments using similarity or fulltext search",
+        "name": "search_issues",
+        "description": "Search issues and comments across connected trackers using similarity or fulltext search. Read-only.",
         "source": "builtin",
         "requires_tracker": True,
         "required_tracker_types": [],
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "project": {
+                    "type": "string",
+                    "description": "Project identifier or slug to narrow search scope",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search",
+        "description": (
+            "Search for issues and comments in connected trackers. "
+            "(Deprecated: use search_issues instead. Will be removed in 0.18.0.)"
+        ),
+        "source": "builtin",
+        "requires_tracker": True,
+        "required_tracker_types": [],
+        "default_enabled": False,
         "schema": {
             "type": "object",
             "properties": {

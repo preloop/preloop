@@ -134,6 +134,9 @@ class OAuthToken(Base):
         comment="OAuth scopes granted to this token",
     )
 
+    # Receipt anchor for provider expires_in; independent of metadata updates.
+    issued_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     # Token expiration
     expires_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True),

@@ -521,3 +521,22 @@ def test_get_or_create_instance_returns_none_on_db_failure():
     ):
         result = instance_service.get_or_create_instance()
     assert result is None
+
+
+@pytest.mark.parametrize("enterprise,expected", [(True, "enterprise"), (False, "oss")])
+def test_hosted_registration_preserves_tracker_edition(
+    monkeypatch: pytest.MonkeyPatch, enterprise: bool, expected: str
+) -> None:
+    """Hosted UI edition does not expand the registration payload contract."""
+    monkeypatch.setenv("PRELOOP_HOSTED", "true")
+    db = MagicMock()
+    db.query.return_value.first.return_value = None
+    with (
+        patch("preloop.models.db.session.get_db_session", return_value=iter([db])),
+        patch.object(instance_service, "_is_enterprise", return_value=enterprise),
+    ):
+        instance = instance_service.get_or_create_instance()
+    assert instance is not None
+    assert instance.edition == expected
+    assert instance_service.instance_edition() == "cloud"
+    db.add.assert_called_once_with(instance)
