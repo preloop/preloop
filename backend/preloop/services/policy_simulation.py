@@ -1,5 +1,6 @@
 """Read-only policy simulation using the firewall's decision cores."""
 
+import time
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
@@ -9,6 +10,8 @@ from starlette.concurrency import run_in_threadpool
 
 from preloop.models import models
 from preloop.models.crud import crud_ai_model, crud_mcp_server, crud_tool_configuration
+from preloop.models.schemas.grant_introspection import GrantSample, IntrospectionConfig
+from preloop.services.grant_introspection import grant_denial_reason
 from preloop.services.model_content_policy import evaluate_model_io, load_model_io_rules
 from preloop.services.policy import load_policy_from_string
 from preloop.services.policy_evaluator import (
@@ -48,6 +51,7 @@ class PolicyEvaluationRequest(BaseModel):
     stored: bool = False
     model_target: Literal["model.request", "model.response"] = "model.request"
     model_text: str | None = Field(None, max_length=100000)
+    grant: GrantSample | None = None
 
     @model_validator(mode="after")
     def validate_source(self) -> "PolicyEvaluationRequest":
@@ -172,23 +176,59 @@ async def simulate_policy(
         managed_agent_id=request.context.get("managed_agent_id"),
         record=False,
     )
-    if sensitive.scan:
-        from preloop.services.policy_evaluator import EXTRA_BINDINGS_KEY
+    from preloop.services.policy_evaluator import EXTRA_BINDINGS_KEY
 
-        context[EXTRA_BINDINGS_KEY] = {"pii": sensitive.scan.bindings()}
+    bindings: dict[str, Any] = {}
+    if sensitive.scan:
+        bindings["pii"] = sensitive.scan.bindings()
+    if request.grant is not None:
+        bindings["grant"] = request.grant.model_dump()
+    context[EXTRA_BINDINGS_KEY] = bindings
+    declared_server = (
+        next(
+            (
+                server
+                for server in policy.mcp_servers or []
+                if server.name == request.server
+            ),
+            None,
+        )
+        if policy is not None
+        else None
+    )
+    server = (
+        await run_in_threadpool(
+            crud_mcp_server.get_by_name,
+            db,
+            name=request.server,
+            account_id=str(account_id),
+        )
+        if declared_server is None and request.server != "builtin"
+        else None
+    )
+    auth_config = (
+        declared_server.auth_config
+        if declared_server is not None
+        else getattr(server, "auth_config", None)
+    )
+    server_introspection = (
+        auth_config.get("introspection") if isinstance(auth_config, dict) else None
+    )
+    if server_introspection is not None:
+        if request.grant is None:
+            raise ValueError(
+                "Provide a synthetic grant sample for introspection simulation"
+            )
+        reason = grant_denial_reason(
+            bindings["grant"],
+            IntrospectionConfig.model_validate(server_introspection),
+            now=time.time(),
+        )
+        if reason:
+            return PolicyEvaluationResponse(decision="deny", description=reason)
 
     if request.stored:
         # Select the exact server's configuration rather than the first same-name tool.
-        server = (
-            await run_in_threadpool(
-                crud_mcp_server.get_by_name,
-                db,
-                name=request.server,
-                account_id=str(account_id),
-            )
-            if request.server != "builtin"
-            else None
-        )
         selected = (
             await run_in_threadpool(
                 crud_tool_configuration.get_for_server,
@@ -218,9 +258,7 @@ async def simulate_policy(
             resolve_tool_configuration=bool(selected),
             subject_context=request.context,
             server_name=request.server,
-            extra_bindings={"pii": sensitive.scan.bindings()}
-            if sensitive.scan
-            else None,
+            extra_bindings=bindings or None,
             record=False,
             trace=trace,
         )

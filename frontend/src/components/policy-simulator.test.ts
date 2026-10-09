@@ -94,4 +94,50 @@ describe('policy simulator', () => {
     await el.updateComplete;
     expect((el as any)._result).to.equal(null);
   });
+  it('submits only synthetic grant context and shows a grant denial reason', async () => {
+    const fetch = sinon.stub(window, 'fetch').resolves(
+      new Response(
+        JSON.stringify({
+          decision: 'deny',
+          description: 'scope_not_granted',
+          matched_rule: null,
+          checked_rules: [],
+          also_matched_rule_ids: [],
+        })
+      )
+    );
+    const el = await fixture<PolicySimulator>(
+      html`<policy-simulator
+        .toolName=${'read_record'}
+        .draftRule=${{ action: 'allow' }}
+      ></policy-simulator>`
+    );
+    const field = el.querySelector(
+      'sl-textarea[label="Synthetic grant JSON (optional)"]'
+    )! as any;
+    field.value = '{"active":true,"scope":["read"]}';
+    field.dispatchEvent(new Event('sl-input'));
+    await (el as any)._simulate();
+    await el.updateComplete;
+    const body = JSON.parse(fetch.firstCall.args[1]!.body as string);
+    expect(body.grant).to.deep.equal({ active: true, scope: ['read'] });
+    expect(el.textContent).to.include('scope_not_granted');
+    expect(el.shadowRoot).to.equal(null);
+  });
+
+  it('rejects a non-object synthetic grant without sending a request', async () => {
+    const fetch = sinon.stub(window, 'fetch');
+    const el = await fixture<PolicySimulator>(
+      html`<policy-simulator
+        .toolName=${'read_record'}
+        .draftRule=${{ action: 'allow' }}
+      ></policy-simulator>`
+    );
+    (el as any)._grant = '[]';
+    await (el as any)._simulate();
+    expect(fetch.called).to.equal(false);
+    expect((el as any)._error).to.include(
+      'Synthetic grant must be a JSON object'
+    );
+  });
 });

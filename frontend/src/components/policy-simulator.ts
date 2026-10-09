@@ -17,6 +17,7 @@ export class PolicySimulator extends LitElement {
   @property({ attribute: false }) toolSchema: Record<string, any> | null = null;
   @state() private _args = '{}';
   @state() private _modelText = '';
+  @state() private _grant = '';
   @state() private _busy = false;
   @state() private _result: PolicyEvaluationResult | null = null;
   @state() private _error = '';
@@ -78,10 +79,17 @@ export class PolicySimulator extends LitElement {
       const args = JSON.parse(this._args);
       if (!args || typeof args !== 'object' || Array.isArray(args))
         throw new Error('Sample arguments must be a JSON object.');
+      const grant = this._grant.trim() ? JSON.parse(this._grant) : undefined;
+      if (
+        grant !== undefined &&
+        (!grant || typeof grant !== 'object' || Array.isArray(grant))
+      )
+        throw new Error('Synthetic grant must be a JSON object.');
       this._result = await evaluatePolicy({
         name: this.toolName,
         server: this.server,
         args,
+        ...(grant !== undefined ? { grant } : {}),
         ...(this.draftYaml !== undefined
           ? { draft_yaml: this.draftYaml }
           : { draft_rule: this.draftRule }),
@@ -134,6 +142,14 @@ export class PolicySimulator extends LitElement {
           this._args = e.target.value;
         }}
       ></sl-textarea>
+      <sl-textarea
+        label="Synthetic grant JSON (optional)"
+        help-text='For grant rules, try {"active":true,"scope":["read"]}. Use synthetic values; introspection is never called.'
+        .value=${this._grant}
+        @sl-input=${(e: any) => {
+          this._grant = e.target.value;
+        }}
+      ></sl-textarea>
       <p>
         For path rules, also try /etc/../etc and //etc. Conditions use the
         arguments as supplied; paths are not normalized.
@@ -149,7 +165,8 @@ export class PolicySimulator extends LitElement {
       </div>
       ${
         this._result
-          ? html`<ol>
+          ? html`${this._result.description ? html`<p>${this._result.description}</p>` : ''}
+              <ol>
                 ${this._result.checked_rules.map((rule) => html`<li>${rule.id}: ${rule.error ? `Error: ${rule.error}` : rule.matched ? 'Matched' : 'No match'}</li>`)}
               </ol>
               ${this._result.also_matched_rule_ids.length ? html`<p>Also matched: ${this._result.also_matched_rule_ids.join(', ')}</p>` : ''}`
