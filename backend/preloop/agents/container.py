@@ -6131,7 +6131,16 @@ export GIT_TERMINAL_PROMPT=0"""
                         build_verification_gate_shell(
                             profile=verification_policy.profile.model_dump(),
                             working_dir=full_path,
-                            base_branch=safe_source,
+                            # A resume clones the PR branch as both source
+                            # and target; diffing against it sees no change
+                            # and the gate falls through to the profile's
+                            # unknown_default. Verify against the PR base the
+                            # resume rebase just fetched.
+                            base_branch=(
+                                safe_source
+                                if safe_source != safe_target
+                                else f"origin/{publication_base}"
+                            ),
                             evidence_dir=EVIDENCE_DIR_PATH,
                             gate_budget_seconds=(
                                 verification_policy.gate_budget_seconds
