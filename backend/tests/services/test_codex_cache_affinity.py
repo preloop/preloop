@@ -210,3 +210,50 @@ def test_endpoint_relays_turn_state_streaming():
     assert response.headers["x-codex-turn-state"] == "ts-up"
     plain = _streaming_with_gateway_warnings(iter([]), _stub_service(None))
     assert "x-codex-turn-state" not in plain.headers
+
+
+def test_routing_headers_alone_do_not_enable_identity_relay():
+    """/chat/completions passes only the Codex routing set (review on #1441)."""
+    auth_context = ModelGatewayAuthContext(
+        token="token",
+        user=SimpleNamespace(id="user-1", account_id="account-1"),
+    )
+    service = OpenAIGatewayService(
+        MagicMock(),
+        auth_context,
+        codex_routing_headers={
+            "x-codex-turn-state": "ts-client",
+            "User-Agent": "opencode/1",
+        },
+    )
+    assert service._client_identity_headers == {}
+    sent: List[Any] = []
+    _call(service, _payload(1), {"x-codex-turn-state": "ts-up"}, sent)
+    assert _hdr(sent[0], "x-codex-turn-state") == "ts-client"
+    assert _hdr(sent[0], "user-agent") == "Preloop/1.0"
+    assert service.codex_turn_state == "ts-up"
+
+
+def test_chat_completions_route_forwards_codex_routing_headers():
+    from preloop.api.endpoints import openai_gateway as endpoint
+
+    request = SimpleNamespace(headers={"x-codex-turn-state": "ts-client"})
+    with (
+        patch.object(endpoint, "OpenAIGatewayService") as service_cls,
+        patch.object(endpoint, "native_session_id_from_headers", return_value=None),
+        patch.object(
+            endpoint, "native_parent_session_id_from_headers", return_value=None
+        ),
+        patch.object(endpoint, "_with_gateway_warnings", return_value={}),
+    ):
+        endpoint.create_chat_completion(
+            request=request,
+            payload={"model": "m"},
+            db=MagicMock(),
+            auth_context=MagicMock(),
+            budget_enforcer=None,
+            x_preloop_session_id=None,
+        )
+    kwargs = service_cls.call_args.kwargs
+    assert kwargs["codex_routing_headers"] is request.headers
+    assert "client_identity_headers" not in kwargs

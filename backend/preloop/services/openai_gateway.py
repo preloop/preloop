@@ -1029,6 +1029,7 @@ class OpenAIGatewayService:
         client_identity_headers: Optional[Mapping[str, str]] = None,
         client_parent_session_id: Optional[str] = None,
         client_session_id_is_explicit: Optional[bool] = None,
+        codex_routing_headers: Optional[Mapping[str, str]] = None,
     ) -> None:
         self._owns_db_session = owns_db_session
         # The request dependency supplies a binding only. Every owned Session
@@ -1039,8 +1040,13 @@ class OpenAIGatewayService:
         self._client_identity_headers = _bounded_client_identity_headers(
             client_identity_headers
         )
+        # Codex routing headers default to the identity headers (/responses)
+        # but can be supplied alone (/chat/completions) without enabling the
+        # identity relay used by other passthroughs.
         self._codex_routing_headers = _bounded_codex_routing_headers(
-            client_identity_headers
+            codex_routing_headers
+            if codex_routing_headers is not None
+            else client_identity_headers
         )
         # Upstream ``x-codex-turn-state`` from the last Codex call, relayed to
         # the client by the /responses endpoint so it can replay it.

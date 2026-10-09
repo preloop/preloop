@@ -151,6 +151,8 @@ def create_chat_completion(
         auth_context,
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
+        # Only the Codex routing set; the identity relay stays /responses-only.
+        codex_routing_headers=request.headers,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
         # Only the explicit Preloop header opts a plain API key into a
