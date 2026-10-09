@@ -96,7 +96,7 @@ func TestClaudeDesktopDirectGoldenMacOS(t *testing.T) {
 
 func TestClaudeDesktopDirectGoldenWindows(t *testing.T) {
 	opts := fixedRouteOptions(claudeDesktopRouteDirect, "windows")
-	opts.HelperPath = `C:\Program Files\Preloop\preloop.exe`
+	opts.HelperPathWindows = `C:\Program Files\Preloop\preloop.exe`
 	artifacts, _ := claudeDesktopDirectArtifacts(opts)
 	want := "Windows Registry Editor Version 5.00\r\n\r\n" +
 		"[HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Claude]\r\n" +
