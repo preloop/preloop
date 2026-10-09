@@ -122,6 +122,12 @@ class ModelGatewayBudgetService:
             if self.auth_context.api_key
             else {}
         )
+        gateway_subject = getattr(self.auth_context, "gateway_subject", None)
+        if gateway_subject is not None:
+            subject_context = {
+                **subject_context,
+                "gateway_subject_id": str(gateway_subject.id),
+            }
 
         estimated_request_cost = self._estimate_request_cost(
             ai_model,

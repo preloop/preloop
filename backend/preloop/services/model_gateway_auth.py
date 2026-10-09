@@ -25,6 +25,7 @@ from preloop.models.crud import (
     crud_user,
 )
 from preloop.models.crud.oauth_mcp_token import crud_oauth_mcp_access_token
+from preloop.services.gateway_upstream_identity import GatewaySubjectRef
 from preloop.services.gateway_execution import (
     GatewayApiKeySnapshot,
     GatewayOAuthSnapshot,
@@ -48,6 +49,11 @@ class ModelGatewayAuthContext:
     user: models.User | GatewayUserSnapshot
     api_key: models.ApiKey | GatewayApiKeySnapshot | None = None
     oauth_access_token: models.OAuthMCPAccessToken | GatewayOAuthSnapshot | None = None
+    # Set only for a trusted upstream key (``model_gateway:trusted_upstream``)
+    # whose secret matched: the developer the apps gateway named in its
+    # identity headers. ``None`` on every other credential.
+    gateway_subject: GatewaySubjectRef | None = None
+    trusted_upstream: bool = False
 
     @property
     def account_id(self) -> Any:
@@ -103,12 +109,19 @@ class ModelGatewayAuthContext:
                 user_id=key.user_id,
                 name=key.name,
                 context_json=json.dumps(key.context_data or {}),
+                scopes=tuple(
+                    scope
+                    for scope in (getattr(key, "scopes", None) or ())
+                    if isinstance(scope, str)
+                ),
             )
             if key is not None
             else None,
             oauth_access_token=GatewayOAuthSnapshot(id=self.oauth_access_token.id)
             if self.oauth_access_token is not None
             else None,
+            gateway_subject=self.gateway_subject,
+            trusted_upstream=self.trusted_upstream,
         )
 
 

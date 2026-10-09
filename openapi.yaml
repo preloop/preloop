@@ -20548,6 +20548,22 @@ components:
             type: string
           type: array
           title: Scopes
+        trusted_upstream_secret:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 16
+          - type: 'null'
+          title: Trusted Upstream Secret
+          description: Only with the model_gateway:trusted_upstream scope. Shared
+            secret the upstream gateway sends in x-preloop-upstream-secret; stored
+            as a sha256 hash, never returned.
+        per_subject_budget:
+          anyOf:
+          - $ref: '#/components/schemas/PerSubjectBudget'
+          - type: 'null'
+          description: Only with the model_gateway:trusted_upstream scope. Default
+            budget for every developer the upstream gateway names.
       type: object
       required:
       - name
@@ -32783,6 +32799,40 @@ components:
       - email
       title: PasswordResetRequest
       description: Model for password reset requests.
+    PerSubjectBudget:
+      properties:
+        period:
+          type: string
+          enum:
+          - hourly
+          - daily
+          - weekly
+          - monthly
+          - yearly
+          - all_time
+          title: Period
+          default: monthly
+        hard_limit_usd:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Hard Limit Usd
+        soft_limit_usd:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Soft Limit Usd
+        model_alias:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Model Alias
+      type: object
+      title: PerSubjectBudget
+      description: Default budget per gateway subject on a trusted upstream key.
     PickupReconciliationRequest:
       properties:
         issue_revision:

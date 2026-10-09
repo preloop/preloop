@@ -1409,6 +1409,70 @@ def change_current_user_password(
     )
 
 
+def _is_account_admin(db: Session, current_user: UserModel) -> bool:
+    """Superuser, the account's primary user, or a holder of manage_account."""
+    from preloop.utils.permissions import user_holds_permission
+
+    if getattr(current_user, "is_superuser", False):
+        return True
+    account = crud_account.get(db, id=current_user.account_id)
+    if account is not None and str(account.primary_user_id) == str(current_user.id):
+        return True
+    return user_holds_permission(db, current_user, "manage_account")
+
+
+def _trusted_upstream_key_context(
+    key_data: ApiKeyCreate, current_user: UserModel, db: Session
+) -> Optional[Dict[str, Any]]:
+    """Validate trusted upstream options and build the key's context data.
+
+    The ``model_gateway:trusted_upstream`` scope lets a key name developers
+    in identity headers, so only account admins (``manage_account``) may
+    grant it. The upstream secret is stored as a sha256 hash only.
+
+    Raises:
+        HTTPException: 403 for a non-admin asking for the scope; 400 when
+            trusted upstream options are sent without the scope.
+    """
+    from preloop.services.gateway_upstream_identity import (
+        PER_SUBJECT_BUDGET_CONTEXT_KEY,
+        TRUSTED_UPSTREAM_SCOPE,
+        UPSTREAM_SECRET_HASH_CONTEXT_KEY,
+        hash_upstream_secret,
+    )
+
+    trusted = TRUSTED_UPSTREAM_SCOPE in (key_data.scopes or [])
+    has_options = (
+        key_data.trusted_upstream_secret is not None
+        or key_data.per_subject_budget is not None
+    )
+    if not trusted:
+        if has_options:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "trusted_upstream_secret and per_subject_budget require the "
+                    f"{TRUSTED_UPSTREAM_SCOPE} scope"
+                ),
+            )
+        return None
+    if not _is_account_admin(db, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Only account admins can grant the {TRUSTED_UPSTREAM_SCOPE} scope",
+        )
+    context: Dict[str, Any] = {}
+    if key_data.trusted_upstream_secret is not None:
+        context[UPSTREAM_SECRET_HASH_CONTEXT_KEY] = hash_upstream_secret(
+            key_data.trusted_upstream_secret
+        )
+    if key_data.per_subject_budget is not None:
+        context[PER_SUBJECT_BUDGET_CONTEXT_KEY] = (
+            key_data.per_subject_budget.model_dump(exclude_none=True)
+        )
+    return context or None
+
+
 @router.post(
     "/api-keys", response_model=ApiKeyResponse, status_code=status.HTTP_201_CREATED
 )
@@ -1426,6 +1490,8 @@ def create_api_key(
     Returns:
         The created API key details.
     """
+    context_data = _trusted_upstream_key_context(key_data, current_user, db)
+
     # Generate a secure random key
     alphabet = string.ascii_letters + string.digits
     key_value = "".join(secrets.choice(alphabet) for _ in range(40))
@@ -1457,6 +1523,7 @@ def create_api_key(
             account_id=current_user.account_id,
             user_id=current_user.id,
             expires_at=key_data.expires_at,
+            context_data=context_data,
         )
 
         session.add(new_key)

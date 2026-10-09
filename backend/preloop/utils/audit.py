@@ -114,8 +114,13 @@ def log_model_gateway_request(
     completion_tokens: Optional[int] = None,
     total_tokens: Optional[int] = None,
     estimated_cost: Optional[float] = None,
+    gateway_subject: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Log a high-signal model gateway request event to the audit trail."""
+    """Log a high-signal model gateway request event to the audit trail.
+
+    ``gateway_subject`` names the developer a trusted upstream gateway
+    identified (``id``, ``email``, ``external_subject``, ``api_key_id``).
+    """
     audit_service = _get_audit_service()
     if audit_service is None:
         _log_model_gateway_request_fallback(
@@ -152,6 +157,7 @@ def log_model_gateway_request(
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             estimated_cost=estimated_cost,
+            gateway_subject=gateway_subject,
         )
         _emit_model_gateway_audit_event(
             account_id=account_id,
@@ -181,11 +187,16 @@ def log_model_gateway_request(
             error_detail=error_detail,
             error_type=error_type,
             budget=budget,
+            gateway_subject=gateway_subject,
         )
         return
 
+    plugin_extra: dict[str, Any] = (
+        {"gateway_subject": gateway_subject} if gateway_subject else {}
+    )
     try:
         audit_service.log_model_gateway_request(
+            **plugin_extra,
             db=db,
             account_id=account_id,
             user_id=user_id,
@@ -252,6 +263,7 @@ def log_model_gateway_request(
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             estimated_cost=estimated_cost,
+            gateway_subject=gateway_subject,
         )
     _emit_model_gateway_audit_event(
         account_id=account_id,
@@ -277,6 +289,7 @@ def log_model_gateway_request(
         error_detail=error_detail,
         error_type=error_type,
         budget=budget,
+        gateway_subject=gateway_subject,
     )
 
 
@@ -315,6 +328,7 @@ def _log_model_gateway_request_fallback(
     completion_tokens: Optional[int] = None,
     total_tokens: Optional[int] = None,
     estimated_cost: Optional[float] = None,
+    gateway_subject: Optional[dict[str, Any]] = None,
 ) -> None:
     """Persist a compatible audit log when the EE audit service is unavailable."""
     details = {
@@ -352,6 +366,8 @@ def _log_model_gateway_request_fallback(
         details["total_tokens"] = total_tokens
     if estimated_cost is not None:
         details["estimated_cost"] = estimated_cost
+    if gateway_subject:
+        details["gateway_subject"] = gateway_subject
     crud_audit_log.log_action(
         db,
         account_id=account_id,
@@ -393,6 +409,7 @@ def _emit_model_gateway_audit_event(
     error_detail: Optional[str] = None,
     error_type: Optional[str] = None,
     budget: Optional[dict[str, Any]] = None,
+    gateway_subject: Optional[dict[str, Any]] = None,
 ) -> None:
     """Emit a realtime audit event for gateway activity."""
     emit_account_event(
@@ -428,6 +445,7 @@ def _emit_model_gateway_audit_event(
                 "error_detail": error_detail,
                 "error_type": error_type,
                 "budget": budget,
+                **({"gateway_subject": gateway_subject} if gateway_subject else {}),
             },
             runtime_session_id=runtime_session_id,
             execution_id=flow_execution_id,
