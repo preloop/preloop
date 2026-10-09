@@ -15,6 +15,9 @@ type discoveryJSON struct {
 	RuntimeState         string `json:"runtime_state,omitempty"`
 	ConfigDrift          bool   `json:"config_drift,omitempty"`
 	ReonboardRecommended bool   `json:"reonboard_recommended,omitempty"`
+	// ModelRoute is set for Claude Desktop only: direct, apps-gateway or
+	// mcp-only, read from the OS managed configuration.
+	ModelRoute string `json:"model_route,omitempty"`
 }
 
 // Fixed IDs are part of the inventory wire contract, independent of display
@@ -43,6 +46,7 @@ func safeDiscoveryJSON(agents []AgentConfig) []discoveryJSON {
 			SupportLevel:    allowDiscoveryEnum(agent.SupportLevel, "full", "mcp-only"),
 			RuntimeState:    allowDiscoveryEnum(agent.RuntimeState, "present", "missing", "unknown"),
 			ConfigDrift:     agent.ConfigDrift, ReonboardRecommended: agent.ReonboardRecommended,
+			ModelRoute: allowDiscoveryEnum(agent.ModelRoute, claudeDesktopRouteDirect, claudeDesktopRouteAppsGateway, claudeDesktopRouteMCPOnly),
 		})
 	}
 	return result
@@ -73,6 +77,10 @@ func isPromptFreeJSONCommand(cmd *cobra.Command) bool {
 		return true
 	}
 	if isSafeDiscoveryJSONCommand(cmd) {
+		return true
+	}
+	// The credential helper's stdout must hold only the token.
+	if isGatewayCredentialCommand(cmd) {
 		return true
 	}
 	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "agents" {

@@ -155,7 +155,7 @@ native binary.
 | Hermes | Yes | Yes | Yes (runtime plugin) |
 | OpenClaw | Yes | Yes (OpenAI-compatible gateway) | Yes (runtime plugin) |
 | Cursor | Yes | Manual BYOK: set the OpenAI base-URL override in Cursor's Settings → Models yourself; covers the AI panel incl. Agent mode | n/a |
-| Claude Desktop | Yes | No | n/a |
+| Claude Desktop | Yes | Yes, via managed config: `--model-route direct` or `apps-gateway` prints it for your MDM ([Claude Desktop](clients/claude-desktop.md)) | n/a |
 | Windsurf | Yes | No | n/a |
 | VS Code / Copilot | Yes | No | n/a |
 | Copilot CLI | Yes (`~/.copilot/mcp-config.json`) | No on onboard. `preloop copilot` launches the CLI with gateway env vars | n/a |

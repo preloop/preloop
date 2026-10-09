@@ -56,6 +56,9 @@ type AgentConfig struct {
 	ConfigDrift          bool     `json:"config_drift,omitempty"`
 	ReonboardRecommended bool     `json:"reonboard_recommended,omitempty"`
 	DriftReasons         []string `json:"drift_reasons,omitempty"`
+	// ModelRoute is the Claude Desktop model route read from the OS managed
+	// configuration (direct, apps-gateway, mcp-only); empty for other agents.
+	ModelRoute string `json:"model_route,omitempty"`
 }
 
 // MCPDef is a minimal MCP server definition read from an agent config.
@@ -261,9 +264,10 @@ func mcpOnlyAgentModelNote(agent AgentConfig) string {
 	switch {
 	case isClaudeDesktopAgent(agent):
 		return mcpOnlySupportLabel + scope +
-			"The current Preloop adapter adds a managed MCP bridge and does not configure Desktop model routing. " +
-			"Vendor gateway/bootstrap support exists and needs a separately verified adapter: " +
-			"https://code.claude.com/docs/en/claude-apps-gateway."
+			"Onboarding adds a managed MCP bridge and does not configure Desktop model routing by itself. " +
+			"To route Desktop model traffic through Preloop, run " +
+			"`preloop agents onboard \"Claude Desktop\" --model-route direct` (or `--model-route apps-gateway`) " +
+			"and deploy the printed managed configuration with your MDM."
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
 		return mcpOnlySupportLabel + scope +
 			"Cursor native action gates are supported separately via --approvals. " +
@@ -850,6 +854,7 @@ func init() {
 	agentsEnrollCmd.Flags().Bool("no-usage-hooks", false, "Cursor only: do not install the usage hooks that store conversations as runtime sessions with a token estimate (installed by default)")
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
+	registerClaudeDesktopRouteFlags(agentsEnrollCmd)
 	agentsEnrollCmd.Flags().Bool("pin-model-families", false, "Claude Code only: keep writing the stock opus/sonnet/haiku family pins (use for API-key accounts or when family autoregistration is disabled; the choice persists for refresh)")
 	agentsListCmd.Flags().Bool("json", false, "output managed agents as JSON")
 	agentsStatusCmd.Flags().Bool("json", false, "output allowlisted managed status as JSON")
@@ -917,6 +922,8 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	annotateClaudeDesktopModelRoutes(discovered, discoveryPreloopURL())
+
 	if asJSON {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
@@ -944,6 +951,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 			fmt.Printf("     Runtime: %s\n", runtimeLabel)
 		}
 		fmt.Printf("     Support: %s\n", agentSupportListingLabel(agent))
+		if label := claudeDesktopModelRouteLabel(agent.ModelRoute); label != "" {
+			fmt.Printf("     Model route: %s\n", label)
+		}
 		if agent.IsOnboarded {
 			fmt.Printf(
 				"     Managed: yes (%s)\n",
@@ -1333,6 +1343,12 @@ func isAutoApprove(cmd *cobra.Command) bool {
 }
 
 func runAgentsEnroll(cmd *cobra.Command, args []string) error {
+	if err := rejectRouteOnlyFlagsWithoutModelRoute(cmd); err != nil {
+		return err
+	}
+	if modelRouteRequested(cmd) {
+		return runClaudeDesktopModelRouteCmd(cmd, args)
+	}
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	autoApprove := isAutoApprove(cmd)
 	liveValidate, _ := cmd.Flags().GetBool("live-validate")

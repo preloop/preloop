@@ -1,0 +1,5 @@
+{
+  "inferenceProvider": "gateway",
+  "inferenceGatewayBaseUrl": "https://preloop.example.com/anthropic/v1/",
+  "inferenceCustomHeaders": {"X-Preloop-Client": "claude-desktop"}
+}
