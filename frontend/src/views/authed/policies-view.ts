@@ -2654,7 +2654,7 @@ export class PoliciesView extends LitElement {
           </div>
           <div class="yaml-editor-actions">
             ${
-              hasCapability(this._features, 'policy_simulation')
+              this._features['policy_simulation'] === true
                 ? html`<sl-button
                     size="small"
                     @click=${() => {
