@@ -1268,6 +1268,51 @@ class TestMCPCallTool:
             assert result.is_error
             assert "disabled" in result.content[0].text.lower()
 
+    async def test_call_search_justification_required_applies_to_both_names(
+        self, dynamic_mcp, user_context
+    ):
+        """A required justification on either search name is required on both."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        def config(tool_name: str) -> MagicMock:
+            row = MagicMock()
+            row.tool_name = tool_name
+            row.tool_source = "builtin"
+            row.is_enabled = True
+            row.justification_mode = "required"
+            row.managed_agent_id = None
+            return row
+
+        async def called_without_justification(stored: str, called: str) -> ToolResult:
+            with (
+                patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[config(stored)],
+                ),
+                patch.object(
+                    dynamic_mcp.__class__.__bases__[0],
+                    "call_tool",
+                    new=AsyncMock(),
+                    create=True,
+                ) as mock_super,
+            ):
+                mock_get_db.side_effect = lambda: iter([MagicMock()])
+                result = await dynamic_mcp.call_tool(called, {"query": "auth"})
+            mock_super.assert_not_called()
+            assert isinstance(result, ToolResult)
+            return result
+
+        for stored, called in (
+            ("search", "search_issues"),
+            ("search_issues", "search"),
+        ):
+            result = await called_without_justification(stored, called)
+            assert result.is_error
+            assert "justification" in result.content[0].text.lower()
+
     async def test_call_default_disabled_builtin_tool_rejected(
         self, dynamic_mcp, user_context
     ):

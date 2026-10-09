@@ -1165,11 +1165,17 @@ class DynamicFastMCP(FastMCP):
                     visible = _configs_visible_to_caller(
                         configs, getattr(user_context, "managed_agent_id", None)
                     )
-                    modes = {
-                        tc.tool_name: tc.justification_mode
-                        for tc in visible
-                        if tc.justification_mode in ("optional", "required")
-                    }
+                    # required wins over optional when the two alias names disagree.
+                    modes: dict[str, str] = {}
+                    for tc in visible:
+                        if tc.justification_mode not in ("optional", "required"):
+                            continue
+                        for alias_name in _tool_enabled_override_names(tc.tool_name):
+                            if (
+                                tc.justification_mode == "required"
+                                or alias_name not in modes
+                            ):
+                                modes[alias_name] = tc.justification_mode
                     # A disable stored under either alias name disables both.
                     # An enable does not override a disable of the other name.
                     enabled: dict[str, bool] = {}
@@ -1985,8 +1991,8 @@ async def {internal_name}({params_str}):
                         builtin_enabled = None
                         for tc in visible:
                             if (
-                                tc.tool_name == name
-                                and tc.justification_mode == "required"
+                                tc.justification_mode == "required"
+                                and name in _tool_enabled_override_names(tc.tool_name)
                             ):
                                 requires_just = True
                             if tc.tool_source != "builtin":
