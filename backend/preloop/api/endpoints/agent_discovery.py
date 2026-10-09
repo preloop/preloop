@@ -19,11 +19,10 @@ from typing import Annotated, Any, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.orm import Session
-
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.auth.key_scopes import DISCOVERY_REPORT_SCOPE
 from preloop.api.common import get_account_for_user
+from preloop.models import models
 from preloop.models.crud import (
     crud_account_discovery_salt,
     crud_discovered_agent_candidate,
@@ -32,9 +31,9 @@ from preloop.models.crud.discovered_agent_candidate import (
     CANDIDATE_RETENTION_DAYS,
     ReportedCandidate,
 )
+from preloop.models.crud.discovery_observation import ObservationConflictError
 from preloop.models.db.session import get_db_session
-from preloop.models.models.account import Account
-from preloop.models.models.user import User as UserModel
+from preloop.plugins.base import get_plugin_manager
 from preloop.schemas.agent_discovery import (
     DiscoveredAgentCandidateList,
     DiscoveredAgentCandidateSummary,
@@ -45,6 +44,7 @@ from preloop.schemas.agent_discovery import (
 )
 from preloop.services.event_webhooks.emitters import emit_agent_discovered
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +94,8 @@ def _summary(candidate: Any) -> DiscoveredAgentCandidateSummary:
 @router.get("/agents/discovery-salt", response_model=DiscoverySaltResponse)
 @require_permission(REPORT_PERMISSION)
 def get_discovery_salt(
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: UserModel = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> DiscoverySaltResponse:
     """Return the account's discovery salt, issuing it on first use."""
@@ -112,8 +112,8 @@ def get_discovery_salt(
 @require_permission(REPORT_PERMISSION)
 def create_discovery_report(
     payload: DiscoveryReportRequest,
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: UserModel = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> DiscoveryReportResponse:
     """Record one workstation's discovery report.
@@ -122,6 +122,21 @@ def create_discovery_report(
     known rows only get a fresh ``last_seen_at``.
     """
     _require_report_access(db, current_user)
+    if payload.evidence is not None:
+        service = get_plugin_manager().get_service("discovery_evidence")
+        if service is None:
+            raise HTTPException(
+                status_code=503, detail="Discovery evidence service unavailable"
+            )
+        try:
+            service.record(
+                db, account_id=account.id, current_user=current_user, payload=payload
+            )
+        except ObservationConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Observation identifier already contains different evidence",
+            ) from exc
     outcomes = crud_discovered_agent_candidate.record_report(
         db,
         account_id=account.id,
@@ -156,9 +171,9 @@ def create_discovery_report(
 )
 @require_permission("view_agents")
 def list_discovery_candidates(
-    account: Annotated[Account, Depends(get_account_for_user)],
+    account: Annotated[models.Account, Depends(get_account_for_user)],
     status_filter: Optional[list[str]] = Query(default=None, alias="status"),
-    current_user: UserModel = Depends(get_current_active_user),
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> DiscoveredAgentCandidateList:
     """List reported candidates, most recently seen first.
@@ -184,8 +199,8 @@ def list_discovery_candidates(
 def update_discovery_candidate(
     candidate_id: UUID,
     payload: DiscoveredAgentCandidateUpdate,
-    account: Annotated[Account, Depends(get_account_for_user)],
-    current_user: UserModel = Depends(get_current_active_user),
+    account: Annotated[models.Account, Depends(get_account_for_user)],
+    current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> DiscoveredAgentCandidateSummary:
     """Mark a candidate ignored, or put an ignored one back to ``new``."""

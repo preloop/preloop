@@ -91,6 +91,7 @@ from .discovered_agent_candidate import (
     CRUDAccountDiscoverySalt,
     CRUDDiscoveredAgentCandidate,
 )
+from .discovery_observation import crud_discovery_observation
 from .embedding import CRUDEmbeddingModel, CRUDIssueEmbedding
 from .event import CRUDEvent, crud_event
 from .flow import CRUDFlow  # Import CRUDFlow class
@@ -305,6 +306,7 @@ __all__ = [
     "CRUDGatewayUsageSearchDocument",
     "CRUDAccountDiscoverySalt",
     "CRUDDiscoveredAgentCandidate",
+    "crud_discovery_observation",
     "CRUDManagedAgent",
     "CRUDManagedAgentAIModelBinding",
     "CRUDManagedAgentCredential",

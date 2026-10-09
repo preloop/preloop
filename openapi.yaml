@@ -25759,6 +25759,104 @@ components:
       - status
       title: DiscoveredAgentCandidateUpdate
       description: 'Console action on a candidate: mark ignored, or un-ignore.'
+    DiscoveryEvidence:
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+          title: Schema Version
+          default: 1
+        observation_id:
+          type: string
+          format: uuid
+          title: Observation Id
+        collector_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Collector Version
+        os_family:
+          anyOf:
+          - type: string
+            enum:
+            - darwin
+            - linux
+            - windows
+            - other
+          - type: 'null'
+          title: Os Family
+        detector_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Detector Version
+        source_environment:
+          type: string
+          enum:
+          - workstation
+          - managed_device
+          - container
+          - vm
+          - unknown
+          title: Source Environment
+          default: unknown
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        ended_at:
+          type: string
+          format: date-time
+          title: Ended At
+        scan_scope:
+          items:
+            type: string
+            enum:
+            - installed_apps
+            - user_config
+            - managed_config
+            - running_apps
+          type: array
+          maxItems: 4
+          minItems: 1
+          title: Scan Scope
+        completeness:
+          type: string
+          enum:
+          - complete
+          - partial
+          - failed
+          title: Completeness
+        errors:
+          items:
+            type: string
+            enum:
+            - permission_denied
+            - unavailable
+            - unsupported
+            - parse_failed
+            - timeout
+          type: array
+          maxItems: 5
+          title: Errors
+        applications:
+          items:
+            $ref: '#/components/schemas/ObservedApplication'
+          type: array
+          maxItems: 100
+          title: Applications
+      additionalProperties: false
+      type: object
+      required:
+      - observation_id
+      - started_at
+      - ended_at
+      - scan_scope
+      - completeness
+      title: DiscoveryEvidence
+      description: Versioned bounded observation, including empty and failed scans.
     DiscoveryReportCandidate:
       properties:
         agent_kind:
@@ -25814,6 +25912,10 @@ components:
             - other
           - type: 'null'
           title: Os
+        evidence:
+          anyOf:
+          - $ref: '#/components/schemas/DiscoveryEvidence'
+          - type: 'null'
         candidates:
           items:
             $ref: '#/components/schemas/DiscoveryReportCandidate'
@@ -32401,6 +32503,122 @@ components:
       type: object
       title: NotificationPreferencesUpdate
       description: Schema for updating notification preferences.
+    ObservedApplication:
+      properties:
+        agent_kind:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9_\-]{0,63}$
+          title: Agent Kind
+        config_path_hash:
+          type: string
+          pattern: ^[0-9a-f]{64}$
+          title: Config Path Hash
+        app_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: App Version
+        surface:
+          type: string
+          enum:
+          - cli
+          - desktop
+          - editor
+          - extension
+          - other
+          - unknown
+          title: Surface
+          default: unknown
+        installed:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Installed
+          default: unknown
+        configured:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Configured
+          default: unknown
+        observed_active:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Observed Active
+          default: unknown
+        controls:
+          items:
+            $ref: '#/components/schemas/ObservedControl'
+          type: array
+          maxItems: 7
+          title: Controls
+      additionalProperties: false
+      type: object
+      required:
+      - agent_kind
+      - config_path_hash
+      title: ObservedApplication
+      description: Safe application facts bound to a candidate's hashed context.
+    ObservedControl:
+      properties:
+        axis:
+          type: string
+          enum:
+          - model_route
+          - model_restriction
+          - native_tool_hook
+          - mcp_control
+          - vendor_policy
+          - content_inspection
+          - usage_visibility
+          title: Axis
+        supported:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Supported
+          default: unknown
+        requested:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Requested
+          default: unknown
+        applied:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+          - unknown
+          title: Applied
+          default: unknown
+        method:
+          type: string
+          enum:
+          - adapter_descriptor
+          - local_config
+          - managed_config
+          - unknown
+          title: Method
+          default: unknown
+      additionalProperties: false
+      type: object
+      required:
+      - axis
+      title: ObservedControl
+      description: Independent collector assertions, with no effective/verified field.
     OnboardingRequest:
       properties:
         email:

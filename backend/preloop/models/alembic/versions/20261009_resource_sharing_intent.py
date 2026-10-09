@@ -1,7 +1,7 @@
 """Persist selected sharing intent and trusted consuming-account command attribution.
 
 Revision ID: 20261009_resource_sharing_intent
-Revises: 20261009_grant_consent_index
+Revises: 20261009_discovery_observation
 """
 
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 
 revision = "20261009_resource_sharing_intent"
-down_revision = "20261009_grant_consent_index"
+down_revision = "20261009_discovery_observation"
 branch_labels = None
 depends_on = None
 
