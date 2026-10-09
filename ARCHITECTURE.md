@@ -410,3 +410,5 @@ and an unresolved or failed profile disables edits. Budget components also accep
 create/edit/delete grants; user actions use `manage_users`, invitations use
 `invite_users`, and team actions mirror the endpoint's create/edit/delete/manage
 permissions. Backend authorization remains the enforcement boundary.
+
+Model-price override edits and provider-price fetches require `edit_ai_models`; repricing and budget controls require `manage_budgets`. User role assignment requires `assign_roles`, independently of user management. Console capability copy is based on plan availability, separately from viewer permissions.

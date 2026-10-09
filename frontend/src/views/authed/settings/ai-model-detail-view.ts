@@ -1234,6 +1234,7 @@ export class AIModelDetailView extends LitElement {
 
   /** Ask the provider what it charges. The answer fills the form, unsaved. */
   private async fetchProviderPrice(): Promise<void> {
+    if (!this.canEditPrice) return;
     if (!this.modelId) {
       return;
     }
@@ -1276,6 +1277,7 @@ export class AIModelDetailView extends LitElement {
    * by accident.
    */
   private async savePrice(): Promise<void> {
+    if (!this.canEditPrice) return;
     const input = this.parsePrice(this.priceDraft.input);
     const output = this.parsePrice(this.priceDraft.output);
     const cached = this.parsePrice(this.priceDraft.cachedInput);
@@ -2463,6 +2465,8 @@ export class AIModelDetailView extends LitElement {
               ? html`<sl-button
                   size="small"
                   data-testid="fetch-price"
+                  ?disabled=${!this.canEditPrice}
+                  title=${!this.canEditPrice ? 'Requires edit_ai_models' : ''}
                   ?loading=${this.pricingFetching}
                   @click=${() => void this.fetchProviderPrice()}
                   >Fetch from provider</sl-button
@@ -2477,7 +2481,7 @@ export class AIModelDetailView extends LitElement {
           }
         </div>
         ${
-          this.canEditPrice
+          this.priceOverridesEnabled
             ? ''
             : html`<div class="meta-line">
                 Price overrides are part of Preloop Cloud and Enterprise. The
@@ -2616,6 +2620,8 @@ export class AIModelDetailView extends LitElement {
             variant="primary"
             size="small"
             data-testid="save-price"
+            ?disabled=${!this.canEditPrice}
+            title=${!this.canEditPrice ? 'Requires edit_ai_models' : ''}
             ?loading=${this.pricingSaving}
             @click=${() => void this.savePrice()}
             >Save price</sl-button
