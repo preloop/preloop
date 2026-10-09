@@ -90,8 +90,8 @@ var mcpServersAddCmd = &cobra.Command{
 collisions with tools of servers that were added earlier.
 
 Examples:
-  preloop mcp-servers add --name crm --url https://crm.example.com/mcp
-  preloop mcp-servers add --name crm --url https://crm.example.com/mcp --bearer-token "$TOKEN" --tool-prefix crm`,
+  preloop mcp-servers add --name crm --server-url https://crm.example.com/mcp
+  preloop mcp-servers add --name crm --server-url https://crm.example.com/mcp --bearer-token "$TOKEN" --tool-prefix crm`,
 	Args: cobra.NoArgs,
 	RunE: runMCPServersAdd,
 }
@@ -117,11 +117,13 @@ func init() {
 	mcpServersCmd.AddCommand(mcpServersUpdateCmd)
 
 	mcpServersAddCmd.Flags().String("name", "", "name of the MCP server entry (required)")
-	mcpServersAddCmd.Flags().String("url", "", "URL of the MCP server (required)")
+	// Not "--url": that is the global API base URL flag, and a local flag
+	// with the same name would shadow it and send the request elsewhere.
+	mcpServersAddCmd.Flags().String("server-url", "", "URL of the MCP server (required)")
 	mcpServersAddCmd.Flags().String("bearer-token", "", "bearer token sent to the MCP server")
 	mcpServersAddCmd.Flags().String("tool-prefix", "", "expose this server's tools as <prefix>_<tool> ([a-z0-9_], at most 32)")
 	_ = mcpServersAddCmd.MarkFlagRequired("name")
-	_ = mcpServersAddCmd.MarkFlagRequired("url")
+	_ = mcpServersAddCmd.MarkFlagRequired("server-url")
 
 	mcpServersUpdateCmd.Flags().String("tool-prefix", "", `expose this server's tools as <prefix>_<tool>; "" clears it`)
 	mcpServersUpdateCmd.Flags().String("status", "", "active or disabled")
@@ -235,7 +237,7 @@ func runMCPServersScan(cmd *cobra.Command, args []string) error {
 
 func runMCPServersAdd(cmd *cobra.Command, args []string) error {
 	name, _ := cmd.Flags().GetString("name")
-	serverURL, _ := cmd.Flags().GetString("url")
+	serverURL, _ := cmd.Flags().GetString("server-url")
 	token, _ := cmd.Flags().GetString("bearer-token")
 	prefix, _ := cmd.Flags().GetString("tool-prefix")
 

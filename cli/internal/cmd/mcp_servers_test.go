@@ -56,9 +56,16 @@ func runMCP(t *testing.T, cmd *cobra.Command, args ...string) (string, error) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.Flags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+	// Reset only this command's own flags. Resetting inherited ones would
+	// clear the global --url and --token that pointCLIAt set, and the
+	// command would talk to the default host instead of the stub.
+	cmd.NonInheritedFlags().VisitAll(func(f *pflag.Flag) { _ = f.Value.Set(f.DefValue); f.Changed = false })
+	stubURL := FlagURL
 	if err := cmd.ParseFlags(args); err != nil {
 		return "", err
+	}
+	if FlagURL != stubURL || !strings.HasPrefix(FlagURL, "http://127.0.0.1") {
+		t.Fatalf("refusing to run against %q: tests must only reach the local stub", FlagURL)
 	}
 	err := cmd.RunE(cmd, cmd.Flags().Args())
 	return out.String(), err
@@ -126,7 +133,7 @@ func TestMCPServersUpdateWithoutFlagsSendsNothing(t *testing.T) {
 
 func TestMCPServersAddNeverSetsAPrefixOnItsOwn(t *testing.T) {
 	stub := newMCPStub(t)
-	out, err := runMCP(t, mcpServersAddCmd, "--name", "third", "--url", "http://x/mcp")
+	out, err := runMCP(t, mcpServersAddCmd, "--name", "third", "--server-url", "http://x/mcp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,10 +147,24 @@ func TestMCPServersAddNeverSetsAPrefixOnItsOwn(t *testing.T) {
 		t.Fatalf("missing warning:\n%s", out)
 	}
 
-	if _, err := runMCP(t, mcpServersAddCmd, "--name", "third", "--url", "http://x/mcp", "--tool-prefix", "crm"); err != nil {
+	if _, err := runMCP(t, mcpServersAddCmd, "--name", "third", "--server-url", "http://x/mcp", "--tool-prefix", "crm"); err != nil {
 		t.Fatal(err)
 	}
 	if stub.posts[1]["tool_prefix"] != "crm" {
 		t.Fatalf("explicit prefix not sent: %#v", stub.posts[1])
+	}
+}
+
+// A local --url on any mcp-servers subcommand would shadow the global API
+// base URL flag, and the request would go to the default host instead of the
+// one the user named.
+func TestMCPServersCommandsDoNotShadowGlobalURLFlag(t *testing.T) {
+	for _, sub := range mcpServersCmd.Commands() {
+		if sub.LocalNonPersistentFlags().Lookup("url") != nil {
+			t.Fatalf("%s defines a local --url flag", sub.Name())
+		}
+		if sub.Flags().Lookup("token") != nil && sub.LocalNonPersistentFlags().Lookup("token") != nil {
+			t.Fatalf("%s defines a local --token flag", sub.Name())
+		}
 	}
 }
