@@ -169,11 +169,23 @@ class GrantIntrospector:
                         response.raise_for_status()
                         if len(response.content) > 1_048_576:
                             raise ValueError("introspection response exceeds bounds")
-                        binding = self._parse(response.json(), config)
-                        serialized = json.dumps(binding)
-                        if (
-                            token in serialized
-                            or config.client_secret.get_secret_value() in serialized
+                        payload = response.json()
+                        binding = self._parse(payload, config)
+                        # Compare decoded claims: JSON escaping must not hide
+                        # quoted/backslash credentials. Check the original scope
+                        # string before whitespace splitting can fragment a secret.
+                        claims = [
+                            payload.get("scope", ""),
+                            binding["sub"],
+                            binding["client_id"],
+                            binding["consent_ref"],
+                        ]
+                        credentials = (token, config.client_secret.get_secret_value())
+                        if any(
+                            secret in claim
+                            for claim in claims
+                            if isinstance(claim, str)
+                            for secret in credentials
                         ):
                             raise ValueError("authorization server echoed a credential")
                 except (httpx.HTTPError, ValueError, TypeError):

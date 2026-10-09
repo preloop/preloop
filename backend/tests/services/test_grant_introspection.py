@@ -278,3 +278,24 @@ async def test_wall_clock_changes_do_not_extend_cache_ttl() -> None:
     )
     assert result.deny_reason == "grant_inactive"
     assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("credential", ["token", "client_secret"])
+@pytest.mark.parametrize("claim", ["sub", "scope", "consent_ref", "client_id"])
+async def test_json_escaped_credential_echo_is_unavailable(
+    credential: str, claim: str
+) -> None:
+    value = 'synthetic"credential\\escaped'
+    token = value if credential == "token" else TOKEN
+    cfg = config(client_secret=value) if credential == "client_secret" else config()
+    client = client_for(
+        lambda request: httpx.Response(200, json={"active": True, claim: value})
+    )
+    result = await client.evaluate(token, cfg, server_id="server-example")
+    assert result.deny_reason == "introspection_unavailable"
+    assert result.binding["scope"] == []
+    assert result.binding["sub"] is None
+    assert result.binding["client_id"] is None
+    assert result.binding["consent_ref"] is None
+    assert all(entry.binding == result.binding for entry in client._cache.values())
