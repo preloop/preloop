@@ -223,9 +223,15 @@ def per_subject_budget(api_key: Any) -> Optional[dict[str, Any]]:
 
 
 _BUDGET_DENIAL_CODES = {"budget_limit_exceeded", "execution_budget_exceeded"}
-#: Fail-closed policy denials (kill switch, model allowlist) that must not be
+#: Fail-closed policy denials (kill switch, model allowlist, model
+#: authorization, content policy / unapproved approval holds) that must not be
 #: bypassable through apps gateway failover either.
-_POLICY_DENIAL_CODES = {"preloop_account_halted", "model_not_allowed"}
+_POLICY_DENIAL_CODES = {
+    "preloop_account_halted",
+    "model_not_allowed",
+    "model_not_authorized",
+    "content_policy_denied",
+}
 
 
 def is_budget_denial(exc: ModelGatewayAPIError) -> bool:
@@ -278,7 +284,8 @@ def to_trusted_upstream_error(
     a developer bypass a per-user Preloop budget. A 429 on an email-carrying
     request is relayed to the developer as-is. Budget denials become 429
     ``billing_error`` with ``x-should-retry: false``; rate limits become 429
-    ``rate_limit_error``; kill switch and model allowlist denials become 429
+    ``rate_limit_error``; kill switch, model allowlist, model authorization
+    and content policy denials become 429
     ``permission_error`` with ``x-should-retry: false``. Everything else is
     returned unchanged.
     """
@@ -309,7 +316,7 @@ def to_trusted_upstream_error(
         denial.should_retry = False
         return denial
     if exc.status_code == 403 and exc.code in _POLICY_DENIAL_CODES:
-        # A kill switch or a model allowlist must hold too: on 403 the apps
+        # Kill switch, allowlist, authorization and content policy must hold too: on 403 the apps
         # gateway would fail over to an upstream that ignores them.
         denial = TrustedUpstreamDenialError(
             provider="anthropic",

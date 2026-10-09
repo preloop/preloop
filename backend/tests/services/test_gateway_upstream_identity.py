@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 import uuid
 
+from unittest.mock import patch
+
 import pytest
 
 from preloop.models.crud import crud_api_key, crud_gateway_subject
@@ -167,7 +169,52 @@ def test_resolve_is_idempotent_and_never_creates_users(db_session, test_user):
     assert db_session.query(GatewaySubject).count() == 1
 
 
-@pytest.mark.parametrize("code", ["preloop_account_halted", "model_not_allowed"])
+def test_resolve_concurrent_insert_returns_winner(db_session, test_user):
+    """A unique-violation race resolves inside the savepoint and reads the winner."""
+    api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="gw",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        scopes=[TRUSTED_UPSTREAM_SCOPE],
+    )
+    winner = crud_gateway_subject.resolve(
+        db_session,
+        account_id=test_user.account_id,
+        api_key_id=api_key.id,
+        external_subject="sub-race",
+        email=None,
+    )
+    real_get = crud_gateway_subject.get_for_key
+    calls = {"n": 0}
+
+    def first_miss(*args, **kwargs):
+        # Simulate the concurrent request: the first lookup misses the row.
+        calls["n"] += 1
+        return None if calls["n"] == 1 else real_get(*args, **kwargs)
+
+    with patch.object(crud_gateway_subject, "get_for_key", side_effect=first_miss):
+        loser = crud_gateway_subject.resolve(
+            db_session,
+            account_id=test_user.account_id,
+            api_key_id=api_key.id,
+            external_subject="sub-race",
+            email=None,
+        )
+    assert loser.id == winner.id
+    # Only the savepoint rolled back: the session is still usable.
+    assert db_session.query(GatewaySubject).count() == 1
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "preloop_account_halted",
+        "model_not_allowed",
+        "model_not_authorized",
+        "content_policy_denied",
+    ],
+)
 def test_fail_closed_policy_denials_map_to_429(code):
     exc = ModelGatewayAPIError(
         provider="anthropic", status_code=403, message="halted", code=code

@@ -147,10 +147,14 @@ class CRUDGatewaySubject(CRUDBase[GatewaySubject]):
             try:
                 with db.begin_nested():
                     db.add(subject)
+                    db.flush()
                 db.commit()
             except IntegrityError:
-                # A concurrent request inserted the same subject first; the
-                # savepoint already rolled back, so read the winner.
+                # A concurrent request inserted the same subject first. The
+                # flush inside the savepoint raised, so only the savepoint
+                # rolled back; drop the loser and read the winner.
+                if subject in db:
+                    db.expunge(subject)
                 existing = self.get_for_key(
                     db,
                     account_id=account_id,

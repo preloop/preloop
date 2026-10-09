@@ -14,7 +14,12 @@ import httpx
 import pytest
 
 from preloop.models import models
-from preloop.models.crud import crud_account, crud_ai_model, crud_api_key
+from preloop.models.crud import (
+    crud_account,
+    crud_account_halt,
+    crud_ai_model,
+    crud_api_key,
+)
 from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.gateway_subject import GatewaySubject
 from preloop.models.models.user import User
@@ -22,6 +27,7 @@ from preloop.services.gateway_upstream_identity import (
     TRUSTED_UPSTREAM_SCOPE,
     hash_upstream_secret,
 )
+from preloop.services.kill_switch import invalidate_kill_switch_cache
 from preloop.services.subject_governance import set_subject_governance
 
 ALIAS = "anthropic/claude-sonnet-4-5"
@@ -511,6 +517,47 @@ def test_count_tokens_forwards_upstream_without_usage(client, db_session, test_u
     assert call.kwargs["headers"]["anthropic-beta"] == "token-counting-2099-01-01"
     assert call.kwargs["json"]["model"] == "claude-sonnet-4-5"
     assert _usage(db_session, api_key) is None
+
+
+def test_count_tokens_rejected_while_gateway_halted(client, db_session, test_user):
+    """An account halt stops token counting before any upstream forward."""
+    _model(db_session, test_user.account_id)
+    _api_key, token = _key(db_session, test_user)
+    upstream = MagicMock()
+    crud_account_halt.set_scopes(
+        db_session,
+        account_id=test_user.account_id,
+        scopes=["gateway"],
+        active=True,
+        user_id=None,
+        reason="runaway agent",
+    )
+    invalidate_kill_switch_cache(test_user.account_id)
+    try:
+        with patch(
+            "preloop.services.openai_gateway._anthropic_passthrough_http_client",
+            return_value=upstream,
+        ):
+            response = client.post(
+                "/anthropic/v1/messages/count_tokens",
+                headers=_headers(token, **_identity()),
+                json={"model": ALIAS, "messages": [{"role": "user", "content": "Hi"}]},
+            )
+    finally:
+        crud_account_halt.set_scopes(
+            db_session,
+            account_id=test_user.account_id,
+            scopes=["gateway"],
+            active=False,
+            user_id=None,
+        )
+        invalidate_kill_switch_cache(test_user.account_id)
+
+    # Trusted identity request: the halt renders as the fail-closed 429.
+    assert response.status_code == 429
+    assert response.json()["error"]["type"] == "permission_error"
+    assert response.headers["x-should-retry"] == "false"
+    upstream.post.assert_not_called()
 
 
 def test_count_tokens_requires_auth(client):

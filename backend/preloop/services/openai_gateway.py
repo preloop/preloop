@@ -2536,10 +2536,21 @@ class OpenAIGatewayService:
         Anthropic model with an API key or subscription-OAuth credential;
         otherwise answered with Preloop's preflight estimate. Token counting
         is free upstream, so no usage row is written and no budget is
-        charged. Model authorization still applies.
+        charged. Model authorization and the account kill switch still
+        apply: a halted account forwards nothing upstream.
         """
+        started_at = time.perf_counter()
         model = self._resolve_requested_model(
             payload.get("model"), provider="anthropic"
+        )
+        self._reject_if_gateway_halted(
+            endpoint="/anthropic/v1/messages/count_tokens",
+            endpoint_kind="anthropic_count_tokens",
+            ai_model=model,
+            requested_model=payload.get("model"),
+            request_payload=payload,
+            started_at=started_at,
+            gateway_provider="anthropic",
         )
         self._raise_if_model_not_allowed(model, payload)
         upstream = self._anthropic_count_tokens_upstream(model)
