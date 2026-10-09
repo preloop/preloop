@@ -411,4 +411,34 @@ create/edit/delete grants; user actions use `manage_users`, invitations use
 `invite_users`, and team actions mirror the endpoint's create/edit/delete/manage
 permissions. Backend authorization remains the enforcement boundary.
 
+
+### Console list filter URLs
+
+Sessions, Audit, Approvals, and Tools apply filter changes as they are committed;
+text searches debounce typing. Filters use `replaceState` while preserving
+unrelated deep-link parameters and the URL hash. Sessions stores `source_type`,
+`status`, `has_artifacts`, `range`, `from`, and `to` beside its existing search
+and session selection fields. Audit repeats `event_type`/`outcome` for multiple
+values and stores tool/date/cost fields under their API names. Approvals stores
+`status`, `tool`, and `q`, retaining its latest-100 browser filtering model.
+Date strings from shared links are validated before timestamp conversion.
+
+Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
+`mcp_rule`, `mcp_workflow` plus `mcp_q`, and native filters as `native_agent`,
+`native_rule`, `native_q`. The `tab` parameter selects the visible tab without
+discarding either filter set. Successful initial loads, including empty catalogs,
+retain mounted content during subsequent background refreshes.
+
+### Policy draft simulation
+
+`POST /api/v1/policies/evaluate` accepts one sample tool call and a stored
+policy, unsaved tool rule, or draft YAML. It uses the firewall's shared rule
+evaluator with recording disabled and reports the ordered checks, winning
+rule, overlapping rules and condition errors. Model text is an optional separate
+sample; model I/O and sensitive-data evaluators also disable their audit and
+notification hooks. Simulation does not dispatch tools, create approvals or
+record usage. The console's `policy_simulation` capability exposes draft testing
+in the rule dialog and YAML editor. Paths are evaluated as submitted, without
+normalization, so operators can test traversal and repeated-slash samples.
+
 Model-price override edits and provider-price fetches require `edit_ai_models`; repricing and budget controls require `manage_budgets`. User role assignment requires `assign_roles`, independently of user management. Console capability copy is based on plan availability, separately from viewer permissions.

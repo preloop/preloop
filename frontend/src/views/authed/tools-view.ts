@@ -1,4 +1,5 @@
-import { LitElement, html, css, unsafeCSS } from 'lit';
+import { replaceListFilters } from '../../utils/list-filter-url';
+import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
   getTools,
@@ -137,6 +138,10 @@ export class ToolsView extends LitElement {
   @state() private mcpServers: MCPServer[] = [];
   @state() private approvalPolicies: ApprovalWorkflow[] = [];
   @state() private loading = true;
+  @state() private refreshing = false;
+  private hasLoadedTools = false;
+  private filterSearchTimer: number | null = null;
+  private nativeSearchTimer: number | null = null;
   @state() private error: string | null = null;
   // Account-wide native tool-approval defaults (inherited by agents).
   @state() private governanceDefaults: AccountGovernanceDefaults | null = null;
@@ -481,6 +486,8 @@ export class ToolsView extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this.activeTab = this._resolveInitialTab();
+    this._readFilterLocation();
+    window.addEventListener('popstate', this._onFilterPopState);
 
     // Check for OAuth callback hash (#setup_mcp=success or #setup_mcp=error)
     if (window.location.hash) {
@@ -498,18 +505,27 @@ export class ToolsView extends LitElement {
       if (tool) {
         this.filters = { ...this.filters, query: tool };
       }
-      // Clean up the hash without dropping ?tab=.
-      const url = new URL(window.location.href);
-      url.hash = '';
-      window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+      // Consume known setup/rule deep links; preserve unrelated anchors.
+      if (hashParams.has('setup_mcp') || hashParams.has('tool')) {
+        const url = new URL(window.location.href);
+        url.hash = '';
+        window.history.replaceState(
+          window.history.state,
+          '',
+          `${url.pathname}${url.search}`
+        );
+      }
     }
 
     this._rememberTab(this.activeTab);
+    this._syncFilterLocation();
     this.loadData();
   }
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    window.removeEventListener('popstate', this._onFilterPopState);
+    this._cancelFilterSearch();
     ++this.toolsLoadGeneration;
     this.toolsSchemaRequest = null;
     this.toolsSchemasLoading = false;
@@ -540,7 +556,11 @@ export class ToolsView extends LitElement {
     const url = new URL(window.location.href);
     if (url.searchParams.get('tab') !== tab) {
       url.searchParams.set('tab', tab);
-      window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `${url.pathname}${url.search}${url.hash}`
+      );
     }
   }
 
@@ -601,8 +621,9 @@ export class ToolsView extends LitElement {
     this.toolsSchemaRequest = null;
     this.toolsSchemasLoading = false;
     this.toolsSchemasReady = false;
-    this.toolsContextLoading = true;
-    this.loading = true;
+    this.toolsContextLoading = !this.hasLoadedTools;
+    this.loading = !this.hasLoadedTools;
+    this.refreshing = this.hasLoadedTools;
     this.error = null;
     let starterPolicyRequest: {
       serverId: string | null;
@@ -646,6 +667,7 @@ export class ToolsView extends LitElement {
               }
             }
             this.mcpServers = [...servers.values()];
+            this.hasLoadedTools = true;
             this.loading = false;
           }
           return tools;
@@ -708,6 +730,7 @@ export class ToolsView extends LitElement {
     } finally {
       if (generation === this.toolsLoadGeneration) {
         this.loading = false;
+        this.refreshing = false;
         this.toolsContextLoading = false;
       }
       if (starterPolicyRequest) {
@@ -1299,9 +1322,20 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleSaveRule(e: CustomEvent) {
+    const { resolve, reject } = e.detail;
     if (!this.toolsSchemasReady) {
-      await this.loadToolSchemas();
-      if (!this.toolsSchemasReady) return;
+      try {
+        await this.loadToolSchemas();
+      } catch (err: any) {
+        reject?.(
+          err.message || 'Could not load tool schemas. Please try again.'
+        );
+        return;
+      }
+      if (!this.toolsSchemasReady) {
+        reject?.('Could not load tool schemas. Please try again.');
+        return;
+      }
     }
     const { tool, existingRule, formData } = e.detail as {
       tool: ToolWithRules;
@@ -1355,8 +1389,17 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       }
 
       await this.loadData();
+      resolve?.();
+      this.dispatchEvent(
+        new CustomEvent('show-toast', {
+          detail: { message: 'Rule saved.' },
+          bubbles: true,
+          composed: true,
+        })
+      );
     } catch (err: any) {
       this.error = err.message || 'Failed to save rule';
+      reject?.(this.error);
     }
   }
 
@@ -1595,6 +1638,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
           ...this.filters,
           workflows: this.filters.workflows.filter((id) => id !== policy.id),
         };
+        this._syncFilterLocation();
       }
       await this.loadData();
     } catch (err: any) {
@@ -1604,12 +1648,59 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
   // ─── Render helpers ──────────────────────────────────
 
+  private _cancelFilterSearch(): void {
+    if (this.filterSearchTimer !== null)
+      window.clearTimeout(this.filterSearchTimer);
+    if (this.nativeSearchTimer !== null)
+      window.clearTimeout(this.nativeSearchTimer);
+    this.filterSearchTimer = this.nativeSearchTimer = null;
+  }
+
+  private _readFilterLocation(): void {
+    const params = new URLSearchParams(window.location.search);
+    this.filters = {
+      query: params.get('mcp_q') ?? '',
+      statuses: params.getAll('mcp_status'),
+      servers: params.getAll('mcp_server'),
+      rules: params.getAll('mcp_rule'),
+      workflows: params.getAll('mcp_workflow'),
+    };
+    this.nativeFilters = {
+      query: params.get('native_q') ?? '',
+      agents: params.getAll('native_agent'),
+      rules: params.getAll('native_rule'),
+    };
+  }
+
+  private _syncFilterLocation(): void {
+    replaceListFilters({
+      mcp_q: this.filters.query,
+      mcp_status: this.filters.statuses,
+      mcp_server: this.filters.servers,
+      mcp_rule: this.filters.rules,
+      mcp_workflow: this.filters.workflows,
+      native_q: this.nativeFilters.query,
+      native_agent: this.nativeFilters.agents,
+      native_rule: this.nativeFilters.rules,
+    });
+  }
+
+  private _onFilterPopState = (): void => {
+    this._cancelFilterSearch();
+    const tab = new URLSearchParams(window.location.search).get('tab');
+    this.activeTab = isToolsTab(tab) ? tab : 'mcp';
+    this._readFilterLocation();
+  };
+
   private _clearFilters() {
+    this._cancelFilterSearch();
     this.filters = { ...EMPTY_FILTERS };
+    this._syncFilterLocation();
   }
 
   private _setFilterValues(patch: Partial<ToolsFilters>) {
     this.filters = { ...this.filters, ...patch };
+    this._syncFilterLocation();
   }
 
   private _toggleSingleFilter(
@@ -1622,7 +1713,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private _handleSearchChange(event: CustomEvent<{ value: string }>) {
-    this._setFilterValues({ query: event.detail.value });
+    if (this.filterSearchTimer !== null)
+      window.clearTimeout(this.filterSearchTimer);
+    const query = event.detail.value;
+    this.filterSearchTimer = window.setTimeout(() => {
+      this.filterSearchTimer = null;
+      this._setFilterValues({ query });
+    }, 250);
   }
 
   private _handleViewChange(event: CustomEvent<{ value: ListViewMode }>) {
@@ -1652,10 +1749,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
   private _setNativeFilterValues(patch: Partial<NativeFilters>) {
     this.nativeFilters = { ...this.nativeFilters, ...patch };
+    this._syncFilterLocation();
   }
 
   private _clearNativeFilters() {
+    this._cancelFilterSearch();
     this.nativeFilters = { ...EMPTY_NATIVE_FILTERS };
+    this._syncFilterLocation();
   }
 
   private _toggleSingleNativeFilter(value: string) {
@@ -1665,7 +1765,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private _handleNativeSearchChange(event: CustomEvent<{ value: string }>) {
-    this._setNativeFilterValues({ query: event.detail.value });
+    if (this.nativeSearchTimer !== null)
+      window.clearTimeout(this.nativeSearchTimer);
+    const query = event.detail.value;
+    this.nativeSearchTimer = window.setTimeout(() => {
+      this.nativeSearchTimer = null;
+      this._setNativeFilterValues({ query });
+    }, 250);
   }
 
   private _handleNativeAgentFilterChange(event: Event) {
@@ -2435,6 +2541,14 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
                 </sl-alert>`
               : ''
           }
+          <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+            style="height: 1.5rem; min-height: 1.5rem; flex: 0 0 1.5rem; display: flex; align-items: center; gap: 0.5rem;"
+          >
+            ${this.refreshing ? html`<sl-spinner></sl-spinner> Refreshing tools…` : nothing}
+          </div>
           ${
             this.loading
               ? html`<div class="loading-indicator">
