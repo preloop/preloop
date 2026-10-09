@@ -1,3 +1,5 @@
+import { editionOf } from '../../capabilities';
+import type { Edition } from '../../api';
 import { css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -398,7 +400,7 @@ export class DashboardView extends AuthedElement {
   @state() private aiModelOverview: AIModelOverviewItem[] = [];
   @state() private isInviteDialogOpen = false;
   @state() private computeFeatureEnabled = false;
-  @state() private isEnterprise = false;
+  @state() private edition: Edition = 'oss';
   @state() private isAdmin = false;
 
   @state() private budgetPolicies: BudgetPolicy[] = [];
@@ -1487,11 +1489,11 @@ export class DashboardView extends AuthedElement {
       const res = await getFeatures();
       this.computeFeatureEnabled = !!res.features?.['compute'];
       this.userManagementEnabled = !!res.features?.['user_management'];
-      this.isEnterprise = Array.isArray(res.plugins) && res.plugins.length > 0;
+      this.edition = editionOf(res);
       return res;
     } catch {
       this.computeFeatureEnabled = false;
-      this.isEnterprise = false;
+      this.edition = 'oss';
       this.userManagementEnabled = false;
       return null;
     } finally {
@@ -3327,7 +3329,7 @@ export class DashboardView extends AuthedElement {
                   .aiModels=${this.aiModels}
                   .modelsFromHost=${true}
                   .computeFeatureEnabled=${this.computeFeatureEnabled}
-                  .isEnterprise=${this.isEnterprise}
+                  .edition=${this.edition}
                   .isAdmin=${this.isAdmin}
                   hide-cancel
                   @deploy-agent-success=${this.handleDeployAgentSuccess}
