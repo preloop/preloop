@@ -17,6 +17,7 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import re
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -41,6 +42,21 @@ HOP_BY_HOP = {
 
 _LOCK = threading.Lock()
 _REQUESTS: list[dict[str, Any]] = []
+
+
+_HEADER_NAME = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+
+
+def _safe_header(name: str, value: str) -> tuple[str, str] | None:
+    """Return the header unchanged if it cannot split the response, else None.
+
+    The recorder relays Preloop's response headers. A name that is not an
+    RFC 9110 token, or a value with CR, LF or NUL, is dropped instead of
+    being written, so a relayed header can never inject another header.
+    """
+    if not _HEADER_NAME.match(name) or any(ch in value for ch in "\r\n\x00"):
+        return None
+    return name, value
 
 
 def _body_model(body: bytes) -> str | None:
@@ -209,8 +225,9 @@ class Handler(BaseHTTPRequestHandler):
         _record(self, body, resp.status)
         self.send_response(resp.status)
         for key, value in resp.getheaders():
-            if key.lower() not in HOP_BY_HOP:
-                self.send_header(key, value)
+            safe = _safe_header(key, value)
+            if safe is not None and safe[0].lower() not in HOP_BY_HOP:
+                self.send_header(*safe)
         self.send_header("connection", "close")
         self.end_headers()
         while True:
