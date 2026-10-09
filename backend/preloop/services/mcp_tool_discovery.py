@@ -5,7 +5,7 @@ This module provides functionality to discover and cache tools from external MCP
 
 import logging
 from datetime import datetime
-from typing import List
+from typing import Any, List
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -14,16 +14,29 @@ from preloop.services.mcp_client_pool import get_mcp_client_pool
 from preloop.models.models.mcp_server import MCPServer
 from preloop.models.models.mcp_tool import MCPTool
 from preloop.models.crud import crud_mcp_server, crud_mcp_tool, crud_tool_configuration
+from preloop.services.mcp_tool_collisions import (
+    first_wins,
+    is_valid_mcp_tool_name,
+    recompute_and_audit,
+)
 
 logger = logging.getLogger(__name__)
 
 
-async def scan_mcp_server_tools(mcp_server_id: UUID, db: Session) -> List[MCPTool]:
+async def scan_mcp_server_tools(
+    mcp_server_id: UUID, db: Session, user: Any = None
+) -> List[MCPTool]:
     """Scan an MCP server and cache its available tools.
+
+    After the scan, same-named tools across the account's servers are
+    recomputed (#1135): the newer server's tools are marked shadowed, and
+    one ``configuration_change`` audit event is written per collision set
+    when ``user`` is given.
 
     Args:
         mcp_server_id: ID of the MCP server to scan
         db: Database session
+        user: Acting user for the collision audit events (optional)
 
     Returns:
         List of discovered tools
@@ -93,6 +106,10 @@ async def scan_mcp_server_tools(mcp_server_id: UUID, db: Session) -> List[MCPToo
         # Commit all changes
         db.commit()
 
+        # Same-named tools across the account's servers: mark the newer
+        # server's tools shadowed, or un-shadow them when the owner is gone.
+        recompute_and_audit(db, str(mcp_server.account_id), user)
+
         logger.info(
             f"Scan complete for {mcp_server.name}: "
             f"{len(new_tools)} new tools, {updated_count} updated tools"
@@ -108,6 +125,8 @@ async def scan_mcp_server_tools(mcp_server_id: UUID, db: Session) -> List[MCPToo
         mcp_server.status = "error"
         mcp_server.last_error = str(e)
         db.commit()
+        # An owner that turned unhealthy no longer owns its names.
+        recompute_and_audit(db, str(mcp_server.account_id), user)
 
         logger.warning("Failed to scan MCP server %s: %s", mcp_server.name, e)
         try:
@@ -174,21 +193,34 @@ def _get_proxied_tools_sync(
         (tc.tool_name, str(tc.mcp_server_id)): tc.is_enabled for tc in tool_configs
     }
 
-    # Get all tools for these servers and filter by configuration
-    proxied_tools = []
+    # First-wins per exposed name (#1135): servers come own-first, each by
+    # created_at then id, so the oldest active server owns a name and newer
+    # servers' same-named tools are shadowed (not listed, not callable).
+    pairs = []
     for server in mcp_servers:
-        tools = crud_mcp_tool.get_by_server(db, server_id=server.id)
-        for tool in tools:
-            # Check if tool has explicit configuration
-            config_key = (tool.name, str(server.id))
-            is_enabled = config_map.get(config_key, True)  # Default to enabled
+        tools = sorted(
+            crud_mcp_tool.get_by_server(db, server_id=server.id),
+            key=lambda tool: tool.name,
+        )
+        pairs.extend((server, tool) for tool in tools)
 
-            if is_enabled:
-                proxied_tools.append((server, tool))
-            else:
-                logger.debug(
-                    f"Skipping disabled tool {tool.name} from server {server.name}"
-                )
+    proxied_tools = []
+    for server, tool, exposed_name in first_wins(pairs):
+        if not is_valid_mcp_tool_name(exposed_name):
+            logger.warning(
+                "Skipping MCP tool %r from server %s: not a valid MCP tool name",
+                exposed_name,
+                server.name,
+            )
+            continue
+        # Configuration is keyed by the exposed name and the server.
+        is_enabled = config_map.get((exposed_name, str(server.id)), True)
+        if is_enabled:
+            proxied_tools.append((server, tool))
+        else:
+            logger.debug(
+                f"Skipping disabled tool {exposed_name} from server {server.name}"
+            )
 
     return proxied_tools
 

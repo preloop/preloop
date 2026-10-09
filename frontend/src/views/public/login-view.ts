@@ -109,7 +109,7 @@ export class LoginView extends LitElement {
         display: flex;
         align-items: center;
         margin: 1.5rem 0;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
       }
 

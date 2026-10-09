@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -213,7 +214,7 @@ export class SessionToolCard extends LitElement {
 
   private formatTime(value: string | null): string {
     if (!value) return '';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleTimeString();
   }
 

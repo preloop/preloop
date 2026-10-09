@@ -12,7 +12,9 @@ import {
   type PricingPlan,
 } from './pricing-plans';
 import { cloudPlans, loadPricingContent } from '../utils/pricing-content';
-import { recordFreePlanChoice, startCheckout } from '../api';
+import { recordFreePlanChoice, startCheckout, signOut } from '../api';
+import { getBrandConfig, hasBrandConfig } from '../brand-config';
+import './logo-component';
 
 /**
  * Where checkout returns to, for both outcomes.
@@ -50,6 +52,9 @@ export class PlanChoiceScreen extends LitElement {
    * than promising "0 days free".
    */
   @property({ type: Number }) trialDays = 0;
+  @property({ type: String }) email = '';
+  @property({ type: Boolean }) checking = false;
+  private loadStarted = false;
 
   @state() private _loading = true;
   @state() private _plans: PricingPlan[] = [];
@@ -62,7 +67,37 @@ export class PlanChoiceScreen extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    if (!this.checking) await this.startLoad();
+  }
+
+  protected updated(changed: Map<string, unknown>): void {
+    if (changed.has('checking') && !this.checking) void this.startLoad();
+  }
+
+  private async startLoad(): Promise<void> {
+    if (this.loadStarted) return;
+    this.loadStarted = true;
     await this._load();
+  }
+
+  private identityHeader() {
+    let docs = 'https://docs.preloop.ai';
+    try {
+      docs = getBrandConfig().docs_url || docs;
+    } catch {
+      /* older build */
+    }
+    return html`<header class="identity-header">
+      ${hasBrandConfig() ? html`<logo-component></logo-component>` : html`<span>Preloop</span>`}
+      <span>Signed in as ${this.email}</span>
+      <button
+        type="button"
+        @click=${() => void signOut({ navigate: (url) => this._navigate(url), assign: (url) => this._navigate(url) })}
+      >
+        Sign out
+      </button>
+      <a href=${docs} target="_blank" rel="noopener">Help</a>
+    </header>`;
   }
 
   private async _load(): Promise<void> {
@@ -209,15 +244,21 @@ export class PlanChoiceScreen extends LitElement {
   }
 
   render() {
-    if (this._loading) {
+    if (this.checking || this._loading) {
       return html`
-        <div class="choice-loading">
-          <sl-spinner style="font-size: 3rem;"></sl-spinner>
+        ${this.identityHeader()}
+        <div class="choice-loading" role="status">
+          <sl-spinner
+            label="Checking your account"
+            style="font-size: 3rem;"
+          ></sl-spinner>
+          <p>${this.checking ? 'Checking your account…' : 'Loading plans…'}</p>
         </div>
       `;
     }
     return html`
       <div class="choice-page">
+        ${this.identityHeader()}
         <header class="choice-head">
           <h1>Choose your plan</h1>
           <p class="lead">
@@ -277,6 +318,16 @@ export class PlanChoiceScreen extends LitElement {
     unsafeCSS(pricingStyles),
     pricingPlansStyles,
     css`
+      .identity-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 1rem;
+        padding: 1.5rem;
+      }
+      .identity-header logo-component {
+        margin-right: auto;
+      }
       :host {
         display: block;
         min-height: 100vh;

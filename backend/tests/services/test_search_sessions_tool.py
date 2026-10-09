@@ -116,13 +116,19 @@ async def test_the_default_limit_is_the_one_the_schema_documents(mcp_server):
     )
 
 
-async def test_the_description_tells_the_agent_what_a_refusal_looks_like():
-    """A refusal is a code the agent can act on, not prose to parse."""
-    description = _catalog_entry()["description"]
-    assert "account_scope_not_granted" in description
-    assert "truncated" in description
-    assert "degraded" in description
-    assert "empty results list" in description
+async def test_the_description_stays_under_token_budget():
+    """search_sessions description plus schema stays under 250 tokens (#1044)."""
+    from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
+
+    entry = _catalog_entry()
+    tokens = estimate_tool_schema_tokens(
+        name=entry["name"],
+        description=entry["description"],
+        schema=entry["schema"],
+    )
+    assert tokens < 250, (
+        f"search_sessions token estimate {tokens} exceeds 250 token budget"
+    )
 
 
 async def test_the_tool_is_off_unless_it_is_selected():
@@ -191,17 +197,35 @@ async def test_a_preset_that_selected_the_tool_is_offered_it_despite_default_off
 
 
 def _call_tool_patches(available_names, *, policy=("allow", None, None)):
+    from contextlib import contextmanager
+
     db = MagicMock()
     db.close = MagicMock()
+    async_db = AsyncMock()
+    async_db_ctx = MagicMock()
+    async_db_ctx.__aenter__ = AsyncMock(return_value=async_db)
+    async_db_ctx.__aexit__ = AsyncMock(return_value=None)
     available = [
         SimpleNamespace(name=name, description="", parameters={})
         for name in available_names
     ]
+
+    @contextmanager
+    def _combined_db():
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp.get_db",
+                side_effect=lambda: iter([db]),
+            ),
+            patch(
+                "preloop.models.db.session.get_async_db_session",
+                return_value=async_db_ctx,
+            ),
+        ):
+            yield
+
     return (
-        patch(
-            "preloop.services.dynamic_fastmcp.get_db",
-            side_effect=lambda: iter([db]),
-        ),
+        _combined_db(),
         patch(
             "preloop.services.dynamic_fastmcp.kill_switch_service.tools_halted",
             return_value=False,

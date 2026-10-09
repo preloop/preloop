@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, Optional
 import litellm
 
 from preloop.models import models
+from preloop.services.usage_token_details import extract_token_details
 from preloop.services import alibaba_pricing, deepseek_pricing
 from preloop.services.litellm_routing import PROVIDER_PREFIX as _PROVIDER_PREFIX
 
@@ -523,24 +524,13 @@ def _estimate_cost_from_pricing(
 ) -> Optional[float]:
     """Estimate cost from a normalized pricing configuration."""
     usage_details = usage_details or {}
-    prompt_tokens_details = usage_details.get("prompt_tokens_details") or {}
-    # Anthropic reports cache reads at the top level; OpenAI nests them under
-    # prompt_tokens_details.cached_tokens. Without the top-level fallback,
-    # Anthropic cache reads were billed at the full input price.
-    cached_tokens = int(
-        prompt_tokens_details.get("cached_tokens")
-        or usage_details.get("cache_read_input_tokens")
-        or 0
-    )
-    cache_creation_tokens = int(
-        prompt_tokens_details.get("cache_creation_tokens")
-        or prompt_tokens_details.get("cache_creation_input_tokens")
-        or (prompt_tokens_details.get("cache_creation") or {}).get(
-            "ephemeral_5m_input_tokens"
-        )
-        or usage_details.get("cache_creation_input_tokens")
-        or 0
-    )
+    # Shared normalizer: Chat Completions (prompt_tokens_details), Responses
+    # (input_tokens_details) and Anthropic (top-level cache_*_input_tokens).
+    # Without the Responses shape, Responses cache reads were billed at the
+    # full input price (#1401).
+    token_details = extract_token_details(usage_details)
+    cached_tokens = token_details["cache_read_tokens"] or 0
+    cache_creation_tokens = token_details["cache_creation_tokens"] or 0
     uncached_prompt_tokens = max(
         prompt_tokens - cached_tokens - cache_creation_tokens, 0
     )

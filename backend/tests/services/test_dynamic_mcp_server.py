@@ -536,7 +536,7 @@ class TestHelperFunctions:
         with patch("preloop.api.endpoints.mcp.get_issue", AsyncMock()):
             with patch("preloop.api.endpoints.mcp.create_issue", AsyncMock()):
                 with patch("preloop.api.endpoints.mcp.update_issue", AsyncMock()):
-                    with patch("preloop.api.endpoints.mcp.search", AsyncMock()):
+                    with patch("preloop.api.endpoints.mcp.search_issues", AsyncMock()):
                         with patch(
                             "preloop.api.endpoints.mcp.estimate_compliance",
                             AsyncMock(),
@@ -547,16 +547,17 @@ class TestHelperFunctions:
                             ):
                                 register_default_tools(server)
 
-        # Check that 6 tools were registered
+        # 6 tools plus the deprecated "search" alias (#1044, removed in 0.18.0)
         names = server.get_registered_tool_names()
-        assert len(names["default"]) == 6
+        assert len(names["default"]) == 7
         # Triage folded into get_issue/update_issue (#661).
         assert "get_issue_triage_context" not in names["default"]
         assert "apply_issue_triage" not in names["default"]
         assert "get_issue" in names["default"]
         assert "create_issue" in names["default"]
         assert "update_issue" in names["default"]
-        assert "search" in names["default"]
+        assert "search_issues" in names["default"]
+        assert "search" in names["default"]  # deprecated alias
         assert "estimate_compliance" in names["default"]
         assert "improve_compliance" in names["default"]
 
@@ -566,7 +567,7 @@ class TestHelperFunctions:
         with patch("preloop.api.endpoints.mcp.get_issue", AsyncMock()):
             with patch("preloop.api.endpoints.mcp.create_issue", AsyncMock()):
                 with patch("preloop.api.endpoints.mcp.update_issue", AsyncMock()):
-                    with patch("preloop.api.endpoints.mcp.search", AsyncMock()):
+                    with patch("preloop.api.endpoints.mcp.search_issues", AsyncMock()):
                         with patch(
                             "preloop.api.endpoints.mcp.estimate_compliance",
                             AsyncMock(),
@@ -579,6 +580,6 @@ class TestHelperFunctions:
 
         assert server is not None
         names = server.get_registered_tool_names()
-        assert len(names["default"]) == 6
+        assert len(names["default"]) == 7
         assert "get_issue_triage_context" not in names["default"]
         assert "apply_issue_triage" not in names["default"]

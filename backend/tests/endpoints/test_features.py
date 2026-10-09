@@ -55,9 +55,9 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "policy_simulation": True,
                 "chat_connections": True,
                 "policies_console": True,
-                "policy_simulation": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
                 "multi_account": False,
@@ -93,9 +93,9 @@ class TestGetFeatures:
                 "first_account_pending": False,
                 "registration_bootstrap_pending": False,
                 "session_optimization": True,
+                "policy_simulation": True,
                 "chat_connections": True,
                 "policies_console": True,
-                "policy_simulation": True,
                 "bitbucket_dc": False,
                 "passkeys": True,
                 "multi_account": False,
@@ -132,6 +132,7 @@ class TestGetFeatures:
         assert "features" in result
         assert len(result["plugins"]) == 3
         assert len(result["features"]) == 16
+        assert result["features"]["policy_simulation"] is True
         assert result["features"]["session_optimization"] is True
         assert result["features"]["chat_connections"] is True
 

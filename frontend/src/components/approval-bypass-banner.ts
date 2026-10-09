@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { getApprovalBypassStatus, revokeAllApprovalBypasses } from '../api';
@@ -171,7 +172,7 @@ export class ApprovalBypassBanner extends LitElement {
   private countdown(): string {
     const expiry = this.status?.soonest_expiry;
     if (!expiry) return '';
-    const msLeft = new Date(`${expiry}Z`).getTime() - this.now;
+    const msLeft = parseUTCDate(expiry).getTime() - this.now;
     if (msLeft <= 0) return 'expiring now';
     const minutes = Math.floor(msLeft / 60000);
     if (minutes < 1) return 'less than a minute left';

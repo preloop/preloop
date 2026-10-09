@@ -10,7 +10,7 @@ ANY_TRACKER_DEFAULT_ENABLED = {
     "get_issue",
     "create_issue",
     "update_issue",
-    "search",
+    "search_issues",
     "add_comment",
 }
 GITHUB_GITLAB_ONLY = {

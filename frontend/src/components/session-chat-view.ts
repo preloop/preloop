@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import {
   renderSessionApproval,
   renderSessionActivity,
@@ -627,7 +628,7 @@ export class SessionChatView extends LitElement {
     }
     .divider {
       align-items: center;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       display: flex;
       font-size: var(--sl-font-size-x-small);
       gap: var(--sl-spacing-small);
@@ -894,7 +895,7 @@ export class SessionChatView extends LitElement {
 
   private formatTime(value: string | null): string {
     if (!value) return '';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleTimeString();
   }

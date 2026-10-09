@@ -1,3 +1,5 @@
+@import './table-scroll.css';
+
 /* =====================================================================
    Console surface tokens (wave 2).
 
@@ -570,7 +572,7 @@ sl-dialog.large::part(panel) {
 
 .empty-state sl-icon {
     font-size: 1.5rem;
-    color: var(--sl-color-neutral-400);
+    color: var(--console-meta-color);
     margin-bottom: var(--sl-spacing-2x-small);
 }
 

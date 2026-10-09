@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -8,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/divider/divider.js';
 
 @customElement('oauth-consent-view')
 export class OAuthConsentView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private clientId = '';
   @state() private clientName = '';
   @state() private redirectUri = '';

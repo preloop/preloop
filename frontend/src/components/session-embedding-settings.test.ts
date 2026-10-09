@@ -238,7 +238,7 @@ describe('SessionEmbeddingSettings', () => {
 
       const cap = q(el, 'embedding-cap')!;
       expect((cap as any).value).to.equal('');
-      expect(cap.getAttribute('placeholder')).to.equal('2.00');
+      expect(cap.getAttribute('placeholder')).to.equal('$2.00');
       const help = q(el, 'embedding-cap-help')!.textContent!.replace(
         /\s+/g,
         ' '

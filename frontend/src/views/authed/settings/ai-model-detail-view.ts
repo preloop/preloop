@@ -1,3 +1,8 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
+import { parseUTCDate } from '../../../utils/date';
+import { formatUsd, formatUsdExact } from '../../../utils/money';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../../router';
@@ -105,6 +110,8 @@ const PER_1K_TO_PER_1M = 1000;
 
 @customElement('ai-model-detail-view')
 export class AIModelDetailView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
+  private readonly editPermissions = new EditPermissions(this);
   @property({ type: String })
   modelId = '';
 
@@ -329,12 +336,12 @@ export class AIModelDetailView extends LitElement {
       }
 
       .price-cell-value.unknown {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-weight: 400;
       }
 
       .price-cell-unit {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
       }
 
@@ -1175,7 +1182,10 @@ export class AIModelDetailView extends LitElement {
   }
 
   private get canEditPrice(): boolean {
-    return this.priceOverridesEnabled;
+    return (
+      this.priceOverridesEnabled &&
+      this.editPermissions.allows('edit_ai_models')
+    );
   }
 
   /** Fill the form from the price in force, so editing starts from today. */
@@ -1228,6 +1238,7 @@ export class AIModelDetailView extends LitElement {
 
   /** Ask the provider what it charges. The answer fills the form, unsaved. */
   private async fetchProviderPrice(): Promise<void> {
+    if (!this.canEditPrice) return;
     if (!this.modelId) {
       return;
     }
@@ -1270,6 +1281,7 @@ export class AIModelDetailView extends LitElement {
    * by accident.
    */
   private async savePrice(): Promise<void> {
+    if (!this.canEditPrice) return;
     const input = this.parsePrice(this.priceDraft.input);
     const output = this.parsePrice(this.priceDraft.output);
     const cached = this.parsePrice(this.priceDraft.cachedInput);
@@ -1359,21 +1371,19 @@ export class AIModelDetailView extends LitElement {
     const price = this.pricing?.price;
     const parts: string[] = [];
     if (typeof price?.input_per_1m === 'number') {
-      parts.push(`input ${this.formatPrice(price.input_per_1m)} per 1M`);
+      parts.push(`input ${formatUsd(price.input_per_1m)} per 1M`);
     }
     if (typeof price?.output_per_1m === 'number') {
-      parts.push(`output ${this.formatPrice(price.output_per_1m)} per 1M`);
+      parts.push(`output ${formatUsd(price.output_per_1m)} per 1M`);
     }
     if (typeof price?.cached_input_per_1m === 'number') {
-      parts.push(
-        `cached input ${this.formatPrice(price.cached_input_per_1m)} per 1M`
-      );
+      parts.push(`cached input ${formatUsd(price.cached_input_per_1m)} per 1M`);
     }
     if (typeof price?.blended_per_1m === 'number') {
-      parts.push(`blended ${this.formatPrice(price.blended_per_1m)} per 1M`);
+      parts.push(`blended ${formatUsd(price.blended_per_1m)} per 1M`);
     }
     if (typeof price?.request_price === 'number') {
-      parts.push(`${this.formatPrice(price.request_price)} per request`);
+      parts.push(`${formatUsd(price.request_price)} per request`);
     }
     return parts.length ? parts.join(', ') : 'no rates';
   }
@@ -1389,13 +1399,13 @@ export class AIModelDetailView extends LitElement {
       return null;
     }
     const candidate =
-      effectiveFrom && new Date(effectiveFrom).getTime() <= Date.now()
+      effectiveFrom && parseUTCDate(effectiveFrom).getTime() <= Date.now()
         ? effectiveFrom
         : (this.summary?.period_start ?? null);
     if (!candidate) {
       return null;
     }
-    const time = new Date(candidate).getTime();
+    const time = parseUTCDate(candidate).getTime();
     if (!Number.isFinite(time) || time > Date.now()) {
       return null;
     }
@@ -1590,16 +1600,6 @@ export class AIModelDetailView extends LitElement {
     `;
   }
 
-  private formatCost(value: number | null | undefined): string {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
-      return '$0.00';
-    }
-    if (value === 0) {
-      return '$0.00';
-    }
-    return value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
-  }
-
   private formatPercent(numerator: number, denominator: number): string {
     if (denominator === 0) {
       return '0.0%';
@@ -1611,7 +1611,7 @@ export class AIModelDetailView extends LitElement {
     return new Intl.DateTimeFormat(undefined, {
       month: 'short',
       day: 'numeric',
-    }).format(new Date(value));
+    }).format(parseUTCDate(value));
   }
 
   private formatDate(value: string | null | undefined): string {
@@ -1622,7 +1622,7 @@ export class AIModelDetailView extends LitElement {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
-    }).format(new Date(value));
+    }).format(parseUTCDate(value));
   }
 
   private formatDateTime(value: string | null | undefined): string {
@@ -1635,7 +1635,7 @@ export class AIModelDetailView extends LitElement {
       year: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
-    }).format(new Date(value));
+    }).format(parseUTCDate(value));
   }
 
   private getSourceLabel(sourceType: string | null | undefined): string {
@@ -1691,6 +1691,7 @@ export class AIModelDetailView extends LitElement {
   }
 
   private openEditModal = () => {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     if (!this.model) {
       return;
     }
@@ -1714,6 +1715,7 @@ export class AIModelDetailView extends LitElement {
   };
 
   private async confirmDelete() {
+    if (!this.editPermissions.allows('delete_ai_models')) return;
     if (!this.model) {
       return;
     }
@@ -1729,6 +1731,7 @@ export class AIModelDetailView extends LitElement {
   }
 
   private async enableGatewayRouting() {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     if (!this.model?.id || !this.model.has_api_key) {
       this.validationError =
         'Add upstream API credentials on this model before enabling gateway routing.';
@@ -1846,7 +1849,11 @@ export class AIModelDetailView extends LitElement {
     }
   }
 
-  private renderStat(label: string, value: string, detail: string) {
+  private renderStat(
+    label: string,
+    value: string | ReturnType<typeof html>,
+    detail: string
+  ) {
     return html`
       <div class="stat-item">
         <div class="stat-label">${label}</div>
@@ -1865,8 +1872,8 @@ export class AIModelDetailView extends LitElement {
     if (!this.summary) {
       return null;
     }
-    const start = new Date(this.summary.period_start);
-    const end = new Date(this.summary.period_end);
+    const start = parseUTCDate(this.summary.period_start);
+    const end = parseUTCDate(this.summary.period_end);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
       return null;
     }
@@ -1905,7 +1912,7 @@ export class AIModelDetailView extends LitElement {
                 ${this.formatNumber(day.request_count)} req
               </div>
               <div class="cell-numeric">
-                ${this.formatCost(day.estimated_cost)}
+                ${html`<span title=${formatUsdExact(day.estimated_cost)}>${formatUsd(day.estimated_cost)}</span>`}
               </div>
             </div>
           `
@@ -1970,7 +1977,7 @@ export class AIModelDetailView extends LitElement {
                 ${this.formatNumber(session.token_usage.total_tokens)}
               </div>
               <div class="cell-numeric">
-                ${this.formatCost(session.estimated_cost)}
+                ${html`<span title=${formatUsdExact(session.estimated_cost)}>${formatUsd(session.estimated_cost)}</span>`}
               </div>
               <div>
                 ${this.formatDateTime(
@@ -2019,7 +2026,7 @@ export class AIModelDetailView extends LitElement {
         <div class="interaction-excerpt">${item.excerpt}</div>
         <div class="interaction-meta">
           ${this.formatNumber(item.token_usage.total_tokens)} tokens ·
-          ${this.formatCost(item.estimated_cost)}
+          ${html`<span title=${formatUsdExact(item.estimated_cost)}>${formatUsd(item.estimated_cost)}</span>`}
           ${item.flow_name ? html` · ${item.flow_name}` : ''}
           ${
             item.runtime_principal_name
@@ -2332,7 +2339,9 @@ export class AIModelDetailView extends LitElement {
           )}
           ${this.renderStat(
             '$ est.',
-            this.formatCost(this.summary.estimated_cost),
+            html`<span title=${formatUsdExact(this.summary.estimated_cost)}
+              >${formatUsd(this.summary.estimated_cost)}</span
+            >`,
             `${this.formatPercent(this.summary.successful_requests, this.summary.total_requests)} success rate`
           )}
           ${this.renderStat(
@@ -2454,6 +2463,8 @@ export class AIModelDetailView extends LitElement {
               ? html`<sl-button
                   size="small"
                   data-testid="fetch-price"
+                  ?disabled=${!this.canEditPrice}
+                  title=${!this.priceOverridesEnabled ? 'Price overrides are part of Preloop Cloud and Enterprise' : !this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
                   ?loading=${this.pricingFetching}
                   @click=${() => void this.fetchProviderPrice()}
                   >Fetch from provider</sl-button
@@ -2468,7 +2479,7 @@ export class AIModelDetailView extends LitElement {
           }
         </div>
         ${
-          this.canEditPrice
+          this.priceOverridesEnabled
             ? ''
             : html`<div class="meta-line">
                 Price overrides are part of Preloop Cloud and Enterprise. The
@@ -2490,24 +2501,13 @@ export class AIModelDetailView extends LitElement {
       <div class="price-cell">
         <div class="price-cell-label">${label}</div>
         <div class="price-cell-value ${known ? '' : 'unknown'}">
-          ${known ? this.formatPrice(value as number) : 'Not priced'}
+          ${known ? html`<span title=${formatUsdExact(value as number)}>${formatUsd(value as number)}</span>` : 'Not priced'}
         </div>
         <div class="price-cell-unit">
           ${perRequest ? 'per request' : 'per 1M tokens'}
         </div>
       </div>
     `;
-  }
-
-  /** Prices run from $0.02 to $75 per million, so two decimals is not enough. */
-  private formatPrice(value: number): string {
-    if (value === 0) {
-      return '$0';
-    }
-    if (value >= 1) {
-      return `$${value.toFixed(2)}`;
-    }
-    return `$${value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`;
   }
 
   private pricingProvenance(): string {
@@ -2607,6 +2607,8 @@ export class AIModelDetailView extends LitElement {
             variant="primary"
             size="small"
             data-testid="save-price"
+            ?disabled=${!this.canEditPrice}
+            title=${!this.priceOverridesEnabled ? 'Price overrides are part of Preloop Cloud and Enterprise' : !this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
             ?loading=${this.pricingSaving}
             @click=${() => void this.savePrice()}
             >Save price</sl-button
@@ -2672,23 +2674,31 @@ export class AIModelDetailView extends LitElement {
                     ${
                       this.model?.has_api_key
                         ? html`
-                            <sl-button
-                              variant="primary"
-                              ?loading=${this.gatewayEnableInFlight}
-                              @click=${this.enableGatewayRouting}
+                            <sl-tooltip
+                              content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+                              ><sl-button
+                                ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+                                variant="primary"
+                                ?loading=${this.gatewayEnableInFlight}
+                                @click=${this.enableGatewayRouting}
+                              >
+                                Enable Preloop gateway routing
+                              </sl-button></sl-tooltip
                             >
-                              Enable Preloop gateway routing
-                            </sl-button>
                           `
                         : html`
                             Add upstream API credentials
-                            <sl-button
-                              variant="text"
-                              size="small"
-                              @click=${this.openEditModal}
+                            <sl-tooltip
+                              content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+                              ><sl-button
+                                ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+                                variant="text"
+                                size="small"
+                                @click=${this.openEditModal}
+                              >
+                                (edit this model)
+                              </sl-button></sl-tooltip
                             >
-                              (edit this model)
-                            </sl-button>
                             before enabling gateway routing.
                           `
                     }
@@ -2757,7 +2767,11 @@ export class AIModelDetailView extends LitElement {
                 separated: true,
                 onClick: this.openDeleteConfirm,
               },
-            ]}
+            ].filter((action) =>
+              this.editPermissions.allows(
+                action.id === 'delete' ? 'delete_ai_models' : 'edit_ai_models'
+              )
+            )}
           ></resource-actions>
         </div>
       </view-header>
@@ -2902,6 +2916,7 @@ export class AIModelDetailView extends LitElement {
             <sl-card>
               <div slot="header" class="model-title">Budget Management</div>
               <budget-policy-editor
+                .readOnly=${!this.editPermissions.allows('manage_budgets')}
                 subjectType="ai_model"
                 .subjectId=${this.modelId}
               ></budget-policy-editor>
@@ -3039,8 +3054,15 @@ export class AIModelDetailView extends LitElement {
           @click=${() => (this.isDeleteConfirmOpen = false)}
           >Cancel</sl-button
         >
-        <sl-button slot="footer" variant="danger" @click=${this.confirmDelete}
-          >Delete</sl-button
+        <sl-tooltip
+          slot="footer"
+          content=${!this.editPermissions.allows('delete_ai_models') ? 'Requires delete_ai_models' : ''}
+          ><sl-button
+            ?disabled=${!this.editPermissions.allows('delete_ai_models')}
+            variant="danger"
+            @click=${this.confirmDelete}
+            >Delete</sl-button
+          ></sl-tooltip
         >
       </sl-dialog>
     `;

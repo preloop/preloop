@@ -311,6 +311,9 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert ci_subscription.down_revision == "20261004_ci_exec_artifact_merge"
     receipt = script.get_revision("20261009_oauth_receipt_anchor")
     assert receipt.down_revision == "20261004_ci_subscription_binding"
+    collisions = script.get_revision("20261009_mcp_tool_shadow_prefix")
+    assert collisions is not None
+    assert collisions.down_revision == "20261009_oauth_receipt_anchor"
     access = script.get_revision("20261009_access_rule_generation")
-    assert access.down_revision == "20261009_oauth_receipt_anchor"
+    assert access.down_revision == "20261009_mcp_tool_shadow_prefix"
     assert script.get_heads() == ["20261009_access_rule_generation"]

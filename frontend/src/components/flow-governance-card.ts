@@ -375,6 +375,7 @@ export class FlowGovernanceCard extends LitElement {
         </div>
         <div class="row" style="margin: 0;">
           <sl-select
+            aria-label="Native tool approvals"
             id="flow-native-tool-approvals"
             size="small"
             hoist
@@ -396,6 +397,7 @@ export class FlowGovernanceCard extends LitElement {
             <sl-option value="off">Off: auto-approve (recorded)</sl-option>
           </sl-select>
           <sl-select
+            aria-label="Approval workflow"
             id="flow-approval-workflow"
             size="small"
             hoist
@@ -423,6 +425,7 @@ export class FlowGovernanceCard extends LitElement {
           </div>
         </div>
         <sl-select
+          aria-label="Allowed models"
           id="flow-allowed-models"
           size="small"
           hoist

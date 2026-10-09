@@ -420,6 +420,33 @@ Preloop shows different tools to different users based on:
 
 ---
 
+## Same Tool Name on Two Servers
+
+Two MCP servers in one account can expose a tool with the same name, for example `search` or `read_scope`. Preloop never renames tools on its own: agents are prompted with tool names, and policies and tool configuration are keyed by them.
+
+- **The oldest server owns the name.** Among the account's active servers, the one created first (then the lower id) owns a name. Agents see the name once, calls go to that server, and that server's tool configuration applies.
+- **The newer server's tool is shadowed.** It is marked `shadowed`, hidden from agents and not callable. Preloop recomputes this when a server is added, updated, scanned or deleted. When the owner is deleted or disabled, the next oldest server takes the name over.
+- **Where you see it.** A warning badge on the server and a **Shadowed** badge on the tool in **Tools**, the warning list in the server's edit dialog, `warnings` in the API responses of create, update, scan, get and list (and per tool in `GET /api/v1/mcp-servers/{id}/tools`), `warning:` lines from `preloop mcp-servers list|tools|scan|add|update`, and one `configuration_change` audit event (`config_type: mcp_tool_collision`, action `shadowed` or `unshadowed`) per collision set, with the server ids and tool names.
+
+The warning reads:
+
+```text
+Tool 'read_scope' on MCP server 'newer' is shadowed by MCP server 'older', which was added earlier and exposes the same name. Agents see and call only the tool from 'older'. Set a tool prefix on this server to expose both.
+```
+
+### Exposing both: an explicit tool prefix
+
+Set **Tool prefix** on a server (console form, `tool_prefix` in the API, or `--tool-prefix` in the CLI) to expose its tools as `<prefix>_<tool>`:
+
+```bash
+preloop mcp-servers update newer --tool-prefix crm   # read_scope becomes crm_read_scope
+preloop mcp-servers update newer --tool-prefix ""    # clear it
+```
+
+The prefixed name is the name everywhere: listing, routing, access rules, tool configuration and policy YAML (`tool: crm_read_scope`). The upstream server still receives `read_scope`. A prefix is lowercase `[a-z0-9_]`, at most 32 characters, and the resulting name must be a valid MCP tool name (at most 128 characters from `A-Z a-z 0-9 _ - .`); a tool whose resulting name is invalid is not exposed and gets a warning. Changing a prefix renames the tools agents see, so update prompts and rules that use the old names. Preloop never sets a prefix for you.
+
+Servers shared into the account by another account rank after the account's own servers.
+
 ## Tool Output Filters
 
 Some MCP tools return verbose JSON results full of fields your agent never uses: raw HTML, embedded metadata, duplicate URLs. Every one of those fields is paid for again on each subsequent model call as session context. **Tool output filters** strip named top-level fields from a tool's JSON results on the proxy hot path, *before* the result reaches the calling agent, without modifying the upstream tool.

@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../styles/table-scroll';
 import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -78,157 +79,160 @@ export class AnswerForm extends LitElement {
   @state()
   private showErrors = false;
 
-  static styles = css`
-    :host {
-      display: block;
-    }
-
-    .field {
-      margin-bottom: 1rem;
-    }
-
-    :host([compact]) .field {
-      margin-bottom: 0.75rem;
-    }
-
-    .field:last-child {
-      margin-bottom: 0;
-    }
-
-    .field-label {
-      display: block;
-      font-size: var(--console-text-body, 14px);
-      font-weight: 600;
-      color: var(--sl-color-neutral-900);
-      margin-bottom: 0.25rem;
-    }
-
-    .required-marker {
-      color: var(--sl-color-danger-600);
-      margin-left: 0.125rem;
-    }
-
-    .field-help {
-      font-size: var(--console-text-meta, 13px);
-      color: var(--sl-color-neutral-600);
-      margin: 0 0 0.375rem 0;
-    }
-
-    .field-error {
-      font-size: var(--console-text-meta, 13px);
-      color: var(--sl-color-danger-700);
-      margin: 0.25rem 0 0 0;
-    }
-
-    .group {
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: 4px;
-      padding: 0.75rem;
-      margin: 0;
-    }
-
-    .item-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: var(--console-text-body, 14px);
-    }
-
-    .item-table th {
-      text-align: left;
-      font-size: var(--console-text-meta, 13px);
-      font-weight: 600;
-      color: var(--sl-color-neutral-600);
-      padding: 0.25rem 0.5rem 0.5rem 0;
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-    }
-
-    .item-table td {
-      vertical-align: top;
-      padding: 0.5rem 0.5rem 0.5rem 0;
-      border-bottom: 1px solid var(--sl-color-neutral-100);
-    }
-
-    .item-table td:last-child,
-    .item-table th:last-child {
-      padding-right: 0;
-    }
-
-    .item-title {
-      font-weight: 500;
-      color: var(--sl-color-neutral-900);
-    }
-
-    .item-detail {
-      font-size: var(--console-text-meta, 13px);
-      color: var(--sl-color-neutral-600);
-      margin-top: 0.125rem;
-    }
-
-    .item-chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.25rem;
-      margin-top: 0.25rem;
-    }
-
-    .chip::part(base) {
-      font-size: 12px;
-      font-weight: 500;
-      padding: 2px 8px;
-      border: none;
-    }
-
-    .row-fields {
-      display: flex;
-      flex-direction: column;
-      gap: 0.5rem;
-    }
-
-    .row-disabled-hint {
-      font-size: var(--console-text-meta, 13px);
-      color: var(--sl-color-neutral-500);
-    }
-
-    .autofilled {
-      display: flex;
-      align-items: center;
-      gap: 0.375rem;
-      font-size: var(--console-text-body, 14px);
-      color: var(--sl-color-neutral-700);
-      background: var(--sl-color-neutral-100);
-      border-radius: 4px;
-      padding: 0.375rem 0.5rem;
-    }
-
-    .autofilled sl-icon {
-      color: var(--sl-color-neutral-500);
-    }
-
-    /* A phone gets the same table as one row per finding, stacked. */
-    @media (max-width: 520px) {
-      .item-table,
-      .item-table tbody,
-      .item-table tr,
-      .item-table td {
+  static styles = [
+    tableScrollStyles,
+    css`
+      :host {
         display: block;
+      }
+
+      .field {
+        margin-bottom: 1rem;
+      }
+
+      :host([compact]) .field {
+        margin-bottom: 0.75rem;
+      }
+
+      .field:last-child {
+        margin-bottom: 0;
+      }
+
+      .field-label {
+        display: block;
+        font-size: var(--console-text-body, 14px);
+        font-weight: 600;
+        color: var(--sl-color-neutral-900);
+        margin-bottom: 0.25rem;
+      }
+
+      .required-marker {
+        color: var(--sl-color-danger-600);
+        margin-left: 0.125rem;
+      }
+
+      .field-help {
+        font-size: var(--console-text-meta, 13px);
+        color: var(--sl-color-neutral-600);
+        margin: 0 0 0.375rem 0;
+      }
+
+      .field-error {
+        font-size: var(--console-text-meta, 13px);
+        color: var(--sl-color-danger-700);
+        margin: 0.25rem 0 0 0;
+      }
+
+      .group {
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: 4px;
+        padding: 0.75rem;
+        margin: 0;
+      }
+
+      .item-table {
         width: 100%;
+        border-collapse: collapse;
+        font-size: var(--console-text-body, 14px);
       }
 
-      .item-table thead {
-        display: none;
-      }
-
-      .item-table tr {
+      .item-table th {
+        text-align: left;
+        font-size: var(--console-text-meta, 13px);
+        font-weight: 600;
+        color: var(--sl-color-neutral-600);
+        padding: 0.25rem 0.5rem 0.5rem 0;
         border-bottom: 1px solid var(--sl-color-neutral-200);
-        padding: 0.5rem 0;
       }
 
       .item-table td {
-        border-bottom: none;
-        padding: 0.25rem 0;
+        vertical-align: top;
+        padding: 0.5rem 0.5rem 0.5rem 0;
+        border-bottom: 1px solid var(--sl-color-neutral-100);
       }
-    }
-  `;
+
+      .item-table td:last-child,
+      .item-table th:last-child {
+        padding-right: 0;
+      }
+
+      .item-title {
+        font-weight: 500;
+        color: var(--sl-color-neutral-900);
+      }
+
+      .item-detail {
+        font-size: var(--console-text-meta, 13px);
+        color: var(--sl-color-neutral-600);
+        margin-top: 0.125rem;
+      }
+
+      .item-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+        margin-top: 0.25rem;
+      }
+
+      .chip::part(base) {
+        font-size: 12px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border: none;
+      }
+
+      .row-fields {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .row-disabled-hint {
+        font-size: var(--console-text-meta, 13px);
+        color: var(--console-meta-color);
+      }
+
+      .autofilled {
+        display: flex;
+        align-items: center;
+        gap: 0.375rem;
+        font-size: var(--console-text-body, 14px);
+        color: var(--sl-color-neutral-700);
+        background: var(--sl-color-neutral-100);
+        border-radius: 4px;
+        padding: 0.375rem 0.5rem;
+      }
+
+      .autofilled sl-icon {
+        color: var(--console-meta-color);
+      }
+
+      /* A phone gets the same table as one row per finding, stacked. */
+      @media (max-width: 520px) {
+        .item-table,
+        .item-table tbody,
+        .item-table tr,
+        .item-table td {
+          display: block;
+          width: 100%;
+        }
+
+        .item-table thead {
+          display: none;
+        }
+
+        .item-table tr {
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+          padding: 0.5rem 0;
+        }
+
+        .item-table td {
+          border-bottom: none;
+          padding: 0.25rem 0;
+        }
+      }
+    `,
+  ];
 
   /** The schema this form was last built for, so a re-render keeps the input. */
   private builtFor: QuestionSchema | null = null;
@@ -905,33 +909,38 @@ export class AnswerForm extends LitElement {
     return html`
       <div class="field" data-field=${name}>
         ${this.renderLabel(name, field)}
-        <table class="item-table">
-          <thead>
-            <tr>
-              <th scope="col">Pick</th>
-              <th scope="col">Item</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map(
-              (item) => html`
-                <tr data-item-id=${item.id}>
-                  <td>
-                    <sl-checkbox
-                      class="item-checkbox"
-                      value=${item.id}
-                      ?checked=${selected.has(item.id)}
-                      ?disabled=${this.disabled}
-                      @sl-change=${(e: Event) =>
-                        toggle(item.id, (e.target as HTMLInputElement).checked)}
-                    ></sl-checkbox>
-                  </td>
-                  <td>${this.renderItemCell(item)}</td>
-                </tr>
-              `
-            )}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="item-table">
+            <thead>
+              <tr>
+                <th scope="col">Pick</th>
+                <th scope="col">Item</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(
+                (item) => html`
+                  <tr data-item-id=${item.id}>
+                    <td>
+                      <sl-checkbox
+                        class="item-checkbox"
+                        value=${item.id}
+                        ?checked=${selected.has(item.id)}
+                        ?disabled=${this.disabled}
+                        @sl-change=${(e: Event) =>
+                          toggle(
+                            item.id,
+                            (e.target as HTMLInputElement).checked
+                          )}
+                      ></sl-checkbox>
+                    </td>
+                    <td>${this.renderItemCell(item)}</td>
+                  </tr>
+                `
+              )}
+            </tbody>
+          </table>
+        </div>
         ${this.renderError(name)}
       </div>
     `;
@@ -956,24 +965,32 @@ export class AnswerForm extends LitElement {
     return html`
       <div class="field" data-field=${name}>
         ${this.renderLabel(name, field)}
-        <table class="item-table">
-          <thead>
-            <tr>
-              <th scope="col">Pick</th>
-              <th scope="col">Item</th>
-              ${
-                extraKeys.length > 0
-                  ? html`<th scope="col">${columnLabel}</th>`
-                  : nothing
-              }
-            </tr>
-          </thead>
-          <tbody>
-            ${rows.map((item) =>
-              this.renderPickRow(name, item, properties, extraKeys, columnLabel)
-            )}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="item-table">
+            <thead>
+              <tr>
+                <th scope="col">Pick</th>
+                <th scope="col">Item</th>
+                ${
+                  extraKeys.length > 0
+                    ? html`<th scope="col">${columnLabel}</th>`
+                    : nothing
+                }
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((item) =>
+                this.renderPickRow(
+                  name,
+                  item,
+                  properties,
+                  extraKeys,
+                  columnLabel
+                )
+              )}
+            </tbody>
+          </table>
+        </div>
         ${this.renderError(name)}
       </div>
     `;

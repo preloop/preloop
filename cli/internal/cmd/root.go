@@ -139,6 +139,7 @@ func init() {
 	rootCmd.AddCommand(authCmd)
 	rootCmd.AddCommand(policyCmd)
 	rootCmd.AddCommand(toolsCmd)
+	rootCmd.AddCommand(mcpServersCmd)
 	rootCmd.AddCommand(approvalsCmd)
 	rootCmd.AddCommand(agentsCmd)
 	rootCmd.AddCommand(copilotCmd)

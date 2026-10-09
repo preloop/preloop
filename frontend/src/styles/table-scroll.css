@@ -1,0 +1,14 @@
+.table-scroll {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+/* Shoelace cards default to inline-block; let a wide table shrink within them. */
+sl-card:has(.table-scroll) {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}

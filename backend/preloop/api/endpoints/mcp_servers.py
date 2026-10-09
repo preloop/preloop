@@ -5,7 +5,7 @@ import hashlib
 import logging
 import os
 import secrets
-from typing import Dict, List
+from typing import Any, Dict, List
 from uuid import UUID
 
 import httpx
@@ -29,6 +29,13 @@ from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, filter_viewable
 from preloop.services.mcp_tool_discovery import (
     get_cached_tools_for_server,
     scan_mcp_server_tools,
+)
+from preloop.services.mcp_tool_collisions import (
+    exposed_tool_name,
+    recompute_and_audit,
+    server_warnings,
+    server_warnings_map,
+    tool_warnings_by_id,
 )
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
@@ -128,6 +135,7 @@ async def create_mcp_server(
             auth_config=auth_config,
             status="error" if validation_error else "active",
             last_error=validation_error if validation_error else None,
+            tool_prefix=server_data.tool_prefix,
         )
 
         db.add(new_server)
@@ -144,6 +152,7 @@ async def create_mcp_server(
                 "name": new_server.name,
                 "url": new_server.url,
                 "transport": new_server.transport,
+                "tool_prefix": new_server.tool_prefix,
             },
         )
 
@@ -166,7 +175,9 @@ async def create_mcp_server(
             else:
                 try:
                     logger.info(f"Auto-scanning MCP server {new_server.id} for tools")
-                    tools = await scan_mcp_server_tools(new_server.id, db)
+                    tools = await scan_mcp_server_tools(
+                        new_server.id, db, user=current_user
+                    )
                     logger.info(
                         f"Auto-scan complete: discovered {len(tools)} tools for {new_server.name}"
                     )
@@ -174,7 +185,7 @@ async def create_mcp_server(
                     logger.warning(f"Auto-scan failed for {new_server.id}: {e}")
                     # Don't fail the creation if scan fails - user can manually rescan
 
-        return MCPServerResponse.model_validate(new_server)
+        return _server_response(db, new_server)
 
     except Exception as e:
         db.rollback()
@@ -208,7 +219,12 @@ def list_mcp_servers(
         servers = filter_viewable(db, current_user, VISIBLE_MCP_SERVER, servers)
         logger.info(f"Found {len(servers)} MCP servers")
 
-        return [MCPServerResponse.model_validate(server) for server in servers]
+        try:
+            warnings_by_server = server_warnings_map(db, str(current_user.account_id))
+        except Exception:
+            logger.warning("Could not compute MCP tool warnings", exc_info=True)
+            warnings_by_server = {}
+        return [_server_response(db, server, warnings_by_server) for server in servers]
     except Exception as e:
         logger.error(f"Error listing MCP servers: {e}", exc_info=True)
         raise
@@ -244,7 +260,27 @@ async def get_mcp_server(
             detail="MCP server not found or access denied",
         )
 
-    return MCPServerResponse.model_validate(server)
+    return _server_response(db, server)
+
+
+def _server_response(
+    db: Session,
+    server: MCPServer,
+    warnings_by_server: Dict[str, List[str]] | None = None,
+) -> MCPServerResponse:
+    """Server response with its tool-collision warnings (#1135).
+
+    A list passes ``warnings_by_server`` computed once for the account.
+    """
+    response = MCPServerResponse.model_validate(server)
+    try:
+        if warnings_by_server is not None:
+            response.warnings = warnings_by_server.get(str(server.id), [])
+        else:
+            response.warnings = server_warnings(db, server)
+    except Exception:
+        logger.warning("Could not compute MCP tool warnings", exc_info=True)
+    return response
 
 
 async def _evict_mcp_client(server_id: UUID) -> None:
@@ -324,7 +360,11 @@ async def update_mcp_server(
             "name": server.name,
             "url": server.url,
             "transport": server.transport,
+            "tool_prefix": server.tool_prefix,
         }
+        old_exposed = [
+            exposed_tool_name(server.tool_prefix, tool.name) for tool in server.tools
+        ]
 
         for field, value in update_data.items():
             setattr(server, field, value)
@@ -344,14 +384,23 @@ async def update_mcp_server(
                 "name": server.name,
                 "url": server.url,
                 "transport": server.transport,
+                "tool_prefix": server.tool_prefix,
             },
         )
+
+        # A new prefix or status changes which names this server exposes or
+        # owns: recompute shadowing and drop wrappers for retired names.
+        recompute_and_audit(db, str(current_user.account_id), current_user)
+        if old_snapshot["tool_prefix"] != server.tool_prefix:
+            _unregister_proxied_tools(
+                str(current_user.account_id), server_id, old_exposed
+            )
 
         logger.info(
             f"Updated MCP server {server_id} for account {current_user.account_id}"
         )
 
-        return MCPServerResponse.model_validate(server)
+        return _server_response(db, server)
 
     except Exception as e:
         db.rollback()
@@ -411,7 +460,8 @@ async def delete_mcp_server(
         from preloop.models.crud import crud_mcp_tool
 
         tool_names = [
-            tool.name for tool in crud_mcp_tool.get_by_server(db, server_id=server_id)
+            exposed_tool_name(server.tool_prefix, tool.name)
+            for tool in crud_mcp_tool.get_by_server(db, server_id=server_id)
         ]
 
         # Delete the MCP server
@@ -427,6 +477,8 @@ async def delete_mcp_server(
             action="deleted",
             old_value={"id": str(server_id), "name": server_name},
         )
+        # The next oldest server takes over names this server owned.
+        recompute_and_audit(db, str(current_user.account_id), current_user)
 
         logger.info(
             f"Deleted MCP server {server_id} and {len(tool_configs) if tool_configs else 0} "
@@ -450,7 +502,7 @@ async def scan_mcp_server(
     server_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Trigger a tool discovery scan for an MCP server.
 
     Args:
@@ -488,7 +540,7 @@ async def scan_mcp_server(
                 detail="OAuth account not connected yet. Click 'Connect OAuth Account' to authorize first.",
             )
 
-        tools = await scan_mcp_server_tools(server_id, db)
+        tools = await scan_mcp_server_tools(server_id, db, user=current_user)
 
         logger.info(
             f"Scan complete for MCP server {server_id}: {len(tools)} tools discovered"
@@ -497,6 +549,7 @@ async def scan_mcp_server(
         return {
             "message": f"Scan completed successfully. Discovered {len(tools)} tools.",
             "tool_count": str(len(tools)),
+            "warnings": server_warnings(db, server),
         }
 
     except ValueError as e:
@@ -544,8 +597,15 @@ async def list_mcp_server_tools(
 
     try:
         tools = await get_cached_tools_for_server(server_id, db)
+        warnings = tool_warnings_by_id(db, server)
 
-        return [MCPToolResponse.model_validate(tool) for tool in tools]
+        responses = []
+        for tool in tools:
+            item = MCPToolResponse.model_validate(tool)
+            item.exposed_name = exposed_tool_name(server.tool_prefix, tool.name)
+            item.warnings = warnings.get(str(tool.id), [])
+            responses.append(item)
+        return responses
 
     except Exception as e:
         logger.error(

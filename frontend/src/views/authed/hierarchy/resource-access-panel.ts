@@ -423,6 +423,7 @@ export class ResourceAccessPanel extends LitElement {
               ${
                 this.draftTarget === 'tag'
                   ? html`<sl-input
+                      aria-label="Share tag"
                       size="small"
                       data-testid="share-tag"
                       placeholder="customer=acme"
@@ -486,6 +487,7 @@ export class ResourceAccessPanel extends LitElement {
           ? nothing
           : html`<div class="row">
               <sl-input
+                aria-label="New resource tag"
                 id="new-tag"
                 size="small"
                 placeholder="key=value"

@@ -3,7 +3,7 @@
 import uuid
 from typing import TYPE_CHECKING, Dict, Optional
 
-from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy import Boolean, false, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -36,6 +36,13 @@ class MCPTool(Base):
 
     # Discovery tracking
     discovered_at: Mapped[str] = mapped_column(String, nullable=False)
+
+    # True when an older active server in the same account exposes the same
+    # tool name (after its optional prefix). Shadowed tools are not listed to
+    # agents and not callable; the older server owns the name (#1135).
+    shadowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     # Relationships
     mcp_server: Mapped["MCPServer"] = relationship(back_populates="tools")

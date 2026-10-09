@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -364,7 +365,7 @@ export class SessionListPanel extends LitElement {
 
   private formatDate(value: string | null): string {
     if (!value) return 'No activity yet';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleString();
   }

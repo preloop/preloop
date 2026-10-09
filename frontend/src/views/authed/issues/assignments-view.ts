@@ -1,8 +1,10 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, html, css } from 'lit';
 import { customElement } from 'lit/decorators.js';
 
 @customElement('assignments-view')
 export class AssignmentsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = css`
     :host {
       display: flex;

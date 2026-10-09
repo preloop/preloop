@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
+import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -74,6 +76,7 @@ const RESOURCE_TYPES = [
 
 @customElement('records-view')
 export class RecordsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private canAudit = false;
   @state() private canPolicies = false;
   @state() private canManage = false;
@@ -132,71 +135,74 @@ export class RecordsView extends LitElement {
   } | null = null;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    consoleDialogStyles,
-    css`
-      .jump {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-small);
-        margin-bottom: var(--sl-spacing-large);
-      }
-      .section {
-        scroll-margin-top: 72px;
-        margin-bottom: var(--sl-spacing-large);
-      }
-      .facts {
-        display: grid;
-        grid-template-columns: minmax(9rem, 16rem) 1fr;
-      }
-      .facts dt,
-      .facts dd {
-        margin: 0;
-        padding: var(--sl-spacing-x-small) 0;
-        border-bottom: 1px solid var(--console-hairline);
-      }
-      .facts dt {
-        color: var(--console-meta-color);
-        font-size: var(--sl-font-size-small);
-      }
-      .honesty,
-      .note {
-        color: var(--console-meta-color);
-        font-size: var(--sl-font-size-small);
-      }
-      .command {
-        background: var(--console-page);
-        padding: var(--sl-spacing-small);
-        overflow-x: auto;
-        font-family: var(--sl-font-mono);
-        font-size: var(--sl-font-size-small);
-      }
-      .row-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-small);
-        align-items: end;
-        margin-top: var(--sl-spacing-medium);
-      }
-      .danger-gap {
-        margin-left: var(--sl-spacing-large);
-      }
-      .warn {
-        color: var(--sl-color-warning-700);
-      }
-      @media (max-width: 640px) {
-        .facts {
-          grid-template-columns: 1fr;
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      consoleDialogStyles,
+      css`
+        .jump {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-small);
+          margin-bottom: var(--sl-spacing-large);
         }
-        .danger-gap {
-          margin-left: 0;
+        .section {
+          scroll-margin-top: 72px;
+          margin-bottom: var(--sl-spacing-large);
+        }
+        .facts {
+          display: grid;
+          grid-template-columns: minmax(9rem, 16rem) 1fr;
+        }
+        .facts dt,
+        .facts dd {
+          margin: 0;
+          padding: var(--sl-spacing-x-small) 0;
+          border-bottom: 1px solid var(--console-hairline);
+        }
+        .facts dt {
+          color: var(--console-meta-color);
+          font-size: var(--sl-font-size-small);
+        }
+        .honesty,
+        .note {
+          color: var(--console-meta-color);
+          font-size: var(--sl-font-size-small);
+        }
+        .command {
+          background: var(--console-page);
+          padding: var(--sl-spacing-small);
+          overflow-x: auto;
+          font-family: var(--sl-font-mono);
+          font-size: var(--sl-font-size-small);
         }
         .row-actions {
-          flex-direction: column;
-          align-items: stretch;
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-small);
+          align-items: end;
+          margin-top: var(--sl-spacing-medium);
         }
-      }
-    `,
+        .danger-gap {
+          margin-left: var(--sl-spacing-large);
+        }
+        .warn {
+          color: var(--sl-color-warning-700);
+        }
+        @media (max-width: 640px) {
+          .facts {
+            grid-template-columns: 1fr;
+          }
+          .danger-gap {
+            margin-left: 0;
+          }
+          .row-actions {
+            flex-direction: column;
+            align-items: stretch;
+          }
+        }
+      `,
+    ],
   ];
 
   connectedCallback(): void {
@@ -840,38 +846,40 @@ ${offlineAuditCommand(range)}</pre>
         ${
           this.checkpoints.length === 0
             ? html`<div class="empty-state">No checkpoints yet.</div>`
-            : html`<table class="styled-table">
-                <thead>
-                  <tr>
-                    <th>Seq</th>
-                    <th>Row count</th>
-                    <th>Checkpointed at</th>
-                    <th>Key id</th>
-                    <th>Signature</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${this.checkpoints.map(
-                    (row) =>
-                      html`<tr>
-                        <td>${row.seq}</td>
-                        <td>${row.row_count}</td>
-                        <td>${row.checkpointed_at}</td>
-                        <td>${row.signing_key_id || 'None'}</td>
-                        <td>
-                          ${
-                            row.signature
-                              ? html`${truncateMiddle(row.signature)}
-                                  <sl-copy-button
-                                    value=${row.signature}
-                                  ></sl-copy-button>`
-                              : 'None'
-                          }
-                        </td>
-                      </tr>`
-                  )}
-                </tbody>
-              </table>`
+            : html`<div class="table-scroll">
+                <table class="styled-table">
+                  <thead>
+                    <tr>
+                      <th>Seq</th>
+                      <th>Row count</th>
+                      <th>Checkpointed at</th>
+                      <th>Key id</th>
+                      <th>Signature</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${this.checkpoints.map(
+                      (row) =>
+                        html`<tr>
+                          <td>${row.seq}</td>
+                          <td>${row.row_count}</td>
+                          <td>${row.checkpointed_at}</td>
+                          <td>${row.signing_key_id || 'None'}</td>
+                          <td>
+                            ${
+                              row.signature
+                                ? html`${truncateMiddle(row.signature)}
+                                    <sl-copy-button
+                                      value=${row.signature}
+                                    ></sl-copy-button>`
+                                : 'None'
+                            }
+                          </td>
+                        </tr>`
+                    )}
+                  </tbody>
+                </table>
+              </div>`
         }
         ${
           this.checkpointsDone
@@ -900,42 +908,44 @@ ${offlineAuditCommand(range)}</pre>
             ? html`<div class="empty-state">
                 No signing key has been published.
               </div>`
-            : html`<table class="styled-table">
-                <thead>
-                  <tr>
-                    <th>Key id</th>
-                    <th>Algorithm</th>
-                    <th>Created</th>
-                    <th>Status</th>
-                    <th>Public half</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${keys.map(
-                    (key) =>
-                      html`<tr>
-                        <td>${key.key_id}</td>
-                        <td>${key.algorithm}</td>
-                        <td>${key.created_at || 'Unknown'}</td>
-                        <td>
-                          ${key.active ? 'Active' : `Retired ${key.retired_at || ''}`}
-                        </td>
-                        <td>
-                          <code>${truncateMiddle(key.public_key, 24)}</code>
-                          <sl-copy-button
-                            value=${key.public_key}
-                          ></sl-copy-button>
-                          <sl-button
-                            size="small"
-                            variant="text"
-                            @click=${() => downloadText(`${key.key_id}.pub`, key.public_key)}
-                            >Download .pub</sl-button
-                          >
-                        </td>
-                      </tr>`
-                  )}
-                </tbody>
-              </table>`
+            : html`<div class="table-scroll">
+                <table class="styled-table">
+                  <thead>
+                    <tr>
+                      <th>Key id</th>
+                      <th>Algorithm</th>
+                      <th>Created</th>
+                      <th>Status</th>
+                      <th>Public half</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${keys.map(
+                      (key) =>
+                        html`<tr>
+                          <td>${key.key_id}</td>
+                          <td>${key.algorithm}</td>
+                          <td>${key.created_at || 'Unknown'}</td>
+                          <td>
+                            ${key.active ? 'Active' : `Retired ${key.retired_at || ''}`}
+                          </td>
+                          <td>
+                            <code>${truncateMiddle(key.public_key, 24)}</code>
+                            <sl-copy-button
+                              value=${key.public_key}
+                            ></sl-copy-button>
+                            <sl-button
+                              size="small"
+                              variant="text"
+                              @click=${() => downloadText(`${key.key_id}.pub`, key.public_key)}
+                              >Download .pub</sl-button
+                            >
+                          </td>
+                        </tr>`
+                    )}
+                  </tbody>
+                </table>
+              </div>`
         }
         ${
           this.canManage
@@ -980,64 +990,67 @@ ${offlineAuditCommand(range)}</pre>
                     ${settings.default_days}. Maximum ${settings.max_days}.
                     Values below the floor are raised before they are saved.
                   </p>
-                  <table class="styled-table">
-                    <thead>
-                      <tr>
-                        <th>Record class</th>
-                        <th>Days</th>
-                        <th>Source</th>
-                        <th>Floored</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${settings.classes.map((row) => {
-                        const editable = retentionRowEditable(row);
-                        return html`<tr>
-                            <td>${row.label}</td>
-                            <td>
-                              ${
-                                editable
-                                  ? html`<sl-input
-                                      type="number"
-                                      size="small"
-                                      data-testid=${`retention-${row.record_class}`}
-                                      min=${settings.floor_days}
-                                      max=${settings.max_days}
-                                      .value=${String(
-                                        this.drafts[row.record_class] ??
-                                          row.days
-                                      )}
-                                      @sl-change=${(event: Event) =>
-                                        this.setDraft(
-                                          row.record_class,
-                                          (event.target as HTMLInputElement)
-                                            .value
+                  <div class="table-scroll">
+                    <table class="styled-table">
+                      <thead>
+                        <tr>
+                          <th>Record class</th>
+                          <th>Days</th>
+                          <th>Source</th>
+                          <th>Floored</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${settings.classes.map((row) => {
+                          const editable = retentionRowEditable(row);
+                          return html`<tr>
+                              <td>${row.label}</td>
+                              <td>
+                                ${
+                                  editable
+                                    ? html`<sl-input
+                                        aria-label="Retention days"
+                                        type="number"
+                                        size="small"
+                                        data-testid=${`retention-${row.record_class}`}
+                                        min=${settings.floor_days}
+                                        max=${settings.max_days}
+                                        .value=${String(
+                                          this.drafts[row.record_class] ??
+                                            row.days
                                         )}
-                                    ></sl-input>`
-                                  : html`<span
-                                      >${row.days === -1 ? 'Unlimited' : row.days}</span
-                                    >`
-                              }
-                            </td>
-                            <td>${row.source}</td>
-                            <td>${row.floored ? 'Yes' : 'No'}</td>
-                          </tr>
-                          ${
-                            !editable
-                              ? html`<tr>
-                                  <td colspan="4" class="note">
-                                    ${
-                                      row.days === -1
-                                        ? 'Unlimited because a subscription history promise prevents deletion. This row is read-only.'
-                                        : 'This class follows a subscription history promise and cannot be shortened here.'
-                                    }
-                                  </td>
-                                </tr>`
-                              : nothing
-                          }`;
-                      })}
-                    </tbody>
-                  </table>
+                                        @sl-change=${(event: Event) =>
+                                          this.setDraft(
+                                            row.record_class,
+                                            (event.target as HTMLInputElement)
+                                              .value
+                                          )}
+                                      ></sl-input>`
+                                    : html`<span
+                                        >${row.days === -1 ? 'Unlimited' : row.days}</span
+                                      >`
+                                }
+                              </td>
+                              <td>${row.source}</td>
+                              <td>${row.floored ? 'Yes' : 'No'}</td>
+                            </tr>
+                            ${
+                              !editable
+                                ? html`<tr>
+                                    <td colspan="4" class="note">
+                                      ${
+                                        row.days === -1
+                                          ? 'Unlimited because a subscription history promise prevents deletion. This row is read-only.'
+                                          : 'This class follows a subscription history promise and cannot be shortened here.'
+                                      }
+                                    </td>
+                                  </tr>`
+                                : nothing
+                            }`;
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                   ${
                     this.canManage
                       ? html`<div class="row-actions">
@@ -1076,28 +1089,30 @@ ${offlineAuditCommand(range)}</pre>
                   >
                   ${
                     this.preview
-                      ? html`<table
-                          class="styled-table"
-                          data-testid="purge-preview"
-                        >
-                          <thead>
-                            <tr>
-                              <th>Class</th>
-                              <th>Cutoff</th>
-                              <th>Purgeable</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            ${this.preview.classes.map(
-                              (row) =>
-                                html`<tr>
-                                  <td>${row.label}</td>
-                                  <td>${row.cutoff || 'None'}</td>
-                                  <td>${row.purgeable}</td>
-                                </tr>`
-                            )}
-                          </tbody>
-                        </table>`
+                      ? html`<div class="table-scroll">
+                          <table
+                            class="styled-table"
+                            data-testid="purge-preview"
+                          >
+                            <thead>
+                              <tr>
+                                <th>Class</th>
+                                <th>Cutoff</th>
+                                <th>Purgeable</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              ${this.preview.classes.map(
+                                (row) =>
+                                  html`<tr>
+                                    <td>${row.label}</td>
+                                    <td>${row.cutoff || 'None'}</td>
+                                    <td>${row.purgeable}</td>
+                                  </tr>`
+                              )}
+                            </tbody>
+                          </table>
+                        </div>`
                       : nothing
                   }
                 `
@@ -1147,73 +1162,75 @@ ${offlineAuditCommand(range)}</pre>
             ? html`<div class="empty-state" data-testid="holds-empty">
                 No legal holds. ${HOLD_DOES} ${HOLD_DOES_NOT}
               </div>`
-            : html`<table class="styled-table" data-testid="holds-table">
-                <thead>
-                  <tr>
-                    <th>Resource</th>
-                    <th>Id</th>
-                    <th>Reason</th>
-                    <th>Placed by</th>
-                    <th>Placed at</th>
-                    <th>Released</th>
-                    <th>Status</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${this.holds.map((hold) => {
-                    const href = holdResourceHref(
-                      hold.resource_type,
-                      hold.resource_id
-                    );
-                    return html`<tr>
-                      <td>${hold.resource_type}</td>
-                      <td>
-                        ${
-                          href
-                            ? html`<a href=${href}>${hold.resource_id}</a>`
-                            : html`<span
-                                >${hold.resource_id}
-                                <span class="note"
-                                  >Evidence packs open from the execution that
-                                  produced them.</span
-                                ></span
-                              >`
-                        }
-                      </td>
-                      <td>${hold.reason}</td>
-                      <td>${hold.placed_by_user_id || 'Unknown'}</td>
-                      <td>${hold.placed_at || 'Unknown'}</td>
-                      <td>
-                        ${
-                          hold.released_at
-                            ? `${hold.released_at} by ${hold.released_by_user_id || 'unknown'}`
-                            : 'Still in force'
-                        }
-                      </td>
-                      <td>${hold.active ? 'Active' : 'Released'}</td>
-                      <td>
-                        ${
-                          hold.active && this.canManage
-                            ? html`<sl-button
-                                size="small"
-                                variant="danger"
-                                outline
-                                data-testid=${`release-${hold.id}`}
-                                @click=${() => {
-                                  this.releaseTarget = hold;
-                                  this.releaseReason = '';
-                                  this.releaseError = null;
-                                }}
-                                >Release</sl-button
-                              >`
-                            : nothing
-                        }
-                      </td>
-                    </tr>`;
-                  })}
-                </tbody>
-              </table>`
+            : html`<div class="table-scroll">
+                <table class="styled-table" data-testid="holds-table">
+                  <thead>
+                    <tr>
+                      <th>Resource</th>
+                      <th>Id</th>
+                      <th>Reason</th>
+                      <th>Placed by</th>
+                      <th>Placed at</th>
+                      <th>Released</th>
+                      <th>Status</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${this.holds.map((hold) => {
+                      const href = holdResourceHref(
+                        hold.resource_type,
+                        hold.resource_id
+                      );
+                      return html`<tr>
+                        <td>${hold.resource_type}</td>
+                        <td>
+                          ${
+                            href
+                              ? html`<a href=${href}>${hold.resource_id}</a>`
+                              : html`<span
+                                  >${hold.resource_id}
+                                  <span class="note"
+                                    >Evidence packs open from the execution that
+                                    produced them.</span
+                                  ></span
+                                >`
+                          }
+                        </td>
+                        <td>${hold.reason}</td>
+                        <td>${hold.placed_by_user_id || 'Unknown'}</td>
+                        <td>${hold.placed_at || 'Unknown'}</td>
+                        <td>
+                          ${
+                            hold.released_at
+                              ? `${hold.released_at} by ${hold.released_by_user_id || 'unknown'}`
+                              : 'Still in force'
+                          }
+                        </td>
+                        <td>${hold.active ? 'Active' : 'Released'}</td>
+                        <td>
+                          ${
+                            hold.active && this.canManage
+                              ? html`<sl-button
+                                  size="small"
+                                  variant="danger"
+                                  outline
+                                  data-testid=${`release-${hold.id}`}
+                                  @click=${() => {
+                                    this.releaseTarget = hold;
+                                    this.releaseReason = '';
+                                    this.releaseError = null;
+                                  }}
+                                  >Release</sl-button
+                                >`
+                              : nothing
+                          }
+                        </td>
+                      </tr>`;
+                    })}
+                  </tbody>
+                </table>
+              </div>`
         }
         <sl-dialog
           label="Place legal hold"

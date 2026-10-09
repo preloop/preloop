@@ -176,6 +176,7 @@ export class AppHeader extends LitElement {
             ${
               this.showDrawerToggle
                 ? html`<sl-icon-button
+                    aria-label="Open navigation"
                     name="menu"
                     @click=${() =>
                       this.dispatchEvent(

@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import type { RuntimeSessionActivityItem } from '../types';
@@ -121,7 +122,7 @@ export class BrowserStepRow extends LitElement {
     const action = String(meta.action || 'other');
     const failed = String(item.status || '').toLowerCase() === 'failed';
     const time = item.timestamp
-      ? new Date(item.timestamp).toLocaleTimeString()
+      ? parseUTCDate(item.timestamp).toLocaleTimeString()
       : '';
     const shot = meta.screenshot;
     return html`

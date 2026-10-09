@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../styles/table-scroll';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
@@ -61,88 +62,91 @@ export class ExecutionReportPanel extends LitElement {
   @state() private sortAsc = true;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    unsafeCSS(markdownBodyCss),
-    css`
-      .layout {
-        display: grid;
-        grid-template-columns: 12rem 1fr;
-        gap: var(--sl-spacing-medium);
-      }
-      .outline {
-        position: sticky;
-        top: 0;
-        align-self: start;
-      }
-      .outline a {
-        display: block;
-        color: var(--console-link-color);
-        font-size: var(--console-text-meta);
-        margin: 0 0 var(--sl-spacing-2x-small);
-        text-decoration: none;
-      }
-      .outline a.l2 {
-        padding-left: var(--sl-spacing-small);
-      }
-      .outline a.l3 {
-        padding-left: var(--sl-spacing-medium);
-      }
-      h2 {
-        font-size: var(--console-text-body);
-        margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small);
-      }
-      .filters {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-small);
-        margin-bottom: var(--sl-spacing-small);
-      }
-      select {
-        font: inherit;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: var(--console-text-meta);
-      }
-      th,
-      td {
-        border-bottom: 1px solid var(--console-hairline);
-        padding: 6px 8px;
-        text-align: left;
-        vertical-align: top;
-      }
-      th button {
-        background: none;
-        border: 0;
-        color: inherit;
-        cursor: pointer;
-        font: inherit;
-        padding: 0;
-      }
-      .mono {
-        font-family: var(--sl-font-mono);
-      }
-      .note,
-      .error {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-      }
-      .error {
-        color: var(--sl-color-danger-600);
-      }
-      .pack-line {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-small);
-        align-items: center;
-      }
-      @media (max-width: 720px) {
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      unsafeCSS(markdownBodyCss),
+      css`
         .layout {
-          grid-template-columns: 1fr;
+          display: grid;
+          grid-template-columns: 12rem 1fr;
+          gap: var(--sl-spacing-medium);
         }
-      }
-    `,
+        .outline {
+          position: sticky;
+          top: 0;
+          align-self: start;
+        }
+        .outline a {
+          display: block;
+          color: var(--console-link-color);
+          font-size: var(--console-text-meta);
+          margin: 0 0 var(--sl-spacing-2x-small);
+          text-decoration: none;
+        }
+        .outline a.l2 {
+          padding-left: var(--sl-spacing-small);
+        }
+        .outline a.l3 {
+          padding-left: var(--sl-spacing-medium);
+        }
+        h2 {
+          font-size: var(--console-text-body);
+          margin: var(--sl-spacing-medium) 0 var(--sl-spacing-x-small);
+        }
+        .filters {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-small);
+          margin-bottom: var(--sl-spacing-small);
+        }
+        select {
+          font: inherit;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: var(--console-text-meta);
+        }
+        th,
+        td {
+          border-bottom: 1px solid var(--console-hairline);
+          padding: 6px 8px;
+          text-align: left;
+          vertical-align: top;
+        }
+        th button {
+          background: none;
+          border: 0;
+          color: inherit;
+          cursor: pointer;
+          font: inherit;
+          padding: 0;
+        }
+        .mono {
+          font-family: var(--sl-font-mono);
+        }
+        .note,
+        .error {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+        }
+        .error {
+          color: var(--sl-color-danger-600);
+        }
+        .pack-line {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-small);
+          align-items: center;
+        }
+        @media (max-width: 720px) {
+          .layout {
+            grid-template-columns: 1fr;
+          }
+        }
+      `,
+    ],
   ];
 
   updated(changed: Map<string, unknown>): void {
@@ -314,52 +318,54 @@ export class ExecutionReportPanel extends LitElement {
           </select>
         </label>
       </div>
-      <table data-testid="findings-table">
-        <thead>
-          <tr>
-            <th>${sortButton('id', 'Id')}</th>
-            <th>${sortButton('lens', 'Lens')}</th>
-            <th>${sortButton('severity', 'Severity')}</th>
-            <th>${sortButton('title', 'Summary')}</th>
-            ${
-              cra
-                ? html`<th>Package</th>
-                    <th>CVSS</th>
-                    <th>KEV</th>
-                    <th>Fix</th>
-                    <th>VEX</th>`
-                : html`<th>Evidence</th>
-                    <th>Status</th>`
-            }
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(
-            (row) => html`
-              <tr>
-                <td class="mono">${row.id}</td>
-                <td>${row.lens}</td>
-                <td>
-                  <sl-badge variant=${severityVariant(row.severity)} pill
-                    >${row.severity}</sl-badge
-                  >
-                </td>
-                <td>${row.title}</td>
-                ${
-                  cra
-                    ? html`<td>${row.pkg}</td>
-                        <td>${row.cvss}</td>
-                        <td>${row.kev}</td>
-                        <td>${row.fix}</td>
-                        <td>${row.vex}</td>`
-                    : html`<td class="mono">${row.evidence}</td>
-                        <td>${row.status}</td>`
-                }
-              </tr>
-            `
-          )}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table data-testid="findings-table">
+          <thead>
+            <tr>
+              <th>${sortButton('id', 'Id')}</th>
+              <th>${sortButton('lens', 'Lens')}</th>
+              <th>${sortButton('severity', 'Severity')}</th>
+              <th>${sortButton('title', 'Summary')}</th>
+              ${
+                cra
+                  ? html`<th>Package</th>
+                      <th>CVSS</th>
+                      <th>KEV</th>
+                      <th>Fix</th>
+                      <th>VEX</th>`
+                  : html`<th>Evidence</th>
+                      <th>Status</th>`
+              }
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(
+              (row) => html`
+                <tr>
+                  <td class="mono">${row.id}</td>
+                  <td>${row.lens}</td>
+                  <td>
+                    <sl-badge variant=${severityVariant(row.severity)} pill
+                      >${row.severity}</sl-badge
+                    >
+                  </td>
+                  <td>${row.title}</td>
+                  ${
+                    cra
+                      ? html`<td>${row.pkg}</td>
+                          <td>${row.cvss}</td>
+                          <td>${row.kev}</td>
+                          <td>${row.fix}</td>
+                          <td>${row.vex}</td>`
+                      : html`<td class="mono">${row.evidence}</td>
+                          <td>${row.status}</td>`
+                  }
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 
@@ -376,28 +382,30 @@ export class ExecutionReportPanel extends LitElement {
     }
     return html`
       <h2>Register</h2>
-      <table data-testid="register-table">
-        <thead>
-          <tr>
-            <th>Module</th>
-            <th>Lens</th>
-            <th>Status</th>
-            <th>Note</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(
-            (row) => html`
-              <tr>
-                <td>${row.module}</td>
-                <td>${row.lens}</td>
-                <td>${row.status}</td>
-                <td>${row.note}</td>
-              </tr>
-            `
-          )}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table data-testid="register-table">
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Lens</th>
+              <th>Status</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(
+              (row) => html`
+                <tr>
+                  <td>${row.module}</td>
+                  <td>${row.lens}</td>
+                  <td>${row.status}</td>
+                  <td>${row.note}</td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 
@@ -424,34 +432,36 @@ export class ExecutionReportPanel extends LitElement {
           ? html`<p class="note">${evidence.integrity_note}</p>`
           : nothing
       }
-      <table data-testid="members-table">
-        <thead>
-          <tr>
-            <th>Path</th>
-            <th>Size</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${this.members.map(
-            (member) => html`
-              <tr>
-                <td class="mono">${member.path}</td>
-                <td>${formatBytes(member.size_bytes)}</td>
-                <td>
-                  <button
-                    type="button"
-                    data-testid="member-download"
-                    @click=${() => this.download(member.path)}
-                  >
-                    Download
-                  </button>
-                </td>
-              </tr>
-            `
-          )}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table data-testid="members-table">
+          <thead>
+            <tr>
+              <th>Path</th>
+              <th>Size</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${this.members.map(
+              (member) => html`
+                <tr>
+                  <td class="mono">${member.path}</td>
+                  <td>${formatBytes(member.size_bytes)}</td>
+                  <td>
+                    <button
+                      type="button"
+                      data-testid="member-download"
+                      @click=${() => this.download(member.path)}
+                    >
+                      Download
+                    </button>
+                  </td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 

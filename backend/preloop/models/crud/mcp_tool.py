@@ -148,16 +148,30 @@ class CRUDMCPTool(CRUDBase[models.MCPTool]):
         db: Session,
         server_ids: List[UUID],
     ) -> List[str]:
-        """Retrieve distinct tool names for a set of MCP servers."""
+        """Distinct exposed tool names for a set of MCP servers.
+
+        The exposed name is ``<tool_prefix>_<name>`` on a server with a prefix.
+        Shadowed tools are left out: an older server owns the name (#1135).
+        """
         if not server_ids:
             return []
         rows = (
-            db.query(self.model.name)
-            .filter(self.model.mcp_server_id.in_(server_ids))
-            .distinct()
+            db.query(self.model.name, models.MCPServer.tool_prefix)
+            .join(models.MCPServer, self.model.mcp_server_id == models.MCPServer.id)
+            .filter(
+                self.model.mcp_server_id.in_(server_ids),
+                self.model.shadowed.is_(False),
+            )
             .all()
         )
-        return [row.name for row in rows if row.name]
+        names: List[str] = []
+        for name, prefix in rows:
+            if not name:
+                continue
+            exposed = f"{prefix}_{name}" if prefix else name
+            if exposed not in names:
+                names.append(exposed)
+        return names
 
 
 crud_mcp_tool = CRUDMCPTool()

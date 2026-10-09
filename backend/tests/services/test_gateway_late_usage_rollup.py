@@ -20,7 +20,9 @@ from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
 
 
-def _record(context_data: dict) -> tuple[MagicMock, OpenAIGatewayService]:
+def _record(
+    context_data: dict, *, hosted: bool = False
+) -> tuple[MagicMock, OpenAIGatewayService]:
     account_id = uuid4()
     user = SimpleNamespace(id=uuid4(), account_id=account_id)
     api_key = SimpleNamespace(
@@ -54,6 +56,9 @@ def _record(context_data: dict) -> tuple[MagicMock, OpenAIGatewayService]:
         meta_data={},
     )
     model = models.AIModel(
+        id=uuid4(),
+        account_id=None if hosted else user.account_id,
+        meta_data={"hosted": hosted},
         name="probe-model",
         provider_name="openai",
         model_identifier="gpt-5",
@@ -95,6 +100,9 @@ def _record(context_data: dict) -> tuple[MagicMock, OpenAIGatewayService]:
             upstream_response=None,
             endpoint_kind="chat_completions",
         )
+    service._captured_billing_metadata = (
+        usage_crud.log_gateway_request.call_args.kwargs["meta_data"]
+    )
     return sync, service
 
 
@@ -109,3 +117,13 @@ def test_usage_row_for_a_run_resyncs_its_rollup():
 def test_usage_row_without_a_run_does_not_touch_rollups():
     sync, _ = _record({})
     sync.assert_not_called()
+
+
+def test_recorded_request_names_actual_model_and_billing_path() -> None:
+    for hosted, expected in [(False, "your_key"), (True, "allowance")]:
+        _sync, service = _record({}, hosted=hosted)
+        metadata = service._captured_billing_metadata
+        assert metadata["billing_path"] == expected
+        assert metadata["billing_model_name"] == "probe-model"
+        assert metadata["billing_model_id"]
+        assert "provider-secret" not in str(metadata)

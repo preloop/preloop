@@ -1,3 +1,6 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+import { formatUsd } from '../../utils/money';
+
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
@@ -397,6 +400,7 @@ type TimelineRow =
 
 @customElement('flow-execution-view')
 export class FlowExecutionView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   // Vaadin Router lifecycle callback
   onBeforeEnter(location: any) {
     this.executionId = location.params.executionId;
@@ -2227,9 +2231,9 @@ export class FlowExecutionView extends LitElement {
     const pricedAt = execution.cost_priced_at;
     const endedAt = execution.end_time;
     if (!pricedAt || !endedAt) return nothing;
-    const priced = new Date(pricedAt);
+    const priced = parseUTCDate(pricedAt);
     if (Number.isNaN(priced.getTime())) return nothing;
-    if (priced.getTime() <= new Date(endedAt).getTime()) return nothing;
+    if (priced.getTime() <= parseUTCDate(endedAt).getTime()) return nothing;
     return html`<span class="strip-note" data-testid="strip-cost-priced-at"
       >priced ${priced.toLocaleString()}</span
     >`;
@@ -2334,8 +2338,8 @@ export class FlowExecutionView extends LitElement {
     if (synthesizedLogs.length > 0) {
       this.logs = [...this.logs, ...synthesizedLogs].sort(
         (left, right) =>
-          new Date(left.timestamp).getTime() -
-          new Date(right.timestamp).getTime()
+          parseUTCDate(left.timestamp).getTime() -
+          parseUTCDate(right.timestamp).getTime()
       );
     }
   }
@@ -2526,8 +2530,8 @@ export class FlowExecutionView extends LitElement {
     return entries
       .sort(
         (left, right) =>
-          new Date(right.timestamp).getTime() -
-          new Date(left.timestamp).getTime()
+          parseUTCDate(right.timestamp).getTime() -
+          parseUTCDate(left.timestamp).getTime()
       )
       .filter((entry) => {
         if (seen.has(entry.key)) {
@@ -3210,6 +3214,7 @@ ${execution.model_output_summary}</pre>
       <div class="logs-panel">
         <div class="logs-toolbar">
           <sl-input
+            aria-label="Search execution logs"
             class="log-search"
             size="small"
             clearable
@@ -3579,7 +3584,7 @@ ${execution.resolved_input_prompt}</pre>
             data-testid="strip-cost"
             title=${
               execution.cost_priced_at
-                ? `Priced at ${new Date(execution.cost_priced_at).toLocaleString()}`
+                ? `Priced at ${parseUTCDate(execution.cost_priced_at).toLocaleString()}`
                 : nothing
             }
             >${costText}${costCeiling}${this.renderRepricedNote(
@@ -4165,7 +4170,7 @@ ${log.payload.content}</pre>
             ?.toolName || 'structured MCP call'
         }`;
       case 'budget_update':
-        return `Budget used: $${log.payload.budget_used?.toFixed(2) || '0.00'}`;
+        return `Budget used: ${formatUsd(log.payload.budget_used)}`;
       default:
         return log.payload.message || JSON.stringify(log.payload);
     }

@@ -42,6 +42,10 @@ from preloop.schemas.tool_approval_condition import (
     ConditionTestRequest,
     ConditionTestResponse,
 )
+from preloop.services.mcp_tool_collisions import (
+    warnings_from_loaded,
+    exposed_tool_name,
+)
 from preloop.services.policy.loader import _detect_condition_type
 from preloop.services.policy_evaluator import evaluate_cel_expression
 from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
@@ -66,6 +70,7 @@ from preloop.tools.builtin_defs import (
     LIST_SESSIONS_TOOL,
     SEARCH_SESSIONS_TOOL,
     SEND_NOTE_TOOL,
+    TOOL_NAME_ALIASES as TOOL_NAME_ALIASES,
     UPDATE_ISSUE_DESCRIPTION,
     UPDATE_ISSUE_SCHEMA,
 )
@@ -130,11 +135,38 @@ BUILTIN_TOOLS = [
         "schema": UPDATE_ISSUE_SCHEMA,
     },
     {
-        "name": "search",
-        "description": "Search for issues and comments using similarity or fulltext search",
+        "name": "search_issues",
+        "description": "Search issues and comments across connected trackers using similarity or fulltext search. Read-only.",
         "source": "builtin",
         "requires_tracker": True,
         "required_tracker_types": [],
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "project": {
+                    "type": "string",
+                    "description": "Project identifier or slug to narrow search scope",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "search",
+        "description": (
+            "Search for issues and comments in connected trackers. "
+            "(Deprecated: use search_issues instead. Will be removed in 0.18.0.)"
+        ),
+        "source": "builtin",
+        "requires_tracker": True,
+        "required_tracker_types": [],
+        "default_enabled": False,
         "schema": {
             "type": "object",
             "properties": {
@@ -694,11 +726,18 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
     ):
         tools_by_server.setdefault(str(tool.mcp_server_id), []).append(tool)
 
+    # Warnings from the rows just loaded, so this list does not read them again.
+    mcp_warnings = (
+        warnings_from_loaded(mcp_servers, tools_by_server) if mcp_servers else {}
+    )
     for server in mcp_servers:
         mcp_tools = tools_by_server.get(str(server.id), [])
 
         for mcp_tool in mcp_tools:
-            mcp_key = (mcp_tool.name, "mcp", str(server.id))
+            # Exposed name: '<tool_prefix>_<tool>' on a prefixed server. Tool
+            # configuration is keyed by it (#1135).
+            exposed_name = exposed_tool_name(server.tool_prefix, mcp_tool.name)
+            mcp_key = (exposed_name, "mcp", str(server.id))
             config = config_map.get(mcp_key)
             config_id = str(config.id) if config else None
             justification_mode = config.justification_mode if config else None
@@ -709,7 +748,7 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
             description = mcp_tool.description or ""
             tools.append(
                 {
-                    "name": mcp_tool.name,
+                    "name": exposed_name,
                     "description": description,
                     "source": "mcp",
                     "source_id": str(server.id),
@@ -732,8 +771,10 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
                     else [],
                     "justification_mode": justification_mode,
                     "enabled_for_agents": agent_scoped_enables.get(mcp_key, []),
+                    "shadowed": bool(mcp_tool.shadowed),
+                    "warnings": mcp_warnings.get(str(mcp_tool.id), []),
                     "schema_tokens_estimate": estimate_tool_schema_tokens(
-                        name=mcp_tool.name,
+                        name=exposed_name,
                         description=description,
                         schema=mcp_tool.input_schema,
                         justification_mode=justification_mode,

@@ -1,14 +1,14 @@
 """Account-access generation counters and committed cross-replica invalidation.
 
 Revision ID: 20261009_access_rule_generation
-Revises: 20261009_oauth_receipt_anchor
+Revises: 20261009_mcp_tool_shadow_prefix
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 revision = "20261009_access_rule_generation"
-down_revision = "20261009_oauth_receipt_anchor"
+down_revision = "20261009_mcp_tool_shadow_prefix"
 branch_labels = None
 depends_on = None
 

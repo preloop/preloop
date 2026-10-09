@@ -243,6 +243,7 @@ export class AccountSwitcher extends LitElement {
           ${
             this.memberships.length > SEARCH_THRESHOLD
               ? html`<sl-input
+                  aria-label="Find an account"
                   size="small"
                   placeholder="Find an account"
                   data-testid="account-search"
