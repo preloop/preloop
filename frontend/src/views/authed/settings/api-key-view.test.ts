@@ -311,7 +311,28 @@ describe('ApiKeyView', () => {
       expect(box.disabled).to.equal(false);
       await toggle(box, true);
       await waitUntil(() => governancePuts().length === 1);
-      expect(governancePuts()[0].allowed_models).to.deep.equal(['Model B']);
+      expect(governancePuts()[0].allowed_models).to.deep.equal([
+        'anthropic/model-b',
+      ]);
+    });
+
+    it('stores the configured gateway alias after a display-name rename', async () => {
+      const renamed = {
+        ...MODELS[1],
+        name: 'Renamed display label',
+        meta_data: { gateway: { model_alias: 'team/stable-model' } },
+      };
+      fetchStub = createFetchStub({
+        models: [MODELS[0], renamed],
+        allowedModels: ['openai/model-a'],
+      });
+      const element = await mount();
+      await toggle(checkbox(element, 'Renamed display label'), true);
+      await waitUntil(() => governancePuts().length === 1);
+      expect(governancePuts()[0].allowed_models).to.deep.equal([
+        'openai/model-a',
+        'team/stable-model',
+      ]);
     });
 
     it('refuses to empty the list by unchecking the last model', async () => {
