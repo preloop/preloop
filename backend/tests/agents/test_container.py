@@ -3095,6 +3095,101 @@ class TestLegacyContinuationProvenance:
         assert self._stored_body(tmp_path, "github") == seeded
 
 
+class TestEvidenceExclude:
+    """Live rehearsal 2026-10-09: a feedback continuation committed
+    evidence/resume-rebased and evidence/pr-template.md with `git add -A`;
+    the verification gate matched no rule for them and refused the repair."""
+
+    def test_exclude_keeps_evidence_untracked(self, tmp_path):
+        import subprocess
+
+        repo = tmp_path / "workspace"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "evidence").mkdir()
+        (repo / "evidence" / "resume-rebased").write_text("")
+        (repo / "code.pm").write_text("1;\n")
+        from preloop.agents import container as container_module
+
+        original = container_module.EVIDENCE_DIR_PATH
+        container_module.EVIDENCE_DIR_PATH = f"{repo}/evidence"
+        try:
+            shell = ContainerAgentExecutor._build_evidence_exclude_shell(str(repo))
+        finally:
+            container_module.EVIDENCE_DIR_PATH = original
+        for _ in range(2):  # idempotent
+            subprocess.run(["bash", "-c", shell], check=True, cwd=tmp_path)
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        staged = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        assert staged == ["code.pm"]
+        exclude = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+        assert exclude.count("/evidence/") == 1
+
+    def test_repository_that_tracks_evidence_keeps_it(self, tmp_path):
+        """Review on #1436: a customer repo with its own top-level evidence/
+        must not have new files there silently dropped."""
+        import subprocess
+
+        repo = tmp_path / "workspace"
+        repo.mkdir()
+        run = lambda *a: subprocess.run(  # noqa: E731
+            ["git", "-C", str(repo), *a], check=True, capture_output=True, text=True
+        )
+        run("init", "-q")
+        run("config", "user.email", "t@example.com")
+        run("config", "user.name", "t")
+        (repo / "evidence").mkdir()
+        (repo / "evidence" / "audit.md").write_text("tracked\n")
+        run("add", "-A")
+        run("commit", "-qm", "own evidence dir")
+        (repo / "evidence" / "new.md").write_text("agent file\n")
+        from preloop.agents import container as container_module
+
+        original = container_module.EVIDENCE_DIR_PATH
+        container_module.EVIDENCE_DIR_PATH = f"{repo}/evidence"
+        try:
+            shell = ContainerAgentExecutor._build_evidence_exclude_shell(str(repo))
+        finally:
+            container_module.EVIDENCE_DIR_PATH = original
+        subprocess.run(["bash", "-c", shell], check=True, cwd=tmp_path)
+        run("add", "-A")
+        staged = run("diff", "--cached", "--name-only").stdout.split()
+        assert staged == ["evidence/new.md"]
+
+    def test_exclude_runs_after_the_restore_wrapper(self, container_executor):
+        """Review on #1436: a restored workspace skips the clone command, so
+        the exclude must be its own step after the clone-or-restore block."""
+        context = {
+            "execution_id": "exec-1",
+            "flow_id": "f",
+            "trigger_project_id": None,
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://bitbucket.org/acme/repo.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+        }
+        commands = container_executor._evidence_exclude_commands(context)
+        assert len(commands) == 1
+        assert "/evidence/" in commands[0]
+        clone = container_executor._prepare_git_clone_command(context)
+        assert "info/exclude" not in clone
+
+    def test_no_exclude_when_evidence_is_outside_the_checkout(self):
+        assert (
+            ContainerAgentExecutor._build_evidence_exclude_shell("/workspace-2") == ""
+        )
+
+
 class TestDockerScriptChunking:
     """Live rehearsal 2026-10-09: a Jira-triggered implementation run on the
     Docker runtime failed to start with "args[1] is 142571 bytes" because the
