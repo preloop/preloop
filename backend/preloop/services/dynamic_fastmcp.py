@@ -38,6 +38,7 @@ from preloop.services.sensitive_data import tool_policy as sensitive_tool_policy
 from preloop.services.sensitive_data.storage import (
     StorageScope,
     apply_storage_redaction,
+    attach_result_to_reference,
 )
 from preloop.services.sensitive_data.storage import (
     cached_config as apply_storage_redaction_config,
@@ -2007,6 +2008,7 @@ async def {internal_name}({params_str}):
         sensitive_detectors = None
         sensitive_bindings: Optional[dict] = None
         args_outcome = None
+        matched_rule_description: Optional[str] = None
         upstream_arguments: Optional[dict] = None
         try:
             sensitive_config, sensitive_detectors = await asyncio.wait_for(
@@ -2107,6 +2109,7 @@ async def {internal_name}({params_str}):
                 )
 
             action, approval_workflow_id, reason = _policy_decision
+            matched_rule_description = reason
 
             logger.info(
                 f"Policy evaluation for '{name}': action={action}, "
@@ -2283,6 +2286,12 @@ async def {internal_name}({params_str}):
                 plugin_manager = get_plugin_manager()
                 audit_service = plugin_manager.get_service("audit_service")
                 if audit_service:
+                    audit_scope = StorageScope(
+                        target="tool.args",
+                        tool_name=client_tool_name,
+                        server_name=scope_server_name,
+                        managed_agent_id=scope_agent_id,
+                    )
                     audit_service.log_tool_call_async(
                         db_factory=lambda: next(get_db()),
                         account_id=uuid.UUID(user_context.account_id),
@@ -2294,21 +2303,27 @@ async def {internal_name}({params_str}):
                         tool_name=client_tool_name,
                         # Credential scrub first, then the account's redact
                         # rules: the chain hashes the redacted row (#1123).
-                        tool_args=apply_storage_redaction(
+                        # Under reference-only the record also gets the
+                        # result's fingerprint and $result kept fields; the
+                        # result itself is not stored (#1368).
+                        tool_args=attach_result_to_reference(
                             user_context.account_id,
-                            redact_dict(arguments),
-                            scope=StorageScope(
-                                target="tool.args",
-                                tool_name=client_tool_name,
-                                server_name=scope_server_name,
-                                managed_agent_id=scope_agent_id,
+                            apply_storage_redaction(
+                                user_context.account_id,
+                                redact_dict(arguments),
+                                scope=audit_scope,
+                                config=storage_config,
                             ),
+                            result=result,
+                            scope=audit_scope,
                             config=storage_config,
                         ),
                         result=audit_status,
                         duration_ms=elapsed_ms,
                         policy_decision=None,
-                        rule_matched=None,
+                        # The access rule the evaluator matched for this
+                        # call, as on its policy_* row (same correlation_id).
+                        rule_matched=matched_rule_description,
                         correlation_id=correlation_id,
                         runtime_session_id=user_context.runtime_session_id,
                         runtime_principal_type=user_context.runtime_principal_type,

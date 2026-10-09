@@ -933,7 +933,10 @@ export class SensitiveDataPanel extends LitElement {
         <legend>Fields to keep as references</legend>
         <span class="hint"
           >JSON paths into the tool input, for example
-          <code>$.consent_id</code> or <code>$.call.id</code>.</span
+          <code>$.consent_id</code> or <code>$.call.id</code>. Start a path with
+          <code>$result</code> to keep a field the tool returns, for example
+          <code>$result.consent_id</code>; the result itself is not
+          stored.</span
         >
         ${entry.keepFields.map((field, fieldIndex) => {
           const key = `ref-${index}-field-${fieldIndex}`;

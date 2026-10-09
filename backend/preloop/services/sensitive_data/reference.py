@@ -3,7 +3,8 @@
 For calls in scope of a ``sensitive_data.reference_only`` rule, no store
 holds the tool arguments or the result. It holds a reference record: tool,
 server, principal, rule id and decision, the values named by
-``keep_fields``, scrypt fingerprints of the arguments and the result,
+``keep_fields`` (argument paths under ``kept``, ``$result`` paths under
+``kept_result``), scrypt fingerprints of the arguments and the result,
 byte sizes, key names, timing and cost.
 
 Fingerprints are keyed with a per-account secret salt stored encrypted on
@@ -279,10 +280,135 @@ def _walk(value: Any, tokens: Sequence[Any]) -> List[Any]:
     return []
 
 
-def extract_keep_fields(arguments: Any, keep_fields: Sequence[str]) -> Dict[str, Any]:
-    """Values named by ``keep_fields``; a ``[*]`` path yields a list."""
+#: Root of a ``keep_fields`` path that reads the tool result, not the
+#: arguments: ``$result.consent_id``. A distinct root (rather than
+#: ``$.result.x``) so an argument literally named ``result`` keeps its
+#: meaning in configs written before result paths existed.
+RESULT_PATH_ROOT = "$result"
+
+
+def is_result_path(path: str) -> bool:
+    """True for a ``keep_fields`` entry rooted at ``$result``."""
+    return path.startswith(RESULT_PATH_ROOT) and path[
+        len(RESULT_PATH_ROOT) : len(RESULT_PATH_ROOT) + 1
+    ] in (".", "[")
+
+
+def split_keep_fields(keep_fields: Sequence[str]) -> Tuple[List[str], List[str]]:
+    """``(argument_paths, result_paths)``; result paths keep their ``$result``."""
+    args_paths = [path for path in keep_fields if not is_result_path(path)]
+    result_paths = [path for path in keep_fields if is_result_path(path)]
+    return args_paths, result_paths
+
+
+def _get(value: Any, *names: str) -> Any:
+    for name in names:
+        if isinstance(value, dict):
+            if name in value:
+                return value[name]
+        elif hasattr(value, name):
+            return getattr(value, name)
+    return None
+
+
+def _first_json_text(content: Any) -> Any:
+    """The first text block that parses as JSON; non-JSON blocks are skipped."""
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        text = _get(block, "text")
+        if text is None:
+            continue
+        try:
+            return json.loads(text)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def result_payloads(result: Any) -> List[Any]:
+    """The JSON values a ``$result`` path is read from, in order.
+
+    ``structuredContent`` when the result has one (MCP ``CallToolResult``,
+    FastMCP ``ToolResult.structured_content`` or the dict forms), then the
+    first text content block that parses as JSON (non-JSON blocks are
+    skipped). A path missing from the first
+    is looked up in the second: FastMCP wraps a tool that returns a JSON
+    string as ``{"result": "<string>"}``, and the text block holds the
+    object. A plain dict or list without those keys is used as is.
+    """
+    if result is None:
+        return []
+    payloads: List[Any] = []
+    structured = _get(result, "structuredContent", "structured_content")
+    if structured is not None:
+        payloads.append(structured)
+    content = _get(result, "content")
+    if isinstance(content, list):
+        parsed = _first_json_text(content)
+        if parsed is not None:
+            payloads.append(parsed)
+    elif not payloads:
+        if isinstance(result, (dict, list)):
+            payloads.append(result)
+        elif isinstance(result, str):
+            try:
+                payloads.append(json.loads(result))
+            except ValueError:
+                pass
+    return payloads
+
+
+def result_fingerprint_payload(result: Any) -> Any:
+    """JSON-serialisable form of a tool result for ``result_hmac``.
+
+    Structured content plus the text blocks, so the same upstream answer
+    yields the same fingerprint whether it arrives as an MCP object or a
+    dict.
+    """
+    if result is None or isinstance(result, (dict, list, str, int, float, bool)):
+        return result
+    texts = [
+        _get(block, "text")
+        for block in (_get(result, "content") or [])
+        if _get(block, "text") is not None
+    ]
+    return {
+        "structuredContent": _get(result, "structuredContent", "structured_content"),
+        "text": texts,
+    }
+
+
+def extract_result_keep_fields(
+    result: Any, keep_fields: Sequence[str]
+) -> Dict[str, Any]:
+    """Values named by the ``$result`` entries of ``keep_fields``.
+
+    Keys are the paths as configured (``$result.consent_id``).
+    """
+    _, result_paths = split_keep_fields(keep_fields)
+    if not result_paths:
+        return {}
+    payloads = result_payloads(result)
     kept: Dict[str, Any] = {}
-    for path in keep_fields:
+    for path in result_paths:
+        tokens = _path_tokens("$" + path[len(RESULT_PATH_ROOT) :])
+        for payload in payloads:
+            values = _walk(payload, tokens)
+            if values:
+                kept[path] = values if "[*]" in path else values[0]
+                break
+    return kept
+
+
+def extract_keep_fields(arguments: Any, keep_fields: Sequence[str]) -> Dict[str, Any]:
+    """Values named by the argument ``keep_fields``; ``[*]`` yields a list.
+
+    ``$result`` entries are skipped here; see
+    :func:`extract_result_keep_fields`.
+    """
+    kept: Dict[str, Any] = {}
+    for path in split_keep_fields(keep_fields)[0]:
         values = _walk(arguments, _path_tokens(path))
         if not values:
             continue
@@ -335,9 +461,28 @@ def _key_names(value: Any) -> List[str]:
     return []
 
 
+class ReferenceRecord(dict):
+    """A reference record this process built.
+
+    Only :func:`build_reference_record` makes one. Tool arguments arrive as
+    plain dicts, so a caller who sends ``{"_preloop_reference": true}`` cannot
+    pass as a server-built record and skip storage redaction.
+    """
+
+
 def is_reference_record(value: Any) -> bool:
-    """True for a record built by :func:`build_reference_record`."""
+    """True for a dict carrying the reference marker (stored rows included).
+
+    Use for reading stored rows. Decisions that skip redaction must use
+    :func:`is_built_reference_record`, because the marker is caller-supplied
+    data until the server builds the record.
+    """
     return isinstance(value, dict) and value.get(REFERENCE_MARKER) is True
+
+
+def is_built_reference_record(value: Any) -> bool:
+    """True only for a record :func:`build_reference_record` returned."""
+    return isinstance(value, ReferenceRecord) and is_reference_record(value)
 
 
 def build_reference_record(
@@ -361,26 +506,29 @@ def build_reference_record(
     account's redact rules so a kept field cannot smuggle a value a redact
     rule would have masked.
     """
-    record: Dict[str, Any] = {
-        REFERENCE_MARKER: True,
-        "schema": RECORD_SCHEMA,
-        "rule_id": rule.id,
-        "tool_name": tool_name,
-        "server_name": server_name,
-        "principal": principal or {},
-        "decision": decision,
-        "kept": {},
-        "args_hmac": None,
-        "result_hmac": None,
-        "fingerprint_algo": "scrypt",
-        "salt_id": None,
-        "args_bytes": _byte_size(arguments),
-        "result_bytes": _byte_size(result),
-        "arg_keys": _key_names(arguments),
-        "timing_ms": timing_ms,
-        "cost": cost,
-        "recorded_at": datetime.now(timezone.utc).isoformat(),
-    }
+    record: Dict[str, Any] = ReferenceRecord(
+        {
+            REFERENCE_MARKER: True,
+            "schema": RECORD_SCHEMA,
+            "rule_id": rule.id,
+            "tool_name": tool_name,
+            "server_name": server_name,
+            "principal": principal or {},
+            "decision": decision,
+            "kept": {},
+            "kept_result": {},
+            "args_hmac": None,
+            "result_hmac": None,
+            "fingerprint_algo": "scrypt",
+            "salt_id": None,
+            "args_bytes": _byte_size(arguments),
+            "result_bytes": _byte_size(result_fingerprint_payload(result)),
+            "arg_keys": _key_names(arguments),
+            "timing_ms": timing_ms,
+            "cost": cost,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
     if arguments is not None:
         kept = extract_keep_fields(arguments, rule.keep_fields)
         if kept and kept_redactor is not None:
@@ -390,9 +538,43 @@ def build_reference_record(
             account_id, arguments, db=db
         )
     if result is not None:
-        result_hmac, salt_id = compute_hmac(account_id, result, db=db)
-        record["result_hmac"] = result_hmac
-        record["salt_id"] = record["salt_id"] or salt_id
+        attach_result(
+            record,
+            account_id=account_id,
+            rule=rule,
+            result=result,
+            kept_redactor=kept_redactor,
+            db=db,
+        )
+    return record
+
+
+def attach_result(
+    record: Dict[str, Any],
+    *,
+    account_id: Any,
+    rule: ReferenceOnlyRule,
+    result: Any,
+    kept_redactor: Optional[Any] = None,
+    db: Optional[Session] = None,
+) -> Dict[str, Any]:
+    """Add ``result_hmac``, ``result_bytes`` and ``kept_result`` to ``record``.
+
+    The result itself is never stored. Used by :func:`build_reference_record`
+    and by the audit ``tool_call`` row, whose record is built from the
+    arguments before the result exists.
+    """
+    if result is None:
+        return record
+    payload = result_fingerprint_payload(result)
+    kept = extract_result_keep_fields(result, rule.keep_fields)
+    if kept and kept_redactor is not None:
+        kept = kept_redactor(kept)
+    record["kept_result"] = kept
+    record["result_bytes"] = _byte_size(payload)
+    result_hmac, salt_id = compute_hmac(account_id, payload, db=db)
+    record["result_hmac"] = result_hmac
+    record["salt_id"] = record.get("salt_id") or salt_id
     return record
 
 

@@ -884,3 +884,330 @@ def test_session_search_indexes_tool_name_and_reference_only(
 def test_result_text_of_reference_record_has_no_payload() -> None:
     record = {REFERENCE_MARKER: True, "args_hmac": "abc"}
     assert "abc" in result_text(record)
+
+
+# ---------------------------------------------------------------------------
+# $result keep_fields, result_hmac and rule_matched on the tool_call row (#1368)
+# ---------------------------------------------------------------------------
+
+RESULT_RULE = {
+    "keep_fields": ["$.consent_id", "$result.consent_id", "$result.grant.scope"]
+}
+RESULT_JSON = {
+    "consent_id": "cons-42",
+    "owner": "did:example:owner1",
+    "grant": {"scope": "daily"},
+}
+
+
+def _result_rule():
+    return _config(**RESULT_RULE).reference_only[0]
+
+
+def test_result_paths_validate_and_old_paths_still_load() -> None:
+    rule = _result_rule()
+    assert rule.keep_fields == [
+        "$.consent_id",
+        "$result.consent_id",
+        "$result.grant.scope",
+    ]
+    # $.result.x stays an argument path named "result".
+    old = _config(keep_fields=["$.result.consent_id"]).reference_only[0]
+    assert reference.split_keep_fields(old.keep_fields) == (
+        ["$.result.consent_id"],
+        [],
+    )
+    for bad in ["$results.x", "$result", "result.x", "$result..x"]:
+        with pytest.raises(ValidationError):
+            _config(keep_fields=[bad])
+
+
+def test_argument_keep_fields_ignore_result_paths() -> None:
+    kept = reference.extract_keep_fields(
+        {"consent_id": "a", "result": {"consent_id": "b"}},
+        ["$.consent_id", "$.result.consent_id", "$result.consent_id"],
+    )
+    assert kept == {"$.consent_id": "a", "$.result.consent_id": "b"}
+
+
+def test_result_keep_from_structured_content() -> None:
+    from fastmcp.tools.tool import ToolResult
+    from mcp.types import TextContent
+
+    result = ToolResult(
+        content=[TextContent(type="text", text="not json")],
+        structured_content=RESULT_JSON,
+    )
+    kept = reference.extract_result_keep_fields(result, _result_rule().keep_fields)
+    assert kept == {"$result.consent_id": "cons-42", "$result.grant.scope": "daily"}
+    # MCP wire form (dict, camelCase) gives the same answer.
+    wire = {"content": [], "structuredContent": RESULT_JSON}
+    assert reference.extract_result_keep_fields(wire, ["$result.consent_id"]) == {
+        "$result.consent_id": "cons-42"
+    }
+
+
+def test_result_keep_from_first_json_text_block() -> None:
+    from mcp.types import TextContent
+
+    result = MagicMock(spec=["content"])
+    result.content = [
+        TextContent(type="text", text=json.dumps(RESULT_JSON)),
+        TextContent(type="text", text=json.dumps({"consent_id": "other"})),
+    ]
+    assert reference.extract_result_keep_fields(
+        result, ["$result.consent_id", "$result.grant.scope", "$result.missing"]
+    ) == {"$result.consent_id": "cons-42", "$result.grant.scope": "daily"}
+    plain = MagicMock(spec=["content"])
+    plain.content = [TextContent(type="text", text="no json here")]
+    assert reference.extract_result_keep_fields(plain, ["$result.consent_id"]) == {}
+
+
+def test_absent_result_leaves_result_fields_empty(salts) -> None:
+    record = reference.build_reference_record(
+        account_id=uuid.uuid4(),
+        rule=_result_rule(),
+        tool_name="get_patient_record",
+        arguments=ARGS,
+    )
+    assert record["kept"] == {"$.consent_id": "consent-9"}
+    assert record["kept_result"] == {}
+    assert record["result_hmac"] is None
+
+
+def test_attach_result_sets_salted_result_hmac(reference_policy, salts) -> None:
+    from fastmcp.tools.tool import ToolResult
+
+    config = _config(**RESULT_RULE)
+    scope = StorageScope(
+        target="tool.args", tool_name="get_patient_record", server_name="ehr"
+    )
+    result = ToolResult(content=[], structured_content=RESULT_JSON)
+    rows = []
+    for account in (uuid.uuid4(), uuid.uuid4()):
+        stored = apply_storage_redaction(account, ARGS, scope=scope, config=config)
+        rows.append(
+            storage.attach_result_to_reference(
+                account, stored, result=result, scope=scope, config=config
+            )
+        )
+    first, second = rows
+    assert first["kept_result"] == {
+        "$result.consent_id": "cons-42",
+        "$result.grant.scope": "daily",
+    }
+    assert first["result_hmac"] and second["result_hmac"]
+    # Salted per account: same result, different fingerprint.
+    assert first["result_hmac"] != second["result_hmac"]
+    # Not an unsalted hash of the payload.
+    payload = reference.result_fingerprint_payload(result)
+    import hashlib as _hashlib
+
+    plain = _hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+    assert first["result_hmac"] != plain
+    assert "did:example:owner1" not in json.dumps(first)
+    # Non-reference rows pass through untouched.
+    assert storage.attach_result_to_reference(
+        uuid.uuid4(), {"a": 1}, result=result, scope=scope, config=config
+    ) == {"a": 1}
+
+
+def test_kept_result_values_pass_through_redact_rules(mocker, salts) -> None:
+    config = SensitiveDataConfig.model_validate(
+        {
+            "rules": [
+                {
+                    "id": "r",
+                    "on": ["tool.result"],
+                    "types": ["email"],
+                    "action": "redact",
+                }
+            ],
+            "reference_only": [
+                {
+                    "id": "ref",
+                    "scope": {"tools": ["t"]},
+                    "keep_fields": ["$result.contact"],
+                }
+            ],
+        }
+    )
+    scope = StorageScope(target="tool.args", tool_name="t")
+    stored = apply_storage_redaction(uuid.uuid4(), {"x": 1}, scope=scope, config=config)
+    out = storage.attach_result_to_reference(
+        uuid.uuid4(),
+        stored,
+        result={"structuredContent": {"contact": EMAIL}},
+        scope=scope,
+        config=config,
+    )
+    assert out["kept_result"] == {"$result.contact": "[REDACTED:email]"}
+
+
+async def _call_with_decision(proxied, monkeypatch, mocker, decision):
+    mcp, client, audit_service, _ = proxied
+    config = _config(**RESULT_RULE)
+    storage.invalidate_cache()
+    mocker.patch.object(storage, "resolve_config", return_value=config)
+    monkeypatch.setattr(
+        "preloop.services.dynamic_fastmcp.apply_storage_redaction_config",
+        lambda account_id: config,
+    )
+    monkeypatch.setattr(
+        "preloop.services.dynamic_fastmcp._load_sensitive_data_policy",
+        lambda account_id: (None, None),
+    )
+    monkeypatch.setattr(
+        "preloop.services.policy_evaluator.evaluate_policy_async",
+        AsyncMock(return_value=decision),
+    )
+    client.call_tool.return_value = [MagicMock(text=json.dumps(RESULT_JSON))]
+    await mcp.call_tool(
+        "get_patient_record", {"patient_id": "P-77", "consent_id": "consent-9"}
+    )
+    storage.invalidate_cache()
+    return audit_service.log_tool_call_async.call_args.kwargs
+
+
+@pytest.mark.asyncio
+async def test_tool_call_row_has_kept_result_and_rule_matched_on_allow(
+    proxied, monkeypatch, mocker, salts
+) -> None:
+    kwargs = await _call_with_decision(
+        proxied,
+        monkeypatch,
+        mocker,
+        policy_evaluator.PolicyDecision("allow", None, "allow owner reads"),
+    )
+    row = kwargs["tool_args"]
+    assert is_reference_record(row)
+    assert row["rule_id"] == "patient-tools"
+    assert row["kept"] == {"$.consent_id": "consent-9"}
+    assert row["kept_result"]["$result.consent_id"] == "cons-42"
+    assert row["result_hmac"] and row["salt_id"]
+    assert "did:example:owner1" not in json.dumps(row)
+    assert kwargs["rule_matched"] == "allow owner reads"
+    assert kwargs["result"] != RESULT_JSON  # status string, not the result
+
+
+@pytest.mark.asyncio
+async def test_rule_matched_for_require_approval_then_executed(
+    proxied, monkeypatch, mocker, salts
+) -> None:
+    kwargs = await _call_with_decision(
+        proxied,
+        monkeypatch,
+        mocker,
+        ("require_approval", uuid.uuid4(), "approve owner writes"),
+    )
+    assert kwargs["rule_matched"] == "approve owner writes"
+    assert kwargs["tool_args"]["kept_result"] == {
+        "$result.consent_id": "cons-42",
+        "$result.grant.scope": "daily",
+    }
+
+
+def test_result_keep_falls_back_to_text_when_structured_lacks_the_path() -> None:
+    """FastMCP wraps a JSON string return as {"result": "<string>"}."""
+    from fastmcp.tools.tool import ToolResult
+    from mcp.types import TextContent
+
+    text = json.dumps(RESULT_JSON)
+    result = ToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content={"result": text},
+    )
+    assert reference.extract_result_keep_fields(result, ["$result.consent_id"]) == {
+        "$result.consent_id": "cons-42"
+    }
+    assert reference.extract_result_keep_fields(None, ["$result.consent_id"]) == {}
+
+
+# ---------------------------------------------------------------------------
+# Caller-supplied reference markers are data, not a server-built record
+# ---------------------------------------------------------------------------
+
+
+def test_forged_marker_out_of_scope_is_still_redacted(mocker, salts) -> None:
+    storage.invalidate_cache()
+    config = SensitiveDataConfig.model_validate(
+        {
+            "rules": [
+                {"id": "r", "on": ["tool.args"], "types": ["email"], "action": "redact"}
+            ]
+        }
+    )
+    mocker.patch.object(storage, "resolve_config", return_value=config)
+    forged = {REFERENCE_MARKER: True, "note": EMAIL}
+    stored = apply_storage_redaction(
+        uuid.uuid4(), forged, scope=StorageScope(target="tool.args", tool_name="t")
+    )
+    assert EMAIL not in json.dumps(stored)
+    storage.invalidate_cache()
+
+
+def test_forged_marker_in_scope_becomes_a_real_record(reference_policy) -> None:
+    forged = {**ARGS, REFERENCE_MARKER: True, "schema": reference.RECORD_SCHEMA}
+    stored = apply_storage_redaction(
+        uuid.uuid4(),
+        forged,
+        scope=StorageScope(
+            target="tool.args", tool_name="get_patient_record", server_name="ehr"
+        ),
+    )
+    assert reference.is_built_reference_record(stored)
+    assert stored["args_hmac"]
+    assert EMAIL not in json.dumps(stored) and "P-77" not in json.dumps(stored)
+
+
+def test_attach_result_ignores_a_forged_record(reference_policy, salts) -> None:
+    from fastmcp.tools.tool import ToolResult
+
+    config = _config(**RESULT_RULE)
+    scope = StorageScope(
+        target="tool.args", tool_name="get_patient_record", server_name="ehr"
+    )
+    forged = {REFERENCE_MARKER: True, "rule_id": "patient-tools"}
+    result = ToolResult(content=[], structured_content=RESULT_JSON)
+    out = storage.attach_result_to_reference(
+        uuid.uuid4(), forged, result=result, scope=scope, config=config
+    )
+    assert out is forged and "kept_result" not in out
+
+
+def test_result_keep_skips_leading_non_json_text_block() -> None:
+    from mcp.types import TextContent
+
+    result = MagicMock(spec=["content"])
+    result.content = [
+        TextContent(type="text", text="Here is the record:"),
+        TextContent(type="text", text=json.dumps(RESULT_JSON)),
+    ]
+    assert reference.extract_result_keep_fields(result, ["$result.consent_id"]) == {
+        "$result.consent_id": "cons-42"
+    }
+
+
+@pytest.mark.parametrize(
+    ("result", "path", "expected"),
+    [
+        ({"items": [{"id": "a"}, {"id": "b"}]}, "$result.items[*].id", ["a", "b"]),
+        ({"items": [{"id": "a"}, {"id": "b"}]}, "$result.items[1].id", "b"),
+        ([{"id": "a"}, {"id": "b"}], "$result[0].id", "a"),
+        ({"consent_id": "plain"}, "$result.consent_id", "plain"),
+    ],
+)
+def test_result_keep_list_paths_and_plain_results(result, path, expected) -> None:
+    kept = reference.extract_result_keep_fields(result, [path])
+    argument_kept = reference.extract_keep_fields(result, ["$" + path[7:]])
+    assert kept == {path: expected}
+    # Same walk as the argument path, rooted at the result.
+    assert list(argument_kept.values()) == [expected]
+
+
+def test_result_keep_from_plain_string_result() -> None:
+    text = json.dumps(RESULT_JSON)
+    assert reference.extract_result_keep_fields(text, ["$result.grant.scope"]) == {
+        "$result.grant.scope": "daily"
+    }
+    assert reference.extract_result_keep_fields("not json", ["$result.x"]) == {}

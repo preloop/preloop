@@ -915,7 +915,10 @@ class ApproverView(str, Enum):
 
 
 #: JSONPath subset for ``keep_fields``: dotted keys, ``[n]`` and ``[*]``.
-KEEP_FIELD_RE = re.compile(r"^\$(?:\.[A-Za-z_][A-Za-z0-9_\-]*|\[\d+\]|\[\*\])+$")
+#: ``$result`` as the root reads the tool result instead of the arguments.
+KEEP_FIELD_RE = re.compile(
+    r"^\$(?:result)?(?:\.[A-Za-z_][A-Za-z0-9_\-]*|\[\d+\]|\[\*\])+$"
+)
 MAX_KEEP_FIELDS = 32
 
 
@@ -938,7 +941,12 @@ class ReferenceOnlyRule(BaseModel):
     keep_fields: List[str] = Field(
         default_factory=list,
         max_length=MAX_KEEP_FIELDS,
-        description="JSONPath subset of argument fields kept in the record",
+        description=(
+            "JSONPath subset of fields kept in the record. $.x reads the "
+            "arguments (record key kept); $result.x reads the tool result's "
+            "structuredContent, or its first JSON text block (record key "
+            "kept_result)"
+        ),
     )
     approver_view: ApproverView = Field(
         ApproverView.REDACTED,
@@ -969,8 +977,9 @@ class ReferenceOnlyRule(BaseModel):
             if not KEEP_FIELD_RE.match(path or ""):
                 raise ValueError(
                     f"keep_fields entry {path!r} is not supported. Use dotted "
-                    "keys, [n] or [*] after $, for example $.consent_id or "
-                    "$.items[*].id"
+                    "keys, [n] or [*] after $ (arguments) or $result (tool "
+                    "result), for example $.consent_id, $.items[*].id or "
+                    "$result.consent_id"
                 )
         return list(dict.fromkeys(value))
 

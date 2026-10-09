@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional, Tuple
 
 from preloop.services.policy.schema import (
@@ -229,7 +229,7 @@ def reference_record_for_storage(
 
     if scope is None or not scope.tool_name:
         return None
-    if reference_module.is_reference_record(obj):
+    if reference_module.is_built_reference_record(obj):
         return obj
     rule = reference_module.reference_rule_for(
         config,
@@ -273,6 +273,60 @@ def reference_record_for_storage(
     if isinstance(obj, str):
         return reference_module.reference_summary(record)
     return record
+
+
+def attach_result_to_reference(
+    account_id: Any,
+    stored: Any,
+    *,
+    result: Any,
+    scope: Optional[StorageScope],
+    config: Optional[SensitiveDataConfig] = None,
+) -> Any:
+    """Add the result's fingerprint and ``$result`` kept fields to ``stored``.
+
+    ``stored`` is what :func:`apply_storage_redaction` returned for the
+    arguments of a call. When it is a reference record, the rule that built
+    it supplies the ``$result`` paths; ``result_hmac``, ``result_bytes`` and
+    ``kept_result`` are filled from ``result``, which is never stored. Any
+    other value is returned unchanged.
+    """
+    from preloop.services.sensitive_data import reference as reference_module
+
+    if result is None or scope is None or not scope.tool_name:
+        return stored
+    if not reference_module.is_built_reference_record(stored):
+        return stored
+    if config is None:
+        config = resolve_config(account_id)
+    if config is None:
+        return stored
+    rule = reference_module.reference_rule_for(
+        config,
+        tool_name=scope.tool_name,
+        server_name=scope.server_name,
+        managed_agent_id=scope.managed_agent_id,
+    )
+    if rule is None or rule.id != stored.get("rule_id"):
+        return stored
+    redact_rules = redact_rules_for(config, replace(scope, target="tool.result"))
+
+    def kept_redactor(kept: Dict[str, Any]) -> Dict[str, Any]:
+        if not redact_rules:
+            return kept
+        return redact_structure(kept, detector_config_for(config, redact_rules))[0]
+
+    try:
+        return reference_module.attach_result(
+            dict(stored),
+            account_id=account_id,
+            rule=rule,
+            result=result,
+            kept_redactor=kept_redactor,
+        )
+    except Exception:  # noqa: BLE001 - keep the argument record as built
+        logger.warning("Result reference could not be attached", exc_info=True)
+        return stored
 
 
 def apply_storage_redaction(
