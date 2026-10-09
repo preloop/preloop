@@ -36,6 +36,7 @@ class TokenPair:
     expires_at: datetime | None = None
     refresh_token_expires_at: datetime | None = None
     scope: str | None = None
+    issued_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,7 @@ def _now() -> datetime:
 
 def _utc(value: datetime | None) -> datetime | None:
     if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-        raise ValueError("OAuth expiry must be timezone-aware")
+        raise ValueError("OAuth timestamps must be timezone-aware")
     return value.astimezone(timezone.utc) if value is not None else None
 
 
@@ -527,6 +528,7 @@ class CRUDManagedOAuth:
                     raise OAuthConflictError("OAuth state unavailable")
                 old.access_token_encrypted = pending.access_token_encrypted
                 old.refresh_token_encrypted = pending.refresh_token_encrypted
+                old.issued_at = pending.issued_at
                 old.expires_at = pending.expires_at
                 old.refresh_token_expires_at = pending.refresh_token_expires_at
                 old.scope = pending.scope
@@ -604,6 +606,7 @@ class CRUDManagedOAuth:
     def _write_pair(grant: models.OAuthToken, pair: TokenPair) -> None:
         if not pair.access_token:
             raise ValueError("Access token is required")
+        grant.issued_at = _utc(pair.issued_at)
         grant.expires_at = _utc(pair.expires_at)
         grant.refresh_token_expires_at = _utc(pair.refresh_token_expires_at)
         grant.access_token_encrypted = encrypt_value(pair.access_token)
@@ -616,6 +619,7 @@ class CRUDManagedOAuth:
     def _erase(grant: models.OAuthToken, status: str) -> None:
         grant.access_token_encrypted = ""
         grant.refresh_token_encrypted = None
+        grant.issued_at = None
         grant.expires_at = None
         grant.refresh_token_expires_at = None
         grant.status = status
@@ -656,6 +660,7 @@ class CRUDManagedOAuth:
                 grant.expires_at,
                 grant.refresh_token_expires_at,
                 grant.scope,
+                grant.issued_at,
             )
             credentials = CallbackSecrets(
                 self._secret(db, config),
