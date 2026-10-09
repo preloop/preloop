@@ -13,6 +13,7 @@ import {
   buildWebSiteSchema,
   get_meta_for_route,
   get_regulation_nav_links,
+  get_vs_nav_links,
   get_regulation_slugs,
   get_route_from_filename,
   get_static_routes_with_options,
@@ -225,6 +226,39 @@ describe('brand-seo', () => {
       { href: '/ai-act-readiness', label: 'EU AI Act' },
       { href: '/nis2', label: 'NIS2' },
     ]);
+  });
+
+  it('builds Compare footer links only for registered /vs/ pages', () => {
+    expect(get_vs_nav_links([])).to.deep.equal([]);
+    expect(
+      get_vs_nav_links(['trigger-dev', 'not-a-competitor', 'aws-agentcore'])
+    ).to.deep.equal([
+      { href: '/vs/aws-agentcore', label: 'vs AWS AgentCore' },
+      { href: '/vs/trigger-dev', label: 'vs Trigger.dev' },
+    ]);
+  });
+
+  it('registers every comparison page with a footer label', () => {
+    const expected = [
+      'agentgateway',
+      'aws-agentcore',
+      'helicone',
+      'jamf',
+      'litellm',
+      'lunar',
+      'mintmcp',
+      'portkey',
+      'runlayer',
+      'trigger-dev',
+      'varonis-atlas',
+      'zenity',
+    ];
+    const links = get_vs_nav_links(expected);
+    expect(links).to.have.length(expected.length);
+    for (const link of links) {
+      expect(link.label).to.match(/^vs /);
+      expect(link.label).not.to.contain('\u2014');
+    }
   });
 
   it('includes FAQ structured data on the homepage', () => {

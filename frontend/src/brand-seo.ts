@@ -37,6 +37,8 @@ export type RouteMeta = {
 export type VsPageMeta = {
   /** Display name of the competitor (e.g. "AWS Bedrock AgentCore"). */
   competitor: string;
+  /** Short footer label for the Compare block (e.g. "vs AWS AgentCore"). */
+  nav_label: string;
   /** Page `<title>` element. */
   title: string;
   /** Meta description (< ~160 chars recommended). */
@@ -51,68 +53,112 @@ export type VsPageMeta = {
 
 export const VS_PAGE_META: Record<string, VsPageMeta> = {
   'aws-agentcore': {
+    nav_label: 'vs AWS AgentCore',
     competitor: 'AWS Bedrock AgentCore',
-    title: 'Preloop vs AWS Bedrock AgentCore — Open-Source Alternative',
+    title: 'Preloop vs AWS Bedrock AgentCore: Open-Source Alternative',
     description:
       'Open source AWS AgentCore alternative: self-hosted agent control plane with MCP firewall, AI model gateway, human approvals, runtime observability, and audit trail. No AWS lock-in.',
     keywords:
       'open source AWS AgentCore alternative, AWS Bedrock AgentCore alternative, self-hosted agent control plane, MCP firewall without AWS lock-in, open source AI agent governance, AI agent control plane, MCP gateway self-hosted, AI model gateway, AI agent audit trail, Claude Code governance, Codex CLI governance, Cursor agent security',
   },
   mintmcp: {
+    nav_label: 'vs MintMCP',
     competitor: 'MintMCP',
-    title: 'Preloop vs MintMCP — Open-Source MCP Gateway with Approvals',
+    title: 'Preloop vs MintMCP: Open-Source MCP Gateway with Approvals',
     description:
       'Open-source MintMCP alternative: self-hosted MCP gateway with HITL approvals, AI model gateway with budgets, runtime observability, and audit trail. One control plane for agents.',
     keywords:
       'open-source MintMCP alternative, self-hosted MCP gateway, HITL approvals, MCP firewall, MCP gateway with approvals, AI agent control plane, AI model gateway, AI agent audit trail, Claude Code governance, Cursor agent security, Codex CLI governance',
   },
   portkey: {
+    nav_label: 'vs Portkey',
     competitor: 'Portkey',
-    title: 'Preloop vs Portkey — Agent Control Plane or AI Gateway?',
+    title: 'Preloop vs Portkey: Agent Control Plane or AI Gateway?',
     description:
       'Open-source Portkey alternative: AI gateway plus MCP firewall, human approvals, runtime observability, and audit. Self-hosted LLM proxy with agent-level governance.',
     keywords:
       'open-source Portkey alternative, AI gateway plus MCP firewall, self-hosted LLM proxy, AI agent control plane, AI model gateway open source, AI agent governance, MCP firewall, Claude Code governance, Codex CLI governance, Cursor agent security, AI agent observability',
   },
   zenity: {
+    nav_label: 'vs Zenity',
     competitor: 'Zenity',
-    title: 'Preloop vs Zenity — Developer-First AI Agent Governance',
+    title: 'Preloop vs Zenity: Developer-First AI Agent Governance',
     description:
       'Open-source Zenity alternative: agent governance for engineers with MCP-native policy enforcement, human approvals, runtime observability, and audit trail. Self-hostable and developer-first.',
     keywords:
       'open-source Zenity alternative, agent governance for engineers, MCP-native policy enforcement, AI agent control plane, AI agent security, AI agent governance, MCP firewall, Claude Code governance, Codex CLI governance, Cursor agent security, AI agent audit trail, AI agent runtime security',
   },
   litellm: {
+    nav_label: 'vs LiteLLM',
     competitor: 'LiteLLM',
-    title: 'Preloop vs LiteLLM — Agent Control Plane vs AI Gateway',
+    title: 'Preloop vs LiteLLM: Agent Control Plane vs AI Gateway',
     description:
       'LiteLLM AI Gateway alternative: model gateway plus MCP firewall, human approvals, session observability, cost reconciliation, and audit. LiteLLM governs model traffic; Preloop governs agents.',
     keywords:
       'LiteLLM alternative, LiteLLM AI gateway alternative, LLM gateway with approvals, open-source LLM proxy with policies, AI model gateway open source, AI agent control plane, MCP firewall, MCP gateway with approvals, AI agent governance, AI cost reconciliation, Claude Code governance, Codex CLI governance, Cursor agent security, AI agent audit trail',
   },
   runlayer: {
+    nav_label: 'vs Runlayer',
     competitor: 'Runlayer',
-    title: 'Preloop vs Runlayer — Open-Source MCP Security & Approvals',
+    title: 'Preloop vs Runlayer: Open-Source MCP Security & Approvals',
     description:
       'Open-source Runlayer alternative: self-hostable MCP firewall with per-call human approvals in the free core, AI model gateway, runtime observability, and a tamper-evident audit trail. Apache 2.0, no vendor lock-in.',
     keywords:
       'open-source Runlayer alternative, self-hosted MCP security, MCP firewall with human approvals, per-call agent approvals, AI agent control plane, MCP gateway open source, AI agent governance, AI agent audit trail, Claude Code governance, Codex CLI governance, Cursor agent security',
   },
   lunar: {
+    nav_label: 'vs Lunar.dev',
     competitor: 'Lunar.dev MCPX',
-    title: 'Preloop vs Lunar.dev MCPX — Approvals in the Free Core',
+    title: 'Preloop vs Lunar.dev MCPX: Approvals in the Free Core',
     description:
       'Open-source Lunar.dev MCPX alternative: MCP firewall with human-in-the-loop approvals in the free core, AI model gateway, runtime observability, and audit. Self-hostable Apache 2.0 control plane.',
     keywords:
       'Lunar.dev MCPX alternative, open-source MCP gateway, MCP firewall with approvals, human in the loop agent approvals, self-hosted MCP gateway, AI agent control plane, AI model gateway, AI agent governance, Claude Code governance, Codex CLI governance, Cursor agent security',
   },
   helicone: {
+    nav_label: 'vs Helicone',
     competitor: 'Helicone',
-    title: 'Preloop vs Helicone — Migrate to an Active Control Plane',
+    title: 'Preloop vs Helicone: Migrate to an Active Control Plane',
     description:
       'Migrating from Helicone? Preloop is an actively developed, Apache 2.0 AI agent control plane: an AI model gateway plus an MCP firewall, human approvals, runtime observability, and audit that Helicone does not have.',
     keywords:
       'Helicone alternative, Helicone migration, open-source LLM gateway, AI model gateway with approvals, MCP firewall, AI agent control plane, LLM observability alternative, AI agent governance, Claude Code governance, Codex CLI governance, Cursor agent security',
+  },
+  agentgateway: {
+    competitor: 'agentgateway',
+    nav_label: 'vs agentgateway',
+    title: 'Preloop vs agentgateway: Agent Control Plane vs Data Plane',
+    description:
+      'agentgateway governs agent traffic; Preloop governs agents. Compare the Linux Foundation proxy with an open-source control plane for approvals, sessions, cost, and audit.',
+    keywords:
+      'agentgateway alternative, agentgateway vs Preloop, MCP gateway, A2A gateway, AI agent control plane, MCP firewall, human approvals for AI agents, AI agent audit trail, Claude Code governance',
+  },
+  'trigger-dev': {
+    competitor: 'Trigger.dev',
+    nav_label: 'vs Trigger.dev',
+    title: 'Preloop vs Trigger.dev: Agent Runtime vs Agent Control Plane',
+    description:
+      'Trigger.dev runs the agents you build; Preloop governs the agents you run, including the ones you bought. How the durable runtime and the control plane fit together.',
+    keywords:
+      'Trigger.dev alternative, Trigger.dev vs Preloop, durable AI agents governance, AI agent control plane, human in the loop approvals, AI model gateway with budgets, MCP firewall, AI agent audit trail',
+  },
+  jamf: {
+    competitor: 'Jamf AI Governance',
+    nav_label: 'vs Jamf AI Governance',
+    title: 'Preloop vs Jamf AI Governance: Rollout Channel and Agent Control',
+    description:
+      'Jamf AI Governance deploys vendor AI settings to Macs. Preloop governs what agents do across vendors and machines: approvals, budgets, sessions, and audit. Use both.',
+    keywords:
+      'Jamf AI governance, Jamf Claude Code managed settings, MDM for AI agents, Jamf Pro AI tools, AI agent control plane, coding agent governance, MCP firewall, AI agent approvals, AI agent cost control',
+  },
+  'varonis-atlas': {
+    competitor: 'Varonis Atlas',
+    nav_label: 'vs Varonis Atlas',
+    title: 'Preloop vs Varonis Atlas: Agent Control Next to Data Security',
+    description:
+      'Varonis Atlas protects the data AI can reach. Preloop governs what agents do, what they cost, and who approved it, open source and self-hosted. Where each fits.',
+    keywords:
+      'Varonis Atlas alternative, Varonis AI security, AllTrue.ai, AI agent control plane, open source AI governance, MCP firewall, AI agent approvals, AI agent cost control, AI agent audit trail',
   },
 };
 
@@ -126,6 +172,23 @@ export function get_vs_slug_from_route(route: string): string | null {
 
 export function get_vs_slugs(): string[] {
   return Object.keys(VS_PAGE_META);
+}
+
+/**
+ * Footer "Compare" links for the comparison pages that actually shipped.
+ *
+ * `slugs` comes from build-time discovery (markdown file plus a
+ * `VS_PAGE_META` entry), so a brand without the markdown never links a
+ * `/vs/<slug>` route that nginx would serve as the homepage.
+ */
+export function get_vs_nav_links(slugs: string[]): RegulationNavLink[] {
+  return slugs
+    .filter((slug) => Boolean(VS_PAGE_META[slug]))
+    .map((slug) => ({
+      href: `/vs/${slug}`,
+      label: VS_PAGE_META[slug].nav_label,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
 
 /**
