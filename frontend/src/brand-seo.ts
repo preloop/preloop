@@ -51,6 +51,11 @@ export type VsPageMeta = {
   og_description?: string;
 };
 
+// Comparison pages are Preloop-only by design: the body copy compares the
+// Preloop product with a named competitor, so a white-label brand cannot
+// reuse it and the titles name Preloop directly instead of using
+// BRAND_NAME_TOKEN. The pages are also gated to SaaS builds, and only brands
+// that ship `content/<brand>/vs/<slug>.md` get them.
 export const VS_PAGE_META: Record<string, VsPageMeta> = {
   'aws-agentcore': {
     nav_label: 'vs AWS AgentCore',

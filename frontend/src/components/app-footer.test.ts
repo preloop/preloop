@@ -69,3 +69,54 @@ describe('AppFooter legal disclaimer', () => {
     expect(el.shadowRoot?.querySelector('p.legal-disclaimer')).to.equal(null);
   });
 });
+
+describe('AppFooter Compare block', () => {
+  let fetchStub: sinon.SinonStub;
+  const VS_PAGES = [
+    { href: '/vs/aws-agentcore', label: 'vs AWS AgentCore' },
+    { href: '/vs/trigger-dev', label: 'vs Trigger.dev' },
+  ];
+
+  afterEach(() => {
+    fetchStub.restore();
+    delete (window as unknown as { BRAND_CONFIG?: unknown }).BRAND_CONFIG;
+  });
+
+  async function renderWith(config: Record<string, unknown>) {
+    (
+      window as unknown as { BRAND_CONFIG: Record<string, unknown> }
+    ).BRAND_CONFIG = config;
+    fetchStub = stubFetch();
+    const el = (await fixture(html`<app-footer></app-footer>`)) as AppFooter;
+    await el.updateComplete;
+    return el;
+  }
+
+  it('renders one link per vs_pages entry on SaaS builds', async () => {
+    const el = await renderWith({ ...BRAND_CONFIG, vs_pages: VS_PAGES });
+    const links = Array.from(
+      el.shadowRoot?.querySelectorAll('nav.footer-compare a') ?? []
+    ).map((a) => [a.getAttribute('href'), (a.textContent || '').trim()]);
+    expect(links).to.deep.equal([
+      ['/vs/aws-agentcore', 'vs AWS AgentCore'],
+      ['/vs/trigger-dev', 'vs Trigger.dev'],
+    ]);
+  });
+
+  it('omits the block when vs_pages is empty or absent', async () => {
+    let el = await renderWith({ ...BRAND_CONFIG, vs_pages: [] });
+    expect(el.shadowRoot?.querySelector('nav.footer-compare')).to.equal(null);
+    fetchStub.restore();
+    el = await renderWith({ ...BRAND_CONFIG });
+    expect(el.shadowRoot?.querySelector('nav.footer-compare')).to.equal(null);
+  });
+
+  it('omits the block on self-hosted builds', async () => {
+    const el = await renderWith({
+      ...BRAND_CONFIG,
+      edition: 'selfhosted',
+      vs_pages: VS_PAGES,
+    });
+    expect(el.shadowRoot?.querySelector('nav.footer-compare')).to.equal(null);
+  });
+});

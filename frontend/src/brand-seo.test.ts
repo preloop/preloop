@@ -14,6 +14,8 @@ import {
   get_meta_for_route,
   get_regulation_nav_links,
   get_vs_nav_links,
+  get_vs_slugs,
+  VS_PAGE_META,
   get_regulation_slugs,
   get_route_from_filename,
   get_static_routes_with_options,
@@ -238,26 +240,20 @@ describe('brand-seo', () => {
     ]);
   });
 
-  it('registers every comparison page with a footer label', () => {
-    const expected = [
+  it('registers every comparison page with a vs label and dash-free title', () => {
+    const slugs = get_vs_slugs();
+    expect(slugs).to.include.members([
       'agentgateway',
-      'aws-agentcore',
-      'helicone',
       'jamf',
-      'litellm',
-      'lunar',
-      'mintmcp',
-      'portkey',
-      'runlayer',
       'trigger-dev',
       'varonis-atlas',
-      'zenity',
-    ];
-    const links = get_vs_nav_links(expected);
-    expect(links).to.have.length(expected.length);
-    for (const link of links) {
-      expect(link.label).to.match(/^vs /);
-      expect(link.label).not.to.contain('\u2014');
+    ]);
+    expect(get_vs_nav_links(slugs)).to.have.length(slugs.length);
+    for (const slug of slugs) {
+      const meta = VS_PAGE_META[slug];
+      expect(meta.nav_label, slug).to.match(/^vs /);
+      expect(meta.title, slug).not.to.contain('\u2014');
+      expect(meta.description, slug).not.to.contain('\u2014');
     }
   });
 
