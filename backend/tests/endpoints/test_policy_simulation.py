@@ -204,13 +204,12 @@ model_io:
     assert result.decision == action
 
 
-@pytest.mark.asyncio
-async def test_evaluate_endpoint_returns_draft_and_rejects_invalid_yaml() -> None:
+def test_evaluate_endpoint_returns_draft_and_rejects_invalid_yaml() -> None:
     from fastapi import HTTPException
     from preloop.api.endpoints.policies import evaluate_policy_sample
 
     account, user = models.Account(id=uuid4()), models.User(id=uuid4())
-    result = await evaluate_policy_sample(
+    result = evaluate_policy_sample(
         PolicyEvaluationRequest(name="read_file", draft_rule={"action": "deny"}),
         account=account,
         current_user=user,
@@ -218,7 +217,7 @@ async def test_evaluate_endpoint_returns_draft_and_rejects_invalid_yaml() -> Non
     )
     assert result.decision == "deny"
     with pytest.raises(HTTPException) as exc:
-        await evaluate_policy_sample(
+        evaluate_policy_sample(
             PolicyEvaluationRequest(name="read_file", draft_yaml="["),
             account=account,
             current_user=user,

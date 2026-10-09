@@ -78,6 +78,7 @@ from preloop.services.sensitive_data.policy_store import (
     load_sensitive_data_config,
 )
 from preloop.services.sensitive_data.redact import redact_text
+from preloop.tools.utils import run_async
 from preloop.utils.audit import log_config_change
 from preloop.utils.permissions import require_permission
 
@@ -311,7 +312,7 @@ router = APIRouter()
 
 @router.post("/policies/evaluate", response_model=PolicyEvaluationResponse)
 @require_permission("view_policies")
-async def evaluate_policy_sample(
+def evaluate_policy_sample(
     request: PolicyEvaluationRequest,
     account: models.Account = Depends(get_account_for_user),
     current_user: models.User = Depends(get_current_active_user),
@@ -319,8 +320,10 @@ async def evaluate_policy_sample(
 ) -> PolicyEvaluationResponse:
     """Evaluate a stored policy or unsaved draft without recording or dispatch."""
     try:
-        return await simulate_policy(
-            request, db=db, account_id=account.id, user_id=current_user.id
+        return run_async(
+            simulate_policy(
+                request, db=db, account_id=account.id, user_id=current_user.id
+            )
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
