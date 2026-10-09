@@ -66,8 +66,9 @@ SENTINEL_ROUND_TRIP = "CANARY_COMPLETE_TOOL_ROUND_TRIP_OK"
 SENTINEL_PLAIN_TEXT = "CANARY_COMPLETE_TURN1_TEXT_OK"
 ERROR_NO_TOOLS = "CANARY_ERROR_NO_MCP_SEARCH_TOOL_DECLARED"
 
-# The harmless read-only builtin MCP tool the scripted model calls.
-CANARY_TOOL_SHORT_NAME = "search"
+# The canonical read-only builtin; the legacy "search" alias is hidden by
+# default unless explicitly enabled by policy.
+CANARY_TOOL_SHORT_NAME = "search_issues"
 
 CODEX_BIN = shutil.which("codex")
 
