@@ -658,12 +658,23 @@ export class UsageCard extends LitElement {
   private renderBudgetRow(
     label: string,
     period: string,
-    spend: number,
+    spend: number | null,
     softLimit: number,
     hardLimit: number,
     bounds: { start?: string | null; end?: string | null } = {}
   ) {
     const denominator = hardLimit || softLimit;
+    if (spend === null) {
+      return html`<div class="budget-row">
+        <div class="budget-row-header">
+          <span class="budget-row-label">${label}</span>
+          <span class="budget-row-value"
+            >Spend
+            unavailable${denominator > 0 ? html` / ${formatUsd(denominator)}` : nothing}</span
+          >
+        </div>
+      </div>`;
+    }
     return html`
       <div class="budget-row">
         <div class="budget-row-header">
@@ -718,7 +729,7 @@ export class UsageCard extends LitElement {
       this.renderBudgetRow(
         budgetPeriodLabel(policy.period),
         policy.period,
-        policy.current_spend_usd || 0,
+        policy.current_spend_usd ?? null,
         policy.soft_limit_usd || 0,
         policy.hard_limit_usd || 0,
         { start: policy.period_start, end: policy.period_end }

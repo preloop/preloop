@@ -1,5 +1,7 @@
 import { html, fixture, expect, oneEvent } from '@open-wc/testing';
 import './budget-health-card.ts';
+import './usage-card.ts';
+import type { UsageCard } from './usage-card';
 import type { BudgetHealthCard } from './budget-health-card';
 import type { BudgetPolicy } from '../api';
 import type { AccountGatewayUsageSummaryResponse } from '../types';
@@ -33,6 +35,7 @@ describe('BudgetHealthCard', () => {
   const policies: BudgetPolicy[] = [
     {
       id: 'policy-1',
+      current_spend_usd: 25,
       subject_type: 'global',
       subject_id: 'global',
       model_alias: null,
@@ -81,6 +84,7 @@ describe('BudgetHealthCard', () => {
       {
         ...policies[0],
         period: 'daily',
+        current_spend_usd: 90,
         hard_limit_usd: 120,
         soft_limit_usd: 80,
       },
@@ -121,7 +125,7 @@ describe('BudgetHealthCard', () => {
     const element = (await fixture(html`
       <budget-health-card
         .summary=${exceededSummary}
-        .policies=${policies}
+        .policies=${[{ ...policies[0], current_spend_usd: 105 }]}
       ></budget-health-card>
     `)) as BudgetHealthCard;
     await element.updateComplete;
@@ -268,6 +272,204 @@ describe('BudgetHealthCard period-aligned spend', () => {
     expect(text).to.include('$3.25');
     expect(text).to.include('$91.83');
   });
+  for (const scenario of [
+    { range: 'month', windowSpend: 150, policySpend: 40 },
+    { range: 'month', windowSpend: 20, policySpend: 125 },
+    { range: 'year', windowSpend: 500, policySpend: 0 },
+    { range: 'day', windowSpend: 5, policySpend: 120 },
+  ]) {
+    it(`agrees with Overview for ${scenario.range} analytics ($${scenario.windowSpend}) and monthly spend ($${scenario.policySpend})`, async () => {
+      const windowSummary = {
+        ...summary,
+        estimated_cost: scenario.windowSpend,
+        budget: {
+          ...summary.budget!,
+          current_spend_usd: scenario.windowSpend,
+          hard_limit_exceeded: scenario.windowSpend > 100,
+        },
+      };
+      const periodPolicies = [
+        {
+          id: 'monthly-policy',
+          subject_type: 'account',
+          subject_id: null,
+          model_alias: null,
+          period: 'monthly',
+          hard_limit_usd: 100,
+          soft_limit_usd: 80,
+          notify_on_soft: false,
+          notify_on_hard: false,
+          notification_emails: [],
+          current_spend_usd: scenario.policySpend,
+          period_start: '2026-03-01T00:00:00Z',
+          period_end: '2026-04-01T00:00:00Z',
+        },
+      ];
+      const overview = await fixture<UsageCard>(html`
+        <usage-card
+          .summary=${windowSummary}
+          .policies=${periodPolicies}
+          .timeRange=${scenario.range}
+        ></usage-card>
+      `);
+      // Cost's monthly budget remains independent of its analytics selector.
+      const cost = await fixture<BudgetHealthCard>(html`
+        <budget-health-card
+          .summary=${windowSummary}
+          .policies=${periodPolicies}
+          .timeRange=${'month'}
+        ></budget-health-card>
+      `);
+      await Promise.all([overview.updateComplete, cost.updateComplete]);
+      const shownSpend = `$${scenario.policySpend.toFixed(2)}`;
+      expect(
+        overview.shadowRoot!.querySelector('.budget-row-value')!.textContent
+      ).to.include(shownSpend);
+      expect(
+        cost.shadowRoot!.querySelector('.row-value')!.textContent
+      ).to.include(shownSpend);
+      expect(
+        Boolean(cost.shadowRoot!.querySelector('.title.exceeded'))
+      ).to.equal(scenario.policySpend >= 100);
+      expect(
+        Boolean(cost.shadowRoot!.querySelector('.row-value.exceeded'))
+      ).to.equal(scenario.policySpend >= 100);
+    });
+  }
+
+  for (const unavailableSpend of [null, undefined]) {
+    it(`shows unknown projected spend (${unavailableSpend}) consistently`, async () => {
+      const unavailablePolicies = [
+        {
+          id: 'monthly-policy',
+          subject_type: 'account',
+          subject_id: null,
+          model_alias: null,
+          period: 'monthly',
+          hard_limit_usd: 100,
+          soft_limit_usd: 80,
+          current_spend_usd: unavailableSpend,
+          notify_on_soft: false,
+          notify_on_hard: false,
+          notification_emails: [],
+        },
+        {
+          id: 'unknown-daily',
+          subject_type: 'account',
+          subject_id: null,
+          model_alias: null,
+          period: 'daily',
+          hard_limit_usd: 10,
+          soft_limit_usd: 0,
+          current_spend_usd: unavailableSpend,
+          notify_on_soft: false,
+          notify_on_hard: false,
+          notification_emails: [],
+        },
+      ];
+      const windowSummary = {
+        ...summary,
+        budget: {
+          ...summary.budget!,
+          current_spend_usd: 150,
+          hard_limit_exceeded: true,
+        },
+      };
+      const overview = await fixture<UsageCard>(
+        html`<usage-card
+          .summary=${windowSummary}
+          .policies=${unavailablePolicies}
+        ></usage-card>`
+      );
+      const cost = await fixture<BudgetHealthCard>(
+        html`<budget-health-card
+          .summary=${windowSummary}
+          .policies=${unavailablePolicies}
+        ></budget-health-card>`
+      );
+      await Promise.all([overview.updateComplete, cost.updateComplete]);
+      for (const card of [overview, cost]) {
+        const text = Array.from(
+          card.shadowRoot!.querySelectorAll('.budget-row')
+        )
+          .map((row) => row.textContent)
+          .join(' ')
+          .replace(/\s+/g, ' ');
+        expect(text).to.include('Spend unavailable');
+        expect(text).to.include('$100.00');
+        expect(text).to.not.include('$150.00');
+        expect(text).to.not.include('$0.00');
+        expect(card.shadowRoot!.querySelector('[role="progressbar"]')).to.not
+          .exist;
+      }
+      expect(cost.shadowRoot!.querySelector('.title.exceeded')).to.not.exist;
+    });
+  }
+
+  it('keeps a soft-only account policy independent of legacy hard limits', async () => {
+    const element = await fixture<BudgetHealthCard>(html`
+      <budget-health-card
+        .summary=${{
+          ...summary,
+          budget: {
+            ...summary.budget!,
+            monthly_limit_usd: 10,
+            hard_limit_exceeded: true,
+          },
+        }}
+        .policies=${[
+          {
+            id: 'soft-only',
+            subject_type: 'account',
+            subject_id: null,
+            model_alias: null,
+            period: 'monthly',
+            hard_limit_usd: 0,
+            soft_limit_usd: 100,
+            current_spend_usd: 40,
+            notify_on_soft: false,
+            notify_on_hard: false,
+            notification_emails: [],
+          },
+        ]}
+      ></budget-health-card>
+    `);
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('.row-value')!.textContent
+    ).to.include('/ $100.00');
+    expect(element.shadowRoot!.querySelector('.title.exceeded')).to.not.exist;
+  });
+
+  it('still warns for an exceeded secondary daily policy', async () => {
+    const element = await fixture<BudgetHealthCard>(html`
+      <budget-health-card
+        .summary=${summary}
+        .policies=${[
+          {
+            id: 'monthly',
+            subject_type: 'account',
+            period: 'monthly',
+            hard_limit_usd: 100,
+            current_spend_usd: 40,
+          },
+          {
+            id: 'daily',
+            subject_type: 'account',
+            period: 'daily',
+            hard_limit_usd: 10,
+            current_spend_usd: 12,
+          },
+        ]}
+      ></budget-health-card>
+    `);
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('.title.exceeded')).to.exist;
+    const rows = element.shadowRoot!.querySelectorAll('.row-value');
+    expect(rows[0].classList.contains('exceeded')).to.equal(false);
+    expect(rows[1].classList.contains('exceeded')).to.equal(true);
+  });
+
   it('names the team on a team budget row', async () => {
     const teamPolicy: BudgetPolicy = {
       model_alias: null,
