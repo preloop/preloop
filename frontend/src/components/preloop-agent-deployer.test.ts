@@ -60,7 +60,7 @@ describe('PreloopAgentDeployer', () => {
           ?hide-back-button=${attrs.hideBack ?? false}
           .stepOffset=${attrs.stepOffset ?? 0}
           .aiModels=${MODELS}
-          .isEnterprise=${true}
+          .edition=${'enterprise'}
           .isAdmin=${true}
         ></preloop-agent-deployer>
       </div>
@@ -350,9 +350,9 @@ describe('PreloopAgentDeployer', () => {
       return new Response(JSON.stringify({ ssh: true, gcp: true }));
     });
     const el = await mount();
-    el.isEnterprise = false;
+    el.edition = 'oss';
     await el.updateComplete;
-    expect(cardByText(el, 'Deploy on a fresh cloud VM')).not.to.exist;
+    expect(cardByText(el, 'Deploy on a fresh cloud VM')).to.exist;
     releaseCapabilities();
     await waitUntil(
       () => (el as any).gcpConfigured,
@@ -365,6 +365,27 @@ describe('PreloopAgentDeployer', () => {
     await el.updateComplete;
     expect((el as any).deploySubStep).to.equal('fresh-vm-premium');
   });
+
+  for (const edition of ['oss', 'cloud', 'enterprise'] as const) {
+    it(`shows the correct unconfigured VM dialog for ${edition}`, async () => {
+      const el = await mount();
+      el.edition = edition;
+      (el as any).gcpConfigured = false;
+      await el.updateComplete;
+      cardByText(el, 'Deploy on a fresh cloud VM')!.click();
+      await el.updateComplete;
+      const open = el.shadowRoot!.querySelector('sl-dialog[open]')!;
+      expect(open.getAttribute('label')).to.equal(
+        edition === 'cloud'
+          ? 'Contact support'
+          : edition === 'oss'
+            ? 'Unlock cloud VM provisioning'
+            : 'Set up a compute backend'
+      );
+      if (edition === 'cloud')
+        expect(open.textContent).not.to.contain('server environment variables');
+    });
+  }
 
   it('does not overflow horizontally at 390px on any step', async () => {
     const steps = [

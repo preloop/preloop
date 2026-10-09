@@ -6775,7 +6775,11 @@ export async function removeUserRole(
 }
 
 // Features API
+export type Edition = 'oss' | 'cloud' | 'enterprise';
+
 export interface FeaturesResponse {
+  edition: Edition;
+  server_version: string;
   plugins: Array<{
     name: string;
     version: string;

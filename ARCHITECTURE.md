@@ -375,3 +375,11 @@ replies revalidate actor, permissions, resource access, and scoped read snapshot
 before private provider delivery. Ambiguous writes become observable uncertain
 work rather than automatic duplicate operations. See
 [Chat connections](docs/chat-connections.md) for setup and operational limits.
+
+The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
+`enterprise` edition and the running backend `server_version`. Hosted instances
+are Cloud; self-hosted proprietary installations are Enterprise; other installs
+are OSS. Plugins can declare an edition, but plugin counts never determine it.
+Feature flags remain the authority for individual capability gates. The console
+reuses its cached features payload for the header help menu; documentation,
+release notes, and issue/support destinations come from brand URL configuration.

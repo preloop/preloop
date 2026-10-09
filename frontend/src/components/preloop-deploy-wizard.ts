@@ -1,3 +1,4 @@
+import type { Edition } from '../api';
 import { LitElement, html, nothing, unsafeCSS } from 'lit';
 import type { TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -65,7 +66,7 @@ export class PreloopDeployWizard extends LitElement {
   computeFeatureEnabled = false;
 
   @property({ type: Boolean })
-  isEnterprise = false;
+  edition: Edition = 'oss';
 
   @property({ type: Boolean })
   isAdmin = false;
@@ -1361,7 +1362,7 @@ agent.invoke(
         <preloop-agent-deployer
           .aiModels=${this.aiModels}
           .computeFeatureEnabled=${this.computeFeatureEnabled}
-          .isEnterprise=${this.isEnterprise}
+          .edition=${this.edition}
           .isAdmin=${this.isAdmin}
           .stepOffset=${this.deployerStepOffset()}
           @deploy-agent-success=${this.handleAgentDeploySuccess}

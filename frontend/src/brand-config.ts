@@ -264,6 +264,9 @@ export interface RegulationNavLink {
 
 // Runtime config - minimal metadata injected into window.BRAND_CONFIG
 export interface BrandRuntimeConfig {
+  docs_url?: string;
+  report_issue_url?: string;
+  changelog_url?: string;
   name: string;
   domain: string;
   edition: BrandEdition; // 'saas' = full marketing site, 'selfhosted' = minimal login-focused

@@ -15,6 +15,8 @@ from preloop.models import models
 from preloop.api.auth import get_current_active_user
 from preloop.services.configuration_gating import configuration_capabilities
 from preloop.plugins.base import get_plugin_manager
+from preloop.config import SERVER_VERSION
+from preloop.services.instance_service import is_hosted_instance, _is_enterprise
 
 __all__ = [
     "router",
@@ -59,6 +61,15 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
     """
     plugin_manager = get_plugin_manager()
     result = plugin_manager.get_enabled_features()
+    default_edition = (
+        "cloud" if is_hosted_instance() else "enterprise" if _is_enterprise() else "oss"
+    )
+    plugin_edition = result["features"].get("edition")
+    if plugin_edition in ("oss", "cloud", "enterprise"):
+        result["edition"] = plugin_edition
+    if result.get("edition") not in ("oss", "cloud", "enterprise"):
+        result["edition"] = default_edition
+    result["server_version"] = SERVER_VERSION
 
     # Registration state comes from the SAME computed rule /register
     # enforces (preloop.api.auth.bootstrap): an unclaimed instance (zero

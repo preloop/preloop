@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from preloop.config import SERVER_VERSION
+
 
 @pytest.fixture(autouse=True)
 def _clear_users_exist_cache():
@@ -37,6 +39,8 @@ class TestGetFeatures:
         result = get_features(db=MagicMock())
 
         assert result == {
+            "edition": "oss",
+            "server_version": SERVER_VERSION,
             "plugins": ["rbac", "audit"],
             "features": {
                 "rbac": True,
@@ -74,6 +78,8 @@ class TestGetFeatures:
         result = get_features(db=MagicMock())
 
         assert result == {
+            "edition": "oss",
+            "server_version": SERVER_VERSION,
             "plugins": [],
             "features": {
                 "registration": True,
@@ -425,3 +431,51 @@ def test_dc_feature_is_deployment_owned(
         }
         users.has_any_users.return_value = True
         assert get_features(db=MagicMock())["features"]["bitbucket_dc"] is enabled
+
+
+@pytest.mark.parametrize(
+    "hosted,enterprise,expected",
+    [
+        (False, False, "oss"),
+        (False, True, "enterprise"),
+        (True, False, "cloud"),
+        (True, True, "cloud"),
+    ],
+)
+def test_features_edition(hosted: bool, enterprise: bool, expected: str) -> None:
+    from preloop.api.endpoints.features import get_features
+
+    with (
+        patch("preloop.api.endpoints.features.get_plugin_manager") as manager,
+        patch("preloop.api.auth.bootstrap.crud_user") as users,
+        patch("preloop.api.endpoints.features.is_hosted_instance", return_value=hosted),
+        patch("preloop.api.endpoints.features._is_enterprise", return_value=enterprise),
+    ):
+        manager.return_value.get_enabled_features.return_value = {
+            "plugins": [{"name": "billing"}],
+            "features": {},
+        }
+        users.has_any_users.return_value = True
+        payload = get_features(db=MagicMock())
+        assert payload["edition"] == expected
+        assert payload["server_version"] == SERVER_VERSION
+
+
+@pytest.mark.parametrize("declared", ["oss", "cloud", "enterprise", "unknown"])
+def test_plugin_edition_declaration(declared: str) -> None:
+    from preloop.api.endpoints.features import get_features
+
+    with (
+        patch("preloop.api.endpoints.features.get_plugin_manager") as manager,
+        patch("preloop.api.auth.bootstrap.crud_user") as users,
+        patch("preloop.api.endpoints.features.is_hosted_instance", return_value=False),
+        patch("preloop.api.endpoints.features._is_enterprise", return_value=False),
+    ):
+        manager.return_value.get_enabled_features.return_value = {
+            "plugins": [],
+            "features": {"edition": declared},
+        }
+        users.has_any_users.return_value = True
+        assert get_features(db=MagicMock())["edition"] == (
+            declared if declared != "unknown" else "oss"
+        )
