@@ -644,6 +644,24 @@ export class ToolListItem extends LitElement {
                 : ''
             }
             ${
+              this.tool.shadowed
+                ? html`<sl-tooltip
+                    content=${
+                      (this.tool.warnings || []).join(' ') ||
+                      'An older MCP server exposes the same tool name.'
+                    }
+                  >
+                    <sl-badge
+                      class="shadowed-badge"
+                      variant="warning"
+                      pill
+                      data-testid="tool-shadowed-badge"
+                      >Shadowed</sl-badge
+                    >
+                  </sl-tooltip>`
+                : ''
+            }
+            ${
               isUnsupported
                 ? html`<sl-tooltip
                     content=${

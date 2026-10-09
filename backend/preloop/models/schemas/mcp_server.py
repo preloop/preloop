@@ -1,7 +1,7 @@
 """Pydantic schemas for MCP server configuration."""
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
@@ -154,6 +154,22 @@ class MCPServerBase(BaseModel):
     status: Optional[str] = Field(
         "active", description="Server status: 'active', 'error', 'disabled'"
     )
+    tool_prefix: Optional[str] = Field(
+        None,
+        description=(
+            "Optional explicit prefix. When set, this server's tools are "
+            "exposed as '<prefix>_<tool>' for listing, routing, policy and "
+            "configuration. Lowercase [a-z0-9_], at most 32 characters. "
+            "Never set automatically. Send null or an empty string to clear."
+        ),
+    )
+
+    @field_validator("tool_prefix")
+    @classmethod
+    def _validate_tool_prefix(cls, value: Optional[str]) -> Optional[str]:
+        from preloop.services.mcp_tool_collisions import validate_tool_prefix
+
+        return validate_tool_prefix(value)
 
     @field_validator("auth_config")
     @classmethod
@@ -192,6 +208,14 @@ class MCPServerResponse(MCPServerBase):
     last_error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    warnings: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Tool name collisions and invalid tool names for this server: "
+            "shadowed tools are hidden from agents because an older server "
+            "owns the same name."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
 

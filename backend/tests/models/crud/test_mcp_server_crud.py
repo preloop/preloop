@@ -130,6 +130,8 @@ def test_get_active_by_account(crud_mcp_server, mock_db_session):
     mock_query = MagicMock()
     mock_db_session.query.return_value = mock_query
     mock_query.filter.return_value = mock_query
+    # First-wins order (#1135): created_at, then id.
+    mock_query.order_by.return_value = mock_query
     mock_query.all.return_value = mock_servers
 
     # Act

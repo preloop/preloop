@@ -1,6 +1,6 @@
 """CRUD operations for MCPServer model."""
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -104,6 +104,7 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
                 self.model.account_id == account_id,
                 self.model.status == "active",
             )
+            .order_by(self.model.created_at, self.model.id)
             .all()
         )
 
@@ -146,17 +147,22 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
         *,
         account_id: str,
         tool_name: str,
-    ) -> List[models.MCPServer]:
-        """Active visible servers that expose an enabled tool ``tool_name``.
+    ) -> List[Tuple[models.MCPServer, bool]]:
+        """Active visible servers exposing ``tool_name``, in first-wins order.
 
-        One query (plus the account hook's shared ids), used to route a
-        proxied call at call time without a full tool discovery. Same
-        visibility as ``get_active_visible_by_account`` and the same
-        enablement rule as tool discovery: an MCP tool configuration with
-        ``is_enabled = false`` for this server hides it. Own servers come
-        first, then shared ones, each by creation time.
+        ``tool_name`` is the name agents see: ``<tool_prefix>_<tool>`` for a
+        server with a prefix, the upstream name otherwise. One query (plus
+        the account hook's shared ids), used to route a proxied call at call
+        time without a full tool discovery. Same visibility as
+        ``get_active_visible_by_account``.
+
+        Order is the owner order of #1135: own servers first, then shared
+        ones, each by ``created_at`` and then ``id``. The first row owns the
+        name. Each row carries whether the MCP tool configuration for that
+        server leaves the tool enabled, so a disabled owner hides the name
+        instead of handing it to a newer server.
         """
-        from sqlalchemy import and_, case, or_
+        from sqlalchemy import and_, case, func, or_
 
         from preloop.plugins.account_hooks import (
             VISIBLE_MCP_SERVER,
@@ -167,8 +173,13 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
         own = self.model.account_id == UUID(str(account_id))
         visible = or_(own, self.model.id.in_(shared_ids)) if shared_ids else own
         config = models.ToolConfiguration
-        return (
-            db.query(self.model)
+        # Same rule as ``exposed_tool_name``: NULL or "" means no prefix.
+        exposed = case(
+            (func.coalesce(self.model.tool_prefix, "") == "", models.MCPTool.name),
+            else_=self.model.tool_prefix + "_" + models.MCPTool.name,
+        )
+        rows = (
+            db.query(self.model, config.is_enabled)
             .join(models.MCPTool, models.MCPTool.mcp_server_id == self.model.id)
             .outerjoin(
                 config,
@@ -182,10 +193,29 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
             .filter(
                 visible,
                 self.model.status == "active",
-                models.MCPTool.name == tool_name,
-                or_(config.id.is_(None), config.is_enabled.is_(True)),
+                exposed == tool_name,
             )
             .order_by(case((own, 0), else_=1), self.model.created_at, self.model.id)
+            .all()
+        )
+        ordered: List[models.MCPServer] = []
+        enabled_by_id: dict = {}
+        for server, enabled in rows:
+            if server.id not in enabled_by_id:
+                ordered.append(server)
+                enabled_by_id[server.id] = True
+            if enabled is False:
+                enabled_by_id[server.id] = False
+        return [(server, enabled_by_id[server.id]) for server in ordered]
+
+    def get_all_by_account(
+        self, db: Session, account_id: str
+    ) -> List[models.MCPServer]:
+        """Every MCP server the account owns, any status, in first-wins order."""
+        return (
+            db.query(self.model)
+            .filter(self.model.account_id == UUID(str(account_id)))
+            .order_by(self.model.created_at, self.model.id)
             .all()
         )
 

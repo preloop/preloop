@@ -18,6 +18,10 @@ export interface MCPServer {
   created_at: string;
   updated_at: string;
   tool_count?: number;
+  /** Optional explicit prefix: tools are exposed as `<prefix>_<tool>`. */
+  tool_prefix?: string | null;
+  /** Tool name collisions (shadowed tools) and invalid tool names. */
+  warnings?: string[];
 }
 
 @customElement('mcp-server-card')
