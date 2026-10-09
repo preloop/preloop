@@ -104,9 +104,20 @@ exports include salt IDs, never the secret salts.
 
 `POST /api/v1/policies/sensitive-data/hash-check` accepts `payload`, `args_hmac`
 and optional `salt_id`; it requires `manage_policies`, checks only the caller's
-account salts, and does not store/log the candidate. Supply `result_hmac` as the
-fingerprint field when checking a result. Equality verification does not
+account salts, and does not store/log the candidate. When checking a result,
+pass the record's **`result_hmac` value in the `args_hmac` request field**.
+The request has no `result_hmac` field. Equality verification does not
 reconstruct the omitted payload.
+
+For example, replace the synthetic fingerprint below with the stored
+`result_hmac` value (and add the record's `salt_id` if available):
+
+```json
+{
+  "payload": {"consent_id": "consent-example"},
+  "args_hmac": "0000000000000000000000000000000000000000000000000000000000000000"
+}
+```
 
 With `approver_view: redacted`, approvers see only the reference. With
 `original_until_decided`, the original arguments stay encrypted on the pending

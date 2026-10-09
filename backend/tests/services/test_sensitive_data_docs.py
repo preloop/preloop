@@ -74,3 +74,15 @@ def test_guide_screenshots_are_local_nonempty_assets() -> None:
         path = GUIDE.parent / image
         assert path.is_file()
         assert path.read_bytes().startswith(b"\x89PNG")
+
+
+def test_result_hash_check_request_example_uses_the_accepted_field() -> None:
+    """Result fingerprints travel in the legacy args_hmac request field."""
+    import json
+    from preloop.api.endpoints.policies import SensitiveDataHashCheckRequest
+
+    snippets = re.findall(r"```json\n(.*?)```", GUIDE.read_text(), re.DOTALL)
+    assert len(snippets) == 1
+    request = SensitiveDataHashCheckRequest.model_validate(json.loads(snippets[0]))
+    assert request.args_hmac
+    assert "result_hmac" not in json.loads(snippets[0])
