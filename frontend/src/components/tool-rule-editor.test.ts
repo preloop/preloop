@@ -217,7 +217,7 @@ describe('ToolRuleEditor', () => {
     });
 
     const cancelBtn = el.shadowRoot?.querySelector(
-      'sl-button[variant="default"]'
+      '.dialog-footer sl-button[variant="default"]'
     ) as HTMLElement;
     expect(cancelBtn).to.exist;
     cancelBtn.click();
@@ -533,5 +533,56 @@ describe('ToolRuleEditor', () => {
 
     expect(saveDetail).to.equal(null);
     expect((el as any)._error).to.equal('That regex does not compile.');
+  });
+});
+
+describe('rule save settlement', () => {
+  it('keeps input and dialog open on rejection and closes only after success', async () => {
+    const el = await fixture<ToolRuleEditor>(
+      html`<tool-rule-editor .open=${true} .features=${{}}></tool-rule-editor>`
+    );
+    const editor = el as any;
+    editor._description = 'Retain this input';
+    let detail: any;
+    let closes = 0;
+    el.addEventListener('save-rule', (event: Event) => {
+      detail = (event as CustomEvent).detail;
+    });
+    el.addEventListener('close', () => {
+      closes++;
+    });
+    editor._handleSave();
+    await el.updateComplete;
+    expect(editor._saving).to.equal(true);
+    editor._handleSave();
+    const close = new CustomEvent('sl-request-close', { cancelable: true });
+    editor._handleClose(close);
+    expect(close.defaultPrevented).to.equal(true);
+    expect(closes).to.equal(0);
+    detail.reject('Invalid CEL condition');
+    await el.updateComplete;
+    expect(editor._saving).to.equal(false);
+    expect(editor._description).to.equal('Retain this input');
+    expect(el.shadowRoot!.textContent).to.include('Invalid CEL condition');
+    expect(closes).to.equal(0);
+    editor._handleSave();
+    detail.resolve();
+    await el.updateComplete;
+    expect(closes).to.equal(1);
+    expect(editor._saving).to.equal(false);
+  });
+
+  it('passes the unsaved condition to the testing panel', async () => {
+    const el = await fixture<ToolRuleEditor>(
+      html`<tool-rule-editor
+        .open=${true}
+        .toolName=${'read_file'}
+        .features=${{ policy_simulation: true }}
+      ></tool-rule-editor>`
+    );
+    const panel = el.shadowRoot!.querySelector('policy-simulator') as any;
+    expect(panel.toolName).to.equal('read_file');
+    expect(panel.draftRule.action).to.equal('require_approval');
+    expect(panel.shadowRoot).to.equal(null);
   });
 });

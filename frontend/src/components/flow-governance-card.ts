@@ -220,11 +220,13 @@ export class FlowGovernanceCard extends LitElement {
     }
   }
 
-  private saveRule(
+  private async saveRule(
     toolName: string,
     existing: AccessRuleSummary | null,
-    formData: RuleFormData
-  ): void {
+    formData: RuleFormData,
+    settlement?: { resolve?: () => void; reject?: (message: string) => void }
+  ): Promise<void> {
+    const previous = this.scopedToolRules[toolName];
     const current = [...(this.scopedToolRules[toolName] || [])].sort(
       (a, b) => a.priority - b.priority
     );
@@ -244,7 +246,16 @@ export class FlowGovernanceCard extends LitElement {
       ...this.scopedToolRules,
       [toolName]: next.map((rule, index) => ({ ...rule, priority: index })),
     };
-    void this.save();
+    await this.save();
+    if (this.error) {
+      const restored = { ...this.scopedToolRules };
+      if (previous) restored[toolName] = previous;
+      else delete restored[toolName];
+      this.scopedToolRules = restored;
+      settlement?.reject?.(this.error);
+    } else {
+      settlement?.resolve?.();
+    }
   }
 
   private deleteRule(toolName: string, ruleId: string): void {
@@ -443,7 +454,8 @@ export class FlowGovernanceCard extends LitElement {
           this.saveRule(
             e.detail.tool.name,
             e.detail.existingRule || e.detail.rule || null,
-            e.detail.formData
+            e.detail.formData,
+            e.detail
           )}
         @delete-rule=${(e: CustomEvent) =>
           this.deleteRule(e.detail.tool.name, e.detail.rule.id)}

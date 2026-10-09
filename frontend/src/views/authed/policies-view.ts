@@ -36,6 +36,7 @@ import { hasPermission } from '../../permissions';
 import type { Tool, ApprovalWorkflow } from '../../components/tool-card';
 import '../../components/policy-generate-dialog';
 import '../../components/sensitive-data-panel';
+import '../../components/policy-simulator';
 import type {
   AgentOption,
   SensitiveDataPanel,
@@ -294,6 +295,7 @@ export class PoliciesView extends LitElement {
   @state() private _isExporting = false;
 
   // YAML tab: live editor over the active policy export.
+  @state() private _showSimulation = false;
   @state() private _yamlDraft = '';
   @state() private _yamlDirty = false;
   @state() private _yamlValidating = false;
@@ -2651,6 +2653,17 @@ export class PoliciesView extends LitElement {
             </p>
           </div>
           <div class="yaml-editor-actions">
+            ${
+              this._features['policy_simulation'] === true
+                ? html`<sl-button
+                    size="small"
+                    @click=${() => {
+                      this._showSimulation = !this._showSimulation;
+                    }}
+                    >Simulate</sl-button
+                  >`
+                : ''
+            }
             <sl-button
               size="small"
               ?disabled=${!this._yamlDirty}
@@ -2675,6 +2688,8 @@ export class PoliciesView extends LitElement {
             </sl-button>
           </div>
         </div>
+
+        ${this._showSimulation ? html`<policy-simulator .draftYaml=${this._yamlDraft}></policy-simulator>` : ''}
 
         <sl-textarea
           class="yaml-editor"
