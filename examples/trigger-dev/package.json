@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "dev": "trigger dev",
+    "dev": "npx trigger.dev@latest dev",
     "smoke": "node --env-file=.env --experimental-strip-types src/smoke.ts"
   },
   "dependencies": {
@@ -17,7 +17,6 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "trigger.dev": "^4.7.3",
     "typescript": "^5.9.0"
   }
 }

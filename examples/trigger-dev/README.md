@@ -46,7 +46,7 @@ prints the reply and the token usage. The session shows up in Preloop under
 the agent you registered.
 
 As a trigger.dev task: set `TRIGGER_PROJECT_REF`, add the three `PRELOOP_*`
-variables to your trigger.dev environment, then run `npx trigger.dev dev` and
+variables to your trigger.dev environment, then run `npm run dev` (`npx trigger.dev@latest dev`) and
 trigger `governed-support-agent` with:
 
 ```json
@@ -54,6 +54,9 @@ trigger `governed-support-agent` with:
 ```
 
 ## Notes
+
+- No lockfile is committed: `npm install` resolves the current releases of the
+  SDKs, so you get their latest security fixes.
 
 - The approval call fails closed: an HTTP error or an expired approval is a
   deny, and the tool tells the model the refund did not happen.
