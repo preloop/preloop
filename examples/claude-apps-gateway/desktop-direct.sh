@@ -3,6 +3,7 @@
 # (Desktop `inferenceProvider: gateway`, no apps gateway in between) and
 # assert the usage row is attributed to claude_desktop.
 # Test-only; needs the harness stack (`./verify.sh` or `docker compose up`).
+# Contract checks report PENDING without #1409; STRICT=1 makes them FAIL.
 # It never touches Claude Desktop's managed configuration on this machine.
 set -uo pipefail
 export PRELOOP_DISABLE_TELEMETRY=true
@@ -17,6 +18,18 @@ KEY_ID="$(jq -r .direct_key_id <<<"$SEED")"
 FAIL=0
 ok() { echo "PASS $*"; }
 bad() { echo "FAIL $*"; FAIL=1; }
+# Same contract detection as verify.sh: checks that need the #1409 backend
+# are PENDING (not FAIL) when it is absent, unless STRICT=1.
+MODELS_PROBE="$(curl -s -o /dev/null -w '%{http_code}' "$PRELOOP/anthropic/v1/models" \
+  -H "x-api-key: $KEY" -H 'anthropic-version: 2023-06-01')"
+CONTRACT=0; [ "$MODELS_PROBE" = 200 ] && CONTRACT=1
+contract_bad() {
+  if [ "$CONTRACT" = 0 ] && [ "${STRICT:-0}" != 1 ]; then
+    echo "PENDING $* (backend contract #1409 not deployed)"
+  else
+    bad "$*"
+  fi
+}
 newest() {
   curl -s -H "Authorization: Bearer $ADMIN_KEY" \
     "$PRELOOP/api/v1/account/gateway-usage/search?api_key_id=$KEY_ID&limit=1" | jq -c '.items[0] // {}'
@@ -52,11 +65,11 @@ for _ in $(seq 1 20); do
 done
 CLIENT="$(jq -r '.meta_data.client // "missing"' <<<"$ROW")"
 SOURCE="$(jq -r '.meta_data.gateway_source // "missing"' <<<"$ROW")"
-[ "$CLIENT" = claude_desktop ] && ok "usage meta_data.client=claude_desktop" || bad "usage meta_data.client=$CLIENT (expects #1409)"
-[ "$SOURCE" = direct ] && ok "usage meta_data.gateway_source=direct" || bad "usage meta_data.gateway_source=$SOURCE (expects #1409)"
+[ "$CLIENT" = claude_desktop ] && ok "usage meta_data.client=claude_desktop" || contract_bad "usage meta_data.client=$CLIENT"
+[ "$SOURCE" = direct ] && ok "usage meta_data.gateway_source=direct" || contract_bad "usage meta_data.gateway_source=$SOURCE"
 
 S_MODELS="$(curl -s -o /tmp/desktop-models.json -w '%{http_code}' "$PRELOOP/anthropic/v1/models" \
   -H "x-api-key: $KEY" -H 'anthropic-version: 2023-06-01' -H 'X-Preloop-Client: claude-desktop')"
 [ "$S_MODELS" = 200 ] && ok "GET <base>/v1/models (Desktop model picker) -> 200, $(jq '.data | length' /tmp/desktop-models.json) models" \
-  || bad "GET <base>/v1/models -> $S_MODELS (expects #1409)"
+  || contract_bad "GET <base>/v1/models -> $S_MODELS"
 exit "$FAIL"

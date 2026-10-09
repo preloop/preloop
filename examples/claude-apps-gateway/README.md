@@ -55,6 +55,7 @@ names. Steps 2 to 4 assert on Preloop API responses
 
 | Step | What it proves |
 | - | - |
+| 0 | Unit tests for the header recorder (`stub/test_harness_server.py`, response-splitting guard); outside the project pytest `testpaths`, so this step is what runs them |
 | 1 | Real Claude Code `/login` with `forceLoginMethod: gateway` and `forceLoginGatewayUrl` (written to the client container's own managed-settings.json), completed through Dex, in a throwaway HOME |
 | 2 | One `claude -p` reaches Preloop; usage row has `gateway_source=claude_apps_gateway`, subject email and id, `client` |
 | 3 | A tiny `gateway_subject` budget for bob makes the gateway return `429`, integer `retry-after`, `error.type=billing_error`, and the second upstream gets nothing |
@@ -64,7 +65,7 @@ names. Steps 2 to 4 assert on Preloop API responses
 
 Checks that need the #1409 backend contract report **PENDING** (not FAIL)
 when Preloop does not serve `GET /anthropic/v1/models`. `STRICT=1` turns
-PENDING into a failure.
+PENDING into a failure. `desktop-direct.sh` uses the same rule.
 
 The real Claude Desktop app is covered by the manual
 [DESKTOP-CHECKLIST.md](DESKTOP-CHECKLIST.md).

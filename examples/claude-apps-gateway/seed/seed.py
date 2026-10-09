@@ -25,7 +25,6 @@ from preloop.models.crud import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.models.models.api_key import ApiKey
-from preloop.models.models.ai_model import AIModel
 
 TRUSTED_SCOPE = "model_gateway:trusted_upstream"
 ORG = "Claude apps gateway harness"
@@ -129,13 +128,13 @@ def main() -> int:
     _user(db, account_id, "alice", "alice@example.com")
 
     for model_id in MODELS:
-        exists = (
-            db.query(AIModel)
-            .filter(
-                AIModel.account_id == account_id,
-                AIModel.model_identifier == model_id,
-            )
-            .first()
+        exists = next(
+            (
+                m
+                for m in crud_ai_model.get_by_account(db, account_id=account_id)
+                if m.model_identifier == model_id
+            ),
+            None,
         )
         if exists is None:
             crud_ai_model.create_with_account(

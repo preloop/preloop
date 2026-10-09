@@ -77,6 +77,8 @@ log "- Preloop commit: $PRELOOP_COMMIT$(git diff --quiet 2>/dev/null || echo ' (
 log "- Backend contract (#1409) detected: $([ $CONTRACT = 1 ] && echo yes || echo "no (GET /anthropic/v1/models -> $MODELS_STATUS)")"
 log ""
 log "## Steps"
+check "0 stub tests" 0 "harness recorder unit tests (stub/test_harness_server.py)" \
+  python3 stub/test_harness_server.py
 curl -s -X DELETE "$RECORDER/_harness/requests" >/dev/null
 curl -s -X DELETE "$SPARE/_harness/requests" >/dev/null
 # Reruns: drop gateway_subject budgets left by an earlier run on this stack.
@@ -115,7 +117,7 @@ check "2 subject email" 1 "meta_data.gateway_subject_email=$(jq -r .gateway_subj
 check "2 subject id" 1 "meta_data.gateway_subject_id=$(jq -r .gateway_subject_id <<<"$META_A")" \
   test "$(jq -r '.gateway_subject_id // "" | length > 0' <<<"$META_A")" = true
 check "2 client" 1 "meta_data.client=$(jq -r .client <<<"$META_A")" \
-  grep -qxE 'claude_code|claude_desktop|unknown' <<<"$(jq -r .client <<<"$META_A")"
+  grep -qxE 'claude_code|claude_desktop' <<<"$(jq -r .client <<<"$META_A")"
 
 # ---------------------------------------------- step 3: budget denial = 429
 BEFORE="$(newest_id "$TRUSTED_KEY_ID")"
