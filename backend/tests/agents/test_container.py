@@ -1535,6 +1535,33 @@ class TestGeneratedBranchNames:
         assert commands.rstrip().endswith("exit 1")
 
 
+class TestUnsafeTargetWithoutPullRequest:
+    def test_push_only_flow_discloses_skip_without_failing(self, container_executor):
+        """Pinned asymmetry (review on #1432): without create_pull_request a
+        flow may never intend to push, so an unsafe target is disclosed with
+        the marker but does not fail the run."""
+        context = {
+            "execution_id": "exec-1",
+            "_git_target_branch": "preloop/bad-(name",
+            "_git_source_branch": "main",
+            "git_clone_config": {
+                "enabled": True,
+                "create_pull_request": False,
+                "repositories": [
+                    {
+                        "repository_url": "https://bitbucket.org/acme/repo.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+        }
+        commands = container_executor._prepare_git_post_execution_commands(context)
+        assert "PRELOOP_PUBLICATION_SKIPPED" in commands
+        assert "exit 1" not in commands
+        assert "git push" not in commands
+        assert "bad-(name" not in commands
+
+
 class TestGitApiTokensNotInScript:
     """The PR/MR creation curls used to interpolate the raw token into the
     generated shell script (issue #173).

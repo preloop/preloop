@@ -5867,14 +5867,18 @@ true
                     "Skipping post-execution git: unsafe target branch %r",
                     target_branch,
                 )
+                marker = (
+                    'echo "PRELOOP_PUBLICATION_SKIPPED: unsafe target '
+                    'branch name; nothing was pushed"'
+                )
                 if create_pr:
                     # A flow that must open a pull request cannot report
                     # success when nothing was pushed.
-                    return (
-                        'echo "PRELOOP_PUBLICATION_SKIPPED: unsafe target '
-                        'branch name; nothing was pushed"\nexit 1'
-                    )
-                return ""
+                    return f"{marker}\nexit 1"
+                # Without create_pull_request the flow may never intend to
+                # push (a reviewer clones read-only), so failing it would
+                # break reviews; the skip is disclosed in the log instead.
+                return marker
             safe_source = _validated_git_ref(source_branch)
             if source_branch and safe_source is None:
                 self.logger.warning(
