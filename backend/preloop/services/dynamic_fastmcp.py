@@ -2426,14 +2426,11 @@ async def {internal_name}({params_str}):
                     account_id=uuid.UUID(user_context.account_id),
                     user_id=uuid.UUID(user_context.user_id),
                     server_name=scope_server_name,
-                    extra_bindings={
-                        **(sensitive_bindings or {}),
-                        **(
-                            {"grant": grant_binding}
-                            if grant_binding is not None
-                            else {}
-                        ),
-                    },
+                    extra_bindings=(
+                        {**(sensitive_bindings or {}), "grant": grant_binding}
+                        if grant_binding is not None
+                        else sensitive_bindings
+                    ),
                     subject_context={
                         "api_key_id": user_context.api_key_id,
                         "flow_id": getattr(user_context, "flow_id", None),

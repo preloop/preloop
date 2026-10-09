@@ -366,3 +366,44 @@ async def test_real_introspection_failure_never_forwards_runtime_tool(
     policy.assert_not_awaited()
     pool.get_client.assert_not_awaited()
     assert deny_audit.call_args.kwargs["rule_description"] == reason
+
+
+@pytest.mark.asyncio
+async def test_sensitive_server_scope_uses_snapshot_owner_over_stale_listing(
+    runtime: Runtime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services.policy.schema import SensitiveDataConfig
+    from preloop.services.sensitive_data.detectors import DetectorConfig
+
+    mcp, _, policy, _, _, wrapper = runtime
+    monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: server())
+    monkeypatch.setattr(
+        gateway.grant_introspector,
+        "evaluate",
+        AsyncMock(return_value=GrantResult(deepcopy(BINDING))),
+    )
+    config = SensitiveDataConfig.model_validate(
+        {
+            "rules": [
+                {
+                    "id": "owner-cards",
+                    "on": ["tool.args"],
+                    "types": ["credit_card"],
+                    "action": "deny",
+                    "scope": {"servers": ["First owner"]},
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        gateway, "_load_sensitive_data_policy", lambda *a: (config, DetectorConfig())
+    )
+    pool = MagicMock(get_client=AsyncMock())
+    monkeypatch.setitem(wrapper.__globals__, "get_mcp_client_pool", lambda: pool)
+    result = await mcp.call_tool(
+        "first_read", {"note": "synthetic card 4111 1111 1111 1111"}
+    )
+    assert result.is_error and "owner-cards" in result.content[0].text
+    policy.assert_not_awaited()
+    pool.get_client.assert_not_awaited()
