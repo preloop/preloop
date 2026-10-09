@@ -2,6 +2,10 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
+Reference-only approvals have different replay and original-argument rules.
+See [Sensitive-data handling](../sensitive-data.md#reference-only-records-and-verification)
+before enabling asynchronous replay for sensitive tool calls.
+
 After reading this page you can switch an approval workflow to non-blocking mode, so agents get a `request_id` back immediately and poll for the decision instead of holding an MCP connection open.
 
 ---

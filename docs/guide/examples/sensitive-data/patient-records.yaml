@@ -1,0 +1,36 @@
+version: "1.0"
+metadata:
+  name: Synthetic patient-record handling
+  description: Reference-only record tools and redacted storage copies
+approval_workflows:
+  - name: record-review
+    timeout_seconds: 300
+sensitive_data:
+  detectors:
+    types: [date_of_birth, medical_record_number, national_id]
+    locales: [us, de, uk, fr, nl]
+  rules:
+    - id: redact-record-identifiers
+      "on": [tool.args, tool.result, model.request, model.response]
+      types: [date_of_birth, medical_record_number]
+      action: redact
+      redact_upstream: false
+    - id: block-national-ids-in-prompts
+      "on": [model.request]
+      types: [national_id]
+      action: deny
+    - id: review-record-release
+      "on": [tool.result]
+      scope:
+        tools: [read_patient_record]
+        servers: [records-example]
+      types: [date_of_birth, medical_record_number]
+      action: require_approval
+      approval_workflow: record-review
+  reference_only:
+    - id: record-tool-references
+      scope:
+        tools: [read_patient_record]
+        servers: [records-example]
+      keep_fields: ["$.consent_id", "$result.consent_id"]
+      approver_view: redacted

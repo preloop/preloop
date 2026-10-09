@@ -1,0 +1,24 @@
+version: "1.0"
+metadata:
+  name: Synthetic payment-data handling
+  description: Block card numbers, redact IBANs and retain payment references
+sensitive_data:
+  detectors:
+    types: [credit_card, iban]
+  rules:
+    - id: block-card-inputs
+      "on": [tool.args, model.request]
+      types: [credit_card]
+      action: deny
+    - id: redact-bank-accounts
+      "on": [tool.args, tool.result, model.request, model.response]
+      types: [iban]
+      action: redact
+      redact_upstream: false
+  reference_only:
+    - id: payment-tool-references
+      scope:
+        tools: [submit_payment]
+        servers: [payments-example]
+      keep_fields: ["$.payment_id", "$result.payment_id"]
+      approver_view: redacted
