@@ -59,6 +59,7 @@ from preloop.utils.execve_limits import (
     MAX_LAUNCH_STRING_BYTES,
     MAX_LAUNCH_TOTAL_BYTES,
     LaunchPayloadTooLargeError,
+    build_chunk_materialization_shell,
     check_launch_payload,
     chunk_bytes_env,
     chunk_count_env,
@@ -957,6 +958,15 @@ K8S_INNER_SCRIPT_BYTES_ENV = chunk_bytes_env(K8S_INNER_SCRIPT_ENV_PREFIX)
 
 # Where the wrapper reassembles the agent script before running it.
 K8S_INNER_SCRIPT_PATH = f"{LAUNCH_PAYLOAD_DIR}/agent-script.sh"
+
+# Docker: a `bash -c <script>` larger than this travels as chunked env
+# variables and is rebuilt here (same transport as Kubernetes, without the
+# log-artifact epilogue Docker does not need).
+DOCKER_SCRIPT_ENV_PREFIX = "PRELOOP_DOCKER_SCRIPT_"
+DOCKER_SCRIPT_PATH = f"{LAUNCH_PAYLOAD_DIR}/docker-agent-script.sh"
+DOCKER_INLINE_SCRIPT_MAX_BYTES = 64 * 1024
+# Exported by the loader so a script that re-execs itself can find its file.
+DOCKER_SCRIPT_PATH_ENV = "PRELOOP_DOCKER_SCRIPT_PATH"
 
 # Key under which the orchestrator names the SESSION (not the execution) that
 # is being started. One execution can legitimately start several agent
@@ -2694,7 +2704,35 @@ class ContainerAgentExecutor(AgentExecutor):
 
         Docker's ``Env`` is a list of ``NAME=value`` strings, which is exactly
         the execve form, so it is measured as-is rather than re-joined.
+
+        Every Docker launch passes through here, so this is also where a large
+        ``bash -c <script>`` moves into chunked environment variables, as on
+        Kubernetes. Inline it would be one execve string over MAX_ARG_STRLEN:
+        an implementation flow with the default verification gate generates
+        ~140 KiB of shell.
         """
+        cmd = container_config.get("Cmd")
+        entrypoint = container_config.get("Entrypoint")
+        chunked = None
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            chunked = self._chunk_docker_script_args(list(cmd[-2:]))
+            if chunked is not None:
+                container_config["Cmd"] = list(cmd[:-2]) + chunked[0]
+        elif (
+            isinstance(entrypoint, list)
+            and entrypoint
+            and entrypoint[-1] == "-c"
+            and isinstance(cmd, list)
+            and len(cmd) == 1
+        ):
+            # Aider: Entrypoint ["bash", "-c"], Cmd [script].
+            chunked = self._chunk_docker_script_args(["-c", cmd[0]])
+            if chunked is not None:
+                container_config["Cmd"] = [chunked[0][1]]
+        if chunked is not None:
+            container_config["Env"] = list(container_config.get("Env") or []) + [
+                f"{name}={value}" for name, value in chunked[1].items()
+            ]
         raw_env = container_config.get("Env") or []
         env: Dict[str, Any] = {}
         for entry in raw_env:
@@ -2705,6 +2743,43 @@ class ContainerAgentExecutor(AgentExecutor):
         self._guard_launch_payload(
             command=command or None, args=args or None, env=env, what=what
         )
+
+    @staticmethod
+    def _chunk_docker_script_args(
+        args: Any,
+    ) -> Optional[tuple[list, Dict[str, str]]]:
+        """Move an oversized ``["-c", script]`` into chunked env variables.
+
+        Returns ``(args, env)`` where ``args`` runs a short loader that
+        rebuilds the script at :data:`DOCKER_SCRIPT_PATH` and execs it, or
+        None when the script is small enough to stay inline (the common
+        case keeps its historic shape).
+        """
+        if not (
+            isinstance(args, list)
+            and len(args) == 2
+            and args[0] == "-c"
+            and isinstance(args[1], str)
+            and len(args[1].encode("utf-8")) > DOCKER_INLINE_SCRIPT_MAX_BYTES
+        ):
+            return None
+        script = args[1]
+        loader = (
+            build_chunk_materialization_shell(
+                DOCKER_SCRIPT_ENV_PREFIX,
+                script,
+                DOCKER_SCRIPT_PATH,
+                label="agent script",
+            )
+            + " || exit 1\n"
+            # Readable by a harness that drops privileges (pi/dsh re-exec the
+            # script as uid 10000 through this exported path, since
+            # BASH_EXECUTION_STRING is unset once the script runs from a file).
+            + f"chmod 0644 {shlex.quote(DOCKER_SCRIPT_PATH)} || exit 1\n"
+            + f"export {DOCKER_SCRIPT_PATH_ENV}={shlex.quote(DOCKER_SCRIPT_PATH)}\n"
+            + f"exec bash {shlex.quote(DOCKER_SCRIPT_PATH)}\n"
+        )
+        return ["-c", loader], chunked_env(DOCKER_SCRIPT_ENV_PREFIX, script)
 
     @staticmethod
     def _wrap_kubernetes_args_for_artifacts(
