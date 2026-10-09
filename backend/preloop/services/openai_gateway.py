@@ -214,6 +214,7 @@ from preloop.services.pricing_overrides import (
     resolve_pricing_override,
 )
 from preloop.services.model_runtime_resolver import (
+    gateway_model_alias_candidates,
     is_agent_managed_model,
     resolve_ai_model_runtime,
 )
@@ -241,6 +242,10 @@ from preloop.services.secret_service import (
 )
 from preloop.utils.audit import log_model_gateway_request
 
+
+#: Upstream response headers relayed to Anthropic gateway clients.
+FORWARDED_RESPONSE_HEADER_PREFIX = "anthropic-ratelimit-unified-"
+FORWARDED_RESPONSE_HEADERS = frozenset({"x-should-retry"})
 logger = logging.getLogger(__name__)
 
 # Bound streamed provider data before final envelope encoding/encryption.
@@ -971,6 +976,16 @@ class OpenAIGatewayService:
     _owns_db_session: bool = False
     # Service instances are scoped to one HTTP request, including its stream.
     _live_request_id: Optional[str] = None
+    # Usage ``meta_data`` attribution set by the Anthropic router:
+    # ``gateway_source``, ``client``, ``gateway_subject_id`` and
+    # ``gateway_subject_email`` (see gateway_upstream_identity).
+    gateway_attribution: Optional[Dict[str, Any]] = None
+    # Client ``anthropic-*`` request headers other than version/beta, relayed
+    # verbatim on the Anthropic passthrough (no allowlist).
+    extra_anthropic_headers: Optional[Dict[str, str]] = None
+    # Upstream response headers relayed to Anthropic clients (see
+    # ``_stash_forwardable_response_headers``).
+    upstream_response_headers: Optional[Dict[str, str]] = None
 
     def __init__(
         self,
@@ -1742,6 +1757,90 @@ class OpenAIGatewayService:
         return payload
 
     @gateway_database_scope
+    def list_anthropic_models(self) -> Dict[str, Any]:
+        """List models for ``GET /anthropic/v1/models`` in Anthropic's shape.
+
+        Same inventory as :meth:`list_models`, further filtered by the
+        ``allowed_models`` of every governance scope of this request (the
+        gateway subject on a trusted upstream request, then the API key and
+        its agent), so a model picker never offers a model the gateway
+        would refuse.
+        """
+        from preloop.models.crud import crud_account
+        from preloop.services.model_allowlist import (
+            allowlist_permits_model,
+            normalize_allowed_models,
+        )
+        from preloop.services.subject_governance import (
+            get_subject_governance,
+            subject_scope_chain,
+        )
+
+        subject_context: Dict[str, Any] = (
+            build_subject_context_from_api_key(self.auth_context.api_key)
+            if self.auth_context.api_key
+            else {}
+        )
+        gateway_subject = getattr(self.auth_context, "gateway_subject", None)
+        if gateway_subject is not None:
+            subject_context["gateway_subject_id"] = str(gateway_subject.id)
+        allowlists: List[List[str]] = []
+        account = crud_account.get(self.db, id=self.auth_context.account_id)
+        if account is not None:
+            for subject_type, subject_id in subject_scope_chain(subject_context):
+                config = get_subject_governance(
+                    account.meta_data or {},
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                )
+                raw = config.get("allowed_models")
+                allowed = normalize_allowed_models(
+                    raw if isinstance(raw, list) else None
+                )
+                if allowed:
+                    allowlists.append(allowed)
+
+        data: List[Dict[str, Any]] = []
+        account_models = self._get_account_models()
+        authorized_ids = self._authorized_model_ids(account_models)
+        for ai_model in account_models:
+            if str(ai_model.id) not in authorized_ids:
+                continue
+            runtime = resolve_ai_model_runtime(ai_model)
+            alias = runtime.model_gateway_model_alias
+            if not runtime.model_gateway_enabled or not alias:
+                continue
+            spellings = gateway_model_alias_candidates(ai_model)
+            if not all(
+                allowlist_permits_model(
+                    allowed, ai_model, requested_spellings=spellings
+                )
+                for allowed in allowlists
+            ):
+                continue
+            created_at = ai_model.created_at
+            if created_at is not None and created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            data.append(
+                {
+                    "type": "model",
+                    "id": alias,
+                    "display_name": ai_model.name or alias,
+                    "created_at": (
+                        created_at.isoformat().replace("+00:00", "Z")
+                        if created_at is not None
+                        else "1970-01-01T00:00:00Z"
+                    ),
+                }
+            )
+        return {
+            "data": data,
+            "has_more": False,
+            "first_id": data[0]["id"] if data else None,
+            "last_id": data[-1]["id"] if data else None,
+        }
+
+    @gateway_database_scope
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Handle OpenAI-compatible chat completions."""
         self._begin_request_accounting()
@@ -2415,6 +2514,141 @@ class OpenAIGatewayService:
                 request_payload=payload,
             )
             raise
+
+    @gateway_database_scope
+    def count_message_tokens(
+        self,
+        payload: Dict[str, Any],
+        *,
+        anthropic_version: Optional[str] = None,
+        anthropic_beta: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Handle ``POST /anthropic/v1/messages/count_tokens``.
+
+        Forwarded to the upstream Anthropic API when the resolved model is an
+        Anthropic model with an API key or subscription-OAuth credential;
+        otherwise answered with Preloop's preflight estimate. Token counting
+        is free upstream, so no usage row is written and no budget is
+        charged. Model authorization still applies.
+        """
+        model = self._resolve_requested_model(
+            payload.get("model"), provider="anthropic"
+        )
+        upstream = self._anthropic_count_tokens_upstream(model)
+        if upstream is None:
+            estimate_payload = dict(payload)
+            system = payload.get("system")
+            if system:
+                estimate_payload["instructions"] = (
+                    system
+                    if isinstance(system, str)
+                    else ModelGatewayBudgetService._content_to_text(system)
+                )
+            return {
+                "input_tokens": ModelGatewayBudgetService._estimate_input_tokens(
+                    estimate_payload
+                )
+            }
+        url, auth_headers = upstream
+        body = dict(payload)
+        body["model"] = self._passthrough_upstream_model_ref(
+            model, payload.get("model")
+        )
+        headers: Dict[str, str] = {
+            "content-type": "application/json",
+            "accept": "application/json",
+            "anthropic-version": (anthropic_version or "").strip()
+            or ANTHROPIC_DEFAULT_API_VERSION,
+            **auth_headers,
+        }
+        beta_flags = [
+            flag.strip() for flag in (anthropic_beta or "").split(",") if flag.strip()
+        ]
+        if "authorization" in auth_headers and ANTHROPIC_OAUTH_BETA_FLAG not in (
+            beta_flags
+        ):
+            beta_flags.insert(0, ANTHROPIC_OAUTH_BETA_FLAG)
+        if beta_flags:
+            headers["anthropic-beta"] = ",".join(beta_flags)
+        for name, value in (self.extra_anthropic_headers or {}).items():
+            headers.setdefault(name.lower(), value)
+        self.release_db_for_wait()
+        try:
+            response = _anthropic_passthrough_http_client().post(
+                url, headers=headers, json=body
+            )
+        except httpx.HTTPError as exc:
+            raise ModelGatewayAPIError(
+                provider="anthropic",
+                status_code=502,
+                message=f"Gateway upstream error: {exc}",
+            ) from exc
+        try:
+            self._stash_forwardable_response_headers(response.headers)
+            if response.status_code >= 400:
+                raise self._anthropic_passthrough_upstream_error(
+                    response.status_code, response.text, ai_model=model
+                )
+            try:
+                result = response.json()
+            except ValueError as exc:
+                raise ModelGatewayAPIError(
+                    provider="anthropic",
+                    status_code=502,
+                    message="Gateway upstream error: invalid JSON from upstream",
+                ) from exc
+            if not isinstance(result, dict):
+                raise ModelGatewayAPIError(
+                    provider="anthropic",
+                    status_code=502,
+                    message="Gateway upstream error: unexpected upstream response",
+                )
+            return result
+        finally:
+            response.close()
+
+    def _anthropic_count_tokens_upstream(
+        self, ai_model: GatewayModel
+    ) -> Optional[tuple[str, Dict[str, str]]]:
+        """Return the upstream count_tokens URL and auth headers, if any.
+
+        Args:
+            ai_model: The resolved gateway model.
+
+        Returns:
+            ``(url, auth_headers)`` for an Anthropic model with a usable
+            credential, or ``None`` when the count must be estimated.
+        """
+        if (ai_model.provider_name or "").strip().lower() != "anthropic":
+            return None
+        base_url = (
+            str(ai_model.api_endpoint).rstrip("/")
+            if ai_model.api_endpoint
+            else ANTHROPIC_OAUTH_PASSTHROUGH_BASE_URL
+        )
+        if base_url.endswith("/v1"):
+            base_url = base_url[: -len("/v1")]
+        url = f"{base_url}/v1/messages/count_tokens"
+        oauth_token = self._anthropic_oauth_passthrough_token(ai_model)
+        if oauth_token is not None:
+            return url, {"authorization": f"Bearer {oauth_token}"}
+        credential_model = (
+            self._model_for_credentials(ai_model) if self._owns_db_session else ai_model
+        )
+        try:
+            resolved = get_secret_service().resolve_ai_model_credentials(
+                credential_model, db=self.db
+            )
+        except Exception:  # noqa: BLE001 - fall back to the local estimate
+            logger.debug("count_tokens credential resolution failed", exc_info=True)
+            return None
+        if (
+            resolved is None
+            or resolved.credential_type != "api_key"
+            or not resolved.value
+        ):
+            return None
+        return url, {"x-api-key": str(resolved.value)}
 
     @gateway_database_scope
     def stream_message(
@@ -6110,6 +6344,10 @@ class OpenAIGatewayService:
             "anthropic-beta": ",".join(beta_flags),
             "anthropic-client-platform": "claude-code",
         }
+        for name, value in (self.extra_anthropic_headers or {}).items():
+            # Client ``anthropic-*`` headers pass through verbatim; the ones
+            # Preloop sets above (version, beta merge, platform) win.
+            headers.setdefault(name.lower(), value)
         return url, headers, body
 
     @staticmethod
@@ -8468,6 +8706,7 @@ class OpenAIGatewayService:
         Args:
             headers: Any headers-like object, or None.
         """
+        self._stash_forwardable_response_headers(headers)
         try:
             snapshot = parse_rate_limit_headers(headers)
         except Exception:  # noqa: BLE001 - telemetry is strictly best-effort
@@ -8475,6 +8714,30 @@ class OpenAIGatewayService:
             return
         if snapshot is not None and snapshot.has_signal():
             self._last_rate_limit_snapshot = snapshot
+
+    def _stash_forwardable_response_headers(self, headers: Any) -> None:
+        """Keep upstream response headers Anthropic clients act on.
+
+        ``anthropic-ratelimit-unified-*`` and ``x-should-retry`` drive
+        Claude Code's retry and quota display, so the Anthropic router
+        relays them to the client. Never raises.
+        """
+        try:
+            items = headers.items() if headers is not None else ()
+            forwardable = {
+                str(name).lower(): str(value)
+                for name, value in items
+                if isinstance(name, str)
+                and (
+                    name.lower().startswith(FORWARDED_RESPONSE_HEADER_PREFIX)
+                    or name.lower() in FORWARDED_RESPONSE_HEADERS
+                )
+            }
+        except Exception:  # noqa: BLE001 - header relay is best-effort
+            logger.debug("Failed to read forwardable response headers", exc_info=True)
+            return
+        if forwardable:
+            self.upstream_response_headers = forwardable
 
     @staticmethod
     def _normalize_upstream_error(
@@ -9792,6 +10055,7 @@ class OpenAIGatewayService:
             api_equivalent_cost = estimated_cost
             estimated_cost = 0.0
             cost_source = "subscription"
+        gateway_subject = getattr(self.auth_context, "gateway_subject", None)
         usage_row = crud_api_usage.log_gateway_request(
             self.db,
             endpoint=endpoint,
@@ -9888,7 +10152,14 @@ class OpenAIGatewayService:
                 "purpose": ((request_payload or {}).get("metadata") or {}).get(
                     "purpose"
                 ),
+                **(self.gateway_attribution or {}),
             },
+            gateway_subject_id=(
+                gateway_subject.id if gateway_subject is not None else None
+            ),
+            gateway_subject_user_id=(
+                gateway_subject.linked_user_id if gateway_subject is not None else None
+            ),
         )
         # Identity does not lazy-load. A refresh that lost the pool expires
         # the row, and reading usage_row.id would check out another connection
@@ -10016,6 +10287,16 @@ class OpenAIGatewayService:
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             estimated_cost=float(usage_row.estimated_cost or 0.0),
+            gateway_subject=(
+                {
+                    "id": str(gateway_subject.id),
+                    "email": gateway_subject.email,
+                    "external_subject": gateway_subject.external_subject,
+                    "api_key_id": str(gateway_subject.api_key_id),
+                }
+                if gateway_subject is not None
+                else None
+            ),
         )
         try:
             from preloop.services.otel_export import emit_gateway_usage
@@ -10629,12 +10910,18 @@ class OpenAIGatewayService:
         )
         if not is_budget_denial:
             return exc
-        return ModelGatewayAPIError(
+        normalized = ModelGatewayAPIError(
             provider=gateway_provider,
             status_code=exc.status_code,
             message=message,
             code="budget_limit_exceeded" if gateway_provider == "openai" else exc.code,
         )
+        # Carried for the trusted upstream 429 (``retry-after``); never
+        # rendered on the 403 itself.
+        normalized.budget_reset_seconds = getattr(  # type: ignore[attr-defined]
+            exc, "budget_reset_seconds", None
+        )
+        return normalized
 
     @staticmethod
     def _budget_meta_data(
