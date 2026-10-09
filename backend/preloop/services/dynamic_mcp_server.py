@@ -994,10 +994,39 @@ def register_default_tools(server: DynamicMCPServer):
         handler=mcp_router.update_issue,
     )
 
-    # Tool 4: search
+    # Tool 4: search_issues
+    server.register_default_tool(
+        name="search_issues",
+        description="Search issues and comments across connected trackers using similarity or fulltext search. Read-only.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Project identifier or slug to narrow search scope",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of results",
+                    "default": 10,
+                },
+            },
+            "required": ["query"],
+        },
+        handler=mcp_router.search_issues,
+    )
+
+    # Tool 4 (alias): search (deprecated alias for search_issues, removed in 0.18.0)
     server.register_default_tool(
         name="search",
-        description="Search for issues and comments using similarity or fulltext search",
+        description=(
+            "Search for issues and comments in connected trackers. "
+            "(Deprecated: use search_issues instead. Will be removed in 0.18.0.)"
+        ),
         input_schema={
             "type": "object",
             "properties": {
@@ -1017,7 +1046,7 @@ def register_default_tools(server: DynamicMCPServer):
             },
             "required": ["query"],
         },
-        handler=mcp_router.search,
+        handler=mcp_router.search_issues,
     )
 
     # Tool 5: estimate_compliance

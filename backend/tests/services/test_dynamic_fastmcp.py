@@ -492,6 +492,67 @@ class TestListTools:
         assert "get_issue" not in names
         assert "create_issue" in names
 
+    async def test_list_tools_search_config_disable_hides_both_names(
+        self, dynamic_mcp, user_context
+    ):
+        """A ToolConfiguration disable of either search name hides both."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+        listed = [
+            Tool(name="search", description="Legacy", parameters={}),
+            Tool(name="search_issues", description="Search", parameters={}),
+            Tool(name="get_issue", description="Get issue", parameters={}),
+        ]
+
+        def config(tool_name: str, enabled: bool) -> MagicMock:
+            row = MagicMock()
+            row.tool_name = tool_name
+            row.tool_source = "builtin"
+            row.is_enabled = enabled
+            row.justification_mode = None
+            row.managed_agent_id = None
+            return row
+
+        async def listed_names(rows: list[MagicMock]) -> set[str]:
+            with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+                mock_db = MagicMock()
+                mock_get_db.side_effect = lambda: iter([mock_db])
+                with (
+                    patch(
+                        "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                        return_value=[],
+                    ),
+                    patch(
+                        "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                        return_value=rows,
+                    ),
+                    patch(
+                        "preloop.models.crud.crud_account.get",
+                        return_value=MagicMock(meta_data={}),
+                    ),
+                    patch.object(
+                        FastMCP, "list_tools", new=AsyncMock(return_value=listed)
+                    ),
+                ):
+                    result = await dynamic_mcp.list_tools()
+            return {tool.name for tool in result}
+
+        hidden = await listed_names([config("search", False)])
+        assert "search" not in hidden
+        assert "search_issues" not in hidden
+        assert "get_issue" in hidden
+
+        reverse = await listed_names([config("search_issues", False)])
+        assert "search" not in reverse
+        assert "search_issues" not in reverse
+
+        # An enable of one name does not undo a disable of the other.
+        both = await listed_names(
+            [config("search", True), config("search_issues", False)]
+        )
+        assert "search" not in both
+        assert "search_issues" not in both
+
     async def test_list_tools_excludes_default_disabled_builtin_without_config(
         self, dynamic_mcp, user_context
     ):
@@ -532,6 +593,158 @@ class TestListTools:
         assert "estimate_compliance" not in names
         assert "improve_compliance" not in names
         assert "get_issue" in names
+
+    async def test_list_tools_search_alias_hidden_for_fresh_account(
+        self, dynamic_mcp, user_context
+    ):
+        """Deprecated search alias is hidden by default outside flows for fresh accounts."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+        user_context.allowed_flow_tools = None
+
+        default_tools = [
+            Tool(name="search_issues", description="Search issues", parameters={}),
+            Tool(name="search", description="Search (alias)", parameters={}),
+            Tool(name="get_issue", description="Get issue", parameters={}),
+        ]
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data={}),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        assert "search" not in names
+        assert "search_issues" in names
+
+    async def test_list_tools_search_alias_visible_when_policy_rule_names_search(
+        self, dynamic_mcp, user_context
+    ):
+        """Deprecated search alias is visible outside flows when policy rule names search."""
+        from preloop.services.subject_governance import (
+            SUBJECT_TYPE_API_KEYS,
+            set_subject_governance,
+        )
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+        user_context.allowed_flow_tools = None
+        user_context.api_key_id = "test-key-search"
+
+        meta = set_subject_governance(
+            {},
+            subject_type=SUBJECT_TYPE_API_KEYS,
+            subject_id="test-key-search",
+            config={"tool_rules": {"search": [{"action": "require_approval"}]}},
+        )
+
+        default_tools = [
+            Tool(name="search_issues", description="Search issues", parameters={}),
+            Tool(name="search", description="Search (alias)", parameters={}),
+            Tool(name="get_issue", description="Get issue", parameters={}),
+        ]
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data=meta),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        assert "search" in names
+        assert "search_issues" in names
+
+    async def test_list_tools_search_alias_hidden_when_rule_disabled_or_deny(
+        self, dynamic_mcp, user_context
+    ):
+        """A switched-off or deny rule naming search does not advertise the alias."""
+        from preloop.services.subject_governance import (
+            SUBJECT_TYPE_API_KEYS,
+            set_subject_governance,
+        )
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+        user_context.allowed_flow_tools = None
+        user_context.api_key_id = "test-key-search"
+
+        default_tools = [
+            Tool(name="search_issues", description="Search issues", parameters={}),
+            Tool(name="search", description="Search (alias)", parameters={}),
+            Tool(name="get_issue", description="Get issue", parameters={}),
+        ]
+
+        for rules in (
+            [{"action": "require_approval", "is_enabled": False}],
+            [{"action": "deny"}],
+        ):
+            meta = set_subject_governance(
+                {},
+                subject_type=SUBJECT_TYPE_API_KEYS,
+                subject_id="test-key-search",
+                config={"tool_rules": {"search": rules}},
+            )
+            with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+                mock_db = MagicMock()
+                mock_get_db.side_effect = lambda db=mock_db: iter([db])
+
+                with (
+                    patch(
+                        "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                        return_value=[],
+                    ),
+                    patch(
+                        "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                        return_value=[],
+                    ),
+                    patch(
+                        "preloop.models.crud.crud_account.get",
+                        return_value=MagicMock(meta_data=meta),
+                    ),
+                    patch.object(
+                        FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                    ),
+                ):
+                    result = await dynamic_mcp.list_tools()
+
+            names = {t.name for t in result}
+            assert "search" not in names
+            assert "search_issues" in names
 
     async def test_list_tools_advertises_only_the_folded_issue_tools(
         self, dynamic_mcp, user_context
@@ -1027,6 +1240,7 @@ class TestMCPCallTool:
                 "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
                 return_value=[disabled_config],
             ),
+            patch("preloop.services.dynamic_fastmcp.crud_account.get") as get_account,
             patch.object(
                 dynamic_mcp.__class__.__bases__[0],
                 "call_tool",
@@ -1040,9 +1254,104 @@ class TestMCPCallTool:
             result = await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
 
         mock_super.assert_not_called()
+        get_account.assert_not_called()
         assert isinstance(result, ToolResult)
         assert result.is_error
         assert "disabled" in result.content[0].text.lower()
+
+    async def test_call_search_config_disable_blocks_both_names(
+        self, dynamic_mcp, user_context
+    ):
+        """A ToolConfiguration disable of either search name blocks both calls."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        def config(tool_name: str, enabled: bool) -> MagicMock:
+            row = MagicMock()
+            row.tool_name = tool_name
+            row.tool_source = "builtin"
+            row.is_enabled = enabled
+            row.justification_mode = None
+            row.managed_agent_id = None
+            return row
+
+        async def rejected(rows: list[MagicMock], called: str) -> ToolResult:
+            with (
+                patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=rows,
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_account.get",
+                ) as get_account,
+                patch.object(
+                    dynamic_mcp.__class__.__bases__[0],
+                    "call_tool",
+                    new=AsyncMock(),
+                    create=True,
+                ) as mock_super,
+            ):
+                mock_get_db.side_effect = lambda: iter([MagicMock()])
+                result = await dynamic_mcp.call_tool(called, {"query": "auth"})
+            mock_super.assert_not_called()
+            get_account.assert_not_called()
+            assert isinstance(result, ToolResult)
+            return result
+
+        for stored, called in (
+            ("search", "search_issues"),
+            ("search_issues", "search"),
+        ):
+            result = await rejected([config(stored, False)], called)
+            assert result.is_error
+            assert "disabled" in result.content[0].text.lower()
+
+    async def test_call_search_justification_required_applies_to_both_names(
+        self, dynamic_mcp, user_context
+    ):
+        """A required justification on either search name is required on both."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        def config(tool_name: str) -> MagicMock:
+            row = MagicMock()
+            row.tool_name = tool_name
+            row.tool_source = "builtin"
+            row.is_enabled = True
+            row.justification_mode = "required"
+            row.managed_agent_id = None
+            return row
+
+        async def called_without_justification(stored: str, called: str) -> ToolResult:
+            with (
+                patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[config(stored)],
+                ),
+                patch.object(
+                    dynamic_mcp.__class__.__bases__[0],
+                    "call_tool",
+                    new=AsyncMock(),
+                    create=True,
+                ) as mock_super,
+            ):
+                mock_get_db.side_effect = lambda: iter([MagicMock()])
+                result = await dynamic_mcp.call_tool(called, {"query": "auth"})
+            mock_super.assert_not_called()
+            assert isinstance(result, ToolResult)
+            return result
+
+        for stored, called in (
+            ("search", "search_issues"),
+            ("search_issues", "search"),
+        ):
+            result = await called_without_justification(stored, called)
+            assert result.is_error
+            assert "justification" in result.content[0].text.lower()
 
     async def test_call_default_disabled_builtin_tool_rejected(
         self, dynamic_mcp, user_context
@@ -1071,6 +1380,151 @@ class TestMCPCallTool:
             result = await dynamic_mcp.call_tool(
                 "estimate_compliance", {"issues": ["ABC-1"]}
             )
+
+        mock_super.assert_not_called()
+        assert isinstance(result, ToolResult)
+        assert result.is_error
+        assert "disabled" in result.content[0].text.lower()
+
+    async def test_call_search_alias_rejected_for_fresh_account(
+        self, dynamic_mcp, user_context
+    ):
+        """Calling deprecated search alias outside flow is rejected for fresh accounts."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.allowed_flow_tools = None
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch(
+                "preloop.models.crud.crud_account.get",
+                return_value=MagicMock(meta_data={}),
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            result = await dynamic_mcp.call_tool("search", {"query": "bug"})
+
+        mock_super.assert_not_called()
+        assert isinstance(result, ToolResult)
+        assert result.is_error
+        assert "disabled" in result.content[0].text.lower()
+
+    async def test_call_search_alias_allowed_when_policy_rule_names_search(
+        self, dynamic_mcp, user_context
+    ):
+        """Calling deprecated search alias outside flow succeeds when policy rule names search."""
+        from preloop.services.subject_governance import (
+            SUBJECT_TYPE_API_KEYS,
+            set_subject_governance,
+        )
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.allowed_flow_tools = None
+        user_context.api_key_id = "test-key-search"
+
+        meta = set_subject_governance(
+            {},
+            subject_type=SUBJECT_TYPE_API_KEYS,
+            subject_id="test-key-search",
+            config={"tool_rules": {"search": [{"action": "require_approval"}]}},
+        )
+
+        available_tools = [
+            Tool(name="search", description="Search (alias)", parameters={})
+        ]
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch(
+                "preloop.models.crud.crud_account.get",
+                return_value=MagicMock(meta_data=meta),
+            ),
+            patch.object(
+                FastMCP,
+                "list_tools",
+                new=AsyncMock(return_value=available_tools),
+            ),
+            patch("preloop.models.db.session.get_async_db_session") as mock_async_db,
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(return_value="call_success"),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+            mock_async_db.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+            mock_async_db.return_value.__aexit__ = AsyncMock(return_value=None)
+
+            result = await dynamic_mcp.call_tool("search", {"query": "bug"})
+
+        mock_super.assert_called_once()
+        assert result == "call_success"
+
+    async def test_call_search_alias_rejected_when_rule_denies_search(
+        self, dynamic_mcp, user_context
+    ):
+        """A deny rule naming search does not make the alias callable."""
+        from fastmcp.tools.tool import ToolResult
+        from preloop.services.subject_governance import (
+            SUBJECT_TYPE_API_KEYS,
+            set_subject_governance,
+        )
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.allowed_flow_tools = None
+        user_context.api_key_id = "test-key-search"
+
+        meta = set_subject_governance(
+            {},
+            subject_type=SUBJECT_TYPE_API_KEYS,
+            subject_id="test-key-search",
+            config={"tool_rules": {"search": [{"action": "deny"}]}},
+        )
+
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch(
+                "preloop.models.crud.crud_account.get",
+                return_value=MagicMock(meta_data=meta),
+            ),
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=AsyncMock(),
+                create=True,
+            ) as mock_super,
+        ):
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            result = await dynamic_mcp.call_tool("search", {"query": "bug"})
 
         mock_super.assert_not_called()
         assert isinstance(result, ToolResult)

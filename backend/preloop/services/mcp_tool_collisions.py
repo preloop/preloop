@@ -300,16 +300,6 @@ def warnings_from_loaded(
     return result
 
 
-def account_tool_warnings(db: Session, account_id: str) -> Dict[str, List[str]]:
-    """Per-tool warnings for every own server of an account, by ``mcp_tool.id``."""
-    return {
-        tool_id: warnings
-        for tool_id, (_server_id, warnings) in _account_tool_warnings(
-            db, account_id
-        ).items()
-    }
-
-
 def _account_tool_warnings(
     db: Session, account_id: str
 ) -> Dict[str, Tuple[str, List[str]]]:

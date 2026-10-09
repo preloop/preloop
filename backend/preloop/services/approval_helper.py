@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastmcp import Context
 from preloop.config import settings
 from preloop.models import models
+from preloop.tools.builtin_defs import TOOL_NAME_ALIASES
 
 logger = logging.getLogger(__name__)
 
@@ -468,6 +469,15 @@ async def require_approval(
                 tool_name=tool_name,
                 tool_source=tool_source,
             )
+            if not config and tool_source == "builtin":
+                alias = TOOL_NAME_ALIASES.get(tool_name)
+                if alias:
+                    config = await get_tool_config_by_name_and_source_async(
+                        db,
+                        account_id=account_id,
+                        tool_name=alias,
+                        tool_source=tool_source,
+                    )
 
             # If workflow_id is provided directly (for standalone requests), use it
             if workflow_id:

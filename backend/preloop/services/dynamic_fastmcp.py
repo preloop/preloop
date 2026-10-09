@@ -30,15 +30,23 @@ from preloop.services.dynamic_mcp_server import (
     get_tracker_types,
 )
 from preloop.services.mcp_client_pool import get_mcp_client_pool
-from preloop.models.crud import crud_mcp_server, crud_tool_configuration
+from preloop.models.crud import (
+    crud_account,
+    crud_mcp_server,
+    crud_tool_configuration,
+)
 from preloop.services.mcp_tool_collisions import (
     exposed_tool_name,
     upstream_tool_name as _upstream_tool_name,
 )
 from preloop.models.db.session import get_db_session as get_db
-from preloop.api.endpoints.tools import BUILTIN_TOOLS
+from preloop.api.endpoints.tools import BUILTIN_TOOLS, TOOL_NAME_ALIASES
 from preloop.services import kill_switch as kill_switch_service
-from preloop.services.subject_governance import is_tool_enabled_for_subject
+from preloop.services.subject_governance import (
+    _tool_enabled_override_names,
+    get_scoped_tool_rules,
+    is_tool_enabled_for_subject,
+)
 from preloop.services.sensitive_data import tool_policy as sensitive_tool_policy
 from preloop.services.sensitive_data.storage import (
     StorageScope,
@@ -51,6 +59,57 @@ from preloop.services.sensitive_data.storage import (
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
+
+
+def _deprecated_alias_names() -> frozenset[str]:
+    """Default-disabled builtin names that ``TOOL_NAME_ALIASES`` still exposes.
+
+    The map is symmetric (``search`` ↔ ``search_issues``). Only the
+    default-disabled side is hidden until a policy names it. Dropping the
+    map entries in 0.18.0 removes this special case from the list and call
+    filters without another edit at those sites.
+    """
+    default_enabled = {
+        str(tool.get("name")): bool(tool.get("default_enabled", True))
+        for tool in BUILTIN_TOOLS
+    }
+    return frozenset(
+        name
+        for name, alias in TOOL_NAME_ALIASES.items()
+        if alias and alias != name and not default_enabled.get(name, True)
+    )
+
+
+# Derived once: the alias map and the builtin catalogue are import-time constants.
+DEPRECATED_ALIAS_NAMES = _deprecated_alias_names()
+
+
+def _rule_enables_deprecated_alias(rule: Any) -> bool:
+    """True when a scoped rule should advertise a default-disabled alias.
+
+    A rule that is switched off, or that denies the tool, names it without
+    offering it. Calls stay gated by policy evaluation either way.
+    """
+    if not isinstance(rule, dict):
+        return False
+    if not rule.get("is_enabled", True):
+        return False
+    return rule.get("action") != "deny"
+
+
+def _policy_enables_deprecated_alias(
+    meta_data: Any,
+    *,
+    tool_name: str,
+    subject_context: dict[str, Any],
+) -> bool:
+    """Whether a scoped policy should surface ``tool_name`` as an alias."""
+    if tool_name not in DEPRECATED_ALIAS_NAMES:
+        return False
+    rules = get_scoped_tool_rules(
+        meta_data, tool_name=tool_name, subject_context=subject_context
+    )
+    return any(_rule_enables_deprecated_alias(rule) for rule in rules)
 
 
 def _tool_error_result(text: str) -> ToolResult:
@@ -1150,16 +1209,27 @@ class DynamicFastMCP(FastMCP):
                     visible = _configs_visible_to_caller(
                         configs, getattr(user_context, "managed_agent_id", None)
                     )
-                    modes = {
-                        tc.tool_name: tc.justification_mode
-                        for tc in visible
-                        if tc.justification_mode in ("optional", "required")
-                    }
-                    enabled = {
-                        tc.tool_name: tc.is_enabled
-                        for tc in visible
-                        if tc.tool_source == "builtin"
-                    }
+                    # required wins over optional when the two alias names disagree.
+                    modes: dict[str, str] = {}
+                    for tc in visible:
+                        if tc.justification_mode not in ("optional", "required"):
+                            continue
+                        for alias_name in _tool_enabled_override_names(tc.tool_name):
+                            if (
+                                tc.justification_mode == "required"
+                                or alias_name not in modes
+                            ):
+                                modes[alias_name] = tc.justification_mode
+                    # A disable stored under either alias name disables both.
+                    # An enable does not override a disable of the other name.
+                    enabled: dict[str, bool] = {}
+                    for tc in visible:
+                        if tc.tool_source != "builtin":
+                            continue
+                        for alias_name in _tool_enabled_override_names(tc.tool_name):
+                            if enabled.get(alias_name) is False:
+                                continue
+                            enabled[alias_name] = bool(tc.is_enabled)
                     acc = crud_account.get(db, id=user_context.account_id)
                     meta = getattr(acc, "meta_data", {}) or {}
                     return proxied, modes, enabled, meta
@@ -1285,6 +1355,10 @@ class DynamicFastMCP(FastMCP):
         # (allowed_flow_tools) that opts into exactly the tools the flow
         # needs, so account-level disables must not break preset flows.
         if user_context.allowed_flow_tools is None:
+            subject_context = {
+                "api_key_id": user_context.api_key_id,
+                "managed_agent_id": getattr(user_context, "managed_agent_id", None),
+            }
             before_count = len(available_tools)
             enabled_filtered = []
             for tool in available_tools:
@@ -1304,6 +1378,12 @@ class DynamicFastMCP(FastMCP):
                         )
                 elif meta.get("default_enabled", True):
                     enabled_filtered.append(tool)
+                elif _policy_enables_deprecated_alias(
+                    account_meta,
+                    tool_name=tool.name,
+                    subject_context=subject_context,
+                ):
+                    enabled_filtered.append(tool)
                 else:
                     logger.info(
                         f"Skipping builtin tool '{tool.name}' "
@@ -1321,11 +1401,12 @@ class DynamicFastMCP(FastMCP):
         # it cannot call tools outside the flow's allowed list
         if user_context.allowed_flow_tools is not None:
             original_count = len(available_tools)
-            available_tools = [
-                tool
-                for tool in available_tools
-                if tool.name in user_context.allowed_flow_tools
-            ]
+            allowed = set(user_context.allowed_flow_tools)
+            # Backward-compatible alias matching (#1044): search and search_issues
+            for alias_src, alias_dst in TOOL_NAME_ALIASES.items():
+                if alias_src in allowed:
+                    allowed.add(alias_dst)
+            available_tools = [tool for tool in available_tools if tool.name in allowed]
             logger.info(
                 f"Flow execution restriction: filtered {original_count} tools down to "
                 f"{len(available_tools)} allowed tools for flow execution "
@@ -1965,12 +2046,19 @@ async def {internal_name}({params_str}):
                         requires_just = False
                         builtin_enabled = None
                         for tc in visible:
-                            if tc.tool_name != name:
-                                continue
-                            if tc.justification_mode == "required":
+                            if (
+                                tc.justification_mode == "required"
+                                and name in _tool_enabled_override_names(tc.tool_name)
+                            ):
                                 requires_just = True
-                            if tc.tool_source == "builtin":
-                                builtin_enabled = tc.is_enabled
+                            if tc.tool_source != "builtin":
+                                continue
+                            if name not in _tool_enabled_override_names(tc.tool_name):
+                                continue
+                            # Disable wins when search and search_issues disagree.
+                            if builtin_enabled is False:
+                                continue
+                            builtin_enabled = bool(tc.is_enabled)
                         return requires_just, builtin_enabled
                     finally:
                         db.close()
@@ -1995,9 +2083,42 @@ async def {internal_name}({params_str}):
                     builtin_call_meta is not None
                     and user_context.allowed_flow_tools is None
                 ):
+                    alias_enabled_by_policy = False
+                    if (
+                        builtin_explicit_enabled is None
+                        and name in DEPRECATED_ALIAS_NAMES
+                    ):
+
+                        def _alias_account_meta() -> dict:
+                            db = next(get_db())
+                            try:
+                                acc = crud_account.get(db, id=user_context.account_id)
+                                meta = getattr(acc, "meta_data", {}) or {}
+                                return meta if isinstance(meta, dict) else {}
+                            finally:
+                                db.close()
+
+                        call_account_meta = await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None, _alias_account_meta
+                            ),
+                            timeout=30,
+                        )
+                        call_subject_context = {
+                            "api_key_id": user_context.api_key_id,
+                            "managed_agent_id": getattr(
+                                user_context, "managed_agent_id", None
+                            ),
+                        }
+                        alias_enabled_by_policy = _policy_enables_deprecated_alias(
+                            call_account_meta,
+                            tool_name=name,
+                            subject_context=call_subject_context,
+                        )
                     is_disabled = builtin_explicit_enabled is False or (
                         builtin_explicit_enabled is None
                         and not builtin_call_meta.get("default_enabled", True)
+                        and not alias_enabled_by_policy
                     )
                     if is_disabled:
                         logger.warning(f"Blocked call to disabled builtin tool: {name}")
