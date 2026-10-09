@@ -447,3 +447,49 @@ async def test_prefixed_call_reaches_upstream_with_the_upstream_name(
     assert not result.is_error, result.content[0].text
     assert pool.get_client.await_args.kwargs["server_id"] == str(a.id)
     assert client.call_tool.await_args.args[0] == "read_scope"
+
+
+def test_empty_string_prefix_routes_like_no_prefix(db_session, test_user):
+    """SQL routing and Python listing agree that "" means no prefix."""
+    account_id = str(test_user.account_id)
+    server = _server(db_session, test_user, "a", tools=["read_scope"])
+    server.tool_prefix = ""
+    db_session.commit()
+    assert _resolve_proxied_tool_server(db_session, account_id, "read_scope").id == (
+        server.id
+    )
+    assert _resolve_proxied_tool_server(db_session, account_id, "_read_scope") is None
+    rows = _get_proxied_tools_sync(account_id, db_session)
+    assert [collisions.exposed_tool_name(s.tool_prefix, t.name) for s, t in rows] == [
+        "read_scope"
+    ]
+
+
+def test_warnings_for_all_servers_read_the_account_once(
+    db_session, test_user, monkeypatch
+):
+    _server(db_session, test_user, "a", age_minutes=0, tools=["x"])
+    b = _server(db_session, test_user, "b", age_minutes=5, tools=["x"])
+    _server(db_session, test_user, "c", age_minutes=9, tools=["y"])
+    collisions.recompute_shadowing(db_session, str(test_user.account_id))
+    calls = []
+    real = collisions._owners
+    monkeypatch.setattr(
+        collisions,
+        "_owners",
+        lambda db, account_id: calls.append(account_id) or real(db, account_id),
+    )
+    warnings = collisions.server_warnings_map(db_session, str(test_user.account_id))
+    assert len(calls) == 1
+    assert [len(v) for v in warnings.values()] == [0, 1, 0]
+    assert warnings[str(b.id)][0].startswith("Tool 'x' on MCP server 'b'")
+
+
+def test_account_tool_warnings_include_invalid_names_without_shadowing(
+    db_session, test_user
+):
+    server = _server(db_session, test_user, "a", prefix="toolong", tools=["t" * 121])
+    [tool] = crud_mcp_tool.get_by_server(db_session, server_id=server.id)
+    warnings = collisions.account_tool_warnings(db_session, str(test_user.account_id))
+    assert tool.shadowed is False
+    assert "is not exposed" in warnings[str(tool.id)][0]

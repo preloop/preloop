@@ -34,6 +34,7 @@ from preloop.services.mcp_tool_collisions import (
     exposed_tool_name,
     recompute_and_audit,
     server_warnings,
+    server_warnings_map,
     tool_warnings_by_id,
 )
 from preloop.utils.audit import log_config_change
@@ -218,7 +219,12 @@ def list_mcp_servers(
         servers = filter_viewable(db, current_user, VISIBLE_MCP_SERVER, servers)
         logger.info(f"Found {len(servers)} MCP servers")
 
-        return [_server_response(db, server) for server in servers]
+        try:
+            warnings_by_server = server_warnings_map(db, str(current_user.account_id))
+        except Exception:
+            logger.warning("Could not compute MCP tool warnings", exc_info=True)
+            warnings_by_server = {}
+        return [_server_response(db, server, warnings_by_server) for server in servers]
     except Exception as e:
         logger.error(f"Error listing MCP servers: {e}", exc_info=True)
         raise
@@ -257,11 +263,21 @@ async def get_mcp_server(
     return _server_response(db, server)
 
 
-def _server_response(db: Session, server: MCPServer) -> MCPServerResponse:
-    """Server response with its tool-collision warnings (#1135)."""
+def _server_response(
+    db: Session,
+    server: MCPServer,
+    warnings_by_server: Dict[str, List[str]] | None = None,
+) -> MCPServerResponse:
+    """Server response with its tool-collision warnings (#1135).
+
+    A list passes ``warnings_by_server`` computed once for the account.
+    """
     response = MCPServerResponse.model_validate(server)
     try:
-        response.warnings = server_warnings(db, server)
+        if warnings_by_server is not None:
+            response.warnings = warnings_by_server.get(str(server.id), [])
+        else:
+            response.warnings = server_warnings(db, server)
     except Exception:
         logger.warning("Could not compute MCP tool warnings", exc_info=True)
     return response

@@ -204,3 +204,18 @@ def test_invalid_prefix_is_rejected(client: TestClient, test_user, prefix):
         },
     )
     assert response.status_code == 422
+
+
+def test_tools_summary_shows_invalid_name_warning_without_shadowing(
+    client: TestClient, db_session, test_user, upstream
+):
+    upstream.list_tools.return_value = [
+        SimpleNamespace(name="t" * 121, description="d", inputSchema={})
+    ]
+    _create(client, "long", tool_prefix="toolong")
+    rows = [
+        r for r in client.get("/api/v1/tools/summary").json() if r["source"] == "mcp"
+    ]
+    assert len(rows) == 1
+    assert rows[0]["shadowed"] is False
+    assert "is not exposed" in rows[0]["warnings"][0]

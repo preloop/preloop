@@ -162,7 +162,7 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
         server leaves the tool enabled, so a disabled owner hides the name
         instead of handing it to a newer server.
         """
-        from sqlalchemy import and_, case, or_
+        from sqlalchemy import and_, case, func, or_
 
         from preloop.plugins.account_hooks import (
             VISIBLE_MCP_SERVER,
@@ -173,8 +173,9 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
         own = self.model.account_id == UUID(str(account_id))
         visible = or_(own, self.model.id.in_(shared_ids)) if shared_ids else own
         config = models.ToolConfiguration
+        # Same rule as ``exposed_tool_name``: NULL or "" means no prefix.
         exposed = case(
-            (self.model.tool_prefix.is_(None), models.MCPTool.name),
+            (func.coalesce(self.model.tool_prefix, "") == "", models.MCPTool.name),
             else_=self.model.tool_prefix + "_" + models.MCPTool.name,
         )
         rows = (

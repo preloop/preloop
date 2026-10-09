@@ -247,20 +247,58 @@ def recompute_shadowing(db: Session, account_id: str) -> ShadowingChanges:
 
 def server_warnings(db: Session, server: Any) -> List[str]:
     """Warnings for one server: its shadowed tools and invalid exposed names."""
-    _servers, tools_by_server, owner_by_name = _owners(db, str(server.account_id))
-    warnings: List[str] = []
-    for tool in sorted(tools_by_server.get(str(server.id), []), key=_tool_key):
-        warnings.extend(_tool_warnings(server, tool, owner_by_name))
-    return warnings
+    return server_warnings_map(db, str(server.account_id)).get(str(server.id), [])
+
+
+def server_warnings_map(db: Session, account_id: str) -> Dict[str, List[str]]:
+    """Warnings for every own server of an account, keyed by server id.
+
+    Two queries for the whole account, so a server list does not re-read
+    every tool once per server.
+    """
+    servers, tools_by_server, owner_by_name = _owners(db, account_id)
+    result: Dict[str, List[str]] = {}
+    for server in servers:
+        warnings: List[str] = []
+        for tool in sorted(tools_by_server.get(str(server.id), []), key=_tool_key):
+            warnings.extend(_tool_warnings(server, tool, owner_by_name))
+        result[str(server.id)] = warnings
+    return result
 
 
 def tool_warnings_by_id(db: Session, server: Any) -> Dict[str, List[str]]:
     """Per-tool warnings for one server, keyed by ``mcp_tool.id``."""
-    _servers, tools_by_server, owner_by_name = _owners(db, str(server.account_id))
     return {
-        str(tool.id): _tool_warnings(server, tool, owner_by_name)
-        for tool in tools_by_server.get(str(server.id), [])
+        tool_id: warnings
+        for tool_id, (server_id, warnings) in _account_tool_warnings(
+            db, str(server.account_id)
+        ).items()
+        if server_id == str(server.id)
     }
+
+
+def account_tool_warnings(db: Session, account_id: str) -> Dict[str, List[str]]:
+    """Per-tool warnings for every own server of an account, by ``mcp_tool.id``."""
+    return {
+        tool_id: warnings
+        for tool_id, (_server_id, warnings) in _account_tool_warnings(
+            db, account_id
+        ).items()
+    }
+
+
+def _account_tool_warnings(
+    db: Session, account_id: str
+) -> Dict[str, Tuple[str, List[str]]]:
+    servers, tools_by_server, owner_by_name = _owners(db, account_id)
+    result: Dict[str, Tuple[str, List[str]]] = {}
+    for server in servers:
+        for tool in tools_by_server.get(str(server.id), []):
+            result[str(tool.id)] = (
+                str(server.id),
+                _tool_warnings(server, tool, owner_by_name),
+            )
+    return result
 
 
 def _tool_warnings(server: Any, tool: Any, owner_by_name: Dict[str, Any]) -> List[str]:

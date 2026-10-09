@@ -43,8 +43,8 @@ from preloop.schemas.tool_approval_condition import (
     ConditionTestResponse,
 )
 from preloop.services.mcp_tool_collisions import (
+    account_tool_warnings,
     exposed_tool_name,
-    tool_warnings_by_id,
 )
 from preloop.services.policy.loader import _detect_condition_type
 from preloop.services.policy_evaluator import evaluate_cel_expression
@@ -698,13 +698,10 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
     ):
         tools_by_server.setdefault(str(tool.mcp_server_id), []).append(tool)
 
+    # Shadowed and invalid-name warnings for every tool, in one pass (#1135).
+    mcp_warnings = account_tool_warnings(db, str(account.id)) if mcp_servers else {}
     for server in mcp_servers:
         mcp_tools = tools_by_server.get(str(server.id), [])
-        mcp_warnings = (
-            tool_warnings_by_id(db, server)
-            if any(t.shadowed for t in mcp_tools)
-            else {}
-        )
 
         for mcp_tool in mcp_tools:
             # Exposed name: '<tool_prefix>_<tool>' on a prefixed server. Tool
