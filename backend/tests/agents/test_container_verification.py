@@ -145,3 +145,34 @@ class TestPublisherWithGate:
             resolve_verification_policy(context["git_clone_config"])
         with pytest.raises(ValueError):
             executor._prepare_git_post_execution_commands(context)
+
+
+class TestGateBaseOnResume:
+    """Live rehearsal 2026-10-09: a feedback continuation clones the PR
+    branch as source and target. The gate diffed the branch against itself
+    (changed_files_count 0), fell through to unknown_default and denied
+    publication of a real repair commit."""
+
+    @staticmethod
+    def _verify_line(commands: str) -> str:
+        return next(
+            line
+            for line in commands.splitlines()
+            if "preloop_gate_verify.py" in line and "python" in line
+        )
+
+    def test_first_run_verifies_against_the_source_branch(self, executor):
+        context = _context(verification={"mode": "gate", "profile": PROFILE})
+        line = self._verify_line(executor._prepare_git_post_execution_commands(context))
+        assert " main " in f" {line} "
+        assert "origin/main" not in line
+
+    def test_resume_verifies_against_the_pr_base(self, executor):
+        context = _context(
+            verification={"mode": "gate", "profile": PROFILE}, source_branch="main"
+        )
+        context["_git_source_branch"] = "preloop/issue-428"
+        context["_git_target_branch"] = "preloop/issue-428"
+        line = self._verify_line(executor._prepare_git_post_execution_commands(context))
+        assert "origin/main" in line
+        assert " preloop/issue-428 " not in f" {line} "
