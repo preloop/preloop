@@ -151,7 +151,9 @@ def get_or_create_instance() -> Optional["Instance"]:
                 return instance
 
             # Create new instance record
-            edition = instance_edition()
+            # Registration retains the tracker's established two-edition contract.
+            # Cloud is a runtime UI edition exposed by /features.
+            edition = "enterprise" if _is_enterprise() else "oss"
             instance = Instance(
                 instance_uuid=uuid.uuid4(),
                 version=SERVER_VERSION,
