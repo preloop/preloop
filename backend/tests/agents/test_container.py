@@ -3001,3 +3001,44 @@ class TestLegacyContinuationProvenance:
         assert "provider limit" in result.stderr
         assert "PRELOOP_PR_OPENED" not in result.stdout
         assert self._stored_body(tmp_path, "github") == seeded
+
+
+class TestEvidenceExclude:
+    """Live rehearsal 2026-10-09: a feedback continuation committed
+    evidence/resume-rebased and evidence/pr-template.md with `git add -A`;
+    the verification gate matched no rule for them and refused the repair."""
+
+    def test_exclude_keeps_evidence_untracked(self, tmp_path):
+        import subprocess
+
+        repo = tmp_path / "workspace"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "evidence").mkdir()
+        (repo / "evidence" / "resume-rebased").write_text("")
+        (repo / "code.pm").write_text("1;\n")
+        from preloop.agents import container as container_module
+
+        original = container_module.EVIDENCE_DIR_PATH
+        container_module.EVIDENCE_DIR_PATH = f"{repo}/evidence"
+        try:
+            shell = ContainerAgentExecutor._build_evidence_exclude_shell(str(repo))
+        finally:
+            container_module.EVIDENCE_DIR_PATH = original
+        for _ in range(2):  # idempotent
+            subprocess.run(["bash", "-c", shell], check=True, cwd=tmp_path)
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        staged = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--cached", "--name-only"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        assert staged == ["code.pm"]
+        exclude = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+        assert exclude.count("/evidence/") == 1
+
+    def test_no_exclude_when_evidence_is_outside_the_checkout(self):
+        assert (
+            ContainerAgentExecutor._build_evidence_exclude_shell("/workspace-2") == ""
+        )

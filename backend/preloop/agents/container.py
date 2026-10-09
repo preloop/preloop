@@ -5061,7 +5061,35 @@ true
                 if rebase_shell:
                     commands.append(rebase_shell)
                     execution_context["_git_resume_rebase"] = True
+        exclude_shell = self._build_evidence_exclude_shell(full_path)
+        if exclude_shell:
+            commands.append(exclude_shell)
         return commands
+
+    @staticmethod
+    def _build_evidence_exclude_shell(full_path: str) -> str:
+        """Keep platform evidence out of the agent's commits.
+
+        ``EVIDENCE_DIR_PATH`` sits inside a checkout cloned at ``/workspace``.
+        A resume writes markers there (``resume-rebased``, the PR template)
+        before the agent runs, and an agent that commits with ``git add -A``
+        then publishes them; the verification gate matches no rule for
+        ``evidence/`` and refuses the repair. A local exclude keeps them
+        untracked without touching the repository's own ``.gitignore``.
+        """
+        root = full_path.rstrip("/")
+        if not EVIDENCE_DIR_PATH.startswith(root + "/"):
+            return ""
+        relative = EVIDENCE_DIR_PATH[len(root) :].rstrip("/") + "/"
+        q_path = shlex.quote(full_path)
+        q_entry = shlex.quote(relative)
+        return (
+            f"( cd {q_path} 2>/dev/null "
+            "&& _pl_exclude=$(git rev-parse --git-path info/exclude 2>/dev/null) "
+            '&& mkdir -p "$(dirname "$_pl_exclude")" '
+            f'&& {{ grep -qxF {q_entry} "$_pl_exclude" 2>/dev/null '
+            f"|| printf '%s\\n' {q_entry} >> \"$_pl_exclude\"; }} ) || true"
+        )
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
         """
