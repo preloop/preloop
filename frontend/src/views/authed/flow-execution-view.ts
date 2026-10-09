@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -398,6 +399,7 @@ type TimelineRow =
 
 @customElement('flow-execution-view')
 export class FlowExecutionView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   // Vaadin Router lifecycle callback
   onBeforeEnter(location: any) {
     this.executionId = location.params.executionId;
@@ -3211,6 +3213,7 @@ ${execution.model_output_summary}</pre>
       <div class="logs-panel">
         <div class="logs-toolbar">
           <sl-input
+            aria-label="Search execution logs"
             class="log-search"
             size="small"
             clearable

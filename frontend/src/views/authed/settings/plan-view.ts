@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import '../../../components/billing-subscription-details';
 import type { BillingSummary } from '../../../types/billing-summary';
@@ -63,6 +64,7 @@ const PLAN_PATH = PLAN_PAGE_PATH;
  */
 @customElement('plan-view')
 export class PlanView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private _loading = true;
   @state() private _error = '';
   /** Without the billing plugin this deployment sells nothing. */

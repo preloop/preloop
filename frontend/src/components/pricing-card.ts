@@ -307,7 +307,7 @@ export class PricingCard extends LitElement {
       color: var(--sl-color-success-600);
     }
     .feature.excluded .feat-icon {
-      color: var(--sl-color-neutral-400);
+      color: var(--console-meta-color);
     }
 
     .feat-text {

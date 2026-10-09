@@ -125,7 +125,7 @@ export class BudgetHealthCard extends LitElement {
       }
 
       .row-footer {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
       }
 
@@ -417,7 +417,7 @@ export class BudgetHealthCard extends LitElement {
             ${
               maxLimit > 0
                 ? html` / ${this.formatCurrency(maxLimit)}`
-                : html`<span style="color: var(--sl-color-neutral-500);">
+                : html`<span style="color: var(--console-meta-color);">
                     spent</span
                   >`
             }

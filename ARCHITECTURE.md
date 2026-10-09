@@ -442,3 +442,18 @@ retain mounted content during subsequent background refreshes.
 
 Console monetary values use the shared USD formatter, with exact precision in tooltips; non-USD provider invoices retain their denomination through shared currency helpers. Server timestamps use the UTC-aware date utilities. Wide tables use the shared `table-scroll` stylesheet in both document CSS and Lit shadow roots so content scrolls within its container at phone widths. Full list-controller migration remains incremental.
 Model-price override edits and provider-price fetches require `edit_ai_models`; repricing and budget controls require `manage_budgets`. User role assignment requires `assign_roles`, independently of user management. Console capability copy is based on plan availability, separately from viewer permissions.
+
+
+### Console accessibility
+
+Console metadata uses the shared `--console-meta-color` token, whose contrast
+against the console surfaces is tested in both themes. The frontend test command
+checks source text colors and programmatic names on native and Shoelace controls.
+Placeholder text alone does not name an input.
+
+The console sidebar uses native navigation lists, links with `aria-current`, and
+expandable `details` groups. After a successful route change, the shell focuses
+the new view heading and announces its title; initial page load does not move
+focus. The shared `ConsoleStatus` controller supplies hidden polite status regions
+for asynchronous authenticated views, and the approvals view announces new live
+requests without moving keyboard focus. Empty capability-gated views stay silent.

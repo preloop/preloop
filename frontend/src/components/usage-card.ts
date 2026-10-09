@@ -161,7 +161,7 @@ export class UsageCard extends LitElement {
       }
 
       .long-range-hint {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 0.8125rem;
         margin-top: var(--sl-spacing-2x-small);
       }
@@ -169,7 +169,7 @@ export class UsageCard extends LitElement {
       /* Where the number came from, not what it is: same register as the
          range it qualifies. */
       .provenance {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .body {
@@ -205,7 +205,7 @@ export class UsageCard extends LitElement {
         display: flex;
         align-items: center;
         gap: var(--sl-spacing-2x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 0.8125rem; /* console meta */
         margin-top: var(--sl-spacing-2x-small);
       }
@@ -213,14 +213,14 @@ export class UsageCard extends LitElement {
       /* The delta is information, not an alarm: no red, no green, no arrow
          colouring. Spend going up is not by itself a problem. */
       .delta {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 0.8125rem;
         font-variant-numeric: tabular-nums;
         margin-top: var(--sl-spacing-2x-small);
       }
 
       .secondary-line {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 0.8125rem;
         font-variant-numeric: tabular-nums;
       }
@@ -290,7 +290,7 @@ export class UsageCard extends LitElement {
       }
 
       .muted {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 0.8125rem;
       }
 

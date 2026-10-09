@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -40,6 +41,7 @@ import '../../components/view-header';
 
 @customElement('issues-dependencies-view')
 export class IssuesDependenciesView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private _allProjects: Project[] = [];
 
@@ -790,7 +792,7 @@ export class IssuesDependenciesView extends LitElement {
         }
         .dependency-reason {
           font-size: var(--sl-font-size-small);
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
         }
         .from-tracker {
           color: var(--sl-color-primary-600);
@@ -828,6 +830,7 @@ export class IssuesDependenciesView extends LitElement {
       <view-header headerText="Issue Dependencies" width="wide">
         <div slot="main-column" class="controls">
           <sl-select
+            aria-label="Project"
             placeholder="Select a project..."
             .value=${this._selectedProjectId}
             @sl-change=${this._handleProjectSelect}

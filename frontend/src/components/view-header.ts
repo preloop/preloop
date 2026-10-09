@@ -90,6 +90,12 @@ export class ViewHeader extends LitElement {
     super.updated(changed);
     if (changed.has('headerText') && this.headerText) {
       document.title = pageTitle(this.headerText);
+      this.dispatchEvent(
+        new CustomEvent('console-view-heading-ready', {
+          bubbles: true,
+          composed: true,
+        })
+      );
     }
   }
 
@@ -99,7 +105,10 @@ export class ViewHeader extends LitElement {
         <div class="main-column">
           <slot name="top"></slot>
           <div class="header">
-            <h1 style="display: flex; align-items: center; gap: 12px;">
+            <h1
+              tabindex="-1"
+              style="display: flex; align-items: center; gap: 12px;"
+            >
               <slot name="title-prefix"></slot>${this.headerText}
             </h1>
             <slot name="main-column"></slot>

@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -30,6 +31,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 
 @customElement('runners-view')
 export class RunnersView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private runners: RunnerRecord[] = [];
 
@@ -114,7 +116,7 @@ export class RunnersView extends LitElement {
           font-size: 14px;
         }
         .muted {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
           font-size: 13px;
         }
         table {
@@ -545,6 +547,7 @@ export class RunnersView extends LitElement {
       return html`
         <div class="slot-edit">
           <sl-input
+            aria-label="Runner concurrency"
             type="number"
             size="small"
             min="1"

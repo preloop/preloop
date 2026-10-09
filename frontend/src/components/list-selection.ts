@@ -945,7 +945,7 @@ export function selectionIdFromEvent(event: Event): string | null {
  * True when the key belongs to a field the operator is typing in.
  *
  * A checkbox is not one: X has to keep working while the focus sits on the
- * row's own checkbox, which is a real `<input>` inside the Shoelace shadow
+ * row's own checkbox, which is a real `<input aria-label="Select all items">` inside the Shoelace shadow
  * root and would otherwise swallow the key.
  */
 function isTypingTarget(event: Event): boolean {

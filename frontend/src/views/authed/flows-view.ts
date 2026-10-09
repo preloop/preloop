@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -336,6 +337,7 @@ export function filterFlowRows(
 
 @customElement('flows-view')
 export class FlowsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   /** Multi-select for the flow table and the card grid. */
   readonly selection = new ListSelectionController<FlowListRow>(this, {
     idOf: (row) => row.id,

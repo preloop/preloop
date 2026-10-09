@@ -188,7 +188,7 @@ export class SessionHistoryWidget extends LitElement {
     }
     .session-meta {
       font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       margin-top: 4px;
     }
     .event-list {
@@ -217,7 +217,7 @@ export class SessionHistoryWidget extends LitElement {
     .empty-state {
       padding: var(--sl-spacing-medium);
       text-align: center;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       display: flex;
       flex-direction: column;
       align-items: center;

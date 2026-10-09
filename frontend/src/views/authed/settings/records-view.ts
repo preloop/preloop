@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -75,6 +76,7 @@ const RESOURCE_TYPES = [
 
 @customElement('records-view')
 export class RecordsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private canAudit = false;
   @state() private canPolicies = false;
   @state() private canManage = false;
@@ -1007,6 +1009,7 @@ ${offlineAuditCommand(range)}</pre>
                                 ${
                                   editable
                                     ? html`<sl-input
+                                        aria-label="Retention days"
                                         type="number"
                                         size="small"
                                         data-testid=${`retention-${row.record_class}`}
@@ -1379,6 +1382,7 @@ ${offlineAuditCommand(range)}</pre>
           <label
             >Start
             <input
+              aria-label="Export start date"
               type="date"
               data-testid="export-start"
               .value=${this.exportStart}
@@ -1389,6 +1393,7 @@ ${offlineAuditCommand(range)}</pre>
           <label
             >End
             <input
+              aria-label="Export end date"
               type="date"
               data-testid="export-end"
               .value=${this.exportEnd}

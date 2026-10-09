@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { AuthedElement, getUserProfile } from '../../api';
@@ -60,6 +61,7 @@ interface TestPushResult {
 
 @customElement('notification-preferences-view')
 export class NotificationPreferencesView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private preferences: NotificationPreferences | null = null;
 
@@ -241,7 +243,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
       .device-date {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .qr-container {
@@ -370,7 +372,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
       .test-result-meta {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .test-result-meta code,

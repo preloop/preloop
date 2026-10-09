@@ -56,7 +56,7 @@ export class NotifyRecipientsField extends LitElement {
     }
     .help-text {
       font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
     .custom-email-row {
       display: flex;
@@ -143,6 +143,7 @@ export class NotifyRecipientsField extends LitElement {
           >${this.label}</label
         >
         <sl-select
+          aria-label="Notification recipients"
           placeholder="Select users or teams..."
           multiple
           clearable
@@ -178,6 +179,7 @@ export class NotifyRecipientsField extends LitElement {
             ? html`
                 <div class="custom-email-row">
                   <sl-input
+                    aria-label="Custom notification email"
                     placeholder="Add custom email"
                     .value=${this.customEmailInput}
                     @sl-input=${(event: Event) => {

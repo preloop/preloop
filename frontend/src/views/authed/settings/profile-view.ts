@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -14,6 +15,7 @@ import '../../../components/view-header';
 
 @customElement('profile-view')
 export class ProfileView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private user: {
     username: string;
@@ -137,6 +139,7 @@ export class ProfileView extends LitElement {
                       : ''
                   }
                   <input
+                    aria-label="Profile avatar image"
                     id="avatar-input"
                     type="file"
                     accept="image/png,image/jpeg,image/webp,image/gif"
@@ -217,7 +220,7 @@ export class ProfileView extends LitElement {
 
       sl-input[readonly]::part(base) {
         background-color: var(--sl-color-neutral-100);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       sl-input[readonly]::part(input) {

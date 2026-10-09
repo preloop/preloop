@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css, nothing, unsafeCSS, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -245,6 +246,7 @@ function formatCue(seconds: number): string {
  */
 @customElement('artifacts-view')
 export class ArtifactsView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() filters: ArtifactFilters = { ...EMPTY_FILTERS };
   @state() private result: ArtifactSearchResponse | null = null;
   @state() private items: ArtifactSearchItem[] = [];
@@ -302,7 +304,7 @@ export class ArtifactsView extends AuthedElement {
         gap: var(--sl-spacing-2x-small) var(--sl-spacing-medium);
       }
       .facet-count {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-variant-numeric: tabular-nums;
         margin-left: 0.25rem;
       }

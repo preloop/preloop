@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -37,6 +38,7 @@ const emptyForm = (): ChatConnectionCreate => ({
 
 @customElement('chat-connections-view')
 export class ChatConnectionsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private connections: ChatConnection[] = [];
   @state() private canManage = false;
   @state() private loading = true;

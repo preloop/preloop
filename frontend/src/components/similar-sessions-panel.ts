@@ -107,7 +107,7 @@ export class SimilarSessionsPanel extends LitElement {
     }
 
     .count {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-weight: 400;
     }
 
@@ -153,7 +153,7 @@ export class SimilarSessionsPanel extends LitElement {
     }
 
     .entry-meta {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       margin-top: 2px;
     }
@@ -167,7 +167,7 @@ export class SimilarSessionsPanel extends LitElement {
     }
 
     .match-turn {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
     }
 

@@ -189,7 +189,7 @@ export class AnswerForm extends LitElement {
 
       .row-disabled-hint {
         font-size: var(--console-text-meta, 13px);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .autofilled {
@@ -204,7 +204,7 @@ export class AnswerForm extends LitElement {
       }
 
       .autofilled sl-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       /* A phone gets the same table as one row per finding, stacked. */

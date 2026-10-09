@@ -1066,7 +1066,7 @@ export class AddTrackerModal extends LitElement {
                       Connect with GitHub
                     </sl-button>
                     <p
-                      style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
+                      style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--console-meta-color); font-size: var(--sl-font-size-small);"
                     >
                       Recommended: One-click OAuth connection
                     </p>
@@ -1523,7 +1523,7 @@ export class AddTrackerModal extends LitElement {
           Connect Bitbucket
         </sl-button>
         <p
-          style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
+          style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--console-meta-color); font-size: var(--sl-font-size-small);"
         >
           Recommended: browser consent with automatic token renewal
         </p>

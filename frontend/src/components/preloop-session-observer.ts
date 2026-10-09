@@ -676,7 +676,7 @@ export class PreloopSessionObserver extends LitElement {
       .optimize-hint-dismiss {
         background: none;
         border: none;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         cursor: pointer;
         font-size: var(--sl-font-size-medium);
         line-height: 1;
@@ -2882,6 +2882,7 @@ export class PreloopSessionObserver extends LitElement {
                       this.hideListSearch
                         ? nothing
                         : html`<sl-input
+                            aria-label="Search sessions"
                             placeholder="Search sessions"
                             clearable
                             .value=${this.searchQuery}

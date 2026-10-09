@@ -88,7 +88,7 @@ export class GovernanceRuleSetEditor extends LitElement {
     }
 
     .drag-handle {
-      color: var(--sl-color-neutral-400);
+      color: var(--console-meta-color);
       cursor: grab;
       flex-shrink: 0;
       font-size: 0.85rem;
@@ -102,7 +102,7 @@ export class GovernanceRuleSetEditor extends LitElement {
     .rule-priority {
       font-size: var(--sl-font-size-x-small);
       font-weight: var(--sl-font-weight-semibold);
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       min-width: 20px;
       text-align: center;
       padding-top: 2px;
@@ -175,7 +175,7 @@ export class GovernanceRuleSetEditor extends LitElement {
 
     .rule-description {
       font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-style: italic;
       margin-top: 2px;
     }
@@ -196,7 +196,7 @@ export class GovernanceRuleSetEditor extends LitElement {
     .empty-rules {
       text-align: center;
       padding: var(--sl-spacing-medium);
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-small);
       border: 1px dashed var(--sl-color-neutral-300);
       border-radius: var(--sl-border-radius-medium);

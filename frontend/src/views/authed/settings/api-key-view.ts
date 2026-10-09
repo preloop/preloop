@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, css, html, unsafeCSS, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../../router';
@@ -64,6 +65,7 @@ function splitAllowedModels(value: string): string[] {
 
 @customElement('api-key-view')
 export class ApiKeyView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
     unsafeCSS(consoleStyles),
     css`
@@ -157,7 +159,7 @@ export class ApiKeyView extends LitElement {
       .empty-state {
         padding: var(--sl-spacing-large);
         text-align: center;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-style: italic;
       }
 
@@ -649,7 +651,7 @@ export class ApiKeyView extends LitElement {
           @sl-change=${this.handleManualAllowlistChange}
         ></sl-input>
         <div
-          style="font-size: 0.8rem; color: var(--sl-color-neutral-500); margin-top: 4px;"
+          style="font-size: 0.8rem; color: var(--console-meta-color); margin-top: 4px;"
         >
           Comma-separated model names, ids or gateway aliases. Empty allows
           every model.
@@ -836,7 +838,7 @@ export class ApiKeyView extends LitElement {
                     ${html`<span title=${formatUsdExact(this.usageSummary?.estimated_cost)}>${formatUsd(this.usageSummary?.estimated_cost)}</span>`}
                   </span>
                   <span
-                    style="color: var(--sl-color-neutral-500); font-size: 0.9em; margin-left: 8px;"
+                    style="color: var(--console-meta-color); font-size: 0.9em; margin-left: 8px;"
                   >
                     (${this.usageSummary?.total_requests || 0} requests)
                   </span>

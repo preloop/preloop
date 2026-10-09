@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { replaceListFilters } from '../../utils/list-filter-url';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -134,6 +135,7 @@ interface StarterPolicyDiff {
 
 @customElement('tools-view')
 export class ToolsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private tools: ToolWithRules[] = [];
   @state() private mcpServers: MCPServer[] = [];
   @state() private approvalPolicies: ApprovalWorkflow[] = [];
@@ -315,7 +317,7 @@ export class ToolsView extends LitElement {
       .empty-state {
         text-align: center;
         padding: var(--sl-spacing-x-large);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .starter-policy-description {
@@ -326,7 +328,7 @@ export class ToolsView extends LitElement {
       }
 
       .starter-policy-meta {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         margin-bottom: var(--sl-spacing-small);
       }

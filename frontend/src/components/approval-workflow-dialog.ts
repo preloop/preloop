@@ -193,7 +193,7 @@ export class ApprovalWorkflowDialog extends LitElement {
         display: flex;
         justify-content: space-between;
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin-top: var(--sl-spacing-2x-small);
       }
 
@@ -499,13 +499,14 @@ export class ApprovalWorkflowDialog extends LitElement {
         <div class="form-field">
           <label class="form-label">Approvals Required</label>
           <sl-input
+            aria-label="Approvals required"
             type="number"
             min="1"
             .value=${String(this._approvalsRequired)}
             @sl-input=${(e: any) =>
               (this._approvalsRequired = parseInt(e.target.value) || 1)}
           ></sl-input>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             Number of approvals needed before the action can proceed.
           </small>
         </div>
@@ -535,6 +536,7 @@ export class ApprovalWorkflowDialog extends LitElement {
         <div class="form-field">
           <label class="form-label required">AI Model</label>
           <sl-select
+            aria-label="AI model"
             hoist
             placeholder=${
               this._loadingModels
@@ -573,6 +575,7 @@ export class ApprovalWorkflowDialog extends LitElement {
         <div class="form-field">
           <label class="form-label">Guidelines</label>
           <sl-textarea
+            aria-label="AI approval guidelines"
             .value=${this._aiGuidelines}
             @sl-input=${(e: any) => (this._aiGuidelines = e.target.value)}
             placeholder="APPROVE if:
@@ -584,7 +587,7 @@ DENY if:
 - Credential access"
             rows="6"
           ></sl-textarea>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             Instructions for the AI to determine when to approve or deny.
           </small>
         </div>
@@ -612,6 +615,7 @@ DENY if:
         <div class="form-field">
           <label class="form-label">When Uncertain</label>
           <sl-radio-group
+            aria-label="AI fallback behavior"
             .value=${this._aiFallbackBehavior}
             @sl-change=${(e: any) =>
               (this._aiFallbackBehavior = e.target.value)}
@@ -628,6 +632,7 @@ DENY if:
                 <div class="form-field">
                   <label class="form-label">Escalation Workflow</label>
                   <sl-select
+                    aria-label="Escalation workflow"
                     hoist
                     .value=${this._escalationWorkflowId}
                     @sl-change=${(e: any) =>
@@ -641,7 +646,7 @@ DENY if:
                       `
                     )}
                   </sl-select>
-                  <small style="color: var(--sl-color-neutral-500);">
+                  <small style="color: var(--console-meta-color);">
                     The approval workflow to use when AI confidence is below
                     threshold.
                   </small>
@@ -666,6 +671,7 @@ DENY if:
         <div class="form-field">
           <label class="form-label required">Incoming Webhook URL</label>
           <sl-input
+            aria-label="Webhook URL"
             type="url"
             .value=${this._webhookUrl}
             @sl-input=${(e: any) => (this._webhookUrl = e.target.value)}
@@ -675,7 +681,7 @@ DENY if:
                 : 'https://your-mattermost.com/hooks/...'
             }
           ></sl-input>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             Approval requests will be posted to this ${typeName} incoming
             webhook.
           </small>
@@ -684,11 +690,12 @@ DENY if:
         <div class="form-field">
           <label class="form-label">Channel (Optional)</label>
           <sl-input
+            aria-label="Notification channel"
             .value=${this._channel}
             @sl-input=${(e: any) => (this._channel = e.target.value)}
             placeholder="#approval-requests"
           ></sl-input>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             Optional display target for your own bookkeeping.
           </small>
         </div>
@@ -707,12 +714,13 @@ DENY if:
         <div class="form-field">
           <label class="form-label required">Webhook URL</label>
           <sl-input
+            aria-label="Webhook URL"
             type="url"
             .value=${this._webhookUrl}
             @sl-input=${(e: any) => (this._webhookUrl = e.target.value)}
             placeholder="https://your-service.com/approval-webhook"
           ></sl-input>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             Approval requests will be sent to this URL. The response should
             include an approval link.
           </small>
@@ -743,6 +751,7 @@ DENY if:
         <div class="form-field">
           <label class="form-label required">Name</label>
           <sl-input
+            aria-label="Workflow name"
             .value=${this._name}
             @sl-input=${(e: any) => (this._name = e.target.value)}
             placeholder="e.g., Production Safeguards"
@@ -752,6 +761,7 @@ DENY if:
         <div class="form-field">
           <label class="form-label">Description</label>
           <sl-textarea
+            aria-label="Description"
             .value=${this._description}
             @sl-input=${(e: any) => (this._description = e.target.value)}
             placeholder="Optional description"
@@ -763,6 +773,7 @@ DENY if:
           <div class="form-field">
             <label class="form-label">Type</label>
             <sl-select
+              aria-label="Approval type"
               hoist
               .value=${this._approvalType}
               @sl-change=${(e: any) => (this._approvalType = e.target.value)}
@@ -786,6 +797,7 @@ DENY if:
           <div class="form-field">
             <label class="form-label">Timeout (seconds)</label>
             <sl-input
+              aria-label="Timeout in seconds"
               type="number"
               min="30"
               .value=${String(this._timeoutSeconds)}
@@ -811,7 +823,7 @@ DENY if:
               }}
             ></sl-switch>
           </div>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             When enabled, tool calls return immediately and agents poll for
             approval status. Recommended for CLI clients (Claude Code, Codex
             CLI) to avoid timeouts.
@@ -828,7 +840,7 @@ DENY if:
               @sl-change=${(e: any) => (this._isDefault = e.target.checked)}
             ></sl-switch>
           </div>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             The default policy is used when no specific policy is assigned.
           </small>
         </div>

@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { css, html, nothing, unsafeCSS } from 'lit';
@@ -100,6 +101,7 @@ const DISMISS_REASON_LABELS: Record<string, string> = {
  */
 @customElement('attention-view')
 export class AttentionView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private loading = true;
   @state() private approvals: AttentionApproval[] = [];
   @state() private approvalsReady = false;

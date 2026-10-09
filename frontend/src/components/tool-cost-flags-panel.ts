@@ -127,7 +127,7 @@ export class ToolCostFlagsPanel extends AuthedElement {
     }
 
     .muted-note {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
     }
 

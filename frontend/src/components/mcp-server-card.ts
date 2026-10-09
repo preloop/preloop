@@ -220,6 +220,7 @@ export class MCPServerCard extends LitElement {
           <div class="enable-control">
             <span>Enabled</span>
             <sl-switch
+              aria-label="Enable MCP server"
               ?checked=${this.server.status === 'active'}
               @sl-change=${this.handleToggleEnabled}
             ></sl-switch>

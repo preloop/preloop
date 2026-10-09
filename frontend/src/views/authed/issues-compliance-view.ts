@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -50,6 +51,7 @@ function complianceStatusLabel(status: string | null | undefined): string {
 
 @customElement('issues-compliance-view')
 export class IssuesComplianceView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private readonly INFO_ALERT_DISMISSED_KEY =
     'preloop-issues-compliance-info-alert-dismissed';
 
@@ -622,6 +624,7 @@ export class IssuesComplianceView extends LitElement {
     return html`
       <div class="search-bar">
         <sl-input
+          aria-label="Search issues"
           placeholder="Search issues by title, description, or ID..."
           .value=${this._searchQuery}
           @sl-input=${(e: Event) =>

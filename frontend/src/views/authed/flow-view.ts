@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
@@ -140,6 +141,7 @@ export function flowRuntimeLabel(agentType: string | null | undefined): string {
 
 @customElement('flow-view')
 export class FlowView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private initialized = false;
   private _formInstanceId = 0;
   private _routeSearch = '';
@@ -1972,7 +1974,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     if (this._loadingReferenceData || this.availableTools.length === 0) {
       return html`
         <div
-          style="display: flex; align-items: center; gap: var(--sl-spacing-small); padding: var(--sl-spacing-medium); color: var(--sl-color-neutral-500);"
+          style="display: flex; align-items: center; gap: var(--sl-spacing-small); padding: var(--sl-spacing-medium); color: var(--console-meta-color);"
         >
           <sl-spinner style="font-size: 1rem;"></sl-spinner>
           Loading tools...
@@ -2382,6 +2384,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               Example Payload
             </label>
             <sl-textarea
+              aria-label="Resolved prompt preview"
               readonly
               rows="6"
               value='{

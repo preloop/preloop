@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
@@ -168,6 +169,7 @@ const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private readonly editPermissions = new EditPermissions(this);
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
   @state() private previousRangeSummary: CostAnalyticsSummaryResponse | null =
@@ -473,7 +475,7 @@ export class CostView extends AuthedElement {
         }
 
         .cell-subtitle {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
           font-size: var(--sl-font-size-x-small);
         }
 
@@ -540,7 +542,7 @@ export class CostView extends AuthedElement {
         }
 
         .override-model-meta {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
           font-size: var(--sl-font-size-x-small);
           display: flex;
           align-items: center;
@@ -570,7 +572,7 @@ export class CostView extends AuthedElement {
         }
 
         .override-empty {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
         }
 
         .override-error {
@@ -644,7 +646,7 @@ export class CostView extends AuthedElement {
         }
 
         .conversation-child-marker {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
           margin-right: var(--sl-spacing-2x-small);
         }
 
@@ -654,7 +656,7 @@ export class CostView extends AuthedElement {
         }
 
         .not-reported {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
           font-style: italic;
         }
 

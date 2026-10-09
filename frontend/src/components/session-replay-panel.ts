@@ -515,7 +515,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .example-provenance {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       line-height: 1.5;
     }
@@ -618,7 +618,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .message-footer {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       margin-top: var(--sl-spacing-x-small);
       text-transform: none;
@@ -836,7 +836,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .timeline-datetime-label {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: 0.62rem;
       position: absolute;
       top: 20px;
@@ -1074,7 +1074,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-threshold-slider::part(form-control-label) {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
     }
 
@@ -1111,7 +1111,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-summary-label {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       letter-spacing: 0.02em;
       text-transform: uppercase;
     }
@@ -1146,7 +1146,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-summary-sub {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
 
     .chat-thread {
@@ -1251,7 +1251,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-turn-time {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       font-weight: var(--sl-font-weight-normal);
     }
@@ -1266,7 +1266,7 @@ export class SessionReplayPanel extends LitElement {
     /* Per-turn token/cost/tool counts are secondary metadata: quiet, muted,
        lighter weight and a touch smaller than the conversation text. */
     .chat-turn-stat {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       font-weight: var(--sl-font-weight-normal);
       letter-spacing: 0.01em;
@@ -1284,7 +1284,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-turn-empty {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       font-style: italic;
     }
@@ -1453,7 +1453,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .optimize-range-label {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: 0.58rem;
       position: absolute;
       top: 16px;
@@ -3585,6 +3585,7 @@ export class SessionReplayPanel extends LitElement {
           </sl-button>
           <div class="timeline-wrap">
             <input
+              aria-label="Replay position"
               class="timeline-range"
               type="range"
               min="0"
@@ -3905,6 +3906,7 @@ export class SessionReplayPanel extends LitElement {
                     <label>
                       <div class="event-meta">Suggestion model</div>
                       <select
+                        aria-label="Replay model"
                         class="speed-select-native optimization-model-select"
                         .value=${selectedModel?.id || ''}
                         ?disabled=${

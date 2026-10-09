@@ -476,6 +476,7 @@ export class SensitiveDataPanel extends LitElement {
                 ([code, label]) =>
                   html`<label
                     ><input
+                      aria-label="Detector language"
                       type="checkbox"
                       name="locale"
                       .value=${code}
@@ -503,6 +504,7 @@ export class SensitiveDataPanel extends LitElement {
     return html`<div class="type-row" data-type=${type.id}>
       <label for=${id}>
         <input
+          aria-label="Enabled sensitive data detector"
           id=${id}
           type="checkbox"
           .checked=${!!action}
@@ -532,6 +534,7 @@ export class SensitiveDataPanel extends LitElement {
                 (value) =>
                   html`<label
                     ><input
+                      aria-label="Detector action"
                       type="radio"
                       name="action-${type.id}"
                       .value=${value}
@@ -565,6 +568,7 @@ export class SensitiveDataPanel extends LitElement {
             <label
               >Name
               <input
+                aria-label="Pattern name"
                 type="text"
                 .value=${item.name}
                 placeholder="employee_id"
@@ -579,6 +583,7 @@ export class SensitiveDataPanel extends LitElement {
             <label
               >Regular expression
               <input
+                aria-label="Regular expression"
                 type="text"
                 .value=${item.regex}
                 placeholder="EMP-\\d{6}"
@@ -615,6 +620,7 @@ export class SensitiveDataPanel extends LitElement {
             <label
               >Name
               <input
+                aria-label="Term list name"
                 type="text"
                 .value=${item.name}
                 placeholder="project_codenames"
@@ -631,6 +637,7 @@ export class SensitiveDataPanel extends LitElement {
             <label
               >Keywords (comma separated)
               <input
+                aria-label="Terms"
                 type="text"
                 .value=${item.terms.join(', ')}
                 placeholder="Bluebird, Nightjar"
@@ -746,6 +753,7 @@ export class SensitiveDataPanel extends LitElement {
           ([value, label]) =>
             html`<label
               ><input
+                aria-label="Policy scope"
                 type="radio"
                 name="scope-mode"
                 .value=${value}
@@ -811,6 +819,7 @@ export class SensitiveDataPanel extends LitElement {
           (target: SensitiveTarget) =>
             html`<label
               ><input
+                aria-label="Policy target"
                 type="checkbox"
                 name="target"
                 .value=${target}
@@ -870,6 +879,7 @@ export class SensitiveDataPanel extends LitElement {
         <label
           >Scope name
           <input
+            aria-label="Policy entry ID"
             type="text"
             .value=${entry.id}
             placeholder="patient-tools"
@@ -998,6 +1008,7 @@ export class SensitiveDataPanel extends LitElement {
           (view) =>
             html`<label
               ><input
+                aria-label="Approver content visibility"
                 type="radio"
                 name="approver-view-${index}"
                 .value=${view}
@@ -1028,6 +1039,7 @@ export class SensitiveDataPanel extends LitElement {
         >Sample text (synthetic data only; it is not stored)</label
       >
       <textarea
+        aria-label="Sensitive data test text"
         id="sd-test-text"
         maxlength=${TEST_TEXT_LIMIT}
         .value=${this._testText}

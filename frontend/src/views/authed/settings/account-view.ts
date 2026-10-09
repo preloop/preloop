@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { billingStatusLabel } from '../../../utils/billing-status';
 import { LitElement, html, css, unsafeCSS } from 'lit';
@@ -36,6 +37,7 @@ import type {
 
 @customElement('account-view')
 export class AccountView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private accountOrganization: AccountOrganization | null = null;
   @state() private features: FeaturesResponse | null = null;
   @state() private organizationName: string = '';
@@ -474,13 +476,13 @@ export class AccountView extends LitElement {
         color: var(--sl-color-neutral-800);
       }
       .feature.excluded {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .feat-icon {
         color: var(--sl-color-success-600);
       }
       .feature.excluded .feat-icon {
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
       }
       .feat-text {
         flex: 1;

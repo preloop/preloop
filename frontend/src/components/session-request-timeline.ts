@@ -490,6 +490,7 @@ export class SessionRequestTimeline extends LitElement {
         <label class="control">
           <span class="control-label">Sort</span>
           <select
+            aria-label="Request filter metric"
             @change=${(event: Event) => {
               this.sort = (event.target as HTMLSelectElement)
                 .value as RequestTimelineSort;
@@ -505,6 +506,7 @@ export class SessionRequestTimeline extends LitElement {
         <label class="control">
           <span class="control-label">Hide below</span>
           <input
+            aria-label="Request threshold"
             type="number"
             min="0"
             step="any"
@@ -519,6 +521,7 @@ export class SessionRequestTimeline extends LitElement {
         <label class="control">
           <span class="control-label">Threshold unit</span>
           <select
+            aria-label="Request sort order"
             @change=${(event: Event) => {
               this.thresholdMode = (event.target as HTMLSelectElement)
                 .value as ThresholdMode;
