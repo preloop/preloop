@@ -10,10 +10,10 @@ import asyncio
 import copy
 import hashlib
 import inspect
-import threading
 import json
 import keyword
 import logging
+import threading
 import uuid
 from contextvars import ContextVar
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
@@ -463,7 +463,7 @@ def _warn_dropped_audit_field(field: str) -> None:
             return
         _DROPPED_AUDIT_ERROR_FIELDS.add(field)
     logger.warning(
-        "Audit service does not accept %s; upstream error detail was dropped",
+        "Audit service does not accept %s; error detail was dropped",
         field,
     )
 
