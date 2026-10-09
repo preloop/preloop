@@ -147,7 +147,7 @@ class GrantIntrospector:
             binding = self._unavailable()
             if token:
                 data = {"token": token}
-                auth = None
+                auth: httpx.Auth = httpx.Auth()
                 if config.client_auth == "basic":
                     auth = httpx.BasicAuth(
                         config.client_id, config.client_secret.get_secret_value()
