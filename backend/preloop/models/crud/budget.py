@@ -59,6 +59,7 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
         ai_model_id: uuid.UUID,
         model_alias: str | None,
         api_key_id: uuid.UUID | None = None,
+        gateway_subject_id: uuid.UUID | None = None,
     ) -> list[BudgetPolicy]:
         """Fetch candidate gateway policies once, always scoped to the account.
 
@@ -85,6 +86,13 @@ class CRUDBudgetPolicy(CRUDBase[BudgetPolicy]):
                 and_(
                     self.model.subject_type == "api_key",
                     self.model.subject_id == api_key_id,
+                )
+            )
+        if gateway_subject_id is not None:
+            subjects.append(
+                and_(
+                    self.model.subject_type == "gateway_subject",
+                    self.model.subject_id == gateway_subject_id,
                 )
             )
         return list(

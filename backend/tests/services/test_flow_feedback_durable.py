@@ -2068,6 +2068,168 @@ def test_register_thread_binds_bitbucket_pr() -> None:
         assert values["provider"] == "bitbucket"
 
 
+def test_register_thread_binds_jira_triggered_pr_to_bound_bitbucket_repo() -> None:
+    """Live rehearsal 2026-10-09: a Jira-triggered run opened Bitbucket PR 4
+    through the Jira project's repository binding, but the thread was never
+    registered ("Cannot bind feedback: missing provider repository
+    identity"): the Jira payload names no repository and source is "jira".
+    The thread must key on the bound Bitbucket tracker and repository, which
+    is where review feedback arrives from, and keep the Jira trigger so the
+    continuation re-applies the binding."""
+    from preloop.services.flow_feedback import register_thread
+    from preloop.services.repository_binding import AppliedRepositoryBinding
+
+    bitbucket_tracker = str(uuid.uuid4())
+    jira_tracker = str(uuid.uuid4())
+    flow = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        trigger_event_source=jira_tracker,
+        git_clone_config={"enabled": True, "repositories": []},
+        agent_config={"feedback": {"enabled": True, "debounce_seconds": 0}},
+    )
+    execution = SimpleNamespace(
+        id=uuid.uuid4(),
+        flow_id=flow.id,
+        trigger_event_details={
+            "source": "jira",
+            "tracker_id": jira_tracker,
+            "project_id": str(uuid.uuid4()),
+            "_session_thread_id": str(uuid.uuid4()),
+            "payload": {"issue": {"key": "JMR-3", "id": "10002"}},
+        },
+    )
+    applied = AppliedRepositoryBinding(
+        source="project",
+        tracker_id=bitbucket_tracker,
+        tracker_type="bitbucket",
+        project_id=str(uuid.uuid4()),
+        repository="ws/repo",
+        base_branch="main",
+        git_clone_config={},
+    )
+    with (
+        patch("preloop.services.flow_feedback.crud_flow.get", return_value=flow),
+        patch(
+            "preloop.services.repository_binding.resolve_repository_binding",
+            return_value=applied,
+        ),
+        patch(
+            "preloop.models.crud.crud_project.get",
+            return_value=SimpleNamespace(
+                identifier="22222222-2222-2222-2222-222222222222", slug="ws/repo"
+            ),
+        ),
+        patch("preloop.services.flow_feedback.crud_flow_feedback.register") as register,
+    ):
+        register_thread(
+            MagicMock(),
+            execution,
+            "https://bitbucket.org/ws/repo/pull-requests/4",
+            "preloop/issue-JMR-3-8caf61e1",
+        )
+    values = register.call_args.kwargs["values"]
+    assert values["provider"] == "bitbucket"
+    assert str(values["tracker_id"]) == bitbucket_tracker
+    assert values["repository_id"] == "ws/22222222-2222-2222-2222-222222222222"
+    assert values["pr_number"] == "4"
+    trigger = values["context"]["trigger"]
+    assert trigger["source"] == "jira"
+    assert trigger["tracker_id"] == jira_tracker
+    # The continuation payload is built from context["repository"]; naming
+    # the bound repository there made the orchestrator narrow the clone to
+    # the Jira project ("could not resolve repository URLs", live 18:03Z).
+    assert values["context"]["repository"] == {}
+
+
+def test_bound_repository_uses_canonical_slug_and_github_id() -> None:
+    """Review on #1434: the bound identity uses the synced project's slug
+    (canonical case), not the user-entered binding path, and the GitHub
+    branch keys on the numeric repository id."""
+    from preloop.services.flow_feedback import _repository_identity, bound_repository
+    from preloop.services.repository_binding import AppliedRepositoryBinding
+
+    flow = SimpleNamespace(account_id=uuid.uuid4(), git_clone_config={"enabled": True})
+    details = {"source": "jira", "tracker_id": str(uuid.uuid4())}
+    for host, slug, identifier, expected in (
+        (
+            "bitbucket",
+            "Acme-WS/Repo",
+            "{AAAAAAAA-0000-0000-0000-000000000001}",
+            "Acme-WS/aaaaaaaa-0000-0000-0000-000000000001",
+        ),
+        ("github", "acme/widgets", "123456", "123456"),
+    ):
+        applied = AppliedRepositoryBinding(
+            source="project",
+            tracker_id=str(uuid.uuid4()),
+            tracker_type=host,
+            project_id=str(uuid.uuid4()),
+            repository=slug.lower(),
+            base_branch="main",
+            git_clone_config={},
+        )
+        with (
+            patch(
+                "preloop.services.repository_binding.resolve_repository_binding",
+                return_value=applied,
+            ),
+            patch(
+                "preloop.models.crud.crud_project.get",
+                return_value=SimpleNamespace(identifier=identifier, slug=slug),
+            ),
+        ):
+            provider, tracker_id, repository = bound_repository(
+                MagicMock(), flow, details
+            )
+        assert provider == host
+        assert tracker_id == applied.tracker_id
+        assert repository["full_name"] == slug
+        assert (
+            str(_repository_identity(provider, repository)).lower() == expected.lower()
+        )
+
+
+def test_register_thread_jira_without_binding_still_refuses() -> None:
+    from preloop.services.flow_feedback import register_thread
+
+    flow = SimpleNamespace(
+        id=uuid.uuid4(),
+        account_id=uuid.uuid4(),
+        trigger_event_source=str(uuid.uuid4()),
+        git_clone_config={"enabled": True},
+        agent_config={"feedback": {"enabled": True}},
+    )
+    execution = SimpleNamespace(
+        id=uuid.uuid4(),
+        flow_id=flow.id,
+        trigger_event_details={
+            "source": "jira",
+            "tracker_id": str(uuid.uuid4()),
+            "_session_thread_id": str(uuid.uuid4()),
+            "payload": {"issue": {"key": "JMR-3"}},
+        },
+    )
+    with (
+        patch("preloop.services.flow_feedback.crud_flow.get", return_value=flow),
+        patch(
+            "preloop.services.repository_binding.resolve_repository_binding",
+            return_value=None,
+        ),
+        patch("preloop.services.flow_feedback.crud_flow_feedback.register") as register,
+    ):
+        assert (
+            register_thread(
+                MagicMock(),
+                execution,
+                "https://bitbucket.org/ws/repo/pull-requests/4",
+                "b",
+            )
+            is None
+        )
+    register.assert_not_called()
+
+
 @pytest.mark.asyncio
 async def test_refused_resumes_do_not_burn_the_budget_or_fan_out(
     database: Engine, monkeypatch: pytest.MonkeyPatch

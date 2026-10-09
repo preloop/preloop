@@ -1,0 +1,36 @@
+{
+  "schema": "preloop.managed-hook-bundle.v1",
+  "app_id": "claude-code",
+  "platform": "linux",
+  "artifact": "managed-settings.json",
+  "keys": [
+    "hooks.PreToolUse"
+  ],
+  "target_locations": [
+    "/etc/claude-code/managed-settings.json"
+  ],
+  "managed_source": "system managed-settings.json",
+  "documented_semantics": "managed hooks cannot be removed by lower user/project settings; higher managed sources can supersede this file",
+  "verification": "unverified",
+  "prerequisites": [
+    "Separately onboard each executing user/device with preloop agents onboard \"Claude Code\" --approvals; provision its supported per-agent credential separately.",
+    "The absolute Preloop executable must exist and be executable in the app's environment; export does not inspect it.",
+    "Use a Claude Code version supporting managed PreToolUse command hooks; Windows requires the shell=powershell hook field and PowerShell.",
+    "The host timeout must exceed the separately configured approval wait budget plus process headroom.",
+    "Review the effective managed source and restart Claude Code; verify harmless allow/deny, missing/revoked credential and outage cases before rollout."
+  ],
+  "omitted_capabilities": [
+    "model-routing",
+    "mcp-allowlists",
+    "permission-rules",
+    "otel-settings",
+    "enrollment",
+    "credentials",
+    "codex",
+    "desktop"
+  ],
+  "references": [
+    "https://code.claude.com/docs/en/hooks",
+    "https://code.claude.com/docs/en/managed-settings"
+  ]
+}

@@ -26,7 +26,9 @@ from preloop.schemas.flow_continuation import (
 )
 from preloop.services.flow_artifacts import artifact_thread_id, artifact_reference
 from preloop.services.flow_feedback import (
+    CODE_HOSTS,
     _repository_identity,
+    bound_repository,
     feedback_policy,
     register_thread,
 )
@@ -100,21 +102,22 @@ def _load_source(
         payload = details.get("payload") or {}
         repository = payload.get("repository") or payload.get("project") or {}
         provider = details.get("source")
+        tracker_ref = details.get("tracker_id") or flow.trigger_event_source
+        if provider not in CODE_HOSTS:
+            # A Jira-triggered run published to its bound repository; key the
+            # adoption on that code host, as register_thread does.
+            bound = bound_repository(db, flow, details)
+            if bound is not None:
+                provider, tracker_ref, repository = bound
         repository_id = _repository_identity(provider, repository)
         number = urlparse(pr_url).path.rstrip("/").split("/")[-1]
         try:
-            tracker_id = UUID(
-                str(details.get("tracker_id") or flow.trigger_event_source)
-            )
+            tracker_id = UUID(str(tracker_ref))
         except (ValueError, TypeError, AttributeError) as exc:
             raise ContinuationAdoptionError(
                 "Execution has no valid tracker binding"
             ) from exc
-        if (
-            provider not in {"github", "gitlab", "bitbucket"}
-            or not repository_id
-            or not number.isdigit()
-        ):
+        if provider not in CODE_HOSTS or not repository_id or not number.isdigit():
             raise ContinuationAdoptionError(
                 "Execution has no valid provider PR binding"
             )

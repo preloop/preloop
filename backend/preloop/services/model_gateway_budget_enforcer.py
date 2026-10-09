@@ -35,12 +35,17 @@ from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.model_gateway_budget import ModelGatewayBudgetService
+from preloop.services.gateway_upstream_identity import (
+    BUDGET_SUBJECT_GATEWAY_SUBJECT,
+    per_subject_budget,
+)
 from preloop.models.crud import crud_managed_agent
 from preloop.plugins.account_hooks import get_budget_extension
 from preloop.models.crud.budget import (
     ACCOUNT_LEVEL_SUBJECT_TYPES,
     crud_budget_policy,
     crud_budget_spend,
+    get_period_end,
     get_period_start,
     spend_bucket_for_policy,
 )
@@ -160,6 +165,12 @@ def _api_key_owner_user_id(
     api_key = auth_context.api_key
     if api_key is None or managed_agent_id is not None:
         return None
+    gateway_subject = getattr(auth_context, "gateway_subject", None)
+    if gateway_subject is not None:
+        # Traffic a trusted upstream gateway names belongs to that developer,
+        # never to the admin who owns the gateway's key: only the member the
+        # subject's email linked to (if any) has user budgets that apply.
+        return gateway_subject.linked_user_id
     owner_id = getattr(api_key, "user_id", None)
     if owner_id is None:
         return None
@@ -167,6 +178,49 @@ def _api_key_owner_user_id(
         return owner_id if isinstance(owner_id, uuid.UUID) else uuid.UUID(str(owner_id))
     except (TypeError, ValueError):
         return None
+
+
+def _per_subject_default_policy(
+    auth_context: ModelGatewayAuthContext,
+    gateway_subject_id: uuid.UUID,
+    candidates: List[models.BudgetPolicy],
+) -> Optional[models.BudgetPolicy]:
+    """Transient policy for the upstream key's per-subject default budget.
+
+    ``ApiKey.context_data["per_subject_budget"]`` gives every developer behind
+    a trusted upstream key the same limit unless an explicit
+    ``gateway_subject`` policy names that developer. The policy is never
+    persisted; it reads and records the subject's own spend bucket.
+    """
+    config = per_subject_budget(auth_context.api_key)
+    if config is None:
+        return None
+    if any(
+        policy.subject_type == BUDGET_SUBJECT_GATEWAY_SUBJECT
+        and policy.subject_id == gateway_subject_id
+        for policy in candidates
+    ):
+        return None
+    try:
+        period = models.BudgetPeriod(config["period"])
+    except ValueError:
+        logger.warning(
+            "Ignoring per_subject_budget with unknown period on api key %s",
+            getattr(auth_context.api_key, "id", None),
+        )
+        return None
+    return models.BudgetPolicy(
+        id=uuid.uuid5(gateway_subject_id, f"per_subject_budget:{period.value}"),
+        account_id=auth_context.account_id,
+        subject_type=BUDGET_SUBJECT_GATEWAY_SUBJECT,
+        subject_id=gateway_subject_id,
+        model_alias=config["model_alias"],
+        period=period,
+        hard_limit_usd=config["hard_limit_usd"],
+        soft_limit_usd=config["soft_limit_usd"],
+        notify_on_soft=False,
+        notify_on_hard=False,
+    )
 
 
 def budget_user_ids(
@@ -264,13 +318,23 @@ class ModelGatewayBudgetEnforcer:
 
         # Read candidate policies before resolving optional attribution. Accounts
         # without policies pay one indexed policy query and no agent/owner reads.
+        gateway_subject = getattr(auth_context, "gateway_subject", None)
         candidates = crud_budget_policy.get_gateway_policies(
             db,
             account_id=account_id,
             ai_model_id=ai_model.id,
             model_alias=model_alias,
             api_key_id=auth_context.api_key.id if auth_context.api_key else None,
+            gateway_subject_id=(
+                gateway_subject.id if gateway_subject is not None else None
+            ),
         )
+        if gateway_subject is not None:
+            default_policy = _per_subject_default_policy(
+                auth_context, gateway_subject.id, candidates
+            )
+            if default_policy is not None:
+                candidates = list(candidates) + [default_policy]
         # Policies of other accounts that also cover this request, such as an
         # ancestor's (account hook H5). Their spend lives under their own
         # account, so each is read from ``policy.account_id`` below.
@@ -326,6 +390,13 @@ class ModelGatewayBudgetEnforcer:
                 )
             )
             and (policy.subject_type != "user" or policy.subject_id in budget_users)
+            and (
+                policy.subject_type != BUDGET_SUBJECT_GATEWAY_SUBJECT
+                or (
+                    gateway_subject is not None
+                    and policy.subject_id == gateway_subject.id
+                )
+            )
         }
 
         evaluations: List[
@@ -467,7 +538,7 @@ class ModelGatewayBudgetEnforcer:
                         current_spend_usd=projected_spend,
                     )
 
-                raise ModelGatewayAPIError(
+                denial = ModelGatewayAPIError(
                     provider=provider,
                     status_code=403,
                     message=(
@@ -479,6 +550,15 @@ class ModelGatewayBudgetEnforcer:
                     ),
                     code="budget_limit_exceeded",
                 )
+                # Not rendered on the 403 (its headers stay as they were); the
+                # trusted upstream 429 uses it for ``retry-after``.
+                period_end = get_period_end(now, policy.period)
+                denial.budget_reset_seconds = (  # type: ignore[attr-defined]
+                    max(1, int((period_end - now).total_seconds()))
+                    if period_end is not None
+                    else None
+                )
+                raise denial
 
         return None
 

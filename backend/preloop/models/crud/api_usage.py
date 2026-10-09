@@ -367,8 +367,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         managed_agent_id: Optional[str] = None,
         rate_limit_retry_after_ms: Optional[int] = None,
         meta_data: Optional[Dict[str, Any]] = None,
+        gateway_subject_id: Optional[Any] = None,
+        gateway_subject_user_id: Optional[Any] = None,
     ) -> ApiUsage:
         """Log a model gateway request with usage and attribution fields.
+
+        ``gateway_subject_id`` names the developer a trusted upstream gateway
+        identified. Its spend is recorded under the ``gateway_subject``
+        budget scope, and the ``user`` scope goes to the member the subject
+        linked to (``gateway_subject_user_id``) instead of the key owner.
 
         ``api_key_user_id`` is the owner of ``api_key_id`` when the caller
         already knows it (the gateway does); otherwise it is looked up, once,
@@ -444,7 +451,15 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                     # the user owns. Agent traffic counts against the agent's
                     # owner instead (below), so one call never counts against
                     # two users.
-                    if not managed_agent_id and auth_subject_type != "managed_agents":
+                    if gateway_subject_id:
+                        subject_scopes.append(
+                            ("gateway_subject", str(gateway_subject_id))
+                        )
+                        if gateway_subject_user_id:
+                            subject_scopes.append(
+                                ("user", str(gateway_subject_user_id))
+                            )
+                    elif not managed_agent_id and auth_subject_type != "managed_agents":
                         key_owner_id = api_key_user_id or _api_key_owner_id(
                             db, api_key_id
                         )

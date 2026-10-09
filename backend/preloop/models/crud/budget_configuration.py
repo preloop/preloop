@@ -26,6 +26,7 @@ def validate_budget_subject(
         "managed_agent": models.ManagedAgent,
         "ai_model": models.AIModel,
         "user": models.User,
+        "gateway_subject": models.GatewaySubject,
     }
     model = subjects.get(subject_type)
     if model is None or subject_id is None:

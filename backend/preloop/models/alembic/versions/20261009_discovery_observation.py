@@ -1,6 +1,6 @@
 """Add immutable source discovery observations.
 Revision ID: 20261009_discovery_observation
-Revises: 20261009_access_rule_generation
+Revises: 20261009_gateway_subject
 """
 
 import sqlalchemy as sa
@@ -8,7 +8,7 @@ from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 revision = "20261009_discovery_observation"
-down_revision = "20261009_access_rule_generation"
+down_revision = "20261009_gateway_subject"
 branch_labels = None
 depends_on = None
 _ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
