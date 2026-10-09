@@ -16,6 +16,11 @@ A VM is owner-controlled only when the organization controls its host policy,
 network and credential delivery. Moving a session onto a VM does not provide
 attestation or automatically prevent token replay from another host.
 
+Local terminal sessions cannot all be forced into remote execution by this
+integration. The enforceable boundary is authorization to protected resources:
+deny an unbound or unauthorized session at Preloop and the resource/network
+layer, rather than relying on every client choosing the remote route.
+
 ## Prerequisites and release gate
 
 The vendor's [configuration guide](https://code.claude.com/docs/en/self-hosted-environments-configuration)
@@ -107,10 +112,12 @@ Do not import personal OAuth custody into a fleet deployment.
 
 ## Verify network and replay boundaries
 
-The organization's IP allowlist does **not cover self-hosted runner traffic by
-default**. Obtain account-team enablement and confirm actual behavior for the
-tenant. An allowlist or source IP alone also does not prove executable identity.
-Private-service reachability and workload controls remain independent.
+An organization IP allowlist is an optional separate Enterprise control, not a
+Team-pilot prerequisite. If using it, confirm plan entitlement and account-team
+enablement: it does **not cover self-hosted runner traffic by default**. Test
+actual tenant behavior. An allowlist or source IP alone also does not prove
+executable identity. Private-service reachability and workload controls remain
+independent and the external-resource replay test is required for either plan.
 
 Before a pilot, run this plan with disposable test credentials and harmless
 resources under explicit authorization:

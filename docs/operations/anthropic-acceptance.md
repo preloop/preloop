@@ -114,9 +114,12 @@ This checklist prepares an operator review. It authorizes no deployment.
 3. Keep both provider capabilities disabled initially. Review binding,
    tenant/resource mapping, policy snapshot/generation and short expiry. Ensure
    exchange remains closed until restricted authority is enforced everywhere.
-4. Record effective vendor full inspection, empty exclusions, tool validation,
-   enforce state, failure mode and timeout. Compare declarations with actual
-   tenant settings. Run harmless shadow cases, then the enforced pilot.
+4. For an Enterprise-hook pilot, record effective vendor full inspection, empty
+   exclusions, tool validation, enforce state, failure mode and timeout. Compare
+   declarations with actual tenant settings, then run shadow and enforced cases.
+   For a Team settings/resource pilot, record client-applied settings and external
+   resource authorization; Enterprise hooks/IP allowlists are separate optional
+   controls. Do not require their entitlement to test the Team resource boundary.
 5. Collect all relevant application cases and independent network/resource replay
    results. Investigate findings rather than dismissing them as fixture success.
 6. Verify rotation, outage recovery and rollback before expansion. Stop sessions
