@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator, Optional
+from urllib.parse import urlsplit
 
 # Only automatic SDK captures made synchronously inside an attempt owned by the
 # gateway are noise: the gateway handles, classifies and records their outcome.
@@ -21,6 +22,30 @@ def gateway_upstream_call() -> Iterator[None]:
         yield
     finally:
         _GATEWAY_UPSTREAM_CALL.reset(token)
+
+
+_PRIVATE_CALLBACK_PREFIXES: set[str] = set()
+
+
+def register_private_callback_prefix(prefix: str) -> None:
+    """Exclude an installed signed callback route from errors and traces."""
+    if not prefix.startswith("/") or not prefix.endswith("/"):
+        raise ValueError("Callback prefix must be an absolute directory path")
+    _PRIVATE_CALLBACK_PREFIXES.add(prefix)
+
+
+def is_private_callback_event(event: dict[str, Any]) -> bool:
+    """Recognize private callback requests without reading their bodies."""
+    request = event.get("request") or {}
+    path = urlsplit(str(request.get("url") or "")).path
+    return any(path.startswith(prefix) for prefix in _PRIVATE_CALLBACK_PREFIXES)
+
+
+def sentry_before_send_transaction(
+    event: dict[str, Any], hint: dict[str, Any]
+) -> Optional[dict[str, Any]]:
+    """Drop callback performance traces as well as exception events."""
+    return None if is_private_callback_event(event) else event
 
 
 _BENIGN_LOG_PHRASES = (
@@ -76,6 +101,8 @@ def should_drop_sentry_event(
     hint: Optional[dict[str, Any]] = None,
 ) -> bool:
     """Return True when an event should be kept out of GlitchTip."""
+    if is_private_callback_event(event):
+        return True
     hint = hint or {}
 
     if "exc_info" in hint:
