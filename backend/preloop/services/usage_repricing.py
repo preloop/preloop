@@ -102,6 +102,7 @@ def reprice_single_row(
     db: Session,
     *,
     api_usage_id: Union[uuid.UUID, str],
+    repriced_by: str = "live_price_lookup",
 ) -> bool:
     """Re-price one gateway usage row against current prices/overrides.
 
@@ -113,6 +114,7 @@ def reprice_single_row(
     Args:
         db: Database session.
         api_usage_id: Target ``ApiUsage`` row id.
+        repriced_by: Provenance recorded in ``meta_data.repriced_by``.
 
     Returns:
         True when the row was updated with a new cost/source.
@@ -160,7 +162,7 @@ def reprice_single_row(
             "repriced_at": datetime.now(timezone.utc).isoformat(),
             "previous_estimated_cost": row.estimated_cost,
             "previous_cost_source": row.cost_source,
-            "repriced_by": "live_price_lookup",
+            "repriced_by": repriced_by,
             **pricing_meta,
         },
     )
