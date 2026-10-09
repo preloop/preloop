@@ -38,6 +38,55 @@ def claim_stale_after_seconds() -> int:
     return int(getattr(settings, "flow_execution_claim_stale_seconds", 120) or 120)
 
 
+async def authorize_dispatched_run(execution_id: uuid.UUID | str) -> None:
+    """Refuse ``execute_flow`` when account access policy denies ``flow:run``.
+
+    Worker-mode callers publish through here and never reach
+    ``FlowTriggerService._start_flow_execution``. The check lives on this
+    shared hand-off so a denied flow is not dispatched by resume, child-wait,
+    feedback, or issue lifecycle either.
+    """
+    from preloop.api.loop_safety import run_db_off_loop
+    from preloop.plugins.account_hooks import (
+        ACTION_FLOW_RUN,
+        AuthorizationContext,
+        authorize,
+        get_authorizer,
+    )
+
+    if get_authorizer() is None:
+        return
+
+    def _check() -> None:
+        from preloop.models.crud import crud_flow_execution
+        from preloop.models.db.session import get_engine
+        from sqlalchemy.orm import Session
+
+        db = Session(get_engine())
+        try:
+            execution = crud_flow_execution.get(db, id=execution_id)
+            flow = execution.flow if execution is not None else None
+            if flow is None:
+                return
+            decision = authorize(
+                AuthorizationContext(
+                    account_id=flow.account_id,
+                    db=db,
+                    attributes={"flow_id": str(flow.id), "resource_type": "flow"},
+                ),
+                ACTION_FLOW_RUN,
+                flow,
+            )
+            if not decision.allowed:
+                raise PermissionError(
+                    decision.reason or "Flow denied by account access policy"
+                )
+        finally:
+            db.close()
+
+    await run_db_off_loop(_check)
+
+
 async def dispatch_execute(
     execution_id: uuid.UUID | str,
     *,
@@ -54,7 +103,11 @@ async def dispatch_execute(
 
     Returns:
         True if the execution was handed off (published or local fallback ran).
+
+    Raises:
+        PermissionError: Account access policy denies ``flow:run``.
     """
+    await authorize_dispatched_run(execution_id)
     return await _dispatch(
         EXECUTE_FLOW_TASK,
         execution_id,
@@ -67,7 +120,8 @@ async def dispatch_resume(
     *,
     local_fallback: Optional[Callable[[], Any]] = None,
 ) -> bool:
-    """Publish ``resume_flow_execution`` for an orphaned/stale execution."""
+    """Publish a resume after checking the current ``flow:run`` policy."""
+    await authorize_dispatched_run(execution_id)
     return await _dispatch(
         RESUME_FLOW_EXECUTION_TASK,
         execution_id,

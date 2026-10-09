@@ -265,6 +265,8 @@ def extra_visible_ids(db: "Session", account_id: Any, resource_type: str) -> lis
 ACTION_MODEL_INVOKE = "model:invoke"
 ACTION_TOOL_CALL = "tool:call"
 ACTION_RUNNER_ACCEPT = "runner:accept"
+ACTION_FLOW_RUN = "flow:run"
+ACTION_RESOURCE_SHARE = "resource:share"
 ACTION_RESOURCE_VIEW = "resource:view"
 
 

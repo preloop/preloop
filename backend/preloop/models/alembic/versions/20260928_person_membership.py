@@ -147,6 +147,10 @@ END $$
 def downgrade() -> None:
     """Drop the membership columns and the person table."""
     op.execute(_REFUSE_WITH_INHERITED)
+    # A later revision's UPDATE OF access_grant_id trigger depends on the
+    # column. Full downgrade drops that trigger first; the hierarchy tests
+    # walk only these revisions, so drop it here when it is still present.
+    op.execute('DROP TRIGGER IF EXISTS trg_access_generation ON "user"')
     op.execute(
         'ALTER TABLE "user"'
         " DROP COLUMN IF EXISTS access_grant_id,"
