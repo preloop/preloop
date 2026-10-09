@@ -357,3 +357,62 @@ def test_incomplete_ready_is_rejected_and_observation_identity_scoped(
         ).source_sha
         == ready.source_sha
     )
+
+
+def test_explicit_flow_binding_overrides_project_default(
+    db_session: Any, test_user: Any
+) -> Any:
+    from preloop.models.crud import crud_flow, crud_flow_execution
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+
+    account = test_user.account_id
+    project, rollup, pr, jira, host, selected = seed(db_session, account)
+    flow = crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name="Synthetic bound flow",
+            prompt_template="work",
+            trigger_event_source="jira",
+            trigger_event_types=["issue_created"],
+            agent_type="openhands",
+            agent_config={},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            is_enabled=True,
+            account_id=account,
+            git_clone_config={
+                "enabled": True,
+                "repository_bindings": [
+                    {"tracker_id": str(host.id), "repository": "example/repo"}
+                ],
+            },
+        ),
+        account_id=account,
+    )
+    execution = crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=flow.id, status="RUNNING", trigger_event_details={}
+        ),
+    )
+    db_session.add(
+        models.IssueCostExecution(
+            account_id=account,
+            execution_id=execution.id,
+            flow_id=flow.id,
+            rollup_id=rollup.id,
+            pr_key=pr.pr_key,
+            link="pull_request",
+            status="SUCCEEDED",
+            start_time=T0,
+        )
+    )
+    project.settings = {}
+    db_session.flush()
+    context = readiness.observation_context(
+        db_session, account_id=account, pr_record_id=pr.id
+    )
+    assert context is not None
+    assert context[3].id == host.id
+    assert context[4] == "example/repo"

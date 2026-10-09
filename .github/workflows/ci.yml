@@ -198,6 +198,15 @@ jobs:
     timeout-minutes: 5
     outputs:
       backend_plan: ${{ steps.pick.outputs.backend_plan }}
+      # Idle self-hosted Linux/X64 count, capped at 8. "0" means every
+      # backend shard stays on ubuntu-latest, including the no-token and
+      # no-runner fallbacks. reclaim-runner-disk skips on 0 so it cannot
+      # queue forever and block the hosted shards.
+      idle_self_hosted: ${{ steps.pick.outputs.idle_self_hosted }}
+      # JSON array of slot numbers, length == idle_self_hosted. "[1]" when
+      # idle is 0 so the matrix expression stays valid; the reclaim job's
+      # if skips that case before any runner is requested.
+      reclaim_slots: ${{ steps.pick.outputs.reclaim_slots }}
     steps:
       - name: Assign overflow backend shards to idle self-hosted runners
         id: pick
@@ -240,6 +249,15 @@ jobs:
               echo "backend_plan<<EOF"
               echo "$plan"
               echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            if [ "$idle" -gt 0 ]; then
+              reclaim_slots=$(jq -cn --argjson n "$idle" '[range(1; $n + 1)]') || reclaim_slots='[1]'
+            else
+              reclaim_slots='[1]'
+            fi
+            {
+              echo "idle_self_hosted=$idle"
+              echo "reclaim_slots=$reclaim_slots"
             } >> "$GITHUB_OUTPUT"
             echo "reason: $reason"
             echo "overflow shards on self-hosted: $idle / 8"
@@ -454,28 +472,63 @@ jobs:
   #
   # Those VMs keep every pulled image. Once the disk is full, the
   # backend container pull fails before a step can delete anything.
-  # Reclaim unused images on each online VM first. The job has no
-  # container of its own, so it can start when a pull would fail. A
-  # missing VM must not fail the suite.
+  # Reclaim unused images on each idle VM first. The job has no
+  # container of its own, so it can start when a pull would fail.
+  #
+  # Skip, rather than queue, when pick-runner sent every shard to
+  # ubuntu-latest. A queued self-hosted job is not a failure:
+  # continue-on-error and timeout-minutes apply only after a runner
+  # picks the job up, and GitHub waits forever on a self-hosted
+  # runs-on (see the pick-runner comment). A skipped job leaves
+  # needs.reclaim-runner-disk.result == skipped, which test-backend
+  # already allows. When self-hosted shards were selected and a VM
+  # then goes offline, those shards queue anyway.
+  #
+  # deb1-deb8 share the labels self-hosted, Linux, and X64. There is
+  # no per-VM label, so a slot cannot be pinned to a name. One
+  # concurrent job per idle runner is the spread: a runner becomes
+  # busy when it accepts a job, and the next slot lands on another
+  # idle VM. The slot count is the same idle count pick-runner uses
+  # for overflow shards, capped at 8, so a fifth-through-eighth VM is
+  # not left full while four jobs prune the same machine twice.
   reclaim-runner-disk:
     name: Reclaim self-hosted disk (${{ matrix.slot }})
     runs-on: [self-hosted, Linux, X64]
-    needs: changes
-    if: needs.changes.outputs.backend == 'true'
+    needs: [changes, pick-runner]
+    if: >-
+      needs.changes.outputs.backend == 'true' &&
+      needs.pick-runner.outputs.idle_self_hosted != '0' &&
+      needs.pick-runner.outputs.idle_self_hosted != ''
     timeout-minutes: 10
     continue-on-error: true
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 8
       matrix:
-        slot: [1, 2, 3, 4]
+        slot: ${{ fromJSON(needs.pick-runner.outputs.reclaim_slots) }}
     steps:
       - name: Remove unused Docker data
         run: |
+          set -u
           docker container prune -f || true
-          docker image prune -af || true
           docker builder prune -af || true
-          df -h /
+          # Keep images pulled in the last 48h. An unconditional
+          # `image prune -af` deletes pgvector and the bookworm image,
+          # and the next shards then hit Docker Hub's anonymous rate
+          # limit (toomanyrequests / auth.docker.io timeouts).
+          docker image prune -af --filter until=48h || true
+          root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
+          if [ -z "${root}" ]; then
+            root=/var/lib/docker
+          fi
+          used=$(df -P "$root" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
+          case "$used" in
+            ''|*[!0-9]*) used=0 ;;
+          esac
+          if [ "$used" -ge 85 ]; then
+            docker image prune -af || true
+          fi
+          df -h "$root" || df -h /
 
   test-backend:
     name: Backend Tests (${{ matrix.group }}/8)

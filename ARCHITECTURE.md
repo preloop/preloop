@@ -475,3 +475,12 @@ for asynchronous authenticated views, and the approvals view announces new live
 requests without moving keyboard focus. Empty capability-gated views stay silent.
 
 The optional ticket-readiness observer uses account-scoped immutable policy and gate-evidence records, historical first-ready series, durable per-PR leases and round-robin reconciliation. Its credentialed fetch and offline object-only Git probe run in separate constrained containers. Reporting labels configured-policy coverage explicitly and preserves existing cycle-time intervals; see [sampled ticket readiness](docs/guide/ticket-readiness.md).
+
+### Discovery source observations
+
+Optional versioned evidence extends the existing discovery report via the named
+`discovery_evidence` plugin service. Generic immutable observation storage and
+tenant-scoped CRUD live in `preloop.models`; commercial correlation/read policy
+lives in the optional plugin. Candidate deduplication and discovered events
+remain unchanged. Collector assertions preserve provenance and scan gaps, and
+do not establish runtime verification or device attestation.

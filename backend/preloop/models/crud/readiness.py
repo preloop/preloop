@@ -547,11 +547,38 @@ def observation_context(
     ):
         return None
     repository = "/".join(parts[:2])
-    bindings = [
-        b
-        for b in (project.settings or {}).get("repository_bindings", [])
-        if b.get("repository") == repository
+    # An execution's explicit flow bindings override the project's defaults.
+    # Deduplicate equal bindings, and reject conflicting code-host identities.
+    flow_configs = list(
+        db.scalars(
+            select(models.Flow.git_clone_config)
+            .join(
+                models.IssueCostExecution,
+                models.IssueCostExecution.flow_id == models.Flow.id,
+            )
+            .where(
+                models.Flow.account_id == account_id,
+                models.IssueCostExecution.account_id == account_id,
+                models.IssueCostExecution.rollup_id == rollup.id,
+                models.IssueCostExecution.pr_key == pr.pr_key,
+            )
+        )
+    )
+    explicit = [
+        binding
+        for config in flow_configs
+        if isinstance(config, dict)
+        for binding in config.get("repository_bindings", [])
+        if isinstance(binding, dict) and binding.get("repository") == repository
     ]
+    candidates = explicit or [
+        binding
+        for binding in (project.settings or {}).get("repository_bindings", [])
+        if isinstance(binding, dict) and binding.get("repository") == repository
+    ]
+    bindings = list(
+        {str(binding.get("tracker_id")): binding for binding in candidates}.values()
+    )
     if len(bindings) != 1:
         return None
     host_tracker = db.scalar(
