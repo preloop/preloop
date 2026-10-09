@@ -88,3 +88,9 @@ Active responses are cached for the smaller of the configured maximum and the re
 Revocation or scope narrowing becomes visible when the cached result expires. The process cache is bounded to 4096 entries and isolates server and introspection configuration. It stores hashes of the token and configuration, never the token or introspection secret. Each process maintains its own cache.
 
 The introspection client secret follows the MCP authentication secret redaction and write-only update behavior. JWKS validation, revocation webhooks and automatic token refresh are outside this feature; rotate an upstream token using the MCP server update API.
+
+## Audit evidence and consent searches
+
+The enterprise audit plugin records the delegated subject, scope list, client ID, consent reference, expiry and cache flag under the audit row's `details.grant`. Both tool-call rows and denied policy decisions retain this attribution. Token and introspection-secret fields are excluded before a write is queued.
+
+With permission to view audit logs, search a consent reference using `GET /api/v1/audit-logs?consent_ref=consent-example` or the grouped timeline at `GET /api/v1/audit-logs/grouped?consent_ref=consent-example`. Matching is exact and always scoped to your account. Pagination and the returned total use the same filter. A partial composite index on account and consent reference supports these lookups; its migration builds and removes the index concurrently to avoid blocking audit inserts.
