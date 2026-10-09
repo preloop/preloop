@@ -189,22 +189,17 @@ async def simulate_policy(
             if request.server != "builtin"
             else None
         )
-        configs = await run_in_threadpool(
-            crud_tool_configuration.get_multi_by_account,
-            db,
-            account_id=str(account_id),
-            limit=100000,
-        )
-        selected = [
-            c
-            for c in configs
-            if c.tool_name == request.name
-            and (
-                c.tool_source == "builtin"
-                if request.server == "builtin"
-                else server is not None and c.mcp_server_id == server.id
+        selected = (
+            await run_in_threadpool(
+                crud_tool_configuration.get_for_server,
+                db,
+                account_id=str(account_id),
+                tool_name=request.name,
+                mcp_server_id=str(server.id) if server is not None else None,
             )
-        ]
+            if request.server == "builtin" or server is not None
+            else []
+        )
         if len(selected) > 1:
             raise ValueError(
                 "Stored tool configuration is ambiguous for this server and name"

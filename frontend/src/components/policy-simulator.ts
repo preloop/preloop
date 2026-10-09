@@ -20,6 +20,7 @@ export class PolicySimulator extends LitElement {
   @state() private _busy = false;
   @state() private _result: PolicyEvaluationResult | null = null;
   @state() private _error = '';
+  private _policySnapshot = '';
 
   createRenderRoot() {
     return this;
@@ -52,8 +53,20 @@ export class PolicySimulator extends LitElement {
         2
       );
     }
-    if (changed.has('draftRule') || changed.has('draftYaml'))
-      this._result = null;
+    if (
+      ['draftRule', 'draftYaml', 'toolName', 'server'].some((key) =>
+        changed.has(key)
+      )
+    ) {
+      const snapshot = JSON.stringify([
+        this.draftRule,
+        this.draftYaml,
+        this.toolName,
+        this.server,
+      ]);
+      if (snapshot !== this._policySnapshot) this._result = null;
+      this._policySnapshot = snapshot;
+    }
   }
 
   private async _simulate() {

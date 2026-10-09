@@ -215,13 +215,31 @@ def _also_matched_rule_ids(
     also: list[str] = []
     for rule in rules[start_index:]:
         try:
+            is_enabled = (
+                rule.get("is_enabled", True)
+                if isinstance(rule, dict)
+                else getattr(rule, "is_enabled", True)
+            )
+            expression = (
+                rule.get("condition_expression")
+                if isinstance(rule, dict)
+                else rule.condition_expression
+            )
+            condition_type = (
+                rule.get("condition_type", "simple")
+                if isinstance(rule, dict)
+                else rule.condition_type
+            )
+            rule_id = rule.get("id") if isinstance(rule, dict) else rule.id
+            if not is_enabled:
+                continue
             if _evaluate_rule_condition(
-                expression=rule.condition_expression,
-                condition_type=rule.condition_type,
+                expression=expression,
+                condition_type=condition_type,
                 tool_args=tool_args,
                 context=context,
             ):
-                also.append(str(rule.id))
+                also.append(str(rule_id))
         except Exception:  # pragma: no cover - best effort annotation only
             continue
     return also
@@ -539,7 +557,7 @@ def _evaluate_rule_candidates(
                 raw_source = rule.get("source")
                 if isinstance(raw_source, str) and raw_source:
                     stored_source = raw_source
-            return PolicyDecision(
+            decision = PolicyDecision(
                 action,
                 approval_workflow_id,
                 rule_desc,
@@ -547,6 +565,14 @@ def _evaluate_rule_candidates(
                 source=SOURCE_SUBJECT_SCOPED_RULE,
                 stored_source=stored_source,
             )
+            if not record:
+                decision.also_matched_rule_ids = _also_matched_rule_ids(
+                    rules,
+                    start_index=index + 1,
+                    tool_args=tool_args,
+                    context=context,
+                )
+            return decision
         except Exception as e:
             if trace is not None:
                 trace.append(

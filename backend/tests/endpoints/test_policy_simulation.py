@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.services.policy_evaluator import _evaluate_loaded_access_rules
@@ -258,7 +259,7 @@ async def test_stored_evaluation_uses_async_firewall_without_recording(
     )
     monkeypatch.setattr(
         simulation.crud_tool_configuration,
-        "get_multi_by_account",
+        "get_for_server",
         lambda *args, **kwargs: [config],
     )
     monkeypatch.setattr(evaluator, "get_meta_data_async", AsyncMock(return_value={}))
@@ -281,3 +282,94 @@ async def test_stored_evaluation_uses_async_firewall_without_recording(
         audit.assert_not_called()
     assert result.decision == "deny"
     assert result.matched_rule == str(rule.id)
+
+
+def test_scoped_simulation_reports_lower_priority_overlap() -> None:
+    from preloop.services.policy_evaluator import _evaluate_rule_candidates
+
+    rules = [
+        {"id": "first", "action": "deny", "condition_expression": "args.count > 0"},
+        {"id": "second", "action": "allow", "condition_expression": "args.count > 1"},
+        {"id": "disabled", "action": "deny", "is_enabled": False},
+        {"id": "broken", "action": "allow", "condition_expression": "args.count >"},
+    ]
+    with patch("preloop.services.policy_evaluator._log_policy_decision_async") as audit:
+        decision = _evaluate_rule_candidates(
+            rules=rules,
+            tool_name="read_record",
+            tool_args={"count": 2},
+            context={},
+            account_id=uuid4(),
+            user_id=None,
+            execution_id=None,
+            record=False,
+        )
+    assert decision.action == "deny"
+    assert decision.also_matched_rule_ids == ["second"]
+    audit.assert_not_called()
+
+
+def test_exact_server_configuration_lookup_filters_in_database(
+    db_session: Session, test_user: models.User
+) -> None:
+    from preloop.models.crud import crud_tool_configuration
+
+    account_id = test_user.account_id
+    other_account = models.Account(
+        organization_name="Synthetic other account", is_active=True
+    )
+    servers = [
+        models.MCPServer(
+            name=f"example-{i}",
+            url="https://mcp.example.com/mcp",
+            account_id=account_id,
+            auth_type="none",
+        )
+        for i in range(2)
+    ]
+    db_session.add_all([other_account, *servers])
+    db_session.flush()
+    configs = [
+        models.ToolConfiguration(
+            account_id=account_id, tool_name="read_example", tool_source="builtin"
+        ),
+        models.ToolConfiguration(
+            account_id=account_id,
+            tool_name="read_example",
+            tool_source="mcp",
+            mcp_server_id=servers[0].id,
+        ),
+        models.ToolConfiguration(
+            account_id=account_id,
+            tool_name="read_example",
+            tool_source="mcp",
+            mcp_server_id=servers[1].id,
+        ),
+        models.ToolConfiguration(
+            account_id=account_id,
+            tool_name="different_example",
+            tool_source="mcp",
+            mcp_server_id=servers[0].id,
+        ),
+        models.ToolConfiguration(
+            account_id=other_account.id, tool_name="read_example", tool_source="builtin"
+        ),
+    ]
+    db_session.add_all(configs)
+    db_session.flush()
+    lookup = crud_tool_configuration.get_for_server
+    assert lookup(db_session, account_id=str(account_id), tool_name="read_example") == [
+        configs[0]
+    ]
+    assert lookup(
+        db_session,
+        account_id=str(account_id),
+        tool_name="read_example",
+        mcp_server_id=str(servers[0].id),
+    ) == [configs[1]]
+    assert lookup(
+        db_session,
+        account_id=str(account_id),
+        tool_name="read_example",
+        mcp_server_id=str(servers[1].id),
+    ) == [configs[2]]
