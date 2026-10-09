@@ -24,3 +24,9 @@ test('accepts implicit labels before or after controls without accepting empty l
   assert.equal(accessibilityFindings('<label><input></label>').length, 1);
   assert.equal(accessibilityFindings('<label><select><option>Recent</option></select></label>').length, 1);
 });
+
+test("a wrapping label names only its first labelable descendant", () => {
+  assert.equal(accessibilityFindings('<label>Scope<input type="range"><input type="range"></label>').length, 1);
+  assert.equal(accessibilityFindings('<label>Scope<button>Reset</button><input type="range"></label>').length, 1);
+  assert.deepEqual(accessibilityFindings('<div>Scope<input type="range" aria-label="Scope start"><input type="range" aria-label="Scope end"></div>'), []);
+});

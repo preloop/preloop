@@ -20,7 +20,8 @@ export function accessibilityFindings(source) {
     const before = clean.slice(0, match.index);
     const openings = [...before.matchAll(/<label\b[^>]*>/g)];
     const opening = openings.at(-1);
-    if (opening && opening.index > before.lastIndexOf('</label')) {
+    const priorLabelable = opening && /<(button|input|select|textarea|meter|output|progress|sl-input|sl-select|sl-textarea|sl-switch|sl-checkbox|sl-radio-group|sl-radio-button|sl-radio|sl-icon-button)\b/.test(before.slice(opening.index + opening[0].length));
+    if (opening && !priorLabelable && opening.index > before.lastIndexOf('</label')) {
       const close = clean.slice(match.index).search(/<\/label\s*>/);
       if (close >= 0) {
         const label = clean.slice(opening.index + opening[0].length, match.index + close)

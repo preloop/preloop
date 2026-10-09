@@ -3943,7 +3943,7 @@ export class SessionReplayPanel extends LitElement {
                     </label>
                   </div>
                   <div class="optimize-control-row">
-                    <label class="optimize-range" style="flex: 1 1 100%;">
+                    <div class="optimize-range" style="flex: 1 1 100%;">
                       <div class="event-meta">
                         Optimization scope (events
                         ${this.getEffectiveOptimizeBounds(messages).fromIndex} –
@@ -3972,6 +3972,7 @@ export class SessionReplayPanel extends LitElement {
                           min="0"
                           max=${String(lastIndex)}
                           .value=${String(this.optimizeFromIndex)}
+                          aria-label="Optimization scope range start"
                           @input=${(event: Event) => {
                             const value = Number(
                               (event.target as HTMLInputElement).value
@@ -3988,6 +3989,7 @@ export class SessionReplayPanel extends LitElement {
                           min="0"
                           max=${String(lastIndex)}
                           .value=${String(this.optimizeToIndex || lastIndex)}
+                          aria-label="Optimization scope range end"
                           @input=${(event: Event) => {
                             const value = Number(
                               (event.target as HTMLInputElement).value
@@ -4000,7 +4002,7 @@ export class SessionReplayPanel extends LitElement {
                         />
                       </div>
                       ${this.renderOptimizationRangeMarkers(messages)}
-                    </label>
+                    </div>
                   </div>
                   <div class="source-toggle-row">
                     ${REPLAY_MARKER_LEGEND.map(
