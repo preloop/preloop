@@ -640,14 +640,14 @@ class FlowTriggerService:
                 return f"bitbucket_dc:{repo_id}:pr:{pr['number']}"
 
         elif source == "jira":
-            # Webhook and manual-run payloads both carry issue.key; the key
-            # is unique per site, so the tracker scopes it (project as a
-            # fallback for callers that omit the tracker).
+            # Webhook and manual-run payloads both carry issue.key. Derive the
+            # whole key from the payload: callers that rebuild event data from
+            # a stored execution keep only source and payload, and the
+            # coalescing guards already scope matches to one flow and account.
             issue = payload.get("issue") or {}
             key = issue.get("key") if isinstance(issue, dict) else None
-            scope = event_data.get("tracker_id") or event_data.get("project_id")
-            if key and scope:
-                return f"jira:{scope}:issue:{key}"
+            if isinstance(key, str) and "-" in key:
+                return f"jira:{key.rsplit('-', 1)[0]}:issue:{key}"
 
         return None
 

@@ -469,8 +469,12 @@ def test_jira_manual_and_webhook_runs_share_a_resource_key():
         "payload": {"issue": {"key": "JMR-1", "fields": {"summary": "x"}}},
     }
     key = FlowTriggerService._extract_resource_key(manual)
-    assert key == f"jira:{tracker.id}:issue:JMR-1"
+    assert key == "jira:JMR:issue:JMR-1"
     assert FlowTriggerService._extract_resource_key(webhook) == key
+    # The guard rebuilds event data from the stored execution with only
+    # source and payload (review on #1437); the key must survive that.
+    stored = {"source": manual["source"], "payload": manual["payload"]}
+    assert FlowTriggerService._extract_resource_key(stored) == key
 
 
 def test_jira_implementer_run_refused_without_binding():
