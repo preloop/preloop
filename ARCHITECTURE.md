@@ -473,3 +473,5 @@ the new view heading and announces its title; initial page load does not move
 focus. The shared `ConsoleStatus` controller supplies hidden polite status regions
 for asynchronous authenticated views, and the approvals view announces new live
 requests without moving keyboard focus. Empty capability-gated views stay silent.
+
+The optional ticket-readiness observer uses account-scoped immutable policy and gate-evidence records, historical first-ready series, durable per-PR leases and round-robin reconciliation. Its credentialed fetch and offline object-only Git probe run in separate constrained containers. Reporting labels configured-policy coverage explicitly and preserves existing cycle-time intervals; see [sampled ticket readiness](docs/guide/ticket-readiness.md).

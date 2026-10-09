@@ -983,6 +983,10 @@ class Settings(BaseSettings):
             "(RETENTION_FLOOR_DAYS)."
         ),
     )
+    ticket_readiness_enabled: bool = Field(
+        False,
+        description="Opt-in sampled ticket readiness observation and console settings.",
+    )
     issue_cost_rebuild_enabled: bool = Field(
         True,
         description=(
