@@ -452,6 +452,67 @@ class TestListTools:
         assert "get_issue" not in names
         assert "create_issue" in names
 
+    async def test_list_tools_search_config_disable_hides_both_names(
+        self, dynamic_mcp, user_context
+    ):
+        """A ToolConfiguration disable of either search name hides both."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        user_context.tracker_types = ["github"]
+        listed = [
+            Tool(name="search", description="Legacy", parameters={}),
+            Tool(name="search_issues", description="Search", parameters={}),
+            Tool(name="get_issue", description="Get issue", parameters={}),
+        ]
+
+        def config(tool_name: str, enabled: bool) -> MagicMock:
+            row = MagicMock()
+            row.tool_name = tool_name
+            row.tool_source = "builtin"
+            row.is_enabled = enabled
+            row.justification_mode = None
+            row.managed_agent_id = None
+            return row
+
+        async def listed_names(rows: list[MagicMock]) -> set[str]:
+            with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+                mock_db = MagicMock()
+                mock_get_db.side_effect = lambda: iter([mock_db])
+                with (
+                    patch(
+                        "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                        return_value=[],
+                    ),
+                    patch(
+                        "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                        return_value=rows,
+                    ),
+                    patch(
+                        "preloop.models.crud.crud_account.get",
+                        return_value=MagicMock(meta_data={}),
+                    ),
+                    patch.object(
+                        FastMCP, "list_tools", new=AsyncMock(return_value=listed)
+                    ),
+                ):
+                    result = await dynamic_mcp.list_tools()
+            return {tool.name for tool in result}
+
+        hidden = await listed_names([config("search", False)])
+        assert "search" not in hidden
+        assert "search_issues" not in hidden
+        assert "get_issue" in hidden
+
+        reverse = await listed_names([config("search_issues", False)])
+        assert "search" not in reverse
+        assert "search_issues" not in reverse
+
+        # An enable of one name does not undo a disable of the other.
+        both = await listed_names(
+            [config("search", True), config("search_issues", False)]
+        )
+        assert "search" not in both
+        assert "search_issues" not in both
+
     async def test_list_tools_excludes_default_disabled_builtin_without_config(
         self, dynamic_mcp, user_context
     ):
@@ -1139,6 +1200,7 @@ class TestMCPCallTool:
                 "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
                 return_value=[disabled_config],
             ),
+            patch("preloop.services.dynamic_fastmcp.crud_account.get") as get_account,
             patch.object(
                 dynamic_mcp.__class__.__bases__[0],
                 "call_tool",
@@ -1152,9 +1214,59 @@ class TestMCPCallTool:
             result = await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
 
         mock_super.assert_not_called()
+        get_account.assert_not_called()
         assert isinstance(result, ToolResult)
         assert result.is_error
         assert "disabled" in result.content[0].text.lower()
+
+    async def test_call_search_config_disable_blocks_both_names(
+        self, dynamic_mcp, user_context
+    ):
+        """A ToolConfiguration disable of either search name blocks both calls."""
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        def config(tool_name: str, enabled: bool) -> MagicMock:
+            row = MagicMock()
+            row.tool_name = tool_name
+            row.tool_source = "builtin"
+            row.is_enabled = enabled
+            row.justification_mode = None
+            row.managed_agent_id = None
+            return row
+
+        async def rejected(rows: list[MagicMock], called: str) -> ToolResult:
+            with (
+                patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=rows,
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_account.get",
+                ) as get_account,
+                patch.object(
+                    dynamic_mcp.__class__.__bases__[0],
+                    "call_tool",
+                    new=AsyncMock(),
+                    create=True,
+                ) as mock_super,
+            ):
+                mock_get_db.side_effect = lambda: iter([MagicMock()])
+                result = await dynamic_mcp.call_tool(called, {"query": "auth"})
+            mock_super.assert_not_called()
+            get_account.assert_not_called()
+            assert isinstance(result, ToolResult)
+            return result
+
+        for stored, called in (
+            ("search", "search_issues"),
+            ("search_issues", "search"),
+        ):
+            result = await rejected([config(stored, False)], called)
+            assert result.is_error
+            assert "disabled" in result.content[0].text.lower()
 
     async def test_call_default_disabled_builtin_tool_rejected(
         self, dynamic_mcp, user_context

@@ -326,7 +326,7 @@ tools:
 
 Search issues and comments across connected trackers using similarity or fulltext search. Read-only.
 
-> Compatibility note: The legacy name `search` is supported as a deprecated alias and will be removed in version 0.18.0. Existing access rules, approval policies, flow allow-lists, and `tool_enabled_overrides` written against `search` continue to match through the alias during the deprecation window. An override that disables either name disables both.
+> Compatibility note: The legacy name `search` is supported as a deprecated alias and will be removed in version 0.18.0. Existing access rules, approval policies, flow allow-lists, tool configurations, and `tool_enabled_overrides` written against `search` continue to match through the alias during the deprecation window. A tool configuration or override that disables either name disables both.
 
 **Arguments:**
 

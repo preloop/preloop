@@ -38,6 +38,7 @@ from preloop.models.db.session import get_db_session as get_db
 from preloop.api.endpoints.tools import BUILTIN_TOOLS, TOOL_NAME_ALIASES
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.subject_governance import (
+    _tool_enabled_override_names,
     get_scoped_tool_rules,
     is_tool_enabled_for_subject,
 )
@@ -1169,11 +1170,16 @@ class DynamicFastMCP(FastMCP):
                         for tc in visible
                         if tc.justification_mode in ("optional", "required")
                     }
-                    enabled = {
-                        tc.tool_name: tc.is_enabled
-                        for tc in visible
-                        if tc.tool_source == "builtin"
-                    }
+                    # A disable stored under either alias name disables both.
+                    # An enable does not override a disable of the other name.
+                    enabled: dict[str, bool] = {}
+                    for tc in visible:
+                        if tc.tool_source != "builtin":
+                            continue
+                        for alias_name in _tool_enabled_override_names(tc.tool_name):
+                            if enabled.get(alias_name) is False:
+                                continue
+                            enabled[alias_name] = bool(tc.is_enabled)
                     acc = crud_account.get(db, id=user_context.account_id)
                     meta = getattr(acc, "meta_data", {}) or {}
                     return proxied, modes, enabled, meta
@@ -1978,22 +1984,26 @@ async def {internal_name}({params_str}):
                         requires_just = False
                         builtin_enabled = None
                         for tc in visible:
-                            if tc.tool_name != name:
-                                continue
-                            if tc.justification_mode == "required":
+                            if (
+                                tc.tool_name == name
+                                and tc.justification_mode == "required"
+                            ):
                                 requires_just = True
-                            if tc.tool_source == "builtin":
-                                builtin_enabled = tc.is_enabled
-                        acc = crud_account.get(db, id=user_context.account_id)
-                        account_meta = getattr(acc, "meta_data", {}) or {}
-                        return requires_just, builtin_enabled, account_meta
+                            if tc.tool_source != "builtin":
+                                continue
+                            if name not in _tool_enabled_override_names(tc.tool_name):
+                                continue
+                            # Disable wins when search and search_issues disagree.
+                            if builtin_enabled is False:
+                                continue
+                            builtin_enabled = bool(tc.is_enabled)
+                        return requires_just, builtin_enabled
                     finally:
                         db.close()
 
                 (
                     requires_justification,
                     builtin_explicit_enabled,
-                    call_account_meta,
                 ) = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(None, _check_tool_config),
                     timeout=30,
@@ -2016,6 +2026,22 @@ async def {internal_name}({params_str}):
                         builtin_explicit_enabled is None
                         and name in DEPRECATED_ALIAS_NAMES
                     ):
+
+                        def _alias_account_meta() -> dict:
+                            db = next(get_db())
+                            try:
+                                acc = crud_account.get(db, id=user_context.account_id)
+                                meta = getattr(acc, "meta_data", {}) or {}
+                                return meta if isinstance(meta, dict) else {}
+                            finally:
+                                db.close()
+
+                        call_account_meta = await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                None, _alias_account_meta
+                            ),
+                            timeout=30,
+                        )
                         call_subject_context = {
                             "api_key_id": user_context.api_key_id,
                             "managed_agent_id": getattr(
