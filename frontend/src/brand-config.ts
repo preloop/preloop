@@ -281,6 +281,12 @@ export interface BrandRuntimeConfig {
    */
   regulation_pages?: RegulationNavLink[];
   /**
+   * Competitor comparison pages (`/vs/<slug>`) discovered at build time
+   * (markdown file present plus a VS_PAGE_META entry). Rendered as the
+   * footer "Compare" block. Optional for the same reason as above.
+   */
+  vs_pages?: RegulationNavLink[];
+  /**
    * Public markdown pages discovered at build time from
    * `content/<brand>/*.md` and `content/<brand>/resources/*.md`. EE adds
    * routes by dropping files; OSS never lists pages it does not ship.

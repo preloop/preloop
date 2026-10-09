@@ -27,6 +27,7 @@ export interface FlowPresetRecord {
   icon?: string;
   account_id?: string | null;
   slug?: string;
+  trigger_event_source?: string | null;
   trigger_event_types?: string[] | null;
   allowed_mcp_tools?: unknown[] | null;
   git_clone_config?: {
@@ -57,6 +58,45 @@ export function presetSlug(preset: FlowPresetRecord): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+/** A schedule-triggered preset runs on its own clock, not on tracker events. */
+export function isScheduledPreset(preset: FlowPresetRecord): boolean {
+  return preset.trigger_event_source === 'schedule';
+}
+
+function toolNames(preset: FlowPresetRecord): string[] {
+  return (preset.allowed_mcp_tools || [])
+    .map((tool) =>
+      typeof tool === 'string'
+        ? tool
+        : tool && typeof tool === 'object'
+          ? String(
+              (tool as { name?: unknown; tool_name?: unknown }).name ??
+                (tool as { tool_name?: unknown }).tool_name ??
+                ''
+            )
+          : ''
+    )
+    .filter(Boolean);
+}
+
+/**
+ * Scope line for a preset that reads artifacts with search_artifacts.
+ *
+ * The tool reads the flow's own runs by default and needs an operator grant
+ * for other agents' artifacts, so a preset card says which of the two it
+ * relies on before anyone enables it (#1106).
+ */
+export function presetArtifactScopeNote(preset: FlowPresetRecord): string {
+  if (!toolNames(preset).includes('search_artifacts')) {
+    return '';
+  }
+  return (
+    "Same-agent: reads artifacts from this flow's own runs, in every edition. " +
+    "Cross-agent: other agents' artifacts need the " +
+    'artifact_search.account_scope grant (Enterprise).'
+  );
 }
 
 function isSecuritySlug(slug: string): boolean {
@@ -123,7 +163,11 @@ export function presetGroups(presets: FlowPresetRecord[]): PresetGroup[] {
       security.push(preset);
       continue;
     }
-    if (preset.trigger_event_types && preset.trigger_event_types.length > 0) {
+    if (
+      !isScheduledPreset(preset) &&
+      preset.trigger_event_types &&
+      preset.trigger_event_types.length > 0
+    ) {
       tracker.push(preset);
       continue;
     }
@@ -164,7 +208,12 @@ export function presetGroups(presets: FlowPresetRecord[]): PresetGroup[] {
 
 export function presetChips(preset: FlowPresetRecord): PresetChip[] {
   const chips: PresetChip[] = [];
-  if (preset.trigger_event_types && preset.trigger_event_types.length > 0) {
+  if (isScheduledPreset(preset)) {
+    chips.push({ key: 'schedule', label: 'Scheduled' });
+  } else if (
+    preset.trigger_event_types &&
+    preset.trigger_event_types.length > 0
+  ) {
     chips.push({ key: 'tracker', label: 'Tracker' });
   }
   chips.push({ key: 'model', label: 'Model' });
@@ -315,6 +364,14 @@ export class PreloopFlowPresetPicker extends LitElement {
         overflow: hidden;
         font-size: var(--console-text-meta);
         color: var(--console-meta-color);
+      }
+
+      .row-note {
+        grid-column: 2 / span 2;
+        grid-row: 3;
+        font-size: var(--console-text-meta);
+        color: var(--console-meta-color);
+        font-style: italic;
       }
 
       .chips {
@@ -551,8 +608,23 @@ export class PreloopFlowPresetPicker extends LitElement {
             : html`<div></div>`
         }
         <div class="row-desc">${disabledReason || options.description}</div>
+        ${
+          options.preset && !disabledReason
+            ? this.renderScopeNote(options.preset)
+            : nothing
+        }
       </div>
     `;
+  }
+
+  private renderScopeNote(preset: FlowPresetRecord) {
+    const note = presetArtifactScopeNote(preset);
+    if (!note) {
+      return nothing;
+    }
+    return html`<div class="row-note" data-testid="preset-scope-note">
+      ${note}
+    </div>`;
   }
 
   private renderCollapsed() {
