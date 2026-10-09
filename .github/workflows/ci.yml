@@ -451,12 +451,42 @@ jobs:
   # service hostname, with no host port, so two listeners on one machine
   # do not collide on 5432. The VM still needs Docker and the runner
   # user in the docker group.
+  #
+  # Those VMs keep every pulled image. Once the disk is full, the
+  # backend container pull fails before a step can delete anything.
+  # Reclaim unused images on each online VM first. The job has no
+  # container of its own, so it can start when a pull would fail. A
+  # missing VM must not fail the suite.
+  reclaim-runner-disk:
+    name: Reclaim self-hosted disk (${{ matrix.slot }})
+    runs-on: [self-hosted, Linux, X64]
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 10
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        slot: [1, 2, 3, 4]
+    steps:
+      - name: Remove unused Docker data
+        run: |
+          docker container prune -f || true
+          docker image prune -af || true
+          docker builder prune -af || true
+          df -h /
+
   test-backend:
     name: Backend Tests (${{ matrix.group }}/8)
     runs-on: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
     container: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].container }}
-    needs: [changes, pick-runner]
-    if: needs.changes.outputs.backend == 'true'
+    needs: [changes, pick-runner, reclaim-runner-disk]
+    if: >-
+      always() &&
+      needs.changes.outputs.backend == 'true' &&
+      needs.reclaim-runner-disk.result != 'cancelled' &&
+      (needs.pick-runner.result == 'success' || needs.pick-runner.result == 'skipped')
     timeout-minutes: 45
     strategy:
       fail-fast: false
