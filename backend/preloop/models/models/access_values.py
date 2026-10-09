@@ -32,6 +32,7 @@ TAGGABLE_RESOURCE_TYPES = (
     "runner",
     "policy",
     "tracker",
+    "api_key",
 )
 SHARE_TARGET_MODES = ("all", "selected", "rule")
 

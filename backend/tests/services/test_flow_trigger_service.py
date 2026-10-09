@@ -2041,3 +2041,44 @@ class TestLabelsAll:
             return_value=False,
         ):
             assert not self._match(flow_trigger_service, sample_flow, cfg, ev)
+
+
+async def test_flow_run_authorizer_denies_before_execution_creation(
+    flow_trigger_service,
+):
+    """Trusted user context reaches H4 before manual execution rows exist."""
+    from types import SimpleNamespace
+    from preloop.plugins.account_hooks import (
+        AuthorizationContext,
+        Decision,
+        register_authorizer,
+        reset_account_hooks,
+    )
+
+    flow = SimpleNamespace(id=uuid.uuid4(), account_id=uuid.uuid4(), name="Synthetic")
+    user = SimpleNamespace(id=uuid.uuid4(), account_id=flow.account_id)
+    context = AuthorizationContext(account_id=flow.account_id, user=user)
+    calls = []
+
+    def deny(ctx, action, resource):
+        calls.append((ctx, action, resource))
+        return Decision("deny", reason="Synthetic forbid")
+
+    register_authorizer(deny)
+    try:
+        with (
+            patch(
+                "preloop.services.flow_trigger_service.crud_flow.get", return_value=flow
+            ),
+            patch(
+                "preloop.services.flow_trigger_service.crud_flow_execution.create"
+            ) as create,
+        ):
+            with pytest.raises(PermissionError, match="Synthetic forbid"):
+                await flow_trigger_service.trigger_flow(
+                    flow.id, authorization_context=context
+                )
+        assert not create.called
+        assert calls == [(context, "flow:run", flow)]
+    finally:
+        reset_account_hooks()

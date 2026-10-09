@@ -10,6 +10,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from preloop.plugins.account_hooks import AuthorizationContext
+
 from preloop.models.crud import crud_flow, crud_flow_execution, crud_issue
 from preloop.models.db.session import get_session_factory
 from preloop.models.models import Flow
@@ -1595,6 +1597,29 @@ class FlowTriggerService:
         finally:
             orchestrator_db.close()
 
+    async def _authorize_flow_run(
+        self, flow: Flow, context: AuthorizationContext | None = None
+    ) -> None:
+        from preloop.plugins.account_hooks import (
+            ACTION_FLOW_RUN,
+            authorize,
+            get_authorizer,
+        )
+        from preloop.api.loop_safety import run_db_off_loop
+
+        if get_authorizer() is None:
+            return
+        ctx = context or AuthorizationContext(
+            account_id=flow.account_id,
+            db=self.db,
+            attributes={"flow_id": str(flow.id), "resource_type": "flow"},
+        )
+        decision = await run_db_off_loop(lambda: authorize(ctx, ACTION_FLOW_RUN, flow))
+        if not decision.allowed:
+            raise PermissionError(
+                decision.reason or "Flow denied by account access policy"
+            )
+
     async def _start_flow_execution(
         self,
         flow: Flow,
@@ -1605,6 +1630,7 @@ class FlowTriggerService:
         test_mode: bool = False,
         precreated_execution: Any = None,
         source_execution: Optional[FlowExecution] = None,
+        authorization_context: AuthorizationContext | None = None,
     ) -> Any:
         """Create (or reuse) a PENDING execution and hand it to a worker or local task.
 
@@ -1628,6 +1654,8 @@ class FlowTriggerService:
             is_triage_flow,
             reserve_triage_execution,
         )
+
+        await self._authorize_flow_run(flow, authorization_context)
 
         if isinstance(precreated_execution, models.FlowExecution):
             await run_db_off_loop(
@@ -2941,6 +2969,7 @@ class FlowTriggerService:
         delegation_depth: int = 0,
         batch_id: Optional[uuid.UUID] = None,
         no_progress_escalation: Optional[Dict[str, Any]] = None,
+        authorization_context: AuthorizationContext | None = None,
     ) -> Dict[str, Any]:
         """
         Manually trigger a flow execution for testing purposes or as a retry.
@@ -2982,6 +3011,8 @@ class FlowTriggerService:
 
         if not flow:
             raise ValueError(f"Flow {flow_id} not found")
+
+        await self._authorize_flow_run(flow, authorization_context)
 
         if flows_halted(self.db, flow.account_id):
             raise FlowHaltActiveError(
@@ -3118,6 +3149,7 @@ class FlowTriggerService:
                 event_data=trigger_details,
                 nats_client=nats_client,
                 precreated_execution=execution,
+                authorization_context=authorization_context,
             )
         except Exception as e:
             raise FlowDispatchError(str(execution_id), execution_status, e) from e
@@ -3136,6 +3168,7 @@ class FlowTriggerService:
         test_mode: bool = False,
         trigger_event_data: Optional[Dict[str, Any]] = None,
         triggered_by: Optional[str] = None,
+        authorization_context: AuthorizationContext | None = None,
     ) -> Dict[str, Any]:
         """Fan a single trigger out to one execution per matrix entry.
 
@@ -3181,6 +3214,8 @@ class FlowTriggerService:
             raise TriageControllerError(
                 "Triage uses one revision claim per issue; use issue batches"
             )
+
+        await self._authorize_flow_run(flow, authorization_context)
 
         if flows_halted(self.db, flow.account_id):
             raise FlowHaltActiveError(
@@ -3253,6 +3288,7 @@ class FlowTriggerService:
                 event_data=execution.trigger_event_details,
                 nats_client=nats_client,
                 precreated_execution=execution,
+                authorization_context=authorization_context,
             )
 
         return {

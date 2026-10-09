@@ -401,10 +401,17 @@ def _runner_may_accept(
 
     if get_authorizer() is None:
         return True
+    from preloop.models.crud import crud_flow_execution
+
+    execution = crud_flow_execution.get(db, id=str(execution_id), account_id=account_id)
     ctx = AuthorizationContext(
         account_id=account_id,
         db=db,
-        attributes={"pool": pool, "execution_id": str(execution_id)},
+        attributes={
+            "pool": pool,
+            "execution_id": str(execution_id),
+            "flow_id": str(execution.flow_id) if execution else None,
+        },
     )
     return authorize(ctx, ACTION_RUNNER_ACCEPT, runner).allowed
 
