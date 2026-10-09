@@ -2,7 +2,7 @@
 
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -239,6 +239,37 @@ class ApiKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     expires_at: Optional[datetime] = None
     scopes: List[str] = Field(default_factory=list)
+    trusted_upstream_secret: Optional[str] = Field(
+        default=None,
+        min_length=16,
+        max_length=512,
+        description=(
+            "Only with the model_gateway:trusted_upstream scope. Shared secret "
+            "the upstream gateway sends in x-preloop-upstream-secret; stored "
+            "as a sha256 hash, never returned."
+        ),
+    )
+    per_subject_budget: Optional["PerSubjectBudget"] = Field(
+        default=None,
+        description=(
+            "Only with the model_gateway:trusted_upstream scope. Default "
+            "budget for every developer the upstream gateway names."
+        ),
+    )
+
+
+class PerSubjectBudget(BaseModel):
+    """Default budget per gateway subject on a trusted upstream key."""
+
+    period: Literal["hourly", "daily", "weekly", "monthly", "yearly", "all_time"] = (
+        "monthly"
+    )
+    hard_limit_usd: Optional[float] = Field(default=None, ge=0)
+    soft_limit_usd: Optional[float] = Field(default=None, ge=0)
+    model_alias: Optional[str] = Field(default=None, max_length=255)
+
+
+ApiKeyCreate.model_rebuild()
 
 
 class ApiKeyResponse(BaseModel):

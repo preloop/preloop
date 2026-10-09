@@ -16,7 +16,14 @@ SUBJECT_TYPE_MANAGED_AGENTS = "managed_agents"
 SUBJECT_TYPE_API_KEYS = "api_keys"
 # Per-flow overrides: govern the traffic of every execution of one flow.
 SUBJECT_TYPE_FLOWS = "flows"
-SUBJECT_TYPES = (SUBJECT_TYPE_MANAGED_AGENTS, SUBJECT_TYPE_API_KEYS, SUBJECT_TYPE_FLOWS)
+# Developers behind a trusted upstream gateway key (``gateway_subject`` rows).
+SUBJECT_TYPE_GATEWAY_SUBJECTS = "gateway_subjects"
+SUBJECT_TYPES = (
+    SUBJECT_TYPE_MANAGED_AGENTS,
+    SUBJECT_TYPE_API_KEYS,
+    SUBJECT_TYPE_FLOWS,
+    SUBJECT_TYPE_GATEWAY_SUBJECTS,
+)
 
 # Account-wide governance defaults that per-subject configs inherit from.
 # Lives beside the per-subject buckets inside the same store so one JSON
@@ -28,6 +35,7 @@ def empty_subject_governance_store() -> dict[str, Any]:
     return {
         SUBJECT_TYPE_MANAGED_AGENTS: {},
         SUBJECT_TYPE_API_KEYS: {},
+        SUBJECT_TYPE_GATEWAY_SUBJECTS: {},
         SUBJECT_TYPE_FLOWS: {},
         ACCOUNT_DEFAULTS_KEY: {},
     }
@@ -208,11 +216,15 @@ def subject_scope_chain(
 ) -> list[tuple[str, str]]:
     """Return governance scopes, most specific first.
 
-    Order: API key, flow (only for a flow execution's credential), managed
-    agent. Account defaults are resolved separately by the callers that
+    Order: gateway subject (only for a trusted upstream request naming a
+    developer), API key, flow (only for a flow execution's credential),
+    managed agent. Every scope must permit a model. Account defaults are resolved separately by the callers that
     support them (native tool approvals and approval workflow).
     """
     scopes: list[tuple[str, str]] = []
+    gateway_subject_id = subject_context.get("gateway_subject_id")
+    if gateway_subject_id:
+        scopes.append((SUBJECT_TYPE_GATEWAY_SUBJECTS, str(gateway_subject_id)))
     api_key_id = subject_context.get("api_key_id")
     flow_id = subject_context.get("flow_id")
     managed_agent_id = subject_context.get("managed_agent_id")

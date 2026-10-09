@@ -267,4 +267,5 @@ class ModelGatewayAPIError(Exception):
             headers["X-Preloop-Error-Class"] = self.error_class
         if self.terminal:
             headers["X-Preloop-Retry-Terminal"] = "true"
+        headers.update(getattr(self, "extra_response_headers", None) or {})
         return headers

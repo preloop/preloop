@@ -639,6 +639,16 @@ class FlowTriggerService:
             if isinstance(pr, dict) and pr.get("number") and repo_id:
                 return f"bitbucket_dc:{repo_id}:pr:{pr['number']}"
 
+        elif source == "jira":
+            # Webhook and manual-run payloads both carry issue.key. Derive the
+            # whole key from the payload: callers that rebuild event data from
+            # a stored execution keep only source and payload, and the
+            # coalescing guards already scope matches to one flow and account.
+            issue = payload.get("issue") or {}
+            key = issue.get("key") if isinstance(issue, dict) else None
+            if isinstance(key, str) and "-" in key:
+                return f"jira:{key.rsplit('-', 1)[0]}:issue:{key}"
+
         return None
 
     @staticmethod

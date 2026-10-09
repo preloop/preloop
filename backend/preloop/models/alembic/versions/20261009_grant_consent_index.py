@@ -4,7 +4,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261009_grant_consent_index"
-down_revision = "20261009_access_rule_generation"
+down_revision = "20261009_gateway_subject"
 branch_labels = None
 depends_on = None
 

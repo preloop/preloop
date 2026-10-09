@@ -4,3 +4,6 @@ cli/internal/cmd/testdata/cursor-transcripts/** text eol=lf
 
 # Golden JSON and table output for `preloop artifacts` tests: LF on every OS.
 cli/internal/cmd/testdata/artifacts/** text eol=lf
+
+# Managed hook bundles are byte-exact LF output on every target platform.
+cli/internal/cmd/testdata/managed-hook-bundle/** text eol=lf

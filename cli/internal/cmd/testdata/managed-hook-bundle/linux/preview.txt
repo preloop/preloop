@@ -1,0 +1,15 @@
+Claude Code managed hook overlay (linux)
+
+Emits only hooks.PreToolUse with matcher *.
+Hook command: '/opt/preloop/bin/preloop' agents permission-hook --source claude-code
+Host timeout: 300 seconds
+Reviewed delivery target: /etc/claude-code/managed-settings.json
+
+This export is offline and performs no installation or enrollment.
+Provision the per-device/user hook credential separately through supported onboarding.
+Missing credentials deny under the existing permission-hook contract.
+The application honoring this overlay remains unverified. A higher managed source may supersede it.
+Managed configuration is not device attestation or local-admin immunity.
+
+Omitted: model routing, MCP allowlists, permission rules, OTel, credentials, Codex, Desktop.
+Review manifest.json and docs/guide/clients/claude-code.md before delivery.

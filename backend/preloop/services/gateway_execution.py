@@ -34,6 +34,7 @@ class GatewayApiKeySnapshot:
     user_id: UUID
     name: str
     context_json: str
+    scopes: tuple[Any, ...] = ()
 
     @property
     def context_data(self) -> dict[str, Any]:

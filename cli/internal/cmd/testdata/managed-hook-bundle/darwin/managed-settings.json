@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/opt/preloop/bin/preloop' agents permission-hook --source claude-code",
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

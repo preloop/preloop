@@ -62,7 +62,7 @@ func TestAgentCapabilitiesRegistry(t *testing.T) {
 func TestControlDisclosureText(t *testing.T) {
 	setPreflightTestEnv(t)
 	note := mcpOnlyAgentModelNote(AgentConfig{Name: "Claude Desktop"})
-	for _, fragment := range []string{"current Preloop adapter", "managed MCP bridge", "does not configure", "separately verified adapter", "https://code.claude.com/docs/en/claude-apps-gateway", "only calls routed through the managed MCP entry"} {
+	for _, fragment := range []string{"managed MCP bridge", "does not configure", "--model-route direct", "only calls routed through the managed MCP entry"} {
 		if !strings.Contains(note, fragment) {
 			t.Fatalf("Desktop disclosure missing %q: %s", fragment, note)
 		}

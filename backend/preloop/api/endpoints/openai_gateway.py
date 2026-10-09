@@ -47,6 +47,19 @@ def _sanitize_header_value(value: str, max_len: int = _WARNING_HEADER_MAX_LEN) -
     return cleaned
 
 
+def _codex_relay_headers(service: OpenAIGatewayService) -> Dict[str, str]:
+    """Upstream Codex headers the client must see to keep sticky routing.
+
+    The ChatGPT Codex backend returns ``x-codex-turn-state``; Codex captures
+    it from the response and replays it on every request in the same turn.
+    The value was already bounded to printable ASCII by the service.
+    """
+    turn_state = getattr(service, "codex_turn_state", None)
+    if isinstance(turn_state, str) and turn_state:
+        return {"x-codex-turn-state": turn_state}
+    return {}
+
+
 def _with_gateway_warnings(
     result: Dict[str, Any], service: OpenAIGatewayService
 ) -> Any:
@@ -69,6 +82,7 @@ def _with_gateway_warnings(
     usage_id = getattr(service, "last_usage_id", None)
     if isinstance(usage_id, str) and usage_id:
         headers["X-Preloop-Usage-Id"] = _sanitize_header_value(usage_id)
+    headers.update(_codex_relay_headers(service))
     if headers:
         return JSONResponse(content=result, headers=headers)
     return result
@@ -88,12 +102,14 @@ def _streaming_with_gateway_warnings(
     ``stream: true`` callers (issue #810).
     """
     warning = service.response_warning
+    headers: Dict[str, str] = {}
+    if warning:
+        headers["X-Preloop-Warning"] = _sanitize_header_value(warning)
+    headers.update(_codex_relay_headers(service))
     return GatewayStreamingResponse(
         events,
         media_type="text/event-stream",
-        headers=(
-            {"X-Preloop-Warning": _sanitize_header_value(warning)} if warning else None
-        ),
+        headers=headers or None,
         on_complete=service.flush_deferred_stream_record,
     )
 
@@ -135,6 +151,8 @@ def create_chat_completion(
         auth_context,
         budget_enforcer=budget_enforcer,
         owns_db_session=True,
+        # Only the Codex routing set; the identity relay stays /responses-only.
+        codex_routing_headers=request.headers,
         client_session_id=x_preloop_session_id
         or native_session_id_from_headers(request.headers, auth_context=auth_context),
         # Only the explicit Preloop header opts a plain API key into a

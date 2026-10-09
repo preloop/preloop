@@ -155,6 +155,11 @@ class ExtensionHarnessAgent(ContainerAgentExecutor):
 if [ "$(id -u)" -eq 0 ]; then
     mkdir -p /workspace /tmp/preloop-home
     chown -R 10000:10000 /workspace /tmp/preloop-home
+    if [ -n "${PRELOOP_DOCKER_SCRIPT_PATH:-}" ] && [ -r "$PRELOOP_DOCKER_SCRIPT_PATH" ]; then
+        # A large script arrived chunked and runs from a file, where
+        # BASH_EXECUTION_STRING is unset.
+        exec setpriv --reuid 10000 --regid 10000 --clear-groups /bin/bash "$PRELOOP_DOCKER_SCRIPT_PATH"
+    fi
     exec setpriv --reuid 10000 --regid 10000 --clear-groups /bin/bash -c "${BASH_EXECUTION_STRING:-${PRELOOP_RUNNER_SCRIPT:?Missing harness script}}"
 fi
 """

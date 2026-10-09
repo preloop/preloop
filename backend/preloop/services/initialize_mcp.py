@@ -21,6 +21,7 @@ from preloop.services.dynamic_fastmcp import (
     _correlation_id_var,
     _justification_var,
     create_dynamic_mcp_server,
+    flow_allowed_tool_names,
 )
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
@@ -2150,6 +2151,20 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     elif cached is not None:
                         response["tool_result"] = cached
 
+                    # A flow sees this tool even when its allow-list omits
+                    # it (dynamic_fastmcp adds it so a parked run can finish
+                    # an approved call); it must not replay a tool the flow
+                    # was never allowed to call.
+                    elif (
+                        getattr(user_context, "allowed_flow_tools", None) is not None
+                        and approval_request.tool_name
+                        not in flow_allowed_tool_names(user_context.allowed_flow_tools)
+                    ):
+                        response["tool_execution_error"] = (
+                            f"Tool '{approval_request.tool_name}' is not in this "
+                            "flow's allowed tools; the approved call was not run."
+                        )
+
                     else:
                         # Claim execution: set a sentinel value and commit to
                         # release the FOR UPDATE lock immediately.
@@ -2211,8 +2226,19 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                             _approved_answer_var.set(approver_answer)
                             _approved_id_var.set(str(req_id))
                             try:
-                                # Try internal (namespaced) name first, fall
-                                # back to original name for built-in tools.
+                                # Namespaced name for a proxied (external MCP)
+                                # tool, original name for a built-in one. The
+                                # namespaced call of a built-in tool does not
+                                # raise "not found": the access check answers
+                                # "not available", so pick the name up front.
+                                proxied = getattr(
+                                    replay_server, "_registered_proxied_tools", None
+                                )
+                                if (
+                                    isinstance(proxied, (set, frozenset))
+                                    and internal_name not in proxied
+                                ):
+                                    internal_name = tool_name
                                 try:
                                     tool_result = await replay_server.call_registered_tool_without_policy(
                                         internal_name,
