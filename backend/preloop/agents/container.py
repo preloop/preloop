@@ -4079,6 +4079,9 @@ class ContainerAgentExecutor(AgentExecutor):
                         git_cmd, execution_context
                     )
                     commands.append(git_cmd)
+                    # After the clone-or-restore wrapper, so a restored
+                    # workspace (which skips the clone) is covered too.
+                    commands.extend(self._evidence_exclude_commands(execution_context))
                     self.logger.info(
                         "Git clone commands added (length=%d)", len(git_cmd)
                     )
@@ -5180,6 +5183,57 @@ true
                     commands.append(rebase_shell)
                     execution_context["_git_resume_rebase"] = True
         return commands
+
+    def _evidence_exclude_commands(self, execution_context: Dict[str, Any]) -> list:
+        """Evidence exclude for every checkout the clone step produced."""
+        git_config = execution_context.get("git_clone_config") or {}
+        if not isinstance(git_config, dict):
+            return []
+        try:
+            repositories = self._resolve_git_clone_repositories(
+                execution_context, git_config
+            )
+        except Exception:  # pragma: no cover - best effort, never fails a run
+            return []
+        shells = []
+        for idx, repo_config in enumerate(repositories or []):
+            if not isinstance(repo_config, dict):
+                continue
+            shell = self._build_evidence_exclude_shell(
+                self._resolve_repository_clone_path(repo_config, idx)
+            )
+            if shell:
+                shells.append(shell)
+        return shells
+
+    @staticmethod
+    def _build_evidence_exclude_shell(full_path: str) -> str:
+        """Keep platform evidence out of the agent's commits.
+
+        ``EVIDENCE_DIR_PATH`` sits inside a checkout cloned at ``/workspace``.
+        A resume writes markers there (``resume-rebased``, the PR template)
+        before the agent runs, and an agent that commits with ``git add -A``
+        then publishes them; the verification gate matches no rule for
+        ``evidence/`` and refuses the repair. A local exclude keeps them
+        untracked without touching the repository's own ``.gitignore``.
+        """
+        root = full_path.rstrip("/")
+        if not EVIDENCE_DIR_PATH.startswith(root + "/"):
+            return ""
+        relative = EVIDENCE_DIR_PATH[len(root) :].rstrip("/") + "/"
+        q_path = shlex.quote(full_path)
+        q_entry = shlex.quote(relative)
+        q_dir = shlex.quote(relative.strip("/"))
+        return (
+            f"( cd {q_path} 2>/dev/null "
+            # A repository that tracks its own top-level evidence/ keeps it:
+            # excluding it would silently drop new agent files there.
+            f"&& ! git ls-files --error-unmatch {q_dir} >/dev/null 2>&1 "
+            "&& _pl_exclude=$(git rev-parse --git-path info/exclude 2>/dev/null) "
+            '&& mkdir -p "$(dirname "$_pl_exclude")" '
+            f'&& {{ grep -qxF {q_entry} "$_pl_exclude" 2>/dev/null '
+            f"|| printf '%s\\n' {q_entry} >> \"$_pl_exclude\"; }} ) || true"
+        )
 
     def _prepare_git_clone_command(self, execution_context: Dict[str, Any]) -> str:
         """
