@@ -19,8 +19,15 @@ from preloop.models import models
 @pytest.fixture
 def tool_pool(monkeypatch: pytest.MonkeyPatch) -> Generator[Any, None, None]:
     """Use a real single-connection pool, without external database services."""
+    # Snapshot reads run in worker threads; reuse the one pooled connection
+    # across workers while retaining the minimal pool and leak assertions.
     engine = create_engine(
-        "sqlite://", poolclass=QueuePool, pool_size=1, max_overflow=0, pool_timeout=0.01
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=0.01,
     )
     sessions: list[Session] = []
 
