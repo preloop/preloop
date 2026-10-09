@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import crud_api_usage, crud_runtime_session_activity
 from preloop.models.models.account import Account
 from preloop.models.models.api_usage import ApiUsage
+from preloop.services.usage_token_details import extract_token_details
 
 # Re-exported from core so the gateway and billing plugin share a single
 # token-estimation implementation (DRY). ``estimate_tokens`` stays importable
@@ -615,70 +616,36 @@ def _diverged_reason(
     return "prefix_extended"
 
 
-def _payload_cache_token_field(
-    payload: dict[str, Any],
-    *,
-    top_level_keys: tuple[str, ...],
-    details_keys: tuple[str, ...],
-) -> int:
-    """Read the first present integer from known cache-token payload shapes.
+def _payload_cache_token_field(payload: dict[str, Any], *, field: str) -> int:
+    """Read a normalized cache-token count from a stored gateway payload.
 
-    Checks, in order: nested ``usage``, top-level keys, nested
-    ``usage_details``, and ``prompt_tokens_details`` under each.
+    Checks, in order: nested ``usage``, the payload itself, and nested
+    ``usage_details``. Each block is read with the shared normalizer, so the
+    Chat Completions, Responses and Anthropic shapes are all understood.
 
     Args:
         payload: Stored gateway-call metadata.
-        top_level_keys: Provider top-level field names (e.g. Anthropic).
-        details_keys: Nested ``prompt_tokens_details`` field names (e.g. OpenAI).
+        field: ``cache_read_tokens`` or ``cache_creation_tokens``.
 
     Returns:
-        First parseable non-``None`` integer, else ``0``.
+        First valid count, else ``0``.
     """
-    candidates: list[Any] = []
-
-    def _extend_from_usage_block(block: Any) -> None:
-        if not isinstance(block, dict):
-            return
-        for key in top_level_keys:
-            candidates.append(block.get(key))
-        details = block.get("prompt_tokens_details")
-        if isinstance(details, dict):
-            for key in details_keys:
-                candidates.append(details.get(key))
-
-    _extend_from_usage_block(payload.get("usage"))
-    for key in top_level_keys:
-        candidates.append(payload.get(key))
-    _extend_from_usage_block(payload.get("usage_details"))
-    details = payload.get("prompt_tokens_details")
-    if isinstance(details, dict):
-        for key in details_keys:
-            candidates.append(details.get(key))
-    for candidate in candidates:
-        try:
-            if candidate is not None:
-                return int(candidate)
-        except (TypeError, ValueError):
-            continue
+    for block in (payload.get("usage"), payload, payload.get("usage_details")):
+        if isinstance(block, dict):
+            value = extract_token_details(block)[field]
+            if value is not None:
+                return value
     return 0
 
 
 def _payload_cache_read_tokens(payload: dict[str, Any]) -> int:
     """Extract cache-read tokens from a stored gateway payload."""
-    return _payload_cache_token_field(
-        payload,
-        top_level_keys=("cache_read_input_tokens",),
-        details_keys=("cached_tokens",),
-    )
+    return _payload_cache_token_field(payload, field="cache_read_tokens")
 
 
 def _payload_cache_creation_tokens(payload: dict[str, Any]) -> int:
     """Extract cache-creation (write) tokens from a stored gateway payload."""
-    return _payload_cache_token_field(
-        payload,
-        top_level_keys=("cache_creation_input_tokens",),
-        details_keys=("cache_creation_tokens",),
-    )
+    return _payload_cache_token_field(payload, field="cache_creation_tokens")
 
 
 def _event_cache_read_tokens(event: GatewayCallEvent) -> int:

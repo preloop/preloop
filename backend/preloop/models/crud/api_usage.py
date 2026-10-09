@@ -725,7 +725,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ``meta_data.usage_details`` carries a Responses detail field
         (``input_tokens_details.cached_tokens`` /
         ``.cache_creation_tokens``, ``output_tokens_details.reasoning_tokens``)
-        while the matching normalized column is NULL (#1401).
+        that holds a usable count (a non-negative integer, as
+        ``coerce_token_count`` accepts) while the matching normalized column is
+        NULL (#1401). Malformed values are never selected, so every candidate
+        can be repaired and bounded runs always make progress.
 
         Args:
             db: Database session.
@@ -741,20 +744,36 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         usage_details = ApiUsage.meta_data["usage_details"]
         input_details = usage_details["input_tokens_details"]
         output_details = usage_details["output_tokens_details"]
+
+        def _usable(value: Any) -> Any:
+            # Mirror coerce_token_count, so every candidate is repairable and
+            # a bounded run cannot stall on rows it can never fix.
+            text = value.astext
+            return or_(
+                and_(
+                    func.jsonb_typeof(value) == "number",
+                    text.op("~")(r"^[0-9]+(\.0+)?$"),
+                ),
+                and_(
+                    func.jsonb_typeof(value) == "string",
+                    text.op("~")(r"^\s*[0-9]+\s*$"),
+                ),
+            )
+
         query = db.query(ApiUsage).filter(
             ApiUsage.action_type == "model_gateway",
             or_(
                 and_(
                     ApiUsage.cache_read_tokens.is_(None),
-                    input_details.has_key("cached_tokens"),
+                    _usable(input_details["cached_tokens"]),
                 ),
                 and_(
                     ApiUsage.cache_creation_tokens.is_(None),
-                    input_details.has_key("cache_creation_tokens"),
+                    _usable(input_details["cache_creation_tokens"]),
                 ),
                 and_(
                     ApiUsage.reasoning_tokens.is_(None),
-                    output_details.has_key("reasoning_tokens"),
+                    _usable(output_details["reasoning_tokens"]),
                 ),
             ),
         )

@@ -142,7 +142,9 @@ def test_chat_and_malformed_rows_are_not_candidates_or_not_repaired(
         db_session, account_id=test_user.account_id, apply=True
     )
 
-    assert result.rows_examined == 1  # only the Responses-shaped row
+    # Neither row is a candidate: chat rows were never missed, and the
+    # malformed value can never be repaired.
+    assert result.rows_examined == 0
     assert result.rows_repairable == 0
     db_session.refresh(chat)
     db_session.refresh(bad)
@@ -247,3 +249,46 @@ def test_cli_defaults_to_dry_run(db_session, test_user, monkeypatch):
     bad = CliRunner().invoke(module.main, ["--reprice"])
     assert bad.exit_code != 0
     assert "--reprice requires --apply" in bad.output
+
+
+def test_unrepairable_rows_never_stall_a_bounded_run(db_session, test_user):
+    """Malformed values are not candidates, so --limit always makes progress."""
+    ai_model = _model(db_session, test_user)
+    for bad in (-5, True, 1.5, "abc", None):
+        _row(
+            db_session,
+            test_user,
+            ai_model,
+            usage={
+                "input_tokens_details": {"cached_tokens": bad},
+                "output_tokens_details": {"reasoning_tokens": bad},
+            },
+        )
+    good = _row(
+        db_session,
+        test_user,
+        ai_model,
+        usage={"input_tokens_details": {"cached_tokens": "12", "x": 1}},
+    )
+    integral = _row(
+        db_session,
+        test_user,
+        ai_model,
+        usage={"output_tokens_details": {"reasoning_tokens": 7.0}},
+    )
+
+    first = repair_token_details(
+        db_session, account_id=test_user.account_id, apply=True, limit=1
+    )
+    second = repair_token_details(
+        db_session, account_id=test_user.account_id, apply=True, limit=1
+    )
+    third = repair_token_details(
+        db_session, account_id=test_user.account_id, apply=True, limit=1
+    )
+
+    assert (first.rows_updated, second.rows_updated, third.rows_examined) == (1, 1, 0)
+    db_session.refresh(good)
+    db_session.refresh(integral)
+    assert good.cache_read_tokens == 12
+    assert integral.reasoning_tokens == 7
