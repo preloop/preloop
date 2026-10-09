@@ -106,6 +106,29 @@ class CRUDToolConfiguration(CRUDBase[models.ToolConfiguration]):
             .first()
         )
 
+    def get_for_server(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        tool_name: str,
+        mcp_server_id: Optional[str] = None,
+    ) -> List[models.ToolConfiguration]:
+        """Fetch at most two exact matches, retaining ambiguity detection.
+
+        A missing server id selects only builtin configurations. All predicates
+        run in SQL; this never materializes the account's tool inventory.
+        """
+        query = db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.tool_name == tool_name,
+        )
+        if mcp_server_id is None:
+            query = query.filter(self.model.tool_source == "builtin")
+        else:
+            query = query.filter(self.model.mcp_server_id == mcp_server_id)
+        return query.limit(2).all()
+
     def get_multi_by_account(
         self,
         db: Session,

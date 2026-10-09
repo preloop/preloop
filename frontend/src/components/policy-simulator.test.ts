@@ -69,4 +69,29 @@ describe('policy simulator', () => {
       JSON.parse(fetch.firstCall.args[1]!.body as string).draft_yaml
     ).to.equal('version: "1.0"');
   });
+  it('keeps the shown result when the parent sends an equivalent draft', async () => {
+    sinon.stub(window, 'fetch').resolves(
+      new Response(
+        JSON.stringify({
+          decision: 'deny',
+          checked_rules: [],
+          also_matched_rule_ids: [],
+        })
+      )
+    );
+    const el = await fixture<PolicySimulator>(
+      html`<policy-simulator
+        .toolName=${'read_record'}
+        .draftRule=${{ action: 'deny' }}
+      ></policy-simulator>`
+    );
+    await (el as any)._simulate();
+    await el.updateComplete;
+    el.draftRule = { action: 'deny' };
+    await el.updateComplete;
+    expect(el.textContent).to.include('Deny');
+    el.draftRule = { action: 'allow' };
+    await el.updateComplete;
+    expect((el as any)._result).to.equal(null);
+  });
 });
