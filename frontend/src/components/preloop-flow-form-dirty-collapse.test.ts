@@ -153,4 +153,53 @@ describe('Flow form advanced sections and unsaved changes', () => {
     await save;
     expect(el.isDirty).to.equal(true);
   });
+  it('keeps unsaved routing and label edits across OAuth restoration', async () => {
+    const el = await mount({ name: 'Example flow' });
+    (el as any).routingRules = [
+      {
+        id: 'route-example',
+        anyLabels: 'synthetic',
+        allLabels: '',
+        ai_model_id: 'model-example',
+        agent_type: '',
+      },
+    ];
+    (el as any).labelRules = [
+      {
+        label: 'synthetic',
+        ai_model_id: 'model-example',
+        reasoning_effort: '',
+      },
+    ];
+    el.dispatchEvent(new CustomEvent('github-oauth-starting'));
+    const stored = JSON.parse(
+      sessionStorage.getItem('preloop_flow_form_state')!
+    );
+    expect(stored.routingRules).to.deep.equal((el as any).routingRules);
+    expect(stored.labelRules).to.deep.equal((el as any).labelRules);
+    el.remove();
+    const restored = await mount();
+    expect((restored as any).routingRules).to.deep.equal(stored.routingRules);
+    expect((restored as any).labelRules).to.deep.equal(stored.labelRules);
+    expect(restored.isDirty).to.equal(true);
+  });
+
+  it('keeps dirty guards when OAuth authorization URL lookup fails', async () => {
+    const el = await mount({ name: 'Example flow' });
+    (el as any).flow.name = 'Unsaved name';
+    el.requestUpdate();
+    await el.updateComplete;
+    const modal = document.createElement('add-tracker-modal') as any;
+    el.appendChild(modal);
+    modal._api = {
+      ...modal._api,
+      getGitHubAuthUrl: sinon.stub().rejects(new Error('OAuth unavailable')),
+    };
+    await modal.startGitHubOAuth();
+    expect(el.isDirty).to.equal(true);
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).to.equal(true);
+    expect(modal.authMethod).to.equal('api_token');
+  });
 });

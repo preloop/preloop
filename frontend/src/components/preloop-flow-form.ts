@@ -486,8 +486,7 @@ export class PreloopFlowForm extends LitElement {
     this.syncUnloadGuard();
   }
 
-  private async openInvalidField(event: Event): Promise<void> {
-    const field = event.target as HTMLElement;
+  private openEnclosingSections(field: HTMLElement): void {
     for (
       let ancestor = field.parentElement;
       ancestor;
@@ -496,6 +495,11 @@ export class PreloopFlowForm extends LitElement {
       if (ancestor.tagName === 'SL-DETAILS')
         (ancestor as HTMLElement & { open: boolean }).open = true;
     }
+  }
+
+  private async openInvalidField(event: Event): Promise<void> {
+    const field = event.target as HTMLElement;
+    this.openEnclosingSections(field);
     await this.updateComplete;
     field.focus?.({ preventScroll: true });
   }
@@ -713,6 +717,8 @@ export class PreloopFlowForm extends LitElement {
       'preloop_flow_form_state',
       JSON.stringify({
         flow: this.flow,
+        routingRules: this.routingRules,
+        labelRules: this.labelRules,
         triggerType: this.triggerType,
         flowExecutionPath: this.flowExecutionPath,
         targetAgentId: this.targetAgentId,
@@ -724,12 +730,19 @@ export class PreloopFlowForm extends LitElement {
     );
   };
 
+  private handleGithubOauthFailed = () => {
+    this.oauthStarting = false;
+    this.syncUnloadGuard();
+    sessionStorage.removeItem('preloop_flow_form_state');
+  };
+
   async connectedCallback() {
     super.connectedCallback();
     this.addEventListener(
       'github-oauth-starting',
       this.handleGithubOauthStarting
     );
+    this.addEventListener('github-oauth-failed', this.handleGithubOauthFailed);
     await this.loadReferenceData();
   }
 
@@ -737,6 +750,10 @@ export class PreloopFlowForm extends LitElement {
     super.disconnectedCallback();
     window.removeEventListener('beforeunload', this.beforeUnload);
     this.unloadRegistered = false;
+    this.removeEventListener(
+      'github-oauth-failed',
+      this.handleGithubOauthFailed
+    );
     this.removeEventListener(
       'github-oauth-starting',
       this.handleGithubOauthStarting
@@ -751,12 +768,22 @@ export class PreloopFlowForm extends LitElement {
     // Restore saved state if returning from OAuth
     const savedStateStr = sessionStorage.getItem('preloop_flow_form_state');
     let restoredFromOAuth = false;
+    let restoredRoutingRules = false;
+    let restoredLabelRules = false;
     if (savedStateStr) {
       sessionStorage.removeItem('preloop_flow_form_state');
       try {
         const saved = JSON.parse(savedStateStr);
         if (saved && saved.flow) {
           this.flow = saved.flow;
+          if (Array.isArray(saved.routingRules)) {
+            this.routingRules = saved.routingRules;
+            restoredRoutingRules = true;
+          }
+          if (Array.isArray(saved.labelRules)) {
+            this.labelRules = saved.labelRules;
+            restoredLabelRules = true;
+          }
           this.restoredSnapshot =
             typeof saved.formSnapshot === 'string' ? saved.formSnapshot : null;
           this.triggerType = saved.triggerType || 'webhook';
@@ -905,8 +932,8 @@ export class PreloopFlowForm extends LitElement {
           this.flowExecutionPath = 'persistent';
           this.targetAgentId = cfg.target_agent_id || '';
         }
-        this.syncRoutingRulesFromConfig(cfg);
-        this.syncLabelRulesFromConfig(cfg);
+        if (!restoredRoutingRules) this.syncRoutingRulesFromConfig(cfg);
+        if (!restoredLabelRules) this.syncLabelRulesFromConfig(cfg);
       }
 
       // Determine trigger type and load tracker scope data
@@ -1429,14 +1456,7 @@ export class PreloopFlowForm extends LitElement {
     if (!field) {
       return;
     }
-    for (
-      let ancestor = field.parentElement;
-      ancestor;
-      ancestor = ancestor.parentElement
-    ) {
-      if (ancestor.tagName === 'SL-DETAILS')
-        (ancestor as HTMLElement & { open: boolean }).open = true;
-    }
+    this.openEnclosingSections(field);
     await this.updateComplete;
     field.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
     field.focus?.({ preventScroll: true });

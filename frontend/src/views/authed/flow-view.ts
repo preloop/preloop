@@ -1735,12 +1735,10 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
         }
         const newFlow = await createFlow(payload);
         if (e.detail.markSaved) e.detail.markSaved();
-        else form?.markSaved?.();
         Router.go(`/console/flows/${newFlow.id}`);
       } else {
         await updateFlow(this.flowId!, payload);
         if (e.detail.markSaved) e.detail.markSaved();
-        else form?.markSaved?.();
         Router.go(`/console/flows/${this.flowId}`);
       }
     } catch (error: any) {

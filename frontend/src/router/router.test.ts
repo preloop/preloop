@@ -1016,6 +1016,54 @@ describe('router', () => {
       expect(window.location.pathname).to.equal('/go-a');
     });
 
+    it('restores cancelled browser Back and Forward without losing the history entry', async () => {
+      let allow = true;
+      let guardCalls = 0;
+      const first = `rt-pop-guard-a-${++tagSeq}`;
+      const second = `rt-pop-guard-b-${++tagSeq}`;
+      for (const tag of [first, second])
+        customElements.define(
+          tag,
+          class extends HTMLElement {
+            onBeforeLeave(
+              _location: RouterLocation,
+              commands: { prevent(): unknown }
+            ) {
+              guardCalls++;
+              return allow ? undefined : commands.prevent();
+            }
+          }
+        );
+      await router.setRoutes(
+        [
+          { path: '/pop-guard-a', component: first },
+          { path: '/pop-guard-b', component: second },
+        ],
+        true
+      );
+      await router.render('/pop-guard-a', { history: 'push' });
+      await router.render('/pop-guard-b', { history: 'push' });
+      allow = false;
+      const beforeBack = guardCalls;
+      window.history.back();
+      await waitUntil(() => guardCalls > beforeBack);
+      await waitUntil(() => window.location.pathname === '/pop-guard-b');
+      expect(outlet.querySelector(second)).to.exist;
+      allow = true;
+      window.history.back();
+      await waitUntil(() => !!outlet.querySelector(first));
+      allow = false;
+      const beforeForward = guardCalls;
+      window.history.forward();
+      await waitUntil(() => guardCalls > beforeForward);
+      await waitUntil(() => window.location.pathname === '/pop-guard-a');
+      expect(outlet.querySelector(first)).to.exist;
+      allow = true;
+      window.history.forward();
+      await waitUntil(() => !!outlet.querySelector(second));
+      expect(window.location.pathname).to.equal('/pop-guard-b');
+    });
+
     it('records in-app history only for entries the router pushed', async () => {
       const first = defineTag('rt-depth-a');
       const second = defineTag('rt-depth-b');
