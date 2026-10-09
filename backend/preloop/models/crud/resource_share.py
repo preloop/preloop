@@ -301,6 +301,8 @@ class CRUDResourceShare:
             return None
         if row.account_id == _id(account_id):
             return row
+        if not sharing_enabled():
+            return None
         shared = db.scalar(
             select(models.ResourceShareRecipient.id).where(
                 models.ResourceShareRecipient.recipient_account_id == _id(account_id),
@@ -526,6 +528,8 @@ class CRUDResourceShare:
 
         Existing sessions keep their binding; new targeting requires a live receipt.
         """
+        if not sharing_enabled():
+            return None
         context = key.context_data or {}
         agent_id = context.get("managed_agent_id")
         owner_id = context.get("shared_agent_owner_account_id")

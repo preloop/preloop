@@ -2014,7 +2014,7 @@ async def get_account_managed_agent_governance(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
-    agent = crud_managed_agent.get_for_account(
+    agent = crud_managed_agent.get_visible_target(
         db, account_id=str(account.id), agent_id=agent_id
     )
     if agent is None:
@@ -2046,7 +2046,7 @@ async def update_account_managed_agent_governance(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
-    agent = crud_managed_agent.get_for_account(
+    agent = crud_managed_agent.get_visible_target(
         db, account_id=str(account.id), agent_id=agent_id
     )
     if agent is None:

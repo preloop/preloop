@@ -37,6 +37,15 @@ def validate_budget_subject(
     subject = db.execute(
         select(model).where(model.id == subject_id, account_filter)
     ).scalar_one_or_none()
+    if subject is None and subject_type in {"ai_model", "managed_agent"}:
+        from preloop.models.crud.resource_share import crud_resource_share
+
+        subject = crud_resource_share.visible_resource(
+            db,
+            account_id=account_id,
+            resource_type=subject_type,
+            resource_id=subject_id,
+        )
     if subject is None:
         raise ValueError("Budget subject was not found in this account")
     return subject

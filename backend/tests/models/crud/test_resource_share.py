@@ -96,6 +96,25 @@ def test_selected_share_is_safe_and_revocation_stops_next_target(
     )
     assert public is not None
     assert public.owner_name == "Parent" and public.is_shared and public.read_only
+    if kind in {"ai_model", "managed_agent"}:
+        from preloop.models.crud.budget_configuration import validate_budget_subject
+
+        assert (
+            validate_budget_subject(
+                db_session,
+                account_id=child.id,
+                subject_type=kind,
+                subject_id=resource.id,
+            )
+            is resource
+        )
+        with pytest.raises(ValueError, match="not found"):
+            validate_budget_subject(
+                db_session,
+                account_id=sibling.id,
+                subject_type=kind,
+                subject_id=resource.id,
+            )
     assert "synthetic-secret" not in public.model_dump_json()
     assert (
         not {
@@ -586,6 +605,17 @@ def test_shared_mcp_owner_approval_and_secret_projection(
             )
 
     register_visibility_provider(Receipts())
+    from preloop.models.crud import crud_mcp_tool
+
+    assert crud_mcp_tool.get_by_visible_servers_for_account(
+        db_session, account_id=str(child.id), server_ids=[server.id]
+    ) == [tool]
+    assert (
+        crud_mcp_tool.get_by_visible_servers_for_account(
+            db_session, account_id=str(sibling.id), server_ids=[server.id]
+        )
+        == []
+    )
     monkeypatch.setattr(dynamic_fastmcp, "get_db", lambda: iter([db_session]))
     monkeypatch.setattr(db_session, "close", lambda: None)
     try:
