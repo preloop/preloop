@@ -13,7 +13,7 @@ export function accessibilityFindings(source) {
     const attrs = match[2];
     if (['sl-switch', 'sl-checkbox', 'sl-radio-button', 'sl-radio'].includes(match[1])) {
       const tail = clean.slice(match.index + match[0].length);
-      const content = tail.slice(0, tail.indexOf(`</${match[1]}>`)).replace(/<[^>]+>/g, '').trim();
+      const content = tail.slice(0, tail.indexOf(`</${match[1]}>`)).replace(/<[^>]+>/g, ' ').trim();
       if (content) continue;
     }
     if (/\b(label|aria-label|aria-labelledby)\s*=\s*(?:"[^"]+"|'[^']+'|\$\{)/.test(attrs) || /type=["']hidden["']/.test(attrs)) continue;

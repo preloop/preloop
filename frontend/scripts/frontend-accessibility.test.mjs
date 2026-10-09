@@ -11,3 +11,8 @@ test('keeps non-text colors and accepts programmatic labels', () => {
   assert.deepEqual(accessibilityFindings('background-color: var(--sl-color-neutral-500); border-color: var(--sl-color-neutral-400); <sl-select aria-label="Status"></sl-select>'), []);
   assert.deepEqual(accessibilityFindings('<label for="email">Email</label><input id="email">'), []);
 });
+
+test('ignores icon-only content and recognizes nested text labels', () => {
+  assert.equal(accessibilityFindings('<sl-switch><sl-icon name="check"></sl-icon></sl-switch>').length, 1);
+  assert.deepEqual(accessibilityFindings('<sl-switch><span>Enable gateway</span></sl-switch>'), []);
+});
