@@ -6,6 +6,33 @@ real application enforcement remain unverified on macOS, Windows and Linux.
 
 ## Versions and control ownership
 
+A Team-first pilot can use the vendor's
+[server-managed settings](https://code.claude.com/docs/en/server-managed-settings)
+and [remote MCP configuration](https://code.claude.com/docs/en/mcp), subject to
+the current platform and plan prerequisites. Server-managed settings are
+available on Team and Enterprise and can distribute hooks,
+`allowManagedPermissionRulesOnly` and `managedMcpServers` (remote HTTP/SSE in
+Claude Code v2.1.259 or later). Review **Platform availability** in the live
+vendor instructions before selecting devices or publishing commands.
+
+These settings are applied by the client. They are not provider-side inference
+enforcement: an initial settings fetch can fail open, user approval may be
+required, and a custom provider or base URL can skip fetching. Test effective
+settings, first-fetch outage and alternate routes on the pinned application.
+Enterprise inference hooks remain an optional separate control requiring their
+own organization entitlement, not a prerequisite for every managed Code pilot.
+
+| Pilot choice | Entitlement and benefit | Remaining gate |
+| --- | --- | --- |
+| Team managed Code settings and approved remote MCP | Team/Enterprise settings/connector eligibility; reuse organization Claude Code usage | Client-applied settings, resource/network boundaries and real app acceptance |
+| Team self-hosted beta runner | Owner-enabled Team/Enterprise beta; same organization Claude Code usage as hosted | Isolated runner, restricted authority, replay and revocation tests |
+| Enterprise provider inference hook | Eligible Enterprise organization and Owner configuration | Full inspection/tool/failure settings and covered-surface pilot |
+| Console/API-key or API federation route | Separate API entitlement and billing | Does not establish subscription or Enterprise-hook coverage |
+
+Do not infer API-rate billing merely from Preloop tool governance or an owner VM.
+Verify the actual inference route and organization allowance/rate limits with the
+vendor. A changed model base URL can change both settings behavior and billing.
+
 The secret-free Claude Code managed-hook exporter merged in
 [PR1439](https://github.com/preloop/preloop/pull/1439) on 2026-10-09. Its command
 below is a **merged-source build example**, not a command verified in the latest

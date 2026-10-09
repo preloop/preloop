@@ -10,6 +10,13 @@ Use the [Enterprise hook guide](anthropic-inference-hooks.md),
 entitlement and control boundary. Never claim that an API key or personal
 subscription validates an Enterprise tenant.
 
+Choose a Team-first managed settings/remote MCP or owner-enabled self-hosted beta
+pilot when its documented controls meet the intended boundary. Enterprise
+provider inference hooks are a separate optional route. Record the plan,
+platform and actual subscription/API inference path: local governance and an
+owner VM do not by themselves switch usage to API billing. Client-applied Team
+settings still need first-fetch outage, approval and alternate-route tests.
+
 ## Offline conformance harness
 
 From the source checkout with its documented development dependencies installed:

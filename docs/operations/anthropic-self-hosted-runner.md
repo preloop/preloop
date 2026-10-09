@@ -26,6 +26,14 @@ Identity Federation or a personal Pro/Max subscription is not evidence that this
 seat-based remote-session path is enabled; API federation is a separate
 entitlement and billing path.
 
+The vendor's [self-hosted environment overview](https://code.claude.com/docs/en/self-hosted-environments)
+states that self-hosted sessions use the same organization's Claude Code usage
+as hosted sessions. Moving subscription sessions onto an owner VM does not by
+itself imply API-rate billing. Preserve the documented subscription route and
+confirm organization allowance/rate limits; a Console/API-key route is separate.
+A Team-first managed settings/MCP pilot is described in the
+[rollout decision table](anthropic-managed-rollout.md#versions-and-control-ownership).
+
 The proposed Preloop capability is `anthropic_self_hosted_identity`, off by
 default; the backend opts in with
 `PRELOOP_ANTHROPIC_SELF_HOSTED_IDENTITY=true`. Administrative bindings live at
