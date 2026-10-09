@@ -191,7 +191,11 @@ export function applyPricingCatalog(
     }),
     comparison: {
       title: 'Compare cloud plans',
-      note: `BYOK analysis quotas never stop the gateway, firewall, approvals or budgets. Above the quota, analytics detail is reduced. Your provider charges on your own keys are separate and never marked up by Preloop. Analytics history controls access and storage for usage and runtime-session analytics. Older analytics are periodically removed; longer grandfathered commitments remain protected.${minimum ? ` Stored audit and evidence records are retained for at least ${minimum} days under the account policy.` : ' Stored audit and evidence records follow the account retention policy.'} Legal holds can retain records longer.`,
+      note: `BYOK analysis quotas never stop the gateway, firewall, approvals or budgets. Above the quota, analytics detail is reduced. Your provider charges on your own keys are separate and never marked up by Preloop. Analytics history controls access and storage for usage and runtime-session analytics. Older analytics are periodically removed; longer grandfathered commitments remain protected.${minimum ? ` Stored audit and evidence records are retained for at least ${minimum} days under the account policy.` : ' Stored audit and evidence records follow the account retention policy.'} Legal holds can retain records longer. Your sessions are used only for your own search, audit, cost reports and policy enforcement. No training, no sharing. Self-host to keep everything in your network.`,
+      note_link: {
+        label: 'Your data: Security & Privacy',
+        url: 'https://docs.preloop.ai/security/security-privacy/#your-data',
+      },
       groups: [
         { title: 'Plan limits', rows: planRows },
         {

@@ -56,6 +56,7 @@ describe('AccountView', () => {
       sessionArtifactUsage?: Record<string, unknown> | null;
       artifactSettings?: Record<string, unknown> | null;
       artifactSettingsPut?: (body: Record<string, unknown>) => Response;
+      accountHierarchy?: boolean;
     } = {}
   ) {
     return sinon
@@ -105,8 +106,23 @@ describe('AccountView', () => {
         if (url.includes('/api/v1/features')) {
           return json({
             plugins: [],
-            features: { billing: opts.billing === true },
+            features: {
+              billing: opts.billing === true,
+              account_hierarchy: opts.accountHierarchy === true,
+            },
           });
+        }
+
+        if (url.includes('/api/v1/auth/users/me')) {
+          return json({ id: 'user-1', account_id: 'acc-1', permissions: null });
+        }
+
+        if (url.includes('/api/v1/me/memberships')) {
+          return json({ detail: 'Not Found' }, 404);
+        }
+
+        if (url.includes('/api/v1/accounts/acc-1/subaccounts')) {
+          return json({ items: [{ id: 'sub-a', name: 'North', tags: {} }] });
         }
 
         if (url.includes('/api/v1/billing/sync-subscription')) {
@@ -270,6 +286,36 @@ describe('AccountView', () => {
         .getCalls()
         .some((call) => String(call.args[0]).includes('/kill-switch'))
     ).to.equal(false);
+  });
+
+  it('shows the Subaccounts card with the account_hierarchy capability', async () => {
+    fetchStub = createFetchStub({ accountHierarchy: true });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+    const card = element.shadowRoot!.querySelector(
+      'subaccounts-view[embedded]'
+    ) as HTMLElement & { updateComplete: Promise<unknown> };
+    expect(card).to.exist;
+    await waitUntil(
+      () => card.shadowRoot?.querySelector('tbody tr[data-id="sub-a"]'),
+      'subaccount row did not render'
+    );
+    expect(card.shadowRoot!.textContent).to.contain('Create subaccount');
+  });
+
+  it('has no Subaccounts card without the capability', async () => {
+    fetchStub = createFetchStub();
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading, 'load');
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('subaccounts-view')).to.equal(
+      null
+    );
   });
 
   it('renders organization details after load (non-billing edition)', async () => {

@@ -25,6 +25,8 @@ import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../../components/view-header';
+import { hasCapability } from '../../../capabilities';
+import '../hierarchy/subaccounts-view';
 
 interface Plan {
   id: string;
@@ -1260,6 +1262,14 @@ export class AccountView extends LitElement {
             </div>
           </sl-card>
 
+          ${
+            // Subaccounts are created from the account they sit under, so
+            // the list lives here rather than behind its own nav entry. The
+            // card hides itself on a subaccount.
+            hasCapability(this.features?.features, 'account_hierarchy')
+              ? html`<subaccounts-view embedded></subaccounts-view>`
+              : ''
+          }
           ${this._renderSessionArtifactUsage()}
           ${
             isProprietary

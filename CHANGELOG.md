@@ -505,6 +505,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Checkpoint failures name the HTTP status and reason** (#1331): a refused
+  workspace capture, restore or evidence upload used to log only
+  `PRELOOP_CHECKPOINT failed HTTPError`. The marker now carries
+  `status=<code> detail=<reason> op=<capture|restore|evidence>`, read from a
+  bounded slice of the API's JSON error body (`detail=not_json` for a proxy
+  error page), never the URL, token or body. Each refused artifact PUT also
+  writes a `flow_artifact_rejected` audit row, so a hosted refusal can be
+  diagnosed without ingress access logs. Reported by Alex J Lennon, Dynamic
+  Devices (@ajlennon).
+
 - **The console audit list keeps rendering under a steady live-event stream.**
   Every websocket `audit` event restarted a full-page spinner load, so on an
   account with continuous agent traffic `/console/audit` never settled and a

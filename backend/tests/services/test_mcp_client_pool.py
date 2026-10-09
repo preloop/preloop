@@ -9,6 +9,7 @@ from preloop.services.mcp_client_pool import (
     MCPClient,
     MCPClientPool,
     get_mcp_client_pool,
+    mcp_client_config_fingerprint,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -651,6 +652,9 @@ class TestMCPClientPoolGetClient:
 
         mock_client = AsyncMock()
         mock_client.is_connected = MagicMock(return_value=True)
+        mock_client.config_fingerprint = mcp_client_config_fingerprint(
+            "http://localhost:8001/mcp"
+        )
         pool._clients["server1"] = mock_client
 
         client = await pool.get_client(
@@ -832,3 +836,70 @@ class TestIsMcpUnavailableError:
             RuntimeError("Feature unavailable for this plan")
         )
         assert not is_mcp_unavailable_error(RuntimeError("invalid amount: 502"))
+
+
+class TestPoolRebuildsOnConfigChange:
+    """A changed server row must reach the upstream on the next call (#1365)."""
+
+    @pytest.fixture(autouse=True)
+    def offline_connect(self):
+        async def connect(self):
+            self._connected = True
+
+        async def close(self):
+            self._connected = False
+
+        with (
+            patch.object(MCPClient, "connect", connect),
+            patch.object(MCPClient, "close", close),
+        ):
+            yield
+
+    async def test_same_config_reuses_client(self):
+        pool = MCPClientPool()
+        first = await pool.get_client(
+            "s1", "http://up/mcp", "bearer", {"token": "TOKEN-A"}
+        )
+        again = await pool.get_client(
+            "s1", "http://up/mcp", "bearer", {"token": "TOKEN-A"}
+        )
+        assert again is first
+
+    async def test_token_change_rebuilds_client(self):
+        pool = MCPClientPool()
+        first = await pool.get_client(
+            "s1", "http://up/mcp", "bearer", {"token": "TOKEN-A"}
+        )
+        second = await pool.get_client(
+            "s1", "http://up/mcp", "bearer", {"token": "TOKEN-B"}
+        )
+        assert second is not first
+        assert first.is_connected() is False
+        headers, auth = second._build_auth()
+        assert headers["Authorization"] == "Bearer TOKEN-B"
+        assert auth.token == "TOKEN-B"
+        assert pool._clients["s1"] is second
+
+    async def test_url_change_rebuilds_client(self):
+        pool = MCPClientPool()
+        first = await pool.get_client("s1", "http://old/mcp")
+        second = await pool.get_client("s1", "http://new/mcp")
+        assert second is not first
+        assert second.url == "http://new/mcp"
+
+    async def test_auth_type_and_transport_changes_rebuild(self):
+        pool = MCPClientPool()
+        first = await pool.get_client("s1", "http://up/mcp", "none", {})
+        second = await pool.get_client(
+            "s1", "http://up/mcp", "api_key", {"api_key": "k"}
+        )
+        third = await pool.get_client(
+            "s1", "http://up/mcp", "api_key", {"api_key": "k"}, transport="sse"
+        )
+        assert len({id(first), id(second), id(third)}) == 3
+
+    async def test_close_client_evicts(self):
+        pool = MCPClientPool()
+        await pool.get_client("s1", "http://up/mcp")
+        await pool.close_client("s1")
+        assert "s1" not in pool._clients

@@ -2,7 +2,9 @@ import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import { invalidateApiCaches } from '../../api';
+import { PENDING_APPROVALS_EVENT } from '../../components/console-header';
 import { LOCATION_CHANGED, Router } from '../../router';
+import { publishAttentionSummary } from '../../utils/attention-summary';
 import './console-shell';
 import type { ConsoleShell } from './console-shell';
 
@@ -112,6 +114,7 @@ describe('ConsoleShell', () => {
     fetchStub.restore();
     matchMediaStub?.restore();
     localStorage.clear();
+    sessionStorage.removeItem('preloop:attention-summary');
     delete (window as any).BRAND_CONFIG;
     invalidateApiCaches();
   });
@@ -635,7 +638,7 @@ describe('ConsoleShell', () => {
     });
   });
 
-  it('nests Sessions and Approvals under Audit without All events when audit_logs is off', async () => {
+  it('keeps Approvals and Sessions under Audit, not top-level', async () => {
     const el = (await fixture(
       html`<console-shell></console-shell>`
     )) as ConsoleShell;
@@ -647,43 +650,212 @@ describe('ConsoleShell', () => {
       'Sessions link did not render'
     );
 
-    const auditSections = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+    const approvals = el.shadowRoot?.querySelector(
+      'a[href="/console/approvals"]'
     );
-    const auditSection = auditSections.find((section) =>
-      section.textContent?.includes('Audit')
+    const sessions = el.shadowRoot?.querySelector(
+      'a[href="/console/runtime-sessions"]'
     );
-    expect(auditSection).to.exist;
-
-    expect(el.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]'))
-      .to.exist;
-    expect(el.shadowRoot?.querySelector('a[href="/console/approvals"]')).to
-      .exist;
+    const audit = approvals?.closest('sl-details.nav-section');
+    expect(audit?.textContent).to.contain('Audit');
+    expect(sessions?.closest('sl-details.nav-section')).to.equal(audit);
+    // Without audit_logs there is no All events entry.
     expect(el.shadowRoot?.querySelector('a[href="/console/audit"]')).to.not
       .exist;
-    expect(el.shadowRoot?.querySelector('a[href="/console/cost"]')).to.exist;
   });
 
-  it('lists Artifacts right after Sessions in the Audit group', async () => {
+  it('orders the top level as Overview, the product pages, Audit, Settings, Emergency', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(
+          JSON.stringify({
+            plugins: [],
+            features: { audit_logs: true, policies_console: true },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('a[href="/console/policies"]'),
+      'Policies link did not render'
+    );
+
+    const menu = el.shadowRoot!.querySelector('#console-nav > sl-menu')!;
+    const rows = Array.from(menu.children)
+      .map((child) =>
+        child.matches('sl-details.nav-section')
+          ? child.querySelector('[slot="summary"] .sidebar-label')?.textContent
+          : child.querySelector('.sidebar-label')?.textContent
+      )
+      .filter((label): label is string => !!label)
+      .map((label) => label.trim());
+    expect(rows).to.deep.equal([
+      'Overview',
+      'Agents',
+      'Flows',
+      'Models',
+      'Tools',
+      'Policies',
+      'Trackers',
+      'Cost',
+      'Audit',
+      'Settings',
+      'Emergency',
+    ]);
+  });
+
+  it('orders the Audit group Approvals, Sessions, All events, Artifacts, Records', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.endsWith('/api/v1/features')) {
+        return new Response(
+          JSON.stringify({ plugins: [], features: { audit_logs: true } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
     const el = (await fixture(
       html`<console-shell></console-shell>`
     )) as ConsoleShell;
     await waitUntil(
       () =>
-        el.shadowRoot?.querySelector('a[href="/console/artifacts"]') !== null,
-      'Artifacts link did not render'
+        el.shadowRoot?.querySelector('a[href="/console/audit"]') &&
+        el.shadowRoot?.querySelector('a[href="/console/settings/records"]'),
+      'Audit links did not render'
     );
 
-    const link = el.shadowRoot!.querySelector('a[href="/console/artifacts"]')!;
-    expect(link.textContent).to.contain('Artifacts');
-    const audit = link.closest('sl-details.nav-section');
-    expect(audit?.textContent).to.contain('Audit');
-    const hrefs = Array.from(audit!.querySelectorAll('a.sidebar-link')).map(
+    const audit = el
+      .shadowRoot!.querySelector('a[href="/console/audit"]')!
+      .closest('sl-details.nav-section')!;
+    const hrefs = Array.from(audit.querySelectorAll('a.sidebar-link')).map(
       (a) => a.getAttribute('href')
     );
-    expect(hrefs.indexOf('/console/artifacts')).to.equal(
-      hrefs.indexOf('/console/runtime-sessions') + 1
+    expect(hrefs).to.deep.equal([
+      '/console/approvals',
+      '/console/runtime-sessions',
+      '/console/audit',
+      '/console/artifacts',
+      '/console/settings/records',
+    ]);
+  });
+
+  it('has no Needs attention entry; the Overview banner links there', async () => {
+    publishAttentionSummary([
+      {
+        id: 'flow:flow-1',
+        kind: 'flow',
+        severity: 'critical',
+        title: 'Pull Request Reviewer',
+        detail: '11 failed runs',
+        href: '/console/flows',
+        at: null,
+        fingerprint: 'flow-1:11',
+        dismissable: true,
+      },
+    ]);
+
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('a[href="/console/cost"]') !== null,
+      'nav did not render'
     );
+
+    expect(el.shadowRoot?.querySelector('a[href="/console/attention"]')).to.not
+      .exist;
+    expect(
+      el.shadowRoot?.querySelector('#console-nav')?.textContent
+    ).to.not.contain('Needs attention');
+  });
+
+  it('badges Approvals with the pending count published by the header', async () => {
+    const el = (await fixture(
+      html`<console-shell></console-shell>`
+    )) as ConsoleShell;
+
+    await waitUntil(
+      () =>
+        el.shadowRoot?.querySelector('a[href="/console/approvals"]') !== null,
+      'Approvals link did not render'
+    );
+
+    // The real header child also publishes its (empty) count; wait for its
+    // initial load to settle so a later dispatch is not overwritten by it.
+    const header = el.shadowRoot?.querySelector(
+      'console-header'
+    ) as unknown as { loadingPendingApprovals: boolean } & HTMLElement;
+    await waitUntil(
+      () => !header.loadingPendingApprovals,
+      'header approval load never settled'
+    );
+    await header.updateComplete;
+
+    // No pending approvals: no badge.
+    expect(
+      el.shadowRoot
+        ?.querySelector('a[href="/console/approvals"]')
+        ?.querySelector('sl-badge')
+    ).to.not.exist;
+
+    window.dispatchEvent(
+      new CustomEvent<number>(PENDING_APPROVALS_EVENT, { detail: 3 })
+    );
+    await el.updateComplete;
+
+    const badge = el.shadowRoot
+      ?.querySelector('a[href="/console/approvals"]')
+      ?.querySelector('sl-badge');
+    expect(badge?.textContent).to.contain('3');
+
+    // The closed Audit group repeats the count on its header, so it stays
+    // visible without opening the group; an open group hides the copy.
+    const audit = el
+      .shadowRoot!.querySelector('a[href="/console/approvals"]')!
+      .closest('sl-details.nav-section') as HTMLElement & { open: boolean };
+    const headerBadge = audit.querySelector(
+      '[slot="summary"] sl-badge.nav-section-badge'
+    ) as HTMLElement;
+    expect(headerBadge?.textContent).to.contain('3');
+    expect(audit.open).to.equal(false);
+    expect(getComputedStyle(headerBadge).display).to.not.equal('none');
+    audit.open = true;
+    await el.updateComplete;
+    expect(getComputedStyle(headerBadge).display).to.equal('none');
+  });
+
+  it('highlights Approvals for a single approval route', async () => {
+    const originalPath = window.location.pathname;
+    window.history.replaceState({}, '', '/console/approval/123');
+
+    try {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+
+      await waitUntil(
+        () =>
+          el.shadowRoot?.querySelector(
+            'a.sidebar-link.active[href="/console/approvals"]'
+          ) !== null,
+        'Active approvals link did not render'
+      );
+    } finally {
+      window.history.replaceState({}, '', originalPath);
+    }
   });
 
   it('nests Runners under Settings instead of the top-level nav', async () => {
@@ -824,121 +996,113 @@ describe('ConsoleShell', () => {
         'a[href^="/console/settings/"]'
       ) ?? []
     ).map((link) => link.getAttribute('href'));
-    const order = ['account', 'plan', 'records', 'users'].map((page) =>
+    const order = ['account', 'plan', 'users'].map((page) =>
       settingsPaths.indexOf(`/console/settings/${page}`)
     );
     expect(order[0]).to.be.greaterThan(-1);
     expect(order[1]).to.equal(order[0] + 1);
     expect(order[2]).to.equal(order[1] + 1);
-    expect(order[3]).to.equal(order[2] + 1);
   });
 
-  it('hides Records unless the operator can read the audit or policies', async () => {
-    invalidateApiCaches();
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/api/v1/features')) {
-        return new Response(
-          JSON.stringify({ plugins: [], features: { user_management: true } }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-      if (url.endsWith('/api/v1/auth/users/me')) {
-        return new Response(
-          JSON.stringify({
-            username: 'test',
-            email: 'test@example.com',
-            email_verified: true,
-            permissions: ['view_flows'],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-      if (
-        url.includes('approval-requests') ||
-        url.endsWith('/api/v1/trackers')
-      ) {
-        return new Response(JSON.stringify([]), {
+  describe('Records placement', () => {
+    /** Re-stub fetch with a chosen permission set; audit_logs stays off. */
+    function stubRecords(permissions: string[]) {
+      invalidateApiCaches();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.endsWith('/api/v1/features')) {
+          return new Response(
+            JSON.stringify({
+              plugins: [],
+              features: { user_management: true },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/api/v1/auth/users/me')) {
+          return new Response(
+            JSON.stringify({
+              username: 'test',
+              email: 'test@example.com',
+              email_verified: true,
+              permissions,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (
+          url.includes('approval-requests') ||
+          url.endsWith('/api/v1/trackers')
+        ) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        return new Response(JSON.stringify({}), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
-      }
-      return new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
       });
-    });
-    const hidden = (await fixture(
-      html`<console-shell></console-shell>`
-    )) as ConsoleShell;
-    await waitUntil(
-      () =>
-        hidden.shadowRoot?.querySelector(
-          'a[href="/console/settings/api-keys"]'
-        ) !== null,
-      'Settings links did not render'
-    );
-    expect(
-      hidden.shadowRoot?.querySelector('a[href="/console/settings/records"]')
-    ).to.not.exist;
-    // Artifacts is gated like Sessions (view_runtime_sessions); wait for the
-    // permissions to load, the nav is unrestricted until they do.
-    await waitUntil(
-      () =>
-        hidden.shadowRoot?.querySelector('a[href="/console/agents"]') === null,
-      'permissions did not apply'
-    );
-    expect(hidden.shadowRoot?.querySelector('a[href="/console/artifacts"]')).to
-      .not.exist;
-    expect(
-      hidden.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]')
-    ).to.not.exist;
+    }
 
-    hidden.remove();
-    invalidateApiCaches();
-    fetchStub.callsFake(async (input: RequestInfo | URL) => {
-      const url = typeof input === 'string' ? input : input.toString();
-      if (url.endsWith('/api/v1/features')) {
-        return new Response(JSON.stringify({ plugins: [], features: {} }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (url.endsWith('/api/v1/auth/users/me')) {
-        return new Response(
-          JSON.stringify({
-            username: 'test',
-            email: 'test@example.com',
-            email_verified: true,
-            permissions: ['view_audit_logs'],
-          }),
-          { status: 200, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-      if (
-        url.includes('approval-requests') ||
-        url.endsWith('/api/v1/trackers')
-      ) {
-        return new Response(JSON.stringify([]), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      return new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    async function mountShell() {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
+      await waitUntil(
+        () =>
+          (el as unknown as { _featuresLoaded: boolean })._featuresLoaded &&
+          (el as unknown as { _permissionsLoaded: boolean })._permissionsLoaded,
+        'Features and permissions did not load'
+      );
+      await el.updateComplete;
+      return el;
+    }
+
+    function recordsLink(el: ConsoleShell): Element | null | undefined {
+      return el.shadowRoot?.querySelector(
+        'a[href="/console/settings/records"]'
+      );
+    }
+
+    it('hides Records unless the operator can read the audit or policies', async () => {
+      stubRecords(['view_flows']);
+      const el = await mountShell();
+
+      expect(recordsLink(el)).to.not.exist;
+      // Artifacts and Sessions share the view_runtime_sessions gate.
+      expect(el.shadowRoot?.querySelector('a[href="/console/artifacts"]')).to
+        .not.exist;
+      expect(
+        el.shadowRoot?.querySelector('a[href="/console/runtime-sessions"]')
+      ).to.not.exist;
+      // Approvals is gated on view_approvals, which this user does not have.
+      expect(el.shadowRoot?.querySelector('a[href="/console/approvals"]')).to
+        .not.exist;
     });
-    const shown = (await fixture(
-      html`<console-shell></console-shell>`
-    )) as ConsoleShell;
-    await waitUntil(
-      () =>
-        shown.shadowRoot?.querySelector(
-          'a[href="/console/settings/records"]'
-        ) !== null,
-      'Records link did not render'
-    );
+
+    it('shows Records under Audit, not Settings, with view_audit_logs', async () => {
+      stubRecords(['view_audit_logs']);
+      const el = await mountShell();
+
+      const link = recordsLink(el);
+      expect(link).to.exist;
+      const group = link?.closest('sl-details.nav-section');
+      expect(group?.textContent).to.contain('Audit');
+      expect(group?.textContent).to.not.contain('Settings');
+    });
+
+    it('shows Records under Audit with view_policies', async () => {
+      stubRecords(['view_policies']);
+      const el = await mountShell();
+
+      const link = recordsLink(el);
+      expect(link).to.exist;
+      expect(link?.closest('sl-details.nav-section')?.textContent).to.contain(
+        'Audit'
+      );
+    });
   });
 
   it('still offers the plan page where there is no user management', async () => {
@@ -1093,29 +1257,31 @@ describe('ConsoleShell', () => {
 
   it('opens the Audit section when a nested route is active', async () => {
     const originalPath = window.location.pathname;
-    window.history.replaceState({}, '', '/console/approvals');
+    window.history.replaceState({}, '', '/console/artifacts');
 
-    const el = (await fixture(
-      html`<console-shell></console-shell>`
-    )) as ConsoleShell;
+    try {
+      const el = (await fixture(
+        html`<console-shell></console-shell>`
+      )) as ConsoleShell;
 
-    await waitUntil(
-      () =>
-        el.shadowRoot?.querySelector(
-          'a.sidebar-link.active[href="/console/approvals"]'
-        ) !== null,
-      'Active approvals link did not render'
-    );
+      await waitUntil(
+        () =>
+          el.shadowRoot?.querySelector(
+            'a.sidebar-link.active[href="/console/artifacts"]'
+          ) !== null,
+        'Active artifacts link did not render'
+      );
 
-    const auditSections = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
-    );
-    const auditSection = auditSections.find((section) =>
-      section.textContent?.includes('Audit')
-    ) as HTMLElement | undefined;
-    expect(auditSection?.hasAttribute('open')).to.be.true;
-
-    window.history.replaceState({}, '', originalPath);
+      const auditSections = Array.from(
+        el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+      );
+      const auditSection = auditSections.find((section) =>
+        section.textContent?.includes('Audit')
+      ) as HTMLElement | undefined;
+      expect(auditSection?.hasAttribute('open')).to.be.true;
+    } finally {
+      window.history.replaceState({}, '', originalPath);
+    }
   });
 
   describe('wayfinding on pages without a nav entry', () => {
@@ -1181,13 +1347,16 @@ describe('ConsoleShell', () => {
 
     it('highlights Approvals and opens Audit on a single approval', async () => {
       // The deep-link target of every approval notification, Slack and email.
+      // Approvals lives under Audit, so the group opens to show where you are.
       window.history.replaceState({}, '', '/console/approval/req-123');
       const el = await loaded();
-      expect(
-        el.shadowRoot!.querySelector(
-          'a.sidebar-link.active[href="/console/approvals"]'
-        )
-      ).to.exist;
+      const approvals = el.shadowRoot!.querySelector(
+        'a.sidebar-link.active[href="/console/approvals"]'
+      );
+      expect(approvals).to.exist;
+      expect(approvals?.closest('sl-details.nav-section')).to.equal(
+        auditSection(el)
+      );
       expect(auditSection(el)?.hasAttribute('open')).to.be.true;
     });
 

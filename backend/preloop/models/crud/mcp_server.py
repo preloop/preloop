@@ -140,6 +140,55 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
         )
         return own + [server for server in shared if server.id not in own_ids]
 
+    def get_active_visible_for_tool(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        tool_name: str,
+    ) -> List[models.MCPServer]:
+        """Active visible servers that expose an enabled tool ``tool_name``.
+
+        One query (plus the account hook's shared ids), used to route a
+        proxied call at call time without a full tool discovery. Same
+        visibility as ``get_active_visible_by_account`` and the same
+        enablement rule as tool discovery: an MCP tool configuration with
+        ``is_enabled = false`` for this server hides it. Own servers come
+        first, then shared ones, each by creation time.
+        """
+        from sqlalchemy import and_, case, or_
+
+        from preloop.plugins.account_hooks import (
+            VISIBLE_MCP_SERVER,
+            extra_visible_ids,
+        )
+
+        shared_ids = list(extra_visible_ids(db, account_id, VISIBLE_MCP_SERVER))
+        own = self.model.account_id == UUID(str(account_id))
+        visible = or_(own, self.model.id.in_(shared_ids)) if shared_ids else own
+        config = models.ToolConfiguration
+        return (
+            db.query(self.model)
+            .join(models.MCPTool, models.MCPTool.mcp_server_id == self.model.id)
+            .outerjoin(
+                config,
+                and_(
+                    config.account_id == UUID(str(account_id)),
+                    config.tool_source == "mcp",
+                    config.tool_name == tool_name,
+                    config.mcp_server_id == self.model.id,
+                ),
+            )
+            .filter(
+                visible,
+                self.model.status == "active",
+                models.MCPTool.name == tool_name,
+                or_(config.id.is_(None), config.is_enabled.is_(True)),
+            )
+            .order_by(case((own, 0), else_=1), self.model.created_at, self.model.id)
+            .all()
+        )
+
     def get_visible(
         self, db: Session, id: UUID, account_id: str
     ) -> Optional[models.MCPServer]:

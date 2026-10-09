@@ -22,10 +22,10 @@ Flow presets can review pull requests, implement issues, scan for vulnerabilitie
 Your first five minutes, start to finish:
 
 ```bash
-# 1. Install the CLI (macOS / Linux)
+# 1. Install the CLI (macOS / Linux / WSL)
 curl -fsSL https://preloop.ai/install/cli | sh
 
-# Windows (PowerShell): irm https://preloop.ai/install/cli.ps1 | iex
+# Windows, native (PowerShell): irm https://preloop.ai/install/cli.ps1 | iex
 # Details: docs/windows-cli.md
 
 # 2. Connect it to a control plane
@@ -189,6 +189,8 @@ Same core jobs (runtime, gateway, identity, observability, policy), vendor-neutr
 Also compare: [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloop.ai/vs/portkey), [Helicone](https://preloop.ai/vs/helicone), [MintMCP](https://preloop.ai/vs/mintmcp), [Lunar](https://preloop.ai/vs/lunar), [Runlayer](https://preloop.ai/vs/runlayer), [Zenity](https://preloop.ai/vs/zenity).
 
 ## Editions
+
+Your data: self-hosted, nothing leaves your network except the optional daily version check. On Preloop Cloud, sessions are stored only to give you search, audit trails, cost reports and policy enforcement; they are not used to train models and are not sold or shared. Details: [Security & Privacy](docs/security/security-privacy.md#your-data).
 
 Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop Cloud** is the hosted service at [preloop.ai](https://preloop.ai). **Preloop Enterprise** is the commercial self-hosted edition.
 

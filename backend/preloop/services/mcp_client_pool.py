@@ -5,6 +5,8 @@ It maintains persistent HTTP connections and handles authentication.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -112,6 +114,31 @@ def is_mcp_unavailable_error(exc: BaseException) -> bool:
     return any(marker in message for marker in markers)
 
 
+def mcp_client_config_fingerprint(
+    url: str,
+    auth_type: str = "none",
+    auth_config: Optional[Dict[str, Any]] = None,
+    transport: str = "http-streaming",
+) -> str:
+    """Return a stable fingerprint of the connection config of a server.
+
+    The pool compares it on every ``get_client`` call so a changed token,
+    URL, auth type or transport rebuilds the cached client. The value only
+    lives in process memory and is never logged.
+    """
+    payload = json.dumps(
+        [
+            (url or "").rstrip("/"),
+            auth_type or "none",
+            auth_config or {},
+            transport or "http-streaming",
+        ],
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class MCPClient:
     """Client for communicating with an external MCP server over HTTP streaming."""
 
@@ -137,6 +164,9 @@ class MCPClient:
         self._session: Optional[ClientSession] = None
         self._exit_stack: Optional[AsyncExitStack] = None
         self._connected = False
+        self.config_fingerprint = mcp_client_config_fingerprint(
+            url, auth_type, auth_config, transport
+        )
 
     def _build_auth(self) -> tuple[Dict[str, str], Optional[httpx.Auth]]:
         """Build request headers and httpx auth for the configured auth type."""
@@ -457,10 +487,20 @@ class MCPClientPool:
         Raises:
             Exception: If connection fails
         """
+        fingerprint = mcp_client_config_fingerprint(
+            url, auth_type, auth_config, transport
+        )
+
         # Check if client already exists
         if server_id in self._clients:
             client = self._clients[server_id]
-            if client.is_connected():
+            if client.config_fingerprint != fingerprint:
+                # The server row changed (new token, URL, auth type or
+                # transport). Every caller reads the current row, so this
+                # also picks up updates made on another pod.
+                logger.info("MCP server config changed, rebuilding client")
+                await self.close_client(server_id)
+            elif client.is_connected():
                 return client
             else:
                 # Client exists but not connected, remove it
@@ -473,8 +513,17 @@ class MCPClientPool:
         lock = self._get_lock(server_id)
         async with lock:
             # Double-check after acquiring lock
-            if server_id in self._clients and self._clients[server_id].is_connected():
-                return self._clients[server_id]
+            existing = self._clients.get(server_id)
+            if (
+                existing is not None
+                and existing.is_connected()
+                and existing.config_fingerprint == fingerprint
+            ):
+                return existing
+            if existing is not None:
+                # Raced with another caller that cached a different config.
+                await existing.close()
+                del self._clients[server_id]
 
             # Create and connect new client
             client = MCPClient(

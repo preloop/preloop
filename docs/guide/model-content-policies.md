@@ -186,6 +186,34 @@ sensitive_data:
       approver_view: redacted                       # redacted | original_until_decided
 ```
 
+A path that starts with `$result` instead of `$` reads the tool result.
+For a tool that returns the consent it acted under:
+
+```yaml
+sensitive_data:
+  reference_only:
+    - id: owner-data-reference-only
+      scope: {tools: [read_scope], servers: [lifecare-sandbox-source]}
+      keep_fields:
+        - "$.scope"              # from the arguments, stored under kept
+        - "$result.consent_id"   # from the result, stored under kept_result
+```
+
+The value is read from the result's `structuredContent`; when that is
+absent or lacks the path, from the first text content block parsed as
+JSON (a tool that returns a JSON string arrives that way). A missing path,
+or a result that is not JSON, keeps nothing. The result itself is
+never stored: the audit `tool_call` row gets `kept_result` (here
+`{"$result.consent_id": "cons-42"}`) and `result_hmac`, the salted
+fingerprint of the result, next to `kept` and `args_hmac`. Kept values,
+argument or result, go through the redact rules in scope first. `$.result.x`
+still means an argument named `result`.
+
+The `tool_call` row's `rule_matched` holds the access rule the policy
+evaluator matched for the call (the same text as `rule_description` on
+the `policy_*` row with the same `correlation_id`). The reference-only
+rule id stays in the record's `rule_id`.
+
 Fingerprints are HMAC-SHA256 over canonical JSON with a per-account salt
 stored encrypted; each record carries its `salt_id`, so a rotation leaves
 old records verifiable. `POST /api/v1/policies/sensitive-data/hash-check`

@@ -38,6 +38,9 @@ import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
 import '../../../components/view-header.ts';
 import consoleStyles from '../../../styles/console-styles.css?inline';
+import { hasCapability } from '../../../capabilities';
+import type { Subaccount } from '../../../hierarchy-api';
+import type { SubaccountAccessDialog } from '../hierarchy/subaccount-access-dialog';
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import { roleLabel } from '../../../utils/role-label';
@@ -283,6 +286,13 @@ export class TeamManagementView extends LitElement {
   @state()
   private featureEnabled = true;
 
+  /**
+   * The account's subaccounts (capability `account_hierarchy`). With at
+   * least one, each row offers "Subaccount access".
+   */
+  @state()
+  private subaccounts: Subaccount[] = [];
+
   async connectedCallback() {
     super.connectedCallback();
     try {
@@ -291,6 +301,14 @@ export class TeamManagementView extends LitElement {
         this.featureEnabled = false;
         this.isLoading = false;
         return;
+      }
+      if (hasCapability(featuresResponse.features, 'account_hierarchy')) {
+        // Loaded on demand, so the gated hierarchy code stays out of this
+        // chunk where the capability is off.
+        void import('../hierarchy/subaccount-access-dialog')
+          .then((module) => module.subaccountsOfCurrentAccount())
+          .then((subaccounts) => (this.subaccounts = subaccounts))
+          .catch(() => undefined);
       }
     } catch {
       // If features endpoint fails, proceed optimistically
@@ -502,6 +520,17 @@ export class TeamManagementView extends LitElement {
     }
   }
 
+  private async openSubaccountAccess(subject: {
+    type: 'user' | 'team';
+    id: string;
+    label: string;
+  }) {
+    const dialog = this.renderRoot.querySelector(
+      'subaccount-access-dialog'
+    ) as SubaccountAccessDialog | null;
+    await dialog?.show(subject);
+  }
+
   render() {
     if (this.isLoading) {
       return html`
@@ -611,6 +640,26 @@ export class TeamManagementView extends LitElement {
                   >
                     <sl-icon name="pencil" label="Edit team"></sl-icon>
                   </sl-button>
+                  ${
+                    this.subaccounts.length > 0
+                      ? html`<sl-button
+                          size="small"
+                          title="Subaccount access"
+                          data-testid="subaccount-access"
+                          @click=${() =>
+                            this.openSubaccountAccess({
+                              type: 'team',
+                              id: team.id,
+                              label: team.name,
+                            })}
+                        >
+                          <sl-icon
+                            name="diagram-3"
+                            label="Subaccount access"
+                          ></sl-icon>
+                        </sl-button>`
+                      : ''
+                  }
                   <!-- Outline, last, after a gap (DESIGN.md "Destructive
                        actions"). -->
                   <sl-button
@@ -629,6 +678,12 @@ export class TeamManagementView extends LitElement {
           `
         )}
       </div>
+
+      ${
+        this.subaccounts.length > 0
+          ? html`<subaccount-access-dialog></subaccount-access-dialog>`
+          : ''
+      }
 
       <!-- Create team modal -->
       <sl-dialog

@@ -111,14 +111,19 @@ is stored with `x11vnc -storepasswd` in `~/.preloop/desktop/vncpasswd` (mode
 `0600`) and is not written anywhere else. The password is a command argument
 for that short-lived `x11vnc` process, so a desktop install assumes a
 single-tenant host. VNC DES uses the first 8 characters of the password.
-Package installation runs `apt-get` as root, or `sudo -n apt-get` when the
+Package installation refreshes the package lists (`apt-get update`) and then
+runs `apt-get install` as root, or `sudo -n apt-get` when the
 SSH user is not root. The GCP Ubuntu image grants the metadata SSH user
 passwordless sudo; a target without that privilege reports `desktop: failed`
 and does not change the validated runtime. The CLI records
 `~/.preloop/desktop.json` and exports `DISPLAY=:99` for the runtime. A systemd
-user unit `preloop-desktop.service` keeps the session up; if a systemd user
-session is unavailable the CLI starts `~/.preloop/desktop/start.sh` with
-`nohup` and says so.
+user unit `preloop-desktop.service` keeps the session up. For a non-root user
+the CLI runs `sudo -n loginctl enable-linger` first so the unit survives the
+end of the deployment SSH session. If a systemd user session is unavailable
+the CLI starts `~/.preloop/desktop/start.sh` with `nohup` and says so. The
+install fails (and the deployment reports `desktop: failed`) when nothing
+accepts connections on `127.0.0.1:5900` within 15 seconds. The desktop step's
+output is kept on the host in `~/.local/state/preloop/desktop.log`.
 
 The listener is loopback-only. Deployment does not change GCP firewall rules
 and does not open port 5900 on any non-loopback interface. Other Linux
@@ -133,7 +138,8 @@ Verify on the host:
 ss -ltnp | grep 5900
 ```
 
-The socket must be `127.0.0.1:5900`. `DISPLAY=:99 chromium --headless=new
+The socket must be loopback only: `127.0.0.1:5900` (x11vnc 0.9.16 on Ubuntu
+24.04 also binds `[::1]:5900` despite `-noipv6`). `DISPLAY=:99 chromium --headless=new
 --screenshot` should write a screenshot, and `preloop agents status <runtime>
 --json` reports `desktop.installed` when `~/.preloop/desktop.json` exists.
 

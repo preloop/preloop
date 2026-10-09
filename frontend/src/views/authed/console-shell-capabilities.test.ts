@@ -6,10 +6,7 @@ import { mockApi, type MockApi } from '../../test-helpers/capability-api';
 import { CI_ACTIONS } from '../../ci-administration-api';
 import type { Capability } from '../../capabilities';
 
-const GATED_LINKS = [
-  '/console/settings/subaccounts',
-  '/console/settings/access-grants',
-];
+const GATED_LINKS = ['/console/settings/access-grants'];
 
 describe('ConsoleShell capability gating', () => {
   let api: MockApi | undefined;
@@ -85,11 +82,16 @@ describe('ConsoleShell capability gating', () => {
     await waitUntil(
       () =>
         el.shadowRoot!.querySelector(`a[href="${GATED_LINKS[0]}"]`) !== null,
-      'Subaccounts link did not render'
+      'Access grants link did not render'
     );
     for (const href of GATED_LINKS) {
       expect(el.shadowRoot!.querySelector(`a[href="${href}"]`), href).to.exist;
     }
+    // Subaccounts live on the Account page; the route stays for deep links
+    // but nothing in the nav points at it.
+    expect(
+      el.shadowRoot!.querySelector('a[href="/console/settings/subaccounts"]')
+    ).to.equal(null);
     expect(
       el.shadowRoot!.querySelector(
         'capability-extension[name="account-switcher"]'

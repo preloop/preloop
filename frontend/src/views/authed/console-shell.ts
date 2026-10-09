@@ -14,10 +14,11 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '../../components/logo-component';
 import '../../components/global-notice';
-import '../../components/console-header';
+import { PENDING_APPROVALS_EVENT } from '../../components/console-header';
 import '../../components/approval-bypass-banner';
 import '../../components/kill-switch-banner';
 import '../../components/usage-nudge-banner';
@@ -80,8 +81,9 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
 
 /**
  * Pages with no nav entry of their own, and the nav item that owns them.
- * Without this, a reader who opened a single approval from a notification
- * saw no item highlighted and the Audit group closed: no wayfinding at all.
+ * `/console/approval/:id` is a single approval opened from a notification
+ * or email. `/console/api-usage` is the older cost URL. Both highlight the
+ * item that owns them.
  */
 const NAV_ALIASES: Record<string, string[]> = {
   '/console/approvals': ['/console/approval'],
@@ -186,6 +188,10 @@ export class ConsoleShell extends LitElement {
 
   /** Set by a back/forward popstate until the router announces it. */
   private _historyTraversal = false;
+
+  /** Unexpired pending approvals, published by the header for the badge. */
+  @state()
+  private _pendingApprovalsCount = 0;
 
   private _mediaQuery?: MediaQueryList;
   private _mediaQueryHandler?: (e: MediaQueryListEvent) => void;
@@ -499,8 +505,62 @@ export class ConsoleShell extends LitElement {
         padding: 0.5em;
       }
 
-      sl-details {
-        padding-left: 1em;
+      /* One icon column and one label column for every top-level row:
+         links, the Audit and Settings group headers, and Emergency. A link
+         row is the anchor's 3px rule, the item's inset, then the icon; a
+         group header gets the same 3px and the same inset, so the two kinds
+         line up. Shoelace reserves a check-mark column at the start of every
+         menu item; top-level rows never show a check, so they drop it
+         instead of carrying a hidden 1.5em gutter. */
+      #console-nav > sl-menu > .sidebar-link > sl-menu-item {
+        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
+      }
+
+      #console-nav
+        > sl-menu
+        > .sidebar-link
+        > sl-menu-item::part(checked-icon) {
+        display: none;
+      }
+
+      #console-nav {
+        --nav-row-inset: 1.25rem;
+      }
+
+      sl-details.nav-section::part(header) {
+        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
+        border-left: 3px solid transparent;
+      }
+
+      /* Centre icon and label on one axis; an inline icon sat on the text
+         baseline, a few pixels above the label's middle. */
+      sl-details.nav-section [slot='summary'] {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        /* A menu item's line box, so group rows are as tall as link rows. */
+        min-height: calc(
+          var(--sl-font-size-medium) * var(--sl-line-height-normal)
+        );
+      }
+
+      sl-details.nav-section [slot='summary'] sl-icon {
+        flex: 0 0 auto;
+      }
+
+      /* A menu item puts the prefix gap (x-small) between icon and label;
+         the summary has no prefix slot, so it adds the same gap here. */
+      sl-details.nav-section [slot='summary'] .sidebar-label {
+        margin-left: calc(0.5rem + var(--sl-spacing-x-small));
+      }
+
+      .nav-section-badge {
+        margin-left: auto;
+        margin-right: var(--sl-spacing-x-small);
+      }
+
+      sl-details.nav-section[open] .nav-section-badge {
+        display: none;
       }
 
       sl-details.nav-section[open]::part(summary) {
@@ -593,6 +653,10 @@ export class ConsoleShell extends LitElement {
     window.addEventListener('show-toast', this._handleShowToast);
     this.addEventListener('keydown', this._handleKeydown);
     window.addEventListener(LOCATION_CHANGED, this._handleLocationChanged);
+    window.addEventListener(
+      PENDING_APPROVALS_EVENT,
+      this._handlePendingApprovals
+    );
     this._mediaQuery = window.matchMedia(
       `(max-width: ${SIDEBAR_BREAKPOINT}px)`
     );
@@ -824,6 +888,10 @@ export class ConsoleShell extends LitElement {
     this._closeSidebar();
   };
 
+  private _handlePendingApprovals = (event: Event) => {
+    this._pendingApprovalsCount = (event as CustomEvent<number>).detail ?? 0;
+  };
+
   private _normalizePath(path: string): string {
     if (path.length > 1 && path.endsWith('/')) {
       return path.slice(0, -1);
@@ -845,7 +913,8 @@ export class ConsoleShell extends LitElement {
   private _isSettingsActive(): boolean {
     return (
       this._isNavActive('/console/settings') &&
-      !this._isNavActive('/console/settings/emergency')
+      !this._isNavActive('/console/settings/emergency') &&
+      !this._isNavActive('/console/settings/records')
     );
   }
 
@@ -867,9 +936,11 @@ export class ConsoleShell extends LitElement {
   /** True when any Audit child is visible for this user/edition. */
   private _hasAuditSection(): boolean {
     return (
-      this._canShowAuditEvents() ||
+      this._canAccess('/console/approvals') ||
       this._canAccess('/console/runtime-sessions') ||
-      this._canAccess('/console/approvals')
+      this._canShowAuditEvents() ||
+      this._canAccess('/console/artifacts') ||
+      this._canAccess('/console/settings/records')
     );
   }
 
@@ -883,10 +954,11 @@ export class ConsoleShell extends LitElement {
 
   private _isAuditActive(): boolean {
     return (
-      this._isNavActive('/console/audit') ||
+      this._isNavActive('/console/approvals') ||
       this._isNavActive('/console/runtime-sessions') ||
+      this._isNavActive('/console/audit') ||
       this._isNavActive('/console/artifacts') ||
-      this._isNavActive('/console/approvals')
+      this._isNavActive('/console/settings/records')
     );
   }
 
@@ -948,6 +1020,10 @@ export class ConsoleShell extends LitElement {
     this.removeEventListener('keydown', this._handleKeydown);
     window.removeEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     window.removeEventListener('popstate', this._handleLocationChanged);
+    window.removeEventListener(
+      PENDING_APPROVALS_EVENT,
+      this._handlePendingApprovals
+    );
     this._mediaQuery?.removeEventListener('change', this._mediaQueryHandler!);
     super.disconnectedCallback();
   }
@@ -1130,13 +1206,43 @@ export class ConsoleShell extends LitElement {
                               ?open=${this._isAuditActive()}
                             >
                               <span slot="summary">
-                                <sl-icon
-                                  name="journal-text"
-                                  style="padding-right: 6px;"
-                                ></sl-icon>
+                                <sl-icon name="journal-text"></sl-icon>
                                 <span class="sidebar-label">Audit</span>
+                                ${
+                                  // The Approvals badge sits inside the
+                                  // group, so a closed group repeats the
+                                  // count on its header.
+                                  this._pendingApprovalsCount > 0 &&
+                                  this._canAccess('/console/approvals')
+                                    ? html`<sl-badge
+                                        class="nav-section-badge"
+                                        variant="primary"
+                                        pill
+                                        >${this._pendingApprovalsCount}</sl-badge
+                                      >`
+                                    : nothing
+                                }
                               </span>
                               <sl-menu>
+                                ${this._renderNavLink(
+                                  '/console/approvals',
+                                  html`<sl-menu-item
+                                    >Approvals${
+                                      this._pendingApprovalsCount > 0
+                                        ? html`<sl-badge
+                                            slot="suffix"
+                                            variant="primary"
+                                            pill
+                                            >${this._pendingApprovalsCount}</sl-badge
+                                          >`
+                                        : nothing
+                                    }</sl-menu-item
+                                  >`
+                                )}
+                                ${this._renderNavLink(
+                                  '/console/runtime-sessions',
+                                  html`<sl-menu-item>Sessions</sl-menu-item>`
+                                )}
                                 ${
                                   this._canShowAuditEvents()
                                     ? this._renderNavLink(
@@ -1148,17 +1254,19 @@ export class ConsoleShell extends LitElement {
                                     : nothing
                                 }
                                 ${this._renderNavLink(
-                                  '/console/runtime-sessions',
-                                  html`<sl-menu-item>Sessions</sl-menu-item>`
-                                )}
-                                ${this._renderNavLink(
                                   '/console/artifacts',
                                   html`<sl-menu-item>Artifacts</sl-menu-item>`
                                 )}
-                                ${this._renderNavLink(
-                                  '/console/approvals',
-                                  html`<sl-menu-item>Approvals</sl-menu-item>`
-                                )}
+                                ${
+                                  this._permissionsLoaded
+                                    ? this._renderNavLink(
+                                        '/console/settings/records',
+                                        html`<sl-menu-item
+                                          >Records</sl-menu-item
+                                        >`
+                                      )
+                                    : ''
+                                }
                               </sl-menu>
                             </sl-details>
                           `
@@ -1169,10 +1277,7 @@ export class ConsoleShell extends LitElement {
                       ?open=${this._isSettingsActive()}
                     >
                       <span slot="summary">
-                        <sl-icon
-                          name="gear"
-                          style="padding-right: 6px;"
-                        ></sl-icon>
+                        <sl-icon name="gear"></sl-icon>
                         <span class="sidebar-label">Settings</span>
                       </span>
                       <sl-menu>
@@ -1197,12 +1302,6 @@ export class ConsoleShell extends LitElement {
                                 html`<sl-menu-item>Plan</sl-menu-item>`
                               )
                             : nothing,
-                          this._permissionsLoaded
-                            ? this._renderNavLink(
-                                '/console/settings/records',
-                                html`<sl-menu-item>Records</sl-menu-item>`
-                              )
-                            : nothing,
                         ])}
                         ${this._renderNavGroup('People & access', [
                           this.features.user_management
@@ -1225,21 +1324,17 @@ export class ConsoleShell extends LitElement {
                               )
                             : nothing,
                           // Served by an extension plugin; the capability in
-                          // /features is the only switch.
-                          ...(hasCapability(this.features, 'account_hierarchy')
-                            ? [
-                                this._renderNavLink(
-                                  '/console/settings/subaccounts',
-                                  html`<sl-menu-item>Subaccounts</sl-menu-item>`
-                                ),
-                                this._renderNavLink(
-                                  '/console/settings/access-grants',
-                                  html`<sl-menu-item
-                                    >Access grants</sl-menu-item
-                                  >`
-                                ),
-                              ]
-                            : []),
+                          // /features is the only switch. Subaccounts have no
+                          // entry: they are created from the Account page,
+                          // and people and teams get access to them from the
+                          // Users and Teams pages. This page is the overview
+                          // of every grant.
+                          hasCapability(this.features, 'account_hierarchy')
+                            ? this._renderNavLink(
+                                '/console/settings/access-grants',
+                                html`<sl-menu-item>Access grants</sl-menu-item>`
+                              )
+                            : nothing,
                         ])}
                         ${this._renderNavGroup('Developers', [
                           this._ciSetupAvailable

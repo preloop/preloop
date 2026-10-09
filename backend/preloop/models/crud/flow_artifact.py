@@ -1,13 +1,229 @@
 """Scoped recovery artifact persistence and retention transactions."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, defer
 
 from preloop.models import models
+
+QUOTA_EXCEEDED = "artifact_quota_exceeded"
+
+
+# Name fixed by the #1339 spec; the stable code, not the class, is the contract.
+class ArtifactQuotaExceeded(ValueError):  # noqa: N818
+    """Admission refused: retained plus incoming ciphertext exceeds the quota.
+
+    ``str(exc)`` stays the stable code ``artifact_quota_exceeded`` so every
+    ``except ValueError`` caller keeps working; the byte totals ride alongside
+    for the 422 body, the audit row and the runner marker (#1339).
+    """
+
+    def __init__(
+        self, *, retained_bytes: int, quota_bytes: int, incoming_bytes: int
+    ) -> None:
+        super().__init__(QUOTA_EXCEEDED)
+        self.retained_bytes = int(retained_bytes)
+        self.quota_bytes = int(quota_bytes)
+        self.incoming_bytes = int(incoming_bytes)
+
+    def numbers(self) -> dict[str, int]:
+        """The three byte totals, without any artifact identity."""
+        return {
+            "retained_bytes": self.retained_bytes,
+            "quota_bytes": self.quota_bytes,
+            "incoming_bytes": self.incoming_bytes,
+        }
+
+
+def _retained_bytes_expr() -> Any:
+    """The retained-ciphertext aggregate shared by admission and usage."""
+    return func.coalesce(func.sum(func.octet_length(models.FlowArtifact.ciphertext)), 0)
+
+
+def usage(
+    db: Session, *, account_id: UUID, now: datetime | None = None
+) -> dict[str, Any]:
+    """Account retained flow-artifact bytes, as admission counts them.
+
+    ``retained_bytes`` is the same aggregate ``store`` compares against the
+    quota. ``by_kind`` gives bytes and row counts per kind (rows whose payload
+    was already cleared count as rows with zero bytes).
+    ``expired_pending_cleanup`` counts rows past ``expires_at`` whose
+    ciphertext the janitor has not cleared yet: those bytes still count.
+    ``next_expiry_at`` is the earliest time cleanup may clear a payload:
+    ``expires_at``, or a later ``lease_until``, among available rows not
+    under a legal hold. A past value means a payload is due and awaits the
+    janitor.
+    """
+    now = now or datetime.now(UTC)
+    rows = (
+        db.query(
+            models.FlowArtifact.kind,
+            _retained_bytes_expr(),
+            func.count(models.FlowArtifact.id),
+        )
+        .filter(models.FlowArtifact.account_id == account_id)
+        .group_by(models.FlowArtifact.kind)
+        .all()
+    )
+    by_kind = {
+        str(kind): {"bytes": int(size), "count": int(count)}
+        for kind, size, count in rows
+    }
+    pending = (
+        db.query(func.count(models.FlowArtifact.id))
+        .filter(
+            models.FlowArtifact.account_id == account_id,
+            models.FlowArtifact.expires_at <= now,
+            models.FlowArtifact.ciphertext.isnot(None),
+        )
+        .scalar()
+    )
+    # When cleanup can next clear bytes: a held row is never cleared while
+    # held, and a leased row not before its lease lapses (see ``cleanup``).
+    next_expiry = (
+        db.query(
+            func.min(
+                func.greatest(
+                    models.FlowArtifact.expires_at,
+                    func.coalesce(
+                        models.FlowArtifact.lease_until, models.FlowArtifact.expires_at
+                    ),
+                )
+            )
+        )
+        .filter(
+            models.FlowArtifact.account_id == account_id,
+            models.FlowArtifact.availability == "available",
+            models.FlowArtifact.ciphertext.isnot(None),
+            models.FlowArtifact.legal_hold.is_(False),
+        )
+        .scalar()
+    )
+    return {
+        "retained_bytes": sum(entry["bytes"] for entry in by_kind.values()),
+        "by_kind": by_kind,
+        "expired_pending_cleanup": int(pending or 0),
+        "next_expiry_at": next_expiry,
+    }
+
+
+def _lock_for_put(
+    db: Session,
+    *,
+    account_id: UUID,
+    execution_id: UUID,
+    require_execution_open: bool,
+) -> None:
+    """Take the execution then account locks every artifact write uses."""
+    from preloop.models.crud import crud_flow_execution
+
+    # Execution row first so a terminal close cannot commit during this PUT.
+    crud_flow_execution.lock_for_artifact_put(
+        db,
+        execution_id=execution_id,
+        require_open=require_execution_open,
+    )
+    # Serialize quota checks without blocking child audit/usage foreign keys.
+    # Account identity does not change, so NO KEY UPDATE is sufficient.
+    db.query(models.Account).filter(models.Account.id == account_id).with_for_update(
+        key_share=True
+    ).one()
+
+
+def workspace_state(metadata: Any) -> tuple[str, tuple[str, ...]] | None:
+    """The identity of a workspace capture: file digest plus repository heads.
+
+    None when the checkpoint metadata does not carry a file digest, so a
+    capture without one is never treated as a duplicate.
+    """
+    if not isinstance(metadata, dict):
+        return None
+    digest = metadata.get("file_state_sha256")
+    if not isinstance(digest, str) or not digest:
+        return None
+    repositories = metadata.get("repositories")
+    heads = tuple(
+        str(repo.get("head_sha") or "")
+        for repo in (repositories if isinstance(repositories, list) else [])
+        if isinstance(repo, dict)
+    )
+    return digest, heads
+
+
+def reuse_identical_workspace(
+    db: Session,
+    *,
+    account_id: UUID,
+    flow_id: UUID,
+    thread_id: str,
+    execution_id: UUID,
+    metadata: dict[str, Any],
+    expires_at: datetime,
+    require_execution_open: bool = True,
+) -> models.FlowArtifact | None:
+    """Return the newest identical workspace snapshot, its expiry extended.
+
+    A run captures its workspace periodically and again before publication;
+    on a clean review checkout both captures hold the same files at the same
+    commit. When the newest available workspace artifact of this execution
+    and thread has the same ``file_state_sha256`` and the same repository
+    ``head_sha`` list, nothing new is stored and the existing row's expiry
+    moves to ``expires_at`` (never earlier). The manifest and payload stay
+    unchanged; ``updated_at`` advances through its ``onupdate`` default. The scope stays inside one
+    execution because ``latest`` looks recovery snapshots up by execution.
+    Returns None, with the locks still held, when a new row must be stored.
+    """
+    state = workspace_state(metadata)
+    if state is None:
+        return None
+    _lock_for_put(
+        db,
+        account_id=account_id,
+        execution_id=execution_id,
+        require_execution_open=require_execution_open,
+    )
+    found = (
+        db.query(
+            models.FlowArtifact,
+            models.FlowArtifact.ciphertext.isnot(None).label("has_payload"),
+        )
+        # The payload is tens of MB; only whether it is still present matters.
+        .options(defer(models.FlowArtifact.ciphertext))
+        .filter(
+            models.FlowArtifact.account_id == account_id,
+            models.FlowArtifact.flow_id == flow_id,
+            models.FlowArtifact.thread_id == thread_id,
+            models.FlowArtifact.execution_id == execution_id,
+            models.FlowArtifact.kind == "workspace",
+        )
+        .order_by(
+            models.FlowArtifact.created_at.desc(),
+            models.FlowArtifact.updated_at.desc(),
+        )
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    newest, has_payload = found if found is not None else (None, False)
+    if (
+        newest is None
+        or newest.availability != "available"
+        or not has_payload
+        or workspace_state((newest.manifest or {}).get("metadata")) != state
+    ):
+        # Keep the locks: the caller's store() runs in this same transaction,
+        # so no concurrent capture can slip in between the check and insert.
+        return None
+    if newest.expires_at is None or newest.expires_at < expires_at:
+        newest.expires_at = expires_at
+    db.commit()
+    # Reload only what artifact_reference reads; the payload must stay unloaded.
+    db.refresh(newest, attribute_names=["id", "execution_id", "manifest_sha256"])
+    return newest
 
 
 def store(
@@ -23,33 +239,25 @@ def store(
     retention after a terminal failure passes False so recovery artifacts can
     still commit.
     """
-    from preloop.models.crud import crud_flow_execution
-
-    # Execution row first so a terminal close cannot commit during this PUT.
-    crud_flow_execution.lock_for_artifact_put(
+    _lock_for_put(
         db,
+        account_id=values["account_id"],
         execution_id=values["execution_id"],
-        require_open=require_execution_open,
+        require_execution_open=require_execution_open,
     )
     now = datetime.now()
     values.setdefault("created_at", now)
     values.setdefault("updated_at", now)
-    # Serialize quota checks without blocking child audit/usage foreign keys.
-    # Account identity does not change, so NO KEY UPDATE is sufficient.
-    db.query(models.Account).filter(
-        models.Account.id == values["account_id"]
-    ).with_for_update(key_share=True).one()
     size = (
-        db.query(
-            func.coalesce(
-                func.sum(func.octet_length(models.FlowArtifact.ciphertext)), 0
-            )
-        )
+        db.query(_retained_bytes_expr())
         .filter(models.FlowArtifact.account_id == values["account_id"])
         .scalar()
     )
-    if size + len(values["ciphertext"]) > quota_bytes:
-        raise ValueError("artifact_quota_exceeded")
+    incoming = len(values["ciphertext"])
+    if size + incoming > quota_bytes:
+        raise ArtifactQuotaExceeded(
+            retained_bytes=size, quota_bytes=quota_bytes, incoming_bytes=incoming
+        )
     artifact = models.FlowArtifact(**values)
     db.add(artifact)
     db.commit()

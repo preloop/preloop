@@ -1351,7 +1351,6 @@ class TestCreateProxiedToolWrapper:
         """Test creating wrapper with simple parameters."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="test_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Test tool",
             input_schema={
@@ -1369,7 +1368,6 @@ class TestCreateProxiedToolWrapper:
         """Test creating wrapper with optional parameters."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="test_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Test tool",
             input_schema={
@@ -1387,7 +1385,6 @@ class TestCreateProxiedToolWrapper:
         """Test creating wrapper with various parameter types."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="test_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Test tool",
             input_schema={
@@ -1409,7 +1406,6 @@ class TestCreateProxiedToolWrapper:
         """Array arguments declared as `["null", "array"]` pass internal validation."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="example_directory_lookup",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Example directory lookup",
             input_schema={
@@ -1450,7 +1446,6 @@ class TestCreateProxiedToolWrapper:
 
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="example_directory_lookup",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Example directory lookup",
             input_schema={
@@ -1481,7 +1476,6 @@ class TestCreateProxiedToolWrapper:
         """A parameter with no declared type is forwarded instead of rejected."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="example_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Example tool",
             input_schema={
@@ -1500,7 +1494,6 @@ class TestCreateProxiedToolWrapper:
         """Hyphenated and spaced property keys are omitted, not interpolated."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={
@@ -1533,7 +1526,6 @@ class TestCreateProxiedToolWrapper:
         )
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={
@@ -1554,7 +1546,6 @@ class TestCreateProxiedToolWrapper:
         """Python keywords are omitted from the generated signature."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={
@@ -1575,7 +1566,6 @@ class TestCreateProxiedToolWrapper:
         """Reserved generated-body names, including duplicate ctx, are omitted."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={
@@ -1627,7 +1617,6 @@ class TestCreateProxiedToolWrapper:
 
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={
@@ -1672,7 +1661,6 @@ class TestCreateProxiedToolWrapper:
 
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={
@@ -1710,7 +1698,6 @@ class TestCreateProxiedToolWrapper:
         """Create a registered wrapper whose schema has a ``type`` property."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={
@@ -1797,7 +1784,7 @@ class TestCreateProxiedToolWrapper:
             AsyncMock(return_value=(True, None)),
         )
         monkeypatch.setattr(
-            "preloop.services.dynamic_fastmcp.crud_mcp_server.get",
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
             MagicMock(
                 return_value=MagicMock(
                     name="upstream",
@@ -1843,7 +1830,6 @@ class TestCreateProxiedToolWrapper:
         """Reserved wrapper locals are valid tool names; they cannot shadow."""
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name=reserved_tool_name,
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Reserved-looking tool name",
             input_schema={"properties": {"ok": {"type": "string"}}},
@@ -1870,7 +1856,6 @@ class TestCreateProxiedToolWrapper:
         assert (
             dynamic_mcp._create_proxied_tool_wrapper(
                 tool_name=unsafe_name,
-                server_id="server-123",
                 account_id=user_context.account_id,
                 description="Hostile",
                 input_schema={"properties": {"ok": {"type": "string"}}},
@@ -1880,7 +1865,6 @@ class TestCreateProxiedToolWrapper:
 
         sibling = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="sibling_ok",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Sibling",
             input_schema={"properties": {"ok": {"type": "string"}}},
@@ -2376,7 +2360,6 @@ class TestApprovalDenialUsageOutcome:
 
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={"properties": {"ok": {"type": "string"}}},
@@ -2456,7 +2439,7 @@ class TestProxiedTransportFailureUsageOutcome:
             AsyncMock(return_value=(True, None)),
         )
         monkeypatch.setattr(
-            "preloop.services.dynamic_fastmcp.crud_mcp_server.get",
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
             MagicMock(
                 return_value=MagicMock(
                     name="upstream",
@@ -2480,7 +2463,6 @@ class TestProxiedTransportFailureUsageOutcome:
 
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name="safe_tool",
-            server_id="server-123",
             account_id=user_context.account_id,
             description="Safe tool",
             input_schema={"properties": {"ok": {"type": "string"}}},
@@ -2641,7 +2623,7 @@ class TestPlaywrightBrowserStepDerivation:
             ),
         )
         monkeypatch.setattr(
-            "preloop.services.dynamic_fastmcp.crud_mcp_server.get_visible",
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
             MagicMock(
                 return_value=MagicMock(
                     name="browser",
@@ -2693,7 +2675,6 @@ class TestPlaywrightBrowserStepDerivation:
 
         wrapper = dynamic_mcp._create_proxied_tool_wrapper(
             tool_name=tool_name,
-            server_id="server-browser",
             account_id=user_context.account_id,
             description="Playwright MCP tool",
             input_schema={

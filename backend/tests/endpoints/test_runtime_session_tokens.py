@@ -705,3 +705,53 @@ async def test_durable_managed_agent_credential_respects_agent_lifecycle(
     ):
         assert await get_user_from_token_if_valid(durable_token, db_session) is None
         assert await authenticate_bearer_token(durable_token, db_session) is None
+
+
+def test_mint_warns_when_restriction_resolves_to_zero_tools(
+    client, db_session, test_user
+):
+    """A token that will see no tools says so, and the timeline records it."""
+    from preloop.api.auth.router import RUNTIME_SESSION_NO_TOOLS_WARNING
+    from preloop.models.models.runtime_session_activity import (
+        RuntimeSessionActivity,
+    )
+
+    response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "zero-tools-1",
+            "allowed_mcp_servers": ["not-a-server"],
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["token"]
+    assert body["warnings"] == [RUNTIME_SESSION_NO_TOOLS_WARNING]
+    rows = (
+        db_session.query(RuntimeSessionActivity)
+        .filter(
+            RuntimeSessionActivity.runtime_session_id == body["runtime_session_id"],
+            RuntimeSessionActivity.activity_type == "session_warning",
+        )
+        .all()
+    )
+    assert len(rows) == 1
+    assert rows[0].metadata_ == {"code": "no_mcp_tools"}
+
+
+def test_mint_has_no_warning_when_tools_resolve(client, db_session, test_user):
+    server = _create_active_mcp_server(
+        db_session, test_user.account_id, name="warn-free"
+    )
+    _add_server_tool(db_session, server.id, tool_name="read_scope")
+    response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "with-tools-1",
+            "allowed_mcp_servers": ["warn-free"],
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["warnings"] == []

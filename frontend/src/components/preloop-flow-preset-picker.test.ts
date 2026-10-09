@@ -100,6 +100,25 @@ const ACCOUNT_PRESET: FlowPresetRecord = {
   trigger_event_types: ['pull_request_opened'],
 };
 
+/** Mirrors backend/presets/020-audio-transcription-agent.yaml (#1103). */
+const AUDIO_PRESET: FlowPresetRecord = {
+  id: 'preset-020',
+  name: 'Audio Transcription Agent',
+  description:
+    'Labelled transcripts and summaries from your audio MCP server; Preloop ' +
+    'does not verify the consent basis you supply. The agent fetches one ' +
+    "recording and has the operator's speech-to-text MCP server transcribe it.",
+  icon: 'mic',
+  trigger_event_types: null,
+  allowed_mcp_tools: [
+    { name: 'deposit_artifact' },
+    { name: 'ask_user' },
+    { server_name: 'audio-mcp', tool_name: 'get_audio' },
+    { server_name: 'audio-mcp', tool_name: 'transcribe_audio' },
+  ],
+  git_clone_config: null,
+};
+
 describe('presetGroups', () => {
   it('puts account presets first and keeps catalog order without a PR-reviewer hack', () => {
     const groups = presetGroups([...CATALOG, ACCOUNT_PRESET]);
@@ -387,5 +406,46 @@ describe('scheduled presets that read artifacts (#1106)', () => {
     expect(
       el.shadowRoot!.querySelector('[data-testid="preset-scope-note"]')
     ).to.equal(null);
+  });
+});
+
+describe('audio transcription agent card (#1103)', () => {
+  it('shows the card on demand, with its tools and the consent caveat', async () => {
+    const el = await fixture<PreloopFlowPresetPicker>(
+      html`<preloop-flow-preset-picker
+        .presets=${[...CATALOG, AUDIO_PRESET]}
+      ></preloop-flow-preset-picker>`
+    );
+    const row = el.shadowRoot!.querySelector(
+      '[data-preset-id="preset-020"]'
+    ) as HTMLElement;
+    expect(row, 'audio preset row').to.exist;
+    const text = (row.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.include('Audio Transcription Agent');
+    expect(text).to.include(
+      'Preloop does not verify the consent basis you supply.'
+    );
+    expect(text).to.not.include('The agent fetches one recording');
+    expect(text).to.include('4 tools');
+    expect(text).to.not.include('Tracker');
+    expect(row.querySelector('sl-icon')!.getAttribute('name')).to.equal('mic');
+  });
+
+  it('is found by searching for transcript or consent', async () => {
+    const el = await fixture<PreloopFlowPresetPicker>(
+      html`<preloop-flow-preset-picker
+        .presets=${[...CATALOG, AUDIO_PRESET]}
+      ></preloop-flow-preset-picker>`
+    );
+    const search = el.shadowRoot!.querySelector('sl-input') as SlInput;
+    for (const query of ['transcript', 'consent']) {
+      search.value = query;
+      search.dispatchEvent(new CustomEvent('sl-input', { bubbles: true }));
+      await el.updateComplete;
+      expect(
+        el.shadowRoot!.querySelector('[data-preset-id="preset-020"]'),
+        query
+      ).to.exist;
+    }
   });
 });

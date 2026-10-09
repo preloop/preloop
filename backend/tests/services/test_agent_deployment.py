@@ -290,7 +290,8 @@ def ssh_connection(output, exit_status=0):
     process = MagicMock()
     process.__aenter__ = AsyncMock(return_value=process)
     process.__aexit__ = AsyncMock(return_value=False)
-    process.stdout.read = AsyncMock(return_value=output)
+    chunks = list(output) if isinstance(output, list) else [output]
+    process.stdout.read = AsyncMock(side_effect=chunks + [""] * 4)
     process.wait_closed = AsyncMock()
     process.exit_status = exit_status
     connection = MagicMock()
@@ -625,3 +626,84 @@ def test_desktop_failure_does_not_fail_validated_deployment(
         assert "PRELOOP_DEPLOY_DESKTOP_FAILED" in result.stdout
     else:
         assert "PRELOOP_DEPLOY_DESKTOP_FAILED" not in result.stdout
+
+
+def _evidence_line(desktop="failed"):
+    return json.dumps(
+        {
+            "agent_id": str(uuid4()),
+            "runtime_version": "Hermes Agent v0.21.3",
+            "model_alias": "model",
+            "desktop": desktop,
+        }
+    )
+
+
+async def _install_with_output(output):
+    connection, process = ssh_connection(output)
+    with (
+        patch.object(service, "resolve_ssh_address", AsyncMock(return_value="8.8.8.8")),
+        patch.object(service.asyncssh, "connect", return_value=connection),
+    ):
+        result = await service.install_over_ssh(
+            ssh_input(),
+            runtime="hermes",
+            alias="model",
+            url="https://test.example",
+            token="private-token",
+            request_id=uuid4(),
+            desktop=True,
+        )
+    return result, process
+
+
+@pytest.mark.asyncio
+async def test_desktop_marker_arriving_before_evidence_keeps_validated_runtime():
+    """Prod 2026-10-08: the marker arrived in its own read and caused a 502."""
+    result, _ = await _install_with_output(
+        ["PRELOOP_DEPLOY_DESKTOP_FAILED\n", _evidence_line() + "\n"]
+    )
+    assert result.desktop == "failed"
+    assert result.runtime_version == "hermes v0.21.3"
+
+
+@pytest.mark.asyncio
+async def test_evidence_split_across_chunks_is_reassembled():
+    line = _evidence_line("installed") + "\n"
+    result, _ = await _install_with_output([line[:7], line[7:30], line[30:]])
+    assert result.desktop == "installed"
+
+
+@pytest.mark.asyncio
+async def test_output_over_cap_across_chunks_terminates_session():
+    with pytest.raises(service.DeploymentError, match="excessive"):
+        await _install_with_output(["x" * 40000, "y" * 40000, _evidence_line()])
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_output_stops_after_limit():
+    stream = MagicMock()
+    stream.read = AsyncMock(side_effect=["a" * 10, "b" * 10, "c" * 10, ""])
+    output = await service.read_bounded_output(stream, 15)
+    assert output == "a" * 10 + "b" * 10
+    assert stream.read.await_args_list[0].args == (16,)
+    assert stream.read.await_args_list[1].args == (6,)
+
+
+def test_parse_evidence_ignores_markers_and_rejects_missing_json():
+    line = _evidence_line()
+    assert (
+        service.parse_evidence(f"PRELOOP_DEPLOY_DESKTOP_FAILED\n{line}\n\n")["desktop"]
+        == "failed"
+    )
+    with pytest.raises(ValueError):
+        service.parse_evidence("PRELOOP_DEPLOY_DESKTOP_FAILED\n")
+    with pytest.raises(ValueError):
+        service.parse_evidence("[1, 2]\n")
+
+
+def test_desktop_log_is_kept_on_the_host():
+    script = service.installation_script(
+        "hermes", "model", "https://test.example", "token", uuid4(), desktop=True
+    )
+    assert '"$HOME/.local/state/preloop/desktop.log"' in script

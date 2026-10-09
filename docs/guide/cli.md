@@ -138,9 +138,11 @@ If you run the CLI inside WSL but installed agents on the Windows side, onboardi
 Hint: Running under WSL: agents installed on Windows are not on the WSL PATH - install the agent inside WSL or add its Windows install dir to PATH.
 ```
 
-Native Windows CLI binaries (`amd64` and `arm64`) also ship with every release.
-WSL remains the recommended environment, see
-[Windows (WSL2)](../operations/windows-wsl2.md) for setup and current limitations.
+The CLI also runs natively on Windows: `amd64` and `arm64` binaries ship with
+every release (install with PowerShell, see [Windows CLI install](../windows-cli.md)).
+Running it inside WSL is a supported option too. See
+[Windows](../operations/windows-wsl2.md) for setup and the current limits of the
+native binary.
 
 ### Support levels
 

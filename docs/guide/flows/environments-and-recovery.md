@@ -223,9 +223,38 @@ checkpoint survives process/pod loss; writes after that checkpoint can be lost.
 Controlled exits attempt a final checkpoint. Before legacy wrapper publication,
 a failed checkpoint blocks publication, except when the archive exceeds the
 storage cap: that case logs `PRELOOP_CHECKPOINT skipped checkpoint_oversized`,
-exits 0, and leaves the last completed checkpoint as the resume point. A
+exits 0, and leaves the last completed checkpoint as the resume point.
+A successful capture logs `PRELOOP_CHECKPOINT committed <artifact_id>`; a
+trailing `deduplicated` token means the workspace was unchanged, so the
+existing artifact was reused and no new storage quota was used. A
 trusted external publisher must make this checkpoint barrier part of its
 handoff as well.
+
+When an upload, restore or evidence transfer is refused over HTTP, the marker
+names the status, a short reason code and the operation, for example
+`PRELOOP_CHECKPOINT failed HTTPError status=409 detail=artifact_execution_closed op=capture`.
+The reason comes from the API's JSON error body. An error page from a proxy in
+front of the API (ingress, console nginx) reports `detail=not_json`, an empty
+body reports `detail=empty`, and any other body reports `detail=unrecognized`;
+the URL, token and body are never printed. When the API refuses a capture
+or evidence upload (PUT) after verifying its capability, it also writes an
+audit log row with action `flow_artifact_rejected` (status code, reason,
+execution id). Three refusals that do come from the API leave no row: a 401
+`invalid_artifact_capability`, any restore (GET) refusal, and a refusal whose
+audit write itself failed (that failure is logged by the API). So a PUT
+marker with `detail=not_json` and no matching row points at a proxy; read the
+marker's status and detail before drawing that conclusion from a missing row
+alone. A quota refusal (`detail=artifact_quota_exceeded`) also carries the
+byte totals, in the 422 body, the audit row and the marker
+(`... op=capture retained=<n> quota=<n> incoming=<n>`); compare them, or read
+`GET /api/v1/account/flow-artifacts/usage` at any time, as described in
+[Evidence storage](evidence-storage.md#when-a-capture-is-refused-for-quota).
+The proxy body limit (`gateway.proxy.bodySize`, which sets both the
+ingress `proxy-body-size` annotation and the console nginx
+`client_max_body_size`) must stay above both `WORKSPACE_SNAPSHOT_MAX_BYTES`
+and `FLOW_EVIDENCE_MAX_BYTES`. The client sends each archive as the request
+body without further encoding, so the body on the wire is never larger than
+the matching cap.
 
 Restore occurs before setup or agent startup on Docker and Kubernetes. It logs
 the age of the checkpoint it recovered (`PRELOOP_CHECKPOINT restored

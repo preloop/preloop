@@ -559,8 +559,50 @@ export class PreloopFlowForm extends LitElement {
   private projectPollingInterval?: number;
   private lastSyncedTriggerKey?: string;
 
+  /**
+   * The trigger as it was saved, keyed by flow id, so submit can tell a
+   * trigger the user edited from one they never touched.
+   */
+  private savedTrigger?: { flowId: string; fingerprint: string };
+
+  private triggerFingerprint(): string {
+    return JSON.stringify([
+      this.flow?.trigger_event_source ?? null,
+      this.flow?.trigger_event_types ?? null,
+    ]);
+  }
+
+  /**
+   * True when this is an existing flow whose tracker and events are exactly
+   * what was saved. The API accepts such a flow (an empty events list is
+   * valid in FlowUpdate), so changing an unrelated field must not be blocked
+   * by a trigger rule the user never touched.
+   */
+  private triggerUnchangedSinceLoad(): boolean {
+    const flowId = this.flow?.id;
+    const saved = this.savedTrigger;
+    return Boolean(
+      flowId &&
+      saved &&
+      saved.flowId === flowId &&
+      saved.fingerprint === this.triggerFingerprint()
+    );
+  }
+
+  private savedWithNoEvents(): boolean {
+    return (
+      this.triggerType === 'tracker' &&
+      !this.flow?.trigger_event_types?.length &&
+      this.triggerUnchangedSinceLoad()
+    );
+  }
+
   willUpdate(changedProperties: Map<string | number | symbol, unknown>) {
     if (changedProperties.has('flow')) {
+      const flowId = this.flow?.id;
+      if (flowId && this.savedTrigger?.flowId !== flowId) {
+        this.savedTrigger = { flowId, fingerprint: this.triggerFingerprint() };
+      }
       void this.syncTriggerStateFromFlow();
     }
   }
@@ -1298,7 +1340,11 @@ export class PreloopFlowForm extends LitElement {
 
     // A tracker trigger with no tracker or no events would be saved as a
     // flow that never fires, so it is refused here instead of being sent
-    // with webhook values filled in.
+    // with webhook values filled in. The events rule is the console's, not
+    // the API's (FlowUpdate accepts an empty list), so it only applies to a
+    // new flow or to a trigger the user changed in this form; the events
+    // field carries no `required` attribute because native constraint
+    // validation would block every save of an untouched, empty trigger.
     if (this.triggerType === 'tracker') {
       if (!this.flow.trigger_event_source) {
         await this.failField(
@@ -1307,7 +1353,10 @@ export class PreloopFlowForm extends LitElement {
         );
         return;
       }
-      if (!this.flow.trigger_event_types?.length) {
+      if (
+        !this.flow.trigger_event_types?.length &&
+        !this.triggerUnchangedSinceLoad()
+      ) {
         await this.failField(
           '[data-field="events"]',
           'Choose at least one event that triggers this flow.'
@@ -3827,7 +3876,11 @@ export class PreloopFlowForm extends LitElement {
                       <sl-select
                         label="Events"
                         data-field="events"
-                        required
+                        help-text=${
+                          this.savedWithNoEvents()
+                            ? 'This flow was saved with no events, so tracker events do not start it. Choose events to have it run on them.'
+                            : ''
+                        }
                         placeholder="Select the events that trigger this flow"
                         multiple
                         .value=${this.flow.trigger_event_types || []}

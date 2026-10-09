@@ -1,5 +1,7 @@
 """Execution-scoped direct artifact transport; no storage-wide credentials."""
 
+import logging
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
@@ -10,7 +12,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
-from preloop.models.crud import crud_flow, crud_flow_execution, flow_artifact
+from preloop.models.crud import (
+    crud_audit_log,
+    crud_flow,
+    crud_flow_execution,
+    flow_artifact,
+)
 from preloop.models.db.session import get_db_session
 from preloop.models.schemas.flow_artifact import ArtifactReference
 from preloop.services.flow_artifacts import (
@@ -21,6 +28,10 @@ from preloop.services.flow_artifacts import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+ARTIFACT_REJECTED_ACTION = "flow_artifact_rejected"
+_REJECTION_REASON = re.compile(r"[a-z0-9_]{1,64}")
 
 # Must cover the longest allowed execution (24h) plus a short buffer so the
 # final prepublication PUT is not rejected after a long coding run.
@@ -159,6 +170,98 @@ def upload_artifact(
     db: Session = Depends(get_db_session),
 ) -> ArtifactReference:
     """Read a bounded gzip archive and commit only after complete validation."""
+    try:
+        return _upload_artifact(execution_id, request, claims, db)
+    except HTTPException as exc:
+        record_artifact_rejection(db, claims, execution_id, exc.status_code, exc.detail)
+        raise
+    except Exception:
+        record_artifact_rejection(db, claims, execution_id, 500, "internal_error")
+        raise
+
+
+def rejection_reason(detail: Any) -> str:
+    """A short code from an HTTPException detail; never free text."""
+    if isinstance(detail, dict):
+        detail = detail.get("error")
+    if isinstance(detail, str) and _REJECTION_REASON.fullmatch(detail):
+        return detail
+    return "unrecognized"
+
+
+QUOTA_FIELDS = ("retained_bytes", "quota_bytes", "incoming_bytes")
+
+
+def quota_numbers(detail: Any) -> dict[str, int]:
+    """The quota byte totals from a 422 detail, or {} when absent (#1339)."""
+    if not isinstance(detail, dict):
+        return {}
+    numbers = {
+        name: detail[name]
+        for name in QUOTA_FIELDS
+        if isinstance(detail.get(name), int) and not isinstance(detail[name], bool)
+    }
+    return numbers if len(numbers) == len(QUOTA_FIELDS) else {}
+
+
+def record_artifact_rejection(
+    db: Session,
+    claims: dict[str, Any],
+    execution_id: UUID,
+    status_code: int,
+    detail: Any,
+) -> None:
+    """Write one audit row for a refused artifact PUT (#1331).
+
+    A proxy or ingress can drop request logs; this row is the API's own
+    record that it answered, with which status and reason. The upload
+    transaction is rolled back first so the row commits alone. Claims are
+    already signature-checked here; a request without a valid capability
+    never reaches this point, so the 401 path is not recorded (no account
+    can be trusted for it). Recording must never replace the original error.
+    """
+    account_id = claims.get("account_id")
+    if account_id is None:
+        return
+    details: dict[str, Any] = {
+        "status_code": int(status_code),
+        "reason": rejection_reason(detail),
+        "kind": str(claims.get("kind") or ""),
+        "flow_id": str(claims.get("flow_id") or ""),
+        "execution_id": str(execution_id),
+    }
+    details.update(quota_numbers(detail))
+    try:
+        flow_artifact.rollback(db)
+        crud_audit_log.log_action(
+            db,
+            account_id=account_id,
+            action=ARTIFACT_REJECTED_ACTION,
+            resource_type="flow_execution",
+            resource_id=str(execution_id),
+            status="failure",
+            details=details,
+        )
+    except Exception:
+        logger.warning(
+            "flow_artifact_rejected audit write failed execution_id=%s status=%s",
+            execution_id,
+            status_code,
+            exc_info=True,
+        )
+        try:
+            flow_artifact.rollback(db)
+        except Exception:
+            pass
+
+
+def _upload_artifact(
+    execution_id: UUID,
+    request: Request,
+    claims: dict[str, Any],
+    db: Session,
+) -> ArtifactReference:
+    """Authorize, read and persist one archive; raises HTTPException on refusal."""
     authorize(db, claims, execution_id, "put")
 
     async def read_archive() -> bytes:
@@ -182,6 +285,12 @@ def upload_artifact(
             kind=claims["kind"],
             archive=archive,
         )
+    except flow_artifact.ArtifactQuotaExceeded as exc:
+        flow_artifact.rollback(db)
+        # Byte totals only: no artifact ids, names or contents (#1339).
+        raise HTTPException(
+            422, {"error": flow_artifact.QUOTA_EXCEEDED, **exc.numbers()}
+        ) from exc
     except ValueError as exc:
         flow_artifact.rollback(db)
         code = str(exc)

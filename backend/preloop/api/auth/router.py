@@ -422,6 +422,14 @@ def _normalize_runtime_session_tool_names(requested_tools: List[Any]) -> List[st
     return normalized_names
 
 
+RUNTIME_SESSION_NO_TOOLS_WARNING = (
+    "This runtime session token allows no MCP tools: allowed_mcp_servers and "
+    "allowed_mcp_tools resolved to zero tools (empty, missing, inactive or "
+    "not yet scanned). The agent will see an empty tool list. Pass the MCP "
+    "server names in allowed_mcp_servers when minting."
+)
+
+
 def _resolve_runtime_session_tool_restrictions(
     db: Session,
     *,
@@ -1722,6 +1730,32 @@ async def create_runtime_session_token(
         )
     )
 
+    warnings: List[str] = []
+    if not allowed_mcp_tools:
+        warnings.append(RUNTIME_SESSION_NO_TOOLS_WARNING)
+        logger.warning(
+            "Runtime session token minted with zero MCP tools "
+            "(managed_agent_id=%s, runtime_session_id=%s, "
+            "requested_servers=%d, requested_tools=%d)",
+            managed_agent.id,
+            runtime_session.id,
+            len(session_data.allowed_mcp_servers),
+            len(session_data.allowed_mcp_tools),
+        )
+        try:
+            from preloop.models.crud import crud_runtime_session_activity
+
+            crud_runtime_session_activity.log_session_warning(
+                db,
+                account_id=current_user.account_id,
+                runtime_session_id=runtime_session.id,
+                code="no_mcp_tools",
+                summary=RUNTIME_SESSION_NO_TOOLS_WARNING,
+            )
+        except Exception:
+            db.rollback()
+            logger.debug("Failed to record zero-tools session warning", exc_info=True)
+
     return RuntimeSessionTokenResponse(
         runtime_session_id=runtime_session.id,
         token=token_value,
@@ -1729,6 +1763,7 @@ async def create_runtime_session_token(
         session_source_type=runtime_session.session_source_type,
         session_source_id=runtime_session.session_source_id,
         session_reference=runtime_session.session_reference,
+        warnings=warnings,
     )
 
 

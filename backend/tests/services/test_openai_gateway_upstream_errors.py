@@ -473,8 +473,8 @@ class TestNotifyAdminsTraceScrubbing:
 
         assert captured_calls, "notify_admins was never called for a 500 error"
         body = captured_calls[0]["message"]
-        # The trace starts after "Trace:\n"; extract it.
-        trace_marker = "Trace:\n"
+        # The upstream body section starts after its label line.
+        trace_marker = "not a Preloop stack trace):\n"
         trace_start = body.index(trace_marker) + len(trace_marker)
         trace_text = body[trace_start:]
         assert len(trace_text) <= 400, (

@@ -1660,7 +1660,10 @@ class Settings(BaseSettings):
         database_url = os.getenv("DATABASE_URL")
         if not database_url:
             database_url = "postgresql+psycopg://postgres:postgres@localhost/preloop"
-            logger.warning(f"DATABASE_URL not set, using default: {database_url}")
+            logger.warning(
+                "DATABASE_URL not set, using default: "
+                "postgresql+psycopg://postgres:***@localhost/preloop"
+            )
         warn_default_database_credentials(database_url)
 
         secret_key = os.getenv("SECRET_KEY")

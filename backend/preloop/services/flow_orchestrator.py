@@ -1995,6 +1995,9 @@ class FlowExecutionOrchestrator:
                 runtime_session_id=(
                     runtime_session.id if runtime_session is not None else None
                 ),
+                # The model this execution actually runs, after overrides,
+                # routing and the unavailable-routing fallback.
+                ai_model_id=getattr(getattr(self, "ai_model", None), "id", None),
             )
         except Exception as exc:
             logger.error(

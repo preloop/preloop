@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
@@ -229,7 +230,14 @@ def capture(root: Path, *, max_bytes: int) -> bytes:
                 after.st_mtime_ns,
             ):
                 raise ValueError("checkpoint_workspace_busy")
-            digest.update(relative.encode() + b"\0" + reader.digest.digest())
+            # Restore applies the mode, so a chmod-only change is a new state.
+            digest.update(
+                relative.encode()
+                + b"\0"
+                + oct(info.mode).encode()
+                + b"\0"
+                + reader.digest.digest()
+            )
         metadata = json.dumps(
             {
                 "version": 1,
@@ -526,6 +534,85 @@ def request(
         return body
 
 
+HTTP_ERROR_BODY_LIMIT = 4096
+_REASON_PATTERN = re.compile(r"[a-z0-9_]{1,64}")
+
+
+QUOTA_MARKER_FIELDS = (
+    ("retained", "retained_bytes"),
+    ("quota", "quota_bytes"),
+    ("incoming", "incoming_bytes"),
+)
+
+
+def http_error_details(exc: urllib.error.HTTPError) -> tuple[str, str]:
+    """Return ``(reason, extra)`` from an HTTP error body, never the body.
+
+    The API answers with ``{"detail": "<code>"}`` or, for the capability
+    check, ``{"detail": {"error": "<code>", ...}}``. Anything else (an HTML
+    page from a proxy in front of the API, an empty body, free text) is
+    reported as a fixed category so the marker still says whether the API
+    itself answered. At most ``HTTP_ERROR_BODY_LIMIT`` bytes are read.
+
+    ``extra`` is `` retained=<n> quota=<n> incoming=<n>`` when a quota
+    refusal carries all three byte totals (#1339), else ''. Only integers
+    are echoed, so nothing else from the body reaches the log.
+    """
+    try:
+        raw = exc.read(HTTP_ERROR_BODY_LIMIT + 1) if exc.fp is not None else b""
+    except Exception:
+        return "unreadable", ""
+    if not raw:
+        return "empty", ""
+    if len(raw) > HTTP_ERROR_BODY_LIMIT:
+        return "not_json", ""
+    try:
+        document = json.loads(raw)
+    except (ValueError, UnicodeDecodeError):
+        return "not_json", ""
+    candidates = []
+    extra = ""
+    if isinstance(document, dict):
+        detail = document.get("detail")
+        if isinstance(detail, dict):
+            candidates.append(detail.get("error"))
+            values = [detail.get(field) for _, field in QUOTA_MARKER_FIELDS]
+            if all(
+                isinstance(value, int) and not isinstance(value, bool)
+                for value in values
+            ):
+                extra = "".join(
+                    " " + label + "=" + str(value)
+                    for (label, _), value in zip(
+                        QUOTA_MARKER_FIELDS, values, strict=False
+                    )
+                )
+        candidates.extend([detail, document.get("error")])
+    for candidate in candidates:
+        if isinstance(candidate, str) and _REASON_PATTERN.fullmatch(candidate):
+            return candidate, extra
+    return "unrecognized", ""
+
+
+def http_error_suffix(exc: Exception, operation: str) -> str:
+    """`` status=<code> detail=<reason> op=<operation>`` for HTTP errors, else ''.
+
+    A quota refusal appends `` retained=<n> quota=<n> incoming=<n>``.
+    """
+    if not isinstance(exc, urllib.error.HTTPError):
+        return ""
+    reason, extra = http_error_details(exc)
+    return (
+        " status="
+        + str(int(exc.code))
+        + " detail="
+        + reason
+        + " op="
+        + operation
+        + extra
+    )
+
+
 CHECKPOINT_METADATA_NAME = ".preloop-checkpoint.json"
 
 
@@ -659,8 +746,13 @@ def main() -> None:
                 Path("/tmp/preloop-checkpoint-reference.json").write_text(
                     json.dumps(reference)
                 )
+                # The server keeps one copy of an unchanged workspace (#1339).
                 print(
-                    "PRELOOP_CHECKPOINT committed " + reference["artifact_id"],
+                    "PRELOOP_CHECKPOINT committed "
+                    + reference["artifact_id"]
+                    + (
+                        " deduplicated" if reference.get("deduplicated") is True else ""
+                    ),
                     flush=True,
                 )
         except Exception as exc:
@@ -668,7 +760,12 @@ def main() -> None:
                 if str(exc) == "evidence_absent":
                     print("PRELOOP_EVIDENCE absent", flush=True)
                     raise SystemExit(2) from None
-                print("PRELOOP_EVIDENCE failed " + type(exc).__name__, flush=True)
+                print(
+                    "PRELOOP_EVIDENCE failed "
+                    + type(exc).__name__
+                    + http_error_suffix(exc, "evidence"),
+                    flush=True,
+                )
                 raise SystemExit(1) from None
             # The cap is a storage limit, not a failed review. The legacy
             # snapshot path prints a skip and returns 0; a direct upload that
@@ -680,8 +777,18 @@ def main() -> None:
                     flush=True,
                 )
                 return
-            reason = str(exc)
-            detail = " " + reason if re.fullmatch(r"[a-z0-9_]+", reason) else ""
+            operation = (
+                "restore"
+                if len(sys.argv) > 1 and sys.argv[1] == "restore"
+                else "capture"
+            )
+            if isinstance(exc, urllib.error.HTTPError):
+                # "HTTP Error 413: ..." never matched the reason pattern, so
+                # the status and the server's reason were both dropped (#1331).
+                detail = http_error_suffix(exc, operation)
+            else:
+                reason = str(exc)
+                detail = " " + reason if re.fullmatch(r"[a-z0-9_]+", reason) else ""
             print(
                 "PRELOOP_CHECKPOINT failed " + type(exc).__name__ + detail,
                 flush=True,
