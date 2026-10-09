@@ -3001,3 +3001,85 @@ class TestLegacyContinuationProvenance:
         assert "provider limit" in result.stderr
         assert "PRELOOP_PR_OPENED" not in result.stdout
         assert self._stored_body(tmp_path, "github") == seeded
+
+
+class TestDockerScriptChunking:
+    """Live rehearsal 2026-10-09: a Jira-triggered implementation run on the
+    Docker runtime failed to start with "args[1] is 142571 bytes" because the
+    default verification gate pushed the `bash -c` script over
+    MAX_ARG_STRLEN. Kubernetes already chunked the script; Docker did not."""
+
+    def test_small_script_stays_inline(self):
+        args = ["-c", "echo hi"]
+        assert ContainerAgentExecutor._chunk_docker_script_args(args) is None
+
+    def test_non_shell_args_untouched(self):
+        assert ContainerAgentExecutor._chunk_docker_script_args(["run"]) is None
+        assert ContainerAgentExecutor._chunk_docker_script_args(None) is None
+
+    def test_large_script_moves_to_env_and_round_trips(self, tmp_path, monkeypatch):
+        import os
+        import subprocess
+
+        from preloop.agents import container as container_module
+        from preloop.utils.execve_limits import MAX_LAUNCH_STRING_BYTES
+
+        target = tmp_path / "agent-script.sh"
+        monkeypatch.setattr(container_module, "DOCKER_SCRIPT_PATH", str(target))
+        marker = tmp_path / "ran"
+        body = "# " + ("x" * 200_000) + "\n"
+        script = f'{body}echo "$1" > {marker}\necho ok > {marker}\nexit 7\n'
+
+        result = ContainerAgentExecutor._chunk_docker_script_args(["-c", script])
+
+        assert result is not None
+        args, env = result
+        assert args[0] == "-c"
+        assert len(args[1].encode()) < 64 * 1024
+        assert all(len(v.encode()) < MAX_LAUNCH_STRING_BYTES for v in env.values())
+        proc = subprocess.run(
+            ["bash", "-c", args[1]],
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 7, proc.stderr
+        assert marker.read_text() == "ok\n"
+        assert target.read_text() == script
+
+    def test_missing_chunk_fails_loudly(self, tmp_path, monkeypatch):
+        import os
+        import subprocess
+
+        from preloop.agents import container as container_module
+
+        target = tmp_path / "agent-script.sh"
+        monkeypatch.setattr(container_module, "DOCKER_SCRIPT_PATH", str(target))
+        script = "#" + ("y" * 200_000) + "\necho should-not-run\n"
+        args, env = ContainerAgentExecutor._chunk_docker_script_args(["-c", script])
+        env.pop("PRELOOP_DOCKER_SCRIPT_1")
+        proc = subprocess.run(
+            ["bash", "-c", args[1]],
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode != 0
+        assert "should-not-run" not in proc.stdout
+        assert "PRELOOP_LAUNCH_PAYLOAD_MISSING" in proc.stderr
+
+
+async def test_docker_guard_chunks_large_script_in_place(container_executor):
+    """The shared Docker guard rewrites every harness's config, including
+    codex (Cmd ["-c", script]) and gemini/opencode (["/bin/bash", "-c", s])."""
+    script = "#" + ("z" * 150_000) + "\necho done\n"
+    for prefix in ([], ["/bin/bash"]):
+        config = {"Image": "x", "Env": ["A=1"], "Cmd": prefix + ["-c", script]}
+        container_executor._guard_docker_launch_payload(config, what="test")
+        assert config["Cmd"][: len(prefix)] == prefix
+        assert config["Cmd"][len(prefix)] == "-c"
+        assert len(config["Cmd"][-1]) < 64 * 1024
+        assert "A=1" in config["Env"]
+        assert any(e.startswith("PRELOOP_DOCKER_SCRIPT_CHUNKS=") for e in config["Env"])
