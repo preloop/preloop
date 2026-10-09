@@ -286,9 +286,7 @@ export class PreloopGatewayEvent extends LitElement {
     }
     const cost = payload.estimated_cost;
     if (typeof cost === 'number' && !Number.isNaN(cost) && cost > 0) {
-      parts.push(
-        cost == null || !Number.isFinite(cost) ? 'n/a' : formatUsd(cost)
-      );
+      parts.push(!Number.isFinite(cost) ? 'n/a' : formatUsd(cost));
     }
     const tokens = payload.total_tokens;
     if (typeof tokens === 'number' && !Number.isNaN(tokens)) {
