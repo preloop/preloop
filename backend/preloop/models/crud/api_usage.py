@@ -3543,24 +3543,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Returns:
             Total absorbed cost in USD (``0.0`` when none).
         """
-        absorbed = func.coalesce(
-            func.sum(cast(ApiUsage.meta_data["api_equivalent_cost"].astext, Float)),
-            0.0,
-        )
-        value = (
-            db.query(absorbed)
-            .filter(
-                ApiUsage.action_type == "model_gateway",
-                ApiUsage.account_id == account_id,
-                ApiUsage.cost_source == "subscription",
-                ApiUsage.meta_data["api_equivalent_cost"].astext.isnot(None),
-                exclude_replay_usage_condition(),
-                ApiUsage.timestamp >= start,
-                ApiUsage.timestamp < end,
-            )
-            .scalar()
-        )
-        return float(value or 0.0)
+        # Single source for the API-equivalent sum (#1401): the summary's
+        # jsonb_typeof guard keeps legacy non-numeric values out of the cast.
+        return self.get_subscription_usage_summary(
+            db, account_id=account_id, start=start, end=end
+        )["api_equivalent_cost"]
 
     def get_subscription_usage_summary(
         self,

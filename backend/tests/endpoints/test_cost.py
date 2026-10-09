@@ -378,3 +378,61 @@ def test_cost_summary_subscription_block_ignores_non_numeric_estimates(
     assert block["covered_requests"] == 1
     assert block["api_equivalent_cost"] == 0.0
     assert block["coverage"] == 0.5
+
+
+def test_cost_summary_subscription_block_follows_principal_and_retry_filters(
+    client, db_session, test_user
+):
+    """The block uses the same principal and retry selection as the spend."""
+    for principal, is_retry, equivalent in (
+        ("agent-a", False, 0.10),
+        ("agent-a", True, 0.20),
+        ("agent-b", False, 0.40),
+    ):
+        _log_usage(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            runtime_principal_id=principal,
+            is_retry=is_retry,
+            meta_data={"api_equivalent_cost": equivalent},
+        )
+    db_session.commit()
+
+    def block(**params):
+        return client.get(COST_SUMMARY, params=params).json()["subscription_usage"]
+
+    assert block()["request_count"] == 3
+    principal = block(runtime_principal_id="agent-a")
+    assert principal["request_count"] == 2
+    assert abs(principal["api_equivalent_cost"] - 0.30) < 1e-9
+    both = block(runtime_principal_id="agent-a", exclude_retries="true")
+    assert both["request_count"] == 1
+    assert abs(both["api_equivalent_cost"] - 0.10) < 1e-9
+    assert block(exclude_retries="true")["request_count"] == 2
+
+
+def test_subscription_absorbed_cost_delegates_to_guarded_sum(db_session, test_user):
+    """The legacy helper ignores non-numeric estimates like the summary does."""
+    from datetime import UTC, datetime, timedelta
+
+    for value in (0.25, "n/a"):
+        _log_usage(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            meta_data={"api_equivalent_cost": value},
+        )
+    db_session.flush()
+    now = datetime.now(UTC)
+    absorbed = crud_api_usage.get_subscription_absorbed_cost(
+        db_session,
+        account_id=test_user.account_id,
+        start=now - timedelta(hours=1),
+        end=now + timedelta(hours=1),
+    )
+    assert absorbed == 0.25

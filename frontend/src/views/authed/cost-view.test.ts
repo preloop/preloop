@@ -2180,6 +2180,8 @@ describe('CostView', () => {
         'Subscription billing coverage unavailable'
       );
       expect(alert?.textContent).not.to.contain('priced fine');
+      // Health has its own lookback; say so next to the range-scoped block.
+      expect(alert?.textContent).to.contain('last 24 hours');
     });
   });
 

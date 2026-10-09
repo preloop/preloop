@@ -1860,7 +1860,7 @@ export class CostView extends AuthedElement {
         aria-label="Accounting health"
       >
         <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-        Accounting health
+        Accounting health (last 24 hours, not the selected range)
         <ul>
           ${this.accountingFindings.map(
             (check) => html`<li data-check=${check.key}>${check.detail}</li>`

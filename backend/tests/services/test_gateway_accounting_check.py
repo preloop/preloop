@@ -271,3 +271,25 @@ def test_warn_outranks_pass_but_not_fail() -> None:
     ):
         result = gac.run_accounting_checks(db, account_id="acct", window_hours=24)
     assert result["status"] == "warn"
+
+
+def test_fail_outranks_warn() -> None:
+    db = MagicMock()
+    counters = _counters(total_rows=2, priceable_rows=2, priced_rows=0)
+    with (
+        patch.object(
+            gac.crud_api_usage, "get_accounting_health_counters", return_value=counters
+        ),
+        patch.object(gac, "_audit_table_exists", return_value=False),
+        patch.object(gac.crud_api_usage, "list_token_detail_rows", return_value=[]),
+        patch.object(
+            gac.crud_api_usage,
+            "get_subscription_usage_summary",
+            return_value=_subscription(requests=2, covered=2),
+        ),
+    ):
+        result = gac.run_accounting_checks(db, account_id="acct", window_hours=24)
+    statuses = {check["key"]: check["status"] for check in result["checks"]}
+    assert statuses["costs_priced"] == "fail"
+    assert statuses["subscription_billing_coverage"] == "warn"
+    assert result["status"] == "fail"
