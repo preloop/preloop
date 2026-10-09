@@ -87,6 +87,19 @@ LTS contract with synthetic fixtures; Jira remains the issue host. OAuth,
 webhooks and execution/publication routing are separate integrations. See the
 [deployment and validation guide](docs/guide/bitbucket-data-center.md).
 
+MCP calls with delegated-grant introspection resolve the prefix/first-wins server
+through CRUD once and copy its dispatch configuration before releasing the DB.
+The exact forwarded bearer/OAuth token is checked with RFC 7662 before access
+rules, after approval waits, and after client connection waits. A call keeps the
+same owner/configuration throughout; asynchronous approval replay starts a fresh
+snapshot and grant check. Inactive grants, missing scopes and unavailable
+introspection have separate denial reasons. Only explicit fail-open allows an
+unavailable result. Hash-keyed bounded caches limit revocation delay to the
+configured TTL (at most 300 seconds); expiry shortens it. Safe grant metadata
+flows into policy and tool-call audits, whose account-scoped consent index is
+built concurrently. Synthetic simulation does no introspection HTTP. See
+[Delegated grants](docs/guide/grant-introspection.md).
+
 ## High-Level Architecture
 
 ```mermaid

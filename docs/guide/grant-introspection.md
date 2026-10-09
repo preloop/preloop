@@ -100,3 +100,14 @@ With permission to view audit logs, search a consent reference using `GET /api/v
 In the rule or YAML simulator, enter a synthetic grant JSON object alongside sample arguments, for example `{"active": true, "scope": ["records:read"], "sub": "subject-example"}`. Do not enter a bearer token or client secret. The sample schema rejects credential fields and incorrect types.
 
 For a configured server, simulation requires a sample and applies the same pure inactive, expiry, required-scope and fail-open gate before matching rules. It uses the declared draft configuration when present, otherwise the named account server configuration. Missing samples produce an error; the simulator never calls the authorization server, forwards a tool, creates an approval or writes an audit row. A rule draft without configured introspection can still test `grant.*` conditions against the supplied sample.
+
+## Dispatch and approval identity
+
+The firewall uses the server selected by the same prefix and first-wins routing
+as tool dispatch. It copies that server configuration before introspection and
+keeps it for policy matching, synchronous approval and forwarding, so editing a
+token, prefix or collision owner during an approval cannot switch the approved
+call to a different upstream credential. It checks the copied token again after
+approval and client-connection waits, honoring expiry and the configured cache
+TTL. An asynchronous approval replay resolves a fresh snapshot and applies the
+grant gate even though its access-rule approval has already been granted.

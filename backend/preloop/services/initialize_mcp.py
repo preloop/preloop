@@ -2191,6 +2191,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         exec_status = "executed"
                         exec_error: Optional[str] = None
                         result_preview: Optional[str] = None
+                        replay_grant = None
                         try:
                             replay_server = mcp_reference()
                             if replay_server is None:
@@ -2200,9 +2201,11 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 _approved_comment_var,
                                 _approved_id_var,
                                 _bypass_approval_var,
+                                _grant_binding_var,
                                 post_approval_exec_outcome,
                             )
 
+                            replay_grant = None
                             _bypass_approval_var.set(True)
                             _approved_comment_var.set(approver_comment)
                             _approved_answer_var.set(approver_answer)
@@ -2230,6 +2233,8 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                     else:
                                         raise
                             finally:
+                                replay_grant = _grant_binding_var.get(None)
+                                _grant_binding_var.set(None)
                                 _bypass_approval_var.set(False)
                                 _approved_comment_var.set(None)
                                 _approved_answer_var.set(None)
@@ -2299,6 +2304,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                                 duration_ms=elapsed_ms,
                                 result_preview=result_preview,
                                 error=exec_error,
+                                extra_details={"grant": replay_grant}
+                                if replay_grant is not None
+                                else None,
                                 execution_id=str(approval_request.execution_id)
                                 if approval_request.execution_id
                                 else None,
