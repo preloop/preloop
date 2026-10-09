@@ -543,17 +543,22 @@ export class BudgetHealthCard extends LitElement {
         )
       : policyUsages;
     const selectedPeriod = this.periodForTimeRange();
-    const globalSpend = this.summary?.budget?.current_spend_usd || 0;
+    // A policy's spend and limits cover its own period, independently of
+    // the Cost page's analytics window. Use the same projection as Overview.
+    const globalSpend =
+      selectedGlobalUsage?.spend ??
+      this.summary?.budget?.current_spend_usd ??
+      0;
     const globalSoftLimit =
-      selectedGlobalUsage?.softLimit ||
-      this.summary?.budget?.soft_limit_usd ||
+      selectedGlobalUsage?.softLimit ??
+      this.summary?.budget?.soft_limit_usd ??
       0;
     const globalHardLimit =
-      selectedGlobalUsage?.hardLimit ||
-      this.summary?.budget?.monthly_limit_usd ||
+      selectedGlobalUsage?.hardLimit ??
+      this.summary?.budget?.monthly_limit_usd ??
       0;
     const anyLimitExceeded =
-      this.summary?.budget?.hard_limit_exceeded ||
+      (!selectedGlobalUsage && this.summary?.budget?.hard_limit_exceeded) ||
       this.isLimitExceeded(globalSpend, globalSoftLimit, globalHardLimit) ||
       additionalUsages.some((usage) =>
         this.isLimitExceeded(usage.spend, usage.softLimit, usage.hardLimit)
