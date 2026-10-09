@@ -1,4 +1,5 @@
-import { LitElement, html, css, type PropertyValues } from 'lit';
+import { getBrandConfig } from '../brand-config';
+import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/menu/menu.js';
@@ -458,6 +459,12 @@ export class ConsoleHeader extends LitElement {
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     this.pruneAndScheduleApprovalExpiry();
     this.fetchUserDetails();
+    void api
+      .getFeatures()
+      .then((features) => {
+        this.serverVersion = features.server_version || '';
+      })
+      .catch(() => {});
     this.connectToFlowUpdates();
     this.connectToApprovalUpdates();
     this.connectToNotificationUpdates();
@@ -1095,6 +1102,8 @@ export class ConsoleHeader extends LitElement {
     }
   }
 
+  @state() private serverVersion = '';
+
   async fetchUserDetails() {
     try {
       this._user = await api.getUserProfile();
@@ -1335,6 +1344,58 @@ export class ConsoleHeader extends LitElement {
     `;
   }
 
+  private renderHelpMenu() {
+    let brand;
+    try {
+      brand = getBrandConfig();
+    } catch {
+      return nothing;
+    }
+    const links = [
+      ['Documentation', brand.docs_url],
+      ["What's new", brand.changelog_url],
+      ['Report an issue', brand.report_issue_url],
+    ];
+    return html`<sl-dropdown
+      class="help-menu"
+      distance="8"
+      placement="bottom-end"
+    >
+      <sl-icon-button
+        slot="trigger"
+        name="question-circle"
+        label="Help"
+      ></sl-icon-button>
+      <sl-menu
+        aria-label="Help"
+        @sl-select=${(event: CustomEvent<{ item: { value: string } }>) => {
+          window.open(event.detail.item.value, '_blank', 'noopener');
+        }}
+      >
+        ${links
+          .filter(([, url]) => url)
+          .map(
+            ([label, url]) =>
+              html`<sl-menu-item value=${url!}>
+                <a
+                  href=${url!}
+                  target="_blank"
+                  rel="noopener"
+                  tabindex="-1"
+                  @click=${(event: Event) => event.preventDefault()}
+                  >${label}</a
+                >
+              </sl-menu-item>`
+          )}
+        <sl-divider></sl-divider>
+        <div class="dropdown-footer">
+          ${brand.name}
+          ${this.serverVersion ? `v${this.serverVersion}` : 'version unavailable'}
+        </div>
+      </sl-menu>
+    </sl-dropdown>`;
+  }
+
   render() {
     const hasContent =
       this._runningExecutions.length > 0 ||
@@ -1353,6 +1414,8 @@ export class ConsoleHeader extends LitElement {
           <!-- Open talk windows, left of the bell: they belong to the
                operator's current work, not to the notification history. -->
           <talking-indicator></talking-indicator>
+
+          ${this.renderHelpMenu()}
 
           <!-- Notification Center -->
           <sl-dropdown distance="8" placement="bottom-end">

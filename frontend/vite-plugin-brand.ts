@@ -10,6 +10,7 @@ import {
   get_canonical_url,
   get_meta_for_route,
   get_regulation_nav_links,
+  get_vs_nav_links,
   get_regulation_slugs,
   get_route_from_filename,
   get_static_routes_with_options,
@@ -902,6 +903,10 @@ export function brandPlugin(
       // Inject minimal runtime brand configuration (no content duplication)
       // Only includes styling/branding metadata, not SEO content
       const runtimeConfig = {
+        docs_url: brandConfig.docs_url,
+        support_url: brandConfig.support_url,
+        report_issue_url: brandConfig.report_issue_url,
+        changelog_url: brandConfig.changelog_url,
         name: brandConfig.name,
         domain: brandConfig.domain,
         edition: (brandConfig as any).edition || 'saas', // Default to 'saas' for backwards compatibility
@@ -915,6 +920,13 @@ export function brandPlugin(
           (brandConfig as any).edition === 'saas' ||
           !(brandConfig as any).edition
             ? get_regulation_nav_links(loadRegulationSlugs())
+            : [],
+        // Footer "Compare" block: only the /vs/ pages that shipped, same
+        // discovery rule and SaaS-only gate as the pre-rendered pages.
+        vs_pages:
+          (brandConfig as any).edition === 'saas' ||
+          !(brandConfig as any).edition
+            ? get_vs_nav_links(discover_vs_slugs(contentBasePath, brandKey))
             : [],
         static_markdown_pages: loadStaticMarkdownPages(),
         legal_disclaimer:

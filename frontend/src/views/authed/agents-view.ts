@@ -1,3 +1,5 @@
+import { editionOf } from '../../capabilities';
+import type { Edition } from '../../api';
 import { LitElement, css, html, unsafeCSS, nothing } from 'lit';
 import { Router } from '../../router';
 import { styleMap } from 'lit/directives/style-map.js';
@@ -412,7 +414,7 @@ export class AgentsView extends LitElement {
 
   // VM Provisioning state variables
   @state() private computeFeatureEnabled = false;
-  @state() private isEnterprise = false;
+  @state() private edition: Edition = 'oss';
   @state() private isAdmin = false;
   @state() private showDeployDialog = false;
 
@@ -1539,7 +1541,7 @@ export class AgentsView extends LitElement {
           if (generation !== this.agentsLoadGeneration) return;
           this.featureFlags = data.features || {};
           this.computeFeatureEnabled = !!this.featureFlags['compute'];
-          this.isEnterprise = (data.plugins?.length ?? 0) > 0;
+          this.edition = editionOf(data);
         })
         .catch(() => undefined);
       void this.fetchUsers()
@@ -4780,7 +4782,7 @@ export class AgentsView extends LitElement {
                   initial-path="govern"
                   .aiModels=${this.aiModels}
                   .computeFeatureEnabled=${this.computeFeatureEnabled}
-                  .isEnterprise=${this.isEnterprise}
+                  .edition=${this.edition}
                   .isAdmin=${this.isAdmin}
                   @deploy-agent-success=${this.handleDeployAgentSuccess}
                   @deploy-wizard-done=${() => {
@@ -4843,7 +4845,7 @@ export class AgentsView extends LitElement {
           <preloop-agent-deployer
             .aiModels=${this.aiModels}
             .computeFeatureEnabled=${this.computeFeatureEnabled}
-            .isEnterprise=${this.isEnterprise}
+            .edition=${this.edition}
             .isAdmin=${this.isAdmin}
             hide-back-button
             @deploy-agent-success=${(e: CustomEvent) => {

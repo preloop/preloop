@@ -12,7 +12,16 @@
  * This module ships in the main bundle, so it holds names and checks only.
  * The views themselves live in lazy chunks.
  */
-import { getFeatures, type FeaturesResponse } from './api';
+import { getFeatures, type FeaturesResponse, type Edition } from './api';
+
+/** Unknown or older servers safely default to the open-source edition. */
+export function editionOf(
+  payload: Partial<FeaturesResponse> | null | undefined
+): Edition {
+  return payload?.edition === 'cloud' || payload?.edition === 'enterprise'
+    ? payload.edition
+    : 'oss';
+}
 
 export const CAPABILITIES = [
   'multi_account',

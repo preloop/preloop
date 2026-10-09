@@ -264,6 +264,10 @@ export interface RegulationNavLink {
 
 // Runtime config - minimal metadata injected into window.BRAND_CONFIG
 export interface BrandRuntimeConfig {
+  docs_url?: string;
+  support_url?: string;
+  report_issue_url?: string;
+  changelog_url?: string;
   name: string;
   domain: string;
   edition: BrandEdition; // 'saas' = full marketing site, 'selfhosted' = minimal login-focused
@@ -276,6 +280,12 @@ export interface BrandRuntimeConfig {
    * optional and render nothing when it is missing.
    */
   regulation_pages?: RegulationNavLink[];
+  /**
+   * Competitor comparison pages (`/vs/<slug>`) discovered at build time
+   * (markdown file present plus a VS_PAGE_META entry). Rendered as the
+   * footer "Compare" block. Optional for the same reason as above.
+   */
+  vs_pages?: RegulationNavLink[];
   /**
    * Public markdown pages discovered at build time from
    * `content/<brand>/*.md` and `content/<brand>/resources/*.md`. EE adds

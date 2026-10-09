@@ -1862,8 +1862,8 @@ describe('AIModelDetailView attention dismissals', () => {
       html`<ai-model-detail-view modelId="model-1"></ai-model-detail-view>`
     )) as AIModelDetailView;
     await waitUntil(
-      () => !(element as any).loading,
-      'the model detail view did not finish loading'
+      () => !(element as any).loading && !(element as any).summaryLoading,
+      'the model and usage summary did not finish loading'
     );
     await element.updateComplete;
     return element;
