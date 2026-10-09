@@ -356,6 +356,7 @@ describe('ToolsView (approvals + conditions)', () => {
   it('does not save a rule if full tool schemas cannot be loaded', async () => {
     const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
     await waitUntil(() => !(el as any).toolsContextLoading);
+    const reject = sinon.spy();
     const previous = (el as any).tools;
     fetchStub
       .withArgs('/api/v1/tools')
@@ -364,6 +365,7 @@ describe('ToolsView (approvals + conditions)', () => {
     await (el as any)._handleSaveRule(
       new CustomEvent('save-rule', {
         detail: {
+          reject,
           tool: previous[0],
           existingRule: null,
           formData: {
@@ -382,6 +384,8 @@ describe('ToolsView (approvals + conditions)', () => {
         .filter((call) => (call.args[1]?.method || 'GET') !== 'GET')
     ).to.have.length(0);
     expect((el as any).error).to.include('Could not load tool schemas');
+    expect(reject.calledOnce).to.equal(true);
+    expect(reject.firstCall.args[0]).to.include('Could not load tool schemas');
   });
 
   it('renders the summary strip counts and the unavailable count', async () => {
@@ -842,6 +846,46 @@ describe('ToolsView (approvals + conditions)', () => {
 
     expect(toolConfigCreateCalls.length).to.equal(1);
     expect((element as any).error).to.equal(null);
+  });
+  it('settles successful saves with a toast and surfaces server failures to the dialog', async () => {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(el as any).toolsContextLoading);
+    const view = el as any;
+    view.toolsSchemasReady = true;
+    const tool = { ...view.tools[0], config_id: 'cfg-1' };
+    const resolve = sinon.spy();
+    const reject = sinon.spy();
+    const toast = sinon.spy();
+    el.addEventListener('show-toast', toast);
+    const detail = {
+      tool,
+      existingRule: null,
+      resolve,
+      reject,
+      formData: {
+        action: 'deny',
+        condition_expression: null,
+        condition_type: 'simple',
+        description: '',
+        is_enabled: true,
+      },
+    };
+    await view._handleSaveRule(new CustomEvent('save-rule', { detail }));
+    expect(resolve.calledOnce).to.equal(true);
+    expect(reject.called).to.equal(false);
+    expect(toast.firstCall.args[0].detail.message).to.equal('Rule saved.');
+    fetchStub
+      .withArgs('/api/v1/tool-configurations/cfg-1/access-rules')
+      .resolves(
+        new Response(JSON.stringify({ detail: 'Invalid CEL condition' }), {
+          status: 422,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+    await view._handleSaveRule(new CustomEvent('save-rule', { detail }));
+    expect(resolve.calledOnce).to.equal(true);
+    expect(reject.calledOnce).to.equal(true);
+    expect(reject.firstCall.args[0]).to.include('Invalid CEL condition');
   });
 });
 

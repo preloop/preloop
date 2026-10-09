@@ -676,6 +676,7 @@ def evaluate_model_io(
     account_id: Optional[Any] = None,
     user_id: Optional[Any] = None,
     detector_config: Optional[DetectorConfig] = None,
+    record: bool = True,
 ) -> ModelIODecision:
     """Evaluate model I/O rules for one target.
 
@@ -714,7 +715,8 @@ def evaluate_model_io(
     def finish(decision: ModelIODecision) -> ModelIODecision:
         decision.notices = notices
         decision.redactions = redactions
-        _emit_notices(notices, rules_by_id)
+        if record:
+            _emit_notices(notices, rules_by_id)
         return decision
 
     for rule in matching:
@@ -732,7 +734,8 @@ def evaluate_model_io(
                     detector_summary=summary.as_dict(),
                     text_sha256=digest,
                 )
-                _audit_decision(account_id, user_id, target, decision, rule)
+                if record:
+                    _audit_decision(account_id, user_id, target, decision, rule)
                 return finish(decision)
             continue
 
@@ -766,7 +769,8 @@ def evaluate_model_io(
                     detector_summary=summary.as_dict(),
                     text_sha256=digest,
                 )
-                _audit_decision(account_id, user_id, target, decision, rule)
+                if record:
+                    _audit_decision(account_id, user_id, target, decision, rule)
                 return finish(decision)
             if not matches:
                 continue
@@ -788,7 +792,8 @@ def evaluate_model_io(
             if action == REDACT_ACTION:
                 hit = _redaction_hit(rule, text, detector_config)
                 redactions.append(hit)
-                _audit_redaction(account_id, user_id, target, digest, hit, rule)
+                if record:
+                    _audit_redaction(account_id, user_id, target, digest, hit, rule)
                 break
             decision = ModelIODecision(
                 action=action,
@@ -801,7 +806,8 @@ def evaluate_model_io(
                 text_sha256=digest,
                 expression=condition.expression,
             )
-            _audit_decision(account_id, user_id, target, decision, rule)
+            if record:
+                _audit_decision(account_id, user_id, target, decision, rule)
             return finish(decision)
 
     if notices:
