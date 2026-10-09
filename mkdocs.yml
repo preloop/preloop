@@ -146,6 +146,7 @@ nav:
       - Copilot cloud agent: guide/copilot-cloud-agent.md
       - OpenClaw: guide/integrations/openclaw.md
       - OpenClaw policy examples: guide/examples/policies/openclaw/README.md
+      - trigger.dev: guide/integrations/trigger-dev.md
       - Agent Control runtime adapters: guide/integrations/agent-control-runtime-adapters.md
       - Browser agents: guide/browser-agents.md
       - Cursor, Claude Desktop and other MCP clients: guide/clients/other-mcp-clients.md
