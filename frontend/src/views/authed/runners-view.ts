@@ -659,110 +659,109 @@ export class RunnersView extends LitElement {
               : html`
                   <!-- Nine columns do not fit a phone: the table scrolls
                        sideways inside this box instead of the whole page. -->
+
                   <div class="table-scroll">
-                    <div class="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Name</th>
-                            <th>Labels</th>
-                            <th>Registered by</th>
-                            <th>Host</th>
-                            <th>Status</th>
-                            <th>Last heartbeat</th>
-                            <th>Running / slots</th>
-                            <th>Executions</th>
-                            <th>Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${this.runners.map(
-                            (row) => html`
-                              <tr>
-                                <td>${row.name}</td>
-                                <td>
-                                  <div class="labels">
-                                    ${(row.labels || []).map(
-                                      (label) =>
-                                        html`<sl-badge class="chip" pill
-                                          >${label}</sl-badge
-                                        >`
-                                    )}
-                                  </div>
-                                </td>
-                                <td class="muted">
-                                  ${row.registered_by_email || '-'}
-                                </td>
-                                <td>
-                                  ${row.hostname || '-'}
-                                  <div class="muted">
-                                    ${[row.os, row.arch].filter(Boolean).join('/')}
-                                  </div>
-                                </td>
-                                <td>
-                                  <sl-badge
-                                    class="chip"
-                                    pill
-                                    variant=${this.statusVariant(row.status)}
-                                  >
-                                    ${this.statusLabel(row.status)}
-                                  </sl-badge>
-                                  ${
-                                    /*
-                                     * An ephemeral runner is only worth pointing
-                                     * out while it is here: the row vanishes with
-                                     * the CI job, so a reader seeing this badge
-                                     * knows not to expect it back.
-                                     */
-                                    row.ephemeral && this.isPresent(row.status)
-                                      ? html`<sl-badge
-                                          class="chip"
-                                          pill
-                                          variant="neutral"
-                                          title="One-shot CI runner. It unregisters when its job ends."
-                                          >ephemeral</sl-badge
-                                        >`
-                                      : nothing
-                                  }
-                                </td>
-                                <td class="muted">
-                                  ${
-                                    row.last_heartbeat
-                                      ? html`<span
-                                          title=${formatLocalDateTime(
-                                            row.last_heartbeat
-                                          )}
-                                          >${formatRelativeTime(
-                                            row.last_heartbeat
-                                          )}</span
-                                        >`
-                                      : '-'
-                                  }
-                                </td>
-                                <td>${this.renderSlots(row)}</td>
-                                <td>
-                                  ${
-                                    this.runningIdsOf(row).length === 0
-                                      ? html`<span class="muted">Idle</span>`
-                                      : html`<div class="executions">
-                                          ${this.runningIdsOf(row).map(
-                                            (executionId) =>
-                                              html`<a
-                                                href="/console/flows/executions/${executionId}"
-                                                >${executionId.slice(0, 8)}…</a
-                                              >`
-                                          )}
-                                        </div>`
-                                  }
-                                </td>
-                                <td>${this.renderActions(row)}</td>
-                              </tr>
-                              ${this.renderActionNotice(row)}
-                            `
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Labels</th>
+                          <th>Registered by</th>
+                          <th>Host</th>
+                          <th>Status</th>
+                          <th>Last heartbeat</th>
+                          <th>Running / slots</th>
+                          <th>Executions</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${this.runners.map(
+                          (row) => html`
+                            <tr>
+                              <td>${row.name}</td>
+                              <td>
+                                <div class="labels">
+                                  ${(row.labels || []).map(
+                                    (label) =>
+                                      html`<sl-badge class="chip" pill
+                                        >${label}</sl-badge
+                                      >`
+                                  )}
+                                </div>
+                              </td>
+                              <td class="muted">
+                                ${row.registered_by_email || '-'}
+                              </td>
+                              <td>
+                                ${row.hostname || '-'}
+                                <div class="muted">
+                                  ${[row.os, row.arch].filter(Boolean).join('/')}
+                                </div>
+                              </td>
+                              <td>
+                                <sl-badge
+                                  class="chip"
+                                  pill
+                                  variant=${this.statusVariant(row.status)}
+                                >
+                                  ${this.statusLabel(row.status)}
+                                </sl-badge>
+                                ${
+                                  /*
+                                   * An ephemeral runner is only worth pointing
+                                   * out while it is here: the row vanishes with
+                                   * the CI job, so a reader seeing this badge
+                                   * knows not to expect it back.
+                                   */
+                                  row.ephemeral && this.isPresent(row.status)
+                                    ? html`<sl-badge
+                                        class="chip"
+                                        pill
+                                        variant="neutral"
+                                        title="One-shot CI runner. It unregisters when its job ends."
+                                        >ephemeral</sl-badge
+                                      >`
+                                    : nothing
+                                }
+                              </td>
+                              <td class="muted">
+                                ${
+                                  row.last_heartbeat
+                                    ? html`<span
+                                        title=${formatLocalDateTime(
+                                          row.last_heartbeat
+                                        )}
+                                        >${formatRelativeTime(
+                                          row.last_heartbeat
+                                        )}</span
+                                      >`
+                                    : '-'
+                                }
+                              </td>
+                              <td>${this.renderSlots(row)}</td>
+                              <td>
+                                ${
+                                  this.runningIdsOf(row).length === 0
+                                    ? html`<span class="muted">Idle</span>`
+                                    : html`<div class="executions">
+                                        ${this.runningIdsOf(row).map(
+                                          (executionId) =>
+                                            html`<a
+                                              href="/console/flows/executions/${executionId}"
+                                              >${executionId.slice(0, 8)}…</a
+                                            >`
+                                        )}
+                                      </div>`
+                                }
+                              </td>
+                              <td>${this.renderActions(row)}</td>
+                            </tr>
+                            ${this.renderActionNotice(row)}
+                          `
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 `
       }

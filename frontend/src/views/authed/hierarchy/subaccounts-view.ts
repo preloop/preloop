@@ -329,7 +329,7 @@ export class SubaccountsView extends LitElement {
               ${
                 this.subaccounts.length === 0
                   ? html`<p class="empty-state">No subaccounts yet.</p>`
-                  : html`<div class="table-scroll">
+                  : html`
                       <div class="table-scroll">
                         <table>
                           <thead>
@@ -344,7 +344,7 @@ export class SubaccountsView extends LitElement {
                           </tbody>
                         </table>
                       </div>
-                    </div>`
+                    `
               }
             `
       }

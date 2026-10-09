@@ -422,6 +422,13 @@ and session selection fields. Audit repeats `event_type`/`outcome` for multiple
 values and stores tool/date/cost fields under their API names. Approvals stores
 `status`, `tool`, and `q`, retaining its latest-100 browser filtering model.
 Date strings from shared links are validated before timestamp conversion.
+
+Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
+`mcp_rule`, `mcp_workflow` plus `mcp_q`, and native filters as `native_agent`,
+`native_rule`, `native_q`. The `tab` parameter selects the visible tab without
+discarding either filter set. Successful initial loads, including empty catalogs,
+retain mounted content during subsequent background refreshes.
+
 ### Policy draft simulation
 
 `POST /api/v1/policies/evaluate` accepts one sample tool call and a stored
@@ -434,11 +441,6 @@ record usage. The console's `policy_simulation` capability exposes draft testing
 in the rule dialog and YAML editor. Paths are evaluated as submitted, without
 normalization, so operators can test traversal and repeated-slash samples.
 
-Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
-`mcp_rule`, `mcp_workflow` plus `mcp_q`, and native filters as `native_agent`,
-`native_rule`, `native_q`. The `tab` parameter selects the visible tab without
-discarding either filter set. Successful initial loads, including empty catalogs,
-retain mounted content during subsequent background refreshes.
-
 Console monetary values use the shared USD formatter, with exact precision in tooltips; non-USD provider invoices retain their denomination through shared currency helpers. Server timestamps use the UTC-aware date utilities. Wide tables use the shared `table-scroll` stylesheet in both document CSS and Lit shadow roots so content scrolls within its container at phone widths. Full list-controller migration remains incremental.
+
 Model-price override edits and provider-price fetches require `edit_ai_models`; repricing and budget controls require `manage_budgets`. User role assignment requires `assign_roles`, independently of user management. Console capability copy is based on plan availability, separately from viewer permissions.

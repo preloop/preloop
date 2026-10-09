@@ -1,7 +1,6 @@
 import {
   formatCurrencyAmount,
   formatCurrencyAmountExact,
-  formatUsdExact,
 } from '../utils/money';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { parseUTCDate } from '../utils/date';

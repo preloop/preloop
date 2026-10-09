@@ -1,4 +1,3 @@
-import { formatUsd, formatUsdExact } from '../../utils/money';
 import { editionOf } from '../../capabilities';
 import type { Edition } from '../../api';
 import { css, html, nothing, unsafeCSS } from 'lit';

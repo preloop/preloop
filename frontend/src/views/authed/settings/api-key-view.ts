@@ -629,7 +629,7 @@ export class ApiKeyView extends LitElement {
                         <span
                           style="color: var(--sl-color-primary-600); font-weight: 500;"
                           title=${formatUsdExact(modelUsage.estimated_cost)}
-                          >${html`<span title=${formatUsdExact(modelUsage.estimated_cost)}>${formatUsd(modelUsage.estimated_cost)}</span>`}</span
+                          >${formatUsd(modelUsage.estimated_cost)}</span
                         >
                       </div>
                     `
@@ -833,7 +833,7 @@ export class ApiKeyView extends LitElement {
                     style="font-size: 1.1em; font-weight: 600; color: var(--sl-color-primary-600);"
                     title=${formatUsdExact(this.usageSummary?.estimated_cost)}
                   >
-                    ${html`<span title=${formatUsdExact(this.usageSummary?.estimated_cost)}>${formatUsd(this.usageSummary?.estimated_cost)}</span>`}
+                    ${formatUsd(this.usageSummary?.estimated_cost)}
                   </span>
                   <span
                     style="color: var(--sl-color-neutral-500); font-size: 0.9em; margin-left: 8px;"
