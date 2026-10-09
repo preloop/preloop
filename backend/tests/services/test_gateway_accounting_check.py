@@ -10,6 +10,20 @@ from sqlalchemy.exc import OperationalError
 from preloop.services import gateway_accounting_check as gac
 
 
+NEW_KEYS = {"token_details_normalized", "subscription_billing_coverage"}
+
+
+def _subscription(requests: int = 0, covered: int = 0) -> dict:
+    return {
+        "request_count": requests,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "coverage_rows": covered,
+        "api_equivalent_cost": 0.0,
+    }
+
+
 def _counters(**overrides: int) -> dict[str, int]:
     base = {
         "total_rows": 0,
@@ -118,10 +132,19 @@ class TestRunAccountingChecks:
             ),
             patch.object(gac, "_audit_table_exists", return_value=True),
             patch.object(gac.crud_audit_log, "count_by_account", return_value=3),
+            patch.object(gac.crud_api_usage, "list_token_detail_rows", return_value=[]),
+            patch.object(
+                gac.crud_api_usage,
+                "get_subscription_usage_summary",
+                return_value=_subscription(),
+            ),
         ):
             result = gac.run_accounting_checks(db, account_id="acct", window_hours=24)
         assert result["status"] == "pass"
-        assert all(check["status"] == "pass" for check in result["checks"])
+        assert all(
+            check["status"] == ("skip" if check["key"] in NEW_KEYS else "pass")
+            for check in result["checks"]
+        )
 
     def test_db_error_reports_fail_instead_of_raising(self) -> None:
         db = MagicMock()
@@ -170,4 +193,103 @@ def test_audit_events_check_uses_count_gt_zero() -> None:
         result = gac._audit_events_check(
             db, account_id="acct", start=datetime.now(timezone.utc)
         )
+    assert result["status"] == "fail"
+
+
+def _detail_row(usage, **columns):
+    row = MagicMock()
+    row.usage_details = usage
+    for name in ("cache_read_tokens", "cache_creation_tokens", "reasoning_tokens"):
+        setattr(row, name, columns.get(name))
+    return row
+
+
+class TestTokenDetailsCheck:
+    def _run(self, rows):
+        with patch.object(
+            gac.crud_api_usage, "list_token_detail_rows", return_value=rows
+        ):
+            return gac._token_details_check(
+                MagicMock(), account_id="acct", start=datetime.now(timezone.utc)
+            )
+
+    def test_skips_without_detail_rows(self) -> None:
+        assert self._run([])["status"] == "skip"
+
+    def test_passes_when_columns_match(self) -> None:
+        rows = [
+            _detail_row(
+                {"input_tokens_details": {"cached_tokens": 0}}, cache_read_tokens=0
+            )
+        ]
+        assert self._run(rows)["status"] == "pass"
+
+    def test_warns_on_null_column(self) -> None:
+        rows = [_detail_row({"output_tokens_details": {"reasoning_tokens": 4}})]
+        result = self._run(rows)
+        assert result["status"] == "warn"
+        assert "reasoning_tokens=1" in result["detail"]
+
+    def test_unknown_raw_value_is_not_a_mismatch(self) -> None:
+        rows = [_detail_row({"input_tokens_details": {"cached_tokens": -1}})]
+        assert self._run(rows)["status"] == "pass"
+
+
+class TestSubscriptionCoverageCheck:
+    def _run(self, summary):
+        with patch.object(
+            gac.crud_api_usage, "get_subscription_usage_summary", return_value=summary
+        ):
+            return gac._subscription_coverage_check(
+                MagicMock(), account_id="acct", start=datetime.now(timezone.utc)
+            )
+
+    def test_skips_without_subscription_rows(self) -> None:
+        assert self._run(_subscription())["status"] == "skip"
+
+    def test_warns_even_with_full_estimate_coverage(self) -> None:
+        result = self._run(_subscription(requests=4, covered=4))
+        assert result["status"] == "warn"
+        assert result["detail"].startswith(gac.SUBSCRIPTION_BILLING_UNAVAILABLE)
+        assert "4/4 (100%)" in result["detail"]
+
+
+def test_warn_outranks_pass_but_not_fail() -> None:
+    db = MagicMock()
+    counters = _counters(total_rows=2, priceable_rows=2, priced_rows=2)
+    with (
+        patch.object(
+            gac.crud_api_usage, "get_accounting_health_counters", return_value=counters
+        ),
+        patch.object(gac, "_audit_table_exists", return_value=False),
+        patch.object(gac.crud_api_usage, "list_token_detail_rows", return_value=[]),
+        patch.object(
+            gac.crud_api_usage,
+            "get_subscription_usage_summary",
+            return_value=_subscription(requests=2, covered=2),
+        ),
+    ):
+        result = gac.run_accounting_checks(db, account_id="acct", window_hours=24)
+    assert result["status"] == "warn"
+
+
+def test_fail_outranks_warn() -> None:
+    db = MagicMock()
+    counters = _counters(total_rows=2, priceable_rows=2, priced_rows=0)
+    with (
+        patch.object(
+            gac.crud_api_usage, "get_accounting_health_counters", return_value=counters
+        ),
+        patch.object(gac, "_audit_table_exists", return_value=False),
+        patch.object(gac.crud_api_usage, "list_token_detail_rows", return_value=[]),
+        patch.object(
+            gac.crud_api_usage,
+            "get_subscription_usage_summary",
+            return_value=_subscription(requests=2, covered=2),
+        ),
+    ):
+        result = gac.run_accounting_checks(db, account_id="acct", window_hours=24)
+    statuses = {check["key"]: check["status"] for check in result["checks"]}
+    assert statuses["costs_priced"] == "fail"
+    assert statuses["subscription_billing_coverage"] == "warn"
     assert result["status"] == "fail"

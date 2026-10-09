@@ -25321,6 +25321,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ImportedUsageSummary'
           - type: 'null'
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
       type: object
       required:
       - period_start
@@ -25336,7 +25340,7 @@ components:
           title: Key
         status:
           type: string
-          pattern: ^(pass|fail|skip)$
+          pattern: ^(pass|warn|fail|skip)$
           title: Status
         detail:
           type: string
@@ -25360,7 +25364,7 @@ components:
           title: Checks
         status:
           type: string
-          pattern: ^(pass|fail|skip)$
+          pattern: ^(pass|warn|fail|skip)$
           title: Status
       type: object
       required:
@@ -38747,6 +38751,75 @@ components:
       - subject_id
       - config
       title: SubjectGovernanceResponse
+    SubscriptionUsageSummary:
+      properties:
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        prompt_tokens:
+          type: integer
+          title: Prompt Tokens
+          default: 0
+        completion_tokens:
+          type: integer
+          title: Completion Tokens
+          default: 0
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        api_equivalent_cost:
+          type: number
+          title: Api Equivalent Cost
+          description: 'Estimate: sum of the API-equivalent cost over covered rows.
+            Not a billed amount.'
+          default: 0.0
+        api_equivalent_cost_is_estimate:
+          type: boolean
+          const: true
+          title: Api Equivalent Cost Is Estimate
+          default: true
+        covered_requests:
+          type: integer
+          title: Covered Requests
+          description: Subscription requests that carry an API-equivalent estimate.
+          default: 0
+        coverage:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Coverage
+          description: Fraction of subscription requests with an API-equivalent estimate;
+            null when there are none.
+        billed:
+          type: 'null'
+          title: Billed
+          description: 'Billed subscription dollars: not tracked, always null.'
+        billed_available:
+          type: boolean
+          const: false
+          title: Billed Available
+          default: false
+      type: object
+      title: SubscriptionUsageSummary
+      description: 'Subscription-covered gateway workload, kept apart from marginal
+        spend.
+
+
+        Subscription rows record $0 marginal API spend. ``api_equivalent_cost``
+
+        is an ESTIMATE of what the same calls would cost at pay-per-use API
+
+        prices; it is not a bill. Billed subscription dollars and provider
+
+        credits are not tracked, so ``billed`` is always null and
+
+        ``billed_available`` false until an authoritative reconciliation source
+
+        exists. They are never derived from token totals (#1401).'
     SupportedReleaseCreate:
       properties:
         product_key:

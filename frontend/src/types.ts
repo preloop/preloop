@@ -1717,9 +1717,44 @@ export interface UnpricedModelUsage {
   tokens: number;
 }
 
+/**
+ * Subscription-covered gateway workload (#1401). Marginal API spend for these
+ * requests is $0; `api_equivalent_cost` is an ESTIMATE of pay-per-use cost,
+ * never a bill. Billed subscription dollars are not tracked: `billed` is
+ * always null and `billed_available` false.
+ */
+export interface SubscriptionUsageSummary {
+  request_count: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  api_equivalent_cost: number;
+  api_equivalent_cost_is_estimate: true;
+  covered_requests: number;
+  coverage: number | null;
+  billed: null;
+  billed_available: false;
+}
+
+export type CostHealthStatus = 'pass' | 'warn' | 'fail' | 'skip';
+
+export interface CostHealthCheck {
+  key: string;
+  status: CostHealthStatus;
+  detail: string;
+}
+
+export interface CostHealthResponse {
+  window_hours: number;
+  checks: CostHealthCheck[];
+  status: CostHealthStatus;
+}
+
 export interface CostAnalyticsSummaryResponse extends AccountGatewayUsageSummaryResponse {
   // Absent (null) when the window contains no imported usage.
   imported_usage?: ImportedUsageSummary | null;
+  // Absent (null) when the window contains no subscription-covered requests.
+  subscription_usage?: SubscriptionUsageSummary | null;
   // Absent on older servers; the console treats missing as "none named".
   unpriced_models?: UnpricedModelUsage[];
 }
