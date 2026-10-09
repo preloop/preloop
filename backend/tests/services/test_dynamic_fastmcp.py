@@ -1172,6 +1172,14 @@ class TestMCPCallTool:
         ]
 
         with (
+            patch(
+                "preloop.services.dynamic_fastmcp._load_sensitive_data_policy",
+                return_value=(None, None),
+            ),
+            patch(
+                "preloop.services.dynamic_fastmcp.apply_storage_redaction_config",
+                return_value=None,
+            ),
             patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
             patch(
                 "preloop.services.policy_evaluator.evaluate_policy_async",
@@ -1206,6 +1214,20 @@ class TestMCPCallTool:
         ]
 
         with (
+            patch(
+                "preloop.services.dynamic_fastmcp._prepare_grant_dispatch",
+                new=AsyncMock(
+                    return_value=(MagicMock(server_name="Test server"), None)
+                ),
+            ),
+            patch(
+                "preloop.services.dynamic_fastmcp._load_sensitive_data_policy",
+                return_value=(None, None),
+            ),
+            patch(
+                "preloop.services.dynamic_fastmcp.apply_storage_redaction_config",
+                return_value=None,
+            ),
             patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
             patch(
                 "preloop.services.policy_evaluator.evaluate_policy_async",
@@ -1747,7 +1769,17 @@ class TestMCPCallTool:
         available_tools = [Tool(name="pay", description="Pay tool", parameters={})]
 
         # ``evaluate_policy_async`` returns require_approval but no workflow id
-        with patch.object(dynamic_mcp, "list_tools", return_value=available_tools):
+        with (
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch(
+                "preloop.services.dynamic_fastmcp._load_sensitive_data_policy",
+                return_value=(None, None),
+            ),
+            patch(
+                "preloop.services.dynamic_fastmcp.apply_storage_redaction_config",
+                return_value=None,
+            ),
+        ):
             with patch(
                 "preloop.services.policy_evaluator.evaluate_policy_async",
                 new=AsyncMock(
@@ -1983,6 +2015,22 @@ class TestCreateProxiedToolWrapper:
     ):
         """Arrays reach the approval/upstream call with list values intact."""
         dynamic_mcp.set_user_context_provider(lambda: user_context)
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
+            lambda *args: MagicMock(
+                id="server-123",
+                name="Test server",
+                tool_prefix=None,
+                url="https://example.test/mcp",
+                transport="streamable-http",
+                auth_type="none",
+                auth_config={},
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([MagicMock()]),
+        )
         captured = {}
 
         async def fake_require_approval(**kwargs):
@@ -2154,6 +2202,22 @@ class TestCreateProxiedToolWrapper:
         ``param_names`` list replaces the generated collection loop.
         """
         dynamic_mcp.set_user_context_provider(lambda: user_context)
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
+            lambda *args: MagicMock(
+                id="server-123",
+                name="Test server",
+                tool_prefix=None,
+                url="https://example.test/mcp",
+                transport="streamable-http",
+                auth_type="none",
+                auth_config={},
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([MagicMock()]),
+        )
         captured = {}
 
         async def fake_require_approval(**kwargs):
@@ -2198,6 +2262,22 @@ class TestCreateProxiedToolWrapper:
     ):
         """A type or next property is aliased and still forwarded as itself."""
         dynamic_mcp.set_user_context_provider(lambda: user_context)
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
+            lambda *args: MagicMock(
+                id="server-123",
+                name="Test server",
+                tool_prefix=None,
+                url="https://example.test/mcp",
+                transport="streamable-http",
+                auth_type="none",
+                auth_config={},
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([MagicMock()]),
+        )
         captured = {}
 
         async def fake_require_approval(**kwargs):
@@ -2870,6 +2950,22 @@ class TestApprovalDenialUsageOutcome:
 
         user_context.runtime_session_id = str(uuid4())
         dynamic_mcp.set_user_context_provider(lambda: user_context)
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
+            lambda *args: MagicMock(
+                id="server-123",
+                name="Test server",
+                tool_prefix=None,
+                url="https://example.test/mcp",
+                transport="streamable-http",
+                auth_type="none",
+                auth_config={},
+            ),
+        )
+        monkeypatch.setattr(
+            "preloop.services.dynamic_fastmcp.get_db",
+            lambda: iter([MagicMock()]),
+        )
         persist = MagicMock()
 
         monkeypatch.setattr(

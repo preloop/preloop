@@ -101,6 +101,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         resource_type: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        consent_ref: Optional[str] = None,
     ) -> List[AuditLog]:
         """Get audit logs for an account with optional filters.
 
@@ -113,6 +114,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             status: Filter by status
             resource_type: Filter by resource type
             start_date: Filter by start date
+            consent_ref: Exact delegated grant consent reference
             end_date: Filter by end date
 
         Returns:
@@ -127,6 +129,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             query = query.filter(AuditLog.status == status)
         if resource_type:
             query = query.filter(AuditLog.resource_type == resource_type)
+        if consent_ref is not None:
+            query = query.filter(
+                AuditLog.details.op("->")("grant").op("->>")("consent_ref")
+                == consent_ref
+            )
         if start_date:
             query = query.filter(AuditLog.timestamp >= start_date)
         if end_date:
@@ -312,6 +319,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         tool_name_filter: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        consent_ref: Optional[str] = None,
         min_cost: Optional[float] = None,
         max_cost: Optional[float] = None,
     ) -> Tuple[List[Dict[str, Any]], int]:
@@ -333,6 +341,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             outcome_filter: Filter by outcome(s) ('allow', 'deny', 'require_approval', etc.)
             tool_name_filter: Filter by tool name (substring match)
             start_date: Filter by start date
+            consent_ref: Exact delegated grant consent reference
             end_date: Filter by end date
 
         Returns:
@@ -412,6 +421,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
                 )
             )
 
+        if consent_ref is not None:
+            primary_query = primary_query.filter(
+                AuditLog.details.op("->")("grant").op("->>")("consent_ref")
+                == consent_ref
+            )
         if start_date:
             primary_query = primary_query.filter(AuditLog.timestamp >= start_date)
         if end_date:
@@ -604,6 +618,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         status: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        consent_ref: Optional[str] = None,
     ) -> int:
         """Count audit logs for an account with optional filters.
 
@@ -613,6 +628,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             action: Filter by action type
             status: Filter by status
             start_date: Filter by start date
+            consent_ref: Exact delegated grant consent reference
             end_date: Filter by end date
 
         Returns:
@@ -627,6 +643,11 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             query = query.filter(AuditLog.action == action)
         if status:
             query = query.filter(AuditLog.status == status)
+        if consent_ref is not None:
+            query = query.filter(
+                AuditLog.details.op("->")("grant").op("->>")("consent_ref")
+                == consent_ref
+            )
         if start_date:
             query = query.filter(AuditLog.timestamp >= start_date)
         if end_date:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -573,8 +574,10 @@ def proxied(monkeypatch, user_context):
     monkeypatch.setattr(
         "preloop.services.dynamic_fastmcp._resolve_proxied_tool_server",
         MagicMock(
-            return_value=MagicMock(
+            return_value=SimpleNamespace(
+                id=str(uuid.uuid4()),
                 name="crm",
+                tool_prefix=None,
                 url="http://example.test",
                 auth_type="none",
                 auth_config={},
