@@ -65,6 +65,59 @@ def _repository_identity(provider: Any, repository: dict[str, Any]) -> Any:
     return repository.get("id")
 
 
+_CODE_HOSTS = frozenset({"github", "gitlab", "bitbucket"})
+
+
+def _bound_repository(
+    db: Session, flow: Any, details: dict[str, Any]
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Provider, code-host tracker and repository of a bound issue trigger.
+
+    A Jira-triggered run publishes to the repository its Jira project is bound
+    to (``repository_binding``); the trigger payload names no repository, so
+    the thread must be keyed on the bound code host, which is where review
+    feedback arrives from.
+
+    Returns:
+        ``(provider, tracker_id, repository)`` shaped like the code host's
+        webhook ``repository`` object, or None when no binding applies.
+    """
+    from preloop.models.crud import crud_project
+    from preloop.services.repository_binding import (
+        RepositoryBindingError,
+        resolve_repository_binding,
+    )
+
+    try:
+        applied = resolve_repository_binding(
+            db,
+            account_id=str(flow.account_id),
+            git_clone_config=getattr(flow, "git_clone_config", None),
+            trigger_tracker_id=details.get("tracker_id"),
+            trigger_source=details.get("source"),
+            trigger_project_id=details.get("project_id"),
+        )
+    except RepositoryBindingError as exc:
+        logger.warning("Cannot bind feedback: repository binding failed: %s", exc)
+        return None
+    if applied is None or applied.tracker_type not in _CODE_HOSTS:
+        return None
+    project = crud_project.get(
+        db, id=str(applied.project_id), account_id=str(flow.account_id)
+    )
+    identifier = getattr(project, "identifier", None) if project else None
+    if not identifier:
+        return None
+    # Bitbucket keys on workspace/uuid (full_name + uuid); GitHub and GitLab
+    # on the numeric repository id the synced project stores as identifier.
+    repository = {
+        "full_name": applied.repository,
+        "uuid": str(identifier),
+        "id": str(identifier),
+    }
+    return applied.tracker_type, applied.tracker_id, repository
+
+
 def feedback_policy(flow: Any) -> dict[str, Any] | None:
     """Existing saved flows opt in explicitly; preset updates never overwrite them."""
     config = getattr(flow, "agent_config", None)
@@ -99,6 +152,11 @@ def register_thread(
     repository = payload.get("repository") or payload.get("project") or {}
     tracker_id = details.get("tracker_id") or flow.trigger_event_source
     provider = details.get("source")
+    trigger_source, trigger_tracker_id = provider, tracker_id
+    if provider not in _CODE_HOSTS:
+        bound = _bound_repository(db, flow, details)
+        if bound is not None:
+            provider, tracker_id, repository = bound
     repository_id = _repository_identity(provider, repository)
     parsed = urlparse(pr_url)
     parts = parsed.path.rstrip("/").split("/")
@@ -140,8 +198,8 @@ def register_thread(
                 for key in ("project_id", "project_path", "issue_id")
                 if key in details
             },
-            "source": provider,
-            "tracker_id": str(tracker_id),
+            "source": trigger_source,
+            "tracker_id": str(trigger_tracker_id),
             "account_id": str(flow.account_id),
         },
     }
