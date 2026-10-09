@@ -216,7 +216,9 @@ export class GovernanceRuleSetEditor extends LitElement {
 
   private _handleSaveRule(e: CustomEvent) {
     e.stopPropagation();
-    const { rule, formData } = e.detail as {
+    const { rule, formData, resolve, reject } = e.detail as {
+      resolve: () => void;
+      reject: (message: string) => void;
       rule: AccessRuleSummary | null;
       formData: RuleFormData;
     };
@@ -226,12 +228,13 @@ export class GovernanceRuleSetEditor extends LitElement {
           toolName: this.toolName,
           existingRule: rule,
           formData,
+          resolve,
+          reject,
         },
         bubbles: true,
         composed: true,
       })
     );
-    this._closeRuleEditor();
   }
 
   private _handleWorkflowCreated() {
@@ -319,6 +322,33 @@ export class GovernanceRuleSetEditor extends LitElement {
     this._dragOverIndex = null;
   }
 
+  private _moveRule(index: number, delta: number) {
+    const rules = [...this.rules].sort((a, b) => a.priority - b.priority);
+    const target = index + delta;
+    if (target < 0 || target >= rules.length) return;
+    const [moved] = rules.splice(index, 1);
+    rules.splice(target, 0, moved);
+    this.dispatchEvent(
+      new CustomEvent('reorder-rules', {
+        detail: {
+          toolName: this.toolName,
+          reorderedRules: rules.map((rule, priority) => ({
+            id: rule.id,
+            priority,
+          })),
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  private _handleRuleKeydown(index: number, e: KeyboardEvent) {
+    if (!e.altKey || !['ArrowUp', 'ArrowDown'].includes(e.key)) return;
+    e.preventDefault();
+    this._moveRule(index, e.key === 'ArrowUp' ? -1 : 1);
+  }
+
   private _handleDragEnd() {
     this._dragIndex = null;
     this._dragOverIndex = null;
@@ -344,6 +374,8 @@ export class GovernanceRuleSetEditor extends LitElement {
         class="rule-item ${!rule.is_enabled ? 'disabled-rule' : ''} ${
           isDragging ? 'dragging' : ''
         } ${dragPosition}"
+        tabindex="0"
+        @keydown=${(e: KeyboardEvent) => this._handleRuleKeydown(index, e)}
         draggable="true"
         @dragstart=${(e: DragEvent) => this._handleDragStart(index, e)}
         @dragover=${(e: DragEvent) => this._handleDragOver(index, e)}
@@ -384,6 +416,18 @@ export class GovernanceRuleSetEditor extends LitElement {
           }
         </div>
         <div class="rule-actions">
+          <sl-icon-button
+            name="arrow-up"
+            label=${`Move rule ${index + 1} up`}
+            ?disabled=${index === 0}
+            @click=${() => this._moveRule(index, -1)}
+          ></sl-icon-button>
+          <sl-icon-button
+            name="arrow-down"
+            label=${`Move rule ${index + 1} down`}
+            ?disabled=${index === this.rules.length - 1}
+            @click=${() => this._moveRule(index, 1)}
+          ></sl-icon-button>
           <sl-tooltip content="Edit rule">
             <sl-icon-button
               name="pencil"
@@ -407,6 +451,10 @@ export class GovernanceRuleSetEditor extends LitElement {
     const sortedRules = [...this.rules].sort((a, b) => a.priority - b.priority);
 
     return html`
+      <p class="rules-hint">
+        Rules are checked top to bottom; the first match decides. No match means
+        allowed.
+      </p>
       <div class="rules-list">
         ${
           sortedRules.length === 0

@@ -7769,3 +7769,33 @@ export async function getHostedModels(): Promise<HostedModelCatalog> {
   if (!response.ok) throw new Error('Could not load built-in hosted models.');
   return response.json();
 }
+
+export interface PolicyEvaluationResult {
+  decision: string;
+  matched_rule: string | null;
+  description?: string;
+  checked_rules: {
+    id: string;
+    expression: string | null;
+    matched: boolean;
+    error: string | null;
+  }[];
+  also_matched_rule_ids: string[];
+}
+
+export async function evaluatePolicy(
+  body: Record<string, unknown>
+): Promise<PolicyEvaluationResult> {
+  const response = await fetchWithAuth('/api/v1/policies/evaluate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to simulate policy')
+    );
+  }
+  return response.json();
+}

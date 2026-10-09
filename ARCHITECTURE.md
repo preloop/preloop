@@ -422,3 +422,14 @@ and session selection fields. Audit repeats `event_type`/`outcome` for multiple
 values and stores tool/date/cost fields under their API names. Approvals stores
 `status`, `tool`, and `q`, retaining its latest-100 browser filtering model.
 Date strings from shared links are validated before timestamp conversion.
+### Policy draft simulation
+
+`POST /api/v1/policies/evaluate` accepts one sample tool call and a stored
+policy, unsaved tool rule, or draft YAML. It uses the firewall's shared rule
+evaluator with recording disabled and reports the ordered checks, winning
+rule, overlapping rules and condition errors. Model text is an optional separate
+sample; model I/O and sensitive-data evaluators also disable their audit and
+notification hooks. Simulation does not dispatch tools, create approvals or
+record usage. The console's `policy_simulation` capability exposes draft testing
+in the rule dialog and YAML editor. Paths are evaluated as submitted, without
+normalization, so operators can test traversal and repeated-slash samples.
