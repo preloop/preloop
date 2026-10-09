@@ -16,3 +16,11 @@ test('ignores icon-only content and recognizes nested text labels', () => {
   assert.equal(accessibilityFindings('<sl-switch><sl-icon name="check"></sl-icon></sl-switch>').length, 1);
   assert.deepEqual(accessibilityFindings('<sl-switch><span>Enable gateway</span></sl-switch>'), []);
 });
+
+test('accepts implicit labels before or after controls without accepting empty labels', () => {
+  assert.deepEqual(accessibilityFindings('<label>Email<input></label>'), []);
+  assert.deepEqual(accessibilityFindings('<label><input type="checkbox">Remember me</label>'), []);
+  assert.deepEqual(accessibilityFindings('<label>Sort<select><option>Recent</option></select></label>'), []);
+  assert.equal(accessibilityFindings('<label><input></label>').length, 1);
+  assert.equal(accessibilityFindings('<label><select><option>Recent</option></select></label>').length, 1);
+});

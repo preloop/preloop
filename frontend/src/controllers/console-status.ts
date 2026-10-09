@@ -37,17 +37,33 @@ export class ConsoleStatus implements ReactiveController {
       root.appendChild(this.region);
     }
     const view = this.host as unknown as Record<string, unknown>;
-    const loading = [
-      'loading',
-      'isLoading',
-      'loadingData',
-      'loadingFeatures',
-      'loadingPolicies',
-      'saving',
-      'isSaving',
-      'busy',
-    ].some((key) => !!view[key]);
-    const error = view.error || view.loadError || view.dialogError;
+    const declaredKeys = [
+      ...(this.host.constructor as typeof LitElement).elementProperties.keys(),
+    ].filter((key): key is string => typeof key === 'string');
+    const keys = [...new Set([...Object.keys(view), ...declaredKeys])];
+    const hasValue = (value: unknown): boolean =>
+      value instanceof Set || value instanceof Map
+        ? value.size > 0
+        : Array.isArray(value)
+          ? value.length > 0
+          : value && typeof value === 'object' && !(value instanceof Error)
+            ? Object.values(value).some(Boolean)
+            : typeof value !== 'function' && !!value;
+    // Lit state may live behind prototype accessors, so include the declared
+    // reactive keys as well as ordinary fields. Accept the repository's
+    // prefix/suffix conventions without treating preserveLoadingState as busy.
+    const loading = keys.some(
+      (key) =>
+        /(?:^_?(?:is)?[Ll]oading(?:[A-Z]|$)|[Ll]oading$|^_?(?:is)?[Ss]aving(?:[A-Z]|$)|[Ss]aving$|^_?[Bb]usy(?:[A-Z]|$)|[Bb]usy$)/.test(
+          key
+        ) && hasValue(view[key])
+    );
+    const error = keys.some(
+      (key) =>
+        /(?:^_?(?:error|loadError|dialogError)$|(?:Error|Errors|ErrorMessage)$|^errorMessage$)/.test(
+          key
+        ) && hasValue(view[key])
+    );
     const state = error ? 'error' : loading ? 'loading' : 'ready';
     const pending = this.pendingMessage;
     this.pendingMessage = null;

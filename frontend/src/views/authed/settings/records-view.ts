@@ -1382,7 +1382,6 @@ ${offlineAuditCommand(range)}</pre>
           <label
             >Start
             <input
-              aria-label="Export start date"
               type="date"
               data-testid="export-start"
               .value=${this.exportStart}
@@ -1393,7 +1392,6 @@ ${offlineAuditCommand(range)}</pre>
           <label
             >End
             <input
-              aria-label="Export end date"
               type="date"
               data-testid="export-end"
               .value=${this.exportEnd}

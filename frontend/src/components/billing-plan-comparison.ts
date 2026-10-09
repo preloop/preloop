@@ -1160,7 +1160,6 @@ export class BillingPlanComparison extends LitElement {
       ${this.expired ? html`<p role="alert">This preview has expired. Request a new preview before confirming.</p>` : nothing}
       <label class="consent"
         ><input
-          aria-label="Acknowledge plan change"
           type="checkbox"
           data-testid="consent"
           .checked=${this.accepted}
@@ -1337,7 +1336,6 @@ export class BillingPlanComparison extends LitElement {
       <div class="selectors">
         <label
           >Change to<select
-            aria-label="Plan"
             data-testid="plan"
             .value=${this.selectedPlan}
             ?disabled=${this.busy === 'confirm' || this.busy === 'checkout' || !!this.pendingConfirmation}
@@ -1350,7 +1348,6 @@ export class BillingPlanComparison extends LitElement {
           this.showPeriod
             ? html`<label
                 >Billing period<select
-                  aria-label="Billing interval"
                   data-testid="interval"
                   .value=${this.interval}
                   ?disabled=${this.busy === 'confirm' || this.busy === 'checkout' || !!this.pendingConfirmation}

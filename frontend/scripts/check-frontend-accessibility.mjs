@@ -17,6 +17,18 @@ export function accessibilityFindings(source) {
       if (content) continue;
     }
     if (/\b(label|aria-label|aria-labelledby)\s*=\s*(?:"[^"]+"|'[^']+'|\$\{)/.test(attrs) || /type=["']hidden["']/.test(attrs)) continue;
+    const before = clean.slice(0, match.index);
+    const openings = [...before.matchAll(/<label\b[^>]*>/g)];
+    const opening = openings.at(-1);
+    if (opening && opening.index > before.lastIndexOf('</label')) {
+      const close = clean.slice(match.index).search(/<\/label\s*>/);
+      if (close >= 0) {
+        const label = clean.slice(opening.index + opening[0].length, match.index + close)
+          .replace(/<(select|textarea)\b[\s\S]*?<\/\1\s*>/g, ' ')
+          .replace(/<[^>]+>/g, ' ').trim();
+        if (label) continue;
+      }
+    }
     const id = attrs.match(/\bid=["']([^"']+)["']/)?.[1];
     if (id && clean.includes(`for="${id}"`)) continue;
     findings.push('Control needs a programmatic name: ' + match[0].split('\n')[0]);

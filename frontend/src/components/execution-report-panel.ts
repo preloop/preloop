@@ -294,7 +294,6 @@ export class ExecutionReportPanel extends LitElement {
         <label>
           Severity
           <select
-            aria-label="Severity filter"
             data-testid="severity-filter"
             @change=${(event: Event) => {
               this.severityFilter = (event.target as HTMLSelectElement).value;
@@ -309,7 +308,6 @@ export class ExecutionReportPanel extends LitElement {
         <label>
           Lens
           <select
-            aria-label="Report lens"
             data-testid="lens-filter"
             @change=${(event: Event) => {
               this.lensFilter = (event.target as HTMLSelectElement).value;

@@ -3906,7 +3906,6 @@ export class SessionReplayPanel extends LitElement {
                     <label>
                       <div class="event-meta">Suggestion model</div>
                       <select
-                        aria-label="Replay model"
                         class="speed-select-native optimization-model-select"
                         .value=${selectedModel?.id || ''}
                         ?disabled=${
@@ -3970,7 +3969,6 @@ export class SessionReplayPanel extends LitElement {
                         <input
                           class="timeline-range"
                           type="range"
-                          aria-label="Range start"
                           min="0"
                           max=${String(lastIndex)}
                           .value=${String(this.optimizeFromIndex)}
@@ -3987,7 +3985,6 @@ export class SessionReplayPanel extends LitElement {
                         <input
                           class="timeline-range"
                           type="range"
-                          aria-label="Range end"
                           min="0"
                           max=${String(lastIndex)}
                           .value=${String(this.optimizeToIndex || lastIndex)}

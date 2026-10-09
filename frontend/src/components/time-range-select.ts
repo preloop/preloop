@@ -12,7 +12,7 @@ export interface TimeRangeOption {
 /**
  * The one time range control the console uses on cards.
  *
- * Every card used to roll its own bare `<select aria-label="Time range">`, which read as a different
+ * Every card used to roll its own bare `<select>`, which read as a different
  * control on every card. This is a compact Shoelace select so the Usage card,
  * the Active agents card and (later) the Cost and API usage views all look and
  * behave the same.

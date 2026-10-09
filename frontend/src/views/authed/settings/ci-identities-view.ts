@@ -268,7 +268,6 @@ export class CiIdentitiesView extends LitElement {
         (action) =>
           html`<label class="ci-check"
             ><input
-              aria-label="Allowed CI action"
               type="checkbox"
               .checked=${selected.includes(action)}
               ?disabled=${this.busy}
@@ -427,7 +426,6 @@ export class CiIdentitiesView extends LitElement {
                     <h2>Create identity</h2>
                     <label
                       >Name<input
-                        aria-label="CI identity name"
                         id="ci-name"
                         maxlength="100"
                         .value=${this.name}
@@ -435,7 +433,6 @@ export class CiIdentitiesView extends LitElement {
                     /></label>
                     <label
                       >Project<select
-                        aria-label="Project"
                         id="ci-project"
                         .value=${this.projectId}
                         @change=${(event: Event) => {
@@ -452,7 +449,6 @@ export class CiIdentitiesView extends LitElement {
                     >
                     <label
                       >Dedicated hosted flow<select
-                        aria-label="Flow"
                         id="ci-flow"
                         .value=${this.flowId}
                         @change=${(event: Event) => {
@@ -478,7 +474,6 @@ export class CiIdentitiesView extends LitElement {
                     <label
                       >New/replacement key expires at (local time; blank means
                       no expiry)<input
-                        aria-label="Expiry time"
                         id="ci-expiry"
                         type="datetime-local"
                         .value=${this.expires}
@@ -571,7 +566,6 @@ export class CiIdentitiesView extends LitElement {
                     </p>
                     <label
                       >Key audit anchor<select
-                        aria-label="CI anchor"
                         id="ci-anchor"
                         .value=${this.anchorId}
                         @change=${(event: Event) => (this.anchorId = (event.target as HTMLSelectElement).value)}
@@ -580,14 +574,12 @@ export class CiIdentitiesView extends LitElement {
                       </select></label
                     ><label
                       >Callback URL<input
-                        aria-label="Callback URL"
                         id="ci-callback-url"
                         type="url"
                         .value=${this.callbackUrl}
                         @input=${(event: Event) => (this.callbackUrl = (event.target as HTMLInputElement).value)} /></label
                     ><label
                       >Description<input
-                        aria-label="Callback description"
                         id="ci-callback-description"
                         .value=${this.callbackDescription}
                         @input=${(event: Event) => (this.callbackDescription = (event.target as HTMLInputElement).value)} /></label
