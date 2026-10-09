@@ -34,9 +34,16 @@ function stubFetch(approvals: () => unknown[] = () => []): () => void {
     const url = typeof input === 'string' ? input : input.toString();
     const body = url.includes('/users/me')
       ? USER
-      : url.includes('/approval-requests')
-        ? approvals()
-        : [];
+      : url.includes('/features')
+        ? {
+            edition: 'cloud',
+            server_version: '1.2.3',
+            features: {},
+            plugins: [{ name: 'billing' }],
+          }
+        : url.includes('/approval-requests')
+          ? approvals()
+          : [];
     return new Response(JSON.stringify(body), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -771,9 +778,16 @@ describe('console-header bell approvals', () => {
       }
       const body = url.includes('/users/me')
         ? USER
-        : url.includes('/approval-requests')
-          ? approvals
-          : [];
+        : url.includes('/features')
+          ? {
+              edition: 'cloud',
+              server_version: '1.2.3',
+              features: {},
+              plugins: [{ name: 'billing' }],
+            }
+          : url.includes('/approval-requests')
+            ? approvals
+            : [];
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1454,5 +1468,73 @@ describe('console-header pending-approvals publish', () => {
     expect(published).to.include(0);
     expect(published).to.not.include(1);
     el.remove();
+  });
+});
+
+describe('console header branded help', () => {
+  let restore: () => void;
+  let original: unknown;
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    original = (window as any).BRAND_CONFIG;
+    (window as any).BRAND_CONFIG = {
+      name: 'Example',
+      docs_url: 'https://example.com/docs',
+      changelog_url: 'https://example.com/releases',
+      report_issue_url: 'https://example.com/support',
+    };
+    restore = stubFetch();
+  });
+  afterEach(() => {
+    restore();
+    localStorage.removeItem('accessToken');
+    (window as any).BRAND_CONFIG = original;
+  });
+  it('opens an accessible menu with branded links and the backend version', async () => {
+    const el = await fixture<ConsoleHeader>(
+      html`<console-header></console-header>`
+    );
+    await waitUntil(() => el.shadowRoot!.textContent!.includes('v1.2.3'));
+    const dropdown = el.shadowRoot!.querySelector('.help-menu') as any;
+    const trigger = dropdown.querySelector('sl-icon-button') as any;
+    expect(trigger.label).to.equal('Help');
+    await trigger.updateComplete;
+    const button = trigger.shadowRoot.querySelector('button');
+    button.focus();
+    button.click();
+    await waitUntil(() => dropdown.open);
+    const links = Array.from(
+      dropdown.querySelectorAll('sl-menu-item a')
+    ) as Element[];
+    expect(links.map((link) => link.getAttribute('href'))).to.deep.equal([
+      'https://example.com/docs',
+      'https://example.com/releases',
+      'https://example.com/support',
+    ]);
+    expect(dropdown.textContent.replace(/\s+/g, ' ')).to.contain(
+      'Example v1.2.3'
+    );
+    for (const link of links)
+      expect(link.getAttribute('rel')).to.equal('noopener');
+    const open = sinon.stub(window, 'open');
+    try {
+      const item = dropdown.querySelector('sl-menu-item');
+      dropdown.querySelector('sl-menu').setCurrentItem(item);
+      item.focus();
+      item.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: 'Enter',
+          bubbles: true,
+          composed: true,
+        })
+      );
+      expect(open).to.have.been.calledOnceWith(
+        'https://example.com/docs',
+        '_blank',
+        'noopener'
+      );
+    } finally {
+      open.restore();
+    }
   });
 });

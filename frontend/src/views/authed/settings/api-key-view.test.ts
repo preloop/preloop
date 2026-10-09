@@ -311,7 +311,28 @@ describe('ApiKeyView', () => {
       expect(box.disabled).to.equal(false);
       await toggle(box, true);
       await waitUntil(() => governancePuts().length === 1);
-      expect(governancePuts()[0].allowed_models).to.deep.equal(['Model B']);
+      expect(governancePuts()[0].allowed_models).to.deep.equal([
+        'anthropic/model-b',
+      ]);
+    });
+
+    it('stores the configured gateway alias after a display-name rename', async () => {
+      const renamed = {
+        ...MODELS[1],
+        name: 'Renamed display label',
+        meta_data: { gateway: { model_alias: 'team/stable-model' } },
+      };
+      fetchStub = createFetchStub({
+        models: [MODELS[0], renamed],
+        allowedModels: ['openai/model-a'],
+      });
+      const element = await mount();
+      await toggle(checkbox(element, 'Renamed display label'), true);
+      await waitUntil(() => governancePuts().length === 1);
+      expect(governancePuts()[0].allowed_models).to.deep.equal([
+        'openai/model-a',
+        'team/stable-model',
+      ]);
     });
 
     it('refuses to empty the list by unchecking the last model', async () => {
@@ -439,5 +460,29 @@ describe('ApiKeyView', () => {
     const total = element.shadowRoot!.querySelector('.spend-total')!;
     expect(total.textContent?.trim()).to.equal('$1.23');
     expect(total.getAttribute('title')).to.equal('$1.23');
+  });
+});
+
+describe('scoped rule save settlement', () => {
+  afterEach(() => sinon.restore());
+  it('retains the scoped rules and rejects the dialog on a failed persistence', async () => {
+    const el = await fixture<ApiKeyView>(html`<api-key-view></api-key-view>`);
+    const view = el as any;
+    const previous = { read_file: [] };
+    view.scopedToolRules = previous;
+    sinon
+      .stub(view, 'handleGovernanceUpdate')
+      .rejects(new Error('Invalid scoped rule'));
+    const resolve = sinon.spy();
+    const reject = sinon.spy();
+    await view.saveScopedToolRule(
+      'read_file',
+      null,
+      { action: 'deny' },
+      { resolve, reject }
+    );
+    expect(resolve.called).to.equal(false);
+    expect(reject.firstCall.args[0]).to.equal('Invalid scoped rule');
+    expect(view.scopedToolRules).to.equal(previous);
   });
 });

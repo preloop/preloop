@@ -11,7 +11,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Literal, Optional
 
 import httpx
 
@@ -63,6 +63,13 @@ def is_telemetry_disabled() -> bool:
 def is_hosted_instance() -> bool:
     """True when this deployment is the hosted preloop.ai service itself."""
     return os.getenv(HOSTED_ENV, "").strip().lower() in _TRUTHY_VALUES
+
+
+def instance_edition() -> Literal["oss", "cloud", "enterprise"]:
+    """Authoritative runtime edition; hosting wins over proprietary plugins."""
+    if is_hosted_instance():
+        return "cloud"
+    return "enterprise" if _is_enterprise() else "oss"
 
 
 def _parse_semver(value: object) -> Optional[tuple]:
@@ -144,6 +151,8 @@ def get_or_create_instance() -> Optional["Instance"]:
                 return instance
 
             # Create new instance record
+            # Registration retains the tracker's established two-edition contract.
+            # Cloud is a runtime UI edition exposed by /features.
             edition = "enterprise" if _is_enterprise() else "oss"
             instance = Instance(
                 instance_uuid=uuid.uuid4(),

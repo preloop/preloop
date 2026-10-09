@@ -395,6 +395,7 @@ def evaluate_tool_target(
     user_id: Any = None,
     correlation_id: Optional[str] = None,
     rules: Optional[Sequence[SensitiveDataRule]] = None,
+    record: bool = True,
 ) -> ToolPolicyOutcome:
     """Evaluate every in-scope rule for ``target`` against ``payload``.
 
@@ -462,9 +463,12 @@ def evaluate_tool_target(
                 outcome.rule = rule
                 outcome.summary = scan
                 outcome.reason = f"detector timeout on rule {rule.id}"
-                _audit(outcome, target, tool_name, account_id, user_id, correlation_id)
+                _audit(
+                    outcome, target, tool_name, account_id, user_id, correlation_id
+                ) if record else None
                 return _finish(
                     outcome,
+                    record=record,
                     target=target,
                     tool_name=tool_name,
                     account_id=account_id,
@@ -485,10 +489,13 @@ def evaluate_tool_target(
         outcome.rule = rule
         outcome.summary = view
         outcome.reason = label
-        _audit(outcome, target, tool_name, account_id, user_id, correlation_id)
+        _audit(
+            outcome, target, tool_name, account_id, user_id, correlation_id
+        ) if record else None
         # Notices gathered before this blocking rule are still emitted.
         return _finish(
             outcome,
+            record=record,
             target=target,
             tool_name=tool_name,
             account_id=account_id,
@@ -505,6 +512,7 @@ def evaluate_tool_target(
         outcome.reason = label
     return _finish(
         outcome,
+        record=record,
         target=target,
         tool_name=tool_name,
         account_id=account_id,
@@ -521,8 +529,11 @@ def _finish(
     account_id: Any = None,
     user_id: Any = None,
     correlation_id: Optional[str] = None,
+    record: bool = True,
 ) -> ToolPolicyOutcome:
     """Emit notices and redaction rows, then return the outcome."""
+    if not record:
+        return outcome
     for rule, view in outcome.redactions:
         try:
             _audit_rule(

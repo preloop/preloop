@@ -1639,8 +1639,10 @@ export class AgentDetailView extends LitElement {
     );
   }
 
-  private async saveGovernance(): Promise<void> {
+  private async saveGovernance(propagateError = false): Promise<void> {
     if (!this.canSaveEditorContext()) {
+      if (propagateError)
+        throw new Error('Governance is not ready. Please try again.');
       return;
     }
     this.actionLoading = true;
@@ -1677,6 +1679,7 @@ export class AgentDetailView extends LitElement {
       console.error('Failed to update agent governance:', error);
       this.error =
         error instanceof Error ? error.message : 'Failed to update governance';
+      if (propagateError) throw error;
     } finally {
       this.actionLoading = false;
     }
@@ -1936,7 +1939,7 @@ export class AgentDetailView extends LitElement {
     this.scopedToolRules = nextRules;
   }
 
-  private saveScopedToolRule(
+  private async saveScopedToolRule(
     toolName: string,
     existingRule: AccessRuleSummary | null,
     formData: {
@@ -1946,8 +1949,10 @@ export class AgentDetailView extends LitElement {
       description: string | null;
       is_enabled: boolean;
       approval_workflow_id: string | null;
-    }
-  ): void {
+    },
+    settlement?: { resolve?: () => void; reject?: (message: string) => void }
+  ): Promise<void> {
+    const previous = this.scopedToolRules;
     const currentRules = [...(this.scopedToolRules[toolName] || [])].sort(
       (left, right) => left.priority - right.priority
     );
@@ -1970,7 +1975,22 @@ export class AgentDetailView extends LitElement {
         priority: index,
       })),
     };
-    void this.saveGovernance();
+    try {
+      await this.saveGovernance(true);
+      settlement?.resolve?.();
+      this.dispatchEvent(
+        new CustomEvent('show-toast', {
+          detail: { message: 'Rule saved.' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    } catch (err) {
+      this.scopedToolRules = previous;
+      settlement?.reject?.(
+        err instanceof Error ? err.message : 'Failed to save rule'
+      );
+    }
   }
 
   private deleteScopedToolRule(toolName: string, ruleId: string): void {
@@ -3469,7 +3489,8 @@ export class AgentDetailView extends LitElement {
                             this.saveScopedToolRule(
                               e.detail.tool.name,
                               e.detail.existingRule || e.detail.rule,
-                              e.detail.formData
+                              e.detail.formData,
+                              e.detail
                             )}
                           @delete-rule=${(e: CustomEvent) =>
                             this.deleteScopedToolRule(

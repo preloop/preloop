@@ -6775,7 +6775,11 @@ export async function removeUserRole(
 }
 
 // Features API
+export type Edition = 'oss' | 'cloud' | 'enterprise';
+
 export interface FeaturesResponse {
+  edition: Edition;
+  server_version: string;
   plugins: Array<{
     name: string;
     version: string;
@@ -7727,6 +7731,36 @@ export async function updateDiscoveryCandidate(
   );
   if (!response.ok) {
     throw new Error('Failed to update discovered agent');
+  }
+  return response.json();
+}
+
+export interface PolicyEvaluationResult {
+  decision: string;
+  matched_rule: string | null;
+  description?: string;
+  checked_rules: {
+    id: string;
+    expression: string | null;
+    matched: boolean;
+    error: string | null;
+  }[];
+  also_matched_rule_ids: string[];
+}
+
+export async function evaluatePolicy(
+  body: Record<string, unknown>
+): Promise<PolicyEvaluationResult> {
+  const response = await fetchWithAuth('/api/v1/policies/evaluate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to simulate policy')
+    );
   }
   return response.json();
 }

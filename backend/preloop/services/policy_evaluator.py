@@ -215,13 +215,31 @@ def _also_matched_rule_ids(
     also: list[str] = []
     for rule in rules[start_index:]:
         try:
+            is_enabled = (
+                rule.get("is_enabled", True)
+                if isinstance(rule, dict)
+                else getattr(rule, "is_enabled", True)
+            )
+            expression = (
+                rule.get("condition_expression")
+                if isinstance(rule, dict)
+                else rule.condition_expression
+            )
+            condition_type = (
+                rule.get("condition_type", "simple")
+                if isinstance(rule, dict)
+                else rule.condition_type
+            )
+            rule_id = rule.get("id") if isinstance(rule, dict) else rule.id
+            if not is_enabled:
+                continue
             if _evaluate_rule_condition(
-                expression=rule.condition_expression,
-                condition_type=rule.condition_type,
+                expression=expression,
+                condition_type=condition_type,
                 tool_args=tool_args,
                 context=context,
             ):
-                also.append(str(rule.id))
+                also.append(str(rule_id))
         except Exception:  # pragma: no cover - best effort annotation only
             continue
     return also
@@ -449,6 +467,8 @@ def _evaluate_rule_candidates(
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
     default_approval_workflow_id: Optional[Any] = None,
+    record: bool = True,
+    trace: Optional[list[dict[str, Any]]] = None,
 ) -> Optional[PolicyDecision]:
     for index, rule in enumerate(rules):
         is_enabled = (
@@ -482,23 +502,37 @@ def _evaluate_rule_candidates(
                 tool_args=tool_args,
                 context=context,
             )
+            if trace is not None:
+                trace.append(
+                    {
+                        "id": (
+                            rule.get("id", str(index + 1))
+                            if isinstance(rule, dict)
+                            else str(rule.id)
+                        ),
+                        "expression": condition_expression,
+                        "matched": bool(matches),
+                        "error": None,
+                    }
+                )
             if not matches:
                 continue
             rule_desc = (
                 description or condition_expression or f"Scoped rule {index + 1}"
             )
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action=action,
-                rule_description=rule_desc,
-                condition_matched=condition_expression,
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
+            if record:
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action=action,
+                    rule_description=rule_desc,
+                    condition_matched=condition_expression,
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
             rule_context = None
             if action == "require_approval":
                 rule_context = build_rule_context(
@@ -523,7 +557,7 @@ def _evaluate_rule_candidates(
                 raw_source = rule.get("source")
                 if isinstance(raw_source, str) and raw_source:
                     stored_source = raw_source
-            return PolicyDecision(
+            decision = PolicyDecision(
                 action,
                 approval_workflow_id,
                 rule_desc,
@@ -531,20 +565,42 @@ def _evaluate_rule_candidates(
                 source=SOURCE_SUBJECT_SCOPED_RULE,
                 stored_source=stored_source,
             )
+            if not record:
+                decision.also_matched_rule_ids = _also_matched_rule_ids(
+                    rules,
+                    start_index=index + 1,
+                    tool_args=tool_args,
+                    context=context,
+                )
+            return decision
         except Exception as e:
+            if trace is not None:
+                trace.append(
+                    {
+                        "id": (
+                            rule.get("id", str(index + 1))
+                            if isinstance(rule, dict)
+                            else str(rule.id)
+                        ),
+                        "expression": condition_expression,
+                        "matched": False,
+                        "error": str(e),
+                    }
+                )
             error_desc = f"Rule evaluation error: {e} (failing closed)"
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description=error_desc,
-                condition_matched=condition_expression,
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
+            if record:
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action="require_approval",
+                    rule_description=error_desc,
+                    condition_matched=condition_expression,
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
             return PolicyDecision(
                 "require_approval",
                 approval_workflow_id,
@@ -578,6 +634,8 @@ def _evaluate_loaded_access_rules(
     default_workflow_id_for_account: Optional[Any] = None,
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
+    record: bool = True,
+    trace: Optional[list[dict[str, Any]]] = None,
 ) -> PolicyDecision:
     """Evaluate already-loaded ToolAccessRule rows.
 
@@ -597,17 +655,18 @@ def _evaluate_loaded_access_rules(
                 f"ALL calls will require approval regardless of arguments. "
                 f"Add access rules with conditions to enable conditional approval."
             )
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description="Tool has approval workflow configured (legacy mode)",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
+            if record:
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action="require_approval",
+                    rule_description="Tool has approval workflow configured (legacy mode)",
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
             return PolicyDecision(
                 "require_approval",
                 tool_config.approval_workflow_id,
@@ -619,17 +678,18 @@ def _evaluate_loaded_access_rules(
                     tool_configuration_id=tool_config.id,
                 ),
             )
-        _log_policy_decision_async(
-            account_id=account_id,
-            tool_name=tool_name,
-            action="allow",
-            rule_description="No access rules defined",
-            tool_args=tool_args,
-            user_id=user_id,
-            execution_id=execution_id,
-            correlation_id=correlation_id,
-            extra_details=extra_details,
-        )
+        if record:
+            _log_policy_decision_async(
+                account_id=account_id,
+                tool_name=tool_name,
+                action="allow",
+                rule_description="No access rules defined",
+                tool_args=tool_args,
+                user_id=user_id,
+                execution_id=execution_id,
+                correlation_id=correlation_id,
+                extra_details=extra_details,
+            )
         return PolicyDecision("allow", None, "No access rules defined")
 
     for index, rule in enumerate(rules):
@@ -645,6 +705,15 @@ def _evaluate_loaded_access_rules(
                 tool_args=tool_args,
                 context=context,
             )
+            if trace is not None:
+                trace.append(
+                    {
+                        "id": str(rule.id),
+                        "expression": rule.condition_expression,
+                        "matched": bool(matches),
+                        "error": None,
+                    }
+                )
             logger.info(f"Rule {rule.id} evaluated: matches={matches}")
 
             if matches:
@@ -665,18 +734,19 @@ def _evaluate_loaded_access_rules(
                     rule.description or f"Rule matched: {rule.condition_expression}"
                 )
 
-                _log_policy_decision_async(
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    action=rule.action,
-                    rule_description=rule_desc,
-                    condition_matched=rule.condition_expression,
-                    tool_args=tool_args,
-                    user_id=user_id,
-                    execution_id=execution_id,
-                    correlation_id=correlation_id,
-                    extra_details=extra_details,
-                )
+                if record:
+                    _log_policy_decision_async(
+                        account_id=account_id,
+                        tool_name=tool_name,
+                        action=rule.action,
+                        rule_description=rule_desc,
+                        condition_matched=rule.condition_expression,
+                        tool_args=tool_args,
+                        user_id=user_id,
+                        execution_id=execution_id,
+                        correlation_id=correlation_id,
+                        extra_details=extra_details,
+                    )
 
                 rule_context = _matched_rule_context(
                     rule,
@@ -687,32 +757,50 @@ def _evaluate_loaded_access_rules(
                     context=context,
                 )
 
-                return PolicyDecision(
+                decision = PolicyDecision(
                     rule.action,
                     approval_workflow_id,
                     rule_desc,
                     rule_context,
                     source=SOURCE_TOOL_ACCESS_RULE,
                 )
+                if not record:
+                    decision.also_matched_rule_ids = _also_matched_rule_ids(
+                        rules,
+                        start_index=index + 1,
+                        tool_args=tool_args,
+                        context=context,
+                    )
+                return decision
 
         except Exception as e:
+            if trace is not None:
+                trace.append(
+                    {
+                        "id": str(rule.id),
+                        "expression": rule.condition_expression,
+                        "matched": False,
+                        "error": str(e),
+                    }
+                )
             logger.error(
                 f"Error evaluating rule {rule.id}: {e}. "
                 f"Failing closed with require_approval for security."
             )
             error_desc = f"Rule evaluation error: {e} (failing closed)"
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="require_approval",
-                rule_description=error_desc,
-                condition_matched=rule.condition_expression,
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
+            if record:
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action="require_approval",
+                    rule_description=error_desc,
+                    condition_matched=rule.condition_expression,
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
             return PolicyDecision(
                 "require_approval",
                 tool_config.approval_workflow_id or default_workflow_id_for_account,
@@ -729,17 +817,18 @@ def _evaluate_loaded_access_rules(
                 ),
             )
 
-    _log_policy_decision_async(
-        account_id=account_id,
-        tool_name=tool_name,
-        action="allow",
-        rule_description="No rules matched (default allow)",
-        tool_args=tool_args,
-        user_id=user_id,
-        execution_id=execution_id,
-        correlation_id=correlation_id,
-        extra_details=extra_details,
-    )
+    if record:
+        _log_policy_decision_async(
+            account_id=account_id,
+            tool_name=tool_name,
+            action="allow",
+            rule_description="No rules matched (default allow)",
+            tool_args=tool_args,
+            user_id=user_id,
+            execution_id=execution_id,
+            correlation_id=correlation_id,
+            extra_details=extra_details,
+        )
     return PolicyDecision("allow", None, "No rules matched (default allow)")
 
 
@@ -754,6 +843,7 @@ def _account_authorizer_denial(
     execution_id: Optional[Any],
     subject_context: Optional[Dict[str, Any]],
     correlation_id: Optional[str] = None,
+    record: bool = True,
 ) -> Optional[PolicyDecision]:
     """Ask the account authorizer (hook H4) about a tool call.
 
@@ -788,17 +878,18 @@ def _account_authorizer_denial(
     if decision.allowed:
         return None
     reason = decision.reason or "Denied by account access rule"
-    _log_policy_decision_async(
-        account_id=account_id,
-        tool_name=tool_name,
-        action="deny",
-        rule_description=reason,
-        tool_args=tool_args,
-        user_id=user_id,
-        execution_id=execution_id,
-        correlation_id=correlation_id,
-        extra_details={"access_rule_ids": list(decision.rule_ids)},
-    )
+    if record:
+        _log_policy_decision_async(
+            account_id=account_id,
+            tool_name=tool_name,
+            action="deny",
+            rule_description=reason,
+            tool_args=tool_args,
+            user_id=user_id,
+            execution_id=execution_id,
+            correlation_id=correlation_id,
+            extra_details={"access_rule_ids": list(decision.rule_ids)},
+        )
     return PolicyDecision(
         "deny",
         None,
@@ -1472,6 +1563,9 @@ async def evaluate_policy_async(
     subject_context: Optional[Dict[str, Any]] = None,
     extra_bindings: Optional[Dict[str, Any]] = None,
     server_name: Optional[str] = None,
+    resolve_tool_configuration: bool = True,
+    record: bool = True,
+    trace: Optional[list[dict[str, Any]]] = None,
 ) -> PolicyDecision:
     """Async version of evaluate_policy.
 
@@ -1485,6 +1579,7 @@ async def evaluate_policy_async(
     try:
         denial = _account_authorizer_denial(
             db,
+            record=record,
             tool_name=tool_name,
             tool_args=tool_args,
             account_id=account_id,
@@ -1519,10 +1614,13 @@ async def evaluate_policy_async(
             tool_config = await get_tool_config_by_id_async(
                 db, id=tool_configuration_id, account_id=account_id
             )
-        else:
+        elif resolve_tool_configuration:
             tool_config = await get_tool_config_by_tool_name_async(
                 db, account_id=account_id, tool_name=tool_name
             )
+
+        else:
+            tool_config = None
 
         # Resolve the account's default approval workflow (if any) up front so it
         # can serve as the implicit fallback for ``require_approval`` rules that
@@ -1557,6 +1655,8 @@ async def evaluate_policy_async(
         if extra_bindings:
             context[EXTRA_BINDINGS_KEY] = dict(extra_bindings)
         scoped_decision = _evaluate_rule_candidates(
+            record=record,
+            trace=trace,
             rules=scoped_rules,
             tool_name=tool_name,
             tool_args=tool_args,
@@ -1575,34 +1675,36 @@ async def evaluate_policy_async(
             return scoped_decision
 
         if scoped_rules:
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="allow",
-                rule_description="No scoped rules matched (default allow for subject)",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
+            if record:
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action="allow",
+                    rule_description="No scoped rules matched (default allow for subject)",
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
             return PolicyDecision(
                 "allow", None, "No scoped rules matched (default allow for subject)"
             )
 
         if not tool_config:
             # Log the policy decision (fire-and-forget)
-            _log_policy_decision_async(
-                account_id=account_id,
-                tool_name=tool_name,
-                action="allow",
-                rule_description="No tool configuration found",
-                tool_args=tool_args,
-                user_id=user_id,
-                execution_id=execution_id,
-                correlation_id=correlation_id,
-                extra_details=extra_details,
-            )
+            if record:
+                _log_policy_decision_async(
+                    account_id=account_id,
+                    tool_name=tool_name,
+                    action="allow",
+                    rule_description="No tool configuration found",
+                    tool_args=tool_args,
+                    user_id=user_id,
+                    execution_id=execution_id,
+                    correlation_id=correlation_id,
+                    extra_details=extra_details,
+                )
             return PolicyDecision("allow", None, "No tool configuration found")
 
         # Load all access rules for this tool, ordered by priority (lower first)
@@ -1614,6 +1716,8 @@ async def evaluate_policy_async(
         )
 
         return _evaluate_loaded_access_rules(
+            record=record,
+            trace=trace,
             rules=rules,
             tool_config=tool_config,
             tool_name=tool_name,

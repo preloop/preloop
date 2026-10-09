@@ -340,8 +340,12 @@ export class ApiKeyView extends LitElement {
     }
   }
 
-  private async handleGovernanceUpdate() {
-    if (!this.keyId || !this.governance) return;
+  private async handleGovernanceUpdate(propagateError = false) {
+    if (!this.keyId || !this.governance) {
+      if (propagateError)
+        throw new Error('Governance is not ready. Please try again.');
+      return;
+    }
 
     this.updatingGovernance = true;
     try {
@@ -361,6 +365,7 @@ export class ApiKeyView extends LitElement {
     } catch (err: any) {
       console.error('Error updating governance:', err);
       showToast(err.message || 'Failed to update governance policy', 'danger');
+      if (propagateError) throw err;
     } finally {
       this.updatingGovernance = false;
     }
@@ -443,7 +448,7 @@ export class ApiKeyView extends LitElement {
     if (checked) {
       next = current.some((entry) => this.entryMatchesModel(entry, model))
         ? current
-        : [...current, model.name];
+        : [...current, gatewayAliasForModel(model)];
     } else {
       // Remove every stored entry that names this model, in whatever form
       // it was stored, so the gateway stops honouring it.
@@ -496,11 +501,13 @@ export class ApiKeyView extends LitElement {
     await this.handleGovernanceUpdate();
   }
 
-  private saveScopedToolRule(
+  private async saveScopedToolRule(
     toolName: string,
     existingRule: any,
-    formData: any
+    formData: any,
+    settlement?: { resolve?: () => void; reject?: (message: string) => void }
   ) {
+    const previous = this.scopedToolRules;
     const rules = [...(this.scopedToolRules[toolName] || [])];
     if (existingRule) {
       const i = rules.findIndex((r) => r.id === existingRule.id);
@@ -512,7 +519,17 @@ export class ApiKeyView extends LitElement {
       });
     }
     this.scopedToolRules = { ...this.scopedToolRules, [toolName]: rules };
-    this.handleGovernanceUpdate();
+    try {
+      await this.handleGovernanceUpdate(true);
+      settlement?.resolve?.();
+      showToast('Rule saved.', 'success');
+    } catch (err) {
+      this.scopedToolRules = previous;
+      if (this.governance) this.governance.config.tool_rules = previous;
+      settlement?.reject?.(
+        err instanceof Error ? err.message : 'Failed to save rule'
+      );
+    }
   }
 
   private deleteScopedToolRule(toolName: string, ruleId: string) {
@@ -874,7 +891,8 @@ export class ApiKeyView extends LitElement {
                   this.saveScopedToolRule(
                     e.detail.tool.name,
                     e.detail.existingRule || e.detail.rule,
-                    e.detail.formData
+                    e.detail.formData,
+                    e.detail
                   )}
                 @delete-rule=${(e: CustomEvent) =>
                   this.deleteScopedToolRule(

@@ -376,3 +376,24 @@ replies revalidate actor, permissions, resource access, and scoped read snapshot
 before private provider delivery. Ambiguous writes become observable uncertain
 work rather than automatic duplicate operations. See
 [Chat connections](docs/chat-connections.md) for setup and operational limits.
+
+### Policy draft simulation
+
+`POST /api/v1/policies/evaluate` accepts one sample tool call and a stored
+policy, unsaved tool rule, or draft YAML. It uses the firewall's shared rule
+evaluator with recording disabled and reports the ordered checks, winning
+rule, overlapping rules and condition errors. Model text is an optional separate
+sample; model I/O and sensitive-data evaluators also disable their audit and
+notification hooks. Simulation does not dispatch tools, create approvals or
+record usage. The console's `policy_simulation` capability exposes draft testing
+in the rule dialog and YAML editor. Paths are evaluated as submitted, without
+normalization, so operators can test traversal and repeated-slash samples.
+
+The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
+`enterprise` edition and the running backend `server_version`. Hosted instances
+are Cloud; self-hosted proprietary installations are Enterprise; other installs
+are OSS. Runtime deployment detection wins over static plugin declarations; plugin counts
+never determine the edition.
+Feature flags remain the authority for individual capability gates. The console
+reuses its cached features payload for the header help menu; documentation,
+release notes, and issue/support destinations come from brand URL configuration.
