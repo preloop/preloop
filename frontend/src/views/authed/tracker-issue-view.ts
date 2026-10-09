@@ -131,6 +131,16 @@ export class TrackerIssueView extends LitElement {
     return type.includes('github') || type.includes('gitlab');
   }
 
+  /**
+   * Git trackers implement in their own repository. A Jira issue runs in the
+   * repository its project is bound to; an unbound project gets a 400 from
+   * the server that says how to bind one.
+   */
+  private _canRunImplementer(): boolean {
+    const type = this._tracker?.tracker_type?.toLowerCase() || '';
+    return this._isGitTracker() || type === 'jira';
+  }
+
   private _runImplementer() {
     if (!this._issue) return;
     void openRunPresetDialog({
@@ -232,7 +242,7 @@ export class TrackerIssueView extends LitElement {
             Run triage
           </sl-button>
           ${
-            this._isGitTracker()
+            this._canRunImplementer()
               ? html`
                   <sl-button
                     size="small"

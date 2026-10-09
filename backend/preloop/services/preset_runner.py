@@ -434,11 +434,24 @@ def _tracker_kind_for_issue_payload(tracker: Any, *, git_only: bool) -> str:
     if git_only:
         raise _http(
             400,
-            "Run implementer is only available for GitHub, GitLab and Bitbucket issues",
+            "Run implementer is only available for GitHub, GitLab and Bitbucket "
+            "issues, or for issues of a project bound to a repository "
+            "(settings.repository_bindings, see the Jira repository binding guide)",
         )
     if "jira" in tracker_type:
         return "jira"
     return tracker_type or "tracker"
+
+
+def _project_has_repository_binding(project: Any) -> bool:
+    """Whether ``project`` declares a repository binding (Jira to a code host)."""
+    from preloop.services.repository_binding import REPOSITORY_BINDINGS_KEY
+
+    settings = getattr(project, "settings", None)
+    if not isinstance(settings, dict):
+        return False
+    bindings = settings.get(REPOSITORY_BINDINGS_KEY)
+    return isinstance(bindings, list) and bool(bindings)
 
 
 def _git_tracker_kind(tracker: Any) -> str:
@@ -449,8 +462,15 @@ def _git_tracker_kind(tracker: Any) -> str:
 def build_issue_trigger_payload(
     issue: Any, project: Any, tracker: Any, *, git_only: bool = True
 ) -> Dict[str, Any]:
-    """Build ``trigger_event_data`` for an implementer or triage run on ``issue``."""
-    tracker_kind = _tracker_kind_for_issue_payload(tracker, git_only=git_only)
+    """Build ``trigger_event_data`` for an implementer or triage run on ``issue``.
+
+    An issue-only tracker (Jira) qualifies for an implementer run when its
+    project is bound to a code-host repository: the orchestrator applies the
+    binding exactly as for a Jira webhook trigger.
+    """
+    tracker_kind = _tracker_kind_for_issue_payload(
+        tracker, git_only=git_only and not _project_has_repository_binding(project)
+    )
 
     is_git_tracker = tracker_kind in ("github", "gitlab", "bitbucket")
     repo = _repository_clone_fields(project, tracker) if is_git_tracker else None
@@ -525,6 +545,13 @@ def build_issue_trigger_payload(
             "updated_at": updated_at,
         }
         source = tracker_kind
+        if tracker_kind == "jira" and number:
+            # Same shape as a Jira webhook (``issue.key``), so a bound run
+            # names its branch and write-back after the issue key.
+            payload["issue"] = {
+                "key": str(number),
+                "fields": {"summary": title, "labels": labels},
+            }
 
     return {
         "type": "issue_run",

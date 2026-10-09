@@ -392,6 +392,58 @@ def test_jira_triage_payload_uses_object_attributes():
     assert event["payload"]["object_attributes"]["updated_at"] == "2026-01-04T00:00:00Z"
 
 
+def _jira_issue_project_tracker(settings):
+    issue = MagicMock()
+    issue.id = uuid.uuid4()
+    issue.key = "JMR-1"
+    issue.title = "Add tonnes_to_kg"
+    issue.description = "Perl 5.10"
+    issue.status = "Backlog"
+    issue.updated_at = "2026-10-09T00:00:00Z"
+    issue.meta_data = {"url": "https://example.atlassian.net/browse/JMR-1"}
+    issue.external_url = None
+    project = MagicMock()
+    project.id = uuid.uuid4()
+    project.name = "Jonas Metals Rehearsal"
+    project.slug = "jmr"
+    project.identifier = "10000"
+    project.settings = settings
+    project.meta_data = {}
+    tracker = MagicMock()
+    tracker.id = uuid.uuid4()
+    tracker.account_id = uuid.uuid4()
+    tracker.tracker_type = "jira"
+    tracker.url = "https://example.atlassian.net"
+    return issue, project, tracker
+
+
+def test_jira_implementer_run_allowed_for_a_bound_project():
+    """Live rehearsal 2026-10-09: "Run implementer" on a Jira issue of a
+    project bound to a Bitbucket repository answered 400 "only available for
+    GitHub, GitLab and Bitbucket issues"; the orchestrator already applies the
+    binding for Jira-sourced runs."""
+    issue, project, tracker = _jira_issue_project_tracker(
+        {
+            "repository_bindings": [
+                {"tracker_id": str(uuid.uuid4()), "repository": "ws/repo"}
+            ]
+        }
+    )
+    event = build_issue_trigger_payload(issue, project, tracker)
+    assert event["source"] == "jira"
+    assert event["project_id"] == str(project.id)
+    assert "repository" not in event["payload"]
+    assert event["payload"]["issue"]["key"] == "JMR-1"
+    assert event["payload"]["object_attributes"]["title"] == "Add tonnes_to_kg"
+
+
+def test_jira_implementer_run_refused_without_binding():
+    issue, project, tracker = _jira_issue_project_tracker({})
+    with pytest.raises(PresetRunnerError) as exc:
+        build_issue_trigger_payload(issue, project, tracker)
+    assert "bound to a repository" in str(exc.value.detail)
+
+
 @pytest.mark.asyncio
 async def test_gitlab_issue_payload_number_alias():
     event = _gitlab_issue_payload()
