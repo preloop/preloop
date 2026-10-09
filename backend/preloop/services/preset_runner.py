@@ -454,13 +454,28 @@ def _project_has_repository_binding(project: Any) -> bool:
     return isinstance(bindings, list) and bool(bindings)
 
 
+def _flow_has_repository_binding(git_clone_config: Any) -> bool:
+    """Whether a flow binds itself to a repository (overrides the project)."""
+    from preloop.services.repository_binding import REPOSITORY_BINDINGS_KEY
+
+    if not isinstance(git_clone_config, dict):
+        return False
+    bindings = git_clone_config.get(REPOSITORY_BINDINGS_KEY)
+    return isinstance(bindings, list) and bool(bindings)
+
+
 def _git_tracker_kind(tracker: Any) -> str:
     """Return ``github`` or ``gitlab``, or raise 400 for other tracker types."""
     return _tracker_kind_for_issue_payload(tracker, git_only=True)
 
 
 def build_issue_trigger_payload(
-    issue: Any, project: Any, tracker: Any, *, git_only: bool = True
+    issue: Any,
+    project: Any,
+    tracker: Any,
+    *,
+    git_only: bool = True,
+    flow_git_clone_config: Any = None,
 ) -> Dict[str, Any]:
     """Build ``trigger_event_data`` for an implementer or triage run on ``issue``.
 
@@ -468,8 +483,11 @@ def build_issue_trigger_payload(
     project is bound to a code-host repository: the orchestrator applies the
     binding exactly as for a Jira webhook trigger.
     """
+    bound = _project_has_repository_binding(project) or _flow_has_repository_binding(
+        flow_git_clone_config
+    )
     tracker_kind = _tracker_kind_for_issue_payload(
-        tracker, git_only=git_only and not _project_has_repository_binding(project)
+        tracker, git_only=git_only and not bound
     )
 
     is_git_tracker = tracker_kind in ("github", "gitlab", "bitbucket")
@@ -887,7 +905,11 @@ async def run_preset_on_target(
         }
 
     trigger_event_data = build_issue_trigger_payload(
-        issue, project, tracker, git_only=preset_slug != TRIAGE_SLUG
+        issue,
+        project,
+        tracker,
+        git_only=preset_slug != TRIAGE_SLUG,
+        flow_git_clone_config=getattr(flow, "git_clone_config", None),
     )
     issue_key = _issue_display_key(issue)
 

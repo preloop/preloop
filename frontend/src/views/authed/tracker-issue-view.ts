@@ -138,7 +138,9 @@ export class TrackerIssueView extends LitElement {
    */
   private _canRunImplementer(): boolean {
     const type = this._tracker?.tracker_type?.toLowerCase() || '';
-    return this._isGitTracker() || type === 'jira';
+    return (
+      this._isGitTracker() || type.includes('bitbucket') || type === 'jira'
+    );
   }
 
   private _runImplementer() {

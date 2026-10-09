@@ -437,6 +437,42 @@ def test_jira_implementer_run_allowed_for_a_bound_project():
     assert event["payload"]["object_attributes"]["title"] == "Add tonnes_to_kg"
 
 
+def test_jira_implementer_run_allowed_for_a_flow_level_binding():
+    """Review on #1437: a flow-level binding overrides the project and must
+    qualify too, as resolve_repository_binding honours both."""
+    issue, project, tracker = _jira_issue_project_tracker({})
+    event = build_issue_trigger_payload(
+        issue,
+        project,
+        tracker,
+        flow_git_clone_config={
+            "enabled": True,
+            "repository_bindings": [{"tracker_id": "t", "repository": "ws/repo"}],
+        },
+    )
+    assert event["source"] == "jira"
+
+
+def test_jira_manual_and_webhook_runs_share_a_resource_key():
+    """Review on #1437: without a Jira resource key the coalescing guard was
+    a no-op, so a second manual run on the same issue started a duplicate."""
+    from preloop.services.flow_trigger_service import FlowTriggerService
+
+    issue, project, tracker = _jira_issue_project_tracker(
+        {"repository_bindings": [{"tracker_id": "t", "repository": "ws/repo"}]}
+    )
+    manual = build_issue_trigger_payload(issue, project, tracker)
+    webhook = {
+        "source": "jira",
+        "tracker_id": str(tracker.id),
+        "project_id": str(project.id),
+        "payload": {"issue": {"key": "JMR-1", "fields": {"summary": "x"}}},
+    }
+    key = FlowTriggerService._extract_resource_key(manual)
+    assert key == f"jira:{tracker.id}:issue:JMR-1"
+    assert FlowTriggerService._extract_resource_key(webhook) == key
+
+
 def test_jira_implementer_run_refused_without_binding():
     issue, project, tracker = _jira_issue_project_tracker({})
     with pytest.raises(PresetRunnerError) as exc:
