@@ -161,7 +161,7 @@ jobs:
   #
   # Frontend, plugins, and coverage stay on ubuntu-latest and do not wait
   # for this job. Backend is eighteen shards; this job emits `backend_plan`,
-  # an array of eighteen {runner, container} entries. The first 18-N shards
+  # an array of eighteen {runner} entries. The first 18-N shards
   # stay hosted. The last N shards — the excess — go to idle self-hosted
   # runners. N is min(idle matching runners, 18). Both kinds of runner
   # execute on the machine, not in a nested container, so 127.0.0.1:5432
@@ -226,7 +226,7 @@ jobs:
             if [ "$idle" -gt "$SPLITS" ]; then idle=$SPLITS; fi
 
             plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
-              def slot($runner): {runner:$runner, container:null};
+              def slot($runner): {runner:$runner};
               ($ENV.IDLE|tonumber) as $idle
               | ($ENV.SPLITS|tonumber) as $splits
               | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64"]) else slot("ubuntu-latest") end]
@@ -235,7 +235,7 @@ jobs:
             if [ -z "$plan" ]; then
               idle=0
               reason="$reason (plan fallback: all public)"
-              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-latest","container":None}]*18))')
+              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-latest"}]*18))')
             fi
 
             {
@@ -457,7 +457,6 @@ jobs:
   test-backend:
     name: Backend Tests (${{ matrix.group }}/18)
     runs-on: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
-    container: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].container }}
     needs: [changes, pick-runner]
     if: needs.changes.outputs.backend == 'true'
     timeout-minutes: 15

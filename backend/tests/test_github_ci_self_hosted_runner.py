@@ -53,10 +53,7 @@ def _pick_script() -> str:
 
 def _hosted_slot() -> dict[str, Any]:
     """Public ubuntu-latest shard. Postgres is the machine's, not a service."""
-    return {
-        "runner": "ubuntu-latest",
-        "container": None,
-    }
+    return {"runner": "ubuntu-latest"}
 
 
 def _overflow_slot(pyver: str = "3.11") -> dict[str, Any]:
@@ -66,10 +63,7 @@ def _overflow_slot(pyver: str = "3.11") -> dict[str, Any]:
     ``python:3.11-bookworm`` would hide ``127.0.0.1:5432``.
     """
     del pyver
-    return {
-        "runner": ["self-hosted", "Linux", "X64"],
-        "container": None,
-    }
+    return {"runner": ["self-hosted", "Linux", "X64"]}
 
 
 def _backend_plan(idle: int, pyver: str = "3.11") -> list[dict[str, Any] | None]:
@@ -96,10 +90,7 @@ def test_backend_shards_route_through_pick_runner_plan() -> None:
     assert BACKEND_SHARD in backend["runs-on"]
     assert "backend_plan" in backend["runs-on"]
     assert "pick-runner" in backend["needs"]
-    assert backend["container"] == (
-        "${{ fromJSON(needs.pick-runner.outputs.backend_plan)"
-        f"{BACKEND_SHARD}.container }}}}"
-    )
+    assert "container" not in backend
     # GitHub expressions have no arithmetic. `matrix.group - 1` makes the
     # workflow file invalid and no job starts.
     assert "matrix.group - 1" not in str(backend)
@@ -146,7 +137,7 @@ def test_pick_runner_falls_back_to_the_public_runner() -> None:
     assert "set -e" not in script
     # Fallback is hosted runners with no nested container. Postgres is
     # decided later by scripts/ci_postgres.py, not by this plan.
-    assert "container:null" in script
+    assert "container" not in script
     assert "bookworm" not in script
     assert "postgres_ports" not in script
     # All-or-nothing self-hosted routing is what made CI slower.
@@ -179,9 +170,9 @@ def test_three_idle_runners_only_overflow_the_last_three_shards() -> None:
     hosted = plan[1:16]
     overflow = plan[16:]
     assert all(slot["runner"] == "ubuntu-latest" for slot in hosted)
-    assert all(slot["container"] is None for slot in hosted)
+    assert all("container" not in slot for slot in hosted)
     assert all(slot["runner"] == ["self-hosted", "Linux", "X64"] for slot in overflow)
-    assert all(slot["container"] is None for slot in overflow)
+    assert all("container" not in slot for slot in overflow)
 
 
 def test_zero_idle_runners_keeps_every_shard_on_hosted() -> None:
@@ -193,7 +184,7 @@ def test_zero_idle_runners_keeps_every_shard_on_hosted() -> None:
     assert all(
         slot is not None and slot["runner"] == "ubuntu-latest" for slot in shards
     )
-    assert all(slot is not None and slot["container"] is None for slot in shards)
+    assert all(slot is not None and "container" not in slot for slot in shards)
 
 
 def test_ci_aggregator_fails_when_pick_runner_fails() -> None:
@@ -245,7 +236,7 @@ def test_backend_postgres_reuses_a_listening_instance() -> None:
 
     backend = load_ci_jobs()["test-backend"]
     assert "services" not in backend
-    assert BACKEND_SHARD in backend["container"]
+    assert "container" not in backend
     prepare = step_script(backend, "Prepare Postgres")
     assert "scripts/ci_postgres.py prepare" in prepare
     assert "DATABASE_URL" not in backend["env"]
