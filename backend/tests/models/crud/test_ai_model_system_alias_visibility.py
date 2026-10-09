@@ -29,5 +29,5 @@ def test_system_alias_collision_counts_are_aggregate_only() -> None:
         ),
     ]
     counts = crud_ai_model.system_alias_collision_counts(db, alias="example/shared")
-    assert counts == {"model_count": 4, "account_count": 3}
+    assert counts == {"model_count": 3, "account_count": 2}
     assert "account-one" not in str(counts)

@@ -19,7 +19,7 @@ func TestModelsListSeparatesHostedAndOwnModels(t *testing.T) {
 		case "/api/v1/features":
 			w.Write([]byte(`{"features":{"hosted_models":true,"backend_providers":["example"]}}`))
 		case "/api/v1/account/hosted-models":
-			w.Write([]byte(`{"models":[{"id":"hosted-1","name":"Hosted example","alias":"example/model","own_alias_shadowing":true}],"allowance":{"included_usd":10,"spent_usd":3,"held_usd":2,"remaining_usd":5,"reset_at":"2026-11-01T00:00:00Z"}}`))
+			w.Write([]byte(`{"models":[{"id":"hosted-1","name":"Hosted example","alias":"example/model","own_alias_shadowing":true}],"allowance":{"kind":"monthly","included_usd":10,"spent_usd":3,"held_usd":2,"remaining_usd":5,"reset_at":"2026-11-01T00:00:00Z"}}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -82,5 +82,41 @@ func TestHostedAliasGuardEscapesAliasAndWarns(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Warning:") || !strings.Contains(out.String(), "2 models in 1 accounts") {
 		t.Fatal(out.String())
+	}
+}
+
+func TestModelsListResetCopyUsesAllowanceKind(t *testing.T) {
+	for _, kind := range []string{"monthly", "one_time"} {
+		t.Run(kind, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/v1/ai-models":
+					w.Write([]byte(`[]`))
+				case "/api/v1/features":
+					w.Write([]byte(`{"features":{"hosted_models":true}}`))
+				case "/api/v1/account/hosted-models":
+					w.Write([]byte(`{"models":[],"allowance":{"kind":"` + kind + `","reset_at":null}}`))
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			client, _ := api.NewClient("test-token", server.URL)
+			var out bytes.Buffer
+			if err := executeModelsList(client, &out); err != nil {
+				t.Fatal(err)
+			}
+			expected := "Monthly reset date is not yet verified."
+			if kind == "one_time" {
+				expected = "One-time credit does not reset."
+			}
+			if !strings.Contains(out.String(), expected) {
+				t.Fatalf("missing %q in %s", expected, out.String())
+			}
+			if kind == "monthly" && strings.Contains(out.String(), "One-time credit") {
+				t.Fatal("monthly allowance mislabeled")
+			}
+		})
 	}
 }
