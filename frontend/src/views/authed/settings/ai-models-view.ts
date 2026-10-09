@@ -1,3 +1,5 @@
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import { EditPermissions } from '../../../controllers/edit-permissions';
 import '../../../components/hosted-allowance';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -109,6 +111,7 @@ export function filterModels(
 
 @customElement('ai-models-view')
 export class AIModelsView extends LitElement {
+  private readonly editPermissions = new EditPermissions(this);
   private static readonly FLEET_WINDOW_DAYS = 30;
 
   /** Multi-select for the model table and the card grid. */
@@ -1027,9 +1030,16 @@ export class AIModelsView extends LitElement {
           this.models.length > 0
             ? html`
                 <div slot="main-column">
-                  <sl-button variant="primary" @click=${this.openAddModelModal}>
-                    <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add model
-                  </sl-button>
+                  <sl-tooltip
+                    content=${!this.editPermissions.allows('create_ai_models') ? 'Requires create_ai_models' : ''}
+                    ><sl-button
+                      ?disabled=${!this.editPermissions.allows('create_ai_models')}
+                      variant="primary"
+                      @click=${this.openAddModelModal}
+                    >
+                      <sl-icon slot="prefix" name="plus-lg"></sl-icon> Add model
+                    </sl-button></sl-tooltip
+                  >
                 </div>
               `
             : ''
@@ -1137,14 +1147,18 @@ export class AIModelsView extends LitElement {
                   The AI models your agents reach through the gateway. Add your
                   OpenAI, Anthropic, Gemini, or custom model endpoints.
                 </p>
-                <sl-button
-                  class="empty-cta-btn"
-                  variant="primary"
-                  @click=${this.openAddModelModal}
+                <sl-tooltip
+                  content=${!this.editPermissions.allows('create_ai_models') ? 'Requires create_ai_models' : ''}
+                  ><sl-button
+                    ?disabled=${!this.editPermissions.allows('create_ai_models')}
+                    class="empty-cta-btn"
+                    variant="primary"
+                    @click=${this.openAddModelModal}
+                  >
+                    <sl-icon slot="prefix" name="plus-lg"></sl-icon>
+                    Add model
+                  </sl-button></sl-tooltip
                 >
-                  <sl-icon slot="prefix" name="plus-lg"></sl-icon>
-                  Add model
-                </sl-button>
               </div>
             </sl-card>
           </div>
@@ -1186,6 +1200,7 @@ export class AIModelsView extends LitElement {
    * while something is selected, so picking a model never moves the list.
    */
   private renderBulkBar() {
+    if (!this.editPermissions.allows('delete_ai_models')) return null;
     return html`<list-bulk-bar
       slot="bulk"
       docked
@@ -1210,6 +1225,7 @@ export class AIModelsView extends LitElement {
    * selection of four would silently pick one and discard three.
    */
   private async handleBulkDelete(): Promise<void> {
+    if (!this.editPermissions.allows('delete_ai_models')) return;
     const models = this.selection.selectedItems;
     if (models.length === 0) return;
     const defaults = models.filter((model) => model.is_default);
@@ -1302,7 +1318,13 @@ export class AIModelsView extends LitElement {
       separated: true,
       onClick: () => this.openDeleteConfirm(model),
     });
-    return actions;
+    return actions.filter(
+      (action) =>
+        action.id === 'view' ||
+        this.editPermissions.allows(
+          action.id === 'delete' ? 'delete_ai_models' : 'edit_ai_models'
+        )
+    );
   }
 
   private renderModelActions(model: AIModel) {
@@ -1802,19 +1824,28 @@ export class AIModelsView extends LitElement {
           @click=${() => (this.isDeleteConfirmOpen = false)}
           >Cancel</sl-button
         >
-        <sl-button slot="footer" variant="danger" @click=${this.deleteModel}
-          >Delete</sl-button
+        <sl-tooltip
+          slot="footer"
+          content=${!this.editPermissions.allows('delete_ai_models') ? 'Requires delete_ai_models' : ''}
+          ><sl-button
+            ?disabled=${!this.editPermissions.allows('delete_ai_models')}
+            variant="danger"
+            @click=${this.deleteModel}
+            >Delete</sl-button
+          ></sl-tooltip
         >
       </sl-dialog>
     `;
   }
 
   openAddModelModal() {
+    if (!this.editPermissions.allows('create_ai_models')) return;
     this.editingModel = null;
     this.isModalOpen = true;
   }
 
   openEditModal(model: AIModel) {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     this.editingModel = model;
     this.isModalOpen = true;
   }
@@ -1830,6 +1861,7 @@ export class AIModelsView extends LitElement {
   }
 
   openDeleteConfirm(model: AIModel) {
+    if (!this.editPermissions.allows('delete_ai_models')) return;
     this.modelToDelete = model;
     this.isDeleteConfirmOpen = true;
   }
@@ -1846,6 +1878,7 @@ export class AIModelsView extends LitElement {
   }
 
   async deleteModel() {
+    if (!this.editPermissions.allows('delete_ai_models')) return;
     if (this.modelToDelete) {
       try {
         await deleteAIModel(this.modelToDelete.id);

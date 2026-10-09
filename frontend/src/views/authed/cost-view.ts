@@ -1,3 +1,5 @@
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import { EditPermissions } from '../../controllers/edit-permissions';
 import '../../components/hosted-allowance';
 import {
   parseDigestLink,
@@ -163,6 +165,7 @@ const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
 
 @customElement('cost-view')
 export class CostView extends AuthedElement {
+  private readonly editPermissions = new EditPermissions(this);
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
   @state() private previousRangeSummary: CostAnalyticsSummaryResponse | null =
     null;
@@ -1214,6 +1217,7 @@ export class CostView extends AuthedElement {
   // Re-price unpriced usage rows in the current window from stored tokens and
   // the current price catalog/overrides, then reload the summary.
   private async handleReprice() {
+    if (!this.editPermissions.allows('manage_budgets')) return;
     if (this.repricing || this.repricePending) return;
     this.repricing = true;
     this.repriceNotice = null;
@@ -1270,6 +1274,7 @@ export class CostView extends AuthedElement {
   // coalesces rows with no model alias to "unknown"; pre-filling that
   // placeholder would invite a no-op override, so the field stays empty.
   private openPriceOverrideForUnpriced() {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     this.openPriceOverrideEditor(null);
     const top = this.summary?.unpriced_models?.[0];
     if (top && top.model !== 'unknown') {
@@ -1478,6 +1483,7 @@ export class CostView extends AuthedElement {
    * override is spelled; the row is remembered so a save updates it in place.
    */
   private openPriceOverrideEditor(override: ModelPriceOverride | null) {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     this.overrideActionError = null;
     this.priceFormError = null;
     this.overrideRemoved = null;
@@ -1554,6 +1560,7 @@ export class CostView extends AuthedElement {
    * account now has rather than what this view guessed.
    */
   private async removeOverride() {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     const target = this.overrideRemoveTarget;
     if (!target || this.overrideRemoving) return;
     this.overrideRemoving = true;
@@ -1577,6 +1584,7 @@ export class CostView extends AuthedElement {
   }
 
   private async savePriceOverride() {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     this.priceFormError = null;
     if (!this.priceModelAlias) {
       this.priceFormError = 'Enter a model alias for the price override.';
@@ -1884,25 +1892,32 @@ export class CostView extends AuthedElement {
         }
         ${
           this.billingEnabled
-            ? html`<sl-button
-                size="small"
-                variant="warning"
-                outline
-                .loading=${this.repricing}
-                ?disabled=${this.repricePending}
-                @click=${() => void this.handleReprice()}
-                >Reprice now</sl-button
+            ? html`<sl-tooltip
+                content=${!this.editPermissions.allows('manage_budgets') ? 'Requires manage_budgets' : ''}
+                ><sl-button
+                  size="small"
+                  variant="warning"
+                  outline
+                  .loading=${this.repricing}
+                  ?disabled=${!this.editPermissions.allows('manage_budgets') || this.repricePending}
+                  @click=${() => void this.handleReprice()}
+                  >Reprice now</sl-button
+                ></sl-tooltip
               >`
             : nothing
         }
         ${
           unpricedModels.length && this.modelPriceOverridesEnabled
-            ? html`<sl-button
-                size="small"
-                variant="warning"
-                outline
-                @click=${() => this.openPriceOverrideForUnpriced()}
-                >Set price override</sl-button
+            ? html`<sl-tooltip
+                content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+                ><sl-button
+                  ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+                  size="small"
+                  variant="warning"
+                  outline
+                  @click=${() => this.openPriceOverrideForUnpriced()}
+                  >Set price override</sl-button
+                ></sl-tooltip
               >`
             : nothing
         }
@@ -1978,7 +1993,7 @@ export class CostView extends AuthedElement {
         (${catalog.model_count ?? '?'} models), ${ageDays}
         ${ageDays === 1 ? 'day' : 'days'} old.
         ${
-          ageDays > 45
+          ageDays > 45 && this.editPermissions.allows('edit_ai_models')
             ? html`<button
                 type="button"
                 class="catalog-action"
@@ -2592,6 +2607,7 @@ export class CostView extends AuthedElement {
   private renderTeamsTab() {
     return html`<div class="tab-panel-body">
       <team-budgets-panel
+        .readOnly=${!this.editPermissions.allows('manage_budgets')}
         .startDate=${this.currentPeriod?.startDate}
         .endDate=${this.currentPeriod?.endDate}
         @team-budgets-changed=${() => void this.refreshBudgetsAfterTeamChange()}
@@ -3142,7 +3158,7 @@ export class CostView extends AuthedElement {
         .summary=${this.summary}
         .policies=${this.budgetPolicies}
         .teamNames=${this.teamNames}
-        .configurable=${true}
+        .configurable=${this.editPermissions.allows('manage_budgets')}
         .timeRange=${'month'}
         @configure=${() => (this.budgetDialogOpen = true)}
       ></budget-health-card>
@@ -3300,20 +3316,28 @@ export class CostView extends AuthedElement {
           ${notes.length > 40 ? `${notes.slice(0, 40)}...` : notes}
         </td>
         <td class="override-actions">
-          <sl-button
-            size="small"
-            data-testid="edit-override"
-            @click=${() => this.openPriceOverrideEditor(override)}
-            >Edit</sl-button
+          <sl-tooltip
+            content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+            ><sl-button
+              ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+              size="small"
+              data-testid="edit-override"
+              @click=${() => this.openPriceOverrideEditor(override)}
+              >Edit</sl-button
+            ></sl-tooltip
           >
-          <sl-button
-            size="small"
-            data-testid="remove-override"
-            @click=${() => {
-              this.overrideActionError = null;
-              this.overrideRemoveTarget = override;
-            }}
-            >Remove</sl-button
+          <sl-tooltip
+            content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+            ><sl-button
+              ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+              size="small"
+              data-testid="remove-override"
+              @click=${() => {
+                this.overrideActionError = null;
+                this.overrideRemoveTarget = override;
+              }}
+              >Remove</sl-button
+            ></sl-tooltip
           >
         </td>
       </tr>
@@ -3422,13 +3446,17 @@ export class CostView extends AuthedElement {
               : nothing
           }
           ${this.renderOverrideRemovedNotice()} ${this.renderOverridesTable()}
-          <sl-button
-            variant="primary"
-            @click=${() => this.openPriceOverrideEditor(null)}
+          <sl-tooltip
+            content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+            ><sl-button
+              ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+              variant="primary"
+              @click=${() => this.openPriceOverrideEditor(null)}
+            >
+              <sl-icon slot="prefix" name="plus"></sl-icon>
+              Add price override
+            </sl-button></sl-tooltip
           >
-            <sl-icon slot="prefix" name="plus"></sl-icon>
-            Add price override
-          </sl-button>
         </div>
       </sl-card>
     `;
@@ -3527,14 +3555,18 @@ export class CostView extends AuthedElement {
           >
             Cancel
           </sl-button>
-          <sl-button
-            variant="danger"
-            data-testid="confirm-remove-override"
-            .loading=${this.overrideRemoving}
-            @click=${() => void this.removeOverride()}
+          <sl-tooltip
+            content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+            ><sl-button
+              ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+              variant="danger"
+              data-testid="confirm-remove-override"
+              .loading=${this.overrideRemoving}
+              @click=${() => void this.removeOverride()}
+            >
+              Remove override
+            </sl-button></sl-tooltip
           >
-            Remove override
-          </sl-button>
         </div>
       </sl-dialog>
     `;
@@ -3763,19 +3795,23 @@ export class CostView extends AuthedElement {
           >
             Cancel
           </sl-button>
-          <sl-button
-            variant="primary"
-            data-testid="save-override"
-            .loading=${this.saving}
-            @click=${async () => {
-              await this.savePriceOverride();
-              if (!this.priceFormError) {
-                this.priceDialogOpen = false;
-              }
-            }}
+          <sl-tooltip
+            content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+            ><sl-button
+              ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+              variant="primary"
+              data-testid="save-override"
+              .loading=${this.saving}
+              @click=${async () => {
+                await this.savePriceOverride();
+                if (!this.priceFormError) {
+                  this.priceDialogOpen = false;
+                }
+              }}
+            >
+              Save override
+            </sl-button></sl-tooltip
           >
-            Save override
-          </sl-button>
         </div>
       </sl-dialog>
     `;
@@ -3797,6 +3833,7 @@ export class CostView extends AuthedElement {
             this.budgetDialogOpen
               ? html`
                   <budget-policy-editor
+                    .readOnly=${!this.editPermissions.allows('manage_budgets')}
                     billingEnabled
                     @budget-policies-changed=${this.handleBudgetPoliciesChanged}
                   ></budget-policy-editor>

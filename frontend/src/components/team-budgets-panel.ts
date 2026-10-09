@@ -1,3 +1,4 @@
+import { EditPermissions } from '../controllers/edit-permissions';
 import { html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { AuthedElement } from '../api';
@@ -41,6 +42,11 @@ function periodLabel(period: string): string {
  */
 @customElement('team-budgets-panel')
 export class TeamBudgetsPanel extends AuthedElement {
+  private readonly editPermissions = new EditPermissions(this);
+  @property({ type: Boolean }) readOnly = false;
+  private get canManage(): boolean {
+    return !this.readOnly && this.editPermissions.allows('manage_budgets');
+  }
   /** Window start (ISO) shared with the rest of the Cost page. */
   @property({ attribute: false }) startDate?: string;
   /** Window end (ISO) shared with the rest of the Cost page. */
@@ -137,6 +143,7 @@ export class TeamBudgetsPanel extends AuthedElement {
   }
 
   private async addBudget(): Promise<void> {
+    if (!this.canManage) return;
     // Number('') is 0: an untouched field must not become a $0 hard limit.
     const limit = Number(this.formLimit);
     if (
@@ -173,6 +180,7 @@ export class TeamBudgetsPanel extends AuthedElement {
   }
 
   private async removeBudget(budget: TeamBudget): Promise<void> {
+    if (!this.canManage) return;
     this.actionError = null;
     const confirmed = await confirmDialog({
       title: 'Remove team budget?',
@@ -258,12 +266,16 @@ export class TeamBudgetsPanel extends AuthedElement {
                           ${this.money(budget.soft_limit_usd)}
                         </td>
                         <td>
-                          <sl-button
-                            size="small"
-                            variant="text"
-                            @click=${() => void this.removeBudget(budget)}
-                            >Remove</sl-button
-                          >
+                          ${
+                            this.canManage
+                              ? html`<sl-button
+                                  size="small"
+                                  variant="text"
+                                  @click=${() => void this.removeBudget(budget)}
+                                  >Remove</sl-button
+                                >`
+                              : nothing
+                          }
                         </td>
                       </tr>`
                   )
@@ -275,7 +287,7 @@ export class TeamBudgetsPanel extends AuthedElement {
         </table>
       </div>
       ${
-        this.usage.length
+        this.canManage && this.usage.length
           ? html`<div class="form">
               <sl-select
                 label="Team"

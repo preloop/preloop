@@ -1,3 +1,5 @@
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../../../router';
@@ -105,6 +107,7 @@ const PER_1K_TO_PER_1M = 1000;
 
 @customElement('ai-model-detail-view')
 export class AIModelDetailView extends LitElement {
+  private readonly editPermissions = new EditPermissions(this);
   @property({ type: String })
   modelId = '';
 
@@ -1175,7 +1178,10 @@ export class AIModelDetailView extends LitElement {
   }
 
   private get canEditPrice(): boolean {
-    return this.priceOverridesEnabled;
+    return (
+      this.priceOverridesEnabled &&
+      this.editPermissions.allows('edit_ai_models')
+    );
   }
 
   /** Fill the form from the price in force, so editing starts from today. */
@@ -1228,6 +1234,7 @@ export class AIModelDetailView extends LitElement {
 
   /** Ask the provider what it charges. The answer fills the form, unsaved. */
   private async fetchProviderPrice(): Promise<void> {
+    if (!this.canEditPrice) return;
     if (!this.modelId) {
       return;
     }
@@ -1270,6 +1277,7 @@ export class AIModelDetailView extends LitElement {
    * by accident.
    */
   private async savePrice(): Promise<void> {
+    if (!this.canEditPrice) return;
     const input = this.parsePrice(this.priceDraft.input);
     const output = this.parsePrice(this.priceDraft.output);
     const cached = this.parsePrice(this.priceDraft.cachedInput);
@@ -1691,6 +1699,7 @@ export class AIModelDetailView extends LitElement {
   }
 
   private openEditModal = () => {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     if (!this.model) {
       return;
     }
@@ -1714,6 +1723,7 @@ export class AIModelDetailView extends LitElement {
   };
 
   private async confirmDelete() {
+    if (!this.editPermissions.allows('delete_ai_models')) return;
     if (!this.model) {
       return;
     }
@@ -1729,6 +1739,7 @@ export class AIModelDetailView extends LitElement {
   }
 
   private async enableGatewayRouting() {
+    if (!this.editPermissions.allows('edit_ai_models')) return;
     if (!this.model?.id || !this.model.has_api_key) {
       this.validationError =
         'Add upstream API credentials on this model before enabling gateway routing.';
@@ -2454,6 +2465,8 @@ export class AIModelDetailView extends LitElement {
               ? html`<sl-button
                   size="small"
                   data-testid="fetch-price"
+                  ?disabled=${!this.canEditPrice}
+                  title=${!this.priceOverridesEnabled ? 'Price overrides are part of Preloop Cloud and Enterprise' : !this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
                   ?loading=${this.pricingFetching}
                   @click=${() => void this.fetchProviderPrice()}
                   >Fetch from provider</sl-button
@@ -2468,7 +2481,7 @@ export class AIModelDetailView extends LitElement {
           }
         </div>
         ${
-          this.canEditPrice
+          this.priceOverridesEnabled
             ? ''
             : html`<div class="meta-line">
                 Price overrides are part of Preloop Cloud and Enterprise. The
@@ -2607,6 +2620,8 @@ export class AIModelDetailView extends LitElement {
             variant="primary"
             size="small"
             data-testid="save-price"
+            ?disabled=${!this.canEditPrice}
+            title=${!this.priceOverridesEnabled ? 'Price overrides are part of Preloop Cloud and Enterprise' : !this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
             ?loading=${this.pricingSaving}
             @click=${() => void this.savePrice()}
             >Save price</sl-button
@@ -2672,23 +2687,31 @@ export class AIModelDetailView extends LitElement {
                     ${
                       this.model?.has_api_key
                         ? html`
-                            <sl-button
-                              variant="primary"
-                              ?loading=${this.gatewayEnableInFlight}
-                              @click=${this.enableGatewayRouting}
+                            <sl-tooltip
+                              content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+                              ><sl-button
+                                ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+                                variant="primary"
+                                ?loading=${this.gatewayEnableInFlight}
+                                @click=${this.enableGatewayRouting}
+                              >
+                                Enable Preloop gateway routing
+                              </sl-button></sl-tooltip
                             >
-                              Enable Preloop gateway routing
-                            </sl-button>
                           `
                         : html`
                             Add upstream API credentials
-                            <sl-button
-                              variant="text"
-                              size="small"
-                              @click=${this.openEditModal}
+                            <sl-tooltip
+                              content=${!this.editPermissions.allows('edit_ai_models') ? 'Requires edit_ai_models' : ''}
+                              ><sl-button
+                                ?disabled=${!this.editPermissions.allows('edit_ai_models')}
+                                variant="text"
+                                size="small"
+                                @click=${this.openEditModal}
+                              >
+                                (edit this model)
+                              </sl-button></sl-tooltip
                             >
-                              (edit this model)
-                            </sl-button>
                             before enabling gateway routing.
                           `
                     }
@@ -2757,7 +2780,11 @@ export class AIModelDetailView extends LitElement {
                 separated: true,
                 onClick: this.openDeleteConfirm,
               },
-            ]}
+            ].filter((action) =>
+              this.editPermissions.allows(
+                action.id === 'delete' ? 'delete_ai_models' : 'edit_ai_models'
+              )
+            )}
           ></resource-actions>
         </div>
       </view-header>
@@ -2902,6 +2929,7 @@ export class AIModelDetailView extends LitElement {
             <sl-card>
               <div slot="header" class="model-title">Budget Management</div>
               <budget-policy-editor
+                .readOnly=${!this.editPermissions.allows('manage_budgets')}
                 subjectType="ai_model"
                 .subjectId=${this.modelId}
               ></budget-policy-editor>
@@ -3039,8 +3067,15 @@ export class AIModelDetailView extends LitElement {
           @click=${() => (this.isDeleteConfirmOpen = false)}
           >Cancel</sl-button
         >
-        <sl-button slot="footer" variant="danger" @click=${this.confirmDelete}
-          >Delete</sl-button
+        <sl-tooltip
+          slot="footer"
+          content=${!this.editPermissions.allows('delete_ai_models') ? 'Requires delete_ai_models' : ''}
+          ><sl-button
+            ?disabled=${!this.editPermissions.allows('delete_ai_models')}
+            variant="danger"
+            @click=${this.confirmDelete}
+            >Delete</sl-button
+          ></sl-tooltip
         >
       </sl-dialog>
     `;

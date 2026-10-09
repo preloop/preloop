@@ -399,3 +399,16 @@ model row captured at request time, so later alias changes cannot relabel histor
 the allowance when supported. Before adding a system alias, operators can run
 `preloop models check-hosted-alias ALIAS` for aggregate collision warnings.
 The lookup exposes no account identifiers and does not change model routing.
+
+
+### Console edit permissions
+
+Edit controls use the cached user profile with three distinct states: a null
+permission list preserves OSS behavior, an RBAC list grants only named actions,
+and an unresolved or failed profile disables edits. Budget components also accept
+`readOnly` to display limits without add/edit/delete actions. Models use separate
+create/edit/delete grants; user actions use `manage_users`, invitations use
+`invite_users`, and team actions mirror the endpoint's create/edit/delete/manage
+permissions. Backend authorization remains the enforcement boundary.
+
+Model-price override edits and provider-price fetches require `edit_ai_models`; repricing and budget controls require `manage_budgets`. User role assignment requires `assign_roles`, independently of user management. Console capability copy is based on plan availability, separately from viewer permissions.

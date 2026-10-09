@@ -25,6 +25,12 @@ describe('AIModelsView', () => {
     fetchStub = sinon.stub(window, 'fetch');
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/auth/users/me')) {
+        return new Response(JSON.stringify({ permissions: null }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
       if (url === '/api/v1/ai-models') {
         return new Response(

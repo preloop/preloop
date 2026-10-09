@@ -1277,6 +1277,25 @@ describe('AIModelDetailView', () => {
     });
   });
 
+  it('explains a plan restriction on disabled price controls', async () => {
+    featureFlags = { model_price_overrides: false };
+    pricingResponse.fetch_supported = true;
+    const element = await mountModel();
+    (element as any).pricingEditOpen = true;
+    await element.updateComplete;
+    const card = pricingCard(element);
+    for (const selector of [
+      '[data-testid="fetch-price"]',
+      '[data-testid="save-price"]',
+    ]) {
+      const button = card.querySelector(selector);
+      expect(button, selector).to.exist;
+      expect(button!.getAttribute('title')).to.equal(
+        'Price overrides are part of Preloop Cloud and Enterprise'
+      );
+    }
+  });
+
   it('leaves legacy async completion unconfirmed', async () => {
     featureFlags = { model_price_overrides: true };
     repriceResponse = {

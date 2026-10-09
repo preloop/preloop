@@ -1,3 +1,5 @@
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -47,6 +49,7 @@ import { roleLabel } from '../../../utils/role-label';
 
 @customElement('team-management-view')
 export class TeamManagementView extends LitElement {
+  private readonly editPermissions = new EditPermissions(this);
   @state()
   private teams: Team[] = [];
 
@@ -353,6 +356,7 @@ export class TeamManagementView extends LitElement {
   }
 
   async handleCreateTeam() {
+    if (!this.editPermissions.allows('create_teams')) return;
     if (!this.newTeam.name) {
       this.dialogError = 'Enter a team name.';
       return;
@@ -371,6 +375,7 @@ export class TeamManagementView extends LitElement {
   }
 
   async handleEditTeam() {
+    if (!this.editPermissions.allows('edit_teams')) return;
     if (!this.selectedTeam) return;
 
     this.dialogError = null;
@@ -387,6 +392,7 @@ export class TeamManagementView extends LitElement {
   }
 
   async handleDeleteTeam(team: Team) {
+    if (!this.editPermissions.allows('delete_teams')) return;
     const confirmed = await confirmDialog({
       title: 'Delete team?',
       message: `Delete the team "${team.name}"?`,
@@ -421,6 +427,7 @@ export class TeamManagementView extends LitElement {
   }
 
   async handleAddMember() {
+    if (!this.editPermissions.allows('manage_teams')) return;
     if (!this.selectedTeam || !this.selectedUserId) return;
 
     try {
@@ -440,6 +447,7 @@ export class TeamManagementView extends LitElement {
   }
 
   async handleRemoveMember(userId: string) {
+    if (!this.editPermissions.allows('manage_teams')) return;
     if (!this.selectedTeam) return;
     const team = this.selectedTeam;
 
@@ -465,6 +473,7 @@ export class TeamManagementView extends LitElement {
   }
 
   openEditModal(team: Team) {
+    if (!this.editPermissions.allows('edit_teams')) return;
     this.selectedTeam = team;
     this.editTeam = {
       name: team.name,
@@ -475,6 +484,7 @@ export class TeamManagementView extends LitElement {
   }
 
   private openCreateModal() {
+    if (!this.editPermissions.allows('create_teams')) return;
     this.dialogError = null;
     this.isCreateModalOpen = true;
   }
@@ -489,6 +499,7 @@ export class TeamManagementView extends LitElement {
   }
 
   async openRoleModal(team: Team) {
+    if (!this.editPermissions.allows('manage_teams')) return;
     this.selectedTeam = team;
     this.dialogError = null;
     this.isRoleModalOpen = true;
@@ -501,6 +512,7 @@ export class TeamManagementView extends LitElement {
   }
 
   async handleToggleRole(roleId: string, isChecked: boolean) {
+    if (!this.editPermissions.allows('manage_teams')) return;
     if (!this.selectedTeam) return;
 
     try {
@@ -551,10 +563,17 @@ export class TeamManagementView extends LitElement {
     return html`
       <view-header headerText="Teams" width="narrow">
         <div slot="main-column">
-          <sl-button variant="primary" @click=${this.openCreateModal}>
-            <sl-icon slot="prefix" name="people-fill"></sl-icon>
-            Create team
-          </sl-button>
+          <sl-tooltip
+            content=${!this.editPermissions.allows('create_teams') ? 'Requires create_teams' : ''}
+            ><sl-button
+              ?disabled=${!this.editPermissions.allows('create_teams')}
+              variant="primary"
+              @click=${this.openCreateModal}
+            >
+              <sl-icon slot="prefix" name="people-fill"></sl-icon>
+              Create team
+            </sl-button></sl-tooltip
+          >
         </div>
       </view-header>
 
@@ -574,9 +593,16 @@ export class TeamManagementView extends LitElement {
               <p>
                 No teams yet. Teams let several people share the same roles.
               </p>
-              <sl-button size="small" @click=${this.openCreateModal}>
-                Create team
-              </sl-button>
+              <sl-tooltip
+                content=${!this.editPermissions.allows('create_teams') ? 'Requires create_teams' : ''}
+                ><sl-button
+                  ?disabled=${!this.editPermissions.allows('create_teams')}
+                  size="small"
+                  @click=${this.openCreateModal}
+                >
+                  Create team
+                </sl-button></sl-tooltip
+              >
             </div>`
           : ''
       }
@@ -619,13 +645,19 @@ export class TeamManagementView extends LitElement {
                   }
                 </div>
                 <div class="team-actions">
-                  <sl-button
-                    size="small"
-                    title="Manage roles"
-                    @click=${() => this.openRoleModal(team)}
-                  >
-                    <sl-icon name="shield-check" label="Manage roles"></sl-icon>
-                  </sl-button>
+                  <sl-tooltip
+                    content=${!this.editPermissions.allows('manage_teams') ? 'Requires manage_teams' : ''}
+                    ><sl-button
+                      ?disabled=${!this.editPermissions.allows('manage_teams')}
+                      size="small"
+                      title="Manage roles"
+                      @click=${() => this.openRoleModal(team)}
+                    >
+                      <sl-icon
+                        name="shield-check"
+                        label="Manage roles"
+                      ></sl-icon> </sl-button
+                  ></sl-tooltip>
                   <sl-button
                     size="small"
                     title="Members"
@@ -633,13 +665,19 @@ export class TeamManagementView extends LitElement {
                   >
                     <sl-icon name="person-lines-fill" label="Members"></sl-icon>
                   </sl-button>
-                  <sl-button
-                    size="small"
-                    title="Edit team"
-                    @click=${() => this.openEditModal(team)}
-                  >
-                    <sl-icon name="pencil" label="Edit team"></sl-icon>
-                  </sl-button>
+                  <sl-tooltip
+                    content=${!this.editPermissions.allows('edit_teams') ? 'Requires edit_teams' : ''}
+                    ><sl-button
+                      ?disabled=${!this.editPermissions.allows('edit_teams')}
+                      size="small"
+                      title="Edit team"
+                      @click=${() => this.openEditModal(team)}
+                    >
+                      <sl-icon
+                        name="pencil"
+                        label="Edit team"
+                      ></sl-icon> </sl-button
+                  ></sl-tooltip>
                   ${
                     this.subaccounts.length > 0
                       ? html`<sl-button
@@ -662,16 +700,22 @@ export class TeamManagementView extends LitElement {
                   }
                   <!-- Outline, last, after a gap (DESIGN.md "Destructive
                        actions"). -->
-                  <sl-button
-                    class="danger-action"
-                    size="small"
-                    variant="danger"
-                    outline
-                    title="Delete team"
-                    @click=${() => this.handleDeleteTeam(team)}
-                  >
-                    <sl-icon name="trash" label="Delete team"></sl-icon>
-                  </sl-button>
+                  <sl-tooltip
+                    content=${!this.editPermissions.allows('delete_teams') ? 'Requires delete_teams' : ''}
+                    ><sl-button
+                      ?disabled=${!this.editPermissions.allows('delete_teams')}
+                      class="danger-action"
+                      size="small"
+                      variant="danger"
+                      outline
+                      title="Delete team"
+                      @click=${() => this.handleDeleteTeam(team)}
+                    >
+                      <sl-icon
+                        name="trash"
+                        label="Delete team"
+                      ></sl-icon> </sl-button
+                  ></sl-tooltip>
                 </div>
               </div>
             </sl-card>
@@ -707,13 +751,16 @@ export class TeamManagementView extends LitElement {
             @sl-input=${(e: any) => (this.newTeam.description = e.target.value)}
           ></sl-textarea>
         </div>
-        <sl-button
-          slot="footer"
-          variant="primary"
-          @click=${this.handleCreateTeam}
+        <sl-tooltip
+          content=${!this.editPermissions.allows('create_teams') ? 'Requires create_teams' : ''}
+          ><sl-button
+            ?disabled=${!this.editPermissions.allows('create_teams')}
+            variant="primary"
+            @click=${this.handleCreateTeam}
+          >
+            Create team
+          </sl-button></sl-tooltip
         >
-          Create team
-        </sl-button>
         <sl-button
           slot="footer"
           variant="default"
@@ -743,13 +790,17 @@ export class TeamManagementView extends LitElement {
               (this.editTeam.description = e.target.value)}
           ></sl-textarea>
         </div>
-        <sl-button
+        <sl-tooltip
           slot="footer"
-          variant="primary"
-          @click=${this.handleEditTeam}
+          content=${!this.editPermissions.allows('edit_teams') ? 'Requires edit_teams' : ''}
+          ><sl-button
+            ?disabled=${!this.editPermissions.allows('edit_teams')}
+            variant="primary"
+            @click=${this.handleEditTeam}
+          >
+            Save changes
+          </sl-button></sl-tooltip
         >
-          Save changes
-        </sl-button>
         <sl-button
           slot="footer"
           variant="default"
@@ -780,15 +831,21 @@ export class TeamManagementView extends LitElement {
                         </span>
                         <span class="member-email">${user?.email || ''}</span>
                       </div>
-                      <sl-button
-                        size="small"
-                        variant="danger"
-                        outline
-                        title="Remove from team"
-                        @click=${() => this.handleRemoveMember(member.user_id)}
-                      >
-                        <sl-icon name="x-lg" label="Remove from team"></sl-icon>
-                      </sl-button>
+                      <sl-tooltip
+                        content=${!this.editPermissions.allows('manage_teams') ? 'Requires manage_teams' : ''}
+                        ><sl-button
+                          ?disabled=${!this.editPermissions.allows('manage_teams')}
+                          size="small"
+                          variant="danger"
+                          outline
+                          title="Remove from team"
+                          @click=${() => this.handleRemoveMember(member.user_id)}
+                        >
+                          <sl-icon
+                            name="x-lg"
+                            label="Remove from team"
+                          ></sl-icon> </sl-button
+                      ></sl-tooltip>
                     </div>
                   `;
                 })
@@ -817,7 +874,14 @@ export class TeamManagementView extends LitElement {
                   `
                 )}
             </sl-select>
-            <sl-button @click=${this.handleAddMember}>Add</sl-button>
+            <sl-tooltip
+              content=${!this.editPermissions.allows('manage_teams') ? 'Requires manage_teams' : ''}
+              ><sl-button
+                ?disabled=${!this.editPermissions.allows('manage_teams')}
+                @click=${this.handleAddMember}
+                >Add</sl-button
+              ></sl-tooltip
+            >
           </div>
         </div>
 
@@ -843,6 +907,7 @@ export class TeamManagementView extends LitElement {
             return html`
               <div class="role-item">
                 <sl-checkbox
+                  ?disabled=${!this.editPermissions.allows('manage_teams')}
                   ?checked=${isAssigned}
                   @sl-change=${(e: any) =>
                     this.handleToggleRole(role.id, e.target.checked)}
