@@ -101,6 +101,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.account_governance_cache import get_cached_account_meta_data
+from preloop.services.usage_token_details import extract_token_details
 from preloop.services.agent_session_headers import (
     normalize_session_id,
     runtime_principal_type,
@@ -9092,10 +9093,8 @@ class OpenAIGatewayService:
     ) -> Dict[str, Optional[int]]:
         """Extract cache/reasoning token counts from a provider usage payload.
 
-        Unifies the OpenAI shape (``prompt_tokens_details.cached_tokens`` /
-        ``cache_creation_tokens``, ``completion_tokens_details.reasoning_tokens``)
-        and the Anthropic shape (top-level ``cache_read_input_tokens`` /
-        ``cache_creation_input_tokens``).
+        Delegates to :func:`preloop.services.usage_token_details.extract_token_details`,
+        which reads the Chat Completions, Responses and Anthropic shapes.
 
         Args:
             usage_details: Raw provider usage dict, possibly empty.
@@ -9104,40 +9103,7 @@ class OpenAIGatewayService:
             Dict with ``cache_read_tokens``, ``cache_creation_tokens``, and
             ``reasoning_tokens`` (None when the provider reported nothing).
         """
-        usage_details = usage_details or {}
-        prompt_details = usage_details.get("prompt_tokens_details")
-        prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
-        cache_creation = prompt_details.get("cache_creation")
-        cache_creation = cache_creation if isinstance(cache_creation, dict) else {}
-        completion_details = usage_details.get("completion_tokens_details")
-        completion_details = (
-            completion_details if isinstance(completion_details, dict) else {}
-        )
-
-        def _first_int(*values: Any) -> Optional[int]:
-            for value in values:
-                if value is not None:
-                    try:
-                        return int(value)
-                    except (TypeError, ValueError):
-                        continue
-            return None
-
-        return {
-            "cache_read_tokens": _first_int(
-                prompt_details.get("cached_tokens"),
-                usage_details.get("cache_read_input_tokens"),
-            ),
-            "cache_creation_tokens": _first_int(
-                prompt_details.get("cache_creation_tokens"),
-                prompt_details.get("cache_creation_input_tokens"),
-                cache_creation.get("ephemeral_5m_input_tokens"),
-                usage_details.get("cache_creation_input_tokens"),
-            ),
-            "reasoning_tokens": _first_int(
-                completion_details.get("reasoning_tokens"),
-            ),
-        }
+        return extract_token_details(usage_details)
 
     def _estimate_usage_fallback(
         self,
