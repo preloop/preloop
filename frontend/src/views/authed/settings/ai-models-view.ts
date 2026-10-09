@@ -1,3 +1,4 @@
+import '../../../components/hosted-allowance';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
@@ -1034,6 +1035,8 @@ export class AIModelsView extends LitElement {
             : ''
         }
       </view-header>
+      <hosted-allowance show-models></hosted-allowance>
+      <h2>Your models</h2>
       <div class="column-layout narrow">
         <div class="main-column">
           <div class="page">

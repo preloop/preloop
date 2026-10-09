@@ -251,6 +251,25 @@ describe('PlanView', () => {
           return json({ plugins: [], features: { billing } });
         }
 
+        if (url.includes('/api/v1/billing/summary')) {
+          return json({
+            subscription: null,
+            plan: { id: 'free', name: 'Free', features: {} },
+            trial: { is_trialing: false },
+            hosted_models: {
+              models: [],
+              current_usage_usd: 0,
+              remaining_limit_usd: 0,
+            },
+            seats: {
+              active_users: 1,
+              included_users: 1,
+              over_included: false,
+              seat_addon: null,
+            },
+          });
+        }
+
         if (url.includes('/api/v1/billing/plan-change-options')) {
           const catalog = opts.unpricedPlan
             ? [...CATALOG, UNPRICED_CATALOG]

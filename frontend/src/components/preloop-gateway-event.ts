@@ -1,3 +1,4 @@
+import { billingAttribution } from '../utils/billing-attribution';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import type {
@@ -563,6 +564,7 @@ ${previewText}</pre>
     }
 
     return html`
+      <p class="gateway-event-summary-meta">${billingAttribution(payload)}</p>
       <sl-details
         class="gateway-event"
         ?open=${this.expanded}

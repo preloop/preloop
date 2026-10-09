@@ -1,3 +1,5 @@
+import '../../../components/billing-subscription-details';
+import type { BillingSummary } from '../../../types/billing-summary';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
@@ -89,6 +91,7 @@ export class PlanView extends LitElement {
   @state() private _requestedLabel = '';
   @state() private _checkoutPlan = '';
   @state() private _notice = '';
+  @state() private _summary: BillingSummary | null = null;
 
   /**
    * Re-read the current plan when something changed the subscription.
@@ -115,7 +118,7 @@ export class PlanView extends LitElement {
    */
   private async _reloadOptions(): Promise<void> {
     try {
-      await this._loadOptions();
+      await Promise.all([this._loadOptions(), this._loadSummary()]);
       this._error = '';
     } catch (error) {
       this._error =
@@ -169,6 +172,7 @@ export class PlanView extends LitElement {
       const [content] = await Promise.all([
         loadPricingContent(),
         this._loadOptions(),
+        this._loadSummary(),
       ]);
       this._plans = cloudPlans(content);
       this._comparison = content.comparison;
@@ -181,6 +185,15 @@ export class PlanView extends LitElement {
     } finally {
       this._loading = false;
     }
+  }
+
+  private async _loadSummary(): Promise<void> {
+    const response = await fetchWithAuth('/api/v1/billing/summary', {
+      cache: 'no-store',
+    });
+    if (!response.ok)
+      throw new Error('Could not load your subscription and usage.');
+    this._summary = await response.json();
   }
 
   /** Current plan, eligibility and permission, from the billing plugin. */
@@ -542,6 +555,11 @@ export class PlanView extends LitElement {
           ${
             this._billingEnabled
               ? html`
+                  <billing-subscription-details
+                    .summary=${this._summary}
+                    .plans=${this._options?.plans ?? []}
+                    .canManageBilling=${this._options?.can_manage_billing === true}
+                  ></billing-subscription-details>
                   ${this._renderCards()}
                   <!--
                     The section confirms the change; the cards above still

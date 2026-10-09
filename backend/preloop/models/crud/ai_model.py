@@ -412,6 +412,30 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 len({str(row.account_id) for row in shadowing}),
             )
 
+    def system_alias_collision_counts(
+        self, db: Session, *, alias: str
+    ) -> dict[str, int]:
+        """Return aggregate warning counts without disclosing tenant identities."""
+        from preloop.services.model_runtime_resolver import effective_gateway_alias
+
+        rows = db.query(self.model).filter(self.model.account_id.is_not(None)).all()
+        matching = []
+        for row in rows:
+            metadata = row.meta_data if isinstance(row.meta_data, dict) else {}
+            gateway = metadata.get("gateway")
+            declared = gateway.get("model_alias") if isinstance(gateway, dict) else None
+            configured = (
+                declared.strip()
+                if isinstance(declared, str) and declared.strip()
+                else effective_gateway_alias(row)
+            )
+            if configured == alias:
+                matching.append(row)
+        return {
+            "model_count": len(matching),
+            "account_count": len({str(row.account_id) for row in matching}),
+        }
+
     def create_with_account(
         self,
         db: Session,

@@ -1,3 +1,4 @@
+import { billingAttribution } from '../../utils/billing-attribution';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 
@@ -1451,6 +1452,7 @@ export class ApiUsageView extends LitElement {
             ${item.outcome}
           </sl-badge>
         </div>
+        <div class="search-meta">${billingAttribution(item.meta_data)}</div>
         <div class="search-excerpt">${item.excerpt}</div>
         <div class="search-meta">
           ${this.formatDateTimeLabel(item.timestamp)} ·

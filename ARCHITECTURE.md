@@ -383,3 +383,18 @@ are OSS. Plugins can declare an edition, but plugin counts never determine it.
 Feature flags remain the authority for individual capability gates. The console
 reuses its cached features payload for the header help menu; documentation,
 release notes, and issue/support destinations come from brand URL configuration.
+
+
+### Hosted model visibility and request billing attribution
+
+The console loads entitled hosted models and durable allowance balances through
+the capability-gated `/account/hosted-models` API. Models, Cost, and Plan share
+the allowance display, including outstanding holds and the monthly reset date;
+one-time credit has no reset. Subscription details live on Plan, while Account
+links to that view. Gateway events preserve the billing path and actual resolved
+model row captured at request time, so later alias changes cannot relabel history.
+
+`preloop models list` separates your models from Preloop-hosted models and reports
+the allowance when supported. Before adding a system alias, operators can run
+`preloop models check-hosted-alias ALIAS` for aggregate collision warnings.
+The lookup exposes no account identifiers and does not change model routing.

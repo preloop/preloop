@@ -1,3 +1,4 @@
+import '../../../components/billing-subscription-details';
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
@@ -318,6 +319,37 @@ describe('AccountView', () => {
     );
   });
 
+  it('keeps only the plan summary and link on Account', async () => {
+    fetchStub = createFetchStub({
+      billing: true,
+      seats: {
+        active_users: 2,
+        included_users: 5,
+        max_users: 5,
+        over_included: false,
+        seat_addon: null,
+      },
+    });
+    const element = await fixture<AccountView>(
+      html`<account-view></account-view>`
+    );
+    await waitUntil(() => !(element as any)._loading);
+    await element.updateComplete;
+    const summary = element.shadowRoot!.querySelector(
+      '[data-testid="billing-summary"]'
+    )!;
+    expect(summary.textContent).to.contain('Pro Plan');
+    expect(summary.querySelector('a')!.getAttribute('href')).to.equal(
+      '/console/settings/plan'
+    );
+    expect(element.shadowRoot!.textContent).not.to.contain(
+      'included users in use'
+    );
+    expect(element.shadowRoot!.textContent).not.to.contain(
+      'Built-in model usage'
+    );
+  });
+
   it('renders organization details after load (non-billing edition)', async () => {
     fetchStub = createFetchStub({ billing: false });
     const element = (await fixture(
@@ -344,7 +376,7 @@ describe('AccountView', () => {
   it('renders subscription information in the billing edition', async () => {
     fetchStub = createFetchStub({ billing: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(
@@ -363,7 +395,7 @@ describe('AccountView', () => {
     // button sat there disabled where the one useful action belongs.
     fetchStub = createFetchStub({ billing: true, freeTier: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -380,7 +412,7 @@ describe('AccountView', () => {
   it('sends "Choose a plan" to the plan page', async () => {
     fetchStub = createFetchStub({ billing: true, freeTier: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -403,7 +435,7 @@ describe('AccountView', () => {
   it('offers a subscribed account the plan page beside the portal', async () => {
     fetchStub = createFetchStub({ billing: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -426,7 +458,7 @@ describe('AccountView', () => {
   it('falls back to a full page load where no router claimed the path', async () => {
     fetchStub = createFetchStub({ billing: true, freeTier: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -450,7 +482,7 @@ describe('AccountView', () => {
   it('keeps the portal button for a subscription, disabled only without the permission', async () => {
     fetchStub = createFetchStub({ billing: true, canManageBilling: false });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -521,7 +553,7 @@ describe('AccountView', () => {
       effectivePlan: { id: 'teams', name: 'Legacy Teams' },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -549,7 +581,7 @@ describe('AccountView', () => {
       effectivePlan: { id: 'teams', name: 'Legacy Teams' },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -561,7 +593,7 @@ describe('AccountView', () => {
       'Legacy Teams'
     );
     expect(card?.querySelector('.status-chip')?.textContent?.trim()).to.equal(
-      'active'
+      'Active'
     );
     expect(card?.querySelector('.date')?.textContent).to.contain('Renews on');
     // The retired name must not survive anywhere on the card, and "Teams"
@@ -582,7 +614,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -619,7 +651,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -653,7 +685,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -684,7 +716,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -699,7 +731,7 @@ describe('AccountView', () => {
   it('still says "Renews on" for a future period end', async () => {
     fetchStub = createFetchStub({ billing: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -719,7 +751,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -734,7 +766,7 @@ describe('AccountView', () => {
   it('hides the interval toggle and grid when no plans render (D13)', async () => {
     fetchStub = createFetchStub({ billing: true, plans: [] });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -749,7 +781,7 @@ describe('AccountView', () => {
     // This page states which plan is current and links to the rest.
     fetchStub = createFetchStub({ billing: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -765,7 +797,7 @@ describe('AccountView', () => {
   it('never offers an opt-in for extra usage that does not exist (D13)', async () => {
     fetchStub = createFetchStub({ billing: true, extraCreditPricePerUsd: 1 });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -783,7 +815,7 @@ describe('AccountView', () => {
     // A marked-up rate is still a price for something nobody can buy.
     fetchStub = createFetchStub({ billing: true, extraCreditPricePerUsd: 1.2 });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -795,7 +827,7 @@ describe('AccountView', () => {
     expect(copy(element)).to.not.contain('per $1.00 of additional usage');
   });
 
-  it('shows $0.00 and the whole cap when a capped plan has no usage yet', async () => {
+  it('does not invent spend or remaining credit when balances are unverified', async () => {
     // The founder's Legacy Teams account: $10 allowance, $10 cap, nothing
     // spent, so the server sends no usage figure at all. "Not configured"
     // there reads as a broken plan; the account simply has not spent.
@@ -809,15 +841,15 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
 
     const cells = usageCells(element);
-    expect(cells['Usage so far']).to.equal('$0.00');
-    expect(cells['Remaining before cap']).to.equal('$10');
+    expect(cells['Usage so far']).to.equal('Not verified');
+    expect(cells['Remaining before cap']).to.equal('Not verified');
     expect(cells['Current active cap']).to.equal('$10');
     expect(copy(element)).to.not.contain('Not configured');
   });
@@ -833,7 +865,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -855,19 +887,19 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
 
     const cells = usageCells(element);
-    expect(cells['Usage so far']).to.equal('Not configured');
+    expect(cells['Usage so far']).to.equal('Not verified');
     expect(cells['Remaining before cap']).to.equal('Not configured');
     expect(cells['Monthly allowance']).to.equal('Not configured');
   });
 
-  it('measures zero spend against the free tier one-time credit', async () => {
+  it('keeps unverified one-time spend distinct from zero', async () => {
     // Free has a one-time credit instead of a monthly cap, so the cap-based
     // check alone would call an untouched grant "Not configured".
     fetchStub = createFetchStub({
@@ -882,7 +914,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
 
     await waitUntil(() => !(element as any)._loading, 'load');
@@ -890,9 +922,9 @@ describe('AccountView', () => {
 
     const cells = usageCells(element);
     expect(cells['One-time credit']).to.equal('$5.00');
-    expect(cells['Usage so far']).to.equal('$0.00');
+    expect(cells['Usage so far']).to.equal('Not verified');
     // No cap to subtract from, so nothing is invented for the cap cell.
-    expect(cells['Remaining before cap']).to.equal('Not configured');
+    expect(cells['Remaining before cap']).to.equal('Not verified');
   });
   it('keeps the sales-led plan (null price) and drops only the $0 plan', async () => {
     fetchStub = createFetchStub({
@@ -922,12 +954,16 @@ describe('AccountView', () => {
       ],
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
 
-    const ids = (element as any)._publicPlans.map((p: any) => p.id);
+    const ids = (element as any).plans
+      .filter(
+        (plan: any) => plan.price_monthly === null || plan.price_monthly > 0
+      )
+      .map((p: any) => p.id);
     // Enterprise has no price, but it is still a plan you can move to. The
     // old filter dropped it along with Free and left no route to sales.
     expect(ids).to.deep.equal(['pro', 'enterprise']);
@@ -940,7 +976,7 @@ describe('AccountView', () => {
       hostedOverrides: { one_time_credit_usd: 0.5, included_limit_usd: null },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -956,7 +992,7 @@ describe('AccountView', () => {
   it('calls the paid hosted grant a monthly allowance', async () => {
     fetchStub = createFetchStub({ billing: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -984,7 +1020,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -1017,7 +1053,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -1041,7 +1077,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -1064,7 +1100,7 @@ describe('AccountView', () => {
       },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -1085,7 +1121,7 @@ describe('AccountView', () => {
       effectivePlan: { id: 'teams', name: 'Legacy Teams' },
     });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -1102,7 +1138,7 @@ describe('AccountView', () => {
   it('does not label a current plan as grandfathered', async () => {
     fetchStub = createFetchStub({ billing: true });
     const element = (await fixture(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     )) as AccountView;
     await waitUntil(() => !(element as any)._loading, 'load');
     await element.updateComplete;
@@ -1127,7 +1163,7 @@ describe('AccountView', () => {
   it('keeps portal mutations disabled for a member without billing permission', async () => {
     fetchStub = createFetchStub({ billing: true, canManageBilling: false });
     const element = await fixture<AccountView>(
-      html`<account-view></account-view>`
+      html`<billing-subscription-details></billing-subscription-details>`
     );
     await waitUntil(() => !(element as any)._loading);
     await element.updateComplete;

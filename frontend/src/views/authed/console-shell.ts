@@ -167,6 +167,7 @@ export class ConsoleShell extends LitElement {
   /** Configured trial length, from the plugin, for the screen's own copy. */
   @state()
   private _planChoiceTrialDays = 0;
+  private _planChoiceEmail = '';
 
   @state()
   private _sidebarOpen = false;
@@ -737,6 +738,7 @@ export class ConsoleShell extends LitElement {
   private _startPlanChoiceCheck(profile: UserProfile | null): void {
     if (this.features['billing'] !== true) return;
     if (profile?.plan_choice_made !== false) return;
+    this._planChoiceEmail = profile.email;
     this._planChoice = 'checking';
     void (async () => {
       const decision = await getPlanChoice();
@@ -1039,6 +1041,8 @@ export class ConsoleShell extends LitElement {
       return html`
         <plan-choice-screen
           .trialDays=${this._planChoiceTrialDays}
+          .email=${this._planChoiceEmail}
+          .checking=${this._planChoice === 'checking'}
           @plan-choice-made=${this._handlePlanChoiceMade}
         ></plan-choice-screen>
       `;

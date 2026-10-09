@@ -218,6 +218,59 @@ describe('PlanChoiceScreen', () => {
     localStorage.clear();
   });
 
+  it('keeps a labelled neutral loader and makes no pricing request while checking', async () => {
+    fetchStub = createFetchStub();
+    const el = await fixture<PlanChoiceScreen>(
+      html`<plan-choice-screen
+        .checking=${true}
+        email="person@example.com"
+      ></plan-choice-screen>`
+    );
+    await el.updateComplete;
+    expect(el.shadowRoot!.textContent).to.contain('person@example.com');
+    expect(
+      el.shadowRoot!.querySelector('sl-spinner')!.getAttribute('label')
+    ).to.equal('Checking your account');
+    expect(el.shadowRoot!.querySelector('pricing-card')).to.equal(null);
+    expect(
+      fetchStub!
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('landing-content'))
+    ).to.equal(false);
+    el.checking = false;
+    await waitUntil(
+      () => el.shadowRoot!.querySelector('pricing-card') !== null
+    );
+  });
+
+  it('lets the signed-in reader sign out and reaches branded help', async () => {
+    const original = (window as any).BRAND_CONFIG;
+    (window as any).BRAND_CONFIG = {
+      name: 'Example',
+      docs_url: 'https://example.com/help',
+      branding: { logo_light: '/logo.svg', logo_dark: '/logo.svg' },
+    };
+    try {
+      const el = await mount();
+      expect(el.shadowRoot!.querySelector('logo-component')).to.exist;
+      expect(el.shadowRoot!.querySelector('a')!.getAttribute('href')).to.equal(
+        'https://example.com/help'
+      );
+      const signOut = Array.from(
+        el.shadowRoot!.querySelectorAll('button')
+      ).find((button) => button.textContent?.includes('Sign out'))!;
+      signOut.click();
+      await waitUntil(() => localStorage.getItem('accessToken') === null);
+      expect(
+        fetchStub!
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('logout'))
+      ).to.equal(true);
+    } finally {
+      (window as any).BRAND_CONFIG = original;
+    }
+  });
+
   it('shows the same cloud ladder as the pricing page, and no dismiss', async () => {
     const element = await mount();
 

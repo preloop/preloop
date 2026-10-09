@@ -1,3 +1,4 @@
+import '../../components/hosted-allowance';
 import {
   parseDigestLink,
   withoutDigestPeriod,
@@ -3830,6 +3831,7 @@ export class CostView extends AuthedElement {
           headerText="Cost"
           description="Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend."
         ></view-header>
+        <hosted-allowance></hosted-allowance>
 
         ${this.activeAccountLabel ? html`<p class="active-account">Active account: ${this.activeAccountLabel}</p>` : nothing}
         ${this.renderDigestNotice()}

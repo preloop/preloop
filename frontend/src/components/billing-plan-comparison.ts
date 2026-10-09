@@ -732,6 +732,7 @@ export class BillingPlanComparison extends LitElement {
       this.accepted = false;
       this.busy = null;
     }
+    if (this.result && !this.error) await this.refresh();
   }
 
   private navigate(url: string): void {
@@ -1492,7 +1493,7 @@ export class BillingPlanComparison extends LitElement {
             </section>`
           : nothing
       }
-      ${this.result ? html`<p class="success" role="status">${this.result.status === 'scheduled' ? 'Plan change scheduled' : 'Plan changed'}: ${this.result.plan_id}, effective ${this.date(this.result.effective_at)}. Refresh to see your subscription.</p>` : nothing}
+      ${this.result ? html`<p class="success" role="status">${this.result.status === 'scheduled' ? 'Plan change scheduled' : 'Plan changed'}: ${this.options?.plans.find((plan) => plan.id === this.result?.plan_id)?.name || this.target?.name || 'Your plan'}, effective ${this.date(this.result.effective_at)}.</p>` : nothing}
       ${this.loading ? html`<p role="status">Loading current prices and usage coverage…</p>` : nothing}
       ${!this.loading && o ? (this.changing ? this.renderChange() : this.renderCollapsed()) : nothing}
     </section>`;
