@@ -696,3 +696,12 @@ cli/
 ## License
 
 Apache License 2.0. See `../LICENSE`.
+
+### Offline managed hook export
+
+`preloop agents managed-config claude-code --output ./review-bundle --platform linux --cli-path /opt/preloop/bin/preloop --timeout 300`
+exports a secret-free Claude Code PreToolUse overlay, versioned manifest and
+preview. It supports macOS, Windows and Linux targets and performs no enrollment,
+installation, credential/config discovery, telemetry or network work. Per-device
+credentials are a separate prerequisite and app behavior remains unverified.
+See the [Claude Code rollout guide](../docs/guide/clients/claude-code.md#export-a-managed-hook-overlay).
