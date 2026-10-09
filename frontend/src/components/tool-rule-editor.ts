@@ -188,7 +188,7 @@ export class ToolRuleEditor extends LitElement {
 
       .form-group .hint {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin-top: var(--sl-spacing-2x-small);
       }
 
@@ -245,7 +245,7 @@ export class ToolRuleEditor extends LitElement {
 
       .action-card .action-desc {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin-top: var(--sl-spacing-2x-small);
       }
 
@@ -962,6 +962,7 @@ export class ToolRuleEditor extends LitElement {
   ) {
     return html`
       <sl-select
+        aria-label="Condition argument"
         size="small"
         value=${value}
         @sl-change=${(e: Event) => onChange((e.target as any).value)}
@@ -996,6 +997,7 @@ export class ToolRuleEditor extends LitElement {
     if (args.length > 0) {
       return html`
         <sl-select
+          aria-label="Comparison operator"
           class="param-select"
           size="small"
           value=${value}
@@ -1008,6 +1010,7 @@ export class ToolRuleEditor extends LitElement {
     }
     return html`
       <sl-input
+        aria-label="Comparison value"
         size="small"
         value=${value}
         @sl-input=${(e: Event) => onChange((e.target as any).value)}
@@ -1039,6 +1042,7 @@ export class ToolRuleEditor extends LitElement {
             <div>
               <label>Value</label>
               <sl-input
+                aria-label="Condition expression"
                 size="small"
                 value=${this._simpleValue}
                 @sl-input=${(e: Event) =>
@@ -1095,6 +1099,7 @@ export class ToolRuleEditor extends LitElement {
                 <div>
                   ${i === 0 ? html`<label>Value</label>` : ''}
                   <sl-input
+                    aria-label="Condition value"
                     size="small"
                     value=${cond.value}
                     @sl-input=${(e: Event) =>
@@ -1290,6 +1295,7 @@ export class ToolRuleEditor extends LitElement {
 
           <div class="workflow-select-row">
             <sl-select
+              aria-label="Approval workflow"
               size="small"
               hoist
               placeholder="Select an approval workflow..."

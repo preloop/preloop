@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
+import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -24,6 +26,7 @@ import '../../../components/view-header';
 
 @customElement('security-view')
 export class SecurityView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private currentPassword = '';
 
@@ -128,7 +131,7 @@ export class SecurityView extends LitElement {
                               used
                               ${
                                 session.last_seen_at
-                                  ? new Date(
+                                  ? parseUTCDate(
                                       session.last_seen_at
                                     ).toLocaleString()
                                   : 'never'
@@ -343,9 +346,7 @@ export class SecurityView extends LitElement {
                                         ${passkey.name}
                                         <small>
                                           added
-                                          ${new Date(
-                                            passkey.created_at
-                                          ).toLocaleDateString()}
+                                          ${parseUTCDate(passkey.created_at).toLocaleDateString()}
                                         </small>
                                       </span>
                                       <sl-button
@@ -435,7 +436,7 @@ export class SecurityView extends LitElement {
       }
 
       .passkey-item small {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin-left: 0.5rem;
       }
 

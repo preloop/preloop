@@ -173,7 +173,7 @@ export class ToolsEditorComponent extends LitElement {
     }
     .section-icon {
       transition: transform 0.2s ease;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
     .section-icon.open {
       transform: rotate(90deg);
@@ -184,7 +184,7 @@ export class ToolsEditorComponent extends LitElement {
     }
     .section-meta {
       font-size: var(--sl-font-size-small);
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       margin-left: var(--sl-spacing-medium);
     }
     .section-actions {
@@ -548,7 +548,7 @@ export class ToolsEditorComponent extends LitElement {
                   ${
                     group.tools.length === 0
                       ? html`<div
-                          style="padding: var(--sl-spacing-small); color: var(--sl-color-neutral-400); font-size: var(--sl-font-size-small);"
+                          style="padding: var(--sl-spacing-small); color: var(--console-meta-color); font-size: var(--sl-font-size-small);"
                         >
                           No tools${this.filterText ? ' matching filter' : ''}.
                           ${
@@ -623,7 +623,7 @@ export class ToolsEditorComponent extends LitElement {
         ${
           groups.length === 0
             ? html`<div
-                style="padding: 2rem; text-align: center; color: var(--sl-color-neutral-400);"
+                style="padding: 2rem; text-align: center; color: var(--console-meta-color);"
               >
                 ${
                   this.family === 'native'

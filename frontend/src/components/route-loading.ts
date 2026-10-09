@@ -39,7 +39,7 @@ export class RouteLoading extends LitElement {
     p {
       margin: 0;
       font-size: 0.8125rem;
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
 
     @keyframes appear {

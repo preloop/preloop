@@ -1,3 +1,6 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+import { parseUTCDate } from '../../utils/date';
+import { formatUsd, formatUsdExact } from '../../utils/money';
 import {
   LitElement,
   css,
@@ -133,6 +136,7 @@ const UUID_IN_IDENTIFIER =
 
 @customElement('agent-detail-view')
 export class AgentDetailView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @property({ type: String })
   agentId = '';
 
@@ -1008,10 +1012,6 @@ export class AgentDetailView extends LitElement {
     return getAgentSourceLabel(sourceType);
   }
 
-  private formatMoney(amount: number | null | undefined): string {
-    return `$${(amount || 0).toFixed(2)}`;
-  }
-
   private getLifecycleVariant(): string {
     if (!this.agent) return 'neutral';
     if (this.agent.lifecycle_state === 'decommissioned') return 'danger';
@@ -1137,10 +1137,10 @@ export class AgentDetailView extends LitElement {
       const usageA = this.usageByModel.find((u) => u.model_alias === a);
       const usageB = this.usageByModel.find((u) => u.model_alias === b);
       const timeA = usageA?.last_request_at
-        ? new Date(usageA.last_request_at).getTime()
+        ? parseUTCDate(usageA.last_request_at).getTime()
         : 0;
       const timeB = usageB?.last_request_at
-        ? new Date(usageB.last_request_at).getTime()
+        ? parseUTCDate(usageB.last_request_at).getTime()
         : 0;
       return timeB - timeA;
     });
@@ -1263,7 +1263,7 @@ export class AgentDetailView extends LitElement {
             ></token-figures>
           </span>
           <span class="strip-value"
-            >${this.formatMoney(aggregate?.estimated_cost)}</span
+            >${html`<span title=${formatUsdExact(aggregate?.estimated_cost)}>${formatUsd(aggregate?.estimated_cost)}</span>`}</span
           >
           <span class="strip-requests"
             >${requests} request${requests === 1 ? '' : 's'}</span
@@ -2115,7 +2115,7 @@ export class AgentDetailView extends LitElement {
     if (!value) {
       return 'None';
     }
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) {
       return value;
     }
@@ -2912,7 +2912,7 @@ export class AgentDetailView extends LitElement {
                       No flow uses this agent yet.
                     </p>
                     <p
-                      style="margin: 4px 0 0 0; font-size: var(--sl-font-size-small); color: var(--sl-color-neutral-400);"
+                      style="margin: 4px 0 0 0; font-size: var(--sl-font-size-small); color: var(--console-meta-color);"
                     >
                       Add it as a step in a flow to have it run on a schedule or
                       on an event.
@@ -2961,7 +2961,7 @@ export class AgentDetailView extends LitElement {
                               ${flow.description || 'No description provided.'}
                             </div>
                             <div
-                              style="font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-400); margin-top: 6px; display: flex; gap: 12px;"
+                              style="font-size: var(--sl-font-size-x-small); color: var(--console-meta-color); margin-top: 6px; display: flex; gap: 12px;"
                             >
                               <span
                                 >Trigger:
@@ -3329,6 +3329,7 @@ export class AgentDetailView extends LitElement {
                               style="display: flex; align-items: center; gap: var(--sl-spacing-medium); flex-shrink: 0;"
                             >
                               <sl-select
+                                aria-label="Native tool approval mode"
                                 id="agent-native-tool-approvals-mode"
                                 size="small"
                                 hoist
@@ -3361,6 +3362,7 @@ export class AgentDetailView extends LitElement {
                                 </sl-option>
                               </sl-select>
                               <sl-select
+                                aria-label="Approval workflow"
                                 id="agent-approval-workflow-select"
                                 size="small"
                                 hoist
@@ -3601,7 +3603,7 @@ export class AgentDetailView extends LitElement {
                                                     }
                                                   ></token-figures
                                                   ><span
-                                                    style="color: var(--sl-color-neutral-500);"
+                                                    style="color: var(--console-meta-color);"
                                                   >
                                                     ·
                                                   </span>`
@@ -3611,9 +3613,7 @@ export class AgentDetailView extends LitElement {
                                             usage || showZeroSpend
                                               ? html`<span
                                                   style="color: var(--sl-color-primary-600); font-weight: 600;"
-                                                  >${this.formatMoney(
-                                                    usage?.estimated_cost ?? 0
-                                                  )}
+                                                  >${html`<span title=${formatUsdExact(usage?.estimated_cost ?? 0)}>${formatUsd(usage?.estimated_cost ?? 0)}</span>`}
                                                   spent</span
                                                 >`
                                               : ''
@@ -3628,9 +3628,7 @@ export class AgentDetailView extends LitElement {
                                             budget.monthly_usd_limit
                                               ? html`<span
                                                   style="color: var(--sl-color-neutral-600);"
-                                                  >${this.formatMoney(
-                                                    budget.monthly_usd_limit
-                                                  )}
+                                                  >${html`<span title=${formatUsdExact(budget.monthly_usd_limit)}>${formatUsd(budget.monthly_usd_limit)}</span>`}
                                                   budget</span
                                                 >`
                                               : ''
@@ -3847,6 +3845,7 @@ export class AgentDetailView extends LitElement {
           just 'key' for boolean tags.
         </div>
         <sl-input
+          aria-label="Agent tags"
           placeholder="e.g. env=prod target=aws db"
           .value=${this.tagsDialogInput}
           @input=${(e: Event) =>

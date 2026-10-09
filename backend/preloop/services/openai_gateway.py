@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from preloop.services.model_gateway_budget import (
+    is_built_in_hosted_model as model_billing_is_hosted,
+)
+
 import atexit
 import asyncio
 from copy import deepcopy
@@ -9868,6 +9872,11 @@ class OpenAIGatewayService:
             runtime_principal_name=runtime_principal.get("name"),
             rate_limit_retry_after_ms=rate_limit_retry_after_ms,
             meta_data={
+                "billing_path": "allowance"
+                if model_billing_is_hosted(ai_model)
+                else "your_key",
+                "billing_model_id": str(ai_model.id),
+                "billing_model_name": ai_model.name,
                 "request_id": getattr(self, "_live_request_id", None),
                 "endpoint_kind": endpoint_kind,
                 "requested_model": requested_model,

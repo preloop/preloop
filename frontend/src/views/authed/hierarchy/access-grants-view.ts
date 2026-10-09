@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
+import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -43,36 +45,40 @@ const LEVELS = GRANT_LEVELS;
  */
 @customElement('access-grants-view')
 export class AccessGrantsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-      }
-      form {
-        display: grid;
-        gap: var(--sl-spacing-small);
-        max-width: 36rem;
-        margin-bottom: var(--sl-spacing-large);
-      }
-      .error {
-        color: var(--sl-color-danger-700);
-      }
-      .off-state,
-      .hint {
-        color: var(--console-meta-color, var(--sl-color-neutral-600));
-      }
-      .table-scroll {
-        overflow-x: auto;
-      }
-    `,
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        th,
+        td {
+          text-align: left;
+          padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+        }
+        form {
+          display: grid;
+          gap: var(--sl-spacing-small);
+          max-width: 36rem;
+          margin-bottom: var(--sl-spacing-large);
+        }
+        .error {
+          color: var(--sl-color-danger-700);
+        }
+        .off-state,
+        .hint {
+          color: var(--console-meta-color, var(--sl-color-neutral-600));
+        }
+        .table-scroll {
+          overflow-x: auto;
+        }
+      `,
+    ],
   ];
 
   @state() private accountId = '';
@@ -326,35 +332,37 @@ export class AccessGrantsView extends LitElement {
               ${
                 this.grants.length === 0
                   ? html`<p class="empty-state">No grants yet.</p>`
-                  : html`<div class="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Who</th>
-                            <th>Level</th>
-                            <th>Where</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${this.grants.map(
-                            (grant) =>
-                              html`<tr data-id=${grant.id}>
-                                <td>${this.subjectLabel(grant)}</td>
-                                <td>${LEVELS[grant.level] ?? grant.level}</td>
-                                <td>${this.targetLabel(grant)}</td>
-                                <td>
-                                  <sl-button
-                                    size="small"
-                                    @click=${() => this.revoke(grant)}
-                                    >Revoke</sl-button
-                                  >
-                                </td>
-                              </tr>`
-                          )}
-                        </tbody>
-                      </table>
-                    </div>`
+                  : html`
+                      <div class="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Who</th>
+                              <th>Level</th>
+                              <th>Where</th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${this.grants.map(
+                              (grant) =>
+                                html`<tr data-id=${grant.id}>
+                                  <td>${this.subjectLabel(grant)}</td>
+                                  <td>${LEVELS[grant.level] ?? grant.level}</td>
+                                  <td>${this.targetLabel(grant)}</td>
+                                  <td>
+                                    <sl-button
+                                      size="small"
+                                      @click=${() => this.revoke(grant)}
+                                      >Revoke</sl-button
+                                    >
+                                  </td>
+                                </tr>`
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    `
               }
             `
       }

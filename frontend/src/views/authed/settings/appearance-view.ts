@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
@@ -10,6 +11,7 @@ import '../../../components/view-header';
 
 @customElement('appearance-view')
 export class AppearanceView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private selectedTheme: Theme = DEFAULT_THEME;
 

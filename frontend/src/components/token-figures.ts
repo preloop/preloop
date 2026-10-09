@@ -243,17 +243,17 @@ export class TokenFigures extends LitElement {
     /* 13px meta, the step below body on the console type scale. 0.9em
        landed on 12.6px, a size the ladder does not have. */
     .unit {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--console-text-meta, 13px);
     }
 
     .cache {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--console-text-meta, 13px);
     }
 
     .empty {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
   `;
 

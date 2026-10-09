@@ -7738,6 +7738,41 @@ export async function updateDiscoveryCandidate(
   return response.json();
 }
 
+export interface HostedModelCatalog {
+  models: Array<{
+    id: string;
+    name: string;
+    provider_name: string;
+    model_identifier: string;
+    alias: string;
+    tariff: {
+      input_price_per_1k: number;
+      output_price_per_1k: number;
+      request_price: number;
+    } | null;
+    available: boolean;
+    operated_by: string;
+    billed_to: 'allowance';
+    own_alias_shadowing: boolean;
+  }>;
+  allowance: {
+    kind: 'one_time' | 'monthly';
+    included_usd: number | null;
+    spent_usd: number | null;
+    held_usd: number | null;
+    remaining_usd: number | null;
+    reset_at: string | null;
+    coverage: 'known' | 'unknown';
+  };
+}
+
+/** Account-bound, authenticated hosted inventory; absent on OSS backends. */
+export async function getHostedModels(): Promise<HostedModelCatalog> {
+  const response = await fetchWithAuth('/api/v1/account/hosted-models');
+  if (!response.ok) throw new Error('Could not load built-in hosted models.');
+  return response.json();
+}
+
 export interface PolicyEvaluationResult {
   decision: string;
   matched_rule: string | null;

@@ -1,9 +1,14 @@
+import { tableScrollStyles } from '../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import { Router } from '../router';
 import { fetchWithAuth } from '../api.js';
-import { formatLocalDateTime, formatRelativeTime } from '../utils/date';
+import {
+  formatLocalDateTime,
+  formatRelativeTime,
+  parseUTCDate,
+} from '../utils/date';
 import {
   effectiveViewMode,
   loadViewMode,
@@ -177,7 +182,7 @@ export class TrackerList extends LitElement {
     };
     const checked = (tracker: Tracker) => {
       const value = trackerLastCheckedAt(tracker);
-      return value ? new Date(value).getTime() || 0 : 0;
+      return value ? parseUTCDate(value).getTime() || 0 : 0;
     };
     switch (this.sortKey) {
       case 'kind':
@@ -381,219 +386,222 @@ export class TrackerList extends LitElement {
   }
 
   static styles = [
-    consoleDialogStyles,
-    unsafeCSS(consoleStyles),
-    css`
-      :host {
-        display: block;
-      }
+    tableScrollStyles,
+    [
+      consoleDialogStyles,
+      unsafeCSS(consoleStyles),
+      css`
+        :host {
+          display: block;
+        }
 
-      .toolbar-wrap {
-        margin-bottom: var(--sl-spacing-medium);
-      }
+        .toolbar-wrap {
+          margin-bottom: var(--sl-spacing-medium);
+        }
 
-      .tracker-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-        gap: var(--sl-spacing-large);
-        padding-top: var(--sl-spacing-medium);
-      }
+        .tracker-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+          gap: var(--sl-spacing-large);
+          padding-top: var(--sl-spacing-medium);
+        }
 
-      .loading-indicator {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        height: 100px;
-      }
+        .loading-indicator {
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          height: 100px;
+        }
 
-      .empty-state-wrapper {
-        display: flex;
-        justify-content: center;
-        width: 100%;
-        margin-top: var(--sl-spacing-large);
-      }
+        .empty-state-wrapper {
+          display: flex;
+          justify-content: center;
+          width: 100%;
+          margin-top: var(--sl-spacing-large);
+        }
 
-      .empty-card {
-        width: 100%;
-        max-width: 580px;
-      }
+        .empty-card {
+          width: 100%;
+          max-width: 580px;
+        }
 
-      .empty-card::part(base) {
-        border: 1px solid
-          color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
-        box-shadow: var(--sl-shadow-large);
-        border-radius: var(--sl-border-radius-large);
-        overflow: hidden;
-      }
+        .empty-card::part(base) {
+          border: 1px solid
+            color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
+          box-shadow: var(--sl-shadow-large);
+          border-radius: var(--sl-border-radius-large);
+          overflow: hidden;
+        }
 
-      .empty-card-body {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding: var(--sl-spacing-large);
-      }
+        .empty-card-body {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          padding: var(--sl-spacing-large);
+        }
 
-      .empty-icon-circle {
-        width: 72px;
-        height: 72px;
-        border-radius: 50%;
-        background: color-mix(
-          in srgb,
-          var(--sl-color-primary-600) 15%,
-          transparent
-        );
-        color: var(--sl-color-primary-600);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: var(--sl-spacing-medium);
-      }
+        .empty-icon-circle {
+          width: 72px;
+          height: 72px;
+          border-radius: 50%;
+          background: color-mix(
+            in srgb,
+            var(--sl-color-primary-600) 15%,
+            transparent
+          );
+          color: var(--sl-color-primary-600);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-bottom: var(--sl-spacing-medium);
+        }
 
-      .empty-icon-circle sl-icon {
-        font-size: 2.5rem;
-      }
+        .empty-icon-circle sl-icon {
+          font-size: 2.5rem;
+        }
 
-      .empty-card-title {
-        margin: 0 0 var(--sl-spacing-2x-small);
-        font-size: 1.25rem;
-        font-weight: 700;
-        color: var(--sl-color-neutral-900);
-      }
+        .empty-card-title {
+          margin: 0 0 var(--sl-spacing-2x-small);
+          font-size: 1.25rem;
+          font-weight: 700;
+          color: var(--sl-color-neutral-900);
+        }
 
-      .empty-card-desc {
-        margin: 0 0 var(--sl-spacing-large);
-        max-width: 440px;
-        font-size: 0.95rem;
-        line-height: 1.55;
-        color: var(--sl-color-neutral-600);
-      }
+        .empty-card-desc {
+          margin: 0 0 var(--sl-spacing-large);
+          max-width: 440px;
+          font-size: 0.95rem;
+          line-height: 1.55;
+          color: var(--sl-color-neutral-600);
+        }
 
-      .empty-cta-btn {
-        width: 100%;
-        max-width: 280px;
-      }
+        .empty-cta-btn {
+          width: 100%;
+          max-width: 280px;
+        }
 
-      .filter-empty {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-body);
-        padding: var(--sl-spacing-large) 0;
-      }
+        .filter-empty {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-body);
+          padding: var(--sl-spacing-large) 0;
+        }
 
-      .trackers-table {
-        table-layout: fixed;
-        width: 100%;
-      }
+        .trackers-table {
+          table-layout: fixed;
+          width: 100%;
+        }
 
-      /* The same header recipe as the Flows list: the label is a button,
+        /* The same header recipe as the Flows list: the label is a button,
          uppercase and in the meta register, with the caret beside it. */
-      .sort-button {
-        align-items: center;
-        background: none;
-        border: none;
-        color: var(--sl-color-neutral-600);
-        cursor: pointer;
-        display: flex;
-        font: inherit;
-        font-size: var(--sl-font-size-x-small);
-        font-weight: var(--sl-font-weight-semibold);
-        gap: 4px;
-        letter-spacing: 0.04em;
-        padding: var(--sl-spacing-small);
-        text-transform: uppercase;
-        width: 100%;
-      }
-      .trackers-table th {
-        padding: 0;
-      }
-      th.numeric .sort-button {
-        justify-content: flex-end;
-      }
-      .sort-button:hover,
-      .sort-button:focus-visible {
-        color: var(--sl-color-neutral-900);
-      }
-      th.active .sort-button {
-        color: var(--sl-color-neutral-900);
-      }
-      .sort-caret {
-        font-size: 0.75em;
-        opacity: 0.55;
-      }
-      th.active .sort-caret {
-        opacity: 1;
-      }
+        .sort-button {
+          align-items: center;
+          background: none;
+          border: none;
+          color: var(--sl-color-neutral-600);
+          cursor: pointer;
+          display: flex;
+          font: inherit;
+          font-size: var(--sl-font-size-x-small);
+          font-weight: var(--sl-font-weight-semibold);
+          gap: 4px;
+          letter-spacing: 0.04em;
+          padding: var(--sl-spacing-small);
+          text-transform: uppercase;
+          width: 100%;
+        }
+        .trackers-table th {
+          padding: 0;
+        }
+        th.numeric .sort-button {
+          justify-content: flex-end;
+        }
+        .sort-button:hover,
+        .sort-button:focus-visible {
+          color: var(--sl-color-neutral-900);
+        }
+        th.active .sort-button {
+          color: var(--sl-color-neutral-900);
+        }
+        .sort-caret {
+          font-size: 0.75em;
+          opacity: 0.55;
+        }
+        th.active .sort-caret {
+          opacity: 1;
+        }
 
-      .trackers-table th.actions-cell,
-      .trackers-table td.actions-cell {
-        width: 72px;
-        text-align: right;
-        padding-left: var(--sl-spacing-x-small);
-        padding-right: var(--sl-spacing-x-small);
-        overflow: visible;
-      }
+        .trackers-table th.actions-cell,
+        .trackers-table td.actions-cell {
+          width: 72px;
+          text-align: right;
+          padding-left: var(--sl-spacing-x-small);
+          padding-right: var(--sl-spacing-x-small);
+          overflow: visible;
+        }
 
-      .actions-cell resource-actions::part(container) {
-        overflow: visible;
-      }
+        .actions-cell resource-actions::part(container) {
+          overflow: visible;
+        }
 
-      .tracker-row {
-        cursor: pointer;
-      }
+        .tracker-row {
+          cursor: pointer;
+        }
 
-      .row-link {
-        color: var(--console-link-color);
-        display: block;
-        font-weight: var(--sl-font-weight-semibold);
-        overflow: hidden;
-        text-decoration: none;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
+        .row-link {
+          color: var(--console-link-color);
+          display: block;
+          font-weight: var(--sl-font-weight-semibold);
+          overflow: hidden;
+          text-decoration: none;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
 
-      .row-link:hover,
-      .row-link:focus-visible {
-        text-decoration: underline;
-      }
+        .row-link:hover,
+        .row-link:focus-visible {
+          text-decoration: underline;
+        }
 
-      .row-subtitle {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
+        .row-subtitle {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
 
-      .muted-cell {
-        color: var(--console-meta-color);
-      }
+        .muted-cell {
+          color: var(--console-meta-color);
+        }
 
-      .numeric {
-        font-variant-numeric: tabular-nums;
-        text-align: right;
-      }
+        .numeric {
+          font-variant-numeric: tabular-nums;
+          text-align: right;
+        }
 
-      .visually-hidden {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-      }
+        .visually-hidden {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+          white-space: nowrap;
+        }
 
-      sl-select::part(form-control-label) {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-        border: 0;
-      }
-    `,
+        sl-select::part(form-control-label) {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+          white-space: nowrap;
+          border: 0;
+        }
+      `,
+    ],
   ];
 
   private renderToolbar() {
@@ -631,27 +639,29 @@ export class TrackerList extends LitElement {
   private renderListView(trackers: Tracker[]) {
     return html`
       <sl-card class="table-card">
-        <table class="styled-table trackers-table">
-          <thead>
-            <tr>
-              ${this.renderSortableHeader('name', 'Name')}
-              ${this.renderSortableHeader('kind', 'Kind')}
-              ${this.renderSortableHeader('projects', 'Projects', true)}
-              ${this.renderSortableHeader('sync', 'Sync')}
-              ${this.renderSortableHeader('checked', 'Last checked')}
-              <th class="actions-cell">
-                <span class="visually-hidden">Actions</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            ${repeat(
-              trackers,
-              (tracker) => tracker.id,
-              (tracker) => this.renderListRow(tracker)
-            )}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="styled-table trackers-table">
+            <thead>
+              <tr>
+                ${this.renderSortableHeader('name', 'Name')}
+                ${this.renderSortableHeader('kind', 'Kind')}
+                ${this.renderSortableHeader('projects', 'Projects', true)}
+                ${this.renderSortableHeader('sync', 'Sync')}
+                ${this.renderSortableHeader('checked', 'Last checked')}
+                <th class="actions-cell">
+                  <span class="visually-hidden">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              ${repeat(
+                trackers,
+                (tracker) => tracker.id,
+                (tracker) => this.renderListRow(tracker)
+              )}
+            </tbody>
+          </table>
+        </div>
       </sl-card>
     `;
   }

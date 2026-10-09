@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+
 import { editionOf } from '../../capabilities';
 import type { Edition } from '../../api';
 import { css, html, nothing, unsafeCSS } from 'lit';
@@ -279,6 +281,7 @@ interface DashboardMetric {
 
 @customElement('dashboard-view')
 export class DashboardView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private loading = true;
   @state() private fetchingGatewaySummary = true;
   /**
@@ -753,7 +756,7 @@ export class DashboardView extends AuthedElement {
         border-color: var(--sl-color-neutral-200);
       }
       .attention-strip.low-only .attention-strip-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .attention-strip.low-only .attention-strip-count {
         color: var(--sl-color-neutral-700);
@@ -782,7 +785,7 @@ export class DashboardView extends AuthedElement {
         text-decoration: underline;
       }
       .next-step-mark {
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         font-size: 16px;
       }
@@ -2092,7 +2095,7 @@ export class DashboardView extends AuthedElement {
 
   /** The same boundary as `getGatewayStartDate()`, as epoch milliseconds. */
   private getGatewayStartMs(): number {
-    return new Date(this.getGatewayStartDate()).getTime();
+    return parseUTCDate(this.getGatewayStartDate()).getTime();
   }
 
   /**
@@ -2104,7 +2107,7 @@ export class DashboardView extends AuthedElement {
     startDate: string;
     endDate: string;
   } {
-    const start = new Date(startDateStr).getTime();
+    const start = parseUTCDate(startDateStr).getTime();
     const span = Date.now() - start;
     return {
       startDate: new Date(start - span).toISOString(),
@@ -2666,8 +2669,8 @@ export class DashboardView extends AuthedElement {
   private applyFlowExecutions(flowExecutions: FlowExecution[]): void {
     const sorted = [...(flowExecutions || [])].sort(
       (left, right) =>
-        new Date(right.start_time).getTime() -
-        new Date(left.start_time).getTime()
+        parseUTCDate(right.start_time).getTime() -
+        parseUTCDate(left.start_time).getTime()
     );
     this.flowExecutionsCount = sorted.length;
     this.failedExecutionsCount = sorted.filter(
@@ -2977,7 +2980,7 @@ export class DashboardView extends AuthedElement {
       .sort((left, right) => {
         const leftTs = left.last_activity_at || left.started_at;
         const rightTs = right.last_activity_at || right.started_at;
-        return new Date(rightTs).getTime() - new Date(leftTs).getTime();
+        return parseUTCDate(rightTs).getTime() - parseUTCDate(leftTs).getTime();
       });
   }
 
@@ -2991,10 +2994,6 @@ export class DashboardView extends AuthedElement {
     return this.flowExecutions.filter(
       (execution) => execution.status === 'FAILED'
     );
-  }
-
-  private formatCurrency(value: number | null | undefined): string {
-    return `$${(value || 0).toFixed(2)}`;
   }
 
   private formatNumber(value: number | null | undefined): string {

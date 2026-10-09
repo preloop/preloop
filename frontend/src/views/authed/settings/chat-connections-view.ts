@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
+import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -36,6 +38,7 @@ const emptyForm = (): ChatConnectionCreate => ({
 
 @customElement('chat-connections-view')
 export class ChatConnectionsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private connections: ChatConnection[] = [];
   @state() private canManage = false;
   @state() private loading = true;
@@ -317,8 +320,8 @@ export class ChatConnectionsView extends LitElement {
                 copy-label="Copy linking command"
               ></sl-copy-button>
               <p>
-                Expires ${new Date(code.expires_at).toLocaleTimeString()}. Keep
-                this code private.
+                Expires ${parseUTCDate(code.expires_at).toLocaleTimeString()}.
+                Keep this code private.
               </p>
               <sl-button
                 @click=${() => {
@@ -336,7 +339,7 @@ export class ChatConnectionsView extends LitElement {
               ${
                 this.deliveries.length
                   ? html`<ul>
-                      ${this.deliveries.map((delivery) => html`<li>${delivery.status} · ${new Date(delivery.created_at).toLocaleString()}${delivery.last_error ? html`<span role="status"> — ${delivery.last_error}</span>` : nothing}</li>`)}
+                      ${this.deliveries.map((delivery) => html`<li>${delivery.status} · ${parseUTCDate(delivery.created_at).toLocaleString()}${delivery.last_error ? html`<span role="status"> — ${delivery.last_error}</span>` : nothing}</li>`)}
                     </ul>`
                   : html`<p>No deliveries yet.</p>`
               }

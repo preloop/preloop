@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -29,6 +31,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 
 @customElement('runners-view')
 export class RunnersView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private runners: RunnerRecord[] = [];
 
@@ -104,124 +107,127 @@ export class RunnersView extends LitElement {
   private static readonly maxConcurrency = 32;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      :host {
-        display: block;
-        font-size: 14px;
-      }
-      .muted {
-        color: var(--sl-color-neutral-500);
-        font-size: 13px;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: 8px 10px;
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-        font-size: 14px;
-        vertical-align: top;
-      }
-      th {
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--sl-color-neutral-600);
-      }
-      .labels {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-      }
-      a {
-        color: var(--sl-color-primary-600);
-      }
-      /*
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        :host {
+          display: block;
+          font-size: 14px;
+        }
+        .muted {
+          color: var(--console-meta-color);
+          font-size: 13px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        th,
+        td {
+          text-align: left;
+          padding: 8px 10px;
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+          font-size: 14px;
+          vertical-align: top;
+        }
+        th {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--sl-color-neutral-600);
+        }
+        .labels {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+        }
+        a {
+          color: var(--sl-color-primary-600);
+        }
+        /*
        * An empty page states one fact and hands over one command. The old
        * treatment (a 580px card, a 72px badge icon and a full width primary
        * button) spent a screen saying "nothing here yet".
        */
-      .empty-state {
-        /* The shared recipe stacks its empty states in a column; this one is
+        .empty-state {
+          /* The shared recipe stacks its empty states in a column; this one is
            a sentence, a command and a link that read as one line. Declared in
            full, including the 72px box, so it does not depend on which half
            of console-styles.css the cascade leaves standing. */
-        box-sizing: border-box;
-        display: flex;
-        flex-flow: row wrap;
-        align-items: center;
-        justify-content: center;
-        gap: var(--sl-spacing-x-small) var(--sl-spacing-small);
-        margin: 0;
-        min-height: 72px;
-        padding: var(--sl-spacing-medium);
-        color: var(--sl-color-neutral-600);
-        font-size: 13px;
-      }
-      .empty-command {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-        font-family: var(--sl-font-mono);
-      }
-      .empty-command code {
-        background: var(--sl-color-neutral-100);
-        border-radius: var(--sl-border-radius-small);
-        color: var(--sl-color-neutral-800);
-        padding: 1px 6px;
-      }
-      .default-pool {
-        margin: 0 0 var(--sl-spacing-large);
-        max-width: 420px;
-      }
-      .default-pool sl-select {
-        margin-bottom: var(--sl-spacing-2x-small);
-      }
-      .slots {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .slot-edit {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .slot-edit sl-input {
-        width: 5.5rem;
-      }
-      .executions {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .action-notice td {
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-        color: var(--sl-color-neutral-700);
-        font-size: 13px;
-      }
-      .action-notice sl-button {
-        margin-left: var(--sl-spacing-x-small);
-      }
-      .table-scroll {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-      }
-      .table-scroll table {
-        min-width: 720px;
-      }
-      .load-error-actions {
-        margin-top: var(--sl-spacing-small);
-      }
-    `,
+          box-sizing: border-box;
+          display: flex;
+          flex-flow: row wrap;
+          align-items: center;
+          justify-content: center;
+          gap: var(--sl-spacing-x-small) var(--sl-spacing-small);
+          margin: 0;
+          min-height: 72px;
+          padding: var(--sl-spacing-medium);
+          color: var(--sl-color-neutral-600);
+          font-size: 13px;
+        }
+        .empty-command {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+          font-family: var(--sl-font-mono);
+        }
+        .empty-command code {
+          background: var(--sl-color-neutral-100);
+          border-radius: var(--sl-border-radius-small);
+          color: var(--sl-color-neutral-800);
+          padding: 1px 6px;
+        }
+        .default-pool {
+          margin: 0 0 var(--sl-spacing-large);
+          max-width: 420px;
+        }
+        .default-pool sl-select {
+          margin-bottom: var(--sl-spacing-2x-small);
+        }
+        .slots {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .slot-edit {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .slot-edit sl-input {
+          width: 5.5rem;
+        }
+        .executions {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .action-notice td {
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+          color: var(--sl-color-neutral-700);
+          font-size: 13px;
+        }
+        .action-notice sl-button {
+          margin-left: var(--sl-spacing-x-small);
+        }
+        .table-scroll {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        .table-scroll table {
+          min-width: 720px;
+        }
+        .load-error-actions {
+          margin-top: var(--sl-spacing-small);
+        }
+      `,
+    ],
   ];
 
   connectedCallback() {
@@ -541,6 +547,7 @@ export class RunnersView extends LitElement {
       return html`
         <div class="slot-edit">
           <sl-input
+            aria-label="Runner concurrency"
             type="number"
             size="small"
             min="1"
@@ -655,6 +662,7 @@ export class RunnersView extends LitElement {
               : html`
                   <!-- Nine columns do not fit a phone: the table scrolls
                        sideways inside this box instead of the whole page. -->
+
                   <div class="table-scroll">
                     <table>
                       <thead>

@@ -1,3 +1,6 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
+import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -36,6 +39,8 @@ import { roleLabel } from '../../../utils/role-label';
 
 @customElement('user-management-view')
 export class UserManagementView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
+  private readonly editPermissions = new EditPermissions(this);
   @state()
   private users: User[] = [];
 
@@ -287,6 +292,7 @@ export class UserManagementView extends LitElement {
   }
 
   async handleCreateUser() {
+    if (!this.editPermissions.allows('manage_users')) return;
     const missing = [
       !this.newUser.username ? 'a username' : null,
       !this.newUser.email ? 'an email' : null,
@@ -310,6 +316,7 @@ export class UserManagementView extends LitElement {
   }
 
   async handleEditUser() {
+    if (!this.editPermissions.allows('manage_users')) return;
     if (!this.selectedUser) return;
 
     this.dialogError = null;
@@ -326,6 +333,7 @@ export class UserManagementView extends LitElement {
   }
 
   async handleDeactivateUser(user: User) {
+    if (!this.editPermissions.allows('manage_users')) return;
     const confirmed = await confirmDialog({
       title: 'Deactivate user?',
       message: `Deactivate ${user.full_name || user.username} (${user.email})?`,
@@ -348,6 +356,7 @@ export class UserManagementView extends LitElement {
   }
 
   async openRoleModal(user: User) {
+    if (!this.editPermissions.allows('assign_roles')) return;
     this.selectedUser = user;
     this.dialogError = null;
     this.isRoleModalOpen = true;
@@ -360,6 +369,7 @@ export class UserManagementView extends LitElement {
   }
 
   async handleToggleRole(roleId: string, isChecked: boolean) {
+    if (!this.editPermissions.allows('assign_roles')) return;
     if (!this.selectedUser) return;
 
     try {
@@ -378,6 +388,7 @@ export class UserManagementView extends LitElement {
   }
 
   openEditModal(user: User) {
+    if (!this.editPermissions.allows('manage_users')) return;
     this.selectedUser = user;
     this.editUser = {
       email: user.email,
@@ -389,6 +400,7 @@ export class UserManagementView extends LitElement {
   }
 
   private openCreateModal() {
+    if (!this.editPermissions.allows('manage_users')) return;
     this.dialogError = null;
     this.isCreateModalOpen = true;
   }
@@ -433,10 +445,17 @@ export class UserManagementView extends LitElement {
     return html`
       <view-header headerText="Users" width="narrow">
         <div slot="main-column">
-          <sl-button variant="primary" @click=${this.openCreateModal}>
-            <sl-icon slot="prefix" name="person-plus"></sl-icon>
-            Add user
-          </sl-button>
+          <sl-tooltip
+            content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
+            ><sl-button
+              ?disabled=${!this.editPermissions.allows('manage_users')}
+              variant="primary"
+              @click=${this.openCreateModal}
+            >
+              <sl-icon slot="prefix" name="person-plus"></sl-icon>
+              Add user
+            </sl-button></sl-tooltip
+          >
         </div>
       </view-header>
 
@@ -522,20 +541,32 @@ export class UserManagementView extends LitElement {
                   }
                 </div>
                 <div class="user-actions">
-                  <sl-button
-                    size="small"
-                    title="Manage roles"
-                    @click=${() => this.openRoleModal(user)}
-                  >
-                    <sl-icon name="shield-check" label="Manage roles"></sl-icon>
-                  </sl-button>
-                  <sl-button
-                    size="small"
-                    title="Edit user"
-                    @click=${() => this.openEditModal(user)}
-                  >
-                    <sl-icon name="pencil" label="Edit user"></sl-icon>
-                  </sl-button>
+                  <sl-tooltip
+                    content=${!this.editPermissions.allows('assign_roles') ? 'Requires assign_roles' : ''}
+                    ><sl-button
+                      ?disabled=${!this.editPermissions.allows('assign_roles')}
+                      size="small"
+                      title="Manage roles"
+                      @click=${() => this.openRoleModal(user)}
+                    >
+                      <sl-icon
+                        name="shield-check"
+                        label="Manage roles"
+                      ></sl-icon> </sl-button
+                  ></sl-tooltip>
+                  <sl-tooltip
+                    content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
+                    ><sl-button
+                      ?disabled=${!this.editPermissions.allows('manage_users')}
+                      size="small"
+                      title="Edit user"
+                      @click=${() => this.openEditModal(user)}
+                    >
+                      <sl-icon
+                        name="pencil"
+                        label="Edit user"
+                      ></sl-icon> </sl-button
+                  ></sl-tooltip>
                   ${
                     this.subaccounts.length > 0
                       ? html`<sl-button
@@ -560,19 +591,22 @@ export class UserManagementView extends LitElement {
                   <!-- Destructive last, outline, after a gap (DESIGN.md
                        "Destructive actions"): a solid red button beside two
                        neutral ones is the loudest thing in the row. -->
-                  <sl-button
-                    class="danger-action"
-                    size="small"
-                    variant="danger"
-                    outline
-                    title="Deactivate user"
-                    @click=${() => this.handleDeactivateUser(user)}
-                  >
-                    <sl-icon
-                      name="person-dash"
-                      label="Deactivate user"
-                    ></sl-icon>
-                  </sl-button>
+                  <sl-tooltip
+                    content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
+                    ><sl-button
+                      ?disabled=${!this.editPermissions.allows('manage_users')}
+                      class="danger-action"
+                      size="small"
+                      variant="danger"
+                      outline
+                      title="Deactivate user"
+                      @click=${() => this.handleDeactivateUser(user)}
+                    >
+                      <sl-icon
+                        name="person-dash"
+                        label="Deactivate user"
+                      ></sl-icon> </sl-button
+                  ></sl-tooltip>
                 </div>
               </div>
             </sl-card>
@@ -625,13 +659,17 @@ export class UserManagementView extends LitElement {
             password-toggle
           ></sl-input>
         </div>
-        <sl-button
+        <sl-tooltip
           slot="footer"
-          variant="primary"
-          @click=${this.handleCreateUser}
+          content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
+          ><sl-button
+            ?disabled=${!this.editPermissions.allows('manage_users')}
+            variant="primary"
+            @click=${this.handleCreateUser}
+          >
+            Create user
+          </sl-button></sl-tooltip
         >
-          Create user
-        </sl-button>
         <sl-button
           slot="footer"
           variant="default"
@@ -661,6 +699,7 @@ export class UserManagementView extends LitElement {
             @sl-input=${(e: any) => (this.editUser.full_name = e.target.value)}
           ></sl-input>
           <sl-checkbox
+            ?disabled=${!this.editPermissions.allows('manage_users')}
             ?checked=${this.editUser.is_active}
             @sl-change=${(e: any) =>
               (this.editUser.is_active = e.target.checked)}
@@ -668,13 +707,17 @@ export class UserManagementView extends LitElement {
             Active
           </sl-checkbox>
         </div>
-        <sl-button
+        <sl-tooltip
           slot="footer"
-          variant="primary"
-          @click=${this.handleEditUser}
+          content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
+          ><sl-button
+            ?disabled=${!this.editPermissions.allows('manage_users')}
+            variant="primary"
+            @click=${this.handleEditUser}
+          >
+            Save changes
+          </sl-button></sl-tooltip
         >
-          Save changes
-        </sl-button>
         <sl-button
           slot="footer"
           variant="default"
@@ -697,6 +740,7 @@ export class UserManagementView extends LitElement {
             return html`
               <div class="role-item">
                 <sl-checkbox
+                  ?disabled=${!this.editPermissions.allows('assign_roles')}
                   ?checked=${isAssigned}
                   @sl-change=${(e: any) =>
                     this.handleToggleRole(role.id, e.target.checked)}

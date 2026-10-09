@@ -1,3 +1,4 @@
+import { setViewport } from '@web/test-runner-commands';
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import './usage-rollup-panel';
 import type { UsageRollupPanel } from './usage-rollup-panel';
@@ -72,12 +73,59 @@ describe('usage-rollup-panel', () => {
       ),
     ].map((td) => td.textContent);
     expect(cells).to.eql(['North', 'South']);
-    expect(q(el, 'rollup-total')!.textContent).to.equal('$1.75');
+    expect(q(el, 'rollup-total')!.textContent!.trim()).to.equal('$1.75');
     expect(q(el, 'attention-rollup')!.textContent).to.contain('South');
     expect(q(el, 'attention-rollup')!.textContent).to.contain('4');
     expect((q(el, 'subaccount-filter') as HTMLSelectElement).value).to.equal(
       '__all__'
     );
+  });
+
+  it('contains a wide table at 390px and retains exact monetary values', async () => {
+    await setViewport({ width: 390, height: 844 });
+    try {
+      api = mockApi({
+        capabilities: ['account_hierarchy'],
+        routes: [
+          {
+            path: USAGE,
+            body: {
+              rows: [
+                {
+                  ...ROWS[0],
+                  cost_usd: 12345.678,
+                  model: 'example-model-with-a-long-name',
+                },
+              ],
+            },
+          },
+          { path: ATTENTION, body: { items: [] } },
+        ],
+      });
+      const el = await fixture<UsageRollupPanel>(
+        html`<usage-rollup-panel
+          style="display:block;width:100%;min-width:0"
+          .context=${{}}
+        ></usage-rollup-panel>`
+      );
+      await waitUntil(() => q(el, 'rollup-table'));
+      const table = q(el, 'rollup-table') as HTMLTableElement;
+      const wrapper = table.parentElement!;
+      expect(wrapper.classList.contains('table-scroll')).to.equal(true);
+      expect(getComputedStyle(wrapper).overflowX).to.equal('auto');
+      table.style.minWidth = '900px';
+      expect(wrapper.scrollWidth).to.be.greaterThan(wrapper.clientWidth);
+      expect(wrapper.getBoundingClientRect().width).to.be.at.most(
+        el.getBoundingClientRect().width
+      );
+      expect(document.documentElement.scrollWidth).to.be.at.most(390);
+      expect(table.textContent).to.contain('$12,345.68');
+      expect(
+        table.querySelector('td.num span')?.getAttribute('title')
+      ).to.equal('$12,345.678');
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+    }
   });
 
   it('filters by one subaccount and keeps the others selectable', async () => {
@@ -97,7 +145,9 @@ describe('usage-rollup-panel', () => {
     select.dispatchEvent(new CustomEvent('sl-change'));
     await waitUntil(() => api.callsTo(USAGE).length === 2);
     expect(api.callsTo(USAGE)[1].search).to.equal('?subaccount_id=sub-a');
-    await waitUntil(() => q(el, 'rollup-total')!.textContent === '$1.25');
+    await waitUntil(
+      () => q(el, 'rollup-total')!.textContent!.trim() === '$1.25'
+    );
     const options = [...el.shadowRoot!.querySelectorAll('sl-option')].map((o) =>
       o.getAttribute('value')
     );

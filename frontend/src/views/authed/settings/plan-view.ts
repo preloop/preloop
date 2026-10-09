@@ -1,3 +1,7 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
+import { parseUTCDate } from '../../../utils/date';
+import '../../../components/billing-subscription-details';
+import type { BillingSummary } from '../../../types/billing-summary';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import consoleStyles from '../../../styles/console-styles.css?inline';
@@ -60,6 +64,7 @@ const PLAN_PATH = PLAN_PAGE_PATH;
  */
 @customElement('plan-view')
 export class PlanView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private _loading = true;
   @state() private _error = '';
   /** Without the billing plugin this deployment sells nothing. */
@@ -89,6 +94,7 @@ export class PlanView extends LitElement {
   @state() private _requestedLabel = '';
   @state() private _checkoutPlan = '';
   @state() private _notice = '';
+  @state() private _summary: BillingSummary | null = null;
 
   /**
    * Re-read the current plan when something changed the subscription.
@@ -115,7 +121,7 @@ export class PlanView extends LitElement {
    */
   private async _reloadOptions(): Promise<void> {
     try {
-      await this._loadOptions();
+      await Promise.all([this._loadOptions(), this._loadSummary()]);
       this._error = '';
     } catch (error) {
       this._error =
@@ -169,6 +175,7 @@ export class PlanView extends LitElement {
       const [content] = await Promise.all([
         loadPricingContent(),
         this._loadOptions(),
+        this._loadSummary(),
       ]);
       this._plans = cloudPlans(content);
       this._comparison = content.comparison;
@@ -181,6 +188,15 @@ export class PlanView extends LitElement {
     } finally {
       this._loading = false;
     }
+  }
+
+  private async _loadSummary(): Promise<void> {
+    const response = await fetchWithAuth('/api/v1/billing/summary', {
+      cache: 'no-store',
+    });
+    if (!response.ok)
+      throw new Error('Could not load your subscription and usage.');
+    this._summary = await response.json();
   }
 
   /** Current plan, eligibility and permission, from the billing plugin. */
@@ -210,7 +226,7 @@ export class PlanView extends LitElement {
     const subscription = options.current_subscription;
     if (subscription?.status !== 'trialing') return false;
     if (!subscription.current_period_end) return false;
-    const date = new Date(subscription.current_period_end);
+    const date = parseUTCDate(subscription.current_period_end);
     return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
   }
 
@@ -277,7 +293,7 @@ export class PlanView extends LitElement {
 
   private _date(value: string | null | undefined): string {
     if (!value) return '';
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     return Number.isNaN(date.getTime())
       ? ''
       : date.toLocaleDateString(undefined, {
@@ -542,6 +558,11 @@ export class PlanView extends LitElement {
           ${
             this._billingEnabled
               ? html`
+                  <billing-subscription-details
+                    .summary=${this._summary}
+                    .plans=${this._options?.plans ?? []}
+                    .canManageBilling=${this._options?.can_manage_billing === true}
+                  ></billing-subscription-details>
                   ${this._renderCards()}
                   <!--
                     The section confirms the change; the cards above still

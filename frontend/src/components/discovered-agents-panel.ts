@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../styles/table-scroll';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -49,46 +50,49 @@ export class DiscoveredAgentsPanel extends LitElement {
   @state() private error: string | null = null;
   @state() private busyId: string | null = null;
 
-  static styles = css`
-    :host {
-      display: block;
-    }
-    section {
-      margin-top: var(--sl-spacing-large);
-    }
-    h2 {
-      font-size: var(--sl-font-size-large);
-      margin: 0 0 var(--sl-spacing-2x-small);
-    }
-    p.hint {
-      margin: 0 0 var(--sl-spacing-small);
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: var(--sl-font-size-small);
-    }
-    th,
-    td {
-      text-align: left;
-      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-      vertical-align: middle;
-    }
-    code {
-      font-family: var(--sl-font-mono);
-    }
-    .actions {
-      display: flex;
-      gap: var(--sl-spacing-x-small);
-      align-items: center;
-    }
-    .error {
-      color: var(--sl-color-danger-700);
-    }
-  `;
+  static styles = [
+    tableScrollStyles,
+    css`
+      :host {
+        display: block;
+      }
+      section {
+        margin-top: var(--sl-spacing-large);
+      }
+      h2 {
+        font-size: var(--sl-font-size-large);
+        margin: 0 0 var(--sl-spacing-2x-small);
+      }
+      p.hint {
+        margin: 0 0 var(--sl-spacing-small);
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: var(--sl-font-size-small);
+      }
+      th,
+      td {
+        text-align: left;
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+        vertical-align: middle;
+      }
+      code {
+        font-family: var(--sl-font-mono);
+      }
+      .actions {
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        align-items: center;
+      }
+      .error {
+        color: var(--sl-color-danger-700);
+      }
+    `,
+  ];
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -158,52 +162,54 @@ export class DiscoveredAgentsPanel extends LitElement {
           ${this.truncated ? html`${this.truncationNotice()}` : nothing}
         </p>
         ${this.error ? html`<p class="error">${this.error}</p>` : nothing}
-        <table>
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Workstation</th>
-              <th>MCP servers</th>
-              <th>First seen</th>
-              <th>Last seen</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${this.candidates.map(
-              (candidate) => html`
-                <tr data-candidate-id=${candidate.id}>
-                  <td>${candidate.agent_kind}</td>
-                  <td>
-                    <code title=${candidate.workstation_fingerprint}
-                      >${shortWorkstation(candidate.workstation_fingerprint)}</code
-                    >
-                  </td>
-                  <td>${candidate.mcp_server_count}</td>
-                  <td>${formatRelativeTime(candidate.first_seen_at)}</td>
-                  <td>${formatRelativeTime(candidate.last_seen_at)}</td>
-                  <td>
-                    <div class="actions">
-                      <sl-copy-button
-                        class="copy-onboard"
-                        value=${onboardCommandFor(candidate)}
-                        copy-label="Copy onboard command"
-                        success-label="Onboard command copied"
-                      ></sl-copy-button>
-                      <sl-button
-                        class="mark-ignored"
-                        size="small"
-                        ?loading=${this.busyId === candidate.id}
-                        @click=${() => this.markIgnored(candidate)}
-                        >Mark ignored</sl-button
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Kind</th>
+                <th>Workstation</th>
+                <th>MCP servers</th>
+                <th>First seen</th>
+                <th>Last seen</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${this.candidates.map(
+                (candidate) => html`
+                  <tr data-candidate-id=${candidate.id}>
+                    <td>${candidate.agent_kind}</td>
+                    <td>
+                      <code title=${candidate.workstation_fingerprint}
+                        >${shortWorkstation(candidate.workstation_fingerprint)}</code
                       >
-                    </div>
-                  </td>
-                </tr>
-              `
-            )}
-          </tbody>
-        </table>
+                    </td>
+                    <td>${candidate.mcp_server_count}</td>
+                    <td>${formatRelativeTime(candidate.first_seen_at)}</td>
+                    <td>${formatRelativeTime(candidate.last_seen_at)}</td>
+                    <td>
+                      <div class="actions">
+                        <sl-copy-button
+                          class="copy-onboard"
+                          value=${onboardCommandFor(candidate)}
+                          copy-label="Copy onboard command"
+                          success-label="Onboard command copied"
+                        ></sl-copy-button>
+                        <sl-button
+                          class="mark-ignored"
+                          size="small"
+                          ?loading=${this.busyId === candidate.id}
+                          @click=${() => this.markIgnored(candidate)}
+                          >Mark ignored</sl-button
+                        >
+                      </div>
+                    </td>
+                  </tr>
+                `
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     `;
   }
