@@ -57,7 +57,7 @@ def _now() -> datetime:
 
 def _utc(value: datetime | None) -> datetime | None:
     if value is not None and (value.tzinfo is None or value.utcoffset() is None):
-        raise ValueError("OAuth expiry must be timezone-aware")
+        raise ValueError("OAuth timestamps must be timezone-aware")
     return value.astimezone(timezone.utc) if value is not None else None
 
 

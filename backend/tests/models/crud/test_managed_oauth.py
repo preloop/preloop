@@ -127,7 +127,10 @@ def configuration(crud: CRUDManagedOAuth, account_id: UUID) -> dict:
 
 
 def pending(
-    crud: CRUDManagedOAuth, owner: tuple[UUID, UUID], config: dict | None = None
+    crud: CRUDManagedOAuth,
+    owner: tuple[UUID, UUID],
+    config: dict | None = None,
+    tokens: TokenPair = PAIR,
 ) -> tuple[dict, dict, dict]:
     account_id, user_id = owner
     config = config or configuration(crud, account_id)
@@ -151,7 +154,7 @@ def pending(
     assert credentials.pkce_verifier == "synthetic-verifier"
     assert credentials.client_secret == "synthetic-client-secret"
     grant = crud.store_pending_grant(
-        **binding, provider_subject="same-provider-subject", tokens=PAIR
+        **binding, provider_subject="same-provider-subject", tokens=tokens
     )
     return binding, grant, config
 
@@ -953,3 +956,28 @@ def test_configuration_readiness_without_secret(storage: tuple) -> None:
         selected_permissions=["REPO_READ"],
     )
     assert config["has_client_secret"] is False
+
+
+def test_reconnect_preserves_pending_receipt_anchor(storage: tuple) -> None:
+    """Completion copies the new pair's receipt anchor onto the existing grant."""
+    crud, owners = storage
+    owner = owners[0]
+    _, existing, config = active(crud, owner)
+    issued = datetime.now(timezone.utc)
+    pair = TokenPair(
+        "reconnected-access",
+        "reconnected-refresh",
+        issued + timedelta(seconds=300),
+        issued_at=issued,
+    )
+    binding, staged, _ = pending(crud, owner, config, tokens=pair)
+    assert datetime.fromisoformat(staged["issued_at"]) == issued
+    tracker_id = crud.complete_connection(
+        **binding,
+        tracker_name="Reconnect with anchor",
+        tracker_id=existing["tracker_id"],
+        expected_rotation_version=0,
+    )
+    completed = crud.get_grant(account_id=owner[0], tracker_id=tracker_id)
+    assert completed["id"] == existing["id"]
+    assert datetime.fromisoformat(completed["issued_at"]) == issued
