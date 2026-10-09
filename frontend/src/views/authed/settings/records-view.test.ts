@@ -276,6 +276,10 @@ describe('RecordsView', () => {
   it('clamps retention days to the floor before save', async () => {
     install({});
     const el = await mount();
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('[data-testid="retention-audit"]'),
+      'retention input did not render'
+    );
     const input = el.shadowRoot!.querySelector(
       '[data-testid="retention-audit"]'
     ) as HTMLInputElement;
