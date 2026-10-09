@@ -2,6 +2,9 @@
 
 Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
 
+For detection limits, storage modes, reference-only verification and complete
+patient/payment examples, see [Sensitive-data handling](sensitive-data.md).
+
 Model I/O rules extend the existing policy engine so instance policies can
 inspect model prompts and completions. Actions are the same as tools
 (`allow`, `deny`, and `require_approval`) plus `notify`, which is only
@@ -214,9 +217,10 @@ evaluator matched for the call (the same text as `rule_description` on
 the `policy_*` row with the same `correlation_id`). The reference-only
 rule id stays in the record's `rule_id`.
 
-Fingerprints are HMAC-SHA256 over canonical JSON with a per-account salt
-stored encrypted; each record carries its `salt_id`, so a rotation leaves
-old records verifiable. `POST /api/v1/policies/sensitive-data/hash-check`
+New fingerprints use scrypt over canonical JSON with a per-account salt
+stored encrypted; historical HMAC-SHA256 records remain verifiable. The
+legacy field names `args_hmac` and `result_hmac` hold either format. Each
+record carries its `salt_id`, so a rotation leaves old records verifiable. `POST /api/v1/policies/sensitive-data/hash-check`
 (manage_policies) answers whether a candidate payload matches a stored
 fingerprint for the caller's account without storing it. The audit chain
 export lists the account's salt ids and never a salt.
