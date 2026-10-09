@@ -2117,7 +2117,7 @@ def test_register_thread_binds_jira_triggered_pr_to_bound_bitbucket_repo() -> No
         patch(
             "preloop.models.crud.crud_project.get",
             return_value=SimpleNamespace(
-                identifier="22222222-2222-2222-2222-222222222222"
+                identifier="22222222-2222-2222-2222-222222222222", slug="ws/repo"
             ),
         ),
         patch("preloop.services.flow_feedback.crud_flow_feedback.register") as register,
@@ -2140,6 +2140,54 @@ def test_register_thread_binds_jira_triggered_pr_to_bound_bitbucket_repo() -> No
     # the bound repository there made the orchestrator narrow the clone to
     # the Jira project ("could not resolve repository URLs", live 18:03Z).
     assert values["context"]["repository"] == {}
+
+
+def test_bound_repository_uses_canonical_slug_and_github_id() -> None:
+    """Review on #1434: the bound identity uses the synced project's slug
+    (canonical case), not the user-entered binding path, and the GitHub
+    branch keys on the numeric repository id."""
+    from preloop.services.flow_feedback import _repository_identity, bound_repository
+    from preloop.services.repository_binding import AppliedRepositoryBinding
+
+    flow = SimpleNamespace(account_id=uuid.uuid4(), git_clone_config={"enabled": True})
+    details = {"source": "jira", "tracker_id": str(uuid.uuid4())}
+    for host, slug, identifier, expected in (
+        (
+            "bitbucket",
+            "Acme-WS/Repo",
+            "{AAAAAAAA-0000-0000-0000-000000000001}",
+            "Acme-WS/aaaaaaaa-0000-0000-0000-000000000001",
+        ),
+        ("github", "acme/widgets", "123456", "123456"),
+    ):
+        applied = AppliedRepositoryBinding(
+            source="project",
+            tracker_id=str(uuid.uuid4()),
+            tracker_type=host,
+            project_id=str(uuid.uuid4()),
+            repository=slug.lower(),
+            base_branch="main",
+            git_clone_config={},
+        )
+        with (
+            patch(
+                "preloop.services.repository_binding.resolve_repository_binding",
+                return_value=applied,
+            ),
+            patch(
+                "preloop.models.crud.crud_project.get",
+                return_value=SimpleNamespace(identifier=identifier, slug=slug),
+            ),
+        ):
+            provider, tracker_id, repository = bound_repository(
+                MagicMock(), flow, details
+            )
+        assert provider == host
+        assert tracker_id == applied.tracker_id
+        assert repository["full_name"] == slug
+        assert (
+            str(_repository_identity(provider, repository)).lower() == expected.lower()
+        )
 
 
 def test_register_thread_jira_without_binding_still_refuses() -> None:

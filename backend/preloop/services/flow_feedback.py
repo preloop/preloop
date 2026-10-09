@@ -65,10 +65,10 @@ def _repository_identity(provider: Any, repository: dict[str, Any]) -> Any:
     return repository.get("id")
 
 
-_CODE_HOSTS = frozenset({"github", "gitlab", "bitbucket"})
+CODE_HOSTS = frozenset({"github", "gitlab", "bitbucket"})
 
 
-def _bound_repository(
+def bound_repository(
     db: Session, flow: Any, details: dict[str, Any]
 ) -> tuple[str, str, dict[str, Any]] | None:
     """Provider, code-host tracker and repository of a bound issue trigger.
@@ -100,7 +100,7 @@ def _bound_repository(
     except RepositoryBindingError as exc:
         logger.warning("Cannot bind feedback: repository binding failed: %s", exc)
         return None
-    if applied is None or applied.tracker_type not in _CODE_HOSTS:
+    if applied is None or applied.tracker_type not in CODE_HOSTS:
         return None
     project = crud_project.get(
         db, id=str(applied.project_id), account_id=str(flow.account_id)
@@ -110,8 +110,11 @@ def _bound_repository(
         return None
     # Bitbucket keys on workspace/uuid (full_name + uuid); GitHub and GitLab
     # on the numeric repository id the synced project stores as identifier.
+    # The synced project's slug is the code host's canonical full name; the
+    # binding path is user-entered and may differ in case, which would never
+    # match the identity webhooks carry.
     repository = {
-        "full_name": applied.repository,
+        "full_name": str(getattr(project, "slug", None) or applied.repository),
         "uuid": str(identifier),
         "id": str(identifier),
     }
@@ -154,8 +157,8 @@ def register_thread(
     provider = details.get("source")
     trigger_source, trigger_tracker_id = provider, tracker_id
     keyed_repository = repository
-    if provider not in _CODE_HOSTS:
-        bound = _bound_repository(db, flow, details)
+    if provider not in CODE_HOSTS:
+        bound = bound_repository(db, flow, details)
         if bound is not None:
             # The bound repository keys the thread only. The context keeps
             # the trigger's own (empty) repository: a continuation payload
@@ -178,7 +181,7 @@ def register_thread(
     if (
         not repository_id
         or tracker_uuid is None
-        or provider not in {"github", "gitlab", "bitbucket"}
+        or provider not in CODE_HOSTS
         or not parts[-1].isdigit()
     ):
         logger.warning("Cannot bind feedback: missing provider repository identity")

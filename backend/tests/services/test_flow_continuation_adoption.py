@@ -652,3 +652,45 @@ async def test_bitbucket_read_publication_rejects_fork_source() -> None:
     ):
         result = await service._read_publication(source)
     assert result["same_repository"] is False
+
+
+def test_jira_triggered_source_uses_the_bound_repository() -> None:
+    """Review on #1434: a Jira-triggered execution published to its bound
+    Bitbucket repository; adoption must key on that binding instead of
+    refusing with "no valid provider PR binding"."""
+    account, execution = uuid4(), uuid4()
+    bitbucket_tracker = uuid4()
+    flow = SimpleNamespace(
+        id=uuid4(), account_id=account, trigger_event_source=str(uuid4())
+    )
+    row = SimpleNamespace(
+        flow_id=flow.id,
+        status="SUCCEEDED",
+        trigger_event_details={
+            "source": "jira",
+            "tracker_id": str(uuid4()),
+            "payload": {"issue": {"key": "JMR-4"}},
+        },
+        result={
+            "pr_url": "https://bitbucket.org/ws/repo/pull-requests/5",
+            "pr_source_branch": "preloop/issue-JMR-4-11386163",
+        },
+    )
+    bound = (
+        "bitbucket",
+        str(bitbucket_tracker),
+        {"full_name": "ws/repo", "uuid": "22222222-2222-2222-2222-222222222222"},
+    )
+    with (
+        patch.object(service, "get_session_factory", return_value=MagicMock()),
+        patch.object(service.crud_flow_execution, "get", return_value=row),
+        patch.object(service.crud_flow, "get", return_value=flow),
+        patch.object(service, "bound_repository", return_value=bound) as resolver,
+        patch.object(service.crud_tracker, "get", return_value=None) as tracker_get,
+    ):
+        with pytest.raises(service.ContinuationAdoptionError) as error:
+            service._load_source(account, execution)
+    # Past the provider check: the bound Bitbucket tracker was looked up.
+    assert error.value.status_code == 404
+    assert resolver.called
+    assert tracker_get.call_args.kwargs["id"] == bitbucket_tracker
