@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -494,63 +495,65 @@ export class WebhooksView extends LitElement {
       </p>`;
     }
     return html`
-      <table>
-        <thead>
-          <tr>
-            <th>Event</th>
-            <th>Status</th>
-            <th>Attempts</th>
-            <th>Response</th>
-            <th>Occurred</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${this.deliveries.map(
-            (delivery) => html`
-              <tr>
-                <td>
-                  ${delivery.event_type}
-                  <div class="muted">${delivery.event_id.slice(0, 8)}…</div>
-                </td>
-                <td>
-                  <sl-badge
-                    class="chip"
-                    pill
-                    variant=${this.deliveryVariant(delivery.status)}
-                    >${delivery.status}</sl-badge
-                  >
-                  ${
-                    delivery.last_error
-                      ? html`<div class="muted" title=${delivery.last_error}>
-                          ${delivery.last_error}
-                        </div>`
-                      : nothing
-                  }
-                </td>
-                <td class="num">${delivery.attempt_count}</td>
-                <td class="num">${delivery.response_status ?? '-'}</td>
-                <td class="muted">
-                  <span title=${formatLocalDateTime(delivery.occurred_at)}
-                    >${formatRelativeTime(delivery.occurred_at)}</span
-                  >
-                </td>
-                <td class="actions">
-                  ${
-                    delivery.status === 'dead'
-                      ? html`<sl-button
-                          size="small"
-                          @click=${() => this.handleReplay(delivery)}
-                          >Replay</sl-button
-                        >`
-                      : nothing
-                  }
-                </td>
-              </tr>
-            `
-          )}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Event</th>
+              <th>Status</th>
+              <th>Attempts</th>
+              <th>Response</th>
+              <th>Occurred</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${this.deliveries.map(
+              (delivery) => html`
+                <tr>
+                  <td>
+                    ${delivery.event_type}
+                    <div class="muted">${delivery.event_id.slice(0, 8)}…</div>
+                  </td>
+                  <td>
+                    <sl-badge
+                      class="chip"
+                      pill
+                      variant=${this.deliveryVariant(delivery.status)}
+                      >${delivery.status}</sl-badge
+                    >
+                    ${
+                      delivery.last_error
+                        ? html`<div class="muted" title=${delivery.last_error}>
+                            ${delivery.last_error}
+                          </div>`
+                        : nothing
+                    }
+                  </td>
+                  <td class="num">${delivery.attempt_count}</td>
+                  <td class="num">${delivery.response_status ?? '-'}</td>
+                  <td class="muted">
+                    <span title=${formatLocalDateTime(delivery.occurred_at)}
+                      >${formatRelativeTime(delivery.occurred_at)}</span
+                    >
+                  </td>
+                  <td class="actions">
+                    ${
+                      delivery.status === 'dead'
+                        ? html`<sl-button
+                            size="small"
+                            @click=${() => this.handleReplay(delivery)}
+                            >Replay</sl-button
+                          >`
+                        : nothing
+                    }
+                  </td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
     `;
   }
 
@@ -595,22 +598,24 @@ export class WebhooksView extends LitElement {
                         session, budget and flow events.
                       </p>`
                     : html`
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Endpoint</th>
-                              <th>Events</th>
-                              <th>State</th>
-                              <th>Last delivery</th>
-                              <th></th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            ${this.endpoints.map((endpoint) =>
-                              this.renderEndpointRow(endpoint)
-                            )}
-                          </tbody>
-                        </table>
+                        <div class="table-scroll">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Endpoint</th>
+                                <th>Events</th>
+                                <th>State</th>
+                                <th>Last delivery</th>
+                                <th></th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              ${this.endpoints.map((endpoint) =>
+                                this.renderEndpointRow(endpoint)
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       `
                 }
                 <h2 class="section-title">Recent deliveries</h2>
@@ -622,97 +627,100 @@ export class WebhooksView extends LitElement {
   }
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    consoleDialogStyles,
-    css`
-      :host {
-        display: block;
-        font-size: var(--console-text-body);
-      }
-      .muted {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: 8px 10px;
-        border-bottom: 1px solid var(--console-hairline);
-        vertical-align: top;
-      }
-      th {
-        font-size: var(--console-text-meta);
-        font-weight: 600;
-        color: var(--console-meta-color);
-      }
-      td.num {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-      }
-      td.actions {
-        text-align: right;
-        white-space: nowrap;
-      }
-      /* Delete sits last, after a gap, so it is never the button next to the
-         one an operator meant to press. */
-      .danger-action {
-        margin-left: var(--sl-spacing-large);
-      }
-      .url {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 28rem;
-        white-space: nowrap;
-      }
-      .filters {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-      }
-      .section-title {
-        font-size: var(--console-text-card-title);
-        font-weight: 600;
-        margin: var(--sl-spacing-x-large) 0 var(--sl-spacing-small);
-      }
-      .form {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-medium);
-      }
-      .field-label {
-        font-size: var(--console-text-meta);
-        font-weight: 600;
-      }
-      .events {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-x-small);
-        margin-top: var(--sl-spacing-x-small);
-      }
-      .event-name {
-        font-weight: 500;
-      }
-      .load-error-actions {
-        margin-top: var(--sl-spacing-small);
-      }
-      .secret {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-x-small);
-        background: var(--console-page);
-        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-        border-radius: var(--sl-border-radius-medium);
-        word-break: break-all;
-      }
-      @media (max-width: 640px) {
-        .url {
-          max-width: 12rem;
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      consoleDialogStyles,
+      css`
+        :host {
+          display: block;
+          font-size: var(--console-text-body);
         }
-      }
-    `,
+        .muted {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        th,
+        td {
+          text-align: left;
+          padding: 8px 10px;
+          border-bottom: 1px solid var(--console-hairline);
+          vertical-align: top;
+        }
+        th {
+          font-size: var(--console-text-meta);
+          font-weight: 600;
+          color: var(--console-meta-color);
+        }
+        td.num {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+        td.actions {
+          text-align: right;
+          white-space: nowrap;
+        }
+        /* Delete sits last, after a gap, so it is never the button next to the
+         one an operator meant to press. */
+        .danger-action {
+          margin-left: var(--sl-spacing-large);
+        }
+        .url {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 28rem;
+          white-space: nowrap;
+        }
+        .filters {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+        }
+        .section-title {
+          font-size: var(--console-text-card-title);
+          font-weight: 600;
+          margin: var(--sl-spacing-x-large) 0 var(--sl-spacing-small);
+        }
+        .form {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-medium);
+        }
+        .field-label {
+          font-size: var(--console-text-meta);
+          font-weight: 600;
+        }
+        .events {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-x-small);
+          margin-top: var(--sl-spacing-x-small);
+        }
+        .event-name {
+          font-weight: 500;
+        }
+        .load-error-actions {
+          margin-top: var(--sl-spacing-small);
+        }
+        .secret {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-x-small);
+          background: var(--console-page);
+          padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+          border-radius: var(--sl-border-radius-medium);
+          word-break: break-all;
+        }
+        @media (max-width: 640px) {
+          .url {
+            max-width: 12rem;
+          }
+        }
+      `,
+    ],
   ];
 }

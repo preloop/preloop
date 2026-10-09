@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../../../utils/date';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
@@ -259,7 +260,7 @@ export class InvitationManagementView extends LitElement {
   }
 
   formatDate(dateString: string): string {
-    const date = new Date(dateString);
+    const date = parseUTCDate(dateString);
     return (
       date.toLocaleDateString() +
       ' ' +

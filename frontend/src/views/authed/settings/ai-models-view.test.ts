@@ -1,3 +1,4 @@
+import { formatUsd } from '../../../utils/money';
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
@@ -568,7 +569,7 @@ describe('AIModelsView', () => {
     expect((element as any).priorFleetSpend).to.be.a('number');
   });
 
-  it('renders counts compact and sub-cent spend to four decimals', async () => {
+  it('renders compact counts and shared sub-cent spend', async () => {
     const element = (await fixture(
       html`<ai-models-view></ai-models-view>`
     )) as AIModelsView;
@@ -586,9 +587,9 @@ describe('AIModelsView', () => {
     expect(format.formatCompactNumber(18306)).to.equal('18.3K');
     expect(format.formatCompactNumber(572180203)).to.equal('572.2M');
     // A sub-cent estimate is four decimals, never a $0.00 that reads as free.
-    expect(format.formatCurrency(0.0042)).to.equal('$0.0042');
-    expect(format.formatCurrency(12.3)).to.equal('$12.30');
-    expect(format.formatCurrency(0)).to.equal('$0.00');
+    expect(formatUsd(0.0042)).to.equal('< $0.01');
+    expect(formatUsd(12.3)).to.equal('$12.30');
+    expect(formatUsd(0)).to.equal('$0.00');
   });
 });
 

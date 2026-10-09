@@ -811,7 +811,7 @@ export class NotificationPreferencesView extends AuthedElement {
   }
 
   private formatDate(dateString: string): string {
-    const date = new Date(dateString);
+    const date = parseUTCDate(dateString);
     return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
   }
 

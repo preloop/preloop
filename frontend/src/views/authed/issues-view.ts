@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
@@ -133,69 +134,72 @@ export class IssuesView extends LitElement {
   private _initialLoadComplete = false;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      .table-card {
-        width: 100%;
-        --padding: 0;
-        border-spacing: 0;
-      }
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        .table-card {
+          width: 100%;
+          --padding: 0;
+          border-spacing: 0;
+        }
 
-      .styled-table th,
-      .styled-table td {
-        padding: var(--sl-spacing-medium);
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-      }
+        .styled-table th,
+        .styled-table td {
+          padding: var(--sl-spacing-medium);
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+        }
 
-      .styled-table .issue-id {
-        font-weight: var(--sl-font-weight-semibold);
-      }
+        .styled-table .issue-id {
+          font-weight: var(--sl-font-weight-semibold);
+        }
 
-      .issue-key {
-        color: var(--sl-color-neutral-600);
-      }
+        .issue-key {
+          color: var(--sl-color-neutral-600);
+        }
 
-      .faint-row {
-        opacity: 0.5;
-        transition: opacity 0.3s ease-in-out;
-      }
+        .faint-row {
+          opacity: 0.5;
+          transition: opacity 0.3s ease-in-out;
+        }
 
-      .clickable-row {
-        cursor: pointer;
-      }
-      .row-expanded {
-        background-color: var(--sl-color-primary-50);
-      }
+        .clickable-row {
+          cursor: pointer;
+        }
+        .row-expanded {
+          background-color: var(--sl-color-primary-50);
+        }
 
-      .loading-overlay {
-        color: white;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        gap: var(--sl-spacing-medium);
-        z-index: 10000;
-      }
+        .loading-overlay {
+          color: white;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          gap: var(--sl-spacing-medium);
+          z-index: 10000;
+        }
 
-      sl-icon {
-        font-size: 1rem;
-      }
+        sl-icon {
+          font-size: 1rem;
+        }
 
-      .placeholder-content {
-        text-align: center;
-      }
+        .placeholder-content {
+          text-align: center;
+        }
 
-      .issues-toolbar {
-        display: flex;
-        align-items: end;
-        gap: var(--sl-spacing-small);
-        justify-content: flex-end;
-      }
+        .issues-toolbar {
+          display: flex;
+          align-items: end;
+          gap: var(--sl-spacing-small);
+          justify-content: flex-end;
+        }
 
-      .threshold-filter {
-        min-width: 170px;
-      }
-    `,
+        .threshold-filter {
+          min-width: 170px;
+        }
+      `,
+    ],
   ];
 
   async connectedCallback() {
@@ -655,158 +659,162 @@ export class IssuesView extends LitElement {
               this._duplicates.length > 0
                 ? html`
                     <sl-card class="table-card">
-                      <table class="styled-table">
-                        <thead>
-                          <tr>
-                            <th>Issue 1</th>
-                            <th>Issue 2</th>
-                            <th class="text-right">Similarity</th>
-                            <th class="text-right">AI Review</th>
-                            <th class="text-right">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${this._duplicates.map((pair) => {
-                            const pairKey = this._pairKey(pair);
-                            const verdictState = this._verdicts[pairKey];
-                            const verdict = verdictState?.verdict as
-                              AIModelVerdict | undefined;
-                            const isFaint = verdictState?.state === 'checking';
-                            const isExpanded = this._expandedRowKey === pairKey;
+                      <div class="table-scroll">
+                        <table class="styled-table">
+                          <thead>
+                            <tr>
+                              <th>Issue 1</th>
+                              <th>Issue 2</th>
+                              <th class="text-right">Similarity</th>
+                              <th class="text-right">AI Review</th>
+                              <th class="text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${this._duplicates.map((pair) => {
+                              const pairKey = this._pairKey(pair);
+                              const verdictState = this._verdicts[pairKey];
+                              const verdict = verdictState?.verdict as
+                                AIModelVerdict | undefined;
+                              const isFaint =
+                                verdictState?.state === 'checking';
+                              const isExpanded =
+                                this._expandedRowKey === pairKey;
 
-                            return html`
-                              <tr
-                                class="clickable-row ${
-                                  isFaint ? 'faint-row' : ''
-                                } ${isExpanded ? 'row-expanded' : ''}"
-                                @click=${() => this._toggleRow(pairKey)}
-                              >
-                                <td>
-                                  <a
-                                    href="${
-                                      pair.issue1.meta_data?.url ||
-                                      pair.issue1.url
-                                    }"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    class="issue-id-link"
-                                    @click=${(e: Event) => e.stopPropagation()}
-                                  >
-                                    <strong class="issue-id"
-                                      >${pair.issue1.key}</strong
-                                    >
-                                    <sl-badge
-                                      class="chip"
-                                      pill
-                                      variant=${getStatusVariant(
-                                        pair.issue1.status
-                                      )}
-                                      >${issueStatusLabel(
-                                        pair.issue1.status
-                                      )}</sl-badge
-                                    >
-                                  </a>
-                                  <div class="issue-title">
-                                    ${pair.issue1.title}
-                                  </div>
-                                </td>
-                                <td>
-                                  <a
-                                    href="${
-                                      pair.issue2.meta_data?.url ||
-                                      pair.issue2.url
-                                    }"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    class="issue-id-link"
-                                    @click=${(e: Event) => e.stopPropagation()}
-                                  >
-                                    <strong class="issue-id"
-                                      >${pair.issue2.key}</strong
-                                    >
-                                    <sl-badge
-                                      class="chip"
-                                      pill
-                                      variant=${getStatusVariant(
-                                        pair.issue2.status
-                                      )}
-                                      >${issueStatusLabel(
-                                        pair.issue2.status
-                                      )}</sl-badge
-                                    >
-                                  </a>
-                                  <div class="issue-title">
-                                    ${pair.issue2.title}
-                                  </div>
-                                </td>
-                                <td class="text-right">
-                                  ${(pair.similarity * 100).toFixed(2)}%
-                                </td>
-                                <td
-                                  class="text-right"
-                                  id="verdict-${pair.issue1.id}-${
-                                    pair.issue2.id
-                                  }"
+                              return html`
+                                <tr
+                                  class="clickable-row ${
+                                    isFaint ? 'faint-row' : ''
+                                  } ${isExpanded ? 'row-expanded' : ''}"
+                                  @click=${() => this._toggleRow(pairKey)}
                                 >
-                                  ${
-                                    pair.similarity >= 0.999
-                                      ? html`<sl-badge
-                                          variant="warning"
-                                          style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
-                                          >Identical</sl-badge
-                                        >`
-                                      : this._renderRowVerdict(
-                                          pair,
-                                          verdictState
-                                        )
-                                  }
-                                </td>
-                                <td>
-                                  <div class="actions-container">
-                                    ${when(
-                                      !verdict?.resolution,
-                                      () => html`
-                                        <sl-button
-                                          size="small"
-                                          variant="primary"
-                                          outline
-                                          @click=${(e: Event) => {
-                                            e.stopPropagation();
-                                            this._openResolveModal(pair);
-                                          }}
-                                          >Resolve</sl-button
-                                        >
-                                        <sl-tooltip
-                                          content="Dismiss this suggestion"
-                                        >
-                                          <sl-icon-button
-                                            name="x-circle"
-                                            label="Dismiss"
+                                  <td>
+                                    <a
+                                      href="${
+                                        pair.issue1.meta_data?.url ||
+                                        pair.issue1.url
+                                      }"
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      class="issue-id-link"
+                                      @click=${(e: Event) => e.stopPropagation()}
+                                    >
+                                      <strong class="issue-id"
+                                        >${pair.issue1.key}</strong
+                                      >
+                                      <sl-badge
+                                        class="chip"
+                                        pill
+                                        variant=${getStatusVariant(
+                                          pair.issue1.status
+                                        )}
+                                        >${issueStatusLabel(
+                                          pair.issue1.status
+                                        )}</sl-badge
+                                      >
+                                    </a>
+                                    <div class="issue-title">
+                                      ${pair.issue1.title}
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <a
+                                      href="${
+                                        pair.issue2.meta_data?.url ||
+                                        pair.issue2.url
+                                      }"
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      class="issue-id-link"
+                                      @click=${(e: Event) => e.stopPropagation()}
+                                    >
+                                      <strong class="issue-id"
+                                        >${pair.issue2.key}</strong
+                                      >
+                                      <sl-badge
+                                        class="chip"
+                                        pill
+                                        variant=${getStatusVariant(
+                                          pair.issue2.status
+                                        )}
+                                        >${issueStatusLabel(
+                                          pair.issue2.status
+                                        )}</sl-badge
+                                      >
+                                    </a>
+                                    <div class="issue-title">
+                                      ${pair.issue2.title}
+                                    </div>
+                                  </td>
+                                  <td class="text-right">
+                                    ${(pair.similarity * 100).toFixed(2)}%
+                                  </td>
+                                  <td
+                                    class="text-right"
+                                    id="verdict-${pair.issue1.id}-${
+                                      pair.issue2.id
+                                    }"
+                                  >
+                                    ${
+                                      pair.similarity >= 0.999
+                                        ? html`<sl-badge
+                                            variant="warning"
+                                            style="--sl-color-warning-text: var(--sl-color-orange-50); --sl-color-warning-600: var(--sl-color-orange-700);"
+                                            >Identical</sl-badge
+                                          >`
+                                        : this._renderRowVerdict(
+                                            pair,
+                                            verdictState
+                                          )
+                                    }
+                                  </td>
+                                  <td>
+                                    <div class="actions-container">
+                                      ${when(
+                                        !verdict?.resolution,
+                                        () => html`
+                                          <sl-button
+                                            size="small"
+                                            variant="primary"
+                                            outline
                                             @click=${(e: Event) => {
                                               e.stopPropagation();
-                                              this._handleDismiss(pair);
+                                              this._openResolveModal(pair);
                                             }}
-                                          ></sl-icon-button>
-                                        </sl-tooltip>
-                                      `
-                                    )}
-                                  </div>
-                                </td>
-                              </tr>
-                              ${when(
-                                isExpanded,
-                                () => html`
-                                  <tr class="inline-detail-row">
-                                    <td colspan="5">
-                                      ${this.renderDetailRow(pair)}
-                                    </td>
-                                  </tr>
-                                `
-                              )}
-                            `;
-                          })}
-                        </tbody>
-                      </table>
+                                            >Resolve</sl-button
+                                          >
+                                          <sl-tooltip
+                                            content="Dismiss this suggestion"
+                                          >
+                                            <sl-icon-button
+                                              name="x-circle"
+                                              label="Dismiss"
+                                              @click=${(e: Event) => {
+                                                e.stopPropagation();
+                                                this._handleDismiss(pair);
+                                              }}
+                                            ></sl-icon-button>
+                                          </sl-tooltip>
+                                        `
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                                ${when(
+                                  isExpanded,
+                                  () => html`
+                                    <tr class="inline-detail-row">
+                                      <td colspan="5">
+                                        ${this.renderDetailRow(pair)}
+                                      </td>
+                                    </tr>
+                                  `
+                                )}
+                              `;
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
                     </sl-card>
                     <pagination-controls
                       .currentPage=${this._currentPage}

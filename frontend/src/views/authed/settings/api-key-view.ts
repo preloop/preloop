@@ -448,7 +448,7 @@ export class ApiKeyView extends LitElement {
     if (checked) {
       next = current.some((entry) => this.entryMatchesModel(entry, model))
         ? current
-        : [...current, model.name];
+        : [...current, gatewayAliasForModel(model)];
     } else {
       // Remove every stored entry that names this model, in whatever form
       // it was stored, so the gateway stops honouring it.

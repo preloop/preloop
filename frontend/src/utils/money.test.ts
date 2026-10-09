@@ -1,6 +1,12 @@
 import { expect } from '@open-wc/testing';
 
-import { formatUsd, formatUsdExact } from './money';
+import {
+  formatUsd,
+  formatUsdExact,
+  formatCurrencyAmount,
+  formatCurrencyAmountExact,
+  formatCurrencyCents,
+} from './money';
 
 describe('formatUsd', () => {
   it('formats dollars with cents and thousands separators', () => {
@@ -32,5 +38,22 @@ describe('formatUsdExact', () => {
     expect(formatUsdExact(0.000123)).to.equal('$0.000123');
     expect(formatUsdExact(12345.6)).to.equal('$12,345.60');
     expect(formatUsdExact(null)).to.equal('$0.00');
+  });
+});
+
+describe('provider currencies', () => {
+  it('keeps cents conversion and USD display consistent', () => {
+    expect(formatCurrencyCents(1234567)).to.equal('$12,345.67');
+    expect(formatCurrencyCents(null)).to.equal('Unavailable');
+    expect(formatCurrencyCents(Number.NaN)).to.equal('Unavailable');
+    expect(formatCurrencyCents(100, 'invalid-currency')).to.equal(
+      'Unavailable'
+    );
+    expect(formatCurrencyAmount(0.000123, 'usd')).to.equal('< $0.01');
+  });
+  it('preserves non-dollar invoice denomination and exact values', () => {
+    expect(formatCurrencyAmount(12345.678, 'EUR')).to.equal('€12,345.68');
+    expect(formatCurrencyAmountExact(0.0125, 'EUR')).to.equal('€0.0125');
+    expect(formatCurrencyAmountExact(0.0125, 'USD')).to.equal('$0.0125');
   });
 });

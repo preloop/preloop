@@ -850,7 +850,7 @@ describe('AccountView', () => {
     const cells = usageCells(element);
     expect(cells['Usage so far']).to.equal('Not verified');
     expect(cells['Remaining before cap']).to.equal('Not verified');
-    expect(cells['Current active cap']).to.equal('$10');
+    expect(cells['Current active cap']).to.equal('$10.00');
     expect(copy(element)).to.not.contain('Not configured');
   });
 
@@ -873,7 +873,7 @@ describe('AccountView', () => {
 
     const cells = usageCells(element);
     expect(cells['Usage so far']).to.equal('$0.00');
-    expect(cells['Remaining before cap']).to.equal('$10');
+    expect(cells['Remaining before cap']).to.equal('$10.00');
   });
 
   it('still says "Not configured" when the plan has no allowance and no cap', async () => {
@@ -1085,7 +1085,7 @@ describe('AccountView', () => {
     const text = copy(element);
     expect(text).to.contain('22 of 20');
     expect(text).to.contain('Agents are unlimited');
-    expect(text).to.contain('$15 each per month');
+    expect(text).to.contain('$15.00 each per month');
   });
 
   it('omits the seat line when the plan has no seat bracket', async () => {

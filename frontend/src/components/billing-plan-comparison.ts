@@ -1,3 +1,5 @@
+import { formatCurrencyCents, formatCurrencyCentsExact } from '../utils/money';
+import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { fetchWithAuth } from '../api';
@@ -370,7 +372,7 @@ export class BillingPlanComparison extends LitElement {
     const subscription = options.current_subscription;
     if (subscription?.status !== 'trialing') return false;
     if (!subscription.current_period_end) return false;
-    const date = new Date(subscription.current_period_end);
+    const date = parseUTCDate(subscription.current_period_end);
     return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
   }
 
@@ -776,24 +778,12 @@ export class BillingPlanComparison extends LitElement {
     }
   }
 
-  private money(cents: number | null | undefined, currency = 'usd'): string {
-    if (cents === null || cents === undefined || !Number.isFinite(cents))
-      return 'Unavailable';
-    try {
-      return new Intl.NumberFormat(undefined, {
-        style: 'currency',
-        currency,
-      }).format(cents / 100);
-    } catch {
-      return 'Unavailable';
-    }
-  }
   private count(value: number | null | undefined): string {
     if (value == null || !Number.isFinite(value)) return 'Unknown';
     return new Intl.NumberFormat(undefined).format(value);
   }
   private date(value: string): string {
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     return Number.isNaN(date.getTime())
       ? 'Unknown'
       : date.toLocaleString(undefined, {
@@ -802,7 +792,7 @@ export class BillingPlanComparison extends LitElement {
         });
   }
   private month(value: string): string {
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     return Number.isNaN(date.getTime())
       ? 'Unknown month'
       : date.toLocaleDateString(undefined, {
@@ -821,7 +811,7 @@ export class BillingPlanComparison extends LitElement {
     ) {
       const credit = plan.features.hosted_credit_one_time_usd;
       return typeof credit === 'number'
-        ? `${this.money(credit * 100)} one-time credit`
+        ? `${formatCurrencyCents(credit * 100, 'USD')} one-time credit`
         : 'One-time credit';
     }
     const value = plan?.features?.[key];
@@ -829,7 +819,7 @@ export class BillingPlanComparison extends LitElement {
     if (value === -1) return key === 'retention_days' ? 'Custom' : 'Unlimited';
     if (typeof value !== 'number') return String(value);
     if (key === 'hosted_models_monthly_limit_usd')
-      return `${this.money(value * 100)} / month`;
+      return `${formatCurrencyCents(value * 100, 'USD')} / month`;
     if (key === 'byok_ingest_tokens_monthly')
       return `${this.count(value)} tokens / month`;
     if (key === 'retention_days')
@@ -911,9 +901,9 @@ export class BillingPlanComparison extends LitElement {
           ? html`
               <h3>Current built-in model balance</h3>
               <p>
-                ${o.hosted_credit.coverage === 'unknown' ? 'Your historical hosted balance has not been verified. An unavailable balance does not mean fresh credit.' : html`Available ${o.hosted_credit.one_time_credit_usd != null ? 'one-time credit' : 'this UTC calendar month'}: ${this.money((o.hosted_credit.one_time_credit_usd != null ? o.hosted_credit.remaining_credit_usd : o.hosted_credit.month_remaining_usd) == null ? null : (o.hosted_credit.one_time_credit_usd != null ? o.hosted_credit.remaining_credit_usd! : o.hosted_credit.month_remaining_usd!) * 100)}.`}
+                ${o.hosted_credit.coverage === 'unknown' ? 'Your historical hosted balance has not been verified. An unavailable balance does not mean fresh credit.' : html`Available ${o.hosted_credit.one_time_credit_usd != null ? 'one-time credit' : 'this UTC calendar month'}: ${formatCurrencyCents((o.hosted_credit.one_time_credit_usd != null ? o.hosted_credit.remaining_credit_usd : o.hosted_credit.month_remaining_usd) == null ? null : (o.hosted_credit.one_time_credit_usd != null ? o.hosted_credit.remaining_credit_usd! : o.hosted_credit.month_remaining_usd!) * 100, 'USD')}.`}
               </p>
-              ${(o.hosted_credit.lifetime_reserved_usd ?? 0) > 0 ? html`<p>${this.money(o.hosted_credit.lifetime_reserved_usd! * 100)} is reserved for calls in progress or awaiting verified provider charges. Reserved credit is not available for another call; it is released or settled when the charge is confirmed.</p>` : nothing}
+              ${(o.hosted_credit.lifetime_reserved_usd ?? 0) > 0 ? html`<p>${html`<span title=${formatCurrencyCentsExact(o.hosted_credit.lifetime_reserved_usd! * 100, 'USD')}>${formatCurrencyCents(o.hosted_credit.lifetime_reserved_usd! * 100, 'USD')}</span>`} is reserved for calls in progress or awaiting verified provider charges. Reserved credit is not available for another call; it is released or settled when the charge is confirmed.</p>` : nothing}
               ${o.hosted_credit.extra_spending_enabled === false ? html`<p>Extra spending is off. When the included balance is exhausted, built-in model calls stop. Calls using your own provider keys continue.</p>` : nothing}
             `
           : nothing
@@ -955,7 +945,7 @@ export class BillingPlanComparison extends LitElement {
         built-in models. Provider charges on your own keys are separate and are
         never marked up by Preloop.
       </p>
-      ${this.target?.features.hosted_credit_one_time_usd != null ? html`<p>The Free hosted credit is granted once across the account lifetime. It does not reset each month or when you change plans. Remaining lifetime credit: ${this.money(o.hosted_credit?.remaining_credit_usd == null ? null : o.hosted_credit.remaining_credit_usd * 100)}.</p>` : nothing}
+      ${this.target?.features.hosted_credit_one_time_usd != null ? html`<p>The Free hosted credit is granted once across the account lifetime. It does not reset each month or when you change plans. Remaining lifetime credit: ${html`<span title=${formatCurrencyCentsExact(o.hosted_credit?.remaining_credit_usd == null ? null : o.hosted_credit.remaining_credit_usd * 100, 'USD')}>${formatCurrencyCents(o.hosted_credit?.remaining_credit_usd == null ? null : o.hosted_credit.remaining_credit_usd * 100, 'USD')}</span>`}.</p>` : nothing}
       <p>
         Current users:
         <strong>${this.count(o.current_usage.active_users)}</strong>; pending
@@ -1021,7 +1011,7 @@ export class BillingPlanComparison extends LitElement {
         >${m.coverage !== 'complete' && m.observed_byok_tokens != null ? html`<br /><small>Observed only</small>` : nothing}
       </td>
       <td>
-        ${this.money(m.observed_hosted_cost_usd == null ? null : m.observed_hosted_cost_usd * 100)}<br /><small
+        ${html`<span title=${formatCurrencyCentsExact(m.observed_hosted_cost_usd == null ? null : m.observed_hosted_cost_usd * 100, 'USD')}>${formatCurrencyCents(m.observed_hosted_cost_usd == null ? null : m.observed_hosted_cost_usd * 100, 'USD')}</span>`}<br /><small
           >${this.observedLimit(m, true)}</small
         >${m.coverage !== 'complete' && m.observed_hosted_cost_usd != null ? html`<br /><small>Observed only</small>` : nothing}
       </td>
@@ -1083,7 +1073,7 @@ export class BillingPlanComparison extends LitElement {
           </tbody>
         </table>
       </div>
-      ${target?.seat_addon ? html`<p>Extra users: ${this.money(target.seat_addon.price_per_user_monthly * 100)} per user monthly, or ${this.money(target.seat_addon.price_per_user_annually * 100)} annually, up to ${target.seat_addon.max_users} users. The quote includes any required extra users.</p>` : nothing}
+      ${target?.seat_addon ? html`<p>Extra users: ${html`<span title=${formatCurrencyCentsExact(target.seat_addon.price_per_user_monthly * 100, 'USD')}>${formatCurrencyCents(target.seat_addon.price_per_user_monthly * 100, 'USD')}</span>`} per user monthly, or ${html`<span title=${formatCurrencyCentsExact(target.seat_addon.price_per_user_annually * 100, 'USD')}>${formatCurrencyCents(target.seat_addon.price_per_user_annually * 100, 'USD')}</span>`} annually, up to ${target.seat_addon.max_users} users. The quote includes any required extra users.</p>` : nothing}
       <p>
         Exhausting a BYOK analysis quota reduces analytics detail. The gateway,
         firewall, approvals and budgets continue enforcing your policies.
@@ -1110,13 +1100,15 @@ export class BillingPlanComparison extends LitElement {
         <dt>Current recurring subtotal</dt>
         <dd>
           ${p.current.name}:
-          ${this.money(p.current.total_amount_cents, p.current.currency)} /
+          ${html`<span title=${formatCurrencyCentsExact(p.current.total_amount_cents, p.current.currency)}>${formatCurrencyCents(p.current.total_amount_cents, p.current.currency)}</span>`}
+          /
           ${p.current.interval}${p.current.quantity > 1 ? ` (${p.current.quantity} users)` : ''}
         </dd>
         <dt>New recurring subtotal</dt>
         <dd>
           ${p.target.name}:
-          ${this.money(p.target.total_amount_cents, p.target.currency)} /
+          ${html`<span title=${formatCurrencyCentsExact(p.target.total_amount_cents, p.target.currency)}>${formatCurrencyCents(p.target.total_amount_cents, p.target.currency)}</span>`}
+          /
           ${p.target.interval}${p.target.addon_quantity ? ` (includes ${p.target.addon_quantity} extra users)` : ''}
         </dd>
         <dt>Effective date</dt>
@@ -1126,10 +1118,12 @@ export class BillingPlanComparison extends LitElement {
         </dd>
         <dt>Proration</dt>
         <dd>
-          ${p.proration_amount_cents === null ? 'Not separately itemized; included in the verified amount due now.' : this.money(p.proration_amount_cents, p.currency)}
+          ${p.proration_amount_cents === null ? 'Not separately itemized; included in the verified amount due now.' : html`<span title=${formatCurrencyCentsExact(p.proration_amount_cents, p.currency)}>${formatCurrencyCents(p.proration_amount_cents, p.currency)}</span>`}
         </dd>
         <dt>Due now</dt>
-        <dd>${this.money(p.amount_due_now_cents, p.currency)}</dd>
+        <dd>
+          ${html`<span title=${formatCurrencyCentsExact(p.amount_due_now_cents, p.currency)}>${formatCurrencyCents(p.amount_due_now_cents, p.currency)}</span>`}
+        </dd>
         <dt>Quote expires</dt>
         <dd>${this.date(p.expires_at)}</dd>
       </dl>
@@ -1213,9 +1207,9 @@ export class BillingPlanComparison extends LitElement {
       >${legacy ? ' (grandfathered)' : ''}. Current recurring subtotal before
       discounts and tax:
       <strong
-        >${this.money(subscription.total_amount_cents, subscription.currency)} /
-        ${subscription.interval}</strong
-      >${perUser ? html` (${this.money(subscription.unit_amount_cents, subscription.currency)} per user, ${this.count(subscription.quantity)} users). Your grandfathered per-user rate stays until you choose to change plans.` : '.'}
+        >${html`<span title=${formatCurrencyCentsExact(subscription.total_amount_cents, subscription.currency)}>${formatCurrencyCents(subscription.total_amount_cents, subscription.currency)}</span>`}
+        / ${subscription.interval}</strong
+      >${perUser ? html` (${formatCurrencyCents(subscription.unit_amount_cents, subscription.currency)} per user, ${this.count(subscription.quantity)} users). Your grandfathered per-user rate stays until you choose to change plans.` : '.'}
     </p>`;
   }
 
@@ -1375,7 +1369,7 @@ export class BillingPlanComparison extends LitElement {
                   : html`
                       <p data-testid="price">
                         ${target.name}:
-                        ${this.money((this.interval === 'year' ? target.price_annually : target.price_monthly) == null ? null : (this.interval === 'year' ? target.price_annually! : target.price_monthly!) * 100)}${this.showPeriod ? html` / ${this.interval}` : nothing}.${o.current_subscription ? ' The preview shows the exact amount and effective date before anything changes.' : ' Secure checkout shows the final amount and any taxes before you subscribe.'}
+                        ${html`<span title=${formatCurrencyCentsExact((this.interval === 'year' ? target.price_annually : target.price_monthly) == null ? null : (this.interval === 'year' ? target.price_annually! : target.price_monthly!) * 100, 'USD')}>${formatCurrencyCents((this.interval === 'year' ? target.price_annually : target.price_monthly) == null ? null : (this.interval === 'year' ? target.price_annually! : target.price_monthly!) * 100, 'USD')}</span>`}${this.showPeriod ? html` / ${this.interval}` : nothing}.${o.current_subscription ? ' The preview shows the exact amount and effective date before anything changes.' : ' Secure checkout shows the final amount and any taxes before you subscribe.'}
                       </p>
                       ${this.renderActionNotices()}
                       ${

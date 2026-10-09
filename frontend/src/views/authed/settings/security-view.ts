@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -128,7 +129,7 @@ export class SecurityView extends LitElement {
                               used
                               ${
                                 session.last_seen_at
-                                  ? new Date(
+                                  ? parseUTCDate(
                                       session.last_seen_at
                                     ).toLocaleString()
                                   : 'never'
@@ -343,9 +344,7 @@ export class SecurityView extends LitElement {
                                         ${passkey.name}
                                         <small>
                                           added
-                                          ${new Date(
-                                            passkey.created_at
-                                          ).toLocaleDateString()}
+                                          ${parseUTCDate(passkey.created_at).toLocaleDateString()}
                                         </small>
                                       </span>
                                       <sl-button

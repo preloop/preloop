@@ -1161,8 +1161,8 @@ describe('AIModelDetailView', () => {
       await element.updateComplete;
       const prompt = removeDialog(element).textContent!.replace(/\s+/g, ' ');
       expect(prompt).to.contain('anthropic/claude-sonnet-4');
-      expect(prompt).to.contain('input $0 per 1M');
-      expect(prompt).to.contain('output $0 per 1M');
+      expect(prompt).to.contain('input $0.00 per 1M');
+      expect(prompt).to.contain('output $0.00 per 1M');
       expect(prompt).to.contain('effective from Aug 1, 2026');
       expect(deletes(), 'the confirm alone sends nothing').to.have.length(0);
 

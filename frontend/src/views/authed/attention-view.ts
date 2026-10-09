@@ -1,3 +1,5 @@
+import { tableScrollStyles } from '../../styles/table-scroll';
+import { formatUsd, formatUsdExact } from '../../utils/money';
 import { css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -66,6 +68,7 @@ import {
   formatFutureRelativeTime,
   formatLocalDateTime,
   formatRelativeTime,
+  parseUTCDate,
 } from '../../utils/date';
 import { renderFailureCategoryChip } from '../../utils/failure-category';
 import {
@@ -142,474 +145,477 @@ export class AttentionView extends AuthedElement {
   private handledHash: string | null = null;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    unsafeCSS(executionSubjectCss),
-    css`
-      :host {
-        display: block;
-      }
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      unsafeCSS(executionSubjectCss),
+      css`
+        :host {
+          display: block;
+        }
 
-      .chip-strip {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-x-small);
-        margin-bottom: var(--sl-spacing-large);
-      }
+        .chip-strip {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-x-small);
+          margin-bottom: var(--sl-spacing-large);
+        }
 
-      .chip {
-        align-items: center;
-        background: var(--console-surface);
-        border: 1px solid var(--console-hairline);
-        border-radius: var(--sl-border-radius-pill);
-        color: var(--sl-color-neutral-800);
-        cursor: pointer;
-        display: inline-flex;
-        font-size: var(--sl-font-size-small);
-        font-variant-numeric: tabular-nums;
-        gap: var(--sl-spacing-2x-small);
-        padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
-      }
+        .chip {
+          align-items: center;
+          background: var(--console-surface);
+          border: 1px solid var(--console-hairline);
+          border-radius: var(--sl-border-radius-pill);
+          color: var(--sl-color-neutral-800);
+          cursor: pointer;
+          display: inline-flex;
+          font-size: var(--sl-font-size-small);
+          font-variant-numeric: tabular-nums;
+          gap: var(--sl-spacing-2x-small);
+          padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
+        }
 
-      .chip.empty {
-        color: var(--console-meta-color);
-        cursor: default;
-      }
+        .chip.empty {
+          color: var(--console-meta-color);
+          cursor: default;
+        }
 
-      .chip sl-icon {
-        color: var(--console-meta-color);
-      }
+        .chip sl-icon {
+          color: var(--console-meta-color);
+        }
 
-      .sections {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-large);
-      }
+        .sections {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-large);
+        }
 
-      .section-title {
-        align-items: center;
-        display: flex;
-        font-weight: 600;
-        gap: var(--sl-spacing-2x-small);
-      }
+        .section-title {
+          align-items: center;
+          display: flex;
+          font-weight: 600;
+          gap: var(--sl-spacing-2x-small);
+        }
 
-      .attention-row {
-        border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-x-small) 0;
-      }
+        .attention-row {
+          border-radius: var(--sl-border-radius-medium);
+          padding: var(--sl-spacing-x-small) 0;
+        }
 
-      .attention-row + .attention-row {
-        border-top: 1px solid var(--console-hairline);
-      }
+        .attention-row + .attention-row {
+          border-top: 1px solid var(--console-hairline);
+        }
 
-      /* A jump from the Overview strip has to land somewhere visible. The tint
+        /* A jump from the Overview strip has to land somewhere visible. The tint
          fades out on its own: it says "here", it is not a state. */
-      .attention-row.highlighted {
-        animation: row-highlight ${unsafeCSS(HIGHLIGHT_MS)}ms ease-out;
-      }
-
-      @keyframes row-highlight {
-        0% {
-          background: color-mix(
-            in srgb,
-            var(--sl-color-primary-500) 18%,
-            transparent
-          );
-        }
-        100% {
-          background: transparent;
-        }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
         .attention-row.highlighted {
-          animation: none;
-          background: color-mix(
-            in srgb,
-            var(--sl-color-primary-500) 12%,
-            transparent
-          );
+          animation: row-highlight ${unsafeCSS(HIGHLIGHT_MS)}ms ease-out;
         }
-      }
 
-      .row-head {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-small);
-      }
+        @keyframes row-highlight {
+          0% {
+            background: color-mix(
+              in srgb,
+              var(--sl-color-primary-500) 18%,
+              transparent
+            );
+          }
+          100% {
+            background: transparent;
+          }
+        }
 
-      .row-toggle {
-        align-items: center;
-        background: none;
-        border: none;
-        color: var(--console-meta-color);
-        cursor: pointer;
-        display: flex;
-        flex-shrink: 0;
-        padding: 2px;
-      }
+        @media (prefers-reduced-motion: reduce) {
+          .attention-row.highlighted {
+            animation: none;
+            background: color-mix(
+              in srgb,
+              var(--sl-color-primary-500) 12%,
+              transparent
+            );
+          }
+        }
 
-      .row-toggle sl-icon {
-        transition: transform 0.15s ease;
-      }
+        .row-head {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-small);
+        }
 
-      .row-toggle[aria-expanded='true'] sl-icon {
-        transform: rotate(90deg);
-      }
+        .row-toggle {
+          align-items: center;
+          background: none;
+          border: none;
+          color: var(--console-meta-color);
+          cursor: pointer;
+          display: flex;
+          flex-shrink: 0;
+          padding: 2px;
+        }
 
-      .row-spacer {
-        flex-shrink: 0;
-        width: 20px;
-      }
+        .row-toggle sl-icon {
+          transition: transform 0.15s ease;
+        }
 
-      .severity-dot {
-        background: var(--sl-color-warning-600);
-        border-radius: 50%;
-        flex-shrink: 0;
-        height: 8px;
-        width: 8px;
-      }
+        .row-toggle[aria-expanded='true'] sl-icon {
+          transform: rotate(90deg);
+        }
 
-      .severity-dot.critical {
-        background: var(--sl-color-danger-600);
-      }
+        .row-spacer {
+          flex-shrink: 0;
+          width: 20px;
+        }
 
-      /* Low tone: worth naming once, not worth an amber dot. */
-      .severity-dot.low {
-        background: var(--sl-color-neutral-400);
-      }
+        .severity-dot {
+          background: var(--sl-color-warning-600);
+          border-radius: 50%;
+          flex-shrink: 0;
+          height: 8px;
+          width: 8px;
+        }
 
-      .row-body {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-        min-width: 0;
-      }
+        .severity-dot.critical {
+          background: var(--sl-color-danger-600);
+        }
 
-      .row-title {
-        color: var(--sl-color-neutral-900);
-        text-decoration: none;
-      }
+        /* Low tone: worth naming once, not worth an amber dot. */
+        .severity-dot.low {
+          background: var(--sl-color-neutral-400);
+        }
 
-      .row-title:hover {
-        text-decoration: underline;
-      }
+        .row-body {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          min-width: 0;
+        }
 
-      .row-detail {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        font-variant-numeric: tabular-nums;
-      }
+        .row-title {
+          color: var(--sl-color-neutral-900);
+          text-decoration: none;
+        }
 
-      .row-attribution {
-        margin-top: 2px;
-      }
+        .row-title:hover {
+          text-decoration: underline;
+        }
 
-      .expiry-chip {
-        margin-left: var(--sl-spacing-x-small);
-        vertical-align: middle;
-      }
+        .row-detail {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          font-variant-numeric: tabular-nums;
+        }
 
-      .row-actions {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-2x-small);
-        margin-left: auto;
-      }
+        .row-attribution {
+          margin-top: 2px;
+        }
 
-      .row-evidence {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-x-small);
-        padding: var(--sl-spacing-x-small) 0 var(--sl-spacing-small) 40px;
-      }
+        .expiry-chip {
+          margin-left: var(--sl-spacing-x-small);
+          vertical-align: middle;
+        }
 
-      .evidence-line {
-        color: var(--sl-color-neutral-700);
-        font-size: var(--console-text-meta);
-      }
+        .row-actions {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-2x-small);
+          margin-left: auto;
+        }
 
-      .evidence-line .mono,
-      .evidence-table .mono {
-        font-family: var(--sl-font-mono);
-        font-size: 12px;
-      }
+        .row-evidence {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-x-small);
+          padding: var(--sl-spacing-x-small) 0 var(--sl-spacing-small) 40px;
+        }
 
-      .policy-notice-excerpt {
-        overflow-wrap: anywhere;
-        white-space: pre-wrap;
-      }
+        .evidence-line {
+          color: var(--sl-color-neutral-700);
+          font-size: var(--console-text-meta);
+        }
 
-      .evidence-table {
-        border-collapse: collapse;
-        font-size: var(--console-text-meta);
-        table-layout: fixed;
-        width: 100%;
-      }
+        .evidence-line .mono,
+        .evidence-table .mono {
+          font-family: var(--sl-font-mono);
+          font-size: 12px;
+        }
 
-      .evidence-table th {
-        color: var(--console-meta-color);
-        font-weight: 500;
-        padding: 2px var(--sl-spacing-x-small) 2px 0;
-        text-align: left;
-      }
+        .policy-notice-excerpt {
+          overflow-wrap: anywhere;
+          white-space: pre-wrap;
+        }
 
-      .evidence-table td {
-        color: var(--sl-color-neutral-700);
-        font-variant-numeric: tabular-nums;
-        overflow: hidden;
-        padding: 3px var(--sl-spacing-x-small) 3px 0;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
+        .evidence-table {
+          border-collapse: collapse;
+          font-size: var(--console-text-meta);
+          table-layout: fixed;
+          width: 100%;
+        }
 
-      .evidence-table td a {
-        color: var(--console-link-color);
-        text-decoration: none;
-      }
+        .evidence-table th {
+          color: var(--console-meta-color);
+          font-weight: 500;
+          padding: 2px var(--sl-spacing-x-small) 2px 0;
+          text-align: left;
+        }
 
-      .evidence-table .numeric {
-        text-align: right;
-      }
+        .evidence-table td {
+          color: var(--sl-color-neutral-700);
+          font-variant-numeric: tabular-nums;
+          overflow: hidden;
+          padding: 3px var(--sl-spacing-x-small) 3px 0;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
 
-      /* The subject is what the reader scans this table for, so it gets the
+        .evidence-table td a {
+          color: var(--console-link-color);
+          text-decoration: none;
+        }
+
+        .evidence-table .numeric {
+          text-align: right;
+        }
+
+        /* The subject is what the reader scans this table for, so it gets the
          body colour while the timings stay in the -700 register. */
-      .evidence-table .subject-cell {
-        color: var(--console-body-color);
-      }
+        .evidence-table .subject-cell {
+          color: var(--console-body-color);
+        }
 
-      .runs-table .subject-cell {
-        width: 30%;
-      }
-      .runs-table .started-cell {
-        width: 18%;
-      }
-      .runs-table .duration-cell {
-        width: 12%;
-      }
-      .runs-table .open-cell {
-        width: 60px;
-      }
+        .runs-table .subject-cell {
+          width: 30%;
+        }
+        .runs-table .started-cell {
+          width: 18%;
+        }
+        .runs-table .duration-cell {
+          width: 12%;
+        }
+        .runs-table .open-cell {
+          width: 60px;
+        }
 
-      /* The category column takes its width from the subject, which has the
+        /* The category column takes its width from the subject, which has the
          most to give: a chip needs a fixed amount and a truncated chip says
          nothing. Overflow stays visible so the tooltip's chip is not clipped. */
-      .runs-table .category-cell {
-        overflow: visible;
-        width: 18%;
-      }
-      .runs-table.has-category .subject-cell {
-        width: 22%;
-      }
-      .runs-table.has-category .started-cell {
-        width: 15%;
-      }
-      .runs-table.has-category .duration-cell {
-        width: 10%;
-      }
+        .runs-table .category-cell {
+          overflow: visible;
+          width: 18%;
+        }
+        .runs-table.has-category .subject-cell {
+          width: 22%;
+        }
+        .runs-table.has-category .started-cell {
+          width: 15%;
+        }
+        .runs-table.has-category .duration-cell {
+          width: 10%;
+        }
 
-      /* On a phone the five columns collide and every one of them is cut off
+        /* On a phone the five columns collide and every one of them is cut off
          mid-word. Duration and the error text are the ones to drop: the error
          is repeated in full above the table as "most common", and the run is
          one tap away. Subject and when it ran stay, and the subject takes the
          width the other two gave up. */
-      @media (max-width: 700px) {
-        .runs-table .duration-cell,
-        .runs-table .error-cell {
-          display: none;
-        }
-        .runs-table .subject-cell {
-          width: 58%;
-        }
-        .runs-table .started-cell {
-          width: 22%;
-        }
-        /* The category survives the narrow layout: it is the shortest
+        @media (max-width: 700px) {
+          .runs-table .duration-cell,
+          .runs-table .error-cell {
+            display: none;
+          }
+          .runs-table .subject-cell {
+            width: 58%;
+          }
+          .runs-table .started-cell {
+            width: 22%;
+          }
+          /* The category survives the narrow layout: it is the shortest
            statement of why the run failed, and it is what the error column
            would have said in more words. */
-        .runs-table.has-category .subject-cell {
-          width: 40%;
+          .runs-table.has-category .subject-cell {
+            width: 40%;
+          }
+          .runs-table.has-category .started-cell {
+            width: 20%;
+          }
+          .runs-table.has-category .category-cell {
+            width: 34%;
+          }
         }
-        .runs-table.has-category .started-cell {
-          width: 20%;
-        }
-        .runs-table.has-category .category-cell {
-          width: 34%;
-        }
-      }
 
-      /* At 390px even those three columns collide: the category chip is wider
+        /* At 390px even those three columns collide: the category chip is wider
          than 34% of the table and overprints "Open run". Started goes (the
          subject link keeps the exact time in its title), the chip takes the
          width it needs, and Open keeps a column of its own. */
-      @media (max-width: 480px) {
-        .runs-table.has-category .started-cell {
+        @media (max-width: 480px) {
+          .runs-table.has-category .started-cell {
+            display: none;
+          }
+          .runs-table.has-category .subject-cell {
+            width: 38%;
+          }
+          .runs-table.has-category .category-cell {
+            width: 42%;
+          }
+          .runs-table.has-category .open-cell {
+            width: 20%;
+          }
+          .runs-table.has-category .category-cell sl-badge.chip::part(base) {
+            font-size: 11px;
+            padding: 1px 6px;
+          }
+        }
+
+        /* Pricing evidence: the same widths the columns carried inline, now in
+         the stylesheet so the phone layout below can change them. */
+        .pricing-table .provider-cell {
+          width: 18%;
+        }
+        .pricing-table .requests-cell,
+        .pricing-table .tokens-cell {
+          width: 12%;
+        }
+        .pricing-table .last-request-cell {
+          width: 16%;
+        }
+        .pricing-table .price-cell {
+          width: 80px;
+        }
+        .pricing-table .stacked-provider {
           display: none;
         }
-        .runs-table.has-category .subject-cell {
-          width: 38%;
-        }
-        .runs-table.has-category .category-cell {
-          width: 42%;
-        }
-        .runs-table.has-category .open-cell {
-          width: 20%;
-        }
-        .runs-table.has-category .category-cell sl-badge.chip::part(base) {
-          font-size: 11px;
-          padding: 1px 6px;
-        }
-      }
 
-      /* Pricing evidence: the same widths the columns carried inline, now in
-         the stylesheet so the phone layout below can change them. */
-      .pricing-table .provider-cell {
-        width: 18%;
-      }
-      .pricing-table .requests-cell,
-      .pricing-table .tokens-cell {
-        width: 12%;
-      }
-      .pricing-table .last-request-cell {
-        width: 16%;
-      }
-      .pricing-table .price-cell {
-        width: 80px;
-      }
-      .pricing-table .stacked-provider {
-        display: none;
-      }
-
-      /* On a phone six columns cannot hold six headers, and a fixed table
+        /* On a phone six columns cannot hold six headers, and a fixed table
          lets them overprint each other ("Model" over "Provider"). Tokens and
          the last request go (both are on the model page), the provider moves
          under the alias, and every header clips to its own column. */
-      @media (max-width: 700px) {
-        .pricing-table .tokens-cell,
-        .pricing-table .last-request-cell,
-        .pricing-table .provider-cell {
-          display: none;
+        @media (max-width: 700px) {
+          .pricing-table .tokens-cell,
+          .pricing-table .last-request-cell,
+          .pricing-table .provider-cell {
+            display: none;
+          }
+          .pricing-table .model-cell {
+            width: 52%;
+          }
+          .pricing-table .requests-cell {
+            width: 22%;
+          }
+          .pricing-table .price-cell {
+            width: 26%;
+          }
+          .pricing-table .stacked-provider {
+            color: var(--console-meta-color);
+            display: block;
+            font-family: var(--sl-font-sans);
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
+          .pricing-table th {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
         }
-        .pricing-table .model-cell {
-          width: 52%;
-        }
-        .pricing-table .requests-cell {
-          width: 22%;
-        }
-        .pricing-table .price-cell {
-          width: 26%;
-        }
-        .pricing-table .stacked-provider {
-          color: var(--console-meta-color);
-          display: block;
-          font-family: var(--sl-font-sans);
+
+        /* The one filled block allowed inside a card body: a command to copy,
+         on the page colour, no border. */
+        .evidence-command {
+          align-items: center;
+          background: var(--console-page);
+          border: none;
+          border-radius: var(--sl-border-radius-medium);
+          display: flex;
+          gap: var(--sl-spacing-x-small);
+          max-width: 100%;
           overflow: hidden;
-          text-overflow: ellipsis;
+          padding: 2px var(--sl-spacing-2x-small) 2px var(--sl-spacing-x-small);
         }
-        .pricing-table th {
+
+        .evidence-command code {
+          font-family: var(--sl-font-mono);
+          font-size: 12px;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
-      }
 
-      /* The one filled block allowed inside a card body: a command to copy,
-         on the page colour, no border. */
-      .evidence-command {
-        align-items: center;
-        background: var(--console-page);
-        border: none;
-        border-radius: var(--sl-border-radius-medium);
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        max-width: 100%;
-        overflow: hidden;
-        padding: 2px var(--sl-spacing-2x-small) 2px var(--sl-spacing-x-small);
-      }
+        .evidence-reason {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-2x-small);
+        }
 
-      .evidence-command code {
-        font-family: var(--sl-font-mono);
-        font-size: 12px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .evidence-reason {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-2x-small);
-      }
-
-      .evidence-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-x-small);
-      }
-
-      .dismissed-toggle {
-        align-items: center;
-        background: none;
-        border: none;
-        color: var(--sl-color-neutral-700);
-        cursor: pointer;
-        display: flex;
-        font-family: inherit;
-        font-size: var(--console-text-card-title);
-        font-weight: 600;
-        gap: var(--sl-spacing-2x-small);
-        padding: 0;
-      }
-
-      .dismissed-row {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-small);
-        padding: var(--sl-spacing-x-small) 0;
-      }
-
-      .dismissed-row + .dismissed-row {
-        border-top: 1px solid var(--console-hairline);
-      }
-
-      .all-clear {
-        align-items: center;
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-small);
-        padding: var(--sl-spacing-2x-large);
-        text-align: center;
-      }
-
-      .all-clear sl-icon {
-        color: var(--sl-color-success-600);
-        font-size: 2.5rem;
-      }
-
-      .updated-at {
-        color: var(--console-meta-color);
-        font-size: var(--sl-font-size-small);
-      }
-
-      .loading-container {
-        display: flex;
-        justify-content: center;
-        padding: var(--sl-spacing-2x-large);
-      }
-
-      @media (max-width: 640px) {
-        .row-head {
+        .evidence-actions {
+          display: flex;
           flex-wrap: wrap;
+          gap: var(--sl-spacing-x-small);
         }
 
-        .row-actions {
-          margin-left: 28px;
+        .dismissed-toggle {
+          align-items: center;
+          background: none;
+          border: none;
+          color: var(--sl-color-neutral-700);
+          cursor: pointer;
+          display: flex;
+          font-family: inherit;
+          font-size: var(--console-text-card-title);
+          font-weight: 600;
+          gap: var(--sl-spacing-2x-small);
+          padding: 0;
         }
 
-        .row-evidence {
-          padding-left: var(--sl-spacing-x-small);
+        .dismissed-row {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-small);
+          padding: var(--sl-spacing-x-small) 0;
         }
-      }
-    `,
+
+        .dismissed-row + .dismissed-row {
+          border-top: 1px solid var(--console-hairline);
+        }
+
+        .all-clear {
+          align-items: center;
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-small);
+          padding: var(--sl-spacing-2x-large);
+          text-align: center;
+        }
+
+        .all-clear sl-icon {
+          color: var(--sl-color-success-600);
+          font-size: 2.5rem;
+        }
+
+        .updated-at {
+          color: var(--console-meta-color);
+          font-size: var(--sl-font-size-small);
+        }
+
+        .loading-container {
+          display: flex;
+          justify-content: center;
+          padding: var(--sl-spacing-2x-large);
+        }
+
+        @media (max-width: 640px) {
+          .row-head {
+            flex-wrap: wrap;
+          }
+
+          .row-actions {
+            margin-left: 28px;
+          }
+
+          .row-evidence {
+            padding-left: var(--sl-spacing-x-small);
+          }
+        }
+      `,
+    ],
   ];
 
   connectedCallback(): void {
@@ -1151,71 +1157,75 @@ export class AttentionView extends AuthedElement {
             </div>`
           : nothing
       }
-      <table
-        class="evidence-table runs-table ${showCategory ? 'has-category' : ''}"
-      >
-        <thead>
-          <tr>
-            <!-- Subject first: six failures of one flow differ by what they
+      <div class="table-scroll">
+        <table
+          class="evidence-table runs-table ${showCategory ? 'has-category' : ''}"
+        >
+          <thead>
+            <tr>
+              <!-- Subject first: six failures of one flow differ by what they
                  ran on, not by when they ran. Column widths live in the
                  stylesheet, not in style attributes, so the narrow layout
                  below can widen the subject. -->
-            <th class="subject-cell">Subject</th>
-            <th class="started-cell">Started</th>
-            <th class="duration-cell">Duration</th>
-            ${
-              showCategory
-                ? html`<th class="category-cell">Category</th>`
-                : nothing
-            }
-            <th class="error-cell">Error</th>
-            <th class="open-cell"></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${runs.map(
-            (run) => html`
-              <tr>
-                <td class="subject-cell">
-                  ${renderExecutionSubject({
-                    id: run.id,
-                    trigger_subject: run.subject,
-                    trigger_subject_url: run.subjectUrl,
-                  })}
-                </td>
-                <td
-                  class="started-cell"
-                  title=${
-                    run.startedAt ? formatLocalDateTime(run.startedAt) : nothing
-                  }
-                >
-                  ${run.startedAt ? formatRelativeTime(run.startedAt) : 'n/a'}
-                </td>
-                <td class="duration-cell">${run.durationText || 'n/a'}</td>
-                ${
-                  showCategory
-                    ? html`<td class="category-cell">
-                        ${renderFailureCategoryChip(run.failureCategory)}
-                      </td>`
-                    : nothing
-                }
-                <td
-                  class="mono error-cell"
-                  title=${run.errorMessage || nothing}
-                >
+              <th class="subject-cell">Subject</th>
+              <th class="started-cell">Started</th>
+              <th class="duration-cell">Duration</th>
+              ${
+                showCategory
+                  ? html`<th class="category-cell">Category</th>`
+                  : nothing
+              }
+              <th class="error-cell">Error</th>
+              <th class="open-cell"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${runs.map(
+              (run) => html`
+                <tr>
+                  <td class="subject-cell">
+                    ${renderExecutionSubject({
+                      id: run.id,
+                      trigger_subject: run.subject,
+                      trigger_subject_url: run.subjectUrl,
+                    })}
+                  </td>
+                  <td
+                    class="started-cell"
+                    title=${
+                      run.startedAt
+                        ? formatLocalDateTime(run.startedAt)
+                        : nothing
+                    }
+                  >
+                    ${run.startedAt ? formatRelativeTime(run.startedAt) : 'n/a'}
+                  </td>
+                  <td class="duration-cell">${run.durationText || 'n/a'}</td>
                   ${
-                    errorHeadline(run.errorMessage) ||
-                    'No error message recorded'
+                    showCategory
+                      ? html`<td class="category-cell">
+                          ${renderFailureCategoryChip(run.failureCategory)}
+                        </td>`
+                      : nothing
                   }
-                </td>
-                <td class="open-cell">
-                  <a href="/console/flows/executions/${run.id}">Open run</a>
-                </td>
-              </tr>
-            `
-          )}
-        </tbody>
-      </table>
+                  <td
+                    class="mono error-cell"
+                    title=${run.errorMessage || nothing}
+                  >
+                    ${
+                      errorHeadline(run.errorMessage) ||
+                      'No error message recorded'
+                    }
+                  </td>
+                  <td class="open-cell">
+                    <a href="/console/flows/executions/${run.id}">Open run</a>
+                  </td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
       <div class="evidence-actions">
         ${
           flowId
@@ -1285,43 +1295,45 @@ export class AttentionView extends AuthedElement {
   private renderModelEvidence(item: AttentionItem) {
     const failures = item.evidence?.modelFailures || [];
     return html`
-      <table class="evidence-table">
-        <thead>
-          <tr>
-            <th style="width: 22%">When</th>
-            <th style="width: 12%">Status</th>
-            <th>Error</th>
-            <th style="width: 90px"></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${failures.map(
-            (failure) => html`
-              <tr>
-                <td
-                  title=${failure.at ? formatLocalDateTime(failure.at) : nothing}
-                >
-                  ${failure.at ? formatRelativeTime(failure.at) : 'n/a'}
-                </td>
-                <td>${failure.statusCode ?? 'n/a'}</td>
-                <td class="mono" title=${failure.excerpt || nothing}>
-                  ${failure.excerpt || 'No response body recorded'}
-                </td>
-                <td>
-                  ${
-                    failure.sessionId
-                      ? html`<a
-                          href="/console/runtime-sessions?sessionId=${failure.sessionId}"
-                          >Open session</a
-                        >`
-                      : nothing
-                  }
-                </td>
-              </tr>
-            `
-          )}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="evidence-table">
+          <thead>
+            <tr>
+              <th style="width: 22%">When</th>
+              <th style="width: 12%">Status</th>
+              <th>Error</th>
+              <th style="width: 90px"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${failures.map(
+              (failure) => html`
+                <tr>
+                  <td
+                    title=${failure.at ? formatLocalDateTime(failure.at) : nothing}
+                  >
+                    ${failure.at ? formatRelativeTime(failure.at) : 'n/a'}
+                  </td>
+                  <td>${failure.statusCode ?? 'n/a'}</td>
+                  <td class="mono" title=${failure.excerpt || nothing}>
+                    ${failure.excerpt || 'No response body recorded'}
+                  </td>
+                  <td>
+                    ${
+                      failure.sessionId
+                        ? html`<a
+                            href="/console/runtime-sessions?sessionId=${failure.sessionId}"
+                            >Open session</a
+                          >`
+                        : nothing
+                    }
+                  </td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
       <div class="evidence-actions">
         <sl-button size="small" href=${item.href}>Open model</sl-button>
       </div>
@@ -1370,81 +1382,85 @@ export class AttentionView extends AuthedElement {
       ${
         models.length > 0
           ? html`
-              <table class="evidence-table pricing-table">
-                <thead>
-                  <tr>
-                    <th class="model-cell">Model</th>
-                    <th class="provider-cell">Provider</th>
-                    <th class="requests-cell numeric">Requests</th>
-                    <th class="tokens-cell numeric">Tokens</th>
-                    ${
-                      anyLastRequest
-                        ? html`<th class="last-request-cell">Last request</th>`
-                        : nothing
-                    }
-                    <th class="price-cell"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${models.map(
-                    (model) => html`
-                      <tr>
-                        <td class="mono model-cell" title=${model.alias}>
-                          ${model.alias}
-                          <!-- The provider column is dropped on a phone, so
+              <div class="table-scroll">
+                <table class="evidence-table pricing-table">
+                  <thead>
+                    <tr>
+                      <th class="model-cell">Model</th>
+                      <th class="provider-cell">Provider</th>
+                      <th class="requests-cell numeric">Requests</th>
+                      <th class="tokens-cell numeric">Tokens</th>
+                      ${
+                        anyLastRequest
+                          ? html`<th class="last-request-cell">
+                              Last request
+                            </th>`
+                          : nothing
+                      }
+                      <th class="price-cell"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${models.map(
+                      (model) => html`
+                        <tr>
+                          <td class="mono model-cell" title=${model.alias}>
+                            ${model.alias}
+                            <!-- The provider column is dropped on a phone, so
                                the provider rides under the alias there. -->
-                          <span class="stacked-provider"
-                            >${model.provider || 'n/a'}</span
+                            <span class="stacked-provider"
+                              >${model.provider || 'n/a'}</span
+                            >
+                          </td>
+                          <td class="provider-cell">
+                            ${model.provider || 'n/a'}
+                          </td>
+                          <td
+                            class="numeric requests-cell"
+                            title=${model.requests.toLocaleString()}
                           >
-                        </td>
-                        <td class="provider-cell">
-                          ${model.provider || 'n/a'}
-                        </td>
-                        <td
-                          class="numeric requests-cell"
-                          title=${model.requests.toLocaleString()}
-                        >
-                          ${this.formatCount(model.requests)}
-                        </td>
-                        <td
-                          class="numeric tokens-cell"
-                          title=${model.tokens.toLocaleString()}
-                        >
-                          ${this.formatCount(model.tokens)}
-                        </td>
-                        ${
-                          anyLastRequest
-                            ? html`<td
-                                class="last-request-cell"
-                                title=${
-                                  model.lastRequestAt
-                                    ? formatLocalDateTime(model.lastRequestAt)
-                                    : nothing
-                                }
-                              >
-                                ${
-                                  model.lastRequestAt
-                                    ? formatRelativeTime(model.lastRequestAt)
-                                    : ''
-                                }
-                              </td>`
-                            : nothing
-                        }
-                        <td class="price-cell">
-                          <a
-                            href=${
-                              model.aiModelId
-                                ? `/console/ai-models/${model.aiModelId}?pricing=edit`
-                                : '/console/cost?panel=pricing'
-                            }
-                            >${zeroPriced.length > 0 ? 'Edit price' : 'Set price'}</a
+                            ${this.formatCount(model.requests)}
+                          </td>
+                          <td
+                            class="numeric tokens-cell"
+                            title=${model.tokens.toLocaleString()}
                           >
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              </table>
+                            ${this.formatCount(model.tokens)}
+                          </td>
+                          ${
+                            anyLastRequest
+                              ? html`<td
+                                  class="last-request-cell"
+                                  title=${
+                                    model.lastRequestAt
+                                      ? formatLocalDateTime(model.lastRequestAt)
+                                      : nothing
+                                  }
+                                >
+                                  ${
+                                    model.lastRequestAt
+                                      ? formatRelativeTime(model.lastRequestAt)
+                                      : ''
+                                  }
+                                </td>`
+                              : nothing
+                          }
+                          <td class="price-cell">
+                            <a
+                              href=${
+                                model.aiModelId
+                                  ? `/console/ai-models/${model.aiModelId}?pricing=edit`
+                                  : '/console/cost?panel=pricing'
+                              }
+                              >${zeroPriced.length > 0 ? 'Edit price' : 'Set price'}</a
+                            >
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                </table>
+              </div>
             `
           : nothing
       }
@@ -1461,28 +1477,32 @@ export class AttentionView extends AuthedElement {
     if (!budget) {
       return nothing;
     }
-    const money = (value: number) => `$${value.toFixed(2)}`;
+
     return html`
-      <table class="evidence-table">
-        <tbody>
-          <tr>
-            <th style="width: 40%">Spend this ${budget.period} period</th>
-            <td>${money(budget.spendUsd)}</td>
-          </tr>
-          <tr>
-            <th>Soft limit</th>
-            <td>
-              ${budget.softLimitUsd ? money(budget.softLimitUsd) : 'none'}
-            </td>
-          </tr>
-          <tr>
-            <th>Hard limit</th>
-            <td>
-              ${budget.hardLimitUsd ? money(budget.hardLimitUsd) : 'none'}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="evidence-table">
+          <tbody>
+            <tr>
+              <th style="width: 40%">Spend this ${budget.period} period</th>
+              <td>
+                ${html`<span title=${formatUsdExact(budget.spendUsd)}>${formatUsd(budget.spendUsd)}</span>`}
+              </td>
+            </tr>
+            <tr>
+              <th>Soft limit</th>
+              <td>
+                ${budget.softLimitUsd ? html`<span title=${formatUsdExact(budget.softLimitUsd)}>${formatUsd(budget.softLimitUsd)}</span>` : 'none'}
+              </td>
+            </tr>
+            <tr>
+              <th>Hard limit</th>
+              <td>
+                ${budget.hardLimitUsd ? html`<span title=${formatUsdExact(budget.hardLimitUsd)}>${formatUsd(budget.hardLimitUsd)}</span>` : 'none'}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div class="evidence-actions">
         <sl-button size="small" @click=${() => (this.showLimitsDialog = true)}
           >Configure limits</sl-button
@@ -1497,39 +1517,41 @@ export class AttentionView extends AuthedElement {
       return nothing;
     }
     return html`
-      <table class="evidence-table">
-        <tbody>
-          <tr>
-            <th style="width: 40%">Rule</th>
-            <td><code>${notice.ruleId}</code></td>
-          </tr>
-          <tr>
-            <th>Matches in the last 7 days</th>
-            <td>${notice.count}</td>
-          </tr>
-          <tr>
-            <th>Last match</th>
-            <td
-              title=${notice.lastAt ? formatLocalDateTime(notice.lastAt) : nothing}
-            >
-              ${notice.lastAt ? formatRelativeTime(notice.lastAt) : 'unknown'}
-              ${notice.lastUsername ? html`by ${notice.lastUsername}` : nothing}
-            </td>
-          </tr>
-          <tr>
-            <th>Latest excerpt (secrets redacted)</th>
-            <td>
-              ${
-                notice.lastExcerpt
-                  ? html`<code class="policy-notice-excerpt"
-                      >${notice.lastExcerpt}</code
-                    >`
-                  : 'Not available'
-              }
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="evidence-table">
+          <tbody>
+            <tr>
+              <th style="width: 40%">Rule</th>
+              <td><code>${notice.ruleId}</code></td>
+            </tr>
+            <tr>
+              <th>Matches in the last 7 days</th>
+              <td>${notice.count}</td>
+            </tr>
+            <tr>
+              <th>Last match</th>
+              <td
+                title=${notice.lastAt ? formatLocalDateTime(notice.lastAt) : nothing}
+              >
+                ${notice.lastAt ? formatRelativeTime(notice.lastAt) : 'unknown'}
+                ${notice.lastUsername ? html`by ${notice.lastUsername}` : nothing}
+              </td>
+            </tr>
+            <tr>
+              <th>Latest excerpt (secrets redacted)</th>
+              <td>
+                ${
+                  notice.lastExcerpt
+                    ? html`<code class="policy-notice-excerpt"
+                        >${notice.lastExcerpt}</code
+                      >`
+                    : 'Not available'
+                }
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div class="evidence-actions">
         <sl-button size="small" href=${POLICY_NOTICE_HREF}
           >Review rule</sl-button
@@ -1548,18 +1570,20 @@ export class AttentionView extends AuthedElement {
     if (!spend) {
       return nothing;
     }
-    const money = (value: number | null) =>
-      value === null ? 'n/a' : `$${value.toFixed(2)}`;
+    const spendCell = (value: number | null) =>
+      value === null
+        ? 'n/a'
+        : html`<span title=${formatUsdExact(value)}>${formatUsd(value)}</span>`;
     const percent = (value: number | null) =>
       value === null ? 'n/a' : `${Math.round(value * 100)}%`;
-    const rows: Array<[string, string]> = [
+    const rows: Array<[string, string | ReturnType<typeof html>]> = [
       ['Developer', spend.userName],
       ['Day (UTC)', spend.day],
     ];
     if (spend.rule === 'daily_spend') {
       rows.push(
-        ['Spend that day', money(spend.spendUsd)],
-        ['28-day median', money(spend.medianUsd)],
+        ['Spend that day', spendCell(spend.spendUsd)],
+        ['28-day median', spendCell(spend.medianUsd)],
         [
           'Multiple',
           spend.multiple === null
@@ -1575,35 +1599,37 @@ export class AttentionView extends AuthedElement {
         ['Share that day', percent(spend.share)],
         ['Share the day before', percent(spend.previousShare)],
         ['Alert above', percent(spend.thresholdShare)],
-        ['Spend that day', money(spend.spendUsd)]
+        ['Spend that day', spendCell(spend.spendUsd)]
       );
     } else {
       rows.push(
         ['Session', spend.sessionTitle || spend.sessionId || 'n/a'],
-        ['Session cost', money(spend.spendUsd)],
-        ['Threshold', money(spend.thresholdUsd)]
+        ['Session cost', spendCell(spend.spendUsd)],
+        ['Threshold', spendCell(spend.thresholdUsd)]
       );
     }
     if (spend.importedUsd > 0) {
       rows.push([
         'Imported spend',
-        `${money(spend.importedUsd)} from ${
+        `${spendCell(spend.importedUsd)} from ${
           spend.importedSources.join(', ') || 'another source'
         }, not metered by the gateway`,
       ]);
     }
     return html`
-      <table class="evidence-table">
-        <tbody>
-          ${rows.map(
-            ([label, value], index) =>
-              html`<tr>
-                <th style=${index === 0 ? 'width: 40%' : ''}>${label}</th>
-                <td>${value}</td>
-              </tr>`
-          )}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table class="evidence-table">
+          <tbody>
+            ${rows.map(
+              ([label, value], index) =>
+                html`<tr>
+                  <th style=${index === 0 ? 'width: 40%' : ''}>${label}</th>
+                  <td>${value}</td>
+                </tr>`
+            )}
+          </tbody>
+        </table>
+      </div>
       <div class="evidence-actions">
         <sl-button size="small" href=${item.href}
           >${spend.rule === 'session_cost' ? 'Open session' : 'Open cost'}</sl-button
@@ -1665,7 +1691,7 @@ export class AttentionView extends AuthedElement {
   private renderExpiry(item: AttentionItem) {
     const expiresAt = item.approval?.expiresAt;
     if (!expiresAt) return nothing;
-    const remainingMs = new Date(expiresAt).getTime() - Date.now();
+    const remainingMs = parseUTCDate(expiresAt).getTime() - Date.now();
     const soon = remainingMs <= 60 * 60 * 1000;
     // A deadline already past reads "expired", not "expires expired": the
     // backend has simply not reaped the row yet.

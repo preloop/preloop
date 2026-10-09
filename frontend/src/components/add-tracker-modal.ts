@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import * as api from '../api';
@@ -892,12 +893,6 @@ export class AddTrackerModal extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      this.dispatchEvent(
-        new CustomEvent('github-oauth-starting', {
-          bubbles: true,
-          composed: true,
-        })
-      );
       sessionStorage.setItem(
         'github_oauth_redirect_back',
         window.location.pathname + window.location.search
@@ -906,9 +901,21 @@ export class AddTrackerModal extends LitElement {
       const { authorization_url, state } = await this._api.getGitHubAuthUrl();
       // Store state for CSRF validation on callback
       sessionStorage.setItem('github_oauth_state', state);
+      this.dispatchEvent(
+        new CustomEvent('github-oauth-starting', {
+          bubbles: true,
+          composed: true,
+        })
+      );
       // Redirect to GitHub
       window.location.href = authorization_url;
     } catch (error: any) {
+      this.dispatchEvent(
+        new CustomEvent('github-oauth-failed', {
+          bubbles: true,
+          composed: true,
+        })
+      );
       this.errorMessage = error.message || 'Failed to start GitHub OAuth';
       this.authMethod = 'api_token'; // Fall back to API token
     } finally {
@@ -1317,7 +1324,7 @@ export class AddTrackerModal extends LitElement {
     const actor =
       status.actor?.display_name || status.actor?.nickname || 'unknown actor';
     const expiry = status.expires_at
-      ? new Date(status.expires_at).toLocaleString()
+      ? parseUTCDate(status.expires_at).toLocaleString()
       : 'reported by the provider when connected';
     return html`
       <sl-alert

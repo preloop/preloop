@@ -1,3 +1,5 @@
+import { tableScrollStyles } from '../../../styles/table-scroll';
+import { formatUsd, formatUsdExact } from '../../../utils/money';
 import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -23,37 +25,40 @@ const ALL = '__all__';
  */
 @customElement('usage-rollup-panel')
 export class UsageRollupPanel extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-      margin-bottom: var(--sl-spacing-large);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th,
-    td {
-      text-align: left;
-      padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-    }
-    td.num,
-    th.num {
-      text-align: right;
-    }
-    .head {
-      display: flex;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: var(--sl-spacing-medium);
-      margin-bottom: var(--sl-spacing-small);
-    }
-    h3 {
-      margin: 0;
-      font-size: var(--sl-font-size-medium);
-    }
-  `;
+  static styles = [
+    tableScrollStyles,
+    css`
+      :host {
+        display: block;
+        margin-bottom: var(--sl-spacing-large);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+      }
+      td.num,
+      th.num {
+        text-align: right;
+      }
+      .head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        gap: var(--sl-spacing-medium);
+        margin-bottom: var(--sl-spacing-small);
+      }
+      h3 {
+        margin: 0;
+        font-size: var(--sl-font-size-medium);
+      }
+    `,
+  ];
 
   /** `range`: the page's time range key, so both tables show one window. */
   @property({ attribute: false }) context: Record<string, unknown> = {};
@@ -144,54 +149,63 @@ export class UsageRollupPanel extends LitElement {
           )}
         </sl-select>
       </div>
-      <table data-testid="rollup-table">
-        <thead>
-          <tr>
-            <th>Subaccount</th>
-            <th>Model</th>
-            <th>Day</th>
-            <th class="num">Requests</th>
-            <th class="num">Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(
-            (row) =>
-              html`<tr data-subaccount=${row.subaccount_id}>
-                <td>${row.subaccount_name}</td>
-                <td>${row.model ?? ''}</td>
-                <td>${row.day ?? ''}</td>
-                <td class="num">${row.requests}</td>
-                <td class="num">$${(row.cost_usd || 0).toFixed(2)}</td>
-              </tr>`
-          )}
-        </tbody>
-        <tfoot>
-          <tr>
-            <th colspan="4">Total</th>
-            <th class="num" data-testid="rollup-total">$${total.toFixed(2)}</th>
-          </tr>
-        </tfoot>
-      </table>
+      <div class="table-scroll">
+        <table data-testid="rollup-table">
+          <thead>
+            <tr>
+              <th>Subaccount</th>
+              <th>Model</th>
+              <th>Day</th>
+              <th class="num">Requests</th>
+              <th class="num">Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(
+              (row) =>
+                html`<tr data-subaccount=${row.subaccount_id}>
+                  <td>${row.subaccount_name}</td>
+                  <td>${row.model ?? ''}</td>
+                  <td>${row.day ?? ''}</td>
+                  <td class="num">${row.requests}</td>
+                  <td class="num">
+                    ${html`<span title=${formatUsdExact(row.cost_usd)}>${formatUsd(row.cost_usd)}</span>`}
+                  </td>
+                </tr>`
+            )}
+          </tbody>
+          <tfoot>
+            <tr>
+              <th colspan="4">Total</th>
+              <th class="num" data-testid="rollup-total">
+                ${html`<span title=${formatUsdExact(total)}>${formatUsd(total)}</span>`}
+              </th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
       ${
         this.attention.length
           ? html`<h3>Needs attention</h3>
-              <table data-testid="attention-rollup">
-                <tbody>
-                  ${this.attention
-                    .filter(
-                      (row) =>
-                        this.filter === ALL || row.subaccount_id === this.filter
-                    )
-                    .map(
-                      (row) =>
-                        html`<tr>
-                          <td>${row.subaccount_name}</td>
-                          <td class="num">${row.count}</td>
-                        </tr>`
-                    )}
-                </tbody>
-              </table>`
+              <div class="table-scroll">
+                <table data-testid="attention-rollup">
+                  <tbody>
+                    ${this.attention
+                      .filter(
+                        (row) =>
+                          this.filter === ALL ||
+                          row.subaccount_id === this.filter
+                      )
+                      .map(
+                        (row) =>
+                          html`<tr>
+                            <td>${row.subaccount_name}</td>
+                            <td class="num">${row.count}</td>
+                          </tr>`
+                      )}
+                  </tbody>
+                </table>
+              </div>`
           : nothing
       }
     </sl-card>`;

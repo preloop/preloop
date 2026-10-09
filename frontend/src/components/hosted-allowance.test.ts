@@ -16,7 +16,8 @@ describe('hosted inventory and durable allowance', () => {
     enabled: boolean,
     unknown = false,
     kind = 'monthly',
-    reset: string | null = '2026-11-01T00:00:00Z'
+    reset: string | null = '2026-11-01T00:00:00Z',
+    missingPrices = false
   ) {
     fetchStub = sinon
       .stub(window, 'fetch')
@@ -34,9 +35,9 @@ describe('hosted inventory and durable allowance', () => {
                       alias: 'example/model',
                       provider_name: 'example',
                       tariff: {
-                        input_price_per_1k: 0.001,
-                        output_price_per_1k: 0.002,
-                        request_price: 0,
+                        input_price_per_1k: missingPrices ? null : 0.001,
+                        output_price_per_1k: missingPrices ? undefined : 0.002,
+                        request_price: missingPrices ? null : 0,
                       },
                       own_alias_shadowing: true,
                     },
@@ -71,6 +72,24 @@ describe('hosted inventory and durable allowance', () => {
       .and.contain('takes precedence');
     expect(text).to.contain('$3.00').and.contain('$2.00').and.contain('$5.00');
     expect(text).to.contain('$1.00 / million input tokens');
+  });
+  it('does not report missing tariff prices as free', async () => {
+    stub(true, false, 'monthly', null, true);
+    const el = await fixture<HostedAllowance>(
+      html`<hosted-allowance show-models></hosted-allowance>`
+    );
+    await waitUntil(() => el.shadowRoot!.textContent!.includes('Tariff:'));
+    const tariff = [...el.shadowRoot!.querySelectorAll('p')].find((p) =>
+      p.textContent?.includes('Tariff:')
+    )!;
+    expect(tariff.textContent).to.include(
+      'Not verified / million input tokens'
+    );
+    expect(tariff.textContent).to.include(
+      'Not verified / million output tokens'
+    );
+    expect(tariff.textContent).to.include('Not verified / request');
+    expect(tariff.textContent).not.to.include('$0.00');
   });
   it('preserves unknown balances instead of displaying zero', async () => {
     stub(true, true);

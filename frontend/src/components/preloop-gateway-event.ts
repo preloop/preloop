@@ -1,3 +1,4 @@
+import { formatUsd } from '../utils/money';
 import { billingAttribution } from '../utils/billing-attribution';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
@@ -272,12 +273,6 @@ export class PreloopGatewayEvent extends LitElement {
       .join(' ');
   }
 
-  private formatGatewayCost(cost?: number | null): string {
-    if (typeof cost !== 'number' || Number.isNaN(cost)) return 'n/a';
-    if (cost === 0) return '$0.00';
-    return cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
-  }
-
   /**
    * The rest of the summary line: the HTTP status when the call failed, the
    * spend, the tokens and how long it took. A fact the event does not carry
@@ -291,7 +286,7 @@ export class PreloopGatewayEvent extends LitElement {
     }
     const cost = payload.estimated_cost;
     if (typeof cost === 'number' && !Number.isNaN(cost) && cost > 0) {
-      parts.push(this.formatGatewayCost(cost));
+      parts.push(!Number.isFinite(cost) ? 'n/a' : formatUsd(cost));
     }
     const tokens = payload.total_tokens;
     if (typeof tokens === 'number' && !Number.isNaN(tokens)) {

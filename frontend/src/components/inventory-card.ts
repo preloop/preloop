@@ -1,3 +1,5 @@
+import { tableScrollStyles } from '../styles/table-scroll';
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -334,342 +336,345 @@ export class InventoryCard extends LitElement {
   };
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    unsafeCSS(executionSubjectCss),
-    css`
-      :host {
-        display: block;
-        width: 100%;
-      }
-
-      .content-card,
-      .content-card::part(base) {
-        width: 100%;
-      }
-
-      .content-card::part(body) {
-        padding: 0;
-      }
-
-      /* Not ".header": the console sheet gives that class a page-header
-         min-height and bottom margin, which pads a card header by 40px. */
-      .card-head {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-small);
-        justify-content: space-between;
-      }
-
-      .title {
-        font-size: var(--console-text-card-title);
-        font-weight: 600;
-      }
-
-      .header-controls {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-small);
-      }
-
-      /* The sort is read next to the column it orders, so its label is for
-         screen readers only. */
-      .sort-select::part(form-control-label) {
-        clip: rect(0 0 0 0);
-        height: 1px;
-        overflow: hidden;
-        position: absolute;
-        white-space: nowrap;
-        width: 1px;
-      }
-
-      .sort-select {
-        width: 9.5rem;
-      }
-
-      .sort-select::part(combobox) {
-        font-size: var(--console-text-meta);
-        min-height: 2rem;
-        padding-block: 0;
-      }
-
-      /* The range is a fact about the numbers below, not a control: the one
-         control lives on the Usage card. */
-      .range-label {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }
-
-      .tabs {
-        border-bottom: 1px solid var(--console-hairline);
-      }
-
-      sl-tab-group::part(nav) {
-        padding: 0 var(--sl-spacing-medium);
-      }
-
-      sl-tab-group::part(tabs) {
-        border-bottom: none;
-      }
-
-      sl-tab::part(base) {
-        font-size: var(--console-text-body);
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      }
-
-      .tab-count {
-        color: var(--console-meta-color);
-        font-variant-numeric: tabular-nums;
-        margin-left: 6px;
-      }
-
-      sl-tab[active] .tab-count {
-        color: inherit;
-      }
-
-      table.inventory-table {
-        border-collapse: collapse;
-        font-size: var(--console-text-body);
-        table-layout: fixed;
-        width: 100%;
-      }
-
-      .inventory-table th,
-      .inventory-table td {
-        border-bottom: 1px solid var(--console-hairline);
-        overflow: hidden;
-        padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
-        text-align: left;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .inventory-table th {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        font-weight: 600;
-      }
-
-      .inventory-table tbody tr:last-child td {
-        border-bottom: none;
-      }
-
-      .inventory-table tbody tr:hover {
-        background-color: var(--console-hover-tint);
-      }
-
-      /* Numbers pay less for their gutters than words do: the columns are
-         narrow, and "Requests" has to fit its own heading. */
-      .inventory-table th.num,
-      .inventory-table td.num {
-        font-variant-numeric: tabular-nums;
-        padding-inline: var(--sl-spacing-x-small);
-        text-align: right;
-      }
-
-      .inventory-table th.num:last-child,
-      .inventory-table td.num:last-child {
-        padding-right: var(--sl-spacing-medium);
-      }
-
-      .identity {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        min-width: 0;
-      }
-
-      .identity sl-icon {
-        color: var(--console-meta-color);
-        flex-shrink: 0;
-        font-size: 15px;
-      }
-
-      a.row-name {
-        color: var(--console-link-color);
-        overflow: hidden;
-        text-decoration: none;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      a.row-name:hover,
-      a.row-name:focus-visible {
-        text-decoration: underline;
-      }
-
-      .muted {
-        color: var(--console-meta-color);
-      }
-
-      .last-run {
-        align-items: center;
-        display: flex;
-        gap: var(--sl-spacing-x-small);
-        min-width: 0;
-      }
-
-      /* The subject is the only part of a run worth reading twice, so it is
-         the only part allowed to grow, and the chip and the clock never
-         steal from it. */
-      .last-run sl-badge,
-      .last-run sl-tooltip,
-      .last-run .meta {
-        flex-shrink: 0;
-      }
-
-      .last-run .execution-subject {
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-
-      .last-run .meta {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        white-space: nowrap;
-      }
-
-      .skeleton-row td {
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      }
-
-      sl-skeleton {
-        --border-radius: var(--sl-border-radius-small);
-        height: 0.75rem;
-      }
-
-      /* The width of the number it stands in for, right where the number
-         will be, so nothing moves sideways when the usage arrives. */
-      .usage-skeleton {
-        display: inline-block;
-        vertical-align: middle;
-        width: 40px;
-      }
-
-      .empty {
-        color: var(--console-meta-color);
-        padding: var(--sl-spacing-large) var(--sl-spacing-medium);
-        text-align: center;
-      }
-
-      .empty a {
-        color: var(--console-link-color);
-        text-decoration: none;
-      }
-
-      .empty a:hover {
-        text-decoration: underline;
-      }
-
-      .footer {
-        border-top: 1px solid var(--console-hairline);
-        padding: var(--sl-spacing-small) var(--sl-spacing-medium);
-      }
-
-      .footer-note {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        margin-right: var(--sl-spacing-2x-small);
-      }
-
-      .footer a {
-        color: var(--console-link-color);
-        font-size: var(--console-text-meta);
-        text-decoration: none;
-      }
-
-      .footer a:hover {
-        text-decoration: underline;
-      }
-
-      sl-badge.chip::part(base) {
-        font-size: 0.6875rem;
-      }
-
-      /* Phones read a row as two lines: who it is, then its numbers. The
-         table stops being a table (a row that is still a table row keeps the
-         column widths and squeezes the name into a sliver), the header row
-         has nothing to align to once the cells stack, so it goes, and each
-         number carries the word its column heading used to supply. */
-      @media (max-width: 640px) {
-        .inventory-table,
-        .inventory-table tbody {
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      unsafeCSS(executionSubjectCss),
+      css`
+        :host {
           display: block;
           width: 100%;
         }
 
-        .inventory-table thead {
-          display: none;
+        .content-card,
+        .content-card::part(base) {
+          width: 100%;
         }
 
-        .inventory-table tr {
-          display: flex;
-          flex-wrap: wrap;
-          /* The separators below carry the rhythm now, so the gap only has
-             to keep the words apart. */
-          gap: 2px 4px;
-          padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
-        }
-
-        .inventory-table td {
-          border-bottom: none;
-          display: block;
+        .content-card::part(body) {
           padding: 0;
         }
 
-        .inventory-table tbody tr {
+        /* Not ".header": the console sheet gives that class a page-header
+         min-height and bottom margin, which pads a card header by 40px. */
+        .card-head {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-small);
+          justify-content: space-between;
+        }
+
+        .title {
+          font-size: var(--console-text-card-title);
+          font-weight: 600;
+        }
+
+        .header-controls {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-small);
+        }
+
+        /* The sort is read next to the column it orders, so its label is for
+         screen readers only. */
+        .sort-select::part(form-control-label) {
+          clip: rect(0 0 0 0);
+          height: 1px;
+          overflow: hidden;
+          position: absolute;
+          white-space: nowrap;
+          width: 1px;
+        }
+
+        .sort-select {
+          width: 9.5rem;
+        }
+
+        .sort-select::part(combobox) {
+          font-size: var(--console-text-meta);
+          min-height: 2rem;
+          padding-block: 0;
+        }
+
+        /* The range is a fact about the numbers below, not a control: the one
+         control lives on the Usage card. */
+        .range-label {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+
+        .tabs {
           border-bottom: 1px solid var(--console-hairline);
         }
 
-        .inventory-table tbody tr:last-child {
+        sl-tab-group::part(nav) {
+          padding: 0 var(--sl-spacing-medium);
+        }
+
+        sl-tab-group::part(tabs) {
           border-bottom: none;
         }
 
-        .inventory-table td.identity-cell,
-        .inventory-table td.wide-cell {
-          flex: 0 0 100%;
-          min-width: 0;
+        sl-tab::part(base) {
+          font-size: var(--console-text-body);
+          padding: var(--sl-spacing-small) var(--sl-spacing-medium);
         }
 
-        .inventory-table td.num,
-        .inventory-table td.secondary {
+        .tab-count {
           color: var(--console-meta-color);
-          font-size: var(--console-text-meta);
-          padding-inline: 0;
-          text-align: left;
+          font-variant-numeric: tabular-nums;
+          margin-left: 6px;
         }
 
-        /* One alias, one line: the second line is a summary, not a URL. */
-        .inventory-table td.secondary:not(.wide-cell) {
-          max-width: 55%;
+        sl-tab[active] .tab-count {
+          color: inherit;
+        }
+
+        table.inventory-table {
+          border-collapse: collapse;
+          font-size: var(--console-text-body);
+          table-layout: fixed;
+          width: 100%;
+        }
+
+        .inventory-table th,
+        .inventory-table td {
+          border-bottom: 1px solid var(--console-hairline);
           overflow: hidden;
+          padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
+          text-align: left;
           text-overflow: ellipsis;
           white-space: nowrap;
         }
 
-        .inventory-table td[data-label]::before {
-          content: attr(data-label) ' ';
+        .inventory-table th {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          font-weight: 600;
         }
 
-        /* The second line is one sentence of numbers, so it is punctuated.
+        .inventory-table tbody tr:last-child td {
+          border-bottom: none;
+        }
+
+        .inventory-table tbody tr:hover {
+          background-color: var(--console-hover-tint);
+        }
+
+        /* Numbers pay less for their gutters than words do: the columns are
+         narrow, and "Requests" has to fit its own heading. */
+        .inventory-table th.num,
+        .inventory-table td.num {
+          font-variant-numeric: tabular-nums;
+          padding-inline: var(--sl-spacing-x-small);
+          text-align: right;
+        }
+
+        .inventory-table th.num:last-child,
+        .inventory-table td.num:last-child {
+          padding-right: var(--sl-spacing-medium);
+        }
+
+        .identity {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-x-small);
+          min-width: 0;
+        }
+
+        .identity sl-icon {
+          color: var(--console-meta-color);
+          flex-shrink: 0;
+          font-size: 15px;
+        }
+
+        a.row-name {
+          color: var(--console-link-color);
+          overflow: hidden;
+          text-decoration: none;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+
+        a.row-name:hover,
+        a.row-name:focus-visible {
+          text-decoration: underline;
+        }
+
+        .muted {
+          color: var(--console-meta-color);
+        }
+
+        .last-run {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-x-small);
+          min-width: 0;
+        }
+
+        /* The subject is the only part of a run worth reading twice, so it is
+         the only part allowed to grow, and the chip and the clock never
+         steal from it. */
+        .last-run sl-badge,
+        .last-run sl-tooltip,
+        .last-run .meta {
+          flex-shrink: 0;
+        }
+
+        .last-run .execution-subject {
+          flex: 1 1 auto;
+          min-width: 0;
+        }
+
+        .last-run .meta {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          white-space: nowrap;
+        }
+
+        .skeleton-row td {
+          padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        }
+
+        sl-skeleton {
+          --border-radius: var(--sl-border-radius-small);
+          height: 0.75rem;
+        }
+
+        /* The width of the number it stands in for, right where the number
+         will be, so nothing moves sideways when the usage arrives. */
+        .usage-skeleton {
+          display: inline-block;
+          vertical-align: middle;
+          width: 40px;
+        }
+
+        .empty {
+          color: var(--console-meta-color);
+          padding: var(--sl-spacing-large) var(--sl-spacing-medium);
+          text-align: center;
+        }
+
+        .empty a {
+          color: var(--console-link-color);
+          text-decoration: none;
+        }
+
+        .empty a:hover {
+          text-decoration: underline;
+        }
+
+        .footer {
+          border-top: 1px solid var(--console-hairline);
+          padding: var(--sl-spacing-small) var(--sl-spacing-medium);
+        }
+
+        .footer-note {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          margin-right: var(--sl-spacing-2x-small);
+        }
+
+        .footer a {
+          color: var(--console-link-color);
+          font-size: var(--console-text-meta);
+          text-decoration: none;
+        }
+
+        .footer a:hover {
+          text-decoration: underline;
+        }
+
+        sl-badge.chip::part(base) {
+          font-size: 0.6875rem;
+        }
+
+        /* Phones read a row as two lines: who it is, then its numbers. The
+         table stops being a table (a row that is still a table row keeps the
+         column widths and squeezes the name into a sliver), the header row
+         has nothing to align to once the cells stack, so it goes, and each
+         number carries the word its column heading used to supply. */
+        @media (max-width: 640px) {
+          .inventory-table,
+          .inventory-table tbody {
+            display: block;
+            width: 100%;
+          }
+
+          .inventory-table thead {
+            display: none;
+          }
+
+          .inventory-table tr {
+            display: flex;
+            flex-wrap: wrap;
+            /* The separators below carry the rhythm now, so the gap only has
+             to keep the words apart. */
+            gap: 2px 4px;
+            padding: var(--sl-spacing-x-small) var(--sl-spacing-medium);
+          }
+
+          .inventory-table td {
+            border-bottom: none;
+            display: block;
+            padding: 0;
+          }
+
+          .inventory-table tbody tr {
+            border-bottom: 1px solid var(--console-hairline);
+          }
+
+          .inventory-table tbody tr:last-child {
+            border-bottom: none;
+          }
+
+          .inventory-table td.identity-cell,
+          .inventory-table td.wide-cell {
+            flex: 0 0 100%;
+            min-width: 0;
+          }
+
+          .inventory-table td.num,
+          .inventory-table td.secondary {
+            color: var(--console-meta-color);
+            font-size: var(--console-text-meta);
+            padding-inline: 0;
+            text-align: left;
+          }
+
+          /* One alias, one line: the second line is a summary, not a URL. */
+          .inventory-table td.secondary:not(.wide-cell) {
+            max-width: 55%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+          }
+
+          .inventory-table td[data-label]::before {
+            content: attr(data-label) ' ';
+          }
+
+          /* The second line is one sentence of numbers, so it is punctuated.
            The separator leads each value instead of trailing the one before
            it: a trailing dot wraps onto the next line on its own, and hiding
            a cell (Tokens, below) used to leave its dot behind. Cells with no
            label resolve attr(data-label) to nothing and print just the dot. */
-        .inventory-table
-          :is(td.num, td.secondary:not(.wide-cell))
-          ~ :is(td.num, td.secondary:not(.wide-cell))::before {
-          content: '· ' attr(data-label) ' ';
-        }
+          .inventory-table
+            :is(td.num, td.secondary:not(.wide-cell))
+            ~ :is(td.num, td.secondary:not(.wide-cell))::before {
+            content: '· ' attr(data-label) ' ';
+          }
 
-        /* Tokens are the one number a phone can do without: the request
+          /* Tokens are the one number a phone can do without: the request
            count and the spend already say how much this row is doing. */
-        .inventory-table td[data-label='Tokens'] {
-          display: none;
+          .inventory-table td[data-label='Tokens'] {
+            display: none;
+          }
         }
-      }
-    `,
+      `,
+    ],
   ];
 
   connectedCallback(): void {
@@ -771,12 +776,6 @@ export class InventoryCard extends LitElement {
       notation: 'compact',
       maximumFractionDigits: 1,
     }).format(amount);
-  }
-
-  private formatCurrency(value: number | null | undefined): string {
-    const amount = Number(value || 0);
-    if (amount > 0 && amount < 0.01) return `$${amount.toFixed(4)}`;
-    return `$${amount.toFixed(2)}`;
   }
 
   private absolute(value: string | null | undefined): string {
@@ -1023,88 +1022,92 @@ export class InventoryCard extends LitElement {
   private renderAgents() {
     const rows = this.sortedAgents.slice(0, this.rowLimit);
     return html`
-      <table class="inventory-table">
-        <!-- Same trade as the Models tab: an alias is 24 characters and a
+      <div class="table-scroll">
+        <table class="inventory-table">
+          <!-- Same trade as the Models tab: an alias is 24 characters and a
              count is five, so the counts give up the four points that stop
              "deepseek/deepseek-v4-pro" reading as "deepseek/deepse...". -->
-        <colgroup>
-          <col style="width: 28%" />
-          <col style="width: 27%" />
-          <col style="width: 11%" />
-          <col style="width: 11%" />
-          <col style="width: 10%" />
-          <col style="width: 13%" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Agent</th>
-            <th>Model</th>
-            <th class="num">Requests</th>
-            <th class="num">Tokens</th>
-            <th class="num">$ est.</th>
-            <th class="num">Last seen</th>
-          </tr>
-        </thead>
-        ${
-          this.isTabLoading('agents') && rows.length === 0
-            ? this.renderSkeleton(6)
-            : html`
-                <tbody>
-                  ${repeat(
-                    rows,
-                    (row) => row.id,
-                    (row) => html`
-                      <tr>
-                        <td class="identity-cell">
-                          <span class="identity">
-                            ${renderAgentIcon(row.kind)}
-                            <a class="row-name" href="/console/agents/${row.id}"
-                              >${row.name}</a
-                            >
-                            <sl-badge
-                              class="chip"
-                              pill
-                              variant=${row.status.variant}
-                              >${row.status.label}</sl-badge
-                            >
-                          </span>
-                        </td>
-                        <td
-                          class="secondary muted"
-                          title=${row.modelAlias || ''}
-                        >
-                          ${row.modelAlias || 'No model'}
-                        </td>
-                        <td class="num" data-label="Requests">
-                          ${this.renderUsageCell(
-                            this.formatCompactNumber(row.requests)
-                          )}
-                        </td>
-                        <!-- Tokens before cost, split in and out. -->
-                        <td class="num" data-label="Tokens">
-                          ${this.renderUsageCell(
-                            html`<token-figures
-                              .usage=${row.tokenUsage}
-                            ></token-figures>`
-                          )}
-                        </td>
-                        <td class="num" data-label="Spend">
-                          ${this.renderUsageCell(this.formatCurrency(row.cost))}
-                        </td>
-                        <td
-                          class="num"
-                          data-label="Seen"
-                          title=${this.absolute(row.lastSeenAt)}
-                        >
-                          ${this.relative(row.lastSeenAt)}
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              `
-        }
-      </table>
+          <colgroup>
+            <col style="width: 28%" />
+            <col style="width: 27%" />
+            <col style="width: 11%" />
+            <col style="width: 11%" />
+            <col style="width: 10%" />
+            <col style="width: 13%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Agent</th>
+              <th>Model</th>
+              <th class="num">Requests</th>
+              <th class="num">Tokens</th>
+              <th class="num">$ est.</th>
+              <th class="num">Last seen</th>
+            </tr>
+          </thead>
+          ${
+            this.isTabLoading('agents') && rows.length === 0
+              ? this.renderSkeleton(6)
+              : html`
+                  <tbody>
+                    ${repeat(
+                      rows,
+                      (row) => row.id,
+                      (row) => html`
+                        <tr>
+                          <td class="identity-cell">
+                            <span class="identity">
+                              ${renderAgentIcon(row.kind)}
+                              <a
+                                class="row-name"
+                                href="/console/agents/${row.id}"
+                                >${row.name}</a
+                              >
+                              <sl-badge
+                                class="chip"
+                                pill
+                                variant=${row.status.variant}
+                                >${row.status.label}</sl-badge
+                              >
+                            </span>
+                          </td>
+                          <td
+                            class="secondary muted"
+                            title=${row.modelAlias || ''}
+                          >
+                            ${row.modelAlias || 'No model'}
+                          </td>
+                          <td class="num" data-label="Requests">
+                            ${this.renderUsageCell(
+                              this.formatCompactNumber(row.requests)
+                            )}
+                          </td>
+                          <!-- Tokens before cost, split in and out. -->
+                          <td class="num" data-label="Tokens">
+                            ${this.renderUsageCell(
+                              html`<token-figures
+                                .usage=${row.tokenUsage}
+                              ></token-figures>`
+                            )}
+                          </td>
+                          <td class="num" data-label="Spend">
+                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>`)}
+                          </td>
+                          <td
+                            class="num"
+                            data-label="Seen"
+                            title=${this.absolute(row.lastSeenAt)}
+                          >
+                            ${this.relative(row.lastSeenAt)}
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                `
+          }
+        </table>
+      </div>
     `;
   }
 
@@ -1155,189 +1158,199 @@ export class InventoryCard extends LitElement {
   private renderFlows() {
     const rows = this.sortedFlows.slice(0, this.rowLimit);
     return html`
-      <table class="inventory-table">
-        <!-- The tokens column takes its width from the last run cell, which
+      <div class="table-scroll">
+        <table class="inventory-table">
+          <!-- The tokens column takes its width from the last run cell, which
              holds a sentence and can lose a few points, rather than from the
              name. -->
-        <colgroup>
-          <col style="width: 24%" />
-          <col style="width: 32%" />
-          <col style="width: 8%" />
-          <col style="width: 8%" />
-          <col style="width: 17%" />
-          <col style="width: 11%" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Flow</th>
-            <th>Last run</th>
-            <th class="num">Runs</th>
-            <th class="num">Failed</th>
-            <th class="num">Tokens</th>
-            <th class="num">$ est.</th>
-          </tr>
-        </thead>
-        ${
-          this.isTabLoading('flows') && rows.length === 0
-            ? this.renderSkeleton(6)
-            : html`
-                <tbody>
-                  ${repeat(
-                    rows,
-                    (row) => row.id,
-                    (row) => html`
-                      <tr>
-                        <td class="identity-cell">
-                          <span class="identity">
-                            <a class="row-name" href="/console/flows/${row.id}"
-                              >${row.name}</a
-                            >
-                          </span>
-                        </td>
-                        <td class="secondary wide-cell">
-                          ${this.renderLastRun(row.lastRun)}
-                        </td>
-                        <td
-                          class="num"
-                          data-label="Runs"
-                          title=${this.flowCountTitle}
-                        >
-                          ${
-                            this.isUsageLoading('flows')
-                              ? this.renderUsageCell(
-                                  this.formatCompactNumber(row.runs),
-                                  true
-                                )
-                              : html`<a
-                                  class="row-name"
-                                  href="/console/flows/executions?flow_id=${row.id}"
-                                  >${this.formatCompactNumber(row.runs)}</a
-                                >`
-                          }
-                        </td>
-                        <td
-                          class="num"
-                          data-label="Failed"
-                          title=${this.flowCountTitle}
-                        >
-                          ${this.renderUsageCell(
-                            this.formatCompactNumber(row.failed),
-                            this.isUsageLoading('flows'),
-                            true
-                          )}
-                        </td>
-                        <!-- Tokens before cost, split in and out: the
+          <colgroup>
+            <col style="width: 24%" />
+            <col style="width: 32%" />
+            <col style="width: 8%" />
+            <col style="width: 8%" />
+            <col style="width: 17%" />
+            <col style="width: 11%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Flow</th>
+              <th>Last run</th>
+              <th class="num">Runs</th>
+              <th class="num">Failed</th>
+              <th class="num">Tokens</th>
+              <th class="num">$ est.</th>
+            </tr>
+          </thead>
+          ${
+            this.isTabLoading('flows') && rows.length === 0
+              ? this.renderSkeleton(6)
+              : html`
+                  <tbody>
+                    ${repeat(
+                      rows,
+                      (row) => row.id,
+                      (row) => html`
+                        <tr>
+                          <td class="identity-cell">
+                            <span class="identity">
+                              <a
+                                class="row-name"
+                                href="/console/flows/${row.id}"
+                                >${row.name}</a
+                              >
+                            </span>
+                          </td>
+                          <td class="secondary wide-cell">
+                            ${this.renderLastRun(row.lastRun)}
+                          </td>
+                          <td
+                            class="num"
+                            data-label="Runs"
+                            title=${this.flowCountTitle}
+                          >
+                            ${
+                              this.isUsageLoading('flows')
+                                ? this.renderUsageCell(
+                                    this.formatCompactNumber(row.runs),
+                                    true
+                                  )
+                                : html`<a
+                                    class="row-name"
+                                    href="/console/flows/executions?flow_id=${row.id}"
+                                    >${this.formatCompactNumber(row.runs)}</a
+                                  >`
+                            }
+                          </td>
+                          <td
+                            class="num"
+                            data-label="Failed"
+                            title=${this.flowCountTitle}
+                          >
+                            ${this.renderUsageCell(
+                              this.formatCompactNumber(row.failed),
+                              this.isUsageLoading('flows'),
+                              true
+                            )}
+                          </td>
+                          <!-- Tokens before cost, split in and out: the
                              volume that earned the dollar figure beside
                              it. -->
-                        <td class="num" data-label="Tokens">
-                          ${this.renderUsageCell(
-                            html`<token-figures
-                              .usage=${row.tokenUsage}
-                            ></token-figures>`,
-                            this.isFlowCostLoading()
-                          )}
-                        </td>
-                        <td class="num" data-label="Spend">
-                          ${this.renderUsageCell(
-                            this.formatCurrency(row.cost),
-                            this.isFlowCostLoading()
-                          )}
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              `
-        }
-      </table>
+                          <td class="num" data-label="Tokens">
+                            ${this.renderUsageCell(
+                              html`<token-figures
+                                .usage=${row.tokenUsage}
+                              ></token-figures>`,
+                              this.isFlowCostLoading()
+                            )}
+                          </td>
+                          <td class="num" data-label="Spend">
+                            ${this.renderUsageCell(
+                              html`<span title=${formatUsdExact(row.cost)}
+                                >${formatUsd(row.cost)}</span
+                              >`,
+                              this.isFlowCostLoading()
+                            )}
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                `
+          }
+        </table>
+      </div>
     `;
   }
 
   private renderModels() {
     const rows = this.sortedModels.slice(0, this.rowLimit);
     return html`
-      <table class="inventory-table">
-        <!-- The name is the row, so it gets the room: three counts of five
+      <div class="table-scroll">
+        <table class="inventory-table">
+          <!-- The name is the row, so it gets the room: three counts of five
              characters each fit in 12% at any width this card is used at,
              and what is left over goes to the alias rather than to the
              gutters beside "1.2k". -->
-        <colgroup>
-          <col style="width: 42%" />
-          <col style="width: 22%" />
-          <col style="width: 12%" />
-          <col style="width: 12%" />
-          <col style="width: 12%" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Model</th>
-            <th>Provider</th>
-            <th class="num">Requests</th>
-            <th class="num">Tokens</th>
-            <th class="num">$ est.</th>
-          </tr>
-        </thead>
-        ${
-          this.isTabLoading('models') && rows.length === 0
-            ? this.renderSkeleton(5)
-            : html`
-                <tbody>
-                  ${repeat(
-                    rows,
-                    (row) => `${row.id || row.alias}`,
-                    (row) => html`
-                      <tr>
-                        <td class="identity-cell" title=${row.alias}>
-                          <span class="identity">
-                            ${
-                              row.id
-                                ? html`<a
-                                    class="row-name"
-                                    href="/console/ai-models/${row.id}"
-                                    >${modelAliasLabel(
-                                      row.alias,
-                                      row.provider
-                                    )}</a
-                                  >`
-                                : html`<span class="row-name"
-                                    >${modelAliasLabel(
-                                      row.alias,
-                                      row.provider
-                                    )}</span
-                                  >`
-                            }
-                          </span>
-                        </td>
-                        <td class="secondary muted">
-                          ${row.provider || 'Unknown'}
-                        </td>
-                        <td class="num" data-label="Requests">
-                          ${this.renderUsageCell(
-                            this.formatCompactNumber(row.requests),
-                            this.isUsageLoading('models')
-                          )}
-                        </td>
-                        <td class="num" data-label="Tokens">
-                          ${this.renderUsageCell(
-                            html`<token-figures
-                              .usage=${row.tokenUsage}
-                            ></token-figures>`,
-                            this.isUsageLoading('models')
-                          )}
-                        </td>
-                        <td class="num" data-label="Spend">
-                          ${this.renderUsageCell(
-                            this.formatCurrency(row.cost),
-                            this.isUsageLoading('models')
-                          )}
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              `
-        }
-      </table>
+          <colgroup>
+            <col style="width: 42%" />
+            <col style="width: 22%" />
+            <col style="width: 12%" />
+            <col style="width: 12%" />
+            <col style="width: 12%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Provider</th>
+              <th class="num">Requests</th>
+              <th class="num">Tokens</th>
+              <th class="num">$ est.</th>
+            </tr>
+          </thead>
+          ${
+            this.isTabLoading('models') && rows.length === 0
+              ? this.renderSkeleton(5)
+              : html`
+                  <tbody>
+                    ${repeat(
+                      rows,
+                      (row) => `${row.id || row.alias}`,
+                      (row) => html`
+                        <tr>
+                          <td class="identity-cell" title=${row.alias}>
+                            <span class="identity">
+                              ${
+                                row.id
+                                  ? html`<a
+                                      class="row-name"
+                                      href="/console/ai-models/${row.id}"
+                                      >${modelAliasLabel(
+                                        row.alias,
+                                        row.provider
+                                      )}</a
+                                    >`
+                                  : html`<span class="row-name"
+                                      >${modelAliasLabel(
+                                        row.alias,
+                                        row.provider
+                                      )}</span
+                                    >`
+                              }
+                            </span>
+                          </td>
+                          <td class="secondary muted">
+                            ${row.provider || 'Unknown'}
+                          </td>
+                          <td class="num" data-label="Requests">
+                            ${this.renderUsageCell(
+                              this.formatCompactNumber(row.requests),
+                              this.isUsageLoading('models')
+                            )}
+                          </td>
+                          <td class="num" data-label="Tokens">
+                            ${this.renderUsageCell(
+                              html`<token-figures
+                                .usage=${row.tokenUsage}
+                              ></token-figures>`,
+                              this.isUsageLoading('models')
+                            )}
+                          </td>
+                          <td class="num" data-label="Spend">
+                            ${this.renderUsageCell(
+                              html`<span title=${formatUsdExact(row.cost)}
+                                >${formatUsd(row.cost)}</span
+                              >`,
+                              this.isUsageLoading('models')
+                            )}
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                `
+          }
+        </table>
+      </div>
     `;
   }
 
@@ -1351,139 +1364,143 @@ export class InventoryCard extends LitElement {
   private renderUsers() {
     const rows = this.sortedUsers.slice(0, this.rowLimit);
     return html`
-      <table class="inventory-table">
-        <colgroup>
-          <col style="width: 30%" />
-          <col style="width: 18%" />
-          <col style="width: 14%" />
-          <col style="width: 12%" />
-          <col style="width: 12%" />
-          <col style="width: 14%" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>User</th>
-            <th>Role</th>
-            <th class="num">Last login</th>
-            <th class="num">Agents</th>
-            <th class="num">Tokens</th>
-            <th class="num">$ est.</th>
-          </tr>
-        </thead>
-        ${
-          this.isTabLoading('users') && rows.length === 0
-            ? this.renderSkeleton(6)
-            : html`
-                <tbody>
-                  ${repeat(
-                    rows,
-                    (row) => row.id,
-                    (row) => html`
-                      <tr>
-                        <td class="identity-cell">
-                          <span class="identity">
-                            <user-avatar
-                              .label=${row.name}
-                              .seed=${row.id}
-                              .size=${20}
-                            ></user-avatar>
-                            <span class="row-name">${row.name}</span>
-                          </span>
-                        </td>
-                        <td class="secondary muted" title=${row.role || ''}>
-                          ${row.role || 'No role'}
-                        </td>
-                        <td
-                          class="num"
-                          data-label="Last login"
-                          title=${this.absolute(row.lastLoginAt)}
-                        >
-                          ${this.relative(row.lastLoginAt)}
-                        </td>
-                        <td class="num" data-label="Agents">
-                          ${this.formatCompactNumber(row.agentsOwned)}
-                        </td>
-                        <td class="num" data-label="Tokens">
-                          ${this.renderUsageCell(
-                            html`<token-figures
-                              .usage=${row.tokenUsage}
-                            ></token-figures>`
-                          )}
-                        </td>
-                        <td class="num" data-label="Spend">
-                          ${this.renderUsageCell(this.formatCurrency(row.cost))}
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              `
-        }
-      </table>
+      <div class="table-scroll">
+        <table class="inventory-table">
+          <colgroup>
+            <col style="width: 30%" />
+            <col style="width: 18%" />
+            <col style="width: 14%" />
+            <col style="width: 12%" />
+            <col style="width: 12%" />
+            <col style="width: 14%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>User</th>
+              <th>Role</th>
+              <th class="num">Last login</th>
+              <th class="num">Agents</th>
+              <th class="num">Tokens</th>
+              <th class="num">$ est.</th>
+            </tr>
+          </thead>
+          ${
+            this.isTabLoading('users') && rows.length === 0
+              ? this.renderSkeleton(6)
+              : html`
+                  <tbody>
+                    ${repeat(
+                      rows,
+                      (row) => row.id,
+                      (row) => html`
+                        <tr>
+                          <td class="identity-cell">
+                            <span class="identity">
+                              <user-avatar
+                                .label=${row.name}
+                                .seed=${row.id}
+                                .size=${20}
+                              ></user-avatar>
+                              <span class="row-name">${row.name}</span>
+                            </span>
+                          </td>
+                          <td class="secondary muted" title=${row.role || ''}>
+                            ${row.role || 'No role'}
+                          </td>
+                          <td
+                            class="num"
+                            data-label="Last login"
+                            title=${this.absolute(row.lastLoginAt)}
+                          >
+                            ${this.relative(row.lastLoginAt)}
+                          </td>
+                          <td class="num" data-label="Agents">
+                            ${this.formatCompactNumber(row.agentsOwned)}
+                          </td>
+                          <td class="num" data-label="Tokens">
+                            ${this.renderUsageCell(
+                              html`<token-figures
+                                .usage=${row.tokenUsage}
+                              ></token-figures>`
+                            )}
+                          </td>
+                          <td class="num" data-label="Spend">
+                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>`)}
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                `
+          }
+        </table>
+      </div>
     `;
   }
 
   private renderTools() {
     const rows = this.sortedTools.slice(0, this.rowLimit);
     return html`
-      <table class="inventory-table">
-        <colgroup>
-          <col style="width: 38%" />
-          <col style="width: 30%" />
-          <col style="width: 16%" />
-          <col style="width: 16%" />
-        </colgroup>
-        <thead>
-          <tr>
-            <th>Tool</th>
-            <th>Server</th>
-            <th class="num">Calls</th>
-            <th class="num">Failed</th>
-          </tr>
-        </thead>
-        ${
-          this.isTabLoading('tools') && rows.length === 0
-            ? this.renderSkeleton(4)
-            : html`
-                <tbody>
-                  ${repeat(
-                    rows,
-                    (row) => `${row.server}:${row.name}`,
-                    (row) => html`
-                      <tr>
-                        <td class="identity-cell">
-                          <span class="identity">
-                            <a
-                              class="row-name"
-                              href="/console/tools#tool=${encodeURIComponent(
-                                row.name
-                              )}"
-                              >${row.name}</a
-                            >
-                          </span>
-                        </td>
-                        <td class="secondary muted">
-                          ${row.server || 'Unknown'}
-                        </td>
-                        <td class="num" data-label="Calls">
-                          ${this.renderUsageCell(
-                            this.formatCompactNumber(row.calls),
-                            this.isUsageLoading('tools')
-                          )}
-                        </td>
-                        <td class="num" data-label="Failed">
-                          ${this.renderUsageCell(
-                            this.formatCompactNumber(row.failed),
-                            this.isUsageLoading('tools')
-                          )}
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              `
-        }
-      </table>
+      <div class="table-scroll">
+        <table class="inventory-table">
+          <colgroup>
+            <col style="width: 38%" />
+            <col style="width: 30%" />
+            <col style="width: 16%" />
+            <col style="width: 16%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>Server</th>
+              <th class="num">Calls</th>
+              <th class="num">Failed</th>
+            </tr>
+          </thead>
+          ${
+            this.isTabLoading('tools') && rows.length === 0
+              ? this.renderSkeleton(4)
+              : html`
+                  <tbody>
+                    ${repeat(
+                      rows,
+                      (row) => `${row.server}:${row.name}`,
+                      (row) => html`
+                        <tr>
+                          <td class="identity-cell">
+                            <span class="identity">
+                              <a
+                                class="row-name"
+                                href="/console/tools#tool=${encodeURIComponent(
+                                  row.name
+                                )}"
+                                >${row.name}</a
+                              >
+                            </span>
+                          </td>
+                          <td class="secondary muted">
+                            ${row.server || 'Unknown'}
+                          </td>
+                          <td class="num" data-label="Calls">
+                            ${this.renderUsageCell(
+                              this.formatCompactNumber(row.calls),
+                              this.isUsageLoading('tools')
+                            )}
+                          </td>
+                          <td class="num" data-label="Failed">
+                            ${this.renderUsageCell(
+                              this.formatCompactNumber(row.failed),
+                              this.isUsageLoading('tools')
+                            )}
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                `
+          }
+        </table>
+      </div>
     `;
   }
 

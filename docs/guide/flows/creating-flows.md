@@ -56,6 +56,18 @@ For this guide, we'll start from a blank flow.
 
 ## Flow Configuration
 
+The name, trigger, agent/model, prompt and tools remain open in the form.
+**Advanced** sections summarize model routing, runner/image settings, Git
+workspace, feedback, notifications and limits. A saved non-default value opens
+its section automatically. Validation opens the section containing an invalid
+field and focuses that control.
+
+The sticky action bar keeps **Cancel** and **Save** reachable. Leaving a changed
+form asks whether to discard edits, including Back/sidebar navigation and closing
+or reloading the browser tab. Successful saves clear the prompt; failed saves
+keep the draft. Starting GitHub authorization preserves the draft across its
+redirect.
+
 ### Basic Information
 
 **Name** (required)
