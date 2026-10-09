@@ -1,0 +1,23 @@
+{
+  "name": "preloop-trigger-dev-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A trigger.dev task whose model calls go through the Preloop gateway and whose refund tool waits for a Preloop human approval.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "dev": "trigger dev",
+    "smoke": "node --env-file=.env --experimental-strip-types src/smoke.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "^4.0.91",
+    "@trigger.dev/sdk": "^4.7.3",
+    "ai": "^7.0.136",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "trigger.dev": "^4.7.3",
+    "typescript": "^5.9.0"
+  }
+}
