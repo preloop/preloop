@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, delete, select
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -16,8 +17,11 @@ from preloop.schemas.access_rule import AccessRuleDefinition
 
 
 @pytest.fixture
-def storage() -> Any:
-    engine = create_engine(os.environ["DATABASE_URL"])
+def storage(request: pytest.FixtureRequest) -> Any:
+    url = make_url(os.environ["DATABASE_URL"])
+    if hasattr(request, "param"):
+        url = url.set(drivername=f"postgresql+{request.param}")
+    engine = create_engine(url)
     ids = []
     with Session(engine) as db, db.begin():
         for _ in range(2):
@@ -133,6 +137,7 @@ def test_mode_generation_replay_and_bundle_secret_boundary(storage: Any) -> None
     assert "email" not in subject
 
 
+@pytest.mark.parametrize("storage", ["psycopg", "psycopg2"], indirect=True)
 def test_listener_receives_committed_changes_only(storage: Any) -> None:
     crud, owners = storage
     account, user = owners[0]

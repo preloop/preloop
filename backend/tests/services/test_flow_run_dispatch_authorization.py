@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Awaitable, Callable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -13,7 +14,13 @@ from preloop.services.runner_service import _runner_may_accept
 
 
 @pytest.mark.asyncio
-async def test_dispatch_execute_refuses_a_denied_flow(monkeypatch: pytest.MonkeyPatch):
+@pytest.mark.parametrize(
+    "dispatch", [dispatcher.dispatch_execute, dispatcher.dispatch_resume]
+)
+async def test_dispatch_refuses_a_denied_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    dispatch: Callable[..., Awaitable[bool]],
+) -> None:
     flow = MagicMock()
     flow.id = uuid.uuid4()
     flow.account_id = uuid.uuid4()
@@ -40,7 +47,7 @@ async def test_dispatch_execute_refuses_a_denied_flow(monkeypatch: pytest.Monkey
     monkeypatch.setattr(dispatcher, "_dispatch", publish)
 
     with pytest.raises(PermissionError, match="denied"):
-        await dispatcher.dispatch_execute(uuid.uuid4())
+        await dispatch(uuid.uuid4())
 
     publish.assert_not_called()
     assert seen["action"] == ACTION_FLOW_RUN

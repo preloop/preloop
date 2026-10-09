@@ -608,7 +608,8 @@ class CRUDAccessRule:
             with closing(engine.raw_connection()) as connection:
                 driver = connection.driver_connection
                 driver.autocommit = True
-                driver.execute("LISTEN preloop_access")
+                with driver.cursor() as cursor:
+                    cursor.execute("LISTEN preloop_access")
                 ready.set()
                 notifies = getattr(driver, "notifies", None)
                 while not stop.is_set():

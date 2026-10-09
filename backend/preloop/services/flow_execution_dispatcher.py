@@ -120,7 +120,8 @@ async def dispatch_resume(
     *,
     local_fallback: Optional[Callable[[], Any]] = None,
 ) -> bool:
-    """Publish ``resume_flow_execution`` for an orphaned/stale execution."""
+    """Publish a resume after checking the current ``flow:run`` policy."""
+    await authorize_dispatched_run(execution_id)
     return await _dispatch(
         RESUME_FLOW_EXECUTION_TASK,
         execution_id,
