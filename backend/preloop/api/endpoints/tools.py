@@ -42,6 +42,10 @@ from preloop.schemas.tool_approval_condition import (
     ConditionTestRequest,
     ConditionTestResponse,
 )
+from preloop.services.mcp_tool_collisions import (
+    exposed_tool_name,
+    tool_warnings_by_id,
+)
 from preloop.services.policy.loader import _detect_condition_type
 from preloop.services.policy_evaluator import evaluate_cel_expression
 from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
@@ -696,9 +700,17 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
 
     for server in mcp_servers:
         mcp_tools = tools_by_server.get(str(server.id), [])
+        mcp_warnings = (
+            tool_warnings_by_id(db, server)
+            if any(t.shadowed for t in mcp_tools)
+            else {}
+        )
 
         for mcp_tool in mcp_tools:
-            mcp_key = (mcp_tool.name, "mcp", str(server.id))
+            # Exposed name: '<tool_prefix>_<tool>' on a prefixed server. Tool
+            # configuration is keyed by it (#1135).
+            exposed_name = exposed_tool_name(server.tool_prefix, mcp_tool.name)
+            mcp_key = (exposed_name, "mcp", str(server.id))
             config = config_map.get(mcp_key)
             config_id = str(config.id) if config else None
             justification_mode = config.justification_mode if config else None
@@ -709,7 +721,7 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
             description = mcp_tool.description or ""
             tools.append(
                 {
-                    "name": mcp_tool.name,
+                    "name": exposed_name,
                     "description": description,
                     "source": "mcp",
                     "source_id": str(server.id),
@@ -732,8 +744,10 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
                     else [],
                     "justification_mode": justification_mode,
                     "enabled_for_agents": agent_scoped_enables.get(mcp_key, []),
+                    "shadowed": bool(mcp_tool.shadowed),
+                    "warnings": mcp_warnings.get(str(mcp_tool.id), []),
                     "schema_tokens_estimate": estimate_tool_schema_tokens(
-                        name=mcp_tool.name,
+                        name=exposed_name,
                         description=description,
                         schema=mcp_tool.input_schema,
                         justification_mode=justification_mode,

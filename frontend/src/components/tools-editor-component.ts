@@ -405,6 +405,10 @@ export class ToolsEditorComponent extends LitElement {
     );
   }
 
+  private _warningLabel(count: number): string {
+    return `${count} warning${count === 1 ? '' : 's'}`;
+  }
+
   private _renderToolGroup(group: ToolGroup) {
     const isEnabled = (t: ToolWithRules) =>
       this.mode === 'scoped' && t.name in this.toolEnabledOverrides
@@ -435,6 +439,23 @@ export class ToolsEditorComponent extends LitElement {
               aria-hidden="true"
             ></sl-icon>
             <span class="section-title">${group.name}</span>
+            ${
+              group.type === 'mcp' && group.server?.tool_prefix
+                ? html`<span class="section-meta"
+                    >prefix ${group.server.tool_prefix}_</span
+                  >`
+                : ''
+            }
+            ${
+              group.type === 'mcp' && group.server?.warnings?.length
+                ? html`<sl-badge
+                    variant="warning"
+                    pill
+                    data-testid="server-warning-badge"
+                    >${this._warningLabel(group.server.warnings.length)}</sl-badge
+                  >`
+                : ''
+            }
             <span class="section-meta">
               ${
                 group.type === 'agent'
@@ -510,6 +531,20 @@ export class ToolsEditorComponent extends LitElement {
           !group.collapsed
             ? html`
                 <div class="tool-list">
+                  ${
+                    group.type === 'mcp' && group.server?.warnings?.length
+                      ? html`<div
+                          class="server-warnings"
+                          role="note"
+                          data-testid="server-warnings"
+                          style="padding: var(--sl-spacing-small); color: var(--sl-color-warning-700); font-size: var(--sl-font-size-small);"
+                        >
+                          ${group.server.warnings.map(
+                            (warning: string) => html`<div>${warning}</div>`
+                          )}
+                        </div>`
+                      : ''
+                  }
                   ${
                     group.tools.length === 0
                       ? html`<div

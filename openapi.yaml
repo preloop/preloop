@@ -4489,8 +4489,7 @@ paths:
             application/json:
               schema:
                 type: object
-                additionalProperties:
-                  type: string
+                additionalProperties: true
                 title: Response Scan Mcp Server Api V1 Mcp Servers  Server Id  Scan
                   Post
         '422':
@@ -30610,6 +30609,15 @@ components:
           title: Status
           description: 'Server status: ''active'', ''error'', ''disabled'''
           default: active
+        tool_prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Prefix
+          description: Optional explicit prefix. When set, this server's tools are
+            exposed as '<prefix>_<tool>' for listing, routing, policy and configuration.
+            Lowercase [a-z0-9_], at most 32 characters. Never set automatically. Send
+            null or an empty string to clear.
       type: object
       required:
       - name
@@ -30665,6 +30673,15 @@ components:
           title: Status
           description: 'Server status: ''active'', ''error'', ''disabled'''
           default: active
+        tool_prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Prefix
+          description: Optional explicit prefix. When set, this server's tools are
+            exposed as '<prefix>_<tool>' for listing, routing, policy and configuration.
+            Lowercase [a-z0-9_], at most 32 characters. Never set automatically. Send
+            null or an empty string to clear.
         id:
           type: string
           title: Id
@@ -30689,6 +30706,14 @@ components:
           type: string
           format: date-time
           title: Updated At
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+          description: 'Tool name collisions and invalid tool names for this server:
+            shadowed tools are hidden from agents because an older server owns the
+            same name.'
       type: object
       required:
       - id
@@ -30741,6 +30766,15 @@ components:
           title: Status
           description: 'Server status: ''active'', ''error'', ''disabled'''
           default: active
+        tool_prefix:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Prefix
+          description: Optional explicit prefix. When set, this server's tools are
+            exposed as '<prefix>_<tool>' for listing, routing, policy and configuration.
+            Lowercase [a-z0-9_], at most 32 characters. Never set automatically. Send
+            null or an empty string to clear.
       type: object
       title: MCPServerUpdate
       description: Schema for updating an MCP server.
@@ -30776,6 +30810,23 @@ components:
           type: string
           format: date-time
           title: Updated At
+        exposed_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Exposed Name
+          description: 'Name agents see: ''<tool_prefix>_<name>'' or the name'
+        shadowed:
+          type: boolean
+          title: Shadowed
+          description: True when an older active server in the account exposes the
+            same name. Shadowed tools are not listed to agents or callable.
+          default: false
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
       type: object
       required:
       - name
@@ -39402,6 +39453,17 @@ components:
           type: boolean
           title: Has Condition
           default: false
+        shadowed:
+          type: boolean
+          title: Shadowed
+          description: 'MCP tool hidden from agents: an older active server in the
+            account exposes the same name and owns it.'
+          default: false
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
       type: object
       required:
       - name
@@ -40146,7 +40208,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

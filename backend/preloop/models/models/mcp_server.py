@@ -38,6 +38,11 @@ class MCPServer(Base):
         String(50), nullable=False, default="http-streaming"
     )
 
+    # Optional explicit prefix: when set, this server's tools are exposed as
+    # ``<prefix>_<tool>`` for listing, routing, policy and configuration.
+    # Never set automatically (#1135).
+    tool_prefix: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
     # Authentication configuration
     auth_type: Mapped[str] = mapped_column(
         String(50), nullable=False, default="none"

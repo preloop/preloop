@@ -307,8 +307,10 @@ class TestListAllTools:
         mcp_server.id = server_id
         mcp_server.name = "Test MCP Server"
         mcp_server.status = "active"
+        mcp_server.tool_prefix = None
 
         mcp_tool = MagicMock(spec=MCPTool)
+        mcp_tool.shadowed = False
         mcp_tool.mcp_server_id = server_id
         mcp_tool.name = "custom_tool"
         mcp_tool.description = "A custom MCP tool"

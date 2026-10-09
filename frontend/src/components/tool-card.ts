@@ -58,6 +58,10 @@ export interface Tool {
   justification_mode?: string | null;
   /** Estimated tokens for this tool's schema as served (incl. justification). */
   schema_tokens_estimate?: number;
+  /** MCP tool hidden from agents: an older server owns the same name (#1135). */
+  shadowed?: boolean;
+  /** Collision and invalid-name warnings for this tool. */
+  warnings?: string[];
 }
 
 export interface ApprovalWorkflow {

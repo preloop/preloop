@@ -1,7 +1,7 @@
 """Pydantic schemas for MCP tool definitions."""
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
@@ -44,6 +44,18 @@ class MCPToolResponse(MCPToolBase):
     discovered_at: str
     created_at: datetime
     updated_at: datetime
+    exposed_name: Optional[str] = Field(
+        None,
+        description="Name agents see: '<tool_prefix>_<name>' or the name",
+    )
+    shadowed: bool = Field(
+        False,
+        description=(
+            "True when an older active server in the account exposes the "
+            "same name. Shadowed tools are not listed to agents or callable."
+        ),
+    )
+    warnings: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
