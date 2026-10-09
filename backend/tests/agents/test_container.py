@@ -3038,6 +3038,60 @@ class TestEvidenceExclude:
         exclude = (repo / ".git" / "info" / "exclude").read_text().splitlines()
         assert exclude.count("/evidence/") == 1
 
+    def test_repository_that_tracks_evidence_keeps_it(self, tmp_path):
+        """Review on #1436: a customer repo with its own top-level evidence/
+        must not have new files there silently dropped."""
+        import subprocess
+
+        repo = tmp_path / "workspace"
+        repo.mkdir()
+        run = lambda *a: subprocess.run(  # noqa: E731
+            ["git", "-C", str(repo), *a], check=True, capture_output=True, text=True
+        )
+        run("init", "-q")
+        run("config", "user.email", "t@example.com")
+        run("config", "user.name", "t")
+        (repo / "evidence").mkdir()
+        (repo / "evidence" / "audit.md").write_text("tracked\n")
+        run("add", "-A")
+        run("commit", "-qm", "own evidence dir")
+        (repo / "evidence" / "new.md").write_text("agent file\n")
+        from preloop.agents import container as container_module
+
+        original = container_module.EVIDENCE_DIR_PATH
+        container_module.EVIDENCE_DIR_PATH = f"{repo}/evidence"
+        try:
+            shell = ContainerAgentExecutor._build_evidence_exclude_shell(str(repo))
+        finally:
+            container_module.EVIDENCE_DIR_PATH = original
+        subprocess.run(["bash", "-c", shell], check=True, cwd=tmp_path)
+        run("add", "-A")
+        staged = run("diff", "--cached", "--name-only").stdout.split()
+        assert staged == ["evidence/new.md"]
+
+    def test_exclude_runs_after_the_restore_wrapper(self, container_executor):
+        """Review on #1436: a restored workspace skips the clone command, so
+        the exclude must be its own step after the clone-or-restore block."""
+        context = {
+            "execution_id": "exec-1",
+            "flow_id": "f",
+            "trigger_project_id": None,
+            "git_clone_config": {
+                "enabled": True,
+                "repositories": [
+                    {
+                        "repository_url": "https://bitbucket.org/acme/repo.git",
+                        "clone_path": "/workspace",
+                    }
+                ],
+            },
+        }
+        commands = container_executor._evidence_exclude_commands(context)
+        assert len(commands) == 1
+        assert "/evidence/" in commands[0]
+        clone = container_executor._prepare_git_clone_command(context)
+        assert "info/exclude" not in clone
+
     def test_no_exclude_when_evidence_is_outside_the_checkout(self):
         assert (
             ContainerAgentExecutor._build_evidence_exclude_shell("/workspace-2") == ""
