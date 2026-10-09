@@ -62,7 +62,7 @@ export class HostedAllowance extends LitElement {
         </div>
       </dl>
       <p>
-        ${allowance.reset_at ? `Resets ${new Date(allowance.reset_at).toLocaleDateString()}.` : 'One-time credit does not reset.'}
+        ${allowance.kind === 'one_time' ? 'One-time credit does not reset.' : allowance.reset_at ? `Resets ${new Date(allowance.reset_at).toLocaleDateString()}.` : 'Monthly reset date is not yet verified.'}
       </p>
       ${allowance.coverage !== 'known' ? html`<p>Some balances are not yet verified. Unverified figures are not zero usage.</p>` : nothing}
       ${
