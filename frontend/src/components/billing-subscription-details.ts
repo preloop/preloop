@@ -101,9 +101,7 @@ export class BillingSubscriptionDetails extends LitElement {
   private _formatUsageSoFar(hosted: BillingSummary['hosted_models']) {
     return hosted.current_usage_usd == null
       ? 'Not verified'
-      : hosted.current_usage_usd == null
-        ? 'Not configured'
-        : formatUsd(hosted.current_usage_usd);
+      : formatUsd(hosted.current_usage_usd);
   }
 
   /** Remaining credit includes holds; a missing value is not the full cap. */

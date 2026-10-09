@@ -332,7 +332,7 @@ export class AccessGrantsView extends LitElement {
               ${
                 this.grants.length === 0
                   ? html`<p class="empty-state">No grants yet.</p>`
-                  : html`<div class="table-scroll">
+                  : html`
                       <div class="table-scroll">
                         <table>
                           <thead>
@@ -362,7 +362,7 @@ export class AccessGrantsView extends LitElement {
                           </tbody>
                         </table>
                       </div>
-                    </div>`
+                    `
               }
             `
       }

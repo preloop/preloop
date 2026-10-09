@@ -1,5 +1,5 @@
 import { parseUTCDate } from '../utils/date';
-import { formatUsd, formatUsdExact } from '../utils/money';
+import { formatUsd } from '../utils/money';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';

@@ -3814,64 +3814,62 @@ export class AgentsView extends LitElement {
       <div class="list-bounds">
         <sl-card class="table-card">
           <div class="table-scroll">
-            <div class="table-scroll">
-              <table
-                class="styled-table agents-table"
-                role="grid"
-                aria-multiselectable="true"
-                aria-label="Agents and flows"
-              >
-                <colgroup>
-                  <col class="col-select" />
-                  <col class="col-agent" />
-                  <col class="col-status" />
-                  <col class="col-owner" />
-                  <col class="col-model" />
-                  <col class="col-requests" />
-                  <col class="col-tokens" />
-                  <col class="col-spend" />
-                  <col class="col-last-seen" />
-                  <col class="col-actions" />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th class="select-cell">
-                      <list-select-checkbox
-                        label="Select all agents"
-                        ?checked=${this.selection.allSelected}
-                        ?indeterminate=${this.selection.someSelected}
-                        ?disabled=${this.selection.busy}
-                        @selection-toggle=${this.selection.handleToggleEvent}
-                      ></list-select-checkbox>
-                    </th>
-                    ${this.renderSortableHeader('agent', 'Agent')}
-                    ${this.renderSortableHeader('status', 'Status')}
-                    ${this.renderSortableHeader('owner', 'Owner')}
-                    ${this.renderSortableHeader('model', 'Model')}
-                    ${this.renderSortableHeader('requests', 'Requests', true)}
-                    ${this.renderSortableHeader(
-                      'tokens',
-                      'Tokens',
-                      true,
-                      'Total tokens, input plus output'
-                    )}
-                    ${this.renderSortableHeader(
-                      'spend',
-                      '$ est.',
-                      true,
-                      'Estimated spend'
-                    )}
-                    ${this.renderSortableHeader('last_seen', 'Last seen')}
-                    <th class="actions-cell">
-                      <span class="visually-hidden">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${rows.map((row) => this.renderListRow(row))}
-                </tbody>
-              </table>
-            </div>
+            <table
+              class="styled-table agents-table"
+              role="grid"
+              aria-multiselectable="true"
+              aria-label="Agents and flows"
+            >
+              <colgroup>
+                <col class="col-select" />
+                <col class="col-agent" />
+                <col class="col-status" />
+                <col class="col-owner" />
+                <col class="col-model" />
+                <col class="col-requests" />
+                <col class="col-tokens" />
+                <col class="col-spend" />
+                <col class="col-last-seen" />
+                <col class="col-actions" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="select-cell">
+                    <list-select-checkbox
+                      label="Select all agents"
+                      ?checked=${this.selection.allSelected}
+                      ?indeterminate=${this.selection.someSelected}
+                      ?disabled=${this.selection.busy}
+                      @selection-toggle=${this.selection.handleToggleEvent}
+                    ></list-select-checkbox>
+                  </th>
+                  ${this.renderSortableHeader('agent', 'Agent')}
+                  ${this.renderSortableHeader('status', 'Status')}
+                  ${this.renderSortableHeader('owner', 'Owner')}
+                  ${this.renderSortableHeader('model', 'Model')}
+                  ${this.renderSortableHeader('requests', 'Requests', true)}
+                  ${this.renderSortableHeader(
+                    'tokens',
+                    'Tokens',
+                    true,
+                    'Total tokens, input plus output'
+                  )}
+                  ${this.renderSortableHeader(
+                    'spend',
+                    '$ est.',
+                    true,
+                    'Estimated spend'
+                  )}
+                  ${this.renderSortableHeader('last_seen', 'Last seen')}
+                  <th class="actions-cell">
+                    <span class="visually-hidden">Actions</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map((row) => this.renderListRow(row))}
+              </tbody>
+            </table>
           </div>
         </sl-card>
         ${this.renderLoadMore()}

@@ -1,4 +1,4 @@
-import { formatUsd, formatUsdExact } from '../utils/money';
+import { formatUsd } from '../utils/money';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';

@@ -216,7 +216,7 @@ export class TeamBudgetsPanel extends AuthedElement {
     if (!this.usage.length) {
       return html`<p class="muted">No teams in this account yet.</p>`;
     }
-    return html`<div class="table-scroll">
+    return html`
       <div class="table-scroll">
         <table aria-label="Spend per team">
           <thead>
@@ -238,62 +238,61 @@ export class TeamBudgetsPanel extends AuthedElement {
           </tbody>
         </table>
       </div>
-    </div>`;
+    `;
   }
 
   private renderBudgets() {
-    return html`<div class="table-scroll">
-        <div class="table-scroll">
-          <table aria-label="Team budgets">
-            <thead>
-              <tr>
-                <th>Team</th>
-                <th>Period</th>
-                <th class="num">Spent this period</th>
-                <th class="num">Hard limit</th>
-                <th class="num">Soft limit</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              ${
-                this.budgets.length
-                  ? this.budgets.map(
-                      (budget) =>
-                        html`<tr>
-                          <td>${budget.team_name}</td>
-                          <td>${periodLabel(budget.period)}</td>
-                          <td class="num">
-                            ${this.money(budget.current_spend_usd)}
-                          </td>
-                          <td class="num">
-                            ${this.money(budget.hard_limit_usd)}
-                          </td>
-                          <td class="num">
-                            ${this.money(budget.soft_limit_usd)}
-                          </td>
-                          <td>
-                            ${
-                              this.canManage
-                                ? html`<sl-button
-                                    size="small"
-                                    variant="text"
-                                    @click=${() => void this.removeBudget(budget)}
-                                    >Remove</sl-button
-                                  >`
-                                : nothing
-                            }
-                          </td>
-                        </tr>`
-                    )
-                  : html`<tr>
-                      <td colspan="6" class="muted">No team budgets.</td>
-                    </tr>`
-              }
-            </tbody>
-          </table>
-        </div>
+    return html` <div class="table-scroll">
+        <table aria-label="Team budgets">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Period</th>
+              <th class="num">Spent this period</th>
+              <th class="num">Hard limit</th>
+              <th class="num">Soft limit</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${
+              this.budgets.length
+                ? this.budgets.map(
+                    (budget) =>
+                      html`<tr>
+                        <td>${budget.team_name}</td>
+                        <td>${periodLabel(budget.period)}</td>
+                        <td class="num">
+                          ${this.money(budget.current_spend_usd)}
+                        </td>
+                        <td class="num">
+                          ${this.money(budget.hard_limit_usd)}
+                        </td>
+                        <td class="num">
+                          ${this.money(budget.soft_limit_usd)}
+                        </td>
+                        <td>
+                          ${
+                            this.canManage
+                              ? html`<sl-button
+                                  size="small"
+                                  variant="text"
+                                  @click=${() => void this.removeBudget(budget)}
+                                  >Remove</sl-button
+                                >`
+                              : nothing
+                          }
+                        </td>
+                      </tr>`
+                  )
+                : html`<tr>
+                    <td colspan="6" class="muted">No team budgets.</td>
+                  </tr>`
+            }
+          </tbody>
+        </table>
       </div>
+
       ${
         this.canManage && this.usage.length
           ? html`<div class="form">

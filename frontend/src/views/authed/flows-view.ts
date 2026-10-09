@@ -1850,58 +1850,56 @@ export class FlowsView extends LitElement {
     return html`
       <sl-card class="table-card">
         <div class="table-scroll">
-          <div class="table-scroll">
-            <table
-              class="styled-table flows-table"
-              role="grid"
-              aria-multiselectable="true"
-              aria-label="Flows"
-            >
-              <colgroup>
-                <col class="col-select" />
-                <col class="col-flow" />
-                <col class="col-trigger" />
-                <col class="col-status" />
-                <col class="col-last-run" />
-                <col class="col-runs" />
-                <col class="col-failed" />
-                <col class="col-tokens" />
-                <col class="col-cost" />
-                <col class="col-actions" />
-              </colgroup>
-              <thead>
-                <tr>
-                  <th class="select-cell">
-                    <list-select-checkbox
-                      label="Select all flows"
-                      ?checked=${this.selection.allSelected}
-                      ?indeterminate=${this.selection.someSelected}
-                      ?disabled=${this.selection.busy}
-                      @selection-toggle=${this.selection.handleToggleEvent}
-                    ></list-select-checkbox>
-                  </th>
-                  ${this.renderSortableHeader('flow', 'Flow')}
-                  ${this.renderSortableHeader('trigger', 'Trigger')}
-                  ${this.renderSortableHeader('status', 'Status')}
-                  ${this.renderSortableHeader('last_run', 'Last run')}
-                  ${this.renderSortableHeader('runs', 'Runs', true)}
-                  ${this.renderSortableHeader('failed', 'Failed', true)}
-                  ${this.renderSortableHeader('tokens', 'Tokens', true)}
-                  ${this.renderSortableHeader('cost', '$ est.', true)}
-                  <th class="actions-cell">
-                    <span class="visually-hidden">Actions</span>
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                ${repeat(
-                  rows,
-                  (row) => row.id,
-                  (row) => this.renderListRow(row, rangeNote)
-                )}
-              </tbody>
-            </table>
-          </div>
+          <table
+            class="styled-table flows-table"
+            role="grid"
+            aria-multiselectable="true"
+            aria-label="Flows"
+          >
+            <colgroup>
+              <col class="col-select" />
+              <col class="col-flow" />
+              <col class="col-trigger" />
+              <col class="col-status" />
+              <col class="col-last-run" />
+              <col class="col-runs" />
+              <col class="col-failed" />
+              <col class="col-tokens" />
+              <col class="col-cost" />
+              <col class="col-actions" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="select-cell">
+                  <list-select-checkbox
+                    label="Select all flows"
+                    ?checked=${this.selection.allSelected}
+                    ?indeterminate=${this.selection.someSelected}
+                    ?disabled=${this.selection.busy}
+                    @selection-toggle=${this.selection.handleToggleEvent}
+                  ></list-select-checkbox>
+                </th>
+                ${this.renderSortableHeader('flow', 'Flow')}
+                ${this.renderSortableHeader('trigger', 'Trigger')}
+                ${this.renderSortableHeader('status', 'Status')}
+                ${this.renderSortableHeader('last_run', 'Last run')}
+                ${this.renderSortableHeader('runs', 'Runs', true)}
+                ${this.renderSortableHeader('failed', 'Failed', true)}
+                ${this.renderSortableHeader('tokens', 'Tokens', true)}
+                ${this.renderSortableHeader('cost', '$ est.', true)}
+                <th class="actions-cell">
+                  <span class="visually-hidden">Actions</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              ${repeat(
+                rows,
+                (row) => row.id,
+                (row) => this.renderListRow(row, rangeNote)
+              )}
+            </tbody>
+          </table>
         </div>
       </sl-card>
     `;
