@@ -35,6 +35,7 @@ describe('BudgetHealthCard', () => {
   const policies: BudgetPolicy[] = [
     {
       id: 'policy-1',
+      current_spend_usd: 25,
       subject_type: 'global',
       subject_id: 'global',
       model_alias: null,
@@ -83,6 +84,7 @@ describe('BudgetHealthCard', () => {
       {
         ...policies[0],
         period: 'daily',
+        current_spend_usd: 90,
         hard_limit_usd: 120,
         soft_limit_usd: 80,
       },
@@ -123,7 +125,7 @@ describe('BudgetHealthCard', () => {
     const element = (await fixture(html`
       <budget-health-card
         .summary=${exceededSummary}
-        .policies=${policies}
+        .policies=${[{ ...policies[0], current_spend_usd: 105 }]}
       ></budget-health-card>
     `)) as BudgetHealthCard;
     await element.updateComplete;
@@ -332,6 +334,75 @@ describe('BudgetHealthCard period-aligned spend', () => {
       expect(
         Boolean(cost.shadowRoot!.querySelector('.row-value.exceeded'))
       ).to.equal(scenario.policySpend >= 100);
+    });
+  }
+
+  for (const unavailableSpend of [null, undefined]) {
+    it(`shows unknown projected spend (${unavailableSpend}) consistently`, async () => {
+      const unavailablePolicies = [
+        {
+          id: 'monthly-policy',
+          subject_type: 'account',
+          subject_id: null,
+          model_alias: null,
+          period: 'monthly',
+          hard_limit_usd: 100,
+          soft_limit_usd: 80,
+          current_spend_usd: unavailableSpend,
+          notify_on_soft: false,
+          notify_on_hard: false,
+          notification_emails: [],
+        },
+        {
+          id: 'unknown-daily',
+          subject_type: 'account',
+          subject_id: null,
+          model_alias: null,
+          period: 'daily',
+          hard_limit_usd: 10,
+          soft_limit_usd: 0,
+          current_spend_usd: unavailableSpend,
+          notify_on_soft: false,
+          notify_on_hard: false,
+          notification_emails: [],
+        },
+      ];
+      const windowSummary = {
+        ...summary,
+        budget: {
+          ...summary.budget!,
+          current_spend_usd: 150,
+          hard_limit_exceeded: true,
+        },
+      };
+      const overview = await fixture<UsageCard>(
+        html`<usage-card
+          .summary=${windowSummary}
+          .policies=${unavailablePolicies}
+        ></usage-card>`
+      );
+      const cost = await fixture<BudgetHealthCard>(
+        html`<budget-health-card
+          .summary=${windowSummary}
+          .policies=${unavailablePolicies}
+        ></budget-health-card>`
+      );
+      await Promise.all([overview.updateComplete, cost.updateComplete]);
+      for (const card of [overview, cost]) {
+        const text = Array.from(
+          card.shadowRoot!.querySelectorAll('.budget-row')
+        )
+          .map((row) => row.textContent)
+          .join(' ')
+          .replace(/\s+/g, ' ');
+        expect(text).to.include('Spend unavailable');
+        expect(text).to.include('$100.00');
+        expect(text).to.not.include('$150.00');
+        expect(text).to.not.include('$0.00');
+        expect(card.shadowRoot!.querySelector('[role="progressbar"]')).to.not
+          .exist;
+      }
+      expect(cost.shadowRoot!.querySelector('.title.exceeded')).to.not.exist;
     });
   }
 

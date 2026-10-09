@@ -20,7 +20,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 
 type BudgetPolicyUsage = {
   policy: BudgetPolicy;
-  spend: number;
+  spend: number | null;
   hardLimit: number;
   softLimit: number;
   maxLimit: number;
@@ -224,58 +224,10 @@ export class BudgetHealthCard extends LitElement {
     return 'sliders';
   }
 
-  private spendForPolicy(policy: BudgetPolicy): number {
-    // Prefer the server-computed, PERIOD-ALIGNED spend (today for a daily
-    // policy, this month for a monthly one). The summary-derived fallbacks
-    // below use the Cost view's date range, which ignores the policy period —
-    // that made a daily and a monthly policy show identical spend.
-    if (typeof policy.current_spend_usd === 'number') {
-      return policy.current_spend_usd;
-    }
-    if (!this.summary) return 0;
-    if (policy.subject_type === 'global' || policy.subject_type === 'account') {
-      return (
-        this.summary.budget?.current_spend_usd ||
-        this.summary.estimated_cost ||
-        0
-      );
-    }
-    if (policy.subject_type === 'ai_model') {
-      return this.summary.usage_by_model
-        .filter(
-          (model) =>
-            model.ai_model_id === policy.subject_id ||
-            model.model_alias === policy.model_alias
-        )
-        .reduce((total, model) => total + model.estimated_cost, 0);
-    }
-    if (policy.subject_type === 'flow') {
-      return this.summary.usage_by_flow
-        .filter((flow) => flow.flow_id === policy.subject_id)
-        .reduce((total, flow) => total + flow.estimated_cost, 0);
-    }
-    if (policy.subject_type === 'managed_agent') {
-      const agent = this.getManagedAgentBySourceId(policy.subject_id);
-      const agentIds = new Set(
-        [policy.subject_id, agent?.id, agent?.session_source_id].filter(
-          Boolean
-        ) as string[]
-      );
-      return this.summary.usage_by_session
-        .filter(
-          (s) =>
-            agentIds.has(s.session_source_id || '') ||
-            agentIds.has(s.runtime_principal_id || '')
-        )
-        .reduce((acc, s) => acc + s.estimated_cost, 0);
-    }
-    return this.summary.usage_by_session
-      .filter(
-        (session) =>
-          session.session_source_id === policy.subject_id ||
-          session.runtime_principal_id === policy.subject_id
-      )
-      .reduce((total, session) => total + session.estimated_cost, 0);
+  private spendForPolicy(policy: BudgetPolicy): number | null {
+    // Missing projections mean unavailable spend. Analytics windows cannot
+    // substitute for a policy's period or subject.
+    return policy.current_spend_usd ?? null;
   }
 
   private calculatePolicyUsages(): BudgetPolicyUsage[] {
@@ -286,7 +238,7 @@ export class BudgetHealthCard extends LitElement {
         const softLimit = policy.soft_limit_usd || 0;
         const maxLimit = hardLimit || softLimit;
         const percent =
-          maxLimit > 0
+          maxLimit > 0 && spend !== null
             ? Math.min(100, Math.round((spend / maxLimit) * 100))
             : 0;
         return { policy, spend, hardLimit, softLimit, maxLimit, percent };
@@ -368,7 +320,7 @@ export class BudgetHealthCard extends LitElement {
   private renderBudgetLimitRow(
     label: string,
     icon: string,
-    spend: number,
+    spend: number | null,
     softLimit: number,
     hardLimit: number,
     forecast: {
@@ -378,6 +330,19 @@ export class BudgetHealthCard extends LitElement {
     } | null = null
   ) {
     const maxLimit = hardLimit || softLimit;
+    if (spend === null) {
+      return html`<div class="budget-row">
+        <div class="row-header">
+          <span class="row-label"
+            ><sl-icon name=${icon} aria-hidden="true"></sl-icon>${label}</span
+          >
+          <span class="row-value"
+            >Spend
+            unavailable${maxLimit > 0 ? html` / ${this.formatCurrency(maxLimit)}` : nothing}</span
+          >
+        </div>
+      </div>`;
+    }
     const fillPercent =
       maxLimit > 0 ? Math.min(100, (spend / maxLimit) * 100) : 0;
     const softPercent =
@@ -545,10 +510,9 @@ export class BudgetHealthCard extends LitElement {
     const selectedPeriod = this.periodForTimeRange();
     // A policy's spend and limits cover its own period, independently of
     // the Cost page's analytics window. Use the same projection as Overview.
-    const globalSpend =
-      selectedGlobalUsage?.spend ??
-      this.summary?.budget?.current_spend_usd ??
-      0;
+    const globalSpend = selectedGlobalUsage
+      ? (selectedGlobalUsage.policy.current_spend_usd ?? null)
+      : (this.summary?.budget?.current_spend_usd ?? 0);
     const globalSoftLimit =
       selectedGlobalUsage?.softLimit ??
       this.summary?.budget?.soft_limit_usd ??
@@ -559,9 +523,12 @@ export class BudgetHealthCard extends LitElement {
       0;
     const anyLimitExceeded =
       (!selectedGlobalUsage && this.summary?.budget?.hard_limit_exceeded) ||
-      this.isLimitExceeded(globalSpend, globalSoftLimit, globalHardLimit) ||
-      additionalUsages.some((usage) =>
-        this.isLimitExceeded(usage.spend, usage.softLimit, usage.hardLimit)
+      (globalSpend !== null &&
+        this.isLimitExceeded(globalSpend, globalSoftLimit, globalHardLimit)) ||
+      additionalUsages.some(
+        (usage) =>
+          usage.spend !== null &&
+          this.isLimitExceeded(usage.spend, usage.softLimit, usage.hardLimit)
       );
 
     return html`
