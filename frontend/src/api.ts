@@ -81,6 +81,7 @@ import type {
   AIModelGatewayUsageSearchResponse,
   AIModel,
   CostAnalyticsSummaryResponse,
+  CostHealthResponse,
   CostReconciliationResponse,
   CopilotConnection,
   CopilotConnectionUpsert,
@@ -1469,6 +1470,17 @@ export async function getCostAnalyticsSummary(
     const refused = await historyUnavailableError(response);
     if (refused) throw refused;
     throw new Error('Failed to fetch cost analytics summary');
+  }
+  return response.json();
+}
+
+/** Gateway accounting self-check for the account (last `hours` hours). */
+export async function getCostHealth(hours = 24): Promise<CostHealthResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/cost/health?hours=${encodeURIComponent(String(hours))}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch accounting health');
   }
   return response.json();
 }

@@ -64,6 +64,8 @@ def test_cost_health_no_traffic_all_checks_skip(client, db_session, test_user):
         "streaming_usage_recorded",
         "costs_priced",
         "usage_source_health",
+        "token_details_normalized",
+        "subscription_billing_coverage",
         "audit_events_present",
     }
     for check in checks.values():
@@ -155,6 +157,92 @@ def test_cost_health_subscription_rows_count_as_priced(client, db_session, test_
 
     checks = _checks_by_key(body)
     assert checks["costs_priced"]["status"] == "pass"
+
+
+def test_cost_health_subscription_rows_warn_billing_unavailable(
+    client, db_session, test_user
+):
+    """An API-equivalent estimate must not make subscription billing healthy."""
+    for equivalent in (0.4, None):
+        meta = {"endpoint_kind": "chat_completions_stream"}
+        if equivalent is not None:
+            meta["api_equivalent_cost"] = equivalent
+        _log_usage(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            meta_data=meta,
+        )
+    _log_audit_event(db_session, account_id=test_user.account_id, user_id=test_user.id)
+    db_session.commit()
+
+    body = client.get(COST_HEALTH).json()
+
+    assert body["status"] == "warn"
+    check = _checks_by_key(body)["subscription_billing_coverage"]
+    assert check["status"] == "warn"
+    assert check["detail"].startswith(
+        "Subscription billing coverage unavailable: API-equivalent cost is an "
+        "estimate, billed subscription dollars are not tracked."
+    )
+    assert "1/2 (50%)" in check["detail"]
+
+
+def test_cost_health_flags_raw_vs_normalized_token_mismatch(
+    client, db_session, test_user
+):
+    """Raw Responses cache detail with a NULL column is flagged, then clears."""
+    row = _log_usage(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        meta_data={
+            "endpoint_kind": "responses",
+            "usage_details": {
+                "input_tokens": 12,
+                "input_tokens_details": {"cached_tokens": 8},
+                "output_tokens_details": {"reasoning_tokens": 2},
+            },
+        },
+    )
+    _log_audit_event(db_session, account_id=test_user.account_id, user_id=test_user.id)
+    db_session.commit()
+
+    body = client.get(COST_HEALTH).json()
+    check = _checks_by_key(body)["token_details_normalized"]
+    assert body["status"] == "warn"
+    assert check["status"] == "warn"
+    assert "cache_read_tokens=1" in check["detail"]
+    assert "reasoning_tokens=1" in check["detail"]
+    assert "repair_usage_token_details" in check["detail"]
+
+    row.cache_read_tokens = 8
+    row.reasoning_tokens = 2
+    db_session.commit()
+    body = client.get(COST_HEALTH).json()
+    assert _checks_by_key(body)["token_details_normalized"]["status"] == "pass"
+    assert body["status"] == "pass"
+
+
+def test_cost_health_flags_differing_normalized_value(client, db_session, test_user):
+    """A normalized column that disagrees with the raw payload is flagged."""
+    _log_usage(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        cache_read_tokens=3,
+        meta_data={
+            "endpoint_kind": "chat_completions",
+            "usage_details": {"prompt_tokens_details": {"cached_tokens": 5}},
+        },
+    )
+    db_session.commit()
+
+    check = _checks_by_key(client.get(COST_HEALTH).json())["token_details_normalized"]
+    assert check["status"] == "warn"
+    assert "cache_read_tokens=1" in check["detail"]
 
 
 def test_cost_health_is_account_scoped(client, db_session, test_user):

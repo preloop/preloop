@@ -34,6 +34,7 @@ from preloop.schemas.cost_analytics import (
     PriceCatalogInfo,
     RepriceRequest,
     RepriceResponse,
+    SubscriptionUsageSummary,
     UnpricedModelUsage,
 )
 from preloop.schemas.gateway_usage import UsageBreakdown
@@ -160,6 +161,29 @@ def get_cost_summary(
             if include_imported
             else [],
         )
+    # Subscription workload is a SEPARATE block too: its marginal spend is
+    # $0 and its API-equivalent figure is an estimate, never a bill (#1401).
+    subscription_totals = crud_api_usage.get_subscription_usage_summary(
+        db,
+        account_id=str(account.id),
+        start=summary.period_start,
+        end=summary.period_end,
+        runtime_principal_id=runtime_principal_id,
+        exclude_retries=exclude_retries,
+    )
+    subscription_usage = None
+    if subscription_totals["request_count"]:
+        requests = subscription_totals["request_count"]
+        covered = subscription_totals["coverage_rows"]
+        subscription_usage = SubscriptionUsageSummary(
+            request_count=requests,
+            prompt_tokens=subscription_totals["prompt_tokens"],
+            completion_tokens=subscription_totals["completion_tokens"],
+            total_tokens=subscription_totals["total_tokens"],
+            api_equivalent_cost=subscription_totals["api_equivalent_cost"],
+            covered_requests=covered,
+            coverage=covered / requests,
+        )
     return CostAnalyticsSummaryResponse(
         period_start=summary.period_start,
         period_end=summary.period_end,
@@ -190,6 +214,7 @@ def get_cost_summary(
         usage_by_session=summary.usage_by_session,
         usage_by_tool=summary.usage_by_tool,
         imported_usage=imported_usage,
+        subscription_usage=subscription_usage,
     )
 
 

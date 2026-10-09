@@ -16,6 +16,7 @@ import {
   getAIModels,
   getBudgetPolicies,
   getCostAnalyticsSummary,
+  getCostHealth,
   getCostReconciliation,
   getFeatures,
   getProviderBillingConnections,
@@ -30,6 +31,7 @@ import {
 import type {
   AIModel,
   CostAnalyticsSummaryResponse,
+  CostHealthCheck,
   CostReconciliationResponse,
   CostReconciliationRow,
   GatewayTokenUsage,
@@ -163,6 +165,9 @@ const DATE_RANGE_OPTIONS: { value: DateRangePreset; label: string }[] = [
 @customElement('cost-view')
 export class CostView extends AuthedElement {
   @state() private summary: CostAnalyticsSummaryResponse | null = null;
+  // Accounting findings shown on this page (#1401); other checks stay in
+  // GET /cost/health for operators and alerting.
+  @state() private accountingFindings: CostHealthCheck[] = [];
   @state() private previousRangeSummary: CostAnalyticsSummaryResponse | null =
     null;
   // When the numbers on screen were fetched. The page dropped its Refresh
@@ -409,6 +414,22 @@ export class CostView extends AuthedElement {
         margin-top: var(--sl-spacing-2x-small);
         color: var(--sl-color-neutral-600);
         font-size: var(--sl-font-size-small);
+      }
+
+      .subscription-usage {
+        margin-top: var(--sl-spacing-medium);
+      }
+
+      .subscription-usage-heading {
+        grid-column: 1 / -1;
+        color: var(--sl-color-neutral-700);
+        font-size: var(--sl-font-size-small);
+        font-weight: 600;
+      }
+
+      .accounting-findings ul {
+        margin: var(--sl-spacing-2x-small) 0 0;
+        padding-left: var(--sl-spacing-large);
       }
 
       .section-header {
@@ -920,6 +941,7 @@ export class CostView extends AuthedElement {
         }
       }
       void this.loadContext(generation);
+      void this.loadAccountingFindings(generation);
       const summary = await getCostAnalyticsSummary({
         ...period,
         includeBreakdown: false,
@@ -948,6 +970,28 @@ export class CostView extends AuthedElement {
           : 'Failed to load cost analytics';
     } finally {
       if (generation === this.loadGeneration) this.loading = false;
+    }
+  }
+
+  /** Health checks this page explains: token detail drift, subscription billing. */
+  private static readonly SHOWN_HEALTH_CHECKS = new Set([
+    'token_details_normalized',
+    'subscription_billing_coverage',
+  ]);
+
+  private async loadAccountingFindings(generation = this.loadGeneration) {
+    try {
+      const health = await getCostHealth();
+      if (generation !== this.loadGeneration) return;
+      this.accountingFindings = (health.checks ?? []).filter(
+        (check) =>
+          CostView.SHOWN_HEALTH_CHECKS.has(check.key) &&
+          (check.status === 'warn' || check.status === 'fail')
+      );
+    } catch (error) {
+      // Decoration only: the cost numbers stand without it.
+      console.warn('Could not load accounting health:', error);
+      if (generation === this.loadGeneration) this.accountingFindings = [];
     }
   }
 
@@ -1736,6 +1780,93 @@ export class CostView extends AuthedElement {
             : nothing
         }
       </div>
+    `;
+  }
+
+  /**
+   * Subscription workload stays apart from marginal API spend (#1401): its
+   * spend is $0, the API-equivalent figure is an estimate, and billed
+   * subscription dollars are not tracked, so they are shown as unavailable.
+   */
+  private renderSubscriptionUsage() {
+    const block = this.summary?.subscription_usage;
+    if (!block?.request_count) return nothing;
+    const coverage =
+      block.coverage === null || block.coverage === undefined
+        ? 'unknown'
+        : `${Math.round(block.coverage * 100)}%`;
+    return html`
+      <div
+        class="metric-grid subscription-usage"
+        role="region"
+        aria-label="Subscription workload"
+      >
+        <div class="subscription-usage-heading">
+          Subscription workload · not included in spend above
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Subscription requests</div>
+          <div
+            class="metric-value"
+            title=${this.formatNumber(block.request_count)}
+          >
+            ${this.formatCompactNumber(block.request_count)}
+          </div>
+          <div class="metric-detail">$0 marginal API spend</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">Subscription tokens</div>
+          <div
+            class="metric-value"
+            title=${this.formatNumber(block.total_tokens)}
+          >
+            ${this.formatCompactNumber(block.total_tokens)}
+          </div>
+          <div class="metric-detail">
+            ${this.formatCompactNumber(block.prompt_tokens)} in ·
+            ${this.formatCompactNumber(block.completion_tokens)} out
+          </div>
+        </div>
+        <div class="metric-card" data-testid="subscription-api-equivalent">
+          <div class="metric-label">API-equivalent cost (estimate)</div>
+          <div class="metric-value">
+            ${this.formatCurrency(block.api_equivalent_cost)}
+          </div>
+          <div class="metric-detail">
+            Coverage ${coverage}: ${this.formatNumber(block.covered_requests)}
+            of ${this.formatNumber(block.request_count)} requests carry an
+            estimate
+          </div>
+        </div>
+        <div class="metric-card" data-testid="subscription-billed">
+          <div class="metric-label">Billed subscription cost</div>
+          <div class="metric-value">Not tracked</div>
+          <div class="metric-detail">
+            No provider billing source; not derived from tokens
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderAccountingFindings() {
+    if (!this.accountingFindings.length) return nothing;
+    return html`
+      <sl-alert
+        class="accounting-findings"
+        variant="warning"
+        open
+        role="status"
+        aria-label="Accounting health"
+      >
+        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+        Accounting health
+        <ul>
+          ${this.accountingFindings.map(
+            (check) => html`<li data-check=${check.key}>${check.detail}</li>`
+          )}
+        </ul>
+      </sl-alert>
     `;
   }
 
@@ -3880,8 +4011,9 @@ export class CostView extends AuthedElement {
                     class="results ${updating ? 'is-updating' : ''}"
                     aria-busy=${updating ? 'true' : 'false'}
                   >
-                    ${this.renderMetrics()} ${this.renderCatalogInfo()}
-                    ${this.renderUnpricedNotice()}
+                    ${this.renderMetrics()} ${this.renderSubscriptionUsage()}
+                    ${this.renderCatalogInfo()} ${this.renderUnpricedNotice()}
+                    ${this.renderAccountingFindings()}
                     <div class="column-layout dashboard extra-wide">
                       <div class="main-column">
                         ${this.renderBreakdown()} ${this.renderImportedUsage()}
