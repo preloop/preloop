@@ -264,6 +264,18 @@ async def test_shared_agent_command_has_consumer_history_and_live_runtime_bindin
         )
         == owner.id
     )
+    owner_budget = models.BudgetPolicy(
+        account_id=owner.id,
+        subject_type="managed_agent",
+        subject_id=agent.id,
+        period=models.BudgetPeriod.daily,
+        hard_limit_usd=1.0,
+    )
+    db_session.add(owner_budget)
+    db_session.flush()
+    assert crud.shared_agent_budget_policies(
+        db_session, account_id=child.id, agent_id=agent.id
+    ) == [owner_budget]
     from preloop.services.subject_governance import set_subject_governance
 
     owner.meta_data = set_subject_governance(
@@ -285,6 +297,11 @@ async def test_shared_agent_command_has_consumer_history_and_live_runtime_bindin
 
     access = CRUDAccessRule()
     monkeypatch.setattr(access, "session", same_session)
+    child.parent_account_id = None
+    child.root_account_id = child.id
+    child.hierarchy_path = [child.id]
+    child.hierarchy_depth = 0
+    db_session.flush()
     bundle = access.bundle(account_id=child.id)
     assert bundle["subjects"][("agent", str(agent.id))]["home_account"]["id"] == str(
         owner.id

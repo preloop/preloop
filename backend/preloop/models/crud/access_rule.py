@@ -522,6 +522,21 @@ class CRUDAccessRule:
                 if agent is not None:
                     by_id[agent.id] = agent
             shared_agents = list(by_id.values())
+            # A detached consumer may still finish an issued session; its
+            # former owner is no longer in the hierarchy path.
+            missing_owners = {
+                agent.account_id
+                for agent in shared_agents
+                if str(agent.account_id) not in accounts
+            }
+            for owner in db.scalars(
+                select(models.Account).where(models.Account.id.in_(missing_owners))
+            ):
+                accounts[str(owner.id)] = {
+                    "id": str(owner.id),
+                    "path": [str(key) for key in owner.hierarchy_path],
+                    "tags": {},
+                }
             shared_agent_ids = {
                 str(agent.id): str(agent.account_id) for agent in shared_agents
             }
