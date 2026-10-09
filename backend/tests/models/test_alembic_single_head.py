@@ -309,4 +309,7 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     ci_subscription = script.get_revision("20261004_ci_subscription_binding")
     assert ci_subscription is not None
     assert ci_subscription.down_revision == "20261004_ci_exec_artifact_merge"
-    assert script.get_heads() == ["20261004_ci_subscription_binding"]
+    collisions = script.get_revision("20261009_mcp_tool_shadow_prefix")
+    assert collisions is not None
+    assert collisions.down_revision == "20261004_ci_subscription_binding"
+    assert script.get_heads() == ["20261009_mcp_tool_shadow_prefix"]
