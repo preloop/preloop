@@ -59,6 +59,7 @@ from .legal_hold import (
     HOLD_RESOURCE_TYPES,
     LegalHold,
 )
+from .discovery_observation import DiscoveryObservation
 from .discovered_agent_candidate import (
     AccountDiscoverySalt,
     DiscoveredAgentCandidate,
@@ -223,6 +224,7 @@ __all__ = [
     "HOLD_RESOURCE_TYPES",
     "AccountDiscoverySalt",
     "DiscoveredAgentCandidate",
+    "DiscoveryObservation",
     "ManagedAgent",
     "ManagedAgentAIModelBinding",
     "ManagedAgentCredential",
