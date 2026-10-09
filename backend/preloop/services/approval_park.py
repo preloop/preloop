@@ -62,6 +62,14 @@ DECIDED_STATUSES = frozenset({"approved", "declined", "cancelled", "expired"})
 
 _MAX_ANSWER_CHARS = 8000
 
+#: Tools whose approval IS the answer (nothing to replay). Mirrors
+#: ``approval_helper._QUESTION_TOOLS``; kept local so this module stays
+#: import-light.
+_QUESTION_TOOLS = frozenset({"ask_user", "request_approval"})
+
+#: Tool a resumed agent calls to run an approved, gated call exactly once.
+APPROVAL_STATUS_TOOL = "get_approval_status"
+
 
 def _bounded(value: Any) -> str:
     """Bound untrusted human prose before it enters a prompt."""
@@ -195,6 +203,18 @@ def answers_prompt_block(answer: Dict[str, Any]) -> str:
         header += (
             " The request was refused. Do not perform the action you asked "
             "about; record the refusal and continue with the rest of the task."
+        )
+    elif status == "approved" and answer.get("tool_name") not in _QUESTION_TOOLS:
+        # The gated call itself never ran: the session was killed while it
+        # waited. Calling the tool again opens a fresh approval and parks the
+        # run again, forever. get_approval_status executes the approved call
+        # once and returns its result.
+        header += (
+            f" The approved {answer.get('tool_name')} call has NOT run yet. "
+            "Do not call that tool again with the same arguments: that opens "
+            "a new approval request. Call get_approval_status with "
+            f"request_id {answer.get('request_id')} once; it executes the "
+            "approved call and returns its result."
         )
     lines = [header, ""]
     if answer.get("question"):

@@ -207,6 +207,55 @@ class TestRegisteredToolBehaviour:
         )
         other_replay.assert_not_awaited()
 
+    async def test_approval_replay_refuses_tool_outside_flow_allow_list(
+        self, mcp_server: DynamicFastMCP
+    ) -> None:
+        """get_approval_status is exposed to every allow-listed flow so a
+        parked run can finish an approved call; it must not become a way to
+        run a tool the flow was never allowed to call."""
+        tool = await mcp_server.get_tool("get_approval_status")
+        request_id = uuid4()
+        account_id = uuid4()
+        approval = models.ApprovalRequest(
+            id=request_id,
+            account_id=account_id,
+            status="approved",
+            tool_name="create_issue",
+            tool_args={"title": "x"},
+            responses=[],
+        )
+        approval_result = MagicMock()
+        approval_result.scalar_one_or_none.return_value = approval
+        events_result = MagicMock()
+        events_result.scalars.return_value = []
+        db = AsyncMock()
+        db.execute.side_effect = [approval_result, events_result, approval_result]
+
+        @asynccontextmanager
+        async def session() -> AsyncIterator[AsyncMock]:
+            yield db
+
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=SimpleNamespace(
+                    account_id=str(account_id),
+                    allowed_flow_tools=["get_pull_request", "update_pull_request"],
+                ),
+            ),
+            patch("preloop.models.db.session.get_async_db_session", new=session),
+            patch.object(
+                mcp_server,
+                "call_registered_tool_without_policy",
+                new=AsyncMock(return_value="should not run"),
+            ) as replay,
+        ):
+            result = json.loads(await tool.fn(request_id=str(request_id)))
+
+        replay.assert_not_awaited()
+        assert "not in this flow's allowed tools" in result["tool_execution_error"]
+        assert approval.tool_result is None
+
     async def _fn(self, mcp_server, name):
         tool = await mcp_server.get_tool(name)
         return tool.fn

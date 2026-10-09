@@ -2150,6 +2150,20 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     elif cached is not None:
                         response["tool_result"] = cached
 
+                    # A flow sees this tool even when its allow-list omits
+                    # it (dynamic_fastmcp adds it so a parked run can finish
+                    # an approved call); it must not replay a tool the flow
+                    # was never allowed to call.
+                    elif (
+                        getattr(user_context, "allowed_flow_tools", None) is not None
+                        and approval_request.tool_name
+                        not in user_context.allowed_flow_tools
+                    ):
+                        response["tool_execution_error"] = (
+                            f"Tool '{approval_request.tool_name}' is not in this "
+                            "flow's allowed tools; the approved call was not run."
+                        )
+
                     else:
                         # Claim execution: set a sentinel value and commit to
                         # release the FOR UPDATE lock immediately.

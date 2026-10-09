@@ -1406,6 +1406,14 @@ class DynamicFastMCP(FastMCP):
             for alias_src, alias_dst in TOOL_NAME_ALIASES.items():
                 if alias_src in allowed:
                     allowed.add(alias_dst)
+            if allowed:
+                # A flow whose allowed tool is gated by an approval workflow
+                # is parked and resumed; the resumed run needs this tool to
+                # execute the approved call (it refuses tools outside the
+                # allow-list, see initialize_mcp.get_approval_status).
+                from preloop.services.approval_park import APPROVAL_STATUS_TOOL
+
+                allowed.add(APPROVAL_STATUS_TOOL)
             available_tools = [tool for tool in available_tools if tool.name in allowed]
             logger.info(
                 f"Flow execution restriction: filtered {original_count} tools down to "
