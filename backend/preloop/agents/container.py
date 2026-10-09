@@ -840,6 +840,46 @@ def extract_issue_number_from_trigger(
     return None
 
 
+_JIRA_ISSUE_KEY = re.compile(r"^[A-Z][A-Z0-9_]{0,30}-[0-9]{1,10}$")
+_UNSAFE_BRANCH_SLUG_CHARS = re.compile(r"[^a-z0-9._-]+")
+
+
+def extract_jira_issue_key_from_trigger(
+    trigger_data: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """Return the Jira issue key (``ABC-123``) of a Jira issue trigger.
+
+    Only for branch naming: Jira links a Bitbucket branch to an issue when the
+    branch name carries the key. Callers that need a numeric issue number
+    keep using :func:`extract_issue_number_from_trigger`.
+    """
+    if not isinstance(trigger_data, dict):
+        return None
+    payload = trigger_data.get("payload", trigger_data)
+    if not isinstance(payload, dict):
+        return None
+    issue = payload.get("issue")
+    if not isinstance(issue, dict):
+        return None
+    key = str(issue.get("key") or "").strip()
+    return key if _JIRA_ISSUE_KEY.fullmatch(key) else None
+
+
+def branch_slug(name: Optional[str], *, max_length: int = 30) -> str:
+    """Reduce a free-text name (a flow name) to a safe git branch segment.
+
+    Flow names are user text: a cloned preset is called ``Copy of X (2)``.
+    Anything outside ``[a-z0-9._-]`` collapses to ``-`` so the generated
+    branch passes :func:`_validated_git_ref`; otherwise publication is
+    skipped for the whole run.
+    """
+    slug = _UNSAFE_BRANCH_SLUG_CHARS.sub("-", str(name or "").lower())
+    slug = re.sub(r"\.{2,}", ".", slug)[:max_length].strip("-.")
+    if slug.endswith(".lock"):
+        slug = slug[: -len(".lock")].strip("-.")
+    return slug or "flow"
+
+
 # Bounded tail for terminal-path pod log reads on Kubernetes. The artifact
 # emission always TRAILS the agent output and its payload is capped by the two
 # byte limits above, so a window of (worst-case emission lines + a generous
@@ -4348,12 +4388,15 @@ fi
 
             if not target_branch:
                 execution_id = execution_context.get("execution_id", "exec")
-                issue_number = extract_issue_number_from_trigger(trigger_data)
+                issue_number = extract_issue_number_from_trigger(
+                    trigger_data
+                ) or extract_jira_issue_key_from_trigger(trigger_data)
                 if issue_number:
                     target_branch = f"preloop/issue-{issue_number}-{execution_id[:8]}"
                 else:
-                    flow_name = execution_context.get("flow_name", "flow")
-                    safe_flow_name = flow_name.lower().replace(" ", "-")[:30]
+                    safe_flow_name = branch_slug(
+                        execution_context.get("flow_name", "flow")
+                    )
                     target_branch = f"preloop/{safe_flow_name}-{execution_id[:8]}"
 
         commit_sha = self._extract_commit_sha_from_trigger(trigger_data)
@@ -5824,7 +5867,18 @@ true
                     "Skipping post-execution git: unsafe target branch %r",
                     target_branch,
                 )
-                return ""
+                marker = (
+                    'echo "PRELOOP_PUBLICATION_SKIPPED: unsafe target '
+                    'branch name; nothing was pushed"'
+                )
+                if create_pr:
+                    # A flow that must open a pull request cannot report
+                    # success when nothing was pushed.
+                    return f"{marker}\nexit 1"
+                # Without create_pull_request the flow may never intend to
+                # push (a reviewer clones read-only), so failing it would
+                # break reviews; the skip is disclosed in the log instead.
+                return marker
             safe_source = _validated_git_ref(source_branch)
             if source_branch and safe_source is None:
                 self.logger.warning(
