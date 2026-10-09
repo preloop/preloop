@@ -3083,3 +3083,61 @@ async def test_docker_guard_chunks_large_script_in_place(container_executor):
         assert len(config["Cmd"][-1]) < 64 * 1024
         assert "A=1" in config["Env"]
         assert any(e.startswith("PRELOOP_DOCKER_SCRIPT_CHUNKS=") for e in config["Env"])
+
+
+class TestDockerScriptChunkingConsumers:
+    """Review on #1433: harnesses that re-exec their own script (pi/dsh drop
+    from root to uid 10000) and Aider's Entrypoint ["bash", "-c"] shape."""
+
+    def test_loader_exports_the_script_path_for_a_reexec(self, tmp_path, monkeypatch):
+        import os
+        import subprocess
+
+        from preloop.agents import container as container_module
+
+        target = tmp_path / "agent-script.sh"
+        monkeypatch.setattr(container_module, "DOCKER_SCRIPT_PATH", str(target))
+        marker = tmp_path / "reexec"
+        # Mirrors harness.py's root bootstrap: BASH_EXECUTION_STRING is unset
+        # when running from a file, so the exported path is the way back in.
+        script = (
+            "#" + ("p" * 150_000) + "\n"
+            'if [ -z "${PL_REEXEC:-}" ]; then\n'
+            '  [ -z "${BASH_EXECUTION_STRING:-}" ] || exit 9\n'
+            '  PL_REEXEC=1 exec /bin/bash "$PRELOOP_DOCKER_SCRIPT_PATH"\n'
+            "fi\n"
+            f"echo reexec-ok > {marker}\n"
+        )
+        args, env = ContainerAgentExecutor._chunk_docker_script_args(["-c", script])
+        proc = subprocess.run(
+            ["bash", "-c", args[1]],
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert marker.read_text() == "reexec-ok\n"
+        assert oct(target.stat().st_mode & 0o777) == "0o644"
+
+    def test_harness_bootstrap_prefers_the_chunked_script_path(self):
+        import inspect
+
+        from preloop.agents import harness
+
+        source = inspect.getsource(harness)
+        assert '/bin/bash "$PRELOOP_DOCKER_SCRIPT_PATH"' in source
+
+    def test_aider_entrypoint_shape_is_chunked(self, container_executor):
+        script = "#" + ("a" * 150_000) + "\necho aider\n"
+        config = {
+            "Image": "x",
+            "Entrypoint": ["bash", "-c"],
+            "Cmd": [script],
+            "Env": [],
+        }
+        container_executor._guard_docker_launch_payload(config, what="test")
+        assert config["Entrypoint"] == ["bash", "-c"]
+        assert len(config["Cmd"]) == 1
+        assert len(config["Cmd"][0]) < 64 * 1024
+        assert any(e.startswith("PRELOOP_DOCKER_SCRIPT_CHUNKS=") for e in config["Env"])

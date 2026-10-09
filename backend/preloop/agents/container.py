@@ -925,6 +925,8 @@ K8S_INNER_SCRIPT_PATH = f"{LAUNCH_PAYLOAD_DIR}/agent-script.sh"
 DOCKER_SCRIPT_ENV_PREFIX = "PRELOOP_DOCKER_SCRIPT_"
 DOCKER_SCRIPT_PATH = f"{LAUNCH_PAYLOAD_DIR}/docker-agent-script.sh"
 DOCKER_INLINE_SCRIPT_MAX_BYTES = 64 * 1024
+# Exported by the loader so a script that re-execs itself can find its file.
+DOCKER_SCRIPT_PATH_ENV = "PRELOOP_DOCKER_SCRIPT_PATH"
 
 # Key under which the orchestrator names the SESSION (not the execution) that
 # is being started. One execution can legitimately start several agent
@@ -2670,14 +2672,27 @@ class ContainerAgentExecutor(AgentExecutor):
         ~140 KiB of shell.
         """
         cmd = container_config.get("Cmd")
+        entrypoint = container_config.get("Entrypoint")
+        chunked = None
         if isinstance(cmd, list) and len(cmd) >= 2:
             chunked = self._chunk_docker_script_args(list(cmd[-2:]))
             if chunked is not None:
-                new_args, script_env = chunked
-                container_config["Cmd"] = list(cmd[:-2]) + new_args
-                container_config["Env"] = list(container_config.get("Env") or []) + [
-                    f"{name}={value}" for name, value in script_env.items()
-                ]
+                container_config["Cmd"] = list(cmd[:-2]) + chunked[0]
+        elif (
+            isinstance(entrypoint, list)
+            and entrypoint
+            and entrypoint[-1] == "-c"
+            and isinstance(cmd, list)
+            and len(cmd) == 1
+        ):
+            # Aider: Entrypoint ["bash", "-c"], Cmd [script].
+            chunked = self._chunk_docker_script_args(["-c", cmd[0]])
+            if chunked is not None:
+                container_config["Cmd"] = [chunked[0][1]]
+        if chunked is not None:
+            container_config["Env"] = list(container_config.get("Env") or []) + [
+                f"{name}={value}" for name, value in chunked[1].items()
+            ]
         raw_env = container_config.get("Env") or []
         env: Dict[str, Any] = {}
         for entry in raw_env:
@@ -2717,6 +2732,11 @@ class ContainerAgentExecutor(AgentExecutor):
                 label="agent script",
             )
             + " || exit 1\n"
+            # Readable by a harness that drops privileges (pi/dsh re-exec the
+            # script as uid 10000 through this exported path, since
+            # BASH_EXECUTION_STRING is unset once the script runs from a file).
+            + f"chmod 0644 {shlex.quote(DOCKER_SCRIPT_PATH)} || exit 1\n"
+            + f"export {DOCKER_SCRIPT_PATH_ENV}={shlex.quote(DOCKER_SCRIPT_PATH)}\n"
             + f"exec bash {shlex.quote(DOCKER_SCRIPT_PATH)}\n"
         )
         return ["-c", loader], chunked_env(DOCKER_SCRIPT_ENV_PREFIX, script)
