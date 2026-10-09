@@ -1,3 +1,5 @@
+import { tableScrollStyles } from '../../../styles/table-scroll';
+import { formatUsd, formatUsdExact } from '../../../utils/money';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
 import '../../../components/hosted-allowance';
@@ -204,226 +206,229 @@ export class AIModelsView extends LitElement {
   private narrowViewportSubscription: NarrowViewportSubscription | null = null;
 
   static styles = [
-    consoleDialogStyles,
-    unsafeCSS(consoleStyles),
-    css`
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      .page {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-large);
-      }
-      .toolbar-wrap {
-        width: 100%;
-      }
-      .summary-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: var(--sl-spacing-medium);
-      }
-      .summary-card::part(base),
-      .table-card::part(base) {
-        height: 100%;
-      }
-      .metric-label {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-      }
-      .metric-value {
-        color: var(--sl-color-neutral-900);
-        font-size: 1.6rem;
-        font-weight: 700;
-        line-height: 1.1;
-        margin-top: var(--sl-spacing-2x-small);
-      }
-      .metric-subtext {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-        margin-top: var(--sl-spacing-small);
-      }
-      .styled-table th,
-      .styled-table td {
-        padding: var(--sl-spacing-medium);
-        text-align: left;
-        border-bottom: 1px solid var(--console-hairline);
-      }
-      .styled-table th {
-        background-color: transparent;
-        font-weight: var(--sl-font-weight-semibold);
-      }
-      .styled-table td {
-        vertical-align: top;
-      }
-      .styled-table tr:last-child td {
-        border-bottom: none;
-      }
-      .empty-state a {
-        color: var(--sl-color-primary-600);
-        text-decoration: none;
-        cursor: pointer;
-      }
-      .empty-state-wrapper {
-        display: flex;
-        justify-content: center;
-        width: 100%;
-        margin-top: var(--sl-spacing-large);
-      }
-      .empty-card {
-        width: 100%;
-        max-width: 580px;
-      }
-      .empty-card::part(base) {
-        border: 1px solid
-          color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
-        box-shadow: var(--sl-shadow-large);
-        border-radius: var(--sl-border-radius-large);
-        overflow: hidden;
-      }
-      .empty-card-body {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-        padding: var(--sl-spacing-large);
-      }
-      .empty-icon-circle {
-        width: 72px;
-        height: 72px;
-        border-radius: 50%;
-        background: color-mix(
-          in srgb,
-          var(--sl-color-primary-600) 15%,
-          transparent
-        );
-        color: var(--sl-color-primary-600);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin-bottom: var(--sl-spacing-medium);
-      }
-      .empty-icon-circle sl-icon {
-        font-size: 2.5rem;
-      }
-      .empty-card-title {
-        margin: 0 0 var(--sl-spacing-2x-small);
-        font-size: 1.25rem;
-        font-weight: 700;
-        color: var(--sl-color-neutral-900);
-      }
-      .empty-card-desc {
-        margin: 0 0 var(--sl-spacing-large);
-        max-width: 440px;
-        font-size: 0.95rem;
-        line-height: 1.55;
-        color: var(--sl-color-neutral-600);
-      }
-      .empty-cta-btn {
-        width: 100%;
-        max-width: 280px;
-      }
-      .model-link {
-        color: var(--sl-color-primary-700);
-        text-decoration: none;
-        font-weight: var(--sl-font-weight-semibold);
-      }
-      .model-link:hover {
-        text-decoration: underline;
-      }
-      .empty-state a:hover {
-        text-decoration: underline;
-      }
-      .info-header {
-        margin-bottom: var(--sl-spacing-large);
-      }
-      .model-meta {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-        margin-top: var(--sl-spacing-2x-small);
-        overflow-wrap: anywhere;
-      }
-      /* The second line of the name cell: what the gateway answers to, in
+    tableScrollStyles,
+    [
+      consoleDialogStyles,
+      unsafeCSS(consoleStyles),
+      css`
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .page {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-large);
+        }
+        .toolbar-wrap {
+          width: 100%;
+        }
+        .summary-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+          gap: var(--sl-spacing-medium);
+        }
+        .summary-card::part(base),
+        .table-card::part(base) {
+          height: 100%;
+        }
+        .metric-label {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+        }
+        .metric-value {
+          color: var(--sl-color-neutral-900);
+          font-size: 1.6rem;
+          font-weight: 700;
+          line-height: 1.1;
+          margin-top: var(--sl-spacing-2x-small);
+        }
+        .metric-subtext {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+          margin-top: var(--sl-spacing-small);
+        }
+        .styled-table th,
+        .styled-table td {
+          padding: var(--sl-spacing-medium);
+          text-align: left;
+          border-bottom: 1px solid var(--console-hairline);
+        }
+        .styled-table th {
+          background-color: transparent;
+          font-weight: var(--sl-font-weight-semibold);
+        }
+        .styled-table td {
+          vertical-align: top;
+        }
+        .styled-table tr:last-child td {
+          border-bottom: none;
+        }
+        .empty-state a {
+          color: var(--sl-color-primary-600);
+          text-decoration: none;
+          cursor: pointer;
+        }
+        .empty-state-wrapper {
+          display: flex;
+          justify-content: center;
+          width: 100%;
+          margin-top: var(--sl-spacing-large);
+        }
+        .empty-card {
+          width: 100%;
+          max-width: 580px;
+        }
+        .empty-card::part(base) {
+          border: 1px solid
+            color-mix(in srgb, var(--sl-color-primary-600) 35%, transparent);
+          box-shadow: var(--sl-shadow-large);
+          border-radius: var(--sl-border-radius-large);
+          overflow: hidden;
+        }
+        .empty-card-body {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          padding: var(--sl-spacing-large);
+        }
+        .empty-icon-circle {
+          width: 72px;
+          height: 72px;
+          border-radius: 50%;
+          background: color-mix(
+            in srgb,
+            var(--sl-color-primary-600) 15%,
+            transparent
+          );
+          color: var(--sl-color-primary-600);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-bottom: var(--sl-spacing-medium);
+        }
+        .empty-icon-circle sl-icon {
+          font-size: 2.5rem;
+        }
+        .empty-card-title {
+          margin: 0 0 var(--sl-spacing-2x-small);
+          font-size: 1.25rem;
+          font-weight: 700;
+          color: var(--sl-color-neutral-900);
+        }
+        .empty-card-desc {
+          margin: 0 0 var(--sl-spacing-large);
+          max-width: 440px;
+          font-size: 0.95rem;
+          line-height: 1.55;
+          color: var(--sl-color-neutral-600);
+        }
+        .empty-cta-btn {
+          width: 100%;
+          max-width: 280px;
+        }
+        .model-link {
+          color: var(--sl-color-primary-700);
+          text-decoration: none;
+          font-weight: var(--sl-font-weight-semibold);
+        }
+        .model-link:hover {
+          text-decoration: underline;
+        }
+        .empty-state a:hover {
+          text-decoration: underline;
+        }
+        .info-header {
+          margin-bottom: var(--sl-spacing-large);
+        }
+        .model-meta {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+          margin-top: var(--sl-spacing-2x-small);
+          overflow-wrap: anywhere;
+        }
+        /* The second line of the name cell: what the gateway answers to, in
          mono so it reads as an identifier and not as prose. */
-      .model-identifier {
-        color: var(--console-meta-color);
-        font-family: var(--sl-font-mono);
-        font-size: var(--sl-font-size-small);
-        overflow-wrap: anywhere;
-      }
-      /* The kebab column is measured from the button it holds: one medium
+        .model-identifier {
+          color: var(--console-meta-color);
+          font-family: var(--sl-font-mono);
+          font-size: var(--sl-font-size-small);
+          overflow-wrap: anywhere;
+        }
+        /* The kebab column is measured from the button it holds: one medium
          sl-button is 48px at the default tokens, so 72px leaves room for the
          padding without clipping (the same rule the agents table uses). */
-      .styled-table th.actions-cell,
-      .styled-table td.actions-cell {
-        width: 72px;
-        text-align: right;
-        padding-left: var(--sl-spacing-x-small);
-        padding-right: var(--sl-spacing-x-small);
-        overflow: visible;
-      }
-      .row-actions {
-        display: flex;
-        justify-content: flex-end;
-      }
-      .badge-row {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .cell-stack {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .cell-primary {
-        color: var(--sl-color-neutral-900);
-        font-weight: var(--sl-font-weight-semibold);
-      }
-      .cell-secondary {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-      }
-      .filter-empty {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-body);
-        padding: var(--sl-spacing-large) 0;
-      }
-      .models-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: var(--sl-spacing-large);
-      }
-      .model-card-body {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-small);
-      }
-      .model-card-header {
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: var(--sl-spacing-small);
-      }
-      .model-card-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-x-small);
-        justify-content: flex-end;
-      }
-      sl-select::part(form-control-label) {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-        border: 0;
-      }
-    `,
+        .styled-table th.actions-cell,
+        .styled-table td.actions-cell {
+          width: 72px;
+          text-align: right;
+          padding-left: var(--sl-spacing-x-small);
+          padding-right: var(--sl-spacing-x-small);
+          overflow: visible;
+        }
+        .row-actions {
+          display: flex;
+          justify-content: flex-end;
+        }
+        .badge-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .cell-stack {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .cell-primary {
+          color: var(--sl-color-neutral-900);
+          font-weight: var(--sl-font-weight-semibold);
+        }
+        .cell-secondary {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+        }
+        .filter-empty {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-body);
+          padding: var(--sl-spacing-large) 0;
+        }
+        .models-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          gap: var(--sl-spacing-large);
+        }
+        .model-card-body {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-small);
+        }
+        .model-card-header {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: var(--sl-spacing-small);
+        }
+        .model-card-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-x-small);
+          justify-content: flex-end;
+        }
+        sl-select::part(form-control-label) {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+          white-space: nowrap;
+          border: 0;
+        }
+      `,
+    ],
   ];
 
   async connectedCallback() {
@@ -738,20 +743,6 @@ export class AIModelsView extends LitElement {
     ).length;
   }
 
-  /**
-   * Money the way the rest of the console prints it: two decimals, except
-   * amounts under a cent, which keep four rather than collapsing into a
-   * `$0.00` that reads as "free" (DESIGN.md Numbers, the rule Cost and API
-   * usage already follow).
-   */
-  private formatCurrency(value: number | null | undefined): string {
-    const amount = Number(value || 0);
-    if (amount > 0 && amount < 0.01) {
-      return `$${amount.toFixed(4)}`;
-    }
-    return `$${amount.toFixed(2)}`;
-  }
-
   private formatNumber(value: number | null | undefined): string {
     return Intl.NumberFormat().format(value || 0);
   }
@@ -991,7 +982,7 @@ export class AIModelsView extends LitElement {
         <sl-card class="summary-card">
           <div class="metric-label">$ est. · ${this.windowSuffix}</div>
           <div class="metric-value">
-            ${this.formatCurrency(this.fleetSpend)}
+            ${html`<span title=${formatUsdExact(this.fleetSpend)}>${formatUsd(this.fleetSpend)}</span>`}
           </div>
           <div class="metric-subtext">${delta ?? `estimated, not billed`}</div>
         </sl-card>
@@ -1344,39 +1335,41 @@ export class AIModelsView extends LitElement {
   private renderListView(models: AIModel[]) {
     return html`
       <sl-card class="table-card">
-        <table
-          class="styled-table"
-          role="grid"
-          aria-multiselectable="true"
-          aria-label="AI models"
-        >
-          <thead>
-            <tr>
-              <th class="select-cell">
-                <list-select-checkbox
-                  label="Select all models"
-                  ?checked=${this.selection.allSelected}
-                  ?indeterminate=${this.selection.someSelected}
-                  ?disabled=${this.selection.busy}
-                  @selection-toggle=${this.selection.handleToggleEvent}
-                ></list-select-checkbox>
-              </th>
-              <th>Name</th>
-              <th>Provider</th>
-              <th>Fleet health</th>
-              <th>Usage</th>
-              <th>Default</th>
-              <th class="actions-cell">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${repeat(
-              models,
-              (model) => model.id,
-              (model) => this.renderModelRow(model)
-            )}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table
+            class="styled-table"
+            role="grid"
+            aria-multiselectable="true"
+            aria-label="AI models"
+          >
+            <thead>
+              <tr>
+                <th class="select-cell">
+                  <list-select-checkbox
+                    label="Select all models"
+                    ?checked=${this.selection.allSelected}
+                    ?indeterminate=${this.selection.someSelected}
+                    ?disabled=${this.selection.busy}
+                    @selection-toggle=${this.selection.handleToggleEvent}
+                  ></list-select-checkbox>
+                </th>
+                <th>Name</th>
+                <th>Provider</th>
+                <th>Fleet health</th>
+                <th>Usage</th>
+                <th>Default</th>
+                <th class="actions-cell">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${repeat(
+                models,
+                (model) => model.id,
+                (model) => this.renderModelRow(model)
+              )}
+            </tbody>
+          </table>
+        </div>
       </sl-card>
     `;
   }
@@ -1694,7 +1687,9 @@ export class AIModelsView extends LitElement {
           <token-figures
             .usage=${overview?.token_usage || null}
           ></token-figures>
-          · ${this.formatCurrency(overview?.estimated_cost)} est.
+          ·
+          ${html`<span title=${formatUsdExact(overview?.estimated_cost)}>${formatUsd(overview?.estimated_cost)}</span>`}
+          est.
         </div>
         ${
           this.getLastRequestLabel(model.id)
@@ -1788,9 +1783,7 @@ export class AIModelsView extends LitElement {
               this.getModelOverview(model.id)?.total_requests
             )}
             requests ·
-            ${this.formatCurrency(
-              this.getModelOverview(model.id)?.estimated_cost
-            )}
+            ${html`<span title=${formatUsdExact(this.getModelOverview(model.id)?.estimated_cost)}>${formatUsd(this.getModelOverview(model.id)?.estimated_cost)}</span>`}
             est.
           </div>
           ${this.renderSinceMarker(

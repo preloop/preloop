@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -634,11 +635,11 @@ export class ToolListItem extends LitElement {
               (this.usageStat.invocation_count > 0 ||
                 this.usageStat.estimated_schema_cost > 0)
                 ? html`<sl-tooltip
-                    content=${`${this.usageStat.invocation_count} invocations · ${this.usageStat.estimated_schema_cost.toFixed(4)} schema cost (30d)`}
+                    content=${`${this.usageStat.invocation_count} invocations · ${formatUsdExact(this.usageStat.estimated_schema_cost)} schema cost (30d)`}
                   >
                     <span class="usage-stat"
                       >${this.usageStat.invocation_count} calls ·
-                      $${this.usageStat.estimated_schema_cost >= 0.01 ? this.usageStat.estimated_schema_cost.toFixed(2) : this.usageStat.estimated_schema_cost.toFixed(4)}</span
+                      ${html`<span title=${formatUsdExact(this.usageStat.estimated_schema_cost)}>${formatUsd(this.usageStat.estimated_schema_cost)}</span>`}</span
                     >
                   </sl-tooltip>`
                 : ''

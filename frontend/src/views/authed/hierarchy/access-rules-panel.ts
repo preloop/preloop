@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -44,49 +45,52 @@ const ALL_ACTIONS = [...MODE_ACTIONS, 'resource:share'];
  */
 @customElement('access-rules-panel')
 export class AccessRulesPanel extends LitElement {
-  static styles = css`
-    :host {
-      display: block;
-    }
-    section {
-      margin-bottom: var(--sl-spacing-x-large);
-    }
-    h3 {
-      font-size: var(--sl-font-size-medium);
-      margin: 0 0 var(--sl-spacing-small);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    th,
-    td {
-      text-align: left;
-      padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-      vertical-align: top;
-    }
-    .form {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
-      gap: var(--sl-spacing-small);
-      align-items: end;
-    }
-    .row {
-      display: flex;
-      gap: var(--sl-spacing-x-small);
-      align-items: flex-end;
-      flex-wrap: wrap;
-    }
-    .error {
-      color: var(--sl-color-danger-700);
-    }
-    .preview {
-      background: var(--sl-color-warning-50);
-      padding: var(--sl-spacing-small);
-      margin-top: var(--sl-spacing-x-small);
-    }
-  `;
+  static styles = [
+    tableScrollStyles,
+    css`
+      :host {
+        display: block;
+      }
+      section {
+        margin-bottom: var(--sl-spacing-x-large);
+      }
+      h3 {
+        font-size: var(--sl-font-size-medium);
+        margin: 0 0 var(--sl-spacing-small);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+        vertical-align: top;
+      }
+      .form {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+        gap: var(--sl-spacing-small);
+        align-items: end;
+      }
+      .row {
+        display: flex;
+        gap: var(--sl-spacing-x-small);
+        align-items: flex-end;
+        flex-wrap: wrap;
+      }
+      .error {
+        color: var(--sl-color-danger-700);
+      }
+      .preview {
+        background: var(--sl-color-warning-50);
+        padding: var(--sl-spacing-small);
+        margin-top: var(--sl-spacing-x-small);
+      }
+    `,
+  ];
 
   @property({ attribute: false }) context: Record<string, unknown> = {};
 
@@ -281,67 +285,74 @@ export class AccessRulesPanel extends LitElement {
         Additive: forbid rules narrow access and permit rules do nothing.
         Require permit: an action is allowed only where a permit rule matches.
       </p>
-      <table>
-        ${MODE_ACTIONS.map((action) => {
-          const preview = this.previews[action];
-          const draft = this.draftModes[action] ?? 'additive';
-          return html`<tr data-action=${action}>
-            <td>${action}</td>
-            <td>
-              <sl-select
-                size="small"
-                .value=${draft}
-                @sl-change=${(e: Event) =>
-                  this.chooseMode(
-                    action,
-                    (e.target as HTMLSelectElement).value as RuleMode
-                  )}
-              >
-                <sl-option value="additive">Additive</sl-option>
-                <sl-option value="require_permit">Require permit</sl-option>
-              </sl-select>
-              ${
-                draft === 'require_permit' &&
-                (this.data?.modes[action] ?? 'additive') !== 'require_permit'
-                  ? html`<sl-button
-                      size="small"
-                      data-testid="mode-preview"
-                      @click=${() => this.preview(action)}
-                      >Preview who loses access</sl-button
-                    >`
-                  : nothing
-              }
-              ${
-                preview
-                  ? html`<div class="preview" data-testid="mode-preview-result">
-                      ${
-                        preview.losing_access.length === 0
-                          ? 'Nobody loses access.'
-                          : html`These lose access:
-                              <ul>
-                                ${preview.losing_access.map(
-                                  (s) =>
-                                    html`<li>${s.kind}: ${s.name || s.id}</li>`
-                                )}
-                              </ul>`
-                      }
-                    </div>`
-                  : nothing
-              }
-            </td>
-            <td>
-              <sl-button
-                size="small"
-                variant="primary"
-                data-testid="mode-save"
-                ?disabled=${!this.canSaveMode(action)}
-                @click=${() => this.saveMode(action)}
-                >Save</sl-button
-              >
-            </td>
-          </tr>`;
-        })}
-      </table>
+      <div class="table-scroll">
+        <table>
+          ${MODE_ACTIONS.map((action) => {
+            const preview = this.previews[action];
+            const draft = this.draftModes[action] ?? 'additive';
+            return html`<tr data-action=${action}>
+              <td>${action}</td>
+              <td>
+                <sl-select
+                  size="small"
+                  .value=${draft}
+                  @sl-change=${(e: Event) =>
+                    this.chooseMode(
+                      action,
+                      (e.target as HTMLSelectElement).value as RuleMode
+                    )}
+                >
+                  <sl-option value="additive">Additive</sl-option>
+                  <sl-option value="require_permit">Require permit</sl-option>
+                </sl-select>
+                ${
+                  draft === 'require_permit' &&
+                  (this.data?.modes[action] ?? 'additive') !== 'require_permit'
+                    ? html`<sl-button
+                        size="small"
+                        data-testid="mode-preview"
+                        @click=${() => this.preview(action)}
+                        >Preview who loses access</sl-button
+                      >`
+                    : nothing
+                }
+                ${
+                  preview
+                    ? html`<div
+                        class="preview"
+                        data-testid="mode-preview-result"
+                      >
+                        ${
+                          preview.losing_access.length === 0
+                            ? 'Nobody loses access.'
+                            : html`These lose access:
+                                <ul>
+                                  ${preview.losing_access.map(
+                                    (s) =>
+                                      html`<li>
+                                        ${s.kind}: ${s.name || s.id}
+                                      </li>`
+                                  )}
+                                </ul>`
+                        }
+                      </div>`
+                    : nothing
+                }
+              </td>
+              <td>
+                <sl-button
+                  size="small"
+                  variant="primary"
+                  data-testid="mode-save"
+                  ?disabled=${!this.canSaveMode(action)}
+                  @click=${() => this.saveMode(action)}
+                  >Save</sl-button
+                >
+              </td>
+            </tr>`;
+          })}
+        </table>
+      </div>
     </section>`;
   }
 
@@ -355,23 +366,25 @@ export class AccessRulesPanel extends LitElement {
       ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
       <section>
         <h3>Access rules</h3>
-        <table data-testid="rules">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Effect</th>
-              <th>Actions</th>
-              <th>Scope</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${this.data.rules.map((rule, i) => this.renderRule(rule, i))}
-            ${this.data.inherited.map((rule) =>
-              this.renderRule(rule, null, rule.account_name)
-            )}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table data-testid="rules">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Effect</th>
+                <th>Actions</th>
+                <th>Scope</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${this.data.rules.map((rule, i) => this.renderRule(rule, i))}
+              ${this.data.inherited.map((rule) =>
+                this.renderRule(rule, null, rule.account_name)
+              )}
+            </tbody>
+          </table>
+        </div>
         <div class="form">
           <sl-input id="rule-name" size="small" label="Name"></sl-input>
           <sl-select

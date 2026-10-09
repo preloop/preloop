@@ -1,3 +1,5 @@
+import { parseUTCDate } from '../utils/date';
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -236,21 +238,6 @@ export class SessionRequestTimeline extends LitElement {
       : html`${formatNumber(value)}`;
   }
 
-  /**
-   * Format a cache-savings amount without rounding it away.
-   *
-   * The shared `formatCost` snaps anything >= $0.01 to two decimals, which
-   * turns $0.0125 of measured savings into "$0.01" — a 20% understatement of a
-   * figure whose whole point is precision. Sub-dollar savings therefore keep
-   * four decimals here, and a non-zero amount below the last displayed digit
-   * is shown as a "<" bound rather than as $0.00.
-   */
-  private static savings(value: number): string {
-    if (value >= 1) return `$${value.toFixed(2)}`;
-    if (value >= 0.0001) return `$${value.toFixed(4)}`;
-    return value > 0 ? '<$0.0001' : '$0.00';
-  }
-
   private get filteredSorted(): RuntimeSessionRequestItem[] {
     let rows = [...this.requests];
     if (this.threshold > 0) {
@@ -261,7 +248,7 @@ export class SessionRequestTimeline extends LitElement {
       );
     }
     const time = (row: RuntimeSessionRequestItem): number =>
-      row.timestamp ? new Date(row.timestamp).getTime() : 0;
+      row.timestamp ? parseUTCDate(row.timestamp).getTime() : 0;
     switch (this.sort) {
       case 'oldest':
         rows.sort((a, b) => time(a) - time(b));
@@ -336,7 +323,7 @@ export class SessionRequestTimeline extends LitElement {
 
   private renderRequest(row: RuntimeSessionRequestItem) {
     const model = row.model_alias || row.provider_name || 'request';
-    const ts = row.timestamp ? new Date(row.timestamp) : null;
+    const ts = row.timestamp ? parseUTCDate(row.timestamp) : null;
     return html`
       <div class="request-row ${row.is_error ? 'error' : ''}">
         <sl-badge variant=${row.is_error ? 'danger' : 'success'} pill>
@@ -469,9 +456,10 @@ export class SessionRequestTimeline extends LitElement {
             ${
               summary.estimated_cache_savings_usd === null
                 ? savingsOmittedText
-                : SessionRequestTimeline.savings(
-                    summary.estimated_cache_savings_usd
-                  )
+                : html`<span
+                    title=${formatUsdExact(summary.estimated_cache_savings_usd)}
+                    >${formatUsd(summary.estimated_cache_savings_usd)}</span
+                  >`
             }${
               summary.estimated_cache_savings_usd !== null &&
               summary.savings_basis === 'catalog_exact_partial'

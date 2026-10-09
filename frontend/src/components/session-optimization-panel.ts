@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -1185,7 +1186,7 @@ export class SessionOptimizationPanel extends LitElement {
     return html`
       ${this.appliedActions.map((item) => {
         const outcome = item.outcome || null;
-        const appliedAt = new Date(item.applied_at);
+        const appliedAt = parseUTCDate(item.applied_at);
         return html`
           <div class="history-item">
             <div class="suggestion-header">
@@ -1282,7 +1283,7 @@ export class SessionOptimizationPanel extends LitElement {
     }
     if (optimization.from_cache) parts.push('cached result');
     if (optimization.generated_at) {
-      const generated = new Date(optimization.generated_at);
+      const generated = parseUTCDate(optimization.generated_at);
       if (!Number.isNaN(generated.getTime())) {
         parts.push(`generated ${generated.toLocaleString()}`);
       }

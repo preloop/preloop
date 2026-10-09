@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../../utils/date';
 /**
  * The talk page: one agent, one session, one composer.
  *
@@ -474,8 +475,8 @@ export class AgentTalkView extends LitElement {
   private sortEvents(events: FlowGatewayEvent[]): FlowGatewayEvent[] {
     return [...events].sort(
       (left, right) =>
-        new Date(right.timestamp || 0).getTime() -
-        new Date(left.timestamp || 0).getTime()
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
   }
 

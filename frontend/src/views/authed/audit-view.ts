@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdExact } from '../../utils/money';
 import {
   replaceListFilters,
   validFilterDate,
@@ -479,7 +480,7 @@ export class AuditView extends AuthedElement {
       showToast('Event not in the current range', 'warning');
       return;
     }
-    const day = new Date(when);
+    const day = parseUTCDate(when);
     const next = new Date(day.getTime() + 24 * 3600 * 1000);
     this._startDate = day.toISOString().slice(0, 10);
     this._endDate = next.toISOString().slice(0, 10);
@@ -692,12 +693,6 @@ export class AuditView extends AuthedElement {
     return actor;
   }
 
-  private _formatCurrency(value?: number | null): string {
-    const amount = Number(value || 0);
-    if (amount === 0) return '$0.00';
-    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
-  }
-
   private _getEventCost(details: Record<string, any> | null): number | null {
     if (!details || details.estimated_cost == null) return null;
     const value = Number(details.estimated_cost);
@@ -728,7 +723,9 @@ export class AuditView extends AuthedElement {
       }
       ${
         cost != null
-          ? html`<span class="event-cost">${this._formatCurrency(cost)}</span>`
+          ? html`<span class="event-cost"
+              >${html`<span title=${formatUsdExact(cost)}>${formatUsd(cost)}</span>`}</span
+            >`
           : nothing
       }
     `;

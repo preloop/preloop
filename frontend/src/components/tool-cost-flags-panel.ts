@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -221,19 +222,13 @@ export class ToolCostFlagsPanel extends AuthedElement {
     }
   }
 
-  private formatCurrency(value?: number | null): string {
-    const amount = Number(value || 0);
-    if (amount === 0) return '$0.00';
-    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
-  }
-
   private flagClaim(flag: ToolCostFlag): string {
     const claim = flag.evidence?.claim;
     if (typeof claim === 'string' && claim.trim()) {
       return claim;
     }
     // Fall back to a constructed string when the backend omits an explicit claim.
-    return `Estimated ${this.formatCurrency(
+    return `Estimated ${formatUsd(
       flag.estimated_weekly_cost
     )}/week attributed to this tool definition.`;
   }
@@ -256,7 +251,7 @@ export class ToolCostFlagsPanel extends AuthedElement {
             </sl-tooltip>
           </span>
           <span class="flag-cost"
-            >${this.formatCurrency(flag.estimated_weekly_cost)}/wk</span
+            >${html`<span title=${formatUsdExact(flag.estimated_weekly_cost)}>${formatUsd(flag.estimated_weekly_cost)}</span>`}/wk</span
           >
         </div>
         <div class="flag-claim">${this.flagClaim(flag)}</div>

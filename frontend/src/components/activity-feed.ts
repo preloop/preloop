@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -313,12 +314,6 @@ function toneFromOutcome(outcome: string | undefined): FeedTone {
   }
 }
 
-function money(value: unknown): string {
-  const amount = Number(value || 0);
-  if (!amount) return '';
-  return `$${amount.toFixed(2)}`;
-}
-
 /** One field, or nothing at all: a body of "Server: -" says less than no row. */
 function field(
   label: string,
@@ -532,7 +527,12 @@ export function feedEventFromAuditGroup(
             firstNumber(details, ['latency_ms', 'duration_ms', 'elapsed_ms'])
           )
         ),
-        field('Cost', money(details.cost_usd || details.total_cost)),
+        field(
+          'Cost',
+          Number(details.cost_usd || details.total_cost)
+            ? formatUsd(Number(details.cost_usd || details.total_cost))
+            : ''
+        ),
         field('Error', firstErrorLine(details.error || details.message), {
           wide: true,
         })
@@ -907,9 +907,17 @@ export function feedEventFromRealtime(
         ),
         field(
           '$ est.',
-          money(
+          Number(
             payload.total_cost_usd || payload.cost_usd || payload.total_cost
           )
+            ? formatUsd(
+                Number(
+                  payload.total_cost_usd ||
+                    payload.cost_usd ||
+                    payload.total_cost
+                )
+              )
+            : ''
         ),
         field(
           'Tool calls',
@@ -1045,7 +1053,7 @@ export function feedEventFromRealtime(
       ? budget.account_limit_usd || budget.flow_limit_usd
       : budget.account_soft_limit_usd || budget.flow_soft_limit_usd;
     const period = lookups.budgetPeriod(limit);
-    const amount = money(limit);
+    const amount = Number(limit) ? formatUsd(Number(limit)) : '';
     const words = `${period ? `${period} budget` : 'Budget'} ${
       hard ? 'hard' : 'soft'
     } limit reached`;
@@ -1068,11 +1076,19 @@ export function feedEventFromRealtime(
         field('Limit', amount),
         field(
           'Spend',
-          money(
+          Number(
             budget.current_spend_usd ||
               budget.account_spend_usd ||
               budget.flow_spend_usd
           )
+            ? formatUsd(
+                Number(
+                  budget.current_spend_usd ||
+                    budget.account_spend_usd ||
+                    budget.flow_spend_usd
+                )
+              )
+            : ''
         ),
         field('Scope', budget.flow_limit_usd ? 'Flow' : 'Account')
       ),
@@ -1111,7 +1127,12 @@ export function feedEventFromRealtime(
           'Latency',
           millisText(firstNumber(payload, ['latency_ms', 'duration_ms']))
         ),
-        field('Cost', money(payload.cost_usd || payload.total_cost)),
+        field(
+          'Cost',
+          Number(payload.cost_usd || payload.total_cost)
+            ? formatUsd(Number(payload.cost_usd || payload.total_cost))
+            : ''
+        ),
         field('Error', firstErrorLine(payload.error || payload.message), {
           wide: true,
         })

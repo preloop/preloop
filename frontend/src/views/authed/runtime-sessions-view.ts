@@ -1,3 +1,5 @@
+import { parseUTCDate } from '../../utils/date';
+import { formatUsd, formatUsdExact } from '../../utils/money';
 import { validFilterDate } from '../../utils/list-filter-url';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -878,8 +880,10 @@ export class RuntimeSessionsView extends LitElement {
               !(
                 e.type === 'model_gateway_request_started' &&
                 Math.abs(
-                  new Date(e.timestamp || new Date().toISOString()).getTime() -
-                    new Date(
+                  parseUTCDate(
+                    e.timestamp || new Date().toISOString()
+                  ).getTime() -
+                    parseUTCDate(
                       payload.timestamp || new Date().toISOString()
                     ).getTime()
                 ) < 60000
@@ -1598,13 +1602,6 @@ export class RuntimeSessionsView extends LitElement {
     return `${this.formatNumber(total)} session${total === 1 ? '' : 's'}`;
   }
 
-  private formatCost(value: number | null | undefined): string {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
-      return '$0.00';
-    }
-    return value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
-  }
-
   private formatDateTime(value: string | null | undefined): string {
     if (!value) {
       return 'Unknown';
@@ -1615,7 +1612,7 @@ export class RuntimeSessionsView extends LitElement {
       year: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
-    }).format(new Date(value));
+    }).format(parseUTCDate(value));
   }
 
   private getSessionDisplayName(session: RuntimeSessionSummary): string {
@@ -1726,7 +1723,7 @@ export class RuntimeSessionsView extends LitElement {
     if (!marker) {
       return null;
     }
-    const markerTime = new Date(marker).getTime();
+    const markerTime = parseUTCDate(marker).getTime();
     if (Number.isNaN(markerTime)) {
       return null;
     }
@@ -1764,7 +1761,7 @@ export class RuntimeSessionsView extends LitElement {
     if (!marker) {
       return null;
     }
-    const markerTime = new Date(marker).getTime();
+    const markerTime = parseUTCDate(marker).getTime();
     if (Number.isNaN(markerTime)) {
       return null;
     }
@@ -1793,7 +1790,7 @@ export class RuntimeSessionsView extends LitElement {
     }
     const end = this.rangeEndIso();
     const endTime = end ? new Date(end).getTime() : Date.now();
-    return new Date(marker).getTime() > endTime;
+    return parseUTCDate(marker).getTime() > endTime;
   }
 
   /**
@@ -2257,7 +2254,7 @@ export class RuntimeSessionsView extends LitElement {
                 ></token-figures>
               </div>
               <div class="cell-numeric">
-                ${this.formatCost(model.estimated_cost)}
+                ${html`<span title=${formatUsdExact(model.estimated_cost)}>${formatUsd(model.estimated_cost)}</span>`}
               </div>
             </div>
           `
@@ -2287,13 +2284,6 @@ export class RuntimeSessionsView extends LitElement {
       .split('_')
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
-  }
-
-  private formatGatewayCost(cost?: number | null): string {
-    if (typeof cost !== 'number' || Number.isNaN(cost)) {
-      return '$0.00';
-    }
-    return cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
   }
 
   private formatGatewayTokens(tokens?: number | null): string {
@@ -2448,7 +2438,9 @@ export class RuntimeSessionsView extends LitElement {
           )}
           ${this.renderGatewayField(
             'Cost',
-            this.formatGatewayCost(payload.estimated_cost)
+            html`<span title=${formatUsdExact(payload.estimated_cost)}
+              >${formatUsd(payload.estimated_cost)}</span
+            >`
           )}
           ${this.renderGatewayField(
             'Tokens',
@@ -2699,7 +2691,7 @@ export class RuntimeSessionsView extends LitElement {
             <div class="summary-card">
               <div class="summary-label">Estimated spend</div>
               <div class="summary-value">
-                ${this.formatCost(session.estimated_cost)}
+                ${html`<span title=${formatUsdExact(session.estimated_cost)}>${formatUsd(session.estimated_cost)}</span>`}
               </div>
               <div class="summary-detail">
                 Last request ${this.formatDateTime(session.last_request_at)}

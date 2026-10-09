@@ -1,3 +1,10 @@
+import {
+  formatCurrencyAmount,
+  formatCurrencyAmountExact,
+  formatUsdExact,
+} from '../utils/money';
+import { tableScrollStyles } from '../styles/table-scroll';
+import { parseUTCDate } from '../utils/date';
 import { html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import {
@@ -47,75 +54,78 @@ export class CopilotUsagePanel extends AuthedElement {
   @state() private formSeatPrice = '';
   private loadSeq = 0;
 
-  static styles = css`
-    :host {
-      display: block;
-    }
-    .panel {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-medium);
-    }
-    .header {
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: var(--sl-spacing-small);
-    }
-    .header h3 {
-      margin: 0;
-      font-size: var(--sl-font-size-large);
-    }
-    .muted {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: var(--sl-spacing-small);
-    }
-    .stat {
-      border: 1px solid var(--sl-color-neutral-200);
-      border-radius: var(--sl-border-radius-medium);
-      padding: var(--sl-spacing-small);
-    }
-    .stat-label {
-      font-size: var(--sl-font-size-x-small);
-      color: var(--sl-color-neutral-600);
-      text-transform: uppercase;
-    }
-    .stat-value {
-      font-size: var(--sl-font-size-large);
-      font-weight: 600;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: var(--sl-font-size-small);
-    }
-    th,
-    td {
-      text-align: left;
-      padding: 4px 8px;
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-    }
-    td.num,
-    th.num {
-      text-align: right;
-    }
-    .form-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: var(--sl-spacing-small);
-      align-items: end;
-    }
-    .actions {
-      display: flex;
-      gap: var(--sl-spacing-small);
-      flex-wrap: wrap;
-    }
-  `;
+  static styles = [
+    tableScrollStyles,
+    css`
+      :host {
+        display: block;
+      }
+      .panel {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-medium);
+      }
+      .header {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+      }
+      .header h3 {
+        margin: 0;
+        font-size: var(--sl-font-size-large);
+      }
+      .muted {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: var(--sl-spacing-small);
+      }
+      .stat {
+        border: 1px solid var(--sl-color-neutral-200);
+        border-radius: var(--sl-border-radius-medium);
+        padding: var(--sl-spacing-small);
+      }
+      .stat-label {
+        font-size: var(--sl-font-size-x-small);
+        color: var(--sl-color-neutral-600);
+        text-transform: uppercase;
+      }
+      .stat-value {
+        font-size: var(--sl-font-size-large);
+        font-weight: 600;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: var(--sl-font-size-small);
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 4px 8px;
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+      }
+      td.num,
+      th.num {
+        text-align: right;
+      }
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: var(--sl-spacing-small);
+        align-items: end;
+      }
+      .actions {
+        display: flex;
+        gap: var(--sl-spacing-small);
+        flex-wrap: wrap;
+      }
+    `,
+  ];
 
   protected updated(changed: Map<string, unknown>): void {
     if (changed.has('startDate') || changed.has('endDate')) {
@@ -142,15 +152,6 @@ export class CopilotUsagePanel extends AuthedElement {
     } finally {
       if (seq === this.loadSeq) this.loading = false;
     }
-  }
-
-  private formatCurrency(value: number, currency = 'USD'): string {
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(value);
   }
 
   private formatNumber(value: number): string {
@@ -356,7 +357,7 @@ export class CopilotUsagePanel extends AuthedElement {
     const connection = this.summary?.connection;
     if (!connection) return nothing;
     const lastSynced = connection.last_synced_at
-      ? new Date(connection.last_synced_at).toLocaleString()
+      ? parseUTCDate(connection.last_synced_at).toLocaleString()
       : 'never';
     return html`
       <div class="muted" data-testid="copilot-status">
@@ -457,10 +458,10 @@ export class CopilotUsagePanel extends AuthedElement {
               ${
                 seats.seat_price_monthly === null
                   ? html`<span class="muted">not set</span>`
-                  : this.formatCurrency(
-                      seats.seat_price_monthly,
-                      seats.currency
-                    )
+                  : html`<span
+                      title=${formatCurrencyAmountExact(seats.seat_price_monthly, seats.currency)}
+                      >${formatCurrencyAmount(seats.seat_price_monthly, seats.currency)}</span
+                    >`
               }
             </div>
           </div>
@@ -470,10 +471,7 @@ export class CopilotUsagePanel extends AuthedElement {
               : html`<div class="stat" data-testid="copilot-seat-estimate">
                   <div class="stat-label">Monthly seat estimate</div>
                   <div class="stat-value">
-                    ${this.formatCurrency(
-                      seats.monthly_seat_estimate,
-                      seats.currency
-                    )}
+                    ${html`<span title=${formatCurrencyAmountExact(seats.monthly_seat_estimate, seats.currency)}>${formatCurrencyAmount(seats.monthly_seat_estimate, seats.currency)}</span>`}
                   </div>
                 </div>`
           }
@@ -488,31 +486,35 @@ export class CopilotUsagePanel extends AuthedElement {
         }
         ${
           seats.assigned.length
-            ? html`<table>
-                <thead>
-                  <tr>
-                    <th>Developer</th>
-                    <th>Last activity</th>
-                    <th>Editor</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${seats.assigned.map(
-                    (seat) =>
-                      html`<tr>
-                        <td>${seat.login}</td>
-                        <td>
-                          ${
-                            seat.last_activity_at
-                              ? new Date(seat.last_activity_at).toLocaleString()
-                              : 'no activity'
-                          }
-                        </td>
-                        <td>${seat.last_activity_editor ?? ''}</td>
-                      </tr>`
-                  )}
-                </tbody>
-              </table>`
+            ? html`<div class="table-scroll">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Developer</th>
+                      <th>Last activity</th>
+                      <th>Editor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${seats.assigned.map(
+                      (seat) =>
+                        html`<tr>
+                          <td>${seat.login}</td>
+                          <td>
+                            ${
+                              seat.last_activity_at
+                                ? parseUTCDate(
+                                    seat.last_activity_at
+                                  ).toLocaleString()
+                                : 'no activity'
+                            }
+                          </td>
+                          <td>${seat.last_activity_editor ?? ''}</td>
+                        </tr>`
+                    )}
+                  </tbody>
+                </table>
+              </div>`
             : nothing
         }
       </section>
@@ -532,7 +534,10 @@ export class CopilotUsagePanel extends AuthedElement {
               ${
                 premium.total_net_amount === null
                   ? html`<span class="muted">no data imported</span>`
-                  : this.formatCurrency(premium.total_net_amount, currency)
+                  : html`<span
+                      title=${formatCurrencyAmountExact(premium.total_net_amount, currency)}
+                      >${formatCurrencyAmount(premium.total_net_amount, currency)}</span
+                    >`
               }
             </div>
           </div>
@@ -542,10 +547,7 @@ export class CopilotUsagePanel extends AuthedElement {
               : html`<div class="stat" data-testid="copilot-org-total">
                   <div class="stat-label">Organization total only</div>
                   <div class="stat-value">
-                    ${this.formatCurrency(
-                      premium.org_aggregate_net_amount,
-                      currency
-                    )}
+                    ${html`<span title=${formatCurrencyAmountExact(premium.org_aggregate_net_amount, currency)}>${formatCurrencyAmount(premium.org_aggregate_net_amount, currency)}</span>`}
                   </div>
                 </div>`
           }
@@ -555,10 +557,7 @@ export class CopilotUsagePanel extends AuthedElement {
               : html`<div class="stat" data-testid="copilot-unattributed">
                   <div class="stat-label">Not matched to a current seat</div>
                   <div class="stat-value">
-                    ${this.formatCurrency(
-                      premium.unattributed_net_amount,
-                      currency
-                    )}
+                    ${html`<span title=${formatCurrencyAmountExact(premium.unattributed_net_amount, currency)}>${formatCurrencyAmount(premium.unattributed_net_amount, currency)}</span>`}
                   </div>
                 </div>`
           }
@@ -587,57 +586,61 @@ export class CopilotUsagePanel extends AuthedElement {
         ${
           premium.by_developer.length
             ? html`<h5>By developer</h5>
-                <table data-testid="copilot-by-developer">
-                  <thead>
-                    <tr>
-                      <th>Developer</th>
-                      <th class="num">Requests</th>
-                      <th class="num">Net spend</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${premium.by_developer.map(
-                      (row) =>
-                        html`<tr>
-                          <td>${row.login}</td>
-                          <td class="num">
-                            ${this.formatNumber(row.net_quantity)}
-                          </td>
-                          <td class="num">
-                            ${this.formatCurrency(row.net_amount, currency)}
-                          </td>
-                        </tr>`
-                    )}
-                  </tbody>
-                </table>`
+                <div class="table-scroll">
+                  <table data-testid="copilot-by-developer">
+                    <thead>
+                      <tr>
+                        <th>Developer</th>
+                        <th class="num">Requests</th>
+                        <th class="num">Net spend</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${premium.by_developer.map(
+                        (row) =>
+                          html`<tr>
+                            <td>${row.login}</td>
+                            <td class="num">
+                              ${this.formatNumber(row.net_quantity)}
+                            </td>
+                            <td class="num">
+                              ${html`<span title=${formatCurrencyAmountExact(row.net_amount, currency)}>${formatCurrencyAmount(row.net_amount, currency)}</span>`}
+                            </td>
+                          </tr>`
+                      )}
+                    </tbody>
+                  </table>
+                </div>`
             : nothing
         }
         ${
           premium.by_model.length
             ? html`<h5>By model</h5>
-                <table data-testid="copilot-by-model">
-                  <thead>
-                    <tr>
-                      <th>Model</th>
-                      <th class="num">Requests</th>
-                      <th class="num">Net spend</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${premium.by_model.map(
-                      (row) =>
-                        html`<tr>
-                          <td>${row.model}</td>
-                          <td class="num">
-                            ${this.formatNumber(row.net_quantity)}
-                          </td>
-                          <td class="num">
-                            ${this.formatCurrency(row.net_amount, currency)}
-                          </td>
-                        </tr>`
-                    )}
-                  </tbody>
-                </table>`
+                <div class="table-scroll">
+                  <table data-testid="copilot-by-model">
+                    <thead>
+                      <tr>
+                        <th>Model</th>
+                        <th class="num">Requests</th>
+                        <th class="num">Net spend</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${premium.by_model.map(
+                        (row) =>
+                          html`<tr>
+                            <td>${row.model}</td>
+                            <td class="num">
+                              ${this.formatNumber(row.net_quantity)}
+                            </td>
+                            <td class="num">
+                              ${html`<span title=${formatCurrencyAmountExact(row.net_amount, currency)}>${formatCurrencyAmount(row.net_amount, currency)}</span>`}
+                            </td>
+                          </tr>`
+                      )}
+                    </tbody>
+                  </table>
+                </div>`
             : nothing
         }
       </section>
@@ -649,38 +652,40 @@ export class CopilotUsagePanel extends AuthedElement {
     return html`
       <section data-testid="copilot-model-mix">
         <h4>Model mix by developer ${this.renderMarker()}</h4>
-        <table>
-          <thead>
-            <tr>
-              <th>Developer</th>
-              <th>Models</th>
-              <th>Based on</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${summary.model_mix.map(
-              (entry) =>
-                html`<tr>
-                  <td>${entry.login}</td>
-                  <td>
-                    ${entry.models
-                      .map(
-                        (model) =>
-                          `${model.model} ${this.formatShare(model.share)}`
-                      )
-                      .join(', ')}
-                  </td>
-                  <td>
-                    ${
-                      entry.basis === 'net_amount'
-                        ? 'net spend'
-                        : 'request counts (no spend data)'
-                    }
-                  </td>
-                </tr>`
-            )}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Developer</th>
+                <th>Models</th>
+                <th>Based on</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${summary.model_mix.map(
+                (entry) =>
+                  html`<tr>
+                    <td>${entry.login}</td>
+                    <td>
+                      ${entry.models
+                        .map(
+                          (model) =>
+                            `${model.model} ${this.formatShare(model.share)}`
+                        )
+                        .join(', ')}
+                    </td>
+                    <td>
+                      ${
+                        entry.basis === 'net_amount'
+                          ? 'net spend'
+                          : 'request counts (no spend data)'
+                      }
+                    </td>
+                  </tr>`
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     `;
   }

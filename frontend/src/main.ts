@@ -1,3 +1,4 @@
+import './styles/table-scroll.css';
 import { initSentry } from './sentry-init';
 import { debugLog } from './utils/debug';
 

@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../router';
@@ -165,7 +166,7 @@ export class TrackerItem extends LitElement {
       return html``;
     }
 
-    const createdAt = new Date(this.tracker.created).toLocaleDateString();
+    const createdAt = parseUTCDate(this.tracker.created).toLocaleDateString();
     const icon = this.getTrackerIcon(this.tracker);
 
     return html`

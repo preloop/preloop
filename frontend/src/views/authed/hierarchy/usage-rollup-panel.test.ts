@@ -1,3 +1,4 @@
+import { setViewport } from '@web/test-runner-commands';
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import './usage-rollup-panel';
 import type { UsageRollupPanel } from './usage-rollup-panel';
@@ -78,6 +79,53 @@ describe('usage-rollup-panel', () => {
     expect((q(el, 'subaccount-filter') as HTMLSelectElement).value).to.equal(
       '__all__'
     );
+  });
+
+  it('contains a wide table at 390px and retains exact monetary values', async () => {
+    await setViewport({ width: 390, height: 844 });
+    try {
+      api = mockApi({
+        capabilities: ['account_hierarchy'],
+        routes: [
+          {
+            path: USAGE,
+            body: {
+              rows: [
+                {
+                  ...ROWS[0],
+                  cost_usd: 12345.678,
+                  model: 'example-model-with-a-long-name',
+                },
+              ],
+            },
+          },
+          { path: ATTENTION, body: { items: [] } },
+        ],
+      });
+      const el = await fixture<UsageRollupPanel>(
+        html`<usage-rollup-panel
+          style="display:block;width:100%;min-width:0"
+          .context=${{}}
+        ></usage-rollup-panel>`
+      );
+      await waitUntil(() => q(el, 'rollup-table'));
+      const table = q(el, 'rollup-table') as HTMLTableElement;
+      const wrapper = table.parentElement!;
+      expect(wrapper.classList.contains('table-scroll')).to.equal(true);
+      expect(getComputedStyle(wrapper).overflowX).to.equal('auto');
+      table.style.minWidth = '900px';
+      expect(wrapper.scrollWidth).to.be.greaterThan(wrapper.clientWidth);
+      expect(wrapper.getBoundingClientRect().width).to.be.at.most(
+        el.getBoundingClientRect().width
+      );
+      expect(document.documentElement.scrollWidth).to.be.at.most(390);
+      expect(table.textContent).to.contain('$12,345.68');
+      expect(
+        table.querySelector('td.num span')?.getAttribute('title')
+      ).to.equal('$12,345.678');
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+    }
   });
 
   it('filters by one subaccount and keeps the others selectable', async () => {

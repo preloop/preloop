@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -39,46 +40,49 @@ const HIERARCHY_DOCS_URL =
 @customElement('subaccounts-view')
 export class SubaccountsView extends LitElement {
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-        vertical-align: middle;
-      }
-      .create {
-        display: flex;
-        gap: var(--sl-spacing-small);
-        align-items: flex-end;
-        margin-bottom: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-      }
-      .actions {
-        display: flex;
-        gap: var(--sl-spacing-2x-small);
-        justify-content: flex-end;
-      }
-      .error {
-        color: var(--sl-color-danger-700);
-      }
-      .off-state,
-      .hint {
-        color: var(--console-meta-color, var(--sl-color-neutral-600));
-      }
-      .table-scroll {
-        overflow-x: auto;
-      }
-      .subaccounts-card {
-        display: block;
-        margin-bottom: 2rem;
-      }
-    `,
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        th,
+        td {
+          text-align: left;
+          padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+          vertical-align: middle;
+        }
+        .create {
+          display: flex;
+          gap: var(--sl-spacing-small);
+          align-items: flex-end;
+          margin-bottom: var(--sl-spacing-medium);
+          flex-wrap: wrap;
+        }
+        .actions {
+          display: flex;
+          gap: var(--sl-spacing-2x-small);
+          justify-content: flex-end;
+        }
+        .error {
+          color: var(--sl-color-danger-700);
+        }
+        .off-state,
+        .hint {
+          color: var(--console-meta-color, var(--sl-color-neutral-600));
+        }
+        .table-scroll {
+          overflow-x: auto;
+        }
+        .subaccounts-card {
+          display: block;
+          margin-bottom: 2rem;
+        }
+      `,
+    ],
   ];
 
   /** Render as the Subaccounts card of the Account page. */
@@ -326,18 +330,20 @@ export class SubaccountsView extends LitElement {
                 this.subaccounts.length === 0
                   ? html`<p class="empty-state">No subaccounts yet.</p>`
                   : html`<div class="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Name</th>
-                            <th>Tags</th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${this.subaccounts.map((sub) => this.renderRow(sub))}
-                        </tbody>
-                      </table>
+                      <div class="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Tags</th>
+                              <th></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${this.subaccounts.map((sub) => this.renderRow(sub))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>`
               }
             `

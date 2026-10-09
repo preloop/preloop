@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
@@ -458,182 +459,192 @@ export class IssuesDependenciesView extends LitElement {
 
     return html`
       <sl-card class="table-card">
-        <table class="styled-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Title</th>
-              <th>Status</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${this._issues.map((issue) => {
-              const deps = this._dependencyMap.get(issue.id);
-              const isExpanded = this._expandedRowKey === issue.id;
-              return html`
-                <tr
-                  class="clickable-row ${isExpanded ? 'row-expanded' : ''}"
-                  @click=${() => this._toggleRow(issue.id)}
-                >
-                  <td>
-                    <a
-                      href="${issue.url}"
-                      target="_blank"
-                      @click=${(e: Event) => e.stopPropagation()}
-                      >${issue.key}</a
-                    >
-                  </td>
-                  <td>
-                    ${issue.title}
-                    <div class="dependency-tags">
-                      ${when(
-                        this._loadingDependencies,
-                        () =>
-                          html`<sl-spinner
-                            style="font-size: 1em; vertical-align: middle;"
-                          ></sl-spinner>`,
-                        () => html`
-                          ${when(
-                            deps && deps.blocks.length > 0,
-                            () => html`
-                              <sl-badge
-                                pill
-                                class="blocks-badge ${
-                                  deps!.blocks.some((d) => d.comes_from_tracker)
-                                    ? 'from-tracker'
-                                    : ''
-                                }"
-                              >
-                                <div class="dependency-badge-content">
-                                  <sl-tooltip content="Blocks">
-                                    <sl-icon name="arrow-right-circle"></sl-icon
-                                    >Blocks:
-                                  </sl-tooltip>
-                                  <span
-                                    >${deps?.blocks.map(
-                                      (d, i) => html`
-                                        <sl-tooltip
-                                          content="Reason: ${d.reason} | Confidence: ${(
-                                            d.confidence_score * 100
-                                          ).toFixed(0)}%"
-                                        >
-                                          <span
-                                            class="${
-                                              d.is_committed
-                                                ? 'is-committed'
-                                                : d.comes_from_tracker
-                                                  ? 'from-tracker'
-                                                  : ''
-                                            }"
-                                            >#${
-                                              d.dependency_key!.match(
-                                                /\d+$/
-                                              )?.[0]
-                                            }</span
-                                          > </sl-tooltip
-                                        >${
-                                          i < deps.blocks.length - 1 ? ', ' : ''
-                                        }
-                                      `
-                                    )}</span
-                                  >
-                                </div>
-                              </sl-badge>
-                            `
-                          )}
-                          ${when(
-                            deps && deps.blockedBy.length > 0,
-                            () => html`
-                              <sl-badge pill class="blocked-by-badge">
-                                <div class="dependency-badge-content">
-                                  <sl-tooltip content="Blocked by">
-                                    <sl-icon name="arrow-left-circle"></sl-icon
-                                    >Blocked by:
-                                  </sl-tooltip>
-                                  <span
-                                    >${deps?.blockedBy.map(
-                                      (d, i) => html`
-                                        <sl-tooltip
-                                          content="Reason: ${d.reason} | Confidence: ${(
-                                            d.confidence_score * 100
-                                          ).toFixed(0)}%"
-                                        >
-                                          <span
-                                            class="${
-                                              d.is_committed
-                                                ? 'is-committed'
-                                                : d.comes_from_tracker
-                                                  ? 'from-tracker'
-                                                  : ''
-                                            }"
-                                            >#${
-                                              d.issue_key!.match(/\d+$/)?.[0]
-                                            }</span
-                                          > </sl-tooltip
-                                        >${
-                                          i < deps.blockedBy.length - 1
-                                            ? ', '
-                                            : ''
-                                        }
-                                      `
-                                    )}</span
-                                  >
-                                </div>
-                              </sl-badge>
-                            `
-                          )}
+        <div class="table-scroll">
+          <table class="styled-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Title</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${this._issues.map((issue) => {
+                const deps = this._dependencyMap.get(issue.id);
+                const isExpanded = this._expandedRowKey === issue.id;
+                return html`
+                  <tr
+                    class="clickable-row ${isExpanded ? 'row-expanded' : ''}"
+                    @click=${() => this._toggleRow(issue.id)}
+                  >
+                    <td>
+                      <a
+                        href="${issue.url}"
+                        target="_blank"
+                        @click=${(e: Event) => e.stopPropagation()}
+                        >${issue.key}</a
+                      >
+                    </td>
+                    <td>
+                      ${issue.title}
+                      <div class="dependency-tags">
+                        ${when(
+                          this._loadingDependencies,
+                          () =>
+                            html`<sl-spinner
+                              style="font-size: 1em; vertical-align: middle;"
+                            ></sl-spinner>`,
+                          () => html`
+                            ${when(
+                              deps && deps.blocks.length > 0,
+                              () => html`
+                                <sl-badge
+                                  pill
+                                  class="blocks-badge ${
+                                    deps!.blocks.some(
+                                      (d) => d.comes_from_tracker
+                                    )
+                                      ? 'from-tracker'
+                                      : ''
+                                  }"
+                                >
+                                  <div class="dependency-badge-content">
+                                    <sl-tooltip content="Blocks">
+                                      <sl-icon
+                                        name="arrow-right-circle"
+                                      ></sl-icon
+                                      >Blocks:
+                                    </sl-tooltip>
+                                    <span
+                                      >${deps?.blocks.map(
+                                        (d, i) => html`
+                                          <sl-tooltip
+                                            content="Reason: ${d.reason} | Confidence: ${(
+                                              d.confidence_score * 100
+                                            ).toFixed(0)}%"
+                                          >
+                                            <span
+                                              class="${
+                                                d.is_committed
+                                                  ? 'is-committed'
+                                                  : d.comes_from_tracker
+                                                    ? 'from-tracker'
+                                                    : ''
+                                              }"
+                                              >#${
+                                                d.dependency_key!.match(
+                                                  /\d+$/
+                                                )?.[0]
+                                              }</span
+                                            > </sl-tooltip
+                                          >${
+                                            i < deps.blocks.length - 1
+                                              ? ', '
+                                              : ''
+                                          }
+                                        `
+                                      )}</span
+                                    >
+                                  </div>
+                                </sl-badge>
+                              `
+                            )}
+                            ${when(
+                              deps && deps.blockedBy.length > 0,
+                              () => html`
+                                <sl-badge pill class="blocked-by-badge">
+                                  <div class="dependency-badge-content">
+                                    <sl-tooltip content="Blocked by">
+                                      <sl-icon
+                                        name="arrow-left-circle"
+                                      ></sl-icon
+                                      >Blocked by:
+                                    </sl-tooltip>
+                                    <span
+                                      >${deps?.blockedBy.map(
+                                        (d, i) => html`
+                                          <sl-tooltip
+                                            content="Reason: ${d.reason} | Confidence: ${(
+                                              d.confidence_score * 100
+                                            ).toFixed(0)}%"
+                                          >
+                                            <span
+                                              class="${
+                                                d.is_committed
+                                                  ? 'is-committed'
+                                                  : d.comes_from_tracker
+                                                    ? 'from-tracker'
+                                                    : ''
+                                              }"
+                                              >#${
+                                                d.issue_key!.match(/\d+$/)?.[0]
+                                              }</span
+                                            > </sl-tooltip
+                                          >${
+                                            i < deps.blockedBy.length - 1
+                                              ? ', '
+                                              : ''
+                                          }
+                                        `
+                                      )}</span
+                                    >
+                                  </div>
+                                </sl-badge>
+                              `
+                            )}
+                          `
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      <sl-badge variant=${getStatusVariant(issue.status)}
+                        >${issue.status}</sl-badge
+                      >
+                    </td>
+                    <td>
+                      <sl-button
+                        size="small"
+                        @click=${(e: Event) => {
+                          e.stopPropagation();
+                          this._expandScanForRow(issue.id);
+                        }}
+                        ?disabled=${
+                          this._loadingDependencies &&
+                          this._expandingIssueId !== issue.id
+                        }
+                        .loading=${this._expandingIssueId === issue.id}
+                        variant=${
+                          this._expandingIssueId === issue.id
+                            ? 'primary'
+                            : 'default'
+                        }
+                        >Expand Scan</sl-button
+                      >
+                    </td>
+                  </tr>
+                  ${
+                    isExpanded
+                      ? html`
+                          <tr class="inline-detail-row">
+                            <td colspan="4">
+                              <div class="detail-view-card">
+                                <single-issue-detail-view .issue=${issue}>
+                                  <div slot="additional-info">
+                                    ${this._renderDependencyDetails(deps, issue.id)}
+                                  </div>
+                                </single-issue-detail-view>
+                              </div>
+                            </td>
+                          </tr>
                         `
-                      )}
-                    </div>
-                  </td>
-                  <td>
-                    <sl-badge variant=${getStatusVariant(issue.status)}
-                      >${issue.status}</sl-badge
-                    >
-                  </td>
-                  <td>
-                    <sl-button
-                      size="small"
-                      @click=${(e: Event) => {
-                        e.stopPropagation();
-                        this._expandScanForRow(issue.id);
-                      }}
-                      ?disabled=${
-                        this._loadingDependencies &&
-                        this._expandingIssueId !== issue.id
-                      }
-                      .loading=${this._expandingIssueId === issue.id}
-                      variant=${
-                        this._expandingIssueId === issue.id
-                          ? 'primary'
-                          : 'default'
-                      }
-                      >Expand Scan</sl-button
-                    >
-                  </td>
-                </tr>
-                ${
-                  isExpanded
-                    ? html`
-                        <tr class="inline-detail-row">
-                          <td colspan="4">
-                            <div class="detail-view-card">
-                              <single-issue-detail-view .issue=${issue}>
-                                <div slot="additional-info">
-                                  ${this._renderDependencyDetails(deps, issue.id)}
-                                </div>
-                              </single-issue-detail-view>
-                            </div>
-                          </td>
-                        </tr>
-                      `
-                    : ''
-                }
-              `;
-            })}
-          </tbody>
-        </table>
+                      : ''
+                  }
+                `;
+              })}
+            </tbody>
+          </table>
+        </div>
       </sl-card>
       <pagination-controls
         .currentPage=${this._currentPage}
@@ -704,100 +715,103 @@ export class IssuesDependenciesView extends LitElement {
   }
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      .container {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-medium);
-      }
-      .table-card {
-        width: 100%;
-        margin-bottom: var(--sl-spacing-medium);
-      }
-      .table-card {
-        --padding: 0;
-        border-spacing: 0;
-      }
-      .controls {
-        display: flex;
-        gap: var(--sl-spacing-medium);
-        align-items: center;
-      }
-      sl-select {
-        min-width: 250px;
-      }
-      .dependency-tags {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-small);
-        padding-top: var(--sl-spacing-3x-small);
-      }
-      .dependency-tags sl-badge::part(base) {
-        cursor: pointer;
-      }
-      .blocks-badge::part(base) {
-        background-color: var(--sl-color-neutral-200);
-        color: var(--sl-color-neutral-800);
-        border: none;
-      }
-      .blocked-by-badge::part(base) {
-        background-color: var(--sl-color-neutral-300);
-        color: var(--sl-color-neutral-800);
-        border: none;
-      }
-      .dependency-badge-content {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-3x-small);
-      }
-      .clickable-row {
-        cursor: pointer;
-      }
-      .row-expanded {
-        background-color: var(--sl-color-primary-50);
-      }
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        .container {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-medium);
+        }
+        .table-card {
+          width: 100%;
+          margin-bottom: var(--sl-spacing-medium);
+        }
+        .table-card {
+          --padding: 0;
+          border-spacing: 0;
+        }
+        .controls {
+          display: flex;
+          gap: var(--sl-spacing-medium);
+          align-items: center;
+        }
+        sl-select {
+          min-width: 250px;
+        }
+        .dependency-tags {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-2x-small);
+          padding-top: var(--sl-spacing-3x-small);
+        }
+        .dependency-tags sl-badge::part(base) {
+          cursor: pointer;
+        }
+        .blocks-badge::part(base) {
+          background-color: var(--sl-color-neutral-200);
+          color: var(--sl-color-neutral-800);
+          border: none;
+        }
+        .blocked-by-badge::part(base) {
+          background-color: var(--sl-color-neutral-300);
+          color: var(--sl-color-neutral-800);
+          border: none;
+        }
+        .dependency-badge-content {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-3x-small);
+        }
+        .clickable-row {
+          cursor: pointer;
+        }
+        .row-expanded {
+          background-color: var(--sl-color-primary-50);
+        }
 
-      .placeholder-content {
-        text-align: center;
-      }
+        .placeholder-content {
+          text-align: center;
+        }
 
-      .dependency-details ul {
-        list-style-type: none;
-        padding-left: var(--sl-spacing-medium);
-      }
-      .dependency-details li {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: var(--sl-spacing-x-small) 0;
-      }
-      .dependency-details li:last-child {
-        border-bottom: none;
-      }
-      .dependency-reason {
-        font-size: var(--sl-font-size-small);
-        color: var(--sl-color-neutral-500);
-      }
-      .from-tracker {
-        color: var(--sl-color-primary-600);
-      }
-      .is-committed {
-        color: var(--sl-color-success-600);
-        font-weight: var(--sl-font-weight-semibold);
-      }
+        .dependency-details ul {
+          list-style-type: none;
+          padding-left: var(--sl-spacing-medium);
+        }
+        .dependency-details li {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: var(--sl-spacing-x-small) 0;
+        }
+        .dependency-details li:last-child {
+          border-bottom: none;
+        }
+        .dependency-reason {
+          font-size: var(--sl-font-size-small);
+          color: var(--sl-color-neutral-500);
+        }
+        .from-tracker {
+          color: var(--sl-color-primary-600);
+        }
+        .is-committed {
+          color: var(--sl-color-success-600);
+          font-weight: var(--sl-font-weight-semibold);
+        }
 
-      .dependencies-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: var(--sl-spacing-small);
-      }
+        .dependencies-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: var(--sl-spacing-small);
+        }
 
-      .dependencies-header h4 {
-        margin: 0;
-      }
-    `,
+        .dependencies-header h4 {
+          margin: 0;
+        }
+      `,
+    ],
   ];
 
   render() {

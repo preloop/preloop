@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../styles/table-scroll';
 import { EditPermissions } from '../controllers/edit-permissions';
 import { html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -63,46 +64,49 @@ export class TeamBudgetsPanel extends AuthedElement {
   @state() private saving = false;
   private loadSeq = 0;
 
-  static styles = css`
-    :host {
-      display: block;
-    }
-    .panel {
-      display: flex;
-      flex-direction: column;
-      gap: var(--sl-spacing-medium);
-    }
-    .muted {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-    }
-    /* Six columns do not fit a phone: scroll inside the panel instead of
+  static styles = [
+    tableScrollStyles,
+    css`
+      :host {
+        display: block;
+      }
+      .panel {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-medium);
+      }
+      .muted {
+        color: var(--sl-color-neutral-600);
+        font-size: var(--sl-font-size-small);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      /* Six columns do not fit a phone: scroll inside the panel instead of
        pushing the page sideways. */
-    .table-scroll {
-      overflow-x: auto;
-    }
-    th,
-    td {
-      text-align: left;
-      padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
-      border-bottom: 1px solid var(--sl-color-neutral-200);
-    }
-    td.num,
-    th.num {
-      text-align: right;
-      font-variant-numeric: tabular-nums;
-    }
-    .form {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--sl-spacing-small);
-      align-items: flex-end;
-    }
-  `;
+      .table-scroll {
+        overflow-x: auto;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
+        border-bottom: 1px solid var(--sl-color-neutral-200);
+      }
+      td.num,
+      th.num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      .form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small);
+        align-items: flex-end;
+      }
+    `,
+  ];
 
   private requested = false;
 
@@ -213,78 +217,82 @@ export class TeamBudgetsPanel extends AuthedElement {
       return html`<p class="muted">No teams in this account yet.</p>`;
     }
     return html`<div class="table-scroll">
-      <table aria-label="Spend per team">
-        <thead>
-          <tr>
-            <th>Team</th>
-            <th class="num">Members</th>
-            <th class="num">Spend</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${this.usage.map(
-            (row) =>
-              html`<tr>
-                <td>${row.team_name}</td>
-                <td class="num">${row.member_count}</td>
-                <td class="num">${this.money(row.cost_usd)}</td>
-              </tr>`
-          )}
-        </tbody>
-      </table>
+      <div class="table-scroll">
+        <table aria-label="Spend per team">
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th class="num">Members</th>
+              <th class="num">Spend</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${this.usage.map(
+              (row) =>
+                html`<tr>
+                  <td>${row.team_name}</td>
+                  <td class="num">${row.member_count}</td>
+                  <td class="num">${this.money(row.cost_usd)}</td>
+                </tr>`
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>`;
   }
 
   private renderBudgets() {
     return html`<div class="table-scroll">
-        <table aria-label="Team budgets">
-          <thead>
-            <tr>
-              <th>Team</th>
-              <th>Period</th>
-              <th class="num">Spent this period</th>
-              <th class="num">Hard limit</th>
-              <th class="num">Soft limit</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${
-              this.budgets.length
-                ? this.budgets.map(
-                    (budget) =>
-                      html`<tr>
-                        <td>${budget.team_name}</td>
-                        <td>${periodLabel(budget.period)}</td>
-                        <td class="num">
-                          ${this.money(budget.current_spend_usd)}
-                        </td>
-                        <td class="num">
-                          ${this.money(budget.hard_limit_usd)}
-                        </td>
-                        <td class="num">
-                          ${this.money(budget.soft_limit_usd)}
-                        </td>
-                        <td>
-                          ${
-                            this.canManage
-                              ? html`<sl-button
-                                  size="small"
-                                  variant="text"
-                                  @click=${() => void this.removeBudget(budget)}
-                                  >Remove</sl-button
-                                >`
-                              : nothing
-                          }
-                        </td>
-                      </tr>`
-                  )
-                : html`<tr>
-                    <td colspan="6" class="muted">No team budgets.</td>
-                  </tr>`
-            }
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table aria-label="Team budgets">
+            <thead>
+              <tr>
+                <th>Team</th>
+                <th>Period</th>
+                <th class="num">Spent this period</th>
+                <th class="num">Hard limit</th>
+                <th class="num">Soft limit</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${
+                this.budgets.length
+                  ? this.budgets.map(
+                      (budget) =>
+                        html`<tr>
+                          <td>${budget.team_name}</td>
+                          <td>${periodLabel(budget.period)}</td>
+                          <td class="num">
+                            ${this.money(budget.current_spend_usd)}
+                          </td>
+                          <td class="num">
+                            ${this.money(budget.hard_limit_usd)}
+                          </td>
+                          <td class="num">
+                            ${this.money(budget.soft_limit_usd)}
+                          </td>
+                          <td>
+                            ${
+                              this.canManage
+                                ? html`<sl-button
+                                    size="small"
+                                    variant="text"
+                                    @click=${() => void this.removeBudget(budget)}
+                                    >Remove</sl-button
+                                  >`
+                                : nothing
+                            }
+                          </td>
+                        </tr>`
+                    )
+                  : html`<tr>
+                      <td colspan="6" class="muted">No team budgets.</td>
+                    </tr>`
+              }
+            </tbody>
+          </table>
+        </div>
       </div>
       ${
         this.canManage && this.usage.length

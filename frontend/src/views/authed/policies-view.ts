@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../../utils/date';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -1972,7 +1973,7 @@ export class PoliciesView extends LitElement {
     if (!dateStr) {
       return 'Unknown date';
     }
-    const date = new Date(dateStr);
+    const date = parseUTCDate(dateStr);
     if (Number.isNaN(date.getTime())) {
       return 'Unknown date';
     }

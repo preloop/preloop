@@ -1,3 +1,5 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -98,10 +100,10 @@ export class SessionHistoryWidget extends LitElement {
                 !(
                   e.type === 'model_gateway_request_started' &&
                   Math.abs(
-                    new Date(
+                    parseUTCDate(
                       e.timestamp || new Date().toISOString()
                     ).getTime() -
-                      new Date(
+                      parseUTCDate(
                         payload.timestamp || new Date().toISOString()
                       ).getTime()
                   ) < 60000
@@ -258,7 +260,8 @@ export class SessionHistoryWidget extends LitElement {
       // Sort newest events first for the timeline view
       const events = (response.logs || []).sort(
         (a: any, b: any) =>
-          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+          parseUTCDate(b.timestamp).getTime() -
+          parseUTCDate(a.timestamp).getTime()
       );
       this.loadedEvents = {
         ...this.loadedEvents,
@@ -311,7 +314,7 @@ export class SessionHistoryWidget extends LitElement {
 
   private _formatDate(dateStr: string | null | undefined) {
     if (!dateStr) return '';
-    return new Date(dateStr).toLocaleString();
+    return parseUTCDate(dateStr).toLocaleString();
   }
 
   private _renderEvent(sessionId: string, event: FlowGatewayEvent) {
@@ -343,8 +346,8 @@ export class SessionHistoryWidget extends LitElement {
 
     // Sort by last_activity_at or started_at
     const sortedSessions = [...this.sessions].sort((a, b) => {
-      const timeA = new Date(a.last_activity_at || a.started_at).getTime();
-      const timeB = new Date(b.last_activity_at || b.started_at).getTime();
+      const timeA = parseUTCDate(a.last_activity_at || a.started_at).getTime();
+      const timeB = parseUTCDate(b.last_activity_at || b.started_at).getTime();
       return timeB - timeA;
     });
 
@@ -373,7 +376,7 @@ export class SessionHistoryWidget extends LitElement {
                     session.last_activity_at || session.started_at
                   )}
                   · ${session.total_requests} requests ·
-                  $${(session.estimated_cost || 0).toFixed(4)}
+                  ${html`<span title=${formatUsdExact(session.estimated_cost)}>${formatUsd(session.estimated_cost)}</span>`}
                 </div>
               </div>
             `

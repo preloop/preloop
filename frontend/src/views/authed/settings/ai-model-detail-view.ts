@@ -1,3 +1,5 @@
+import { parseUTCDate } from '../../../utils/date';
+import { formatUsd, formatUsdExact } from '../../../utils/money';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
@@ -1365,21 +1367,19 @@ export class AIModelDetailView extends LitElement {
     const price = this.pricing?.price;
     const parts: string[] = [];
     if (typeof price?.input_per_1m === 'number') {
-      parts.push(`input ${this.formatPrice(price.input_per_1m)} per 1M`);
+      parts.push(`input ${formatUsd(price.input_per_1m)} per 1M`);
     }
     if (typeof price?.output_per_1m === 'number') {
-      parts.push(`output ${this.formatPrice(price.output_per_1m)} per 1M`);
+      parts.push(`output ${formatUsd(price.output_per_1m)} per 1M`);
     }
     if (typeof price?.cached_input_per_1m === 'number') {
-      parts.push(
-        `cached input ${this.formatPrice(price.cached_input_per_1m)} per 1M`
-      );
+      parts.push(`cached input ${formatUsd(price.cached_input_per_1m)} per 1M`);
     }
     if (typeof price?.blended_per_1m === 'number') {
-      parts.push(`blended ${this.formatPrice(price.blended_per_1m)} per 1M`);
+      parts.push(`blended ${formatUsd(price.blended_per_1m)} per 1M`);
     }
     if (typeof price?.request_price === 'number') {
-      parts.push(`${this.formatPrice(price.request_price)} per request`);
+      parts.push(`${formatUsd(price.request_price)} per request`);
     }
     return parts.length ? parts.join(', ') : 'no rates';
   }
@@ -1395,13 +1395,13 @@ export class AIModelDetailView extends LitElement {
       return null;
     }
     const candidate =
-      effectiveFrom && new Date(effectiveFrom).getTime() <= Date.now()
+      effectiveFrom && parseUTCDate(effectiveFrom).getTime() <= Date.now()
         ? effectiveFrom
         : (this.summary?.period_start ?? null);
     if (!candidate) {
       return null;
     }
-    const time = new Date(candidate).getTime();
+    const time = parseUTCDate(candidate).getTime();
     if (!Number.isFinite(time) || time > Date.now()) {
       return null;
     }
@@ -1596,16 +1596,6 @@ export class AIModelDetailView extends LitElement {
     `;
   }
 
-  private formatCost(value: number | null | undefined): string {
-    if (typeof value !== 'number' || Number.isNaN(value)) {
-      return '$0.00';
-    }
-    if (value === 0) {
-      return '$0.00';
-    }
-    return value >= 0.01 ? `$${value.toFixed(2)}` : `$${value.toFixed(4)}`;
-  }
-
   private formatPercent(numerator: number, denominator: number): string {
     if (denominator === 0) {
       return '0.0%';
@@ -1617,7 +1607,7 @@ export class AIModelDetailView extends LitElement {
     return new Intl.DateTimeFormat(undefined, {
       month: 'short',
       day: 'numeric',
-    }).format(new Date(value));
+    }).format(parseUTCDate(value));
   }
 
   private formatDate(value: string | null | undefined): string {
@@ -1628,7 +1618,7 @@ export class AIModelDetailView extends LitElement {
       month: 'short',
       day: 'numeric',
       year: 'numeric',
-    }).format(new Date(value));
+    }).format(parseUTCDate(value));
   }
 
   private formatDateTime(value: string | null | undefined): string {
@@ -1641,7 +1631,7 @@ export class AIModelDetailView extends LitElement {
       year: 'numeric',
       hour: 'numeric',
       minute: '2-digit',
-    }).format(new Date(value));
+    }).format(parseUTCDate(value));
   }
 
   private getSourceLabel(sourceType: string | null | undefined): string {
@@ -1855,7 +1845,11 @@ export class AIModelDetailView extends LitElement {
     }
   }
 
-  private renderStat(label: string, value: string, detail: string) {
+  private renderStat(
+    label: string,
+    value: string | ReturnType<typeof html>,
+    detail: string
+  ) {
     return html`
       <div class="stat-item">
         <div class="stat-label">${label}</div>
@@ -1874,8 +1868,8 @@ export class AIModelDetailView extends LitElement {
     if (!this.summary) {
       return null;
     }
-    const start = new Date(this.summary.period_start);
-    const end = new Date(this.summary.period_end);
+    const start = parseUTCDate(this.summary.period_start);
+    const end = parseUTCDate(this.summary.period_end);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
       return null;
     }
@@ -1914,7 +1908,7 @@ export class AIModelDetailView extends LitElement {
                 ${this.formatNumber(day.request_count)} req
               </div>
               <div class="cell-numeric">
-                ${this.formatCost(day.estimated_cost)}
+                ${html`<span title=${formatUsdExact(day.estimated_cost)}>${formatUsd(day.estimated_cost)}</span>`}
               </div>
             </div>
           `
@@ -1979,7 +1973,7 @@ export class AIModelDetailView extends LitElement {
                 ${this.formatNumber(session.token_usage.total_tokens)}
               </div>
               <div class="cell-numeric">
-                ${this.formatCost(session.estimated_cost)}
+                ${html`<span title=${formatUsdExact(session.estimated_cost)}>${formatUsd(session.estimated_cost)}</span>`}
               </div>
               <div>
                 ${this.formatDateTime(
@@ -2028,7 +2022,7 @@ export class AIModelDetailView extends LitElement {
         <div class="interaction-excerpt">${item.excerpt}</div>
         <div class="interaction-meta">
           ${this.formatNumber(item.token_usage.total_tokens)} tokens ·
-          ${this.formatCost(item.estimated_cost)}
+          ${html`<span title=${formatUsdExact(item.estimated_cost)}>${formatUsd(item.estimated_cost)}</span>`}
           ${item.flow_name ? html` · ${item.flow_name}` : ''}
           ${
             item.runtime_principal_name
@@ -2341,7 +2335,9 @@ export class AIModelDetailView extends LitElement {
           )}
           ${this.renderStat(
             '$ est.',
-            this.formatCost(this.summary.estimated_cost),
+            html`<span title=${formatUsdExact(this.summary.estimated_cost)}
+              >${formatUsd(this.summary.estimated_cost)}</span
+            >`,
             `${this.formatPercent(this.summary.successful_requests, this.summary.total_requests)} success rate`
           )}
           ${this.renderStat(
@@ -2499,24 +2495,13 @@ export class AIModelDetailView extends LitElement {
       <div class="price-cell">
         <div class="price-cell-label">${label}</div>
         <div class="price-cell-value ${known ? '' : 'unknown'}">
-          ${known ? this.formatPrice(value as number) : 'Not priced'}
+          ${known ? html`<span title=${formatUsdExact(value as number)}>${formatUsd(value as number)}</span>` : 'Not priced'}
         </div>
         <div class="price-cell-unit">
           ${perRequest ? 'per request' : 'per 1M tokens'}
         </div>
       </div>
     `;
-  }
-
-  /** Prices run from $0.02 to $75 per million, so two decimals is not enough. */
-  private formatPrice(value: number): string {
-    if (value === 0) {
-      return '$0';
-    }
-    if (value >= 1) {
-      return `$${value.toFixed(2)}`;
-    }
-    return `$${value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}`;
   }
 
   private pricingProvenance(): string {

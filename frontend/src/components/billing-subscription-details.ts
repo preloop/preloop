@@ -1,3 +1,5 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { fetchWithAuth, getFeatures } from '../api';
@@ -70,17 +72,6 @@ export class BillingSubscriptionDetails extends LitElement {
   private _navigate(url: string): void {
     window.location.assign(url);
   }
-  private _formatUsd(value: number | null | undefined) {
-    if (value === null || value === undefined) {
-      return 'Not configured';
-    }
-    return new Intl.NumberFormat(undefined, {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: value < 10 ? 2 : 0,
-      maximumFractionDigits: 2,
-    }).format(value);
-  }
 
   /** Token counts, compacted: 10000000 becomes "10M". */
   private _formatTokens(value: number): string {
@@ -110,7 +101,9 @@ export class BillingSubscriptionDetails extends LitElement {
   private _formatUsageSoFar(hosted: BillingSummary['hosted_models']) {
     return hosted.current_usage_usd == null
       ? 'Not verified'
-      : this._formatUsd(hosted.current_usage_usd);
+      : hosted.current_usage_usd == null
+        ? 'Not configured'
+        : formatUsd(hosted.current_usage_usd);
   }
 
   /** Remaining credit includes holds; a missing value is not the full cap. */
@@ -119,7 +112,9 @@ export class BillingSubscriptionDetails extends LitElement {
       return this._hasConfiguredLimit(hosted)
         ? 'Not verified'
         : 'Not configured';
-    return this._formatUsd(hosted.remaining_limit_usd);
+    return hosted.remaining_limit_usd == null
+      ? 'Not configured'
+      : formatUsd(hosted.remaining_limit_usd);
   }
 
   /**
@@ -140,7 +135,7 @@ export class BillingSubscriptionDetails extends LitElement {
     if (!value) {
       return 'Unknown';
     }
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     if (Number.isNaN(date.getTime())) {
       return 'Unknown';
     }
@@ -165,7 +160,7 @@ export class BillingSubscriptionDetails extends LitElement {
     if (!value) {
       return false;
     }
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
   }
 
@@ -181,8 +176,9 @@ export class BillingSubscriptionDetails extends LitElement {
         ${
           seats.over_included && addon
             ? html`<span class="seat-warning"
-                >Extra users are $${addon.price_per_user_monthly} each per
-                month, up to ${addon.max_users}.</span
+                >Extra users are
+                ${html`<span title=${formatUsdExact(addon.price_per_user_monthly)}>${formatUsd(addon.price_per_user_monthly)}</span>`}
+                each per month, up to ${addon.max_users}.</span
               >`
             : seats.over_included
               ? html`<span class="seat-warning"
@@ -235,14 +231,14 @@ export class BillingSubscriptionDetails extends LitElement {
               ? html`You have used this month's analysis quota. Your agents keep
                 running and every policy still applies. New traffic is recorded
                 with less analysis detail until the quota resets on
-                ${new Date(quota.period_end).toLocaleDateString()}. Upgrade to
-                restore full detail sooner.`
+                ${parseUTCDate(quota.period_end).toLocaleDateString()}. Upgrade
+                to restore full detail sooner.`
               : quota.approaching_limit
                 ? html`You have used most of this month's analysis quota. Agents
                   and policies are unaffected either way. Upgrade for a larger
                   quota.`
                 : html`Tokens we analyze from your own provider keys. Resets
-                  ${new Date(quota.period_end).toLocaleDateString()}. Your
+                  ${parseUTCDate(quota.period_end).toLocaleDateString()}. Your
                   provider tokens are never billed or marked up by Preloop.`
           }
         </div>
@@ -406,7 +402,7 @@ export class BillingSubscriptionDetails extends LitElement {
             ? html`
                 <div class="date">
                   Trial cap for built-in models:
-                  ${this._formatUsd(trialSummary?.hosted_model_hard_cap_usd)}
+                  ${trialSummary?.hosted_model_hard_cap_usd == null ? 'Not configured' : html`<span title=${formatUsdExact(trialSummary?.hosted_model_hard_cap_usd)}>${formatUsd(trialSummary?.hosted_model_hard_cap_usd)}</span>`}
                 </div>
               `
             : ''
@@ -477,18 +473,33 @@ export class BillingSubscriptionDetails extends LitElement {
                               }
                             </div>
                             <div class="usage-value">
-                              ${this._formatUsd(
-                                onFreePlan
+                              ${
+                                (onFreePlan
                                   ? (hostedSummary.one_time_credit_usd ??
-                                      hostedSummary.included_limit_usd)
-                                  : hostedSummary.included_limit_usd
-                              )}
+                                    hostedSummary.included_limit_usd)
+                                  : hostedSummary.included_limit_usd) == null
+                                  ? 'Not configured'
+                                  : html`<span
+                                      title=${formatUsdExact(
+                                        onFreePlan
+                                          ? (hostedSummary.one_time_credit_usd ??
+                                              hostedSummary.included_limit_usd)
+                                          : hostedSummary.included_limit_usd
+                                      )}
+                                      >${formatUsd(
+                                        onFreePlan
+                                          ? (hostedSummary.one_time_credit_usd ??
+                                              hostedSummary.included_limit_usd)
+                                          : hostedSummary.included_limit_usd
+                                      )}</span
+                                    >`
+                              }
                             </div>
                           </div>
                           <div class="usage-metric">
                             <div class="usage-label">Current active cap</div>
                             <div class="usage-value">
-                              ${this._formatUsd(hostedSummary.active_limit_usd)}
+                              ${hostedSummary.active_limit_usd == null ? 'Not configured' : html`<span title=${formatUsdExact(hostedSummary.active_limit_usd)}>${formatUsd(hostedSummary.active_limit_usd)}</span>`}
                             </div>
                           </div>
                         `
@@ -556,7 +567,7 @@ export class BillingSubscriptionDetails extends LitElement {
                                 </div>
                               </div>
                               <div class="usage-model-cost">
-                                ${this._formatUsd(model.estimated_cost)}
+                                ${model.estimated_cost == null ? 'Not configured' : html`<span title=${formatUsdExact(model.estimated_cost)}>${formatUsd(model.estimated_cost)}</span>`}
                               </div>
                             </div>
                           `

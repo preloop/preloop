@@ -50,3 +50,46 @@ export function formatUsd(value: number | null | undefined): string {
 export function formatUsdExact(value: number | null | undefined): string {
   return EXACT.format(toAmount(value));
 }
+
+/** Provider invoices can be denominated in a currency other than USD. */
+export function formatCurrencyAmount(value: number, currency = 'USD'): string {
+  if (currency.toUpperCase() === 'USD') return formatUsd(value);
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(toAmount(value));
+}
+
+/** Exact provider amount, preserving the invoice currency. */
+export function formatCurrencyAmountExact(
+  value: number,
+  currency = 'USD'
+): string {
+  if (currency.toUpperCase() === 'USD') return formatUsdExact(value);
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 6,
+  }).format(toAmount(value));
+}
+
+/** Billing providers publish cents; missing amounts are unavailable. */
+export function formatCurrencyCents(
+  cents: number | null | undefined,
+  currency = 'USD'
+): string {
+  if (cents == null || !Number.isFinite(cents)) return 'Unavailable';
+  return formatCurrencyAmount(cents / 100, currency);
+}
+
+/** Exact cents-based invoice amount for a tooltip. */
+export function formatCurrencyCentsExact(
+  cents: number | null | undefined,
+  currency = 'USD'
+): string {
+  if (cents == null || !Number.isFinite(cents)) return 'Unavailable';
+  return formatCurrencyAmountExact(cents / 100, currency);
+}

@@ -439,3 +439,5 @@ Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
 `native_rule`, `native_q`. The `tab` parameter selects the visible tab without
 discarding either filter set. Successful initial loads, including empty catalogs,
 retain mounted content during subsequent background refreshes.
+
+Console monetary values use the shared USD formatter, with exact precision in tooltips; non-USD provider invoices retain their denomination through shared currency helpers. Server timestamps use the UTC-aware date utilities. Wide tables use the shared `table-scroll` stylesheet in both document CSS and Lit shadow roots so content scrolls within its container at phone widths. Full list-controller migration remains incremental.

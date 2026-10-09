@@ -1,3 +1,6 @@
+import { tableScrollStyles } from '../../styles/table-scroll';
+import { parseUTCDate } from '../../utils/date';
+import { formatUsd, formatUsdExact } from '../../utils/money';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../controllers/edit-permissions';
 import '../../components/hosted-allowance';
@@ -309,383 +312,386 @@ export class CostView extends AuthedElement {
   }
 
   static styles = [
-    consoleDialogStyles,
-    unsafeCSS(consoleStyles),
-    css`
-      :host {
-        display: block;
-      }
+    tableScrollStyles,
+    [
+      consoleDialogStyles,
+      unsafeCSS(consoleStyles),
+      css`
+        :host {
+          display: block;
+        }
 
-      .page {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-large);
-      }
+        .page {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-large);
+        }
 
-      .analytics-stack,
-      .actions-stack {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-large);
-      }
+        .analytics-stack,
+        .actions-stack {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-large);
+        }
 
-      .toolbar {
-        display: flex;
-        gap: var(--sl-spacing-medium);
-        align-items: center;
-        flex-wrap: wrap;
-      }
+        .toolbar {
+          display: flex;
+          gap: var(--sl-spacing-medium);
+          align-items: center;
+          flex-wrap: wrap;
+        }
 
-      /* Wide enough for "Last month"; the shared control is 96px by default,
+        /* Wide enough for "Last month"; the shared control is 96px by default,
          which is sized for 24h/7d/30d chips. */
-      .toolbar time-range-select {
-        --time-range-select-width: 140px;
-      }
+        .toolbar time-range-select {
+          --time-range-select-width: 140px;
+        }
 
-      /* The window the numbers cover, restated beside the control that chose
+        /* The window the numbers cover, restated beside the control that chose
          it, plus how fresh they are now that there is no Refresh button. */
-      .range-window {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-        font-variant-numeric: tabular-nums;
-      }
+        .range-window {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+          font-variant-numeric: tabular-nums;
+        }
 
-      .active-account {
-        margin: 0 0 var(--sl-spacing-small);
-        color: var(--console-meta-color, var(--sl-color-neutral-600));
-        font-size: var(--sl-font-size-small);
-      }
+        .active-account {
+          margin: 0 0 var(--sl-spacing-small);
+          color: var(--console-meta-color, var(--sl-color-neutral-600));
+          font-size: var(--sl-font-size-small);
+        }
 
-      .digest-actions {
-        margin-top: var(--sl-spacing-small);
-      }
+        .digest-actions {
+          margin-top: var(--sl-spacing-small);
+        }
 
-      .unpriced-links {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-medium);
-        margin-top: var(--sl-spacing-x-small);
-      }
+        .unpriced-links {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-medium);
+          margin-top: var(--sl-spacing-x-small);
+        }
 
-      /* It opens a dialog, so it is a button. As an anchor it pointed at a
+        /* It opens a dialog, so it is a button. As an anchor it pointed at a
          fragment that cannot resolve inside a shadow root, and told assistive
          tech it was a link. */
-      .catalog-action {
-        appearance: none;
-        background: none;
-        border: none;
-        padding: 0;
-        font: inherit;
-        color: var(--sl-color-primary-600);
-        cursor: pointer;
-      }
+        .catalog-action {
+          appearance: none;
+          background: none;
+          border: none;
+          padding: 0;
+          font: inherit;
+          color: var(--sl-color-primary-600);
+          cursor: pointer;
+        }
 
-      .catalog-action:hover {
-        text-decoration: underline;
-      }
+        .catalog-action:hover {
+          text-decoration: underline;
+        }
 
-      .metric-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-        gap: var(--sl-spacing-medium);
-      }
+        .metric-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+          gap: var(--sl-spacing-medium);
+        }
 
-      .metric-card {
-        padding: var(--sl-spacing-medium);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        background: var(--sl-color-neutral-0);
-      }
+        .metric-card {
+          padding: var(--sl-spacing-medium);
+          border: 1px solid var(--sl-color-neutral-200);
+          border-radius: var(--sl-border-radius-medium);
+          background: var(--sl-color-neutral-0);
+        }
 
-      .metric-label {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-      }
+        .metric-label {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+        }
 
-      .metric-value {
-        margin-top: var(--sl-spacing-x-small);
-        font-size: 1.6rem;
-        font-weight: 700;
-        color: var(--sl-color-neutral-950);
-      }
+        .metric-value {
+          margin-top: var(--sl-spacing-x-small);
+          font-size: 1.6rem;
+          font-weight: 700;
+          color: var(--sl-color-neutral-950);
+        }
 
-      .metric-detail {
-        margin-top: var(--sl-spacing-2x-small);
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-      }
+        .metric-detail {
+          margin-top: var(--sl-spacing-2x-small);
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+        }
 
-      .section-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        gap: var(--sl-spacing-small);
-      }
+        .section-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: flex-start;
+          gap: var(--sl-spacing-small);
+        }
 
-      .section-title {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-        font-weight: 700;
-        color: var(--sl-color-neutral-900);
-      }
+        .section-title {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-small);
+          font-weight: 700;
+          color: var(--sl-color-neutral-900);
+        }
 
-      .tool-cost-flags-section {
-        display: flex;
-        flex-direction: column;
-        width: 100%;
-      }
+        .tool-cost-flags-section {
+          display: flex;
+          flex-direction: column;
+          width: 100%;
+        }
 
-      sl-tab-group::part(base) {
-        --track-color: var(--sl-color-neutral-200);
-      }
+        sl-tab-group::part(base) {
+          --track-color: var(--sl-color-neutral-200);
+        }
 
-      .tab-panel-body {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-medium);
-      }
+        .tab-panel-body {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-medium);
+        }
 
-      .styled-table th.sortable {
-        cursor: pointer;
-        user-select: none;
-        white-space: nowrap;
-      }
+        .styled-table th.sortable {
+          cursor: pointer;
+          user-select: none;
+          white-space: nowrap;
+        }
 
-      .styled-table th.sortable:hover {
-        color: var(--sl-color-primary-600);
-      }
+        .styled-table th.sortable:hover {
+          color: var(--sl-color-primary-600);
+        }
 
-      .sort-header {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-      }
+        .sort-header {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+        }
 
-      .sort-header sl-icon {
-        font-size: 0.85em;
-        color: var(--sl-color-primary-600);
-      }
+        .sort-header sl-icon {
+          font-size: 0.85em;
+          color: var(--sl-color-primary-600);
+        }
 
-      .cell-subtitle {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-x-small);
-      }
+        .cell-subtitle {
+          color: var(--sl-color-neutral-500);
+          font-size: var(--sl-font-size-x-small);
+        }
 
-      .tools-notice {
-        margin-bottom: var(--sl-spacing-medium);
-      }
+        .tools-notice {
+          margin-bottom: var(--sl-spacing-medium);
+        }
 
-      .form-grid {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: var(--sl-spacing-medium);
-      }
+        .form-grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: var(--sl-spacing-medium);
+        }
 
-      .empty {
-        color: var(--sl-color-neutral-600);
-        padding: var(--sl-spacing-large);
-      }
+        .empty {
+          color: var(--sl-color-neutral-600);
+          padding: var(--sl-spacing-large);
+        }
 
-      .action-card-body,
-      .dialog-description {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-        line-height: 1.5;
-      }
+        .action-card-body,
+        .dialog-description {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+          line-height: 1.5;
+        }
 
-      .action-card-body {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-medium);
-      }
+        .action-card-body {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-medium);
+        }
 
-      .action-row {
-        display: flex;
-        justify-content: space-between;
-        gap: var(--sl-spacing-small);
-        align-items: center;
-      }
+        .action-row {
+          display: flex;
+          justify-content: space-between;
+          gap: var(--sl-spacing-small);
+          align-items: center;
+        }
 
-      .policy-summary {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-small);
-      }
+        .policy-summary {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-small);
+        }
 
-      .policy-summary-row {
-        display: flex;
-        justify-content: space-between;
-        gap: var(--sl-spacing-small);
-      }
+        .policy-summary-row {
+          display: flex;
+          justify-content: space-between;
+          gap: var(--sl-spacing-small);
+        }
 
-      .policy-summary-label {
-        color: var(--sl-color-neutral-600);
-      }
+        .policy-summary-label {
+          color: var(--sl-color-neutral-600);
+        }
 
-      .policy-summary-value {
-        color: var(--sl-color-neutral-900);
-        font-weight: 600;
-      }
+        .policy-summary-value {
+          color: var(--sl-color-neutral-900);
+          font-weight: 600;
+        }
 
-      /* An override that is off or out of its window still belongs in the
+        /* An override that is off or out of its window still belongs in the
          table: it explains a past cost. It is dimmed, not hidden. */
-      tr.override-inactive td {
-        opacity: 0.6;
-      }
+        tr.override-inactive td {
+          opacity: 0.6;
+        }
 
-      .override-model-meta {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-x-small);
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-      }
+        .override-model-meta {
+          color: var(--sl-color-neutral-500);
+          font-size: var(--sl-font-size-x-small);
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+        }
 
-      .override-model-link {
-        color: var(--sl-color-primary-600);
-        text-decoration: none;
-      }
+        .override-model-link {
+          color: var(--sl-color-primary-600);
+          text-decoration: none;
+        }
 
-      .override-model-link:hover {
-        text-decoration: underline;
-      }
+        .override-model-link:hover {
+          text-decoration: underline;
+        }
 
-      .override-notes {
-        max-width: 18ch;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
+        .override-notes {
+          max-width: 18ch;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
 
-      .override-actions {
-        white-space: nowrap;
-        display: flex;
-        gap: var(--sl-spacing-2x-small);
-      }
+        .override-actions {
+          white-space: nowrap;
+          display: flex;
+          gap: var(--sl-spacing-2x-small);
+        }
 
-      .override-empty {
-        color: var(--sl-color-neutral-500);
-      }
+        .override-empty {
+          color: var(--sl-color-neutral-500);
+        }
 
-      .override-error {
-        color: var(--sl-color-danger-700);
-      }
+        .override-error {
+          color: var(--sl-color-danger-700);
+        }
 
-      .override-removed-notice {
-        color: var(--sl-color-neutral-700);
-      }
+        .override-removed-notice {
+          color: var(--sl-color-neutral-700);
+        }
 
-      .loading-state {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: var(--sl-spacing-small);
-        min-height: 160px;
-        color: var(--sl-color-neutral-600);
-      }
+        .loading-state {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: var(--sl-spacing-small);
+          min-height: 160px;
+          color: var(--sl-color-neutral-600);
+        }
 
-      /* The previous range's answers, on their way out: readable, clearly not
+        /* The previous range's answers, on their way out: readable, clearly not
          current, and in exactly the place the new ones will appear. Only the
          answers dim and go inert. The side column (budgets, pricing
          overrides) is not an answer about the range, so it stays live: no
          opacity here on the wrapper, which would group the side column into
          the fade. */
-      .results.is-updating > *:not(.column-layout),
-      .results.is-updating .main-column {
-        opacity: 0.6;
-        pointer-events: none;
-      }
+        .results.is-updating > *:not(.column-layout),
+        .results.is-updating .main-column {
+          opacity: 0.6;
+          pointer-events: none;
+        }
 
-      .analytics-card::part(body) {
-        padding: var(--sl-spacing-large);
-      }
+        .analytics-card::part(body) {
+          padding: var(--sl-spacing-large);
+        }
 
-      .imported-usage-note {
-        margin-bottom: var(--sl-spacing-medium);
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-        line-height: 1.5;
-      }
+        .imported-usage-note {
+          margin-bottom: var(--sl-spacing-medium);
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+          line-height: 1.5;
+        }
 
-      .imported-usage-totals {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-large);
-        margin-bottom: var(--sl-spacing-medium);
-      }
+        .imported-usage-totals {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-large);
+          margin-bottom: var(--sl-spacing-medium);
+        }
 
-      .imported-usage-total-label {
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-      }
+        .imported-usage-total-label {
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+        }
 
-      .imported-usage-total-value {
-        margin-top: var(--sl-spacing-2x-small);
-        font-size: 1.25rem;
-        font-weight: 700;
-        color: var(--sl-color-neutral-950);
-      }
+        .imported-usage-total-value {
+          margin-top: var(--sl-spacing-2x-small);
+          font-size: 1.25rem;
+          font-weight: 700;
+          color: var(--sl-color-neutral-950);
+        }
 
-      .imported-conversations-title {
-        margin: var(--sl-spacing-large) 0 var(--sl-spacing-x-small);
-        font-size: var(--sl-font-size-medium);
-        font-weight: 600;
-        color: var(--sl-color-neutral-950);
-      }
+        .imported-conversations-title {
+          margin: var(--sl-spacing-large) 0 var(--sl-spacing-x-small);
+          font-size: var(--sl-font-size-medium);
+          font-weight: 600;
+          color: var(--sl-color-neutral-950);
+        }
 
-      .conversation-child-cell {
-        padding-left: var(--sl-spacing-x-large);
-      }
+        .conversation-child-cell {
+          padding-left: var(--sl-spacing-x-large);
+        }
 
-      .conversation-child-marker {
-        color: var(--sl-color-neutral-500);
-        margin-right: var(--sl-spacing-2x-small);
-      }
+        .conversation-child-marker {
+          color: var(--sl-color-neutral-500);
+          margin-right: var(--sl-spacing-2x-small);
+        }
 
-      .conversation-thread-total td {
-        font-weight: 600;
-        background: var(--sl-color-neutral-50);
-      }
+        .conversation-thread-total td {
+          font-weight: 600;
+          background: var(--sl-color-neutral-50);
+        }
 
-      .not-reported {
-        color: var(--sl-color-neutral-500);
-        font-style: italic;
-      }
+        .not-reported {
+          color: var(--sl-color-neutral-500);
+          font-style: italic;
+        }
 
-      .analytics-table-wrap {
-        overflow-x: auto;
-      }
+        .analytics-table-wrap {
+          overflow-x: auto;
+        }
 
-      .analytics-card .styled-table th {
-        background: transparent;
-        font-weight: 700;
-      }
+        .analytics-card .styled-table th {
+          background: transparent;
+          font-weight: 700;
+        }
 
-      .subject-links {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-small);
-      }
+        .subject-links {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-2x-small);
+        }
 
-      .agent-breakdown {
-        margin-top: var(--sl-spacing-x-small);
-        padding-left: var(--sl-spacing-medium);
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-x-small);
-      }
+        .agent-breakdown {
+          margin-top: var(--sl-spacing-x-small);
+          padding-left: var(--sl-spacing-medium);
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-x-small);
+        }
 
-      .agent-breakdown-row {
-        display: flex;
-        justify-content: space-between;
-        gap: var(--sl-spacing-small);
-        padding: 2px 0;
-      }
+        .agent-breakdown-row {
+          display: flex;
+          justify-content: space-between;
+          gap: var(--sl-spacing-small);
+          padding: 2px 0;
+        }
 
-      sl-dialog::part(panel) {
-        --width: 640px;
-      }
-    `,
+        sl-dialog::part(panel) {
+          --width: 640px;
+        }
+      `,
+    ],
   ];
 
   connectedCallback() {
@@ -1282,12 +1288,6 @@ export class CostView extends AuthedElement {
     }
   }
 
-  private formatCurrency(value?: number | null): string {
-    const amount = Number(value || 0);
-    if (amount === 0) return '$0.00';
-    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
-  }
-
   private formatNumber(value?: number | null): string {
     return Number(value || 0).toLocaleString();
   }
@@ -1325,8 +1325,8 @@ export class CostView extends AuthedElement {
     if (this.digestPeriod)
       return `Digest period: ${this.digestPeriod.startDate} to ${this.digestPeriod.endDate} (UTC; end exclusive)`;
     const params = this.getDateParams();
-    const start = new Date(this.summary?.period_start || params.startDate);
-    const end = new Date(this.summary?.period_end || params.endDate);
+    const start = parseUTCDate(this.summary?.period_start || params.startDate);
+    const end = parseUTCDate(this.summary?.period_end || params.endDate);
     if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
     const day = (date: Date) =>
       date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
@@ -1334,7 +1334,7 @@ export class CostView extends AuthedElement {
     // Cost has no websocket subscription and no poll, so the numbers are as
     // old as the last load. A relative "updated just now" painted once would
     // still say "just now" an hour later; a clock time cannot go stale.
-    const loaded = this.loadedAt ? new Date(this.loadedAt) : null;
+    const loaded = this.loadedAt ? parseUTCDate(this.loadedAt) : null;
     if (!loaded || Number.isNaN(loaded.getTime())) return window;
     const read = loaded.toLocaleTimeString(undefined, {
       hour: 'numeric',
@@ -1345,7 +1345,7 @@ export class CostView extends AuthedElement {
 
   /** The full timestamp behind "read 14:02", for the label's tooltip. */
   private rangeWindowTitle(): string {
-    const loaded = this.loadedAt ? new Date(this.loadedAt) : null;
+    const loaded = this.loadedAt ? parseUTCDate(this.loadedAt) : null;
     if (!loaded || Number.isNaN(loaded.getTime())) return '';
     return `Loaded ${loaded.toLocaleString()}`;
   }
@@ -1697,7 +1697,7 @@ export class CostView extends AuthedElement {
             }
           </div>
           <div class="metric-value">
-            ${this.formatCurrency(summary?.estimated_cost)}
+            ${html`<span title=${formatUsdExact(summary?.estimated_cost)}>${formatUsd(summary?.estimated_cost)}</span>`}
           </div>
           <div class="metric-detail">${this.spendComparisonDetail()}</div>
         </div>
@@ -1735,7 +1735,7 @@ export class CostView extends AuthedElement {
                 <div class="metric-card">
                   <div class="metric-label">${this.projectedPeriodLabel()}</div>
                   <div class="metric-value">
-                    ${this.formatCurrency(projectedPeriodCost)}
+                    ${html`<span title=${formatUsdExact(projectedPeriodCost)}>${formatUsd(projectedPeriodCost)}</span>`}
                   </div>
                   <div class="metric-detail">
                     ${this.projectedPeriodComparisonDetail(projectedPeriodCost)}
@@ -1974,7 +1974,7 @@ export class CostView extends AuthedElement {
   private renderCatalogInfo() {
     const catalog = this.summary?.price_catalog;
     if (!catalog?.fetched_at) return nothing;
-    const fetched = new Date(catalog.fetched_at);
+    const fetched = parseUTCDate(catalog.fetched_at);
     const ageDays = Math.floor(
       (Date.now() - fetched.getTime()) / (24 * 60 * 60 * 1000)
     );
@@ -2216,7 +2216,7 @@ export class CostView extends AuthedElement {
         label: 'Last event',
         numeric: true,
         value: (r) =>
-          r.last_event_at ? new Date(r.last_event_at).getTime() : 0,
+          r.last_event_at ? parseUTCDate(r.last_event_at).getTime() : 0,
       },
     ];
     const rows = this.sortRows(
@@ -2256,7 +2256,7 @@ export class CostView extends AuthedElement {
           <div>
             <div class="imported-usage-total-label">Imported cost</div>
             <div class="imported-usage-total-value">
-              ${this.formatCurrency(imported.imported_cost)}
+              ${html`<span title=${formatUsdExact(imported.imported_cost)}>${formatUsd(imported.imported_cost)}</span>`}
             </div>
           </div>
         </div>
@@ -2265,46 +2265,52 @@ export class CostView extends AuthedElement {
             ? this.renderSectionState('imported')
             : rows.length
               ? html`<div class="analytics-table-wrap">
-                  <table
-                    class="styled-table"
-                    aria-label="Imported usage by model"
-                  >
-                    <thead>
-                      <tr>
-                        ${columns.map((column) =>
-                          this.renderSortableHeader(
-                            column,
-                            this.importedSort,
-                            (key) =>
-                              (this.importedSort = this.toggleSort(
-                                this.importedSort,
-                                key
-                              ))
-                          )
+                  <div class="table-scroll">
+                    <table
+                      class="styled-table"
+                      aria-label="Imported usage by model"
+                    >
+                      <thead>
+                        <tr>
+                          ${columns.map((column) =>
+                            this.renderSortableHeader(
+                              column,
+                              this.importedSort,
+                              (key) =>
+                                (this.importedSort = this.toggleSort(
+                                  this.importedSort,
+                                  key
+                                ))
+                            )
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${rows.map(
+                          (row) => html`
+                            <tr>
+                              <td>${row.model_alias || 'Unknown'}</td>
+                              <td>${row.source || 'Unknown'}</td>
+                              <td>${this.formatNumber(row.request_count)}</td>
+                              <td>${this.formatNumber(row.total_tokens)}</td>
+                              <td>
+                                ${html`<span title=${formatUsdExact(row.imported_cost)}>${formatUsd(row.imported_cost)}</span>`}
+                              </td>
+                              <td>
+                                ${
+                                  row.last_event_at
+                                    ? parseUTCDate(
+                                        row.last_event_at
+                                      ).toLocaleString()
+                                    : '-'
+                                }
+                              </td>
+                            </tr>
+                          `
                         )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${rows.map(
-                        (row) => html`
-                          <tr>
-                            <td>${row.model_alias || 'Unknown'}</td>
-                            <td>${row.source || 'Unknown'}</td>
-                            <td>${this.formatNumber(row.request_count)}</td>
-                            <td>${this.formatNumber(row.total_tokens)}</td>
-                            <td>${this.formatCurrency(row.imported_cost)}</td>
-                            <td>
-                              ${
-                                row.last_event_at
-                                  ? new Date(row.last_event_at).toLocaleString()
-                                  : '-'
-                              }
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>`
               : html`<div class="empty">No per-model imported usage yet.</div>`
         }
@@ -2330,21 +2336,26 @@ export class CostView extends AuthedElement {
         export) are shown separately and are never summed together.
       </div>
       <div class="analytics-table-wrap">
-        <table class="styled-table" aria-label="Imported usage by conversation">
-          <thead>
-            <tr>
-              <th scope="col">Conversation</th>
-              <th scope="col">Events</th>
-              <th scope="col">Tokens</th>
-              <th scope="col">Estimated cost</th>
-              <th scope="col">Reconciled cost</th>
-              <th scope="col">Last event</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${threads.map((thread) => this.renderConversationThread(thread))}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table
+            class="styled-table"
+            aria-label="Imported usage by conversation"
+          >
+            <thead>
+              <tr>
+                <th scope="col">Conversation</th>
+                <th scope="col">Events</th>
+                <th scope="col">Tokens</th>
+                <th scope="col">Estimated cost</th>
+                <th scope="col">Reconciled cost</th>
+                <th scope="col">Last event</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${threads.map((thread) => this.renderConversationThread(thread))}
+            </tbody>
+          </table>
+        </div>
       </div>
     `;
   }
@@ -2431,7 +2442,7 @@ export class CostView extends AuthedElement {
         <td>
           ${
             row.last_event_at
-              ? new Date(row.last_event_at).toLocaleString()
+              ? parseUTCDate(row.last_event_at).toLocaleString()
               : html`<span class="not-reported">not reported</span>`
           }
         </td>
@@ -2458,7 +2469,7 @@ export class CostView extends AuthedElement {
   private renderReportedCurrency(value?: number | null) {
     return value === null || value === undefined
       ? html`<span class="not-reported">not reported</span>`
-      : html`${this.formatCurrency(value)}`;
+      : html`${formatUsd(value)}`;
   }
 
   private renderBreakdown() {
@@ -2686,59 +2697,63 @@ export class CostView extends AuthedElement {
           rows.length
             ? html`
                 <div class="analytics-table-wrap">
-                  <table
-                    class="styled-table"
-                    aria-label="Estimated vs provider-reported spend"
-                  >
-                    <thead>
-                      <tr>
-                        <th scope="col">Date</th>
-                        <th scope="col">Provider</th>
-                        <th scope="col">Preloop estimate</th>
-                        <th scope="col">Provider actual</th>
-                        <th scope="col">Drift</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${rows.map(
-                        (row) => html`
-                          <tr>
-                            <td>${new Date(row.date).toLocaleDateString()}</td>
-                            <td>${row.provider}</td>
-                            <td>${this.formatCurrency(row.preloop_cost)}</td>
-                            <td>${this.formatCurrency(row.provider_cost)}</td>
-                            <td>${this.renderDriftBadge(row)}</td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                    ${
-                      totals
-                        ? html`<tfoot>
+                  <div class="table-scroll">
+                    <table
+                      class="styled-table"
+                      aria-label="Estimated vs provider-reported spend"
+                    >
+                      <thead>
+                        <tr>
+                          <th scope="col">Date</th>
+                          <th scope="col">Provider</th>
+                          <th scope="col">Preloop estimate</th>
+                          <th scope="col">Provider actual</th>
+                          <th scope="col">Drift</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${rows.map(
+                          (row) => html`
                             <tr>
-                              <th scope="row" colspan="2">Total</th>
                               <td>
-                                ${this.formatCurrency(
-                                  totals.total_preloop_cost
-                                )}
+                                ${parseUTCDate(row.date).toLocaleDateString()}
+                              </td>
+                              <td>${row.provider}</td>
+                              <td>
+                                ${html`<span title=${formatUsdExact(row.preloop_cost)}>${formatUsd(row.preloop_cost)}</span>`}
                               </td>
                               <td>
-                                ${this.formatCurrency(
-                                  totals.total_provider_cost
-                                )}
+                                ${html`<span title=${formatUsdExact(row.provider_cost)}>${formatUsd(row.provider_cost)}</span>`}
                               </td>
-                              <td>
-                                ${
-                                  totals.total_drift_pct !== null
-                                    ? `${totals.total_drift_pct > 0 ? '+' : ''}${totals.total_drift_pct.toFixed(1)}%`
-                                    : 'n/a'
-                                }
-                              </td>
+                              <td>${this.renderDriftBadge(row)}</td>
                             </tr>
-                          </tfoot>`
-                        : nothing
-                    }
-                  </table>
+                          `
+                        )}
+                      </tbody>
+                      ${
+                        totals
+                          ? html`<tfoot>
+                              <tr>
+                                <th scope="row" colspan="2">Total</th>
+                                <td>
+                                  ${html`<span title=${formatUsdExact(totals.total_preloop_cost)}>${formatUsd(totals.total_preloop_cost)}</span>`}
+                                </td>
+                                <td>
+                                  ${html`<span title=${formatUsdExact(totals.total_provider_cost)}>${formatUsd(totals.total_provider_cost)}</span>`}
+                                </td>
+                                <td>
+                                  ${
+                                    totals.total_drift_pct !== null
+                                      ? `${totals.total_drift_pct > 0 ? '+' : ''}${totals.total_drift_pct.toFixed(1)}%`
+                                      : 'n/a'
+                                  }
+                                </td>
+                              </tr>
+                            </tfoot>`
+                          : nothing
+                      }
+                    </table>
+                  </div>
                 </div>
                 <div class="metric-detail">
                   Positive drift means the provider reported more spend than
@@ -2784,51 +2799,55 @@ export class CostView extends AuthedElement {
     return html`
       <div class="tab-panel-body">
         <div class="analytics-table-wrap">
-          <table class="styled-table" aria-label="Spend by agent">
-            <thead>
-              <tr>
-                ${columns.map((column) =>
-                  this.renderSortableHeader(
-                    column,
-                    this.agentSort,
-                    (key) =>
-                      (this.agentSort = this.toggleSort(this.agentSort, key))
-                  )
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.map(
-                (row) => html`
-                  <tr>
-                    <td>
-                      ${
-                        row.agentId
-                          ? html`<a
-                              href=${`/console/agents/${encodeURIComponent(row.agentId)}`}
-                              >${row.name}</a
-                            >`
-                          : row.flowId
+          <div class="table-scroll">
+            <table class="styled-table" aria-label="Spend by agent">
+              <thead>
+                <tr>
+                  ${columns.map((column) =>
+                    this.renderSortableHeader(
+                      column,
+                      this.agentSort,
+                      (key) =>
+                        (this.agentSort = this.toggleSort(this.agentSort, key))
+                    )
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map(
+                  (row) => html`
+                    <tr>
+                      <td>
+                        ${
+                          row.agentId
                             ? html`<a
-                                href=${`/console/flows/${encodeURIComponent(row.flowId)}`}
+                                href=${`/console/agents/${encodeURIComponent(row.agentId)}`}
                                 >${row.name}</a
                               >`
-                            : row.name
-                      }
-                    </td>
-                    <td>${this.formatNumber(row.requests)}</td>
-                    <td>
-                      <token-figures
-                        .usage=${row.tokenUsage}
-                        expanded
-                      ></token-figures>
-                    </td>
-                    <td>${this.formatCurrency(row.cost)}</td>
-                  </tr>
-                `
-              )}
-            </tbody>
-          </table>
+                            : row.flowId
+                              ? html`<a
+                                  href=${`/console/flows/${encodeURIComponent(row.flowId)}`}
+                                  >${row.name}</a
+                                >`
+                              : row.name
+                        }
+                      </td>
+                      <td>${this.formatNumber(row.requests)}</td>
+                      <td>
+                        <token-figures
+                          .usage=${row.tokenUsage}
+                          expanded
+                        ></token-figures>
+                      </td>
+                      <td>
+                        ${html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>`}
+                      </td>
+                    </tr>
+                  `
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
@@ -2898,57 +2917,61 @@ export class CostView extends AuthedElement {
           rows.length
             ? html`
                 <div class="analytics-table-wrap">
-                  <table class="styled-table" aria-label="Tool schema cost">
-                    <thead>
-                      <tr>
-                        ${columns.map((column) =>
-                          this.renderSortableHeader(
-                            column,
-                            this.toolSort,
-                            (key) =>
-                              (this.toolSort = this.toggleSort(
-                                this.toolSort,
-                                key
-                              ))
-                          )
+                  <div class="table-scroll">
+                    <table class="styled-table" aria-label="Tool schema cost">
+                      <thead>
+                        <tr>
+                          ${columns.map((column) =>
+                            this.renderSortableHeader(
+                              column,
+                              this.toolSort,
+                              (key) =>
+                                (this.toolSort = this.toggleSort(
+                                  this.toolSort,
+                                  key
+                                ))
+                            )
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${rows.map(
+                          (row) => html`
+                            <tr>
+                              <td>
+                                <div>${row.tool_name}</div>
+                                ${
+                                  row.server_name
+                                    ? html`<div class="cell-subtitle">
+                                        ${row.server_name}
+                                      </div>`
+                                    : nothing
+                                }
+                              </td>
+                              <td>
+                                ${this.formatNumber(row.invocation_count)}
+                              </td>
+                              <td>
+                                ${this.formatNumber(row.failed_invocations)}
+                              </td>
+                              <td>
+                                ${this.formatNumber(row.schema_tokens_total)}
+                              </td>
+                              <td>
+                                ${html`<span title=${formatUsdExact(row.estimated_schema_cost)}>${formatUsd(row.estimated_schema_cost)}</span>`}
+                              </td>
+                              <td>
+                                ${html`<span title=${formatUsdExact(this.perDefinitionCost(row))}>${formatUsd(this.perDefinitionCost(row))}</span>`}
+                              </td>
+                              <td>
+                                ${html`<span title=${formatUsdExact(row.avg_cost_per_invocation)}>${formatUsd(row.avg_cost_per_invocation)}</span>`}
+                              </td>
+                            </tr>
+                          `
                         )}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${rows.map(
-                        (row) => html`
-                          <tr>
-                            <td>
-                              <div>${row.tool_name}</div>
-                              ${
-                                row.server_name
-                                  ? html`<div class="cell-subtitle">
-                                      ${row.server_name}
-                                    </div>`
-                                  : nothing
-                              }
-                            </td>
-                            <td>${this.formatNumber(row.invocation_count)}</td>
-                            <td>
-                              ${this.formatNumber(row.failed_invocations)}
-                            </td>
-                            <td>
-                              ${this.formatNumber(row.schema_tokens_total)}
-                            </td>
-                            <td>
-                              ${this.formatCurrency(row.estimated_schema_cost)}
-                            </td>
-                            <td>
-                              ${this.formatCurrency(this.perDefinitionCost(row))}
-                            </td>
-                            <td>
-                              ${this.formatCurrency(row.avg_cost_per_invocation)}
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               `
             : html`<div class="empty">No tool usage recorded yet.</div>`
@@ -2995,7 +3018,7 @@ export class CostView extends AuthedElement {
         numeric: true,
         value: (r) =>
           r.last_activity_at || r.last_request_at
-            ? new Date(
+            ? parseUTCDate(
                 (r.last_activity_at || r.last_request_at) as string
               ).getTime()
             : 0,
@@ -3012,60 +3035,64 @@ export class CostView extends AuthedElement {
     return html`
       <div class="tab-panel-body">
         <div class="analytics-table-wrap">
-          <table class="styled-table" aria-label="Session spend">
-            <thead>
-              <tr>
-                ${columns.map((column) =>
-                  this.renderSortableHeader(
-                    column,
-                    this.sessionSort,
-                    (key) =>
-                      (this.sessionSort = this.toggleSort(
-                        this.sessionSort,
-                        key
-                      ))
-                  )
+          <div class="table-scroll">
+            <table class="styled-table" aria-label="Session spend">
+              <thead>
+                <tr>
+                  ${columns.map((column) =>
+                    this.renderSortableHeader(
+                      column,
+                      this.sessionSort,
+                      (key) =>
+                        (this.sessionSort = this.toggleSort(
+                          this.sessionSort,
+                          key
+                        ))
+                    )
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map(
+                  (row) => html`
+                    <tr>
+                      <td>
+                        ${
+                          row.runtime_session_id
+                            ? html`<a
+                                href="/console/runtime-sessions?sessionId=${row.runtime_session_id}"
+                                >${this.getSessionTitle(row)}</a
+                              >`
+                            : this.getSessionTitle(row)
+                        }
+                      </td>
+                      <td>${this.renderSessionSubjects(row)}</td>
+                      <td>${this.formatNumber(row.request_count)}</td>
+                      <td>
+                        <token-figures
+                          .usage=${row.token_usage || null}
+                          expanded
+                        ></token-figures>
+                      </td>
+                      <td>
+                        ${html`<span title=${formatUsdExact(row.estimated_cost)}>${formatUsd(row.estimated_cost)}</span>`}
+                      </td>
+                      <td>
+                        ${
+                          row.last_activity_at || row.last_request_at
+                            ? parseUTCDate(
+                                (row.last_activity_at ||
+                                  row.last_request_at) as string
+                              ).toLocaleString()
+                            : '—'
+                        }
+                      </td>
+                    </tr>
+                  `
                 )}
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.map(
-                (row) => html`
-                  <tr>
-                    <td>
-                      ${
-                        row.runtime_session_id
-                          ? html`<a
-                              href="/console/runtime-sessions?sessionId=${row.runtime_session_id}"
-                              >${this.getSessionTitle(row)}</a
-                            >`
-                          : this.getSessionTitle(row)
-                      }
-                    </td>
-                    <td>${this.renderSessionSubjects(row)}</td>
-                    <td>${this.formatNumber(row.request_count)}</td>
-                    <td>
-                      <token-figures
-                        .usage=${row.token_usage || null}
-                        expanded
-                      ></token-figures>
-                    </td>
-                    <td>${this.formatCurrency(row.estimated_cost)}</td>
-                    <td>
-                      ${
-                        row.last_activity_at || row.last_request_at
-                          ? new Date(
-                              (row.last_activity_at ||
-                                row.last_request_at) as string
-                            ).toLocaleString()
-                          : '—'
-                      }
-                    </td>
-                  </tr>
-                `
-              )}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
@@ -3116,37 +3143,41 @@ export class CostView extends AuthedElement {
             : nothing
         }
         <div class="analytics-table-wrap">
-          <table class="styled-table" aria-label="Spend by user">
-            <thead>
-              <tr>
-                ${columns.map((column) =>
-                  this.renderSortableHeader(
-                    column,
-                    this.userSort,
-                    (key) =>
-                      (this.userSort = this.toggleSort(this.userSort, key))
-                  )
+          <div class="table-scroll">
+            <table class="styled-table" aria-label="Spend by user">
+              <thead>
+                <tr>
+                  ${columns.map((column) =>
+                    this.renderSortableHeader(
+                      column,
+                      this.userSort,
+                      (key) =>
+                        (this.userSort = this.toggleSort(this.userSort, key))
+                    )
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                ${rows.map(
+                  (row) => html`
+                    <tr>
+                      <td>${row.username}</td>
+                      <td>${this.formatNumber(row.requests)}</td>
+                      <td>
+                        <token-figures
+                          .usage=${row.tokenUsage}
+                          expanded
+                        ></token-figures>
+                      </td>
+                      <td>
+                        ${html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>`}
+                      </td>
+                    </tr>
+                  `
                 )}
-              </tr>
-            </thead>
-            <tbody>
-              ${rows.map(
-                (row) => html`
-                  <tr>
-                    <td>${row.username}</td>
-                    <td>${this.formatNumber(row.requests)}</td>
-                    <td>
-                      <token-figures
-                        .usage=${row.tokenUsage}
-                        expanded
-                      ></token-figures>
-                    </td>
-                    <td>${this.formatCurrency(row.cost)}</td>
-                  </tr>
-                `
-              )}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
@@ -3178,13 +3209,13 @@ export class CostView extends AuthedElement {
     const now = Date.now();
     if (
       override.effective_until &&
-      new Date(override.effective_until).getTime() <= now
+      parseUTCDate(override.effective_until).getTime() <= now
     ) {
       return 'expired';
     }
     if (
       override.effective_from &&
-      new Date(override.effective_from).getTime() > now
+      parseUTCDate(override.effective_from).getTime() > now
     ) {
       return 'pending';
     }
@@ -3226,12 +3257,12 @@ export class CostView extends AuthedElement {
   /** Stored rates are per 1,000 tokens; every price on this page is per 1M. */
   private formatPer1m(value: number | null | undefined) {
     if (typeof value !== 'number') return nothing;
-    return html`${this.formatCurrency(value * 1000)}`;
+    return html`${formatUsd(value * 1000)}`;
   }
 
   private formatOverrideDate(value: string | null | undefined): string {
     if (!value) return '';
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     if (Number.isNaN(date.getTime())) return '';
     return date.toLocaleDateString(undefined, {
       month: 'short',
@@ -3244,7 +3275,7 @@ export class CostView extends AuthedElement {
   private describeOverrideRates(override: ModelPriceOverride): string {
     const parts: string[] = [];
     const per1m = (value: number | null) =>
-      typeof value === 'number' ? this.formatCurrency(value * 1000) : null;
+      typeof value === 'number' ? formatUsd(value * 1000) : null;
     const input = per1m(override.input_price_per_1k);
     const output = per1m(override.output_price_per_1k);
     const cached = per1m(override.cache_read_input_price_per_1k);
@@ -3256,7 +3287,7 @@ export class CostView extends AuthedElement {
     if (creation) parts.push(`cache creation ${creation} per 1M`);
     if (blended) parts.push(`blended ${blended} per 1M`);
     if (typeof override.request_price === 'number') {
-      parts.push(`${this.formatCurrency(override.request_price)} per request`);
+      parts.push(`${formatUsd(override.request_price)} per request`);
     }
     if (typeof override.discount_percent === 'number') {
       parts.push(`${override.discount_percent}% off list`);
@@ -3305,7 +3336,9 @@ export class CostView extends AuthedElement {
         <td>
           ${
             typeof override.request_price === 'number'
-              ? this.formatCurrency(override.request_price)
+              ? html`<span title=${formatUsdExact(override.request_price)}
+                  >${formatUsd(override.request_price)}</span
+                >`
               : nothing
           }
         </td>
@@ -3353,26 +3386,28 @@ export class CostView extends AuthedElement {
     }
     return html`
       <div class="analytics-table-wrap">
-        <table class="styled-table" aria-label="Price overrides">
-          <thead>
-            <tr>
-              <th scope="col">Model</th>
-              <th scope="col">Input / 1M</th>
-              <th scope="col">Output / 1M</th>
-              <th scope="col">Cached input / 1M</th>
-              <th scope="col">Cache creation / 1M</th>
-              <th scope="col">Per request</th>
-              <th scope="col">Effective from</th>
-              <th scope="col">Effective until</th>
-              <th scope="col">Created</th>
-              <th scope="col">Notes</th>
-              <th scope="col">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${overrides.map((override) => this.renderOverrideRow(override))}
-          </tbody>
-        </table>
+        <div class="table-scroll">
+          <table class="styled-table" aria-label="Price overrides">
+            <thead>
+              <tr>
+                <th scope="col">Model</th>
+                <th scope="col">Input / 1M</th>
+                <th scope="col">Output / 1M</th>
+                <th scope="col">Cached input / 1M</th>
+                <th scope="col">Cache creation / 1M</th>
+                <th scope="col">Per request</th>
+                <th scope="col">Effective from</th>
+                <th scope="col">Effective until</th>
+                <th scope="col">Created</th>
+                <th scope="col">Notes</th>
+                <th scope="col">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${overrides.map((override) => this.renderOverrideRow(override))}
+            </tbody>
+          </table>
+        </div>
       </div>
     `;
   }

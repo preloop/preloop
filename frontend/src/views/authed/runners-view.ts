@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -104,124 +105,127 @@ export class RunnersView extends LitElement {
   private static readonly maxConcurrency = 32;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      :host {
-        display: block;
-        font-size: 14px;
-      }
-      .muted {
-        color: var(--sl-color-neutral-500);
-        font-size: 13px;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-      }
-      th,
-      td {
-        text-align: left;
-        padding: 8px 10px;
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-        font-size: 14px;
-        vertical-align: top;
-      }
-      th {
-        font-size: 13px;
-        font-weight: 600;
-        color: var(--sl-color-neutral-600);
-      }
-      .labels {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 4px;
-      }
-      a {
-        color: var(--sl-color-primary-600);
-      }
-      /*
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        :host {
+          display: block;
+          font-size: 14px;
+        }
+        .muted {
+          color: var(--sl-color-neutral-500);
+          font-size: 13px;
+        }
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        th,
+        td {
+          text-align: left;
+          padding: 8px 10px;
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+          font-size: 14px;
+          vertical-align: top;
+        }
+        th {
+          font-size: 13px;
+          font-weight: 600;
+          color: var(--sl-color-neutral-600);
+        }
+        .labels {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 4px;
+        }
+        a {
+          color: var(--sl-color-primary-600);
+        }
+        /*
        * An empty page states one fact and hands over one command. The old
        * treatment (a 580px card, a 72px badge icon and a full width primary
        * button) spent a screen saying "nothing here yet".
        */
-      .empty-state {
-        /* The shared recipe stacks its empty states in a column; this one is
+        .empty-state {
+          /* The shared recipe stacks its empty states in a column; this one is
            a sentence, a command and a link that read as one line. Declared in
            full, including the 72px box, so it does not depend on which half
            of console-styles.css the cascade leaves standing. */
-        box-sizing: border-box;
-        display: flex;
-        flex-flow: row wrap;
-        align-items: center;
-        justify-content: center;
-        gap: var(--sl-spacing-x-small) var(--sl-spacing-small);
-        margin: 0;
-        min-height: 72px;
-        padding: var(--sl-spacing-medium);
-        color: var(--sl-color-neutral-600);
-        font-size: 13px;
-      }
-      .empty-command {
-        display: inline-flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-        font-family: var(--sl-font-mono);
-      }
-      .empty-command code {
-        background: var(--sl-color-neutral-100);
-        border-radius: var(--sl-border-radius-small);
-        color: var(--sl-color-neutral-800);
-        padding: 1px 6px;
-      }
-      .default-pool {
-        margin: 0 0 var(--sl-spacing-large);
-        max-width: 420px;
-      }
-      .default-pool sl-select {
-        margin-bottom: var(--sl-spacing-2x-small);
-      }
-      .slots {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .slot-edit {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .slot-edit sl-input {
-        width: 5.5rem;
-      }
-      .executions {
-        display: flex;
-        flex-direction: column;
-        gap: 2px;
-      }
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-2x-small);
-      }
-      .action-notice td {
-        border-bottom: 1px solid var(--sl-color-neutral-200);
-        color: var(--sl-color-neutral-700);
-        font-size: 13px;
-      }
-      .action-notice sl-button {
-        margin-left: var(--sl-spacing-x-small);
-      }
-      .table-scroll {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
-      }
-      .table-scroll table {
-        min-width: 720px;
-      }
-      .load-error-actions {
-        margin-top: var(--sl-spacing-small);
-      }
-    `,
+          box-sizing: border-box;
+          display: flex;
+          flex-flow: row wrap;
+          align-items: center;
+          justify-content: center;
+          gap: var(--sl-spacing-x-small) var(--sl-spacing-small);
+          margin: 0;
+          min-height: 72px;
+          padding: var(--sl-spacing-medium);
+          color: var(--sl-color-neutral-600);
+          font-size: 13px;
+        }
+        .empty-command {
+          display: inline-flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+          font-family: var(--sl-font-mono);
+        }
+        .empty-command code {
+          background: var(--sl-color-neutral-100);
+          border-radius: var(--sl-border-radius-small);
+          color: var(--sl-color-neutral-800);
+          padding: 1px 6px;
+        }
+        .default-pool {
+          margin: 0 0 var(--sl-spacing-large);
+          max-width: 420px;
+        }
+        .default-pool sl-select {
+          margin-bottom: var(--sl-spacing-2x-small);
+        }
+        .slots {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .slot-edit {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .slot-edit sl-input {
+          width: 5.5rem;
+        }
+        .executions {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-2x-small);
+        }
+        .action-notice td {
+          border-bottom: 1px solid var(--sl-color-neutral-200);
+          color: var(--sl-color-neutral-700);
+          font-size: 13px;
+        }
+        .action-notice sl-button {
+          margin-left: var(--sl-spacing-x-small);
+        }
+        .table-scroll {
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+        }
+        .table-scroll table {
+          min-width: 720px;
+        }
+        .load-error-actions {
+          margin-top: var(--sl-spacing-small);
+        }
+      `,
+    ],
   ];
 
   connectedCallback() {
@@ -656,107 +660,109 @@ export class RunnersView extends LitElement {
                   <!-- Nine columns do not fit a phone: the table scrolls
                        sideways inside this box instead of the whole page. -->
                   <div class="table-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Labels</th>
-                          <th>Registered by</th>
-                          <th>Host</th>
-                          <th>Status</th>
-                          <th>Last heartbeat</th>
-                          <th>Running / slots</th>
-                          <th>Executions</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${this.runners.map(
-                          (row) => html`
-                            <tr>
-                              <td>${row.name}</td>
-                              <td>
-                                <div class="labels">
-                                  ${(row.labels || []).map(
-                                    (label) =>
-                                      html`<sl-badge class="chip" pill
-                                        >${label}</sl-badge
-                                      >`
-                                  )}
-                                </div>
-                              </td>
-                              <td class="muted">
-                                ${row.registered_by_email || '-'}
-                              </td>
-                              <td>
-                                ${row.hostname || '-'}
-                                <div class="muted">
-                                  ${[row.os, row.arch].filter(Boolean).join('/')}
-                                </div>
-                              </td>
-                              <td>
-                                <sl-badge
-                                  class="chip"
-                                  pill
-                                  variant=${this.statusVariant(row.status)}
-                                >
-                                  ${this.statusLabel(row.status)}
-                                </sl-badge>
-                                ${
-                                  /*
-                                   * An ephemeral runner is only worth pointing
-                                   * out while it is here: the row vanishes with
-                                   * the CI job, so a reader seeing this badge
-                                   * knows not to expect it back.
-                                   */
-                                  row.ephemeral && this.isPresent(row.status)
-                                    ? html`<sl-badge
-                                        class="chip"
-                                        pill
-                                        variant="neutral"
-                                        title="One-shot CI runner. It unregisters when its job ends."
-                                        >ephemeral</sl-badge
-                                      >`
-                                    : nothing
-                                }
-                              </td>
-                              <td class="muted">
-                                ${
-                                  row.last_heartbeat
-                                    ? html`<span
-                                        title=${formatLocalDateTime(
-                                          row.last_heartbeat
-                                        )}
-                                        >${formatRelativeTime(
-                                          row.last_heartbeat
-                                        )}</span
-                                      >`
-                                    : '-'
-                                }
-                              </td>
-                              <td>${this.renderSlots(row)}</td>
-                              <td>
-                                ${
-                                  this.runningIdsOf(row).length === 0
-                                    ? html`<span class="muted">Idle</span>`
-                                    : html`<div class="executions">
-                                        ${this.runningIdsOf(row).map(
-                                          (executionId) =>
-                                            html`<a
-                                              href="/console/flows/executions/${executionId}"
-                                              >${executionId.slice(0, 8)}…</a
-                                            >`
-                                        )}
-                                      </div>`
-                                }
-                              </td>
-                              <td>${this.renderActions(row)}</td>
-                            </tr>
-                            ${this.renderActionNotice(row)}
-                          `
-                        )}
-                      </tbody>
-                    </table>
+                    <div class="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Name</th>
+                            <th>Labels</th>
+                            <th>Registered by</th>
+                            <th>Host</th>
+                            <th>Status</th>
+                            <th>Last heartbeat</th>
+                            <th>Running / slots</th>
+                            <th>Executions</th>
+                            <th>Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${this.runners.map(
+                            (row) => html`
+                              <tr>
+                                <td>${row.name}</td>
+                                <td>
+                                  <div class="labels">
+                                    ${(row.labels || []).map(
+                                      (label) =>
+                                        html`<sl-badge class="chip" pill
+                                          >${label}</sl-badge
+                                        >`
+                                    )}
+                                  </div>
+                                </td>
+                                <td class="muted">
+                                  ${row.registered_by_email || '-'}
+                                </td>
+                                <td>
+                                  ${row.hostname || '-'}
+                                  <div class="muted">
+                                    ${[row.os, row.arch].filter(Boolean).join('/')}
+                                  </div>
+                                </td>
+                                <td>
+                                  <sl-badge
+                                    class="chip"
+                                    pill
+                                    variant=${this.statusVariant(row.status)}
+                                  >
+                                    ${this.statusLabel(row.status)}
+                                  </sl-badge>
+                                  ${
+                                    /*
+                                     * An ephemeral runner is only worth pointing
+                                     * out while it is here: the row vanishes with
+                                     * the CI job, so a reader seeing this badge
+                                     * knows not to expect it back.
+                                     */
+                                    row.ephemeral && this.isPresent(row.status)
+                                      ? html`<sl-badge
+                                          class="chip"
+                                          pill
+                                          variant="neutral"
+                                          title="One-shot CI runner. It unregisters when its job ends."
+                                          >ephemeral</sl-badge
+                                        >`
+                                      : nothing
+                                  }
+                                </td>
+                                <td class="muted">
+                                  ${
+                                    row.last_heartbeat
+                                      ? html`<span
+                                          title=${formatLocalDateTime(
+                                            row.last_heartbeat
+                                          )}
+                                          >${formatRelativeTime(
+                                            row.last_heartbeat
+                                          )}</span
+                                        >`
+                                      : '-'
+                                  }
+                                </td>
+                                <td>${this.renderSlots(row)}</td>
+                                <td>
+                                  ${
+                                    this.runningIdsOf(row).length === 0
+                                      ? html`<span class="muted">Idle</span>`
+                                      : html`<div class="executions">
+                                          ${this.runningIdsOf(row).map(
+                                            (executionId) =>
+                                              html`<a
+                                                href="/console/flows/executions/${executionId}"
+                                                >${executionId.slice(0, 8)}…</a
+                                              >`
+                                          )}
+                                        </div>`
+                                  }
+                                </td>
+                                <td>${this.renderActions(row)}</td>
+                              </tr>
+                              ${this.renderActionNotice(row)}
+                            `
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 `
       }

@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
@@ -424,14 +425,6 @@ export class UsageCard extends LitElement {
     }).format(amount);
   }
 
-  private formatCurrency(value: number | null | undefined): string {
-    const amount = Number(value || 0);
-    if (amount > 0 && amount < 0.01) {
-      return `$${amount.toFixed(4)}`;
-    }
-    return `$${amount.toFixed(2)}`;
-  }
-
   private handleRangeChange(event: CustomEvent<{ value: string }>) {
     event.stopPropagation();
     this.dispatchEvent(
@@ -488,7 +481,9 @@ export class UsageCard extends LitElement {
     if (this.unit === 'dollars') {
       return html`
         <div>
-          <div class="primary-value">${this.formatCurrency(cost)}</div>
+          <div class="primary-value">
+            ${html`<span title=${formatUsdExact(cost)}>${formatUsd(cost)}</span>`}
+          </div>
           <div class="primary-label">
             <span>est. spend · ${this.rangeLabel}</span>
             ${this.renderProvenance()}
@@ -674,10 +669,10 @@ export class UsageCard extends LitElement {
         <div class="budget-row-header">
           <span class="budget-row-label">${label}</span>
           <span class="budget-row-value">
-            ${this.formatCurrency(spend)}
+            ${html`<span title=${formatUsdExact(spend)}>${formatUsd(spend)}</span>`}
             ${
               denominator > 0
-                ? html`/ ${this.formatCurrency(denominator)}`
+                ? html`/ ${formatUsd(denominator)}`
                 : html`<span class="muted">spent</span>`
             }
           </span>
@@ -701,7 +696,7 @@ export class UsageCard extends LitElement {
             periodStart: bounds.start,
             periodEnd: bounds.end,
           },
-          (value) => this.formatCurrency(value)
+          (value) => formatUsd(value)
         )}
       </div>
     `;

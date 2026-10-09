@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import * as api from '../api';
@@ -1323,7 +1324,7 @@ export class AddTrackerModal extends LitElement {
     const actor =
       status.actor?.display_name || status.actor?.nickname || 'unknown actor';
     const expiry = status.expires_at
-      ? new Date(status.expires_at).toLocaleString()
+      ? parseUTCDate(status.expires_at).toLocaleString()
       : 'reported by the provider when connected';
     return html`
       <sl-alert

@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { when } from 'lit/directives/when.js';
@@ -131,127 +132,130 @@ export class IssuesComplianceView extends LitElement {
   }
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      .table-card {
-        width: 100%;
-        --padding: 0;
-        border-spacing: 0;
-      }
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        .table-card {
+          width: 100%;
+          --padding: 0;
+          border-spacing: 0;
+        }
 
-      .styled-table .issue-id {
-        font-weight: var(--sl-font-weight-semibold);
-      }
+        .styled-table .issue-id {
+          font-weight: var(--sl-font-weight-semibold);
+        }
 
-      .issue-key {
-        color: var(--sl-color-neutral-600);
-      }
+        .issue-key {
+          color: var(--sl-color-neutral-600);
+        }
 
-      .faint-row {
-        opacity: 0.5;
-        transition: opacity 0.3s ease-in-out;
-      }
+        .faint-row {
+          opacity: 0.5;
+          transition: opacity 0.3s ease-in-out;
+        }
 
-      .clickable-row {
-        cursor: pointer;
-      }
-      .row-expanded {
-        background-color: var(--sl-color-primary-50);
-      }
+        .clickable-row {
+          cursor: pointer;
+        }
+        .row-expanded {
+          background-color: var(--sl-color-primary-50);
+        }
 
-      .loading-overlay {
-        color: white;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        gap: var(--sl-spacing-medium);
-        z-index: 10000;
-      }
-      .chart-header {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-      }
+        .loading-overlay {
+          color: white;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          gap: var(--sl-spacing-medium);
+          z-index: 10000;
+        }
+        .chart-header {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+        }
 
-      sl-icon {
-        font-size: 1rem;
-      }
+        sl-icon {
+          font-size: 1rem;
+        }
 
-      .placeholder-content {
-        text-align: center;
-      }
+        .placeholder-content {
+          text-align: center;
+        }
 
-      /* Unscored is a state, not a missing value, so it reads as words. */
-      .not-scored {
-        color: var(--console-meta-color, var(--sl-color-neutral-500));
-        font-size: var(--console-text-meta, 0.8125rem);
-      }
+        /* Unscored is a state, not a missing value, so it reads as words. */
+        .not-scored {
+          color: var(--console-meta-color, var(--sl-color-neutral-500));
+          font-size: var(--console-text-meta, 0.8125rem);
+        }
 
-      .search-bar {
-        display: flex;
-        gap: var(--sl-spacing-small);
-        align-items: center;
-        margin-bottom: var(--sl-spacing-medium);
-      }
+        .search-bar {
+          display: flex;
+          gap: var(--sl-spacing-small);
+          align-items: center;
+          margin-bottom: var(--sl-spacing-medium);
+        }
 
-      .search-bar sl-input {
-        flex-grow: 1;
-      }
+        .search-bar sl-input {
+          flex-grow: 1;
+        }
 
-      .review-section {
-        margin-top: 3rem;
-      }
+        .review-section {
+          margin-top: 3rem;
+        }
 
-      .issue-description {
-        font-size: var(--sl-font-size-small);
-        color: var(--sl-color-neutral-700);
-        background-color: var(--sl-color-neutral-100);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-medium);
-        white-space: pre-line;
-        overflow-wrap: break-word;
-        max-height: 400px;
-        overflow-y: auto;
-      }
+        .issue-description {
+          font-size: var(--sl-font-size-small);
+          color: var(--sl-color-neutral-700);
+          background-color: var(--sl-color-neutral-100);
+          border: 1px solid var(--sl-color-neutral-200);
+          border-radius: var(--sl-border-radius-medium);
+          padding: var(--sl-spacing-medium);
+          white-space: pre-line;
+          overflow-wrap: break-word;
+          max-height: 400px;
+          overflow-y: auto;
+        }
 
-      .compliance-reason,
-      .compliance-suggestion {
-        margin-top: var(--sl-spacing-small);
-      }
+        .compliance-reason,
+        .compliance-suggestion {
+          margin-top: var(--sl-spacing-small);
+        }
 
-      .compliance-title {
-        display: block;
-        margin-top: var(--sl-spacing-medium);
-        margin-bottom: var(--sl-spacing-x-small);
-        font-weight: var(--sl-font-weight-semibold);
-      }
+        .compliance-title {
+          display: block;
+          margin-top: var(--sl-spacing-medium);
+          margin-bottom: var(--sl-spacing-x-small);
+          font-weight: var(--sl-font-weight-semibold);
+        }
 
-      .review-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: var(--sl-spacing-medium);
-      }
+        .review-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: var(--sl-spacing-medium);
+        }
 
-      .score-container {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-top: var(--sl-spacing-medium);
-      }
+        .score-container {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: var(--sl-spacing-medium);
+        }
 
-      .score-container .compliance-title {
-        margin: 0;
-      }
+        .score-container .compliance-title {
+          margin: 0;
+        }
 
-      .improve-button-container {
-        display: flex;
-        justify-content: flex-end;
-        margin-top: var(--sl-spacing-medium);
-      }
-    `,
+        .improve-button-container {
+          display: flex;
+          justify-content: flex-end;
+          margin-top: var(--sl-spacing-medium);
+        }
+      `,
+    ],
   ];
 
   async connectedCallback() {
@@ -678,125 +682,131 @@ export class IssuesComplianceView extends LitElement {
     return html`
       <div class="table-container">
         <sl-card class="table-card">
-          <table class="styled-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Title</th>
-                <th>Project</th>
-                <th>Status</th>
-                <th>${this._complianceMetricName}</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${this._issues.map((issue) => {
-                const issueId = issue.id;
-                const isExpanded = this._expandedRowKey === issueId;
-                const project = this._allProjects.find(
-                  (p) => p.id === issue.project_id
-                );
-                const complianceResult = this._complianceResults[issue.id];
+          <div class="table-scroll">
+            <table class="styled-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Title</th>
+                  <th>Project</th>
+                  <th>Status</th>
+                  <th>${this._complianceMetricName}</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${this._issues.map((issue) => {
+                  const issueId = issue.id;
+                  const isExpanded = this._expandedRowKey === issueId;
+                  const project = this._allProjects.find(
+                    (p) => p.id === issue.project_id
+                  );
+                  const complianceResult = this._complianceResults[issue.id];
 
-                return html`
-                  <tr
-                    class="clickable-row ${isExpanded ? 'row-expanded' : ''}"
-                    @click=${() => this._toggleRow(issueId)}
-                  >
-                    <td>
-                      <a
-                        href="${issue.url}"
-                        target="_blank"
-                        @click=${(e: Event) => e.stopPropagation()}
-                        >${issue.key}</a
-                      >
-                    </td>
-                    <td>${issue.title}</td>
-                    <td>${project?.name || 'N/A'}</td>
-                    <td>
-                      <sl-badge
-                        class="chip"
-                        pill
-                        variant=${getStatusVariant(issue.status)}
-                      >
-                        ${complianceStatusLabel(issue.status)}
-                      </sl-badge>
-                    </td>
-                    <td>
-                      ${when(
-                        this._loadingCompliance[issue.id],
-                        () => html`<sl-spinner></sl-spinner>`,
-                        () => {
-                          return complianceResult
-                            ? html`
-                                <sl-tooltip content=${complianceResult.reason}>
-                                  <sl-badge
-                                    variant=${getComplianceVariant(
-                                      complianceResult.compliance_factor
-                                    )}
-                                    pill
+                  return html`
+                    <tr
+                      class="clickable-row ${isExpanded ? 'row-expanded' : ''}"
+                      @click=${() => this._toggleRow(issueId)}
+                    >
+                      <td>
+                        <a
+                          href="${issue.url}"
+                          target="_blank"
+                          @click=${(e: Event) => e.stopPropagation()}
+                          >${issue.key}</a
+                        >
+                      </td>
+                      <td>${issue.title}</td>
+                      <td>${project?.name || 'N/A'}</td>
+                      <td>
+                        <sl-badge
+                          class="chip"
+                          pill
+                          variant=${getStatusVariant(issue.status)}
+                        >
+                          ${complianceStatusLabel(issue.status)}
+                        </sl-badge>
+                      </td>
+                      <td>
+                        ${when(
+                          this._loadingCompliance[issue.id],
+                          () => html`<sl-spinner></sl-spinner>`,
+                          () => {
+                            return complianceResult
+                              ? html`
+                                  <sl-tooltip
+                                    content=${complianceResult.reason}
                                   >
-                                    ${(
-                                      complianceResult.compliance_factor * 100
-                                    ).toFixed(0)}%
-                                  </sl-badge>
-                                </sl-tooltip>
-                              `
-                            : html`<span class="not-scored">Not scored</span>`;
+                                    <sl-badge
+                                      variant=${getComplianceVariant(
+                                        complianceResult.compliance_factor
+                                      )}
+                                      pill
+                                    >
+                                      ${(
+                                        complianceResult.compliance_factor * 100
+                                      ).toFixed(0)}%
+                                    </sl-badge>
+                                  </sl-tooltip>
+                                `
+                              : html`<span class="not-scored"
+                                  >Not scored</span
+                                >`;
+                          }
+                        )}
+                      </td>
+                      <td>
+                        ${
+                          this._canImprove(complianceResult)
+                            ? html`<sl-button
+                                size="small"
+                                variant="primary"
+                                outline
+                                @click=${(e: Event) => {
+                                  e.stopPropagation();
+                                  this._openImproveComplianceModal(issue);
+                                }}
+                              >
+                                Improve
+                              </sl-button>`
+                            : html`<sl-button
+                                size="small"
+                                ?loading=${this._loadingCompliance[issue.id]}
+                                @click=${(e: Event) => {
+                                  e.stopPropagation();
+                                  void this._loadComplianceResult(issue.id);
+                                }}
+                              >
+                                Score
+                              </sl-button>`
                         }
-                      )}
-                    </td>
-                    <td>
-                      ${
-                        this._canImprove(complianceResult)
-                          ? html`<sl-button
-                              size="small"
-                              variant="primary"
-                              outline
-                              @click=${(e: Event) => {
-                                e.stopPropagation();
-                                this._openImproveComplianceModal(issue);
-                              }}
-                            >
-                              Improve
-                            </sl-button>`
-                          : html`<sl-button
-                              size="small"
-                              ?loading=${this._loadingCompliance[issue.id]}
-                              @click=${(e: Event) => {
-                                e.stopPropagation();
-                                void this._loadComplianceResult(issue.id);
-                              }}
-                            >
-                              Score
-                            </sl-button>`
-                      }
-                    </td>
-                  </tr>
-                  ${
-                    isExpanded
-                      ? html`
-                          <tr class="inline-detail-row">
-                            <td colspan="6">
-                              <div class="detail-view-card">
-                                <single-issue-detail-view .issue=${issue}>
-                                  <div slot="additional-info">
-                                    ${this._renderComplianceDetails(
-                                      issue,
-                                      complianceResult
-                                    )}
-                                  </div>
-                                </single-issue-detail-view>
-                              </div>
-                            </td>
-                          </tr>
-                        `
-                      : ''
-                  }
-                `;
-              })}
-            </tbody>
-          </table>
+                      </td>
+                    </tr>
+                    ${
+                      isExpanded
+                        ? html`
+                            <tr class="inline-detail-row">
+                              <td colspan="6">
+                                <div class="detail-view-card">
+                                  <single-issue-detail-view .issue=${issue}>
+                                    <div slot="additional-info">
+                                      ${this._renderComplianceDetails(
+                                        issue,
+                                        complianceResult
+                                      )}
+                                    </div>
+                                  </single-issue-detail-view>
+                                </div>
+                              </td>
+                            </tr>
+                          `
+                        : ''
+                    }
+                  `;
+                })}
+              </tbody>
+            </table>
+          </div>
         </sl-card>
         <pagination-controls
           .currentPage=${this._currentPage}

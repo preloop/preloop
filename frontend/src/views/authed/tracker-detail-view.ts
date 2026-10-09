@@ -1,3 +1,4 @@
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -185,320 +186,323 @@ export class TrackerDetailView extends LitElement {
   private readonly _prsPageSize = 20;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      .tracker-header {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-medium);
-        margin-bottom: var(--sl-spacing-small);
-      }
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        .tracker-header {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-medium);
+          margin-bottom: var(--sl-spacing-small);
+        }
 
-      .tracker-icon {
-        font-size: 2.5rem;
-        color: var(--sl-color-primary-600);
-      }
+        .tracker-icon {
+          font-size: 2.5rem;
+          color: var(--sl-color-primary-600);
+        }
 
-      .tracker-meta {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-medium);
-        margin-bottom: var(--sl-spacing-medium);
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-      }
+        .tracker-meta {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-medium);
+          margin-bottom: var(--sl-spacing-medium);
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+        }
 
-      .tracker-meta span {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-x-small);
-      }
+        .tracker-meta span {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-x-small);
+        }
 
-      .managed-connection-panel {
-        margin: 0 0 var(--sl-spacing-large) 0;
-      }
+        .managed-connection-panel {
+          margin: 0 0 var(--sl-spacing-large) 0;
+        }
 
-      .managed-connection-facts {
-        display: grid;
-        grid-template-columns: max-content 1fr;
-        gap: var(--sl-spacing-2x-small) var(--sl-spacing-medium);
-        margin: 0;
-        font-size: var(--sl-font-size-small);
-      }
+        .managed-connection-facts {
+          display: grid;
+          grid-template-columns: max-content 1fr;
+          gap: var(--sl-spacing-2x-small) var(--sl-spacing-medium);
+          margin: 0;
+          font-size: var(--sl-font-size-small);
+        }
 
-      .managed-connection-facts dt {
-        color: var(--sl-color-neutral-600);
-      }
+        .managed-connection-facts dt {
+          color: var(--sl-color-neutral-600);
+        }
 
-      .managed-connection-facts dd {
-        margin: 0;
-      }
+        .managed-connection-facts dd {
+          margin: 0;
+        }
 
-      .scope-summary {
-        margin: 0 0 var(--sl-spacing-large) 0;
-        padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-50);
-        border-radius: var(--sl-border-radius-medium);
-        font-size: var(--sl-font-size-small);
-        color: var(--sl-color-neutral-700);
-        line-height: 1.5;
-      }
+        .scope-summary {
+          margin: 0 0 var(--sl-spacing-large) 0;
+          padding: var(--sl-spacing-medium);
+          background: var(--sl-color-neutral-50);
+          border-radius: var(--sl-border-radius-medium);
+          font-size: var(--sl-font-size-small);
+          color: var(--sl-color-neutral-700);
+          line-height: 1.5;
+        }
 
-      .scope-summary strong {
-        color: var(--sl-color-neutral-900);
-      }
+        .scope-summary strong {
+          color: var(--sl-color-neutral-900);
+        }
 
-      .section-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--sl-spacing-medium);
-        flex-wrap: wrap;
-        margin: var(--sl-spacing-large) 0 var(--sl-spacing-medium) 0;
-      }
+        .section-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: var(--sl-spacing-medium);
+          flex-wrap: wrap;
+          margin: var(--sl-spacing-large) 0 var(--sl-spacing-medium) 0;
+        }
 
-      .section-title {
-        font-size: var(--sl-font-size-large);
-        font-weight: var(--sl-font-weight-semibold);
-        margin: 0;
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-x-small);
-      }
+        .section-title {
+          font-size: var(--sl-font-size-large);
+          font-weight: var(--sl-font-weight-semibold);
+          margin: 0;
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-x-small);
+        }
 
-      .analytics-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-        gap: var(--sl-spacing-medium);
-      }
+        .analytics-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          gap: var(--sl-spacing-medium);
+        }
 
-      .analytics-card {
-        cursor: pointer;
-        transition: box-shadow 0.2s ease;
-      }
+        .analytics-card {
+          cursor: pointer;
+          transition: box-shadow 0.2s ease;
+        }
 
-      .analytics-card:hover {
-        box-shadow: var(--sl-shadow-medium);
-      }
+        .analytics-card:hover {
+          box-shadow: var(--sl-shadow-medium);
+        }
 
-      .analytics-card .card-header {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-        margin-bottom: var(--sl-spacing-small);
-      }
+        .analytics-card .card-header {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-small);
+          margin-bottom: var(--sl-spacing-small);
+        }
 
-      .analytics-card .card-header sl-icon {
-        font-size: 1.25rem;
-        color: var(--sl-color-primary-600);
-      }
+        .analytics-card .card-header sl-icon {
+          font-size: 1.25rem;
+          color: var(--sl-color-primary-600);
+        }
 
-      .analytics-card .card-header h3 {
-        margin: 0;
-        font-size: var(--sl-font-size-medium);
-      }
+        .analytics-card .card-header h3 {
+          margin: 0;
+          font-size: var(--sl-font-size-medium);
+        }
 
-      .analytics-card p {
-        margin: 0;
-        color: var(--sl-color-neutral-600);
-        font-size: var(--sl-font-size-small);
-      }
+        .analytics-card p {
+          margin: 0;
+          color: var(--sl-color-neutral-600);
+          font-size: var(--sl-font-size-small);
+        }
 
-      .org-group {
-        margin-bottom: var(--sl-spacing-large);
-      }
+        .org-group {
+          margin-bottom: var(--sl-spacing-large);
+        }
 
-      .org-group:last-child {
-        margin-bottom: 0;
-      }
+        .org-group:last-child {
+          margin-bottom: 0;
+        }
 
-      .org-header {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-x-small);
-        margin-bottom: var(--sl-spacing-small);
-        font-size: var(--sl-font-size-small);
-        font-weight: var(--sl-font-weight-semibold);
-        color: var(--sl-color-neutral-700);
-      }
+        .org-header {
+          display: flex;
+          align-items: center;
+          gap: var(--sl-spacing-x-small);
+          margin-bottom: var(--sl-spacing-small);
+          font-size: var(--sl-font-size-small);
+          font-weight: var(--sl-font-weight-semibold);
+          color: var(--sl-color-neutral-700);
+        }
 
-      .projects-list {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-x-small);
-      }
+        .projects-list {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-x-small);
+        }
 
-      .project-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: var(--sl-spacing-medium);
-        padding: var(--sl-spacing-small) 0;
-        border-bottom: 1px solid var(--console-hairline);
-        font-size: var(--console-text-body);
-      }
+        .project-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: var(--sl-spacing-medium);
+          padding: var(--sl-spacing-small) 0;
+          border-bottom: 1px solid var(--console-hairline);
+          font-size: var(--console-text-body);
+        }
 
-      .project-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-x-small);
-        flex-shrink: 0;
-      }
+        .project-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-x-small);
+          flex-shrink: 0;
+        }
 
-      .project-row:last-child {
-        border-bottom: none;
-      }
+        .project-row:last-child {
+          border-bottom: none;
+        }
 
-      sl-tab-group::part(tabs) {
-        border-bottom: 1px solid var(--console-hairline);
-      }
+        sl-tab-group::part(tabs) {
+          border-bottom: 1px solid var(--console-hairline);
+        }
 
-      sl-tab::part(base) {
-        font-size: var(--console-text-body);
-      }
+        sl-tab::part(base) {
+          font-size: var(--console-text-body);
+        }
 
-      /* Issues and pull requests are collections, so their tabs are panes
+        /* Issues and pull requests are collections, so their tabs are panes
          that span the page: a filter bar, then the table, with no card
          around them and no title (the tab is the title). Flows is the
          reference collection page and this is the same bar. */
-      .collection-pane {
-        display: block;
-        width: 100%;
-        padding-top: var(--sl-spacing-medium);
-      }
+        .collection-pane {
+          display: block;
+          width: 100%;
+          padding-top: var(--sl-spacing-medium);
+        }
 
-      .collection-pane list-toolbar {
-        margin-bottom: var(--sl-spacing-small);
-      }
+        .collection-pane list-toolbar {
+          margin-bottom: var(--sl-spacing-small);
+        }
 
-      .collection-pane sl-select {
-        min-width: 180px;
-      }
+        .collection-pane sl-select {
+          min-width: 180px;
+        }
 
-      /* The bar has no room for a stacked label above every control, so each
+        /* The bar has no room for a stacked label above every control, so each
          select names itself inside its own combobox ("Project Alpha",
          "Status Open") and the label is left for assistive tech. A dropdown
          reading only "Alpha" names nothing. */
-      .collection-pane sl-select .select-name {
-        color: var(--console-meta-color, var(--sl-color-neutral-500));
-      }
+        .collection-pane sl-select .select-name {
+          color: var(--console-meta-color, var(--sl-color-neutral-500));
+        }
 
-      .collection-pane sl-select::part(form-control-label) {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-        border: 0;
-      }
+        .collection-pane sl-select::part(form-control-label) {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+          white-space: nowrap;
+          border: 0;
+        }
 
-      .collection-pane .styled-table {
-        width: 100%;
-      }
+        .collection-pane .styled-table {
+          width: 100%;
+        }
 
-      .actions-cell {
-        width: 56px;
-        text-align: right;
-        overflow: visible;
-      }
+        .actions-cell {
+          width: 56px;
+          text-align: right;
+          overflow: visible;
+        }
 
-      .select-col {
-        width: 2.5rem;
-      }
+        .select-col {
+          width: 2.5rem;
+        }
 
-      /* One line, the height of a table row, so an empty pane is the same
+        /* One line, the height of a table row, so an empty pane is the same
          page as a full one rather than a collapsed card. */
-      .issues-empty,
-      .issues-error,
-      .prs-empty,
-      .prs-error {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-x-small);
-        min-height: 72px;
-        border-top: 1px solid var(--console-hairline);
-        color: var(--console-meta-color);
-        font-size: var(--console-text-body);
-      }
+        .issues-empty,
+        .issues-error,
+        .prs-empty,
+        .prs-error {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-x-small);
+          min-height: 72px;
+          border-top: 1px solid var(--console-hairline);
+          color: var(--console-meta-color);
+          font-size: var(--console-text-body);
+        }
 
-      .live-note,
-      .pr-branches {
-        font-size: 13px;
-        color: var(--console-meta-color);
-      }
+        .live-note,
+        .pr-branches {
+          font-size: 13px;
+          color: var(--console-meta-color);
+        }
 
-      .live-note {
-        margin: 0 0 var(--sl-spacing-small) 0;
-      }
+        .live-note {
+          margin: 0 0 var(--sl-spacing-small) 0;
+        }
 
-      .load-more {
-        display: block;
-        margin-top: var(--sl-spacing-small);
-        font-size: var(--console-text-meta);
-      }
+        .load-more {
+          display: block;
+          margin-top: var(--sl-spacing-small);
+          font-size: var(--console-text-meta);
+        }
 
-      .visually-hidden {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-      }
+        .visually-hidden {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+          white-space: nowrap;
+        }
 
-      .project-info {
-        display: flex;
-        align-items: flex-start;
-        gap: var(--sl-spacing-small);
-        min-width: 0;
-      }
+        .project-info {
+          display: flex;
+          align-items: flex-start;
+          gap: var(--sl-spacing-small);
+          min-width: 0;
+        }
 
-      .project-text {
-        min-width: 0;
-      }
+        .project-text {
+          min-width: 0;
+        }
 
-      .project-name {
-        font-weight: var(--sl-font-weight-semibold);
-        color: var(--sl-color-neutral-900);
-      }
+        .project-name {
+          font-weight: var(--sl-font-weight-semibold);
+          color: var(--sl-color-neutral-900);
+        }
 
-      .project-description {
-        color: var(--sl-color-neutral-500);
-        font-size: var(--sl-font-size-x-small);
-        margin-top: 2px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
+        .project-description {
+          color: var(--sl-color-neutral-500);
+          font-size: var(--sl-font-size-x-small);
+          margin-top: 2px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
 
-      .header-actions {
-        display: flex;
-        justify-content: flex-end;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-        flex: 1;
-        min-width: min(100%, 360px);
-      }
+        .header-actions {
+          display: flex;
+          justify-content: flex-end;
+          align-items: center;
+          gap: var(--sl-spacing-small);
+          flex: 1;
+          min-width: min(100%, 360px);
+        }
 
-      .project-subgroup {
-        font-size: var(--console-text-meta, var(--sl-font-size-small));
-        font-weight: var(--sl-font-weight-semibold);
-        color: var(--console-meta-color);
-        padding: var(--sl-spacing-x-small) 0;
-      }
+        .project-subgroup {
+          font-size: var(--console-text-meta, var(--sl-font-size-small));
+          font-weight: var(--sl-font-weight-semibold);
+          color: var(--console-meta-color);
+          padding: var(--sl-spacing-x-small) 0;
+        }
 
-      .no-analytics,
-      .no-projects {
-        padding: var(--sl-spacing-medium) 0;
-        color: var(--console-meta-color);
-        font-size: var(--console-text-body);
-        line-height: 1.5;
-      }
-    `,
+        .no-analytics,
+        .no-projects {
+          padding: var(--sl-spacing-medium) 0;
+          color: var(--console-meta-color);
+          font-size: var(--console-text-body);
+          line-height: 1.5;
+        }
+      `,
+    ],
   ];
 
   connectedCallback() {
@@ -1593,118 +1597,122 @@ export class TrackerDetailView extends LitElement {
                     }
                   </div>`
                 : html`
-                    <table class="styled-table">
-                      <thead>
-                        <tr>
-                          <th class="select-col">
-                            <sl-checkbox
-                              ?checked=${
-                                this._visibleIssues().length > 0 &&
-                                this._selectedVisibleIssues().length ===
-                                  Math.min(
-                                    this._visibleIssues().length,
-                                    this._triageBatchMax
-                                  )
-                              }
-                              ?indeterminate=${
-                                this._selectedVisibleIssues().length > 0 &&
-                                this._selectedVisibleIssues().length <
-                                  Math.min(
-                                    this._visibleIssues().length,
-                                    this._triageBatchMax
-                                  )
-                              }
-                              @sl-change=${(event: Event) => {
-                                const checkbox = event.target as {
-                                  checked?: boolean;
-                                };
-                                this._toggleSelectVisible(
-                                  Boolean(checkbox.checked)
-                                );
-                              }}
-                            >
-                              <span class="visually-hidden">Select issues</span>
-                            </sl-checkbox>
-                          </th>
-                          <th>Key</th>
-                          <th>Title</th>
-                          <th>Status</th>
-                          <th>Updated</th>
-                          <th>
-                            <span class="visually-hidden">Actions</span>
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${visible.map(
-                          (issue) => html`
-                            <tr>
-                              <td class="select-col">
-                                <sl-checkbox
-                                  ?checked=${this._selectedIssueIds.includes(
-                                    issue.id
-                                  )}
-                                  ?disabled=${
-                                    !this._selectedIssueIds.includes(
-                                      issue.id
-                                    ) &&
-                                    this._selectedIssueIds.length >=
+                    <div class="table-scroll">
+                      <table class="styled-table">
+                        <thead>
+                          <tr>
+                            <th class="select-col">
+                              <sl-checkbox
+                                ?checked=${
+                                  this._visibleIssues().length > 0 &&
+                                  this._selectedVisibleIssues().length ===
+                                    Math.min(
+                                      this._visibleIssues().length,
                                       this._triageBatchMax
-                                  }
-                                  @sl-change=${(event: Event) => {
-                                    const checkbox = event.target as {
-                                      checked?: boolean;
-                                    };
-                                    this._toggleIssueSelection(
-                                      issue.id,
-                                      Boolean(checkbox.checked)
-                                    );
-                                  }}
-                                >
-                                  <span class="visually-hidden"
-                                    >Select ${issue.key}</span
-                                  >
-                                </sl-checkbox>
-                              </td>
-                              <td>
-                                <a
-                                  href="/console/trackers/${this._trackerId}/issues/${issue.id}"
-                                >
-                                  ${issue.key}
-                                </a>
-                              </td>
-                              <td>${issue.title}</td>
-                              <td>
-                                <sl-badge
-                                  pill
-                                  variant=${getStatusVariant(
-                                    issue.status || ''
-                                  )}
-                                  >${issue.status}</sl-badge
-                                >
-                              </td>
-                              <td title=${issue.updated_at}>
-                                ${formatRelativeTime(issue.updated_at)}
-                              </td>
-                              <td class="actions-cell">
-                                ${
-                                  this._isGitTracker()
-                                    ? html`
-                                        <resource-actions
-                                          menu-only
-                                          .actions=${this._issueRowActions(
-                                            issue
-                                          )}
-                                        ></resource-actions>
-                                      `
-                                    : nothing
+                                    )
                                 }
-                              </td>
-                            </tr>
-                          `
-                        )}
-                      </tbody>
-                    </table>
+                                ?indeterminate=${
+                                  this._selectedVisibleIssues().length > 0 &&
+                                  this._selectedVisibleIssues().length <
+                                    Math.min(
+                                      this._visibleIssues().length,
+                                      this._triageBatchMax
+                                    )
+                                }
+                                @sl-change=${(event: Event) => {
+                                  const checkbox = event.target as {
+                                    checked?: boolean;
+                                  };
+                                  this._toggleSelectVisible(
+                                    Boolean(checkbox.checked)
+                                  );
+                                }}
+                              >
+                                <span class="visually-hidden"
+                                  >Select issues</span
+                                >
+                              </sl-checkbox>
+                            </th>
+                            <th>Key</th>
+                            <th>Title</th>
+                            <th>Status</th>
+                            <th>Updated</th>
+                            <th>
+                              <span class="visually-hidden">Actions</span>
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${visible.map(
+                            (issue) => html`
+                              <tr>
+                                <td class="select-col">
+                                  <sl-checkbox
+                                    ?checked=${this._selectedIssueIds.includes(
+                                      issue.id
+                                    )}
+                                    ?disabled=${
+                                      !this._selectedIssueIds.includes(
+                                        issue.id
+                                      ) &&
+                                      this._selectedIssueIds.length >=
+                                        this._triageBatchMax
+                                    }
+                                    @sl-change=${(event: Event) => {
+                                      const checkbox = event.target as {
+                                        checked?: boolean;
+                                      };
+                                      this._toggleIssueSelection(
+                                        issue.id,
+                                        Boolean(checkbox.checked)
+                                      );
+                                    }}
+                                  >
+                                    <span class="visually-hidden"
+                                      >Select ${issue.key}</span
+                                    >
+                                  </sl-checkbox>
+                                </td>
+                                <td>
+                                  <a
+                                    href="/console/trackers/${this._trackerId}/issues/${issue.id}"
+                                  >
+                                    ${issue.key}
+                                  </a>
+                                </td>
+                                <td>${issue.title}</td>
+                                <td>
+                                  <sl-badge
+                                    pill
+                                    variant=${getStatusVariant(
+                                      issue.status || ''
+                                    )}
+                                    >${issue.status}</sl-badge
+                                  >
+                                </td>
+                                <td title=${issue.updated_at}>
+                                  ${formatRelativeTime(issue.updated_at)}
+                                </td>
+                                <td class="actions-cell">
+                                  ${
+                                    this._isGitTracker()
+                                      ? html`
+                                          <resource-actions
+                                            menu-only
+                                            .actions=${this._issueRowActions(
+                                              issue
+                                            )}
+                                          ></resource-actions>
+                                        `
+                                      : nothing
+                                  }
+                                </td>
+                              </tr>
+                            `
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                     ${
                       canLoadMore
                         ? html`<sl-button
@@ -1762,52 +1770,54 @@ export class TrackerDetailView extends LitElement {
                 ? this._renderPrsError()
                 : html`<div class="prs-empty">${empty}</div>`
               : html`
-                  <table class="styled-table">
-                    <thead>
-                      <tr>
-                        <th>Number</th>
-                        <th>Title</th>
-                        <th>Author</th>
-                        <th>Branches</th>
-                        <th>Updated</th>
-                        <th>
-                          <span class="visually-hidden">Actions</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${this._pullRequests.map(
-                        (pr) => html`
-                          <tr>
-                            <td>
-                              <a
-                                href=${pr.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                >#${pr.number}</a
-                              >
-                            </td>
-                            <td>${pr.title}</td>
-                            <td>${pr.author || ''}</td>
-                            ${this._renderPrBranches(pr)}
-                            <td title=${pr.updated_at || ''}>
-                              ${
-                                pr.updated_at
-                                  ? formatRelativeTime(pr.updated_at)
-                                  : ''
-                              }
-                            </td>
-                            <td class="actions-cell">
-                              <resource-actions
-                                menu-only
-                                .actions=${this._pullRequestRowActions(pr)}
-                              ></resource-actions>
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
+                  <div class="table-scroll">
+                    <table class="styled-table">
+                      <thead>
+                        <tr>
+                          <th>Number</th>
+                          <th>Title</th>
+                          <th>Author</th>
+                          <th>Branches</th>
+                          <th>Updated</th>
+                          <th>
+                            <span class="visually-hidden">Actions</span>
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${this._pullRequests.map(
+                          (pr) => html`
+                            <tr>
+                              <td>
+                                <a
+                                  href=${pr.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  >#${pr.number}</a
+                                >
+                              </td>
+                              <td>${pr.title}</td>
+                              <td>${pr.author || ''}</td>
+                              ${this._renderPrBranches(pr)}
+                              <td title=${pr.updated_at || ''}>
+                                ${
+                                  pr.updated_at
+                                    ? formatRelativeTime(pr.updated_at)
+                                    : ''
+                                }
+                              </td>
+                              <td class="actions-cell">
+                                <resource-actions
+                                  menu-only
+                                  .actions=${this._pullRequestRowActions(pr)}
+                                ></resource-actions>
+                              </td>
+                            </tr>
+                          `
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                   ${
                     this._prsHasMore
                       ? html`<sl-button

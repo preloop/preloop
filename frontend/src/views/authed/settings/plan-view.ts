@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../../../utils/date';
 import '../../../components/billing-subscription-details';
 import type { BillingSummary } from '../../../types/billing-summary';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
@@ -223,7 +224,7 @@ export class PlanView extends LitElement {
     const subscription = options.current_subscription;
     if (subscription?.status !== 'trialing') return false;
     if (!subscription.current_period_end) return false;
-    const date = new Date(subscription.current_period_end);
+    const date = parseUTCDate(subscription.current_period_end);
     return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
   }
 
@@ -290,7 +291,7 @@ export class PlanView extends LitElement {
 
   private _date(value: string | null | undefined): string {
     if (!value) return '';
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     return Number.isNaN(date.getTime())
       ? ''
       : date.toLocaleDateString(undefined, {

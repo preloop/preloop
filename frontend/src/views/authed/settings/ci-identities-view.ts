@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { getAllFlows, listProjects } from '../../../api';
@@ -124,7 +125,7 @@ export class CiIdentitiesView extends LitElement {
   }
   private expiry(value = this.expires): string | undefined {
     if (!value) return undefined;
-    const date = new Date(value);
+    const date = parseUTCDate(value);
     if (!Number.isFinite(date.getTime()) || date.getTime() <= Date.now())
       throw new Error('Invalid expiry');
     return date.toISOString();
@@ -251,11 +252,7 @@ export class CiIdentitiesView extends LitElement {
   private retired(key: CiKey): boolean {
     if (!key.is_active) return true;
     if (!key.expires_at) return false;
-    const date = new Date(
-      key.expires_at.endsWith('Z') || /[+-]\d\d:\d\d$/.test(key.expires_at)
-        ? key.expires_at
-        : key.expires_at + 'Z'
-    );
+    const date = parseUTCDate(key.expires_at);
     return !Number.isFinite(date.getTime()) || date.getTime() <= Date.now();
   }
   private actionChoices(
@@ -523,31 +520,33 @@ export class CiIdentitiesView extends LitElement {
                         <p>Actions: ${identity.grant.actions.join(', ')}</p>
                         ${this.manage ? this.controls(identity) : nothing}
                         ${this.manage && this.editId === identity.id ? html`${this.actionChoices(this.editActions, identity.grant.actions, (actions) => (this.editActions = actions))}<button ?disabled=${this.busy || !this.editActions.length} @click=${() => this.narrow(identity)}>Save narrower grant</button><button @click=${() => (this.editId = '')}>Cancel narrowing</button>` : nothing}
-                        <table>
-                          <thead>
-                            <tr>
-                              <th>Key audit ID</th>
-                              <th>Status</th>
-                              <th>Expires (UTC)</th>
-                              <th>Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            ${identity.keys.map(
-                              (key) =>
-                                html`<tr data-key=${key.id}>
-                                  <td><code>${key.id}</code></td>
-                                  <td>
-                                    ${!key.is_active ? 'Revoked' : this.retired(key) ? 'Expired' : 'Active'}
-                                  </td>
-                                  <td>${key.expires_at ?? 'No expiry'}</td>
-                                  <td>
-                                    ${key.actions.join(', ')}${this.manage ? html`<div><button ?disabled=${this.busy || !!this.secret || this.retired(key) || !identity.is_active} @click=${() => this.keyOperation(identity, key, 'rotate')}>Rotate key</button><button ?disabled=${this.busy || !!this.secret || !key.is_active} @click=${() => this.keyOperation(identity, key, 'revoke')}>Revoke key</button></div>` : nothing}
-                                  </td>
-                                </tr>`
-                            )}
-                          </tbody>
-                        </table>
+                        <div class="table-scroll">
+                          <table>
+                            <thead>
+                              <tr>
+                                <th>Key audit ID</th>
+                                <th>Status</th>
+                                <th>Expires (UTC)</th>
+                                <th>Actions</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              ${identity.keys.map(
+                                (key) =>
+                                  html`<tr data-key=${key.id}>
+                                    <td><code>${key.id}</code></td>
+                                    <td>
+                                      ${!key.is_active ? 'Revoked' : this.retired(key) ? 'Expired' : 'Active'}
+                                    </td>
+                                    <td>${key.expires_at ?? 'No expiry'}</td>
+                                    <td>
+                                      ${key.actions.join(', ')}${this.manage ? html`<div><button ?disabled=${this.busy || !!this.secret || this.retired(key) || !identity.is_active} @click=${() => this.keyOperation(identity, key, 'rotate')}>Rotate key</button><button ?disabled=${this.busy || !!this.secret || !key.is_active} @click=${() => this.keyOperation(identity, key, 'revoke')}>Revoke key</button></div>` : nothing}
+                                    </td>
+                                  </tr>`
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
                       </section>`
                   )
                 : html`<p>No restricted CI identities.</p>`

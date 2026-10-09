@@ -1,3 +1,5 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { getFeatures, getHostedModels, type HostedModelCatalog } from '../api';
@@ -19,15 +21,7 @@ export class HostedAllowance extends LitElement {
       this.error = 'Built-in model allowance could not be loaded.';
     }
   }
-  private money(value: number | null): string {
-    return value === null
-      ? 'Not verified'
-      : new Intl.NumberFormat('en-US', {
-          style: 'currency',
-          currency: 'USD',
-          maximumFractionDigits: 4,
-        }).format(value);
-  }
+
   render() {
     if (!this.enabled) return nothing;
     if (this.error)
@@ -46,23 +40,31 @@ export class HostedAllowance extends LitElement {
           <dt>
             ${allowance.kind === 'one_time' ? 'One-time credit' : 'Included allowance'}
           </dt>
-          <dd>${this.money(allowance.included_usd)}</dd>
+          <dd>
+            ${allowance.included_usd === null ? 'Not verified' : html`<span title=${formatUsdExact(allowance.included_usd)}>${formatUsd(allowance.included_usd)}</span>`}
+          </dd>
         </div>
         <div>
           <dt>Spent</dt>
-          <dd>${this.money(allowance.spent_usd)}</dd>
+          <dd>
+            ${allowance.spent_usd === null ? 'Not verified' : html`<span title=${formatUsdExact(allowance.spent_usd)}>${formatUsd(allowance.spent_usd)}</span>`}
+          </dd>
         </div>
         <div>
           <dt>Held (open reservations)</dt>
-          <dd>${this.money(allowance.held_usd)}</dd>
+          <dd>
+            ${allowance.held_usd === null ? 'Not verified' : html`<span title=${formatUsdExact(allowance.held_usd)}>${formatUsd(allowance.held_usd)}</span>`}
+          </dd>
         </div>
         <div>
           <dt>Remaining</dt>
-          <dd>${this.money(allowance.remaining_usd)}</dd>
+          <dd>
+            ${allowance.remaining_usd === null ? 'Not verified' : html`<span title=${formatUsdExact(allowance.remaining_usd)}>${formatUsd(allowance.remaining_usd)}</span>`}
+          </dd>
         </div>
       </dl>
       <p>
-        ${allowance.kind === 'one_time' ? 'One-time credit does not reset.' : allowance.reset_at ? `Resets ${new Date(allowance.reset_at).toLocaleDateString()}.` : 'Monthly reset date is not yet verified.'}
+        ${allowance.kind === 'one_time' ? 'One-time credit does not reset.' : allowance.reset_at ? `Resets ${parseUTCDate(allowance.reset_at).toLocaleDateString()}.` : 'Monthly reset date is not yet verified.'}
       </p>
       ${allowance.coverage !== 'known' ? html`<p>Some balances are not yet verified. Unverified figures are not zero usage.</p>` : nothing}
       ${
@@ -73,7 +75,7 @@ export class HostedAllowance extends LitElement {
                   html`<li>
                     <strong>${model.name}</strong> · ${model.provider_name} ·
                     <code>${model.alias}</code>
-                    ${model.tariff ? html`<p>Tariff: ${this.money(model.tariff.input_price_per_1k * 1000)} / million input tokens; ${this.money(model.tariff.output_price_per_1k * 1000)} / million output tokens; ${this.money(model.tariff.request_price)} / request.</p>` : html`<p>Tariff not verified; this model is unavailable.</p>`}
+                    ${model.tariff ? html`<p>Tariff: ${model.tariff.input_price_per_1k * 1000 === null ? 'Not verified' : html`<span title=${formatUsdExact(model.tariff.input_price_per_1k * 1000)}>${formatUsd(model.tariff.input_price_per_1k * 1000)}</span>`} / million input tokens; ${model.tariff.output_price_per_1k * 1000 === null ? 'Not verified' : html`<span title=${formatUsdExact(model.tariff.output_price_per_1k * 1000)}>${formatUsd(model.tariff.output_price_per_1k * 1000)}</span>`} / million output tokens; ${model.tariff.request_price === null ? 'Not verified' : html`<span title=${formatUsdExact(model.tariff.request_price)}>${formatUsd(model.tariff.request_price)}</span>`} / request.</p>` : html`<p>Tariff not verified; this model is unavailable.</p>`}
                     ${model.own_alias_shadowing ? html`<p>Your own model uses this alias and takes precedence. Calls to that alias use your key.</p>` : nothing}
                   </li>`
               )}

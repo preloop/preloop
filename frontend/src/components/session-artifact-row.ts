@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { RuntimeSessionActivityItem } from '../types';
@@ -497,7 +498,7 @@ ${shown}${more ? '\n...' : ''}</pre>
     if (!artifact) return nothing;
     const labels = orderedArtifactLabels(artifact.labels);
     const time = this.item?.timestamp
-      ? new Date(this.item.timestamp).toLocaleTimeString()
+      ? parseUTCDate(this.item.timestamp).toLocaleTimeString()
       : '';
     const size = formatArtifactBytes(artifact.sizeBytes);
     return html`

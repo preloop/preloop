@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../../../utils/date';
 import { billingStatusLabel } from '../../../utils/billing-status';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -689,7 +690,7 @@ export class AccountView extends LitElement {
       this._billingSummary?.trial?.is_expired === true ||
       (this.subscription?.status === 'trialing' &&
         !!periodEnd &&
-        new Date(periodEnd).getTime() < Date.now());
+        parseUTCDate(periodEnd).getTime() < Date.now());
     const displayPlanName =
       this._billingSummary?.effective_plan?.name ??
       (trialExpired ? 'Free' : (this._billingSummary?.plan?.name ?? 'Free'));

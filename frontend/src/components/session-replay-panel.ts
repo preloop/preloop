@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import {
   renderSessionApproval,
   renderSessionActivity,
@@ -1687,7 +1688,7 @@ export class SessionReplayPanel extends LitElement {
 
   private formatTime(value: string | null | undefined): string {
     if (!value) return 'Unknown time';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleTimeString();
   }
@@ -1698,7 +1699,7 @@ export class SessionReplayPanel extends LitElement {
   // the label reflects render time — acceptable for a replay/history view.
   private formatRelativeTime(value: string | null | undefined): string {
     if (!value) return 'Unknown time';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     const elapsedMs = Date.now() - parsed.getTime();
     if (elapsedMs < 60_000) return 'just now';
@@ -1714,14 +1715,14 @@ export class SessionReplayPanel extends LitElement {
 
   private formatDateTime(value: string | null | undefined): string {
     if (!value) return 'Unknown time';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleString();
   }
 
   private formatTimelineLabel(value: string | null | undefined): string {
     if (!value) return '';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return `${parsed.toLocaleDateString(undefined, {
       month: 'short',
@@ -2067,8 +2068,8 @@ export class SessionReplayPanel extends LitElement {
       ...activityMessages,
     ].sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
     return this.replayReversed ? messages.reverse() : messages;
   }
@@ -2152,8 +2153,8 @@ export class SessionReplayPanel extends LitElement {
     }
     return Array.from(byId.values()).sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
   }
 
@@ -2184,11 +2185,15 @@ export class SessionReplayPanel extends LitElement {
       )
       .forEach((item) => {
         const timestamp = item.timestamp || null;
-        const itemTime = new Date(timestamp || 0).getTime();
+        const itemTime = parseUTCDate(
+          timestamp || '1970-01-01T00:00:00Z'
+        ).getTime();
         let nearestIndex = 0;
         let nearestDistance = Number.POSITIVE_INFINITY;
         messages.forEach((message, index) => {
-          const messageTime = new Date(message.timestamp || 0).getTime();
+          const messageTime = parseUTCDate(
+            message.timestamp || '1970-01-01T00:00:00Z'
+          ).getTime();
           const distance = Math.abs(messageTime - itemTime);
           if (distance < nearestDistance) {
             nearestDistance = distance;
@@ -3417,8 +3422,8 @@ export class SessionReplayPanel extends LitElement {
       )
       .sort(
         (left, right) =>
-          new Date(left.timestamp || 0).getTime() -
-          new Date(right.timestamp || 0).getTime()
+          parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+          parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
       )
       .map((item) => {
         const metadata = item.metadata ?? {};
@@ -4351,8 +4356,8 @@ export class SessionReplayPanel extends LitElement {
     }
     return rows.sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
   }
 
@@ -4593,8 +4598,8 @@ export class SessionReplayPanel extends LitElement {
       ...artifactTurns,
     ].sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
     // Re-index in natural chat order so sort/filter can reorder in place while
     // preserving a stable oldest-first ordering reference.
