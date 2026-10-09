@@ -505,6 +505,23 @@ class CRUDAccessRule:
                 )
                 .distinct()
             ).all()
+            from preloop.models.crud.resource_share import crud_resource_share
+
+            # Issued consumer-session credentials preserve their agent identity
+            # after rescinding; only new targeting depends on live recipients.
+            by_id = {agent.id: agent for agent in shared_agents}
+            for key in db.scalars(
+                select(models.ApiKey).where(
+                    models.ApiKey.account_id == account_id,
+                    models.ApiKey.context_data["shared_agent_owner_account_id"]
+                    .as_string()
+                    .is_not(None),
+                )
+            ):
+                agent = crud_resource_share.bound_agent(db, key=key)
+                if agent is not None:
+                    by_id[agent.id] = agent
+            shared_agents = list(by_id.values())
             shared_agent_ids = {
                 str(agent.id): str(agent.account_id) for agent in shared_agents
             }

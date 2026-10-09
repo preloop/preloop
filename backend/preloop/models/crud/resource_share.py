@@ -476,8 +476,9 @@ class CRUDResourceShare:
             select(models.ApiKey.id)
             .where(
                 models.ApiKey.account_id == _id(account_id),
-                models.ApiKey.context_data["managed_agent_id"].astext == str(agent.id),
-                models.ApiKey.context_data["shared_agent_owner_account_id"].astext
+                models.ApiKey.context_data["managed_agent_id"].as_string()
+                == str(agent.id),
+                models.ApiKey.context_data["shared_agent_owner_account_id"].as_string()
                 == str(agent.account_id),
             )
             .limit(1)
@@ -864,6 +865,24 @@ def _collect_changes(db: Session, flush_context: Any, instances: Any) -> None:
     if db.info.get("preloop_share_reconciling"):
         return
     affected = db.info.setdefault("preloop_share_owners", set())
+    removed = db.info.setdefault("preloop_share_deleted_rules", {})
+    for rule in list(db.deleted):
+        if not isinstance(rule, models.AccessRule):
+            continue
+        for share in db.scalars(
+            select(models.ResourceShare).where(
+                models.ResourceShare.access_rule_id == rule.id
+            )
+        ):
+            if share.id not in removed:
+                targets = list(
+                    db.scalars(
+                        select(
+                            models.ResourceShareRecipient.recipient_account_id
+                        ).where(models.ResourceShareRecipient.share_id == share.id)
+                    )
+                )
+                removed[share.id] = (share.owner_account_id, share.resource_id, targets)
     for row in [*db.new, *db.dirty, *db.deleted]:
         if isinstance(
             row,
@@ -906,9 +925,31 @@ def _before_commit(db: Session) -> None:
     try:
         db.flush()
         crud_resource_share.reconcile(db, owner_account_ids=affected)
+        for share_id, (owner, resource_id, targets) in db.info.pop(
+            "preloop_share_deleted_rules", {}
+        ).items():
+            _audit(
+                db,
+                owner,
+                targets,
+                None,
+                "resource_share_targets_changed",
+                {
+                    "share_id": str(share_id),
+                    "resource_id": str(resource_id),
+                    "added_account_ids": [],
+                    "removed_account_ids": [str(key) for key in targets],
+                },
+            )
     finally:
         db.info.pop("preloop_share_reconciling", None)
         db.info.pop("preloop_share_owners", None)
+
+
+def _after_rollback(db: Session, previous_transaction: Any) -> None:
+    """Discard write receipts when their transaction is rolled back."""
+    db.info.pop("preloop_share_owners", None)
+    db.info.pop("preloop_share_deleted_rules", None)
 
 
 def install_materializer(selector: ShareSelector) -> None:
@@ -918,6 +959,7 @@ def install_materializer(selector: ShareSelector) -> None:
     if not event.contains(Session, "before_flush", _collect_changes):
         event.listen(Session, "before_flush", _collect_changes)
         event.listen(Session, "before_commit", _before_commit)
+        event.listen(Session, "after_soft_rollback", _after_rollback)
 
 
 def uninstall_materializer() -> None:
@@ -927,6 +969,7 @@ def uninstall_materializer() -> None:
     for name, callback in (
         ("before_flush", _collect_changes),
         ("before_commit", _before_commit),
+        ("after_soft_rollback", _after_rollback),
     ):
         if event.contains(Session, name, callback):
             event.remove(Session, name, callback)

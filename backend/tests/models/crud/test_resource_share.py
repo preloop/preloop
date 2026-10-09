@@ -259,6 +259,38 @@ async def test_shared_agent_command_has_consumer_history_and_live_runtime_bindin
     )
     assert _managed_agent_for_api_key(db_session, key) is agent
     assert (
+        crud.shared_agent_spend_owner(
+            db_session, account_id=child.id, agent_id=agent.id
+        )
+        == owner.id
+    )
+    from preloop.services.subject_governance import set_subject_governance
+
+    owner.meta_data = set_subject_governance(
+        owner.meta_data or {},
+        subject_type="managed_agents",
+        subject_id=str(agent.id),
+        config={"allowed_models": ["openai/example-model"]},
+    )
+    db_session.flush()
+    assert crud.shared_agent_governance(
+        db_session, account_id=child.id, agent_id=agent.id
+    )["allowed_models"] == ["openai/example-model"]
+    from contextlib import contextmanager
+    from preloop.models.crud.access_rule import CRUDAccessRule
+
+    @contextmanager
+    def same_session() -> Any:
+        yield db_session
+
+    access = CRUDAccessRule()
+    monkeypatch.setattr(access, "session", same_session)
+    bundle = access.bundle(account_id=child.id)
+    assert bundle["subjects"][("agent", str(agent.id))]["home_account"]["id"] == str(
+        owner.id
+    )
+    assert bundle["key_agents"][str(key.id)] == str(agent.id)
+    assert (
         crud_agent_control_command.get_for_consumer(
             db_session,
             account_id=child.id,
