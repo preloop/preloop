@@ -146,6 +146,7 @@ nav:
       - Copilot cloud agent: guide/copilot-cloud-agent.md
       - OpenClaw: guide/integrations/openclaw.md
       - OpenClaw policy examples: guide/examples/policies/openclaw/README.md
+      - trigger.dev: guide/integrations/trigger-dev.md
       - Agent Control runtime adapters: guide/integrations/agent-control-runtime-adapters.md
       - Browser agents: guide/browser-agents.md
       - Cursor, Claude Desktop and other MCP clients: guide/clients/other-mcp-clients.md
@@ -172,6 +173,7 @@ nav:
       - External MCP tools: guide/tools/external-mcp.md
       - Policy generation: guide/tools/policy-generation.md
       - Model content policies: guide/model-content-policies.md
+      - Sensitive data: guide/sensitive-data.md
       - Account kill switch: guide/account-kill-switch.md
       - Operator notes: guide/operator-notes.md
       - Attaching to a session: guide/sessions-attach.md
@@ -234,6 +236,7 @@ nav:
           - "Security audit (CRA evidence packs)": guide/flows/security-audit-presets.md
           - Security maintenance: guide/flows/security-maintenance.md
           - Product evidence: guide/flows/product-evidence.md
+          - Transcript evaluation: guide/flows/transcript-evaluation.md
           - "Scanner binaries: decision note": guide/flows/scanner-binaries-decision.md
       - Trigger from CI: guide/flows/ci-trigger.md
       - GitHub Actions: guide/flows/github-actions.md

@@ -12,6 +12,9 @@
 
 brands:
   preloop:
+    docs_url: https://docs.preloop.ai
+    report_issue_url: https://github.com/preloop/preloop/issues/new
+    changelog_url: https://github.com/preloop/preloop/releases
     name: "Preloop"
     domain: "localhost"
     edition: "selfhosted"

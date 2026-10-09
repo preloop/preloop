@@ -1,14 +1,14 @@
 """MCP tool name collisions: shadowed flag on mcp_tool, optional server prefix.
 
 Revision ID: 20261009_mcp_tool_shadow_prefix
-Revises: 20261004_ci_subscription_binding
+Revises: 20261009_oauth_receipt_anchor
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "20261009_mcp_tool_shadow_prefix"
-down_revision = "20261004_ci_subscription_binding"
+down_revision = "20261009_oauth_receipt_anchor"
 branch_labels = None
 depends_on = None
 
