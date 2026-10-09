@@ -41,6 +41,7 @@ from preloop.services.mcp_tool_collisions import (
 )
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.endpoints.tools import BUILTIN_TOOLS, TOOL_NAME_ALIASES
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.subject_governance import (
     _tool_enabled_override_names,
@@ -423,6 +424,73 @@ def _resolve_proxied_tool_server(db: Any, account_id: str, tool_name: str) -> An
         return None
     owner, enabled = candidates[0]
     return owner if enabled else None
+
+
+def _shared_tool_ceiling(
+    account_id: str, tool_name: str, arguments: dict[str, Any], agent_id: str | None
+) -> str:
+    """Owner restrictions can tighten a consumer's policy, with consumer approvals."""
+    from preloop.models.crud.resource_share import crud_resource_share, sharing_enabled
+    from preloop.services.policy_evaluator import _evaluate_rule_candidates
+
+    if not sharing_enabled():
+        return "allow"
+    db = next(get_db())
+    try:
+        candidates: list[list[Any]] = []
+        approval = False
+        server = _resolve_proxied_tool_server(db, account_id, tool_name)
+        if server is not None and str(server.account_id) != str(account_id):
+            enabled, mandatory, rules = crud_resource_share.owner_tool_rules(
+                db,
+                account_id=account_id,
+                server=server,
+                tool_name=tool_name,
+            )
+            if not enabled:
+                return "deny"
+            approval = mandatory
+            candidates.append(rules)
+        owner = (
+            crud_resource_share.shared_agent_spend_owner(
+                db, account_id=account_id, agent_id=agent_id
+            )
+            if agent_id
+            else None
+        )
+        if owner and kill_switch_service.tools_halted(db, owner):
+            return "deny"
+        config = crud_resource_share.shared_agent_governance(
+            db,
+            account_id=account_id,
+            agent_id=agent_id,
+        )
+        if (config.get("tool_enabled_overrides") or {}).get(tool_name) is False:
+            return "deny"
+        candidates.append((config.get("tool_rules") or {}).get(tool_name) or [])
+        for rules in candidates:
+            decision = _evaluate_rule_candidates(
+                rules=rules,
+                tool_name=tool_name,
+                tool_args=arguments,
+                context={
+                    "tool_name": tool_name,
+                    "args": arguments,
+                    "account_id": account_id,
+                    "managed_agent_id": agent_id,
+                },
+                account_id=uuid.UUID(account_id),
+                user_id=None,
+                execution_id=None,
+                record=False,
+            )
+            if decision is not None:
+                if decision.action == "deny":
+                    return "deny"
+                approval = approval or decision.action == "require_approval"
+        return "require_approval" if approval else "allow"
+    finally:
+        db.close()
 
 
 @dataclass(frozen=True)
@@ -2462,6 +2530,22 @@ async def {internal_name}({params_str}):
                 )
 
             action, approval_workflow_id, reason = _policy_decision
+            owner_action = await run_db_off_loop(
+                lambda: _shared_tool_ceiling(
+                    user_context.account_id,
+                    name,
+                    arguments,
+                    getattr(user_context, "managed_agent_id", None),
+                )
+            )
+            if owner_action == "deny":
+                return await _refuse("Tool call denied by the resource owner's policy")
+            if owner_action == "require_approval" and action != "deny":
+                action = "require_approval"
+                approval_workflow_id = await run_db_off_loop(
+                    lambda: _resolve_approval_workflow_id(user_context.account_id, None)
+                )
+                reason = "Resource owner requires consumer approval"
             matched_rule_description = reason
 
             logger.info(

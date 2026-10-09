@@ -17,6 +17,7 @@ from preloop.models.crud import (
     crud_agent_control_command,
     crud_flow_execution,
     crud_managed_agent,
+    crud_runtime_session,
     crud_runtime_session_activity,
 )
 from preloop.services.agent_control_dispatch import (
@@ -238,6 +239,10 @@ class AgentControlExecutor(AgentExecutor):
             agent_id=target_id,
         )
         if agent is None:
+            agent = crud_managed_agent.get_visible_target(
+                self.db, account_id=account_id, agent_id=target_id
+            )
+        if agent is None:
             raise AgentStartError(
                 f"persistent target {target_id} was not found in this account",
                 category="runner_error",
@@ -261,7 +266,9 @@ class AgentControlExecutor(AgentExecutor):
                 "supports text messages to active sessions only",
                 category="runner_error",
             )
-        if not agent_has_control_config(self.db, account_id=account_id, agent=agent):
+        if not agent_has_control_config(
+            self.db, account_id=str(agent.account_id), agent=agent
+        ):
             self._raise_not_connected(agent, target_id)
         if not control_heartbeat_is_fresh(agent.control_last_heartbeat_at):
             self._raise_not_connected(agent, target_id)
@@ -315,6 +322,12 @@ class AgentControlExecutor(AgentExecutor):
                     limits.get("max_total_tokens", 32768) * 4, 64000
                 ),
             }
+        if str(agent.account_id) != self._account_id(execution_context):
+            metadata["gateway"] = {
+                "api_key": dispatch_context.get("model_gateway_token"),
+                "base_url": dispatch_context.get("model_gateway_url"),
+                "model": dispatch_context.get("model_gateway_model_alias"),
+            }
         trigger = dispatch_context.get("trigger_event_data")
         employee = trigger.get("employee") if isinstance(trigger, dict) else None
         if isinstance(employee, dict):
@@ -356,6 +369,7 @@ class AgentControlExecutor(AgentExecutor):
                 input_mode="text",
                 session_mode="new",
                 require_delivery=True,
+                consuming_account_id=self._account_id(execution_context),
             )
         except AgentControlDispatchError as exc:
             name = _target_display_name(agent, target_id)
@@ -365,15 +379,22 @@ class AgentControlExecutor(AgentExecutor):
             ) from exc
         reference = f"{_SESSION_PREFIX}:{agent.id}:{dispatched.command_id}"
         try:
-            history_session = create_command_history_session(
-                self.db,
-                agent=agent,
-                start_new_session=True,
-            )
+            if getattr(dispatched, "history_session_id", None) is not None:
+                history_session = crud_runtime_session.get_account_session(
+                    self.db,
+                    account_id=self._account_id(execution_context),
+                    runtime_session_id=str(dispatched.history_session_id),
+                )
+            else:
+                history_session = create_command_history_session(
+                    self.db,
+                    agent=agent,
+                    start_new_session=True,
+                )
             if history_session is not None:
                 crud_runtime_session_activity.log_agent_control_message(
                     self.db,
-                    account_id=agent.account_id,
+                    account_id=self._account_id(execution_context),
                     runtime_session_id=history_session.id,
                     message=prompt,
                     status="delivered" if dispatched.local_delivery else "queued",
@@ -428,11 +449,21 @@ class AgentControlExecutor(AgentExecutor):
         )
         if not account_id:
             return None
-        return crud_agent_control_command.get_by_command_id(
+        own = crud_agent_control_command.get_by_command_id(
             self.db,
             account_id=account_id,
             command_id=command_id,
             managed_agent_id=managed_agent_id,
+        )
+        return (
+            own
+            if own is not None
+            else crud_agent_control_command.get_for_consumer(
+                self.db,
+                account_id=account_id,
+                command_id=command_id,
+                managed_agent_id=managed_agent_id,
+            )
         )
 
     def _binding(self, session_reference: str) -> Dict[str, Any]:

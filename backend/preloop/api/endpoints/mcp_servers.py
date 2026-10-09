@@ -1,6 +1,8 @@
 """MCP Servers router for managing external MCP server connections."""
 
 import base64
+from preloop.schemas.resource_share import SharedResourceRead
+
 import hashlib
 import logging
 import os
@@ -196,12 +198,12 @@ async def create_mcp_server(
         )
 
 
-@router.get("/mcp-servers", response_model=List[MCPServerResponse])
+@router.get("/mcp-servers", response_model=List[SharedResourceRead | MCPServerResponse])
 @require_permission("view_mcp_servers")
 def list_mcp_servers(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> List[MCPServerResponse]:
+) -> List[SharedResourceRead | MCPServerResponse]:
     """List all MCP servers for the current user.
 
     Args:
@@ -224,19 +226,29 @@ def list_mcp_servers(
         except Exception:
             logger.warning("Could not compute MCP tool warnings", exc_info=True)
             warnings_by_server = {}
-        return [_server_response(db, server, warnings_by_server) for server in servers]
+        from preloop.models.crud.resource_share import crud_resource_share
+
+        shared = crud_resource_share.public_list(
+            db, account_id=current_user.account_id, resource_type="mcp_server"
+        )
+        return [
+            *[_server_response(db, server, warnings_by_server) for server in servers],
+            *filter_viewable(db, current_user, VISIBLE_MCP_SERVER, shared),
+        ]
     except Exception as e:
         logger.error(f"Error listing MCP servers: {e}", exc_info=True)
         raise
 
 
-@router.get("/mcp-servers/{server_id}", response_model=MCPServerResponse)
+@router.get(
+    "/mcp-servers/{server_id}", response_model=SharedResourceRead | MCPServerResponse
+)
 @require_permission("view_mcp_servers")
 async def get_mcp_server(
     server_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
-) -> MCPServerResponse:
+) -> SharedResourceRead | MCPServerResponse:
     """Get a specific MCP server by ID.
 
     Args:
@@ -250,6 +262,20 @@ async def get_mcp_server(
     Raises:
         HTTPException: If server not found or access denied
     """
+    from preloop.models.crud.resource_share import crud_resource_share
+
+    shared = crud_resource_share.public_read(
+        db,
+        account_id=current_user.account_id,
+        resource_type="mcp_server",
+        resource_id=server_id,
+    )
+    if shared is not None:
+        from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, filter_viewable
+
+        if not filter_viewable(db, current_user, VISIBLE_MCP_SERVER, [shared]):
+            raise HTTPException(404, "Resource not found")
+        return shared
     server = crud_mcp_server.get(
         db, id=server_id, account_id=str(current_user.account_id)
     )
@@ -267,7 +293,7 @@ def _server_response(
     db: Session,
     server: MCPServer,
     warnings_by_server: Dict[str, List[str]] | None = None,
-) -> MCPServerResponse:
+) -> SharedResourceRead | MCPServerResponse:
     """Server response with its tool-collision warnings (#1135).
 
     A list passes ``warnings_by_server`` computed once for the account.
@@ -585,7 +611,7 @@ async def list_mcp_server_tools(
     Raises:
         HTTPException: If server not found or access denied
     """
-    server = crud_mcp_server.get(
+    server = crud_mcp_server.get_visible(
         db, id=server_id, account_id=str(current_user.account_id)
     )
 

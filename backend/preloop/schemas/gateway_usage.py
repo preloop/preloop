@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from preloop.schemas.resource_share import SharedResourceRead
+
 from preloop.services.cache_accounting import compute_cache_hit_ratio
 from preloop.utils.agent_kind import (
     AGENT_KIND_SHAPE_ERROR,
@@ -701,7 +703,7 @@ class AccountManagedAgentListResponse(BaseModel):
     total: int = 0
     limit: int = 20
     offset: int = 0
-    items: List[ManagedAgentSummary] = Field(default_factory=list)
+    items: List[SharedResourceRead | ManagedAgentSummary] = Field(default_factory=list)
 
 
 class ManagedAgentDetailResponse(BaseModel):

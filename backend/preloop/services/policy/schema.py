@@ -70,6 +70,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from preloop.models.schemas.grant_introspection import IntrospectionConfig
 from preloop.schemas.access_rule import AccessRuleDefinition, Action, Mode
+from preloop.schemas.resource_share import ResourceShareDefinition
 
 from preloop.services.sensitive_data.detectors import (
     BUILTIN_TYPE_IDS,
@@ -1271,6 +1272,7 @@ class PolicyDocument(BaseModel):
     sensitive_data: Optional[SensitiveDataConfig] = Field(
         None, description="Sensitive data detectors shared by model and tool rules"
     )
+    resource_shares: list[ResourceShareDefinition] | None = None
     access_rules: list[AccessRuleDefinition] | None = None
     access_rule_mode: dict[Action, Mode] | None = None
 

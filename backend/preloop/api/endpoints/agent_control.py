@@ -38,6 +38,7 @@ from preloop.models.crud import (
 from preloop.models.crud import agent_control_connection as control_connection
 from preloop.models.crud.agent_control_connection import AgentControlConnectionContext
 from preloop.models.db.session import get_db_session
+from preloop.utils.redaction import redact_dict
 from preloop.schemas.agent_control import (
     AgentControlCommandResponse,
     AgentControlCommandStatusResponse,
@@ -1033,9 +1034,10 @@ def _persist_agent_control_result(
     sanitized = _sanitize_agent_control_payload(inbound.payload)
     crud_runtime_session_activity.log_agent_control_result(
         db,
-        account_id=context.account_id,
+        account_id=command.consuming_account_id or context.account_id,
         command_id=command_id.strip(),
-        fallback_runtime_session_id=context.runtime_session_id,
+        fallback_runtime_session_id=command.runtime_session_id
+        or context.runtime_session_id,
         status=result_status,
         message=message,
         metadata=sanitized,
@@ -1462,6 +1464,28 @@ def _emit_operator_command_activity(
         logger.debug("Live operator command event failed", exc_info=True)
 
 
+def _public_shared_command_envelope(
+    envelope: AgentControlEnvelope,
+) -> AgentControlEnvelope:
+    """Recipient command responses never include runtime credentials or metadata."""
+    fields = {
+        "text",
+        "session_mode",
+        "start_new_session",
+        "input_mode",
+        "target_session_id",
+        "interrupt",
+        "spawn_worktree",
+    }
+    return envelope.model_copy(
+        update={
+            "payload": {
+                key: value for key, value in envelope.payload.items() if key in fields
+            }
+        }
+    )
+
+
 async def _route_managed_agent_prompt(
     *,
     agent_id: str,
@@ -1469,7 +1493,7 @@ async def _route_managed_agent_prompt(
     current_user: models.User,
     db: Session,
 ) -> AgentControlCommandResponse:
-    agent = crud_managed_agent.get_for_account(
+    agent = crud_managed_agent.get_visible_target(
         db,
         account_id=str(current_user.account_id),
         agent_id=agent_id,
@@ -1493,14 +1517,18 @@ async def _route_managed_agent_prompt(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This harness supports text messages to active sessions only",
         )
-    if not _agent_has_control_config(
-        db, account_id=str(current_user.account_id), agent=agent
-    ):
+    if not _agent_has_control_config(db, account_id=str(agent.account_id), agent=agent):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Managed agent does not have an Agent Control plugin configured",
         )
 
+    if (
+        str(agent.account_id) != str(current_user.account_id)
+        and not request.start_new_session
+        and request.target_session_id is None
+    ):
+        raise HTTPException(400, "Shared agents require a consumer-owned session")
     session_mode, target_session = _resolve_session_mode(
         db,
         account_id=str(current_user.account_id),
@@ -1524,6 +1552,7 @@ async def _route_managed_agent_prompt(
             session_identity=_existing_session_identity(target_session),
             created_by_user_id=current_user.id,
             require_delivery=True,
+            consuming_account_id=current_user.account_id,
         )
     except AgentControlDispatchError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
@@ -1535,7 +1564,14 @@ async def _route_managed_agent_prompt(
     expires_at = dispatched.expires_at
     command_ttl_seconds = dispatched.command_ttl_seconds
 
-    history_session = _command_history_session(db, agent=agent, request=request)
+    if getattr(dispatched, "history_session_id", None) is not None:
+        history_session = crud_runtime_session.get_account_session(
+            db,
+            account_id=str(current_user.account_id),
+            runtime_session_id=str(dispatched.history_session_id),
+        )
+    else:
+        history_session = _command_history_session(db, agent=agent, request=request)
     author_display = (
         getattr(current_user, "full_name", None)
         or getattr(current_user, "username", None)
@@ -1579,16 +1615,26 @@ async def _route_managed_agent_prompt(
             agent=agent,
         )
 
+    public_envelope = (
+        _public_shared_command_envelope(envelope)
+        if str(agent.account_id) != str(current_user.account_id)
+        else envelope
+    )
     emit_account_event(
         build_account_event(
             account_id=str(current_user.account_id),
             topic=ACCOUNT_TOPIC_AGENT_CONTROL,
             event_type="managed_agent_command_sent",
-            payload=envelope.model_dump(mode="json"),
+            payload=redact_dict(
+                {
+                    **public_envelope.model_dump(mode="json"),
+                    "runtime_session_id": str(history_session.id)
+                    if history_session
+                    else None,
+                }
+            ),
             managed_agent_id=str(agent.id),
-            runtime_session_id=str(agent.runtime_session_id)
-            if agent.runtime_session_id
-            else None,
+            runtime_session_id=str(history_session.id) if history_session else None,
         )
     )
     identity_session = target_session
@@ -1597,7 +1643,9 @@ async def _route_managed_agent_prompt(
     return AgentControlCommandResponse(
         command_id=envelope.message_id,
         managed_agent_id=agent.id,
-        runtime_session_id=envelope.runtime_session_id,
+        runtime_session_id=history_session.id
+        if history_session
+        else envelope.runtime_session_id,
         target_session_id=(
             history_session.id
             if request.start_new_session and history_session is not None
@@ -1616,7 +1664,7 @@ async def _route_managed_agent_prompt(
         command_status=command_status,
         expires_at=expires_at,
         command_ttl_seconds=command_ttl_seconds,
-        command_envelope=envelope,
+        command_envelope=public_envelope,
     )
 
 
@@ -1685,7 +1733,7 @@ def get_managed_agent_command_status(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Command not found"
         ) from None
-    record = crud_agent_control_command.get_by_command_id(
+    record = crud_agent_control_command.get_for_consumer(
         db,
         account_id=current_user.account_id,
         managed_agent_id=agent_uuid,

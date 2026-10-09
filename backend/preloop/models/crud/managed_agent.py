@@ -367,6 +367,22 @@ def _usage_aggregate_for_principal(
 class CRUDManagedAgent(CRUDBase[ManagedAgent]):
     """CRUD helpers for account-scoped managed-agent registry entries."""
 
+    def get_visible_target(self, db: Session, *, account_id: Any, agent_id: Any) -> Any:
+        """Resolve an own or currently shared target for execution only."""
+        from preloop.models.crud.resource_share import crud_resource_share
+
+        own = self.get_for_account(
+            db, account_id=str(account_id), agent_id=str(agent_id)
+        )
+        if own is not None:
+            return own
+        return crud_resource_share.visible_resource(
+            db,
+            account_id=account_id,
+            resource_type="managed_agent",
+            resource_id=agent_id,
+        )
+
     def get_by_source(
         self,
         db: Session,
@@ -1058,10 +1074,17 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         for row in rows:
             summary = self._row_to_summary(row)
             if str(row.id) in shared_ids:
-                # The owner is a user of another account: never name them.
-                summary["owner_user_id"] = None
-                summary["owner_username"] = None
-                summary["owner_email"] = None
+                from preloop.models.crud.resource_share import crud_resource_share
+
+                public = crud_resource_share.public_read(
+                    db,
+                    account_id=account_id,
+                    resource_type="managed_agent",
+                    resource_id=row.id,
+                )
+                if public is not None:
+                    items.append(public.model_dump(mode="json"))
+                continue
             aggregate = aggregates.get(
                 (row.session_source_type, row.session_source_id),
                 _empty_usage_aggregate(),
