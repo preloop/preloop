@@ -1,4 +1,4 @@
-"""Purge discovery candidates that no workstation has reported for 90 days.
+"""Purge discovery candidates and source observations after their 90-day window.
 
 Discovery data is inventory, not evidence: a candidate nobody has seen for
 the retention window describes a tool that was removed or a workstation
@@ -13,7 +13,10 @@ import asyncio
 import logging
 from typing import Optional
 
-from preloop.models.crud import crud_discovered_agent_candidate
+from preloop.models.crud import (
+    crud_discovered_agent_candidate,
+    crud_discovery_observation,
+)
 from preloop.models.db.session import get_db_session
 from preloop.services.service_roles import (
     background_passes_allowed,
@@ -34,10 +37,16 @@ def run_discovery_candidate_purge_once() -> int:
     """
     db = next(get_db_session())
     try:
-        deleted = crud_discovered_agent_candidate.purge_stale(db)
+        deleted = int(crud_discovered_agent_candidate.purge_stale(db))
+        observations_deleted = int(crud_discovery_observation.purge_all_expired(db))
+        db.commit()
+        if observations_deleted:
+            logger.info(
+                "Purged %s expired discovery observation(s)", observations_deleted
+            )
         if deleted:
             logger.info("Purged %s stale discovery candidate(s)", deleted)
-        return deleted
+        return deleted + observations_deleted
     finally:
         db.close()
 

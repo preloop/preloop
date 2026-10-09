@@ -31,6 +31,7 @@ from preloop.models.crud.discovered_agent_candidate import (
     CANDIDATE_RETENTION_DAYS,
     ReportedCandidate,
 )
+from preloop.models.crud.discovery_observation import ObservationConflictError
 from preloop.models.db.session import get_db_session
 from preloop.plugins.base import get_plugin_manager
 from preloop.schemas.agent_discovery import (
@@ -127,9 +128,15 @@ def create_discovery_report(
             raise HTTPException(
                 status_code=503, detail="Discovery evidence service unavailable"
             )
-        service.record(
-            db, account_id=account.id, current_user=current_user, payload=payload
-        )
+        try:
+            service.record(
+                db, account_id=account.id, current_user=current_user, payload=payload
+            )
+        except ObservationConflictError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Observation identifier already contains different evidence",
+            ) from exc
     outcomes = crud_discovered_agent_candidate.record_report(
         db,
         account_id=account.id,

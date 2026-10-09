@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from preloop.models import models
+from preloop.schemas.discovery_evidence import DiscoveryEvidence
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
@@ -34,7 +35,12 @@ class CRUDDiscoveryObservation:
         evidence: dict[str, Any],
         now: datetime | None = None,
     ) -> models.DiscoveryObservation:
-        """Insert once, accepting exact replay and rejecting changed replay."""
+        """Accept Python/JSON mappings, canonicalizing validated safe evidence.
+
+        Exact replay is idempotent regardless of schema dump mode. A changed
+        observation raises ObservationConflictError; the caller owns commit.
+        """
+        evidence = DiscoveryEvidence.model_validate(evidence).model_dump(mode="json")
         received = now or datetime.now(UTC)
         observation_id = UUID(evidence["observation_id"])
         digest = hashlib.sha256(
@@ -106,6 +112,20 @@ class CRUDDiscoveryObservation:
             )
         )
         return rows, total
+
+    def purge_all_expired(self, db: Session, *, now: datetime | None = None) -> int:
+        """Privileged background retention across all tenants, including inactive.
+
+        Request paths use purge_expired with an explicit owning account instead.
+        The always-on discovery sweeper owns this system pass and its commit.
+        """
+        cutoff = (now or datetime.now(UTC)) - timedelta(days=CANDIDATE_RETENTION_DAYS)
+        result = db.execute(
+            delete(models.DiscoveryObservation).where(
+                models.DiscoveryObservation.received_at < cutoff
+            )
+        )
+        return int(result.rowcount)
 
     def purge_expired(
         self, db: Session, *, account_id: UUID, now: datetime | None = None

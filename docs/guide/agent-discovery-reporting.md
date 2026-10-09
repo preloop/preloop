@@ -104,6 +104,8 @@ Observations preserve enumerated scan scope/errors, timezone-aware collection
 windows, completeness, safe app/version facts and independent control
 assertions. Exact replay is idempotent per authenticated source and workstation;
 changed replay conflicts. Sources and collection windows remain separate,
-including empty scans. Retention is 90 days from receipt. None of these records
+including empty scans. Retention is 90 days from receipt; the always-on
+discovery sweeper purges expired observations even if the evidence plugin is
+disabled or the source stops reporting. None of these records
 prove device identity, app runtime enforcement or use. Collector assertions
 cannot carry effective or successful runtime-verification fields.

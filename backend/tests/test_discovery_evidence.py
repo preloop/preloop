@@ -253,3 +253,63 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
     assert ScriptDirectory.from_config(config).get_heads() == [
         "20261009_discovery_observation"
     ]
+
+
+def test_changed_replay_plugin_error_is_a_409() -> None:
+    payload = DiscoveryReportRequest(
+        workstation_fingerprint="a" * 64,
+        evidence=DiscoveryEvidence.model_validate(envelope()),
+    )
+    with (
+        patch("preloop.api.endpoints.agent_discovery._require_report_access"),
+        patch("preloop.api.endpoints.agent_discovery.get_plugin_manager") as manager,
+        patch(
+            "preloop.api.endpoints.agent_discovery.crud_discovered_agent_candidate.record_report"
+        ) as candidates,
+    ):
+        manager.return_value.get_service.return_value.record.side_effect = (
+            ObservationConflictError("changed")
+        )
+        with pytest.raises(HTTPException) as exc:
+            create_discovery_report(
+                payload=payload,
+                account=SimpleNamespace(id=uuid4()),
+                current_user=SimpleNamespace(id=uuid4()),
+                db=MagicMock(),
+            )
+        assert exc.value.status_code == 409
+        candidates.assert_not_called()
+
+
+def test_python_and_json_schema_dumps_are_the_same_replay(
+    observation_db: Session,
+) -> None:
+    account, source = uuid4(), uuid4()
+    evidence = DiscoveryEvidence.model_validate(envelope())
+    row = crud_discovery_observation.record(
+        observation_db,
+        account_id=account,
+        workstation_fingerprint="a" * 64,
+        source_ref=source,
+        evidence=evidence.model_dump(),
+        now=NOW,
+    )
+    replay = crud_discovery_observation.record(
+        observation_db,
+        account_id=account,
+        workstation_fingerprint="a" * 64,
+        source_ref=source,
+        evidence=evidence.model_dump(mode="json"),
+        now=NOW,
+    )
+    assert replay.id == row.id
+
+
+def test_background_retention_purges_inactive_sources(observation_db: Session) -> None:
+    db = observation_db
+    source = uuid4()
+    for _ in range(2):
+        record(db, uuid4(), source, envelope(), NOW - timedelta(days=91))
+    record(db, uuid4(), source, envelope(), NOW)
+    assert crud_discovery_observation.purge_all_expired(db, now=NOW) == 2
+    assert len(list(db.scalars(select(models.DiscoveryObservation)))) == 1
