@@ -24,6 +24,7 @@ ShareSelector = Callable[
     [list[dict[str, Any]], dict[str, Any], dict[str, Any], UUID | None], bool
 ]
 _selector: ShareSelector | None = None
+_prepare: Callable[[list[dict[str, Any]]], ShareSelector] | None = None
 
 
 def sharing_enabled() -> bool:
@@ -708,6 +709,8 @@ class CRUDResourceShare:
                 }
                 for rule in rules
             ]
+            applicable = [rule for rule in rule_data if rule["scope"] != "self"]
+            selector = _prepare(applicable) if _prepare else _selector
             tags = {
                 (tag.resource_type, str(tag.resource_id), tag.key): tag.value
                 for tag in db.scalars(
@@ -809,10 +812,7 @@ class CRUDResourceShare:
                             "roles": [],
                             "teams": [],
                         }
-                        applicable = [
-                            rule for rule in rule_data if rule["scope"] != "self"
-                        ]
-                        if _selector(
+                        if selector(
                             applicable,
                             subject,
                             resource,
@@ -956,10 +956,14 @@ def _after_rollback(db: Session, previous_transaction: Any) -> None:
     db.info.pop("preloop_share_deleted_rules", None)
 
 
-def install_materializer(selector: ShareSelector) -> None:
+def install_materializer(
+    selector: ShareSelector,
+    prepare: Callable[[list[dict[str, Any]]], ShareSelector] | None = None,
+) -> None:
     """Enable transactional reconciliation only when the EE phase is loaded."""
-    global _selector
+    global _selector, _prepare
     _selector = selector
+    _prepare = prepare
     if not event.contains(Session, "before_flush", _collect_changes):
         event.listen(Session, "before_flush", _collect_changes)
         event.listen(Session, "before_commit", _before_commit)
@@ -968,8 +972,9 @@ def install_materializer(selector: ShareSelector) -> None:
 
 def uninstall_materializer() -> None:
     """Remove listeners during shutdown and test cleanup."""
-    global _selector
+    global _selector, _prepare
     _selector = None
+    _prepare = None
     for name, callback in (
         ("before_flush", _collect_changes),
         ("before_commit", _before_commit),
