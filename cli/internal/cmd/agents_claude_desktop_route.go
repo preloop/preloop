@@ -520,6 +520,11 @@ func ensureNotAdminManagedPath(path string) error {
 		return err
 	}
 	normalized := strings.ToLower(filepath.ToSlash(abs))
+	// Compare without a Windows volume so /etc/claude-desktop is caught on
+	// every OS the CLI runs on.
+	if vol := filepath.VolumeName(abs); vol != "" {
+		normalized = strings.TrimPrefix(normalized, strings.ToLower(filepath.ToSlash(vol)))
+	}
 	for _, root := range []string{"/library/managed preferences", "/etc/claude-desktop"} {
 		if normalized == root || strings.HasPrefix(normalized, root+"/") {
 			return fmt.Errorf("refusing to write into %s: managed configuration is admin-owned; deploy the generated files with your MDM instead", path)
