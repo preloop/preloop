@@ -500,7 +500,9 @@ async def _prepare_grant_dispatch(
     return snapshot, await _evaluate_snapshot_grant(snapshot)
 
 
-def _audit_grant_kwargs(audit_service: Any, grant: Optional[dict[str, Any]]) -> dict:
+def _audit_grant_kwargs(
+    audit_service: Any, grant: Optional[dict[str, Any]]
+) -> dict[str, Any]:
     """Keep older optional audit plugins compatible until their paired upgrade."""
     if grant is None:
         return {}

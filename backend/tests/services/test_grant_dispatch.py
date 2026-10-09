@@ -2,8 +2,10 @@
 
 from copy import deepcopy
 from types import SimpleNamespace
+from typing import Any, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from preloop.services import dynamic_fastmcp as gateway
@@ -28,6 +30,16 @@ BINDING = {
 }
 
 
+Runtime = tuple[
+    gateway.DynamicFastMCP,
+    gateway.UserContext,
+    AsyncMock,
+    MagicMock,
+    MagicMock,
+    Callable[..., Any],
+]
+
+
 def server() -> SimpleNamespace:
     return SimpleNamespace(
         id="server-a",
@@ -48,7 +60,7 @@ async def test_snapshot_releases_db_before_introspection_and_copies_credentials(
     db = MagicMock()
     introspect = AsyncMock(return_value=GrantResult(deepcopy(BINDING)))
 
-    async def evaluate(*args, **kwargs):
+    async def evaluate(*args: Any, **kwargs: Any) -> GrantResult:
         db.close.assert_called_once()
         return await introspect(*args, **kwargs)
 
@@ -119,7 +131,7 @@ async def test_no_introspection_config_keeps_existing_server_behavior() -> None:
 
 
 @pytest.fixture
-def runtime(monkeypatch):
+def runtime(monkeypatch: pytest.MonkeyPatch) -> Runtime:
     """Isolate gateway guards while exercising actual grant/policy/dispatch wiring."""
     from uuid import uuid4
     from fastmcp.tools import Tool
@@ -187,8 +199,8 @@ def runtime(monkeypatch):
     "reason", ["grant_inactive", "scope_not_granted", "introspection_unavailable"]
 )
 async def test_central_hard_denial_before_policy_approval_or_upstream(
-    runtime, monkeypatch, reason
-):
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
     mcp, user, policy, deny_audit, audit, _ = runtime
     row = server()
     monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: row)
@@ -214,8 +226,8 @@ async def test_central_hard_denial_before_policy_approval_or_upstream(
 
 @pytest.mark.asyncio
 async def test_policy_and_approval_share_exact_prefix_owner_and_token_snapshot(
-    runtime, monkeypatch
-):
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
     mcp, user, policy, _, audit, wrapper = runtime
     row = server()
     resolve = MagicMock(return_value=row)
@@ -231,7 +243,7 @@ async def test_policy_and_approval_share_exact_prefix_owner_and_token_snapshot(
     monkeypatch.setitem(wrapper.__globals__, "get_mcp_client_pool", lambda: pool)
     monkeypatch.setattr(gateway, "get_mcp_client_pool", lambda: pool)
 
-    async def approve(**kwargs):
+    async def approve(**kwargs: Any) -> tuple[bool, str]:
         assert kwargs["server_name"] == "First owner"
         row.id = "replacement-owner"
         row.auth_config["token"] = "rotated-token"
@@ -255,8 +267,8 @@ async def test_policy_and_approval_share_exact_prefix_owner_and_token_snapshot(
 
 @pytest.mark.asyncio
 async def test_direct_wrapper_and_async_approval_replay_do_not_bypass_grant(
-    runtime, monkeypatch
-):
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
     mcp, user, policy, deny_audit, _, wrapper = runtime
     monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: server())
     evaluate = AsyncMock(return_value=GrantResult(deepcopy(BINDING), "grant_inactive"))
@@ -279,8 +291,8 @@ async def test_direct_wrapper_and_async_approval_replay_do_not_bypass_grant(
 
 @pytest.mark.asyncio
 async def test_revocation_during_human_wait_is_checked_on_same_snapshot(
-    runtime, monkeypatch
-):
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
     mcp, user, policy, deny_audit, audit, wrapper = runtime
     row = server()
     resolve = MagicMock(return_value=row)
@@ -296,7 +308,7 @@ async def test_revocation_during_human_wait_is_checked_on_same_snapshot(
     pool = MagicMock(get_client=AsyncMock())
     monkeypatch.setitem(wrapper.__globals__, "get_mcp_client_pool", lambda: pool)
 
-    async def approve(**kwargs):
+    async def approve(**kwargs: Any) -> tuple[bool, str]:
         row.auth_config["token"] = "rotated-token"
         return True, ""
 
@@ -319,15 +331,14 @@ async def test_revocation_during_human_wait_is_checked_on_same_snapshot(
     "mode", ["timeout", "server_error", "inactive", "missing_scope"]
 )
 async def test_real_introspection_failure_never_forwards_runtime_tool(
-    runtime, monkeypatch, mode
-):
-    import httpx
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
     from preloop.services.grant_introspection import GrantIntrospector
 
     mcp, _, policy, deny_audit, _, wrapper = runtime
     monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: server())
 
-    def respond(request):
+    def respond(request: httpx.Request) -> httpx.Response:
         if mode == "timeout":
             raise httpx.ReadTimeout("synthetic timeout", request=request)
         if mode == "server_error":
