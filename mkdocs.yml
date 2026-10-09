@@ -235,6 +235,7 @@ nav:
           - "Security audit (CRA evidence packs)": guide/flows/security-audit-presets.md
           - Security maintenance: guide/flows/security-maintenance.md
           - Product evidence: guide/flows/product-evidence.md
+          - Transcript evaluation: guide/flows/transcript-evaluation.md
           - "Scanner binaries: decision note": guide/flows/scanner-binaries-decision.md
       - Trigger from CI: guide/flows/ci-trigger.md
       - GitHub Actions: guide/flows/github-actions.md
