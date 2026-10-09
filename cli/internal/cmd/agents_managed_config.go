@@ -267,7 +267,7 @@ func rejectManagedTargetOutput(output string) error {
 	}
 	for _, candidate := range []string{output, absolute} {
 		normalized := strings.TrimRight(strings.ReplaceAll(candidate, `\`, "/"), "/")
-		if normalized == "/Library/Application Support/ClaudeCode" || normalized == "/etc/claude-code" || normalized == "/private/etc/claude-code" || strings.EqualFold(normalized, "C:/Program Files/ClaudeCode") {
+		if strings.EqualFold(normalized, "/Library/Application Support/ClaudeCode") || strings.EqualFold(normalized, "/etc/claude-code") || strings.EqualFold(normalized, "/private/etc/claude-code") || strings.EqualFold(normalized, "C:/Program Files/ClaudeCode") {
 			return errors.New("--output cannot be a managed system target; export to a separate review directory")
 		}
 	}

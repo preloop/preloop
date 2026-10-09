@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/testenv"
 	"github.com/spf13/pflag"
 )
@@ -256,7 +257,7 @@ func (f managedFixtureTransport) RoundTrip(r *http.Request) (*http.Response, err
 
 func TestManagedBundleRefusesSystemTargetsAndMissingOutputParent(t *testing.T) {
 	files, _ := renderClaudeManagedBundle("linux", "/opt/preloop/bin/preloop", 300)
-	for _, output := range []string{"/Library/Application Support/ClaudeCode", "/etc/claude-code", `C:\Program Files\ClaudeCode`} {
+	for _, output := range []string{"/Library/Application Support/ClaudeCode", "/library/application support/claudecode", "/LIBRARY/APPLICATION SUPPORT/CLAUDECODE", "/etc/claude-code", "/ETC/CLAUDE-CODE", "/PRIVATE/ETC/CLAUDE-CODE", `C:\Program Files\ClaudeCode`, `c:\program files\claudecode`} {
 		if err := rejectManagedTargetOutput(output); err == nil {
 			t.Errorf("accepted installation target %s", output)
 		}
@@ -268,5 +269,30 @@ func TestManagedBundleRefusesSystemTargetsAndMissingOutputParent(t *testing.T) {
 	entries, err := os.ReadDir(parent)
 	if err != nil || len(entries) != 0 {
 		t.Fatal("wrote outside output")
+	}
+}
+
+func TestNormalCommandStillSelectsProfileAndAccount(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	t.Setenv("PRELOOP_PROFILE", "")
+	t.Setenv("PRELOOP_ACCOUNT", "")
+	config.Select("default", "")
+	t.Cleanup(func() { config.Select("", "") })
+	writeInventoryFixture(t, home, ".preloop/config.yaml", `profiles:
+  work:
+    api_url: https://example.com
+    accounts:
+      fixture:
+        account_id: synthetic-account
+        name: Fixture Account
+`)
+	output, err := runRoot(t, "--profile", "work", "--account", "fixture", "accounts", "current")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Profile: work", "Account: Fixture Account (fixture)", "API URL: https://example.com"} {
+		if !strings.Contains(output, expected) {
+			t.Errorf("non-offline selection missing %q: %s", expected, output)
+		}
 	}
 }
