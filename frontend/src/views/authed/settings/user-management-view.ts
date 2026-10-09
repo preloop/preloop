@@ -354,7 +354,7 @@ export class UserManagementView extends LitElement {
   }
 
   async openRoleModal(user: User) {
-    if (!this.editPermissions.allows('manage_users')) return;
+    if (!this.editPermissions.allows('assign_roles')) return;
     this.selectedUser = user;
     this.dialogError = null;
     this.isRoleModalOpen = true;
@@ -367,7 +367,7 @@ export class UserManagementView extends LitElement {
   }
 
   async handleToggleRole(roleId: string, isChecked: boolean) {
-    if (!this.editPermissions.allows('manage_users')) return;
+    if (!this.editPermissions.allows('assign_roles')) return;
     if (!this.selectedUser) return;
 
     try {
@@ -540,9 +540,9 @@ export class UserManagementView extends LitElement {
                 </div>
                 <div class="user-actions">
                   <sl-tooltip
-                    content=${!this.editPermissions.allows('manage_users') ? 'Requires manage_users' : ''}
+                    content=${!this.editPermissions.allows('assign_roles') ? 'Requires assign_roles' : ''}
                     ><sl-button
-                      ?disabled=${!this.editPermissions.allows('manage_users')}
+                      ?disabled=${!this.editPermissions.allows('assign_roles')}
                       size="small"
                       title="Manage roles"
                       @click=${() => this.openRoleModal(user)}
@@ -738,7 +738,7 @@ export class UserManagementView extends LitElement {
             return html`
               <div class="role-item">
                 <sl-checkbox
-                  ?disabled=${!this.editPermissions.allows('manage_users')}
+                  ?disabled=${!this.editPermissions.allows('assign_roles')}
                   ?checked=${isAssigned}
                   @sl-change=${(e: any) =>
                     this.handleToggleRole(role.id, e.target.checked)}

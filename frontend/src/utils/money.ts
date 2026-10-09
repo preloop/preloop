@@ -54,12 +54,17 @@ export function formatUsdExact(value: number | null | undefined): string {
 /** Provider invoices can be denominated in a currency other than USD. */
 export function formatCurrencyAmount(value: number, currency = 'USD'): string {
   if (currency.toUpperCase() === 'USD') return formatUsd(value);
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(toAmount(value));
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(toAmount(value));
+  } catch (error) {
+    if (error instanceof RangeError) return 'Unavailable';
+    throw error;
+  }
 }
 
 /** Exact provider amount, preserving the invoice currency. */
@@ -68,12 +73,17 @@ export function formatCurrencyAmountExact(
   currency = 'USD'
 ): string {
   if (currency.toUpperCase() === 'USD') return formatUsdExact(value);
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
-  }).format(toAmount(value));
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    }).format(toAmount(value));
+  } catch (error) {
+    if (error instanceof RangeError) return 'Unavailable';
+    throw error;
+  }
 }
 
 /** Billing providers publish cents; missing amounts are unavailable. */

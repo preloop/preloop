@@ -46,6 +46,9 @@ describe('provider currencies', () => {
     expect(formatCurrencyCents(1234567)).to.equal('$12,345.67');
     expect(formatCurrencyCents(null)).to.equal('Unavailable');
     expect(formatCurrencyCents(Number.NaN)).to.equal('Unavailable');
+    expect(formatCurrencyCents(100, 'invalid-currency')).to.equal(
+      'Unavailable'
+    );
     expect(formatCurrencyAmount(0.000123, 'usd')).to.equal('< $0.01');
   });
   it('preserves non-dollar invoice denomination and exact values', () => {

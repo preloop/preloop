@@ -73,7 +73,7 @@ describe('usage-rollup-panel', () => {
       ),
     ].map((td) => td.textContent);
     expect(cells).to.eql(['North', 'South']);
-    expect(q(el, 'rollup-total')!.textContent).to.equal('$1.75');
+    expect(q(el, 'rollup-total')!.textContent!.trim()).to.equal('$1.75');
     expect(q(el, 'attention-rollup')!.textContent).to.contain('South');
     expect(q(el, 'attention-rollup')!.textContent).to.contain('4');
     expect((q(el, 'subaccount-filter') as HTMLSelectElement).value).to.equal(
@@ -145,7 +145,9 @@ describe('usage-rollup-panel', () => {
     select.dispatchEvent(new CustomEvent('sl-change'));
     await waitUntil(() => api.callsTo(USAGE).length === 2);
     expect(api.callsTo(USAGE)[1].search).to.equal('?subaccount_id=sub-a');
-    await waitUntil(() => q(el, 'rollup-total')!.textContent === '$1.25');
+    await waitUntil(
+      () => q(el, 'rollup-total')!.textContent!.trim() === '$1.25'
+    );
     const options = [...el.shadowRoot!.querySelectorAll('sl-option')].map((o) =>
       o.getAttribute('value')
     );
