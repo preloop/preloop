@@ -35,6 +35,10 @@ from preloop.models.crud import (
     crud_mcp_server,
     crud_tool_configuration,
 )
+from preloop.services.mcp_tool_collisions import (
+    exposed_tool_name,
+    upstream_tool_name as _upstream_tool_name,
+)
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.endpoints.tools import BUILTIN_TOOLS, TOOL_NAME_ALIASES
 from preloop.services import kill_switch as kill_switch_service
@@ -399,17 +403,26 @@ def _resolve_proxied_tool_server(db: Any, account_id: str, tool_name: str) -> An
     process-wide server, so they must not carry a server id from the time
     they were created: a server deleted and recreated under the same name
     gets a new id. Resolving on every call reads the same rows as
-    ``list_tools`` (own and shared active servers, disabled tools skipped),
-    so every pod routes to the current server. When two servers expose the
-    same name, the last one wins, which matches the listing (see #1135).
+    ``list_tools`` (own and shared active servers), so every pod routes to
+    the current server.
+
+    ``tool_name`` is the name agents see (``<tool_prefix>_<tool>`` when the
+    server has a prefix). When several servers expose it, the first one
+    wins (#1135): own servers before shared ones, then the oldest by
+    ``created_at`` and ``id``. Newer servers' same-named tools are shadowed.
+    If the owner's tool is disabled by configuration, the name is not
+    served at all; it is not handed to a shadowed server.
 
     One indexed query for this tool name, not a full tool discovery, so it
     stays as cheap as the single-row lookup it replaces.
     """
-    servers = crud_mcp_server.get_active_visible_for_tool(
+    candidates = crud_mcp_server.get_active_visible_for_tool(
         db, account_id=account_id, tool_name=tool_name
     )
-    return servers[-1] if servers else None
+    if not candidates:
+        return None
+    owner, enabled = candidates[0]
+    return owner if enabled else None
 
 
 def _proxied_exception_outcome(
@@ -911,6 +924,7 @@ _WRAPPER_NAMESPACE_KEYS = (
     "account_id",
     "tool_name",
     "_resolve_proxied_tool_server",
+    "_upstream_tool_name",
     "param_names",
     "logger",
     "get_db",
@@ -935,7 +949,15 @@ _WRAPPER_NAMESPACE_KEYS = (
 #: Colliding parameter names would make ``locals().get(param_name)`` forward
 #: the body's own object instead of the caller-supplied argument.
 _RESERVED_WRAPPER_BODY_LOCALS = frozenset(
-    {"ctx", "arguments", "user_context", "param_name", "value", "server_id"}
+    {
+        "ctx",
+        "arguments",
+        "user_context",
+        "param_name",
+        "value",
+        "server_id",
+        "upstream_name",
+    }
 )
 
 #: Builtins the generated wrapper body calls. An upstream property with one
@@ -1231,18 +1253,24 @@ class DynamicFastMCP(FastMCP):
             proxied_tool_map = {}  # Track original_name -> internal_name mapping
 
             for mcp_server, mcp_tool in proxied_tools_data:
-                if not _is_safe_tool_identifier(mcp_tool.name):
+                # The name agents see: ``<tool_prefix>_<tool>`` when the
+                # server has an explicit prefix (#1135), else the upstream
+                # name. Discovery already dropped shadowed duplicates.
+                exposed_name = exposed_tool_name(
+                    getattr(mcp_server, "tool_prefix", None), mcp_tool.name
+                )
+                if not _is_safe_tool_identifier(exposed_name):
                     logger.warning(
                         "Skipping proxied tool with unsafe name %r; "
                         "not interpolating into generated wrapper source",
-                        mcp_tool.name,
+                        exposed_name,
                     )
                     continue
 
                 # Create internal name with namespace (sanitize account_id)
                 safe_account_id = user_context.account_id.replace("-", "_")
-                internal_name = f"account_{safe_account_id}_{mcp_tool.name}"
-                proxied_tool_map[mcp_tool.name] = (
+                internal_name = f"account_{safe_account_id}_{exposed_name}"
+                proxied_tool_map[exposed_name] = (
                     internal_name,
                     mcp_tool,
                     mcp_server,
@@ -1251,14 +1279,14 @@ class DynamicFastMCP(FastMCP):
                 # Only register if not already registered
                 if internal_name not in self._registered_proxied_tools:
                     logger.info(
-                        f"Dynamically registering proxied tool: {mcp_tool.name} "
+                        f"Dynamically registering proxied tool: {exposed_name} "
                         f"(internal: {internal_name})"
                     )
 
                     # Create wrapper function with approval and streaming
                     try:
                         wrapper = self._create_proxied_tool_wrapper(
-                            tool_name=mcp_tool.name,
+                            tool_name=exposed_name,
                             account_id=user_context.account_id,
                             description=mcp_tool.description or "",
                             input_schema=mcp_tool.input_schema,
@@ -1266,7 +1294,7 @@ class DynamicFastMCP(FastMCP):
                     except Exception:
                         logger.warning(
                             "Skipping proxied tool %r: wrapper creation failed",
-                            mcp_tool.name,
+                            exposed_name,
                             exc_info=True,
                         )
                         continue
@@ -1280,8 +1308,8 @@ class DynamicFastMCP(FastMCP):
                     self._registered_proxied_tools.add(internal_name)
 
                 # Always track the mapping for name translation
-                self._proxied_tool_servers[mcp_tool.name] = str(mcp_server.id)
-                self._proxied_tool_server_names[mcp_tool.name] = mcp_server.name
+                self._proxied_tool_servers[exposed_name] = str(mcp_server.id)
+                self._proxied_tool_server_names[exposed_name] = mcp_server.name
 
             # Now get all registered tools and map back to original names
             all_registered = await super().list_tools(run_middleware=run_middleware)
@@ -1649,6 +1677,11 @@ async def {internal_name}({params_str}):
                     status="failed",
                 )
             server_id = str(mcp_server.id)
+            # Agents call ``<prefix>_<tool>`` on a prefixed server; the
+            # upstream server only knows ``<tool>``.
+            upstream_name = _upstream_tool_name(
+                getattr(mcp_server, "tool_prefix", None), tool_name
+            )
 
             # Snapshot configuration before releasing the database connection.
             # Connecting, approvals and remote tools can wait indefinitely.
@@ -1669,7 +1702,7 @@ async def {internal_name}({params_str}):
             if denial:
                 return _wrapper_tool_error(denial, status="refused")
             # Call tool on external server
-            result = await client.call_tool(tool_name, arguments)
+            result = await client.call_tool(upstream_name, arguments)
             # Keep isError/structuredContent before filters rebuild the list.
             upstream = result
             logger.info(
@@ -1744,6 +1777,7 @@ async def {internal_name}({params_str}):
             "account_id": account_id,
             "tool_name": tool_name,
             "_resolve_proxied_tool_server": _resolve_proxied_tool_server,
+            "_upstream_tool_name": _upstream_tool_name,
             "param_names": param_names,
             "logger": logger,
             "get_db": get_db,

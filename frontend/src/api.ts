@@ -5408,6 +5408,9 @@ export interface ToolSummary {
   schema_tokens_estimate: number;
   adapters: string[];
   has_condition: boolean;
+  /** MCP tool hidden from agents: an older server owns the same name. */
+  shadowed?: boolean;
+  warnings?: string[];
 }
 
 /** List metadata and policy state; input definitions stay on the full route. */

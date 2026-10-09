@@ -31,3 +31,11 @@ class ToolSummaryResponse(BaseModel):
     schema_tokens_estimate: int = Field(ge=0)
     adapters: list[str] = Field(default_factory=list)
     has_condition: bool = False
+    shadowed: bool = Field(
+        default=False,
+        description=(
+            "MCP tool hidden from agents: an older active server in the "
+            "account exposes the same name and owns it."
+        ),
+    )
+    warnings: list[str] = Field(default_factory=list)

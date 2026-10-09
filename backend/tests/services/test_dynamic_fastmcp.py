@@ -316,6 +316,7 @@ class TestListTools:
 
         # Mock proxied tool data
         mock_mcp_server = MagicMock()
+        mock_mcp_server.tool_prefix = None
         mock_mcp_server.id = str(uuid4())
 
         mock_mcp_tool = MagicMock()
@@ -354,6 +355,44 @@ class TestListTools:
         # Should NOT include internal name in results
         assert not any(t.name == internal_name for t in result)
 
+    async def test_list_tools_exposes_prefixed_name_for_prefixed_server(
+        self, dynamic_mcp, user_context
+    ):
+        """A server with tool_prefix 'crm' exposes 'crm_<tool>' (#1135)."""
+        dynamic_mcp._user_context_provider = lambda: user_context
+        server = MagicMock()
+        server.tool_prefix = "crm"
+        server.id = str(uuid4())
+        server.name = "crm-server"
+        tool = MagicMock()
+        tool.name = "read_scope"
+        tool.description = "Read"
+        tool.input_schema = {"properties": {}}
+        safe_account_id = user_context.account_id.replace("-", "_")
+        internal_name = f"account_{safe_account_id}_crm_read_scope"
+        registered = Tool(name=internal_name, description="Internal", parameters={})
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+            with patch(
+                "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                return_value=[(server, tool)],
+            ):
+                with patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=[registered])
+                ):
+                    with patch.object(dynamic_mcp, "tool", return_value=lambda x: x):
+                        result = await dynamic_mcp.list_tools()
+
+        names = [t.name for t in result]
+        assert "crm_read_scope" in names
+        assert "read_scope" not in names
+        assert internal_name in dynamic_mcp._registered_proxied_tools
+        assert dynamic_mcp._proxied_tool_server_names["crm_read_scope"] == (
+            "crm-server"
+        )
+
     async def test_list_tools_skips_unsafe_tool_name_keeps_sibling(
         self, dynamic_mcp, user_context
     ):
@@ -361,6 +400,7 @@ class TestListTools:
         dynamic_mcp._user_context_provider = lambda: user_context
 
         mock_mcp_server = MagicMock()
+        mock_mcp_server.tool_prefix = None
         mock_mcp_server.id = str(uuid4())
         mock_mcp_server.name = "upstream"
 
