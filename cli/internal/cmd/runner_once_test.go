@@ -339,7 +339,23 @@ func TestRunnerFgOnceEphemeralRunsOneJobAndUnregisters(t *testing.T) {
 		t.Fatalf("error = %q", err.Error())
 	}
 
-	registers, completions, unregisters, _ := state.snapshot()
+	// The control-plane handler records frames on its own goroutine. The
+	// command can return as soon as the socket write completes, before that
+	// handler has appended the completion.
+	deadline := time.Now().Add(2 * time.Second)
+	var registers []map[string]any
+	var completions []map[string]any
+	var unregisters int
+	for {
+		registers, completions, unregisters, _ = state.snapshot()
+		if len(completions) > 0 && unregisters > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if len(registers) != 1 {
 		t.Fatalf("register calls = %d", len(registers))
 	}
