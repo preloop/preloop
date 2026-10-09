@@ -38,6 +38,8 @@ import {
 import consoleStyles from '../styles/console-styles.css?inline';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import './add-tracker-modal';
+import { confirmDialog } from './confirm-dialog';
+import '@shoelace-style/shoelace/dist/components/details/details.js';
 import './add-ai-model-modal';
 import './preloop-runner-pool-select';
 import './schedule-config-editor';
@@ -225,6 +227,21 @@ export class PreloopFlowForm extends LitElement {
     unsafeCSS(consoleStyles),
     consoleDialogStyles,
     css`
+      sl-details {
+        margin: var(--sl-spacing-medium) 0;
+      }
+      .form-actions {
+        position: sticky;
+        bottom: 0;
+        z-index: 2;
+        display: flex;
+        gap: var(--sl-spacing-medium);
+        justify-content: flex-end;
+        padding: var(--sl-spacing-medium);
+        background: var(--sl-color-neutral-0);
+        border-top: 1px solid var(--sl-color-neutral-200);
+      }
+
       :host {
         display: block;
       }
@@ -404,6 +421,88 @@ export class PreloopFlowForm extends LitElement {
       }
     `,
   ];
+
+  private formSnapshot: string | null = null;
+  private oauthStarting = false;
+  private restoredSnapshot: string | null = null;
+  private unloadRegistered = false;
+
+  private formFingerprint(): string {
+    return JSON.stringify({
+      flow: this.flow,
+      triggerType: this.triggerType,
+      executionPath: this.flowExecutionPath,
+      targetAgentId: this.targetAgentId,
+      routing: this.routingRules,
+      labels: this.labelRules,
+      customImage: this._customImageValue,
+      approvalAmount: this._approvalWindowAmount,
+      approvalUnit: this._approvalWindowUnit,
+      callableFlows: this.callableFlows,
+    });
+  }
+
+  get isDirty(): boolean {
+    return (
+      !this.oauthStarting &&
+      this.formSnapshot !== null &&
+      this.formSnapshot !== this.formFingerprint()
+    );
+  }
+
+  markSaved(snapshot = this.formFingerprint()): void {
+    this.formSnapshot = snapshot;
+    this.syncUnloadGuard();
+  }
+
+  async confirmLeave(): Promise<boolean> {
+    if (!this.isDirty) return true;
+    const confirmed = await confirmDialog({
+      title: 'Discard unsaved changes?',
+      message: 'Your flow has unsaved changes.',
+      detail: 'Leave without saving these changes?',
+      confirmLabel: 'Discard changes',
+      variant: 'danger',
+    });
+    if (confirmed) this.markSaved();
+    return confirmed;
+  }
+
+  private beforeUnload = (event: BeforeUnloadEvent): void => {
+    if (!this.isDirty) return;
+    event.preventDefault();
+    event.returnValue = '';
+  };
+
+  private syncUnloadGuard(): void {
+    const dirty = this.isConnected && this.isDirty;
+    if (dirty === this.unloadRegistered) return;
+    if (dirty) window.addEventListener('beforeunload', this.beforeUnload);
+    else window.removeEventListener('beforeunload', this.beforeUnload);
+    this.unloadRegistered = dirty;
+  }
+
+  protected updated(): void {
+    this.syncUnloadGuard();
+  }
+
+  private async openInvalidField(event: Event): Promise<void> {
+    const field = event.target as HTMLElement;
+    for (
+      let ancestor = field.parentElement;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      if (ancestor.tagName === 'SL-DETAILS')
+        (ancestor as HTMLElement & { open: boolean }).open = true;
+    }
+    await this.updateComplete;
+    field.focus?.({ preventScroll: true });
+  }
+
+  private draftChanged(): void {
+    this.requestUpdate();
+  }
 
   @property({ type: Object })
   flow: any = {};
@@ -608,6 +707,8 @@ export class PreloopFlowForm extends LitElement {
   }
 
   private handleGithubOauthStarting = () => {
+    this.oauthStarting = true;
+    this.syncUnloadGuard();
     sessionStorage.setItem(
       'preloop_flow_form_state',
       JSON.stringify({
@@ -618,6 +719,7 @@ export class PreloopFlowForm extends LitElement {
         customImage: this._customImageValue,
         approvalWindowAmount: this._approvalWindowAmount,
         approvalWindowUnit: this._approvalWindowUnit,
+        formSnapshot: this.formSnapshot,
       })
     );
   };
@@ -633,6 +735,8 @@ export class PreloopFlowForm extends LitElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener('beforeunload', this.beforeUnload);
+    this.unloadRegistered = false;
     this.removeEventListener(
       'github-oauth-starting',
       this.handleGithubOauthStarting
@@ -653,6 +757,8 @@ export class PreloopFlowForm extends LitElement {
         const saved = JSON.parse(savedStateStr);
         if (saved && saved.flow) {
           this.flow = saved.flow;
+          this.restoredSnapshot =
+            typeof saved.formSnapshot === 'string' ? saved.formSnapshot : null;
           this.triggerType = saved.triggerType || 'webhook';
           this.flowExecutionPath = saved.flowExecutionPath || 'ephemeral';
           this.targetAgentId = saved.targetAgentId || '';
@@ -823,6 +929,9 @@ export class PreloopFlowForm extends LitElement {
       console.error('Failed to load reference data for flow form:', e);
     } finally {
       this._loadingReferenceData = false;
+      await this.updateComplete;
+      this.markSaved(this.restoredSnapshot ?? this.formFingerprint());
+      this.restoredSnapshot = null;
       this.requestUpdate();
     }
   }
@@ -1320,6 +1429,15 @@ export class PreloopFlowForm extends LitElement {
     if (!field) {
       return;
     }
+    for (
+      let ancestor = field.parentElement;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      if (ancestor.tagName === 'SL-DETAILS')
+        (ancestor as HTMLElement & { open: boolean }).open = true;
+    }
+    await this.updateComplete;
     field.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
     field.focus?.({ preventScroll: true });
   }
@@ -1514,12 +1632,14 @@ export class PreloopFlowForm extends LitElement {
       // ignored) until the request settles, not just until this event is
       // dispatched. A listener that never calls it ends the busy state here.
       const pending: Promise<unknown>[] = [];
+      const submittedSnapshot = this.formFingerprint();
       this.dispatchEvent(
         new CustomEvent('flow-submit', {
           bubbles: true,
           composed: true,
           detail: {
             flow: payload,
+            markSaved: () => this.markSaved(submittedSnapshot),
             waitUntil: (work: Promise<unknown>) => {
               pending.push(Promise.resolve(work));
             },
@@ -1527,7 +1647,12 @@ export class PreloopFlowForm extends LitElement {
         })
       );
       if (pending.length > 0) {
-        await Promise.allSettled(pending);
+        const outcomes = await Promise.allSettled(pending);
+        if (
+          !this.formError &&
+          outcomes.every((result) => result.status === 'fulfilled')
+        )
+          this.markSaved(submittedSnapshot);
       }
     } catch (e) {
       this.formError =
@@ -1910,80 +2035,87 @@ export class PreloopFlowForm extends LitElement {
     const feedback = this.feedbackConfig();
     const enabled = feedback.enabled === true;
     return html`
-      <sl-card data-feedback-editor>
-        <div slot="header" class="card-header-title">
-          <sl-icon name="arrow-repeat"></sl-icon> PR review and CI follow-up
-        </div>
-        <p class="notifications-help">
-          Repair review findings and failing CI on pull or merge requests
-          published by this flow. Each repair starts a new execution and
-          continues the previous agent conversation when its saved checkpoint is
-          compatible. Otherwise it starts fresh from the issue and PR context
-          and reports that choice. Merge remains manual.
-        </p>
-        <sl-checkbox
-          data-feedback="enabled"
-          .checked=${enabled}
-          @sl-change=${(e: Event) => this.updateFeedback('enabled', (e.target as HTMLInputElement).checked)}
-          >Continue implementation after PR review or CI failure</sl-checkbox
-        >
-        ${
-          enabled
-            ? html`
-                <p
-                  class="notifications-help"
-                  style="margin-top: var(--sl-spacing-medium);"
-                >
-                  Limits apply across the PR's repair turns. The cost limit is
-                  cumulative estimated USD; each execution also keeps its own
-                  budget. Pending CI waits for results without keeping the agent
-                  running. Enabling applies to future runs. Existing PRs require
-                  explicit adoption from the execution that published them.
-                </p>
-                <div class="form-grid">
-                  ${[
-                    [
-                      'trusted_reviewer_ids',
-                      'Trusted reviewers',
-                      'Usernames or app slugs, for example preloop. On GitHub, preloop matches reviews posted by the preloop[bot] App; a staging app is preloop-staging. On Bitbucket, use the reviewer username, account ID or user UUID (approvals and change requests count as reviews). Numeric actor IDs still work. Unlisted bots are ignored.',
-                    ],
-                    [
-                      'implementer_actor_ids',
-                      'Implementer actor IDs',
-                      'Comma-separated numeric user IDs used by the implementing agent. Their own comments are ignored to prevent feedback loops.',
-                    ],
-                  ].map(
-                    ([key, label, help]) => html`
-                      <sl-input
-                        data-feedback=${key}
-                        label=${label}
-                        help-text=${help}
-                        .value=${Array.isArray(feedback[key]) ? (feedback[key] as unknown[]).join(', ') : String(feedback[key] ?? '')}
-                        @sl-input=${(e: Event) => this.updateFeedback(key, (e.target as HTMLInputElement).value)}
-                      ></sl-input>
-                    `
-                  )}
-                  ${Object.entries(FEEDBACK_LIMITS).map(
-                    ([key, limit]) => html`
-                      <sl-input
-                        data-feedback=${key}
-                        type="number"
-                        label=${limit.label}
-                        min=${limit.min}
-                        max=${limit.max}
-                        step=${limit.step}
-                        required
-                        help-text=${key === 'debounce_seconds' ? 'Collect nearby feedback into one repair turn before starting work.' : `${limit.min}–${limit.max}.`}
-                        .value=${String(feedback[key] ?? limit.default)}
-                        @sl-input=${(e: Event) => this.updateFeedback(key, (e.target as HTMLInputElement).value)}
-                      ></sl-input>
-                    `
-                  )}
-                </div>
-              `
-            : nothing
-        }
-      </sl-card>
+      <sl-details
+        data-advanced="feedback"
+        summary=${`Advanced feedback: ${enabled ? 'review and CI follow-up enabled' : 'off'}`}
+        .open=${enabled}
+      >
+        <sl-card data-feedback-editor>
+          <div slot="header" class="card-header-title">
+            <sl-icon name="arrow-repeat"></sl-icon> PR review and CI follow-up
+          </div>
+          <p class="notifications-help">
+            Repair review findings and failing CI on pull or merge requests
+            published by this flow. Each repair starts a new execution and
+            continues the previous agent conversation when its saved checkpoint
+            is compatible. Otherwise it starts fresh from the issue and PR
+            context and reports that choice. Merge remains manual.
+          </p>
+          <sl-checkbox
+            data-feedback="enabled"
+            .checked=${enabled}
+            @sl-change=${(e: Event) => this.updateFeedback('enabled', (e.target as HTMLInputElement).checked)}
+            >Continue implementation after PR review or CI failure</sl-checkbox
+          >
+          ${
+            enabled
+              ? html`
+                  <p
+                    class="notifications-help"
+                    style="margin-top: var(--sl-spacing-medium);"
+                  >
+                    Limits apply across the PR's repair turns. The cost limit is
+                    cumulative estimated USD; each execution also keeps its own
+                    budget. Pending CI waits for results without keeping the
+                    agent running. Enabling applies to future runs. Existing PRs
+                    require explicit adoption from the execution that published
+                    them.
+                  </p>
+                  <div class="form-grid">
+                    ${[
+                      [
+                        'trusted_reviewer_ids',
+                        'Trusted reviewers',
+                        'Usernames or app slugs, for example preloop. On GitHub, preloop matches reviews posted by the preloop[bot] App; a staging app is preloop-staging. On Bitbucket, use the reviewer username, account ID or user UUID (approvals and change requests count as reviews). Numeric actor IDs still work. Unlisted bots are ignored.',
+                      ],
+                      [
+                        'implementer_actor_ids',
+                        'Implementer actor IDs',
+                        'Comma-separated numeric user IDs used by the implementing agent. Their own comments are ignored to prevent feedback loops.',
+                      ],
+                    ].map(
+                      ([key, label, help]) => html`
+                        <sl-input
+                          data-feedback=${key}
+                          label=${label}
+                          help-text=${help}
+                          .value=${Array.isArray(feedback[key]) ? (feedback[key] as unknown[]).join(', ') : String(feedback[key] ?? '')}
+                          @sl-input=${(e: Event) => this.updateFeedback(key, (e.target as HTMLInputElement).value)}
+                        ></sl-input>
+                      `
+                    )}
+                    ${Object.entries(FEEDBACK_LIMITS).map(
+                      ([key, limit]) => html`
+                        <sl-input
+                          data-feedback=${key}
+                          type="number"
+                          label=${limit.label}
+                          min=${limit.min}
+                          max=${limit.max}
+                          step=${limit.step}
+                          required
+                          help-text=${key === 'debounce_seconds' ? 'Collect nearby feedback into one repair turn before starting work.' : `${limit.min}–${limit.max}.`}
+                          .value=${String(feedback[key] ?? limit.default)}
+                          @sl-input=${(e: Event) => this.updateFeedback(key, (e.target as HTMLInputElement).value)}
+                        ></sl-input>
+                      `
+                    )}
+                  </div>
+                `
+              : nothing
+          }
+        </sl-card>
+      </sl-details>
     `;
   }
 
@@ -2549,7 +2681,8 @@ export class PreloopFlowForm extends LitElement {
     `;
   }
 
-  private handleCancel() {
+  private async handleCancel() {
+    if (!(await this.confirmLeave())) return;
     this.dispatchEvent(
       new CustomEvent('flow-cancel', {
         bubbles: true,
@@ -2751,6 +2884,9 @@ export class PreloopFlowForm extends LitElement {
       }
       await this.selectPreset(preset);
     }
+    await this.syncTriggerStateFromFlow(true);
+    await this.updateComplete;
+    this.markSaved();
     this.pickerSelectedId = presetId;
     this.pickerCollapsed = true;
   }
@@ -2804,7 +2940,10 @@ export class PreloopFlowForm extends LitElement {
     this.syncLabelRulesFromConfig(preset.agent_config);
     this.sourcePresetId = preset.id;
     await this._autoPopulatePresetFields();
+    await this.syncTriggerStateFromFlow(true);
+    await this.updateComplete;
     this.capturePresetSnapshot();
+    this.markSaved();
   }
 
   private async _autoPopulatePresetFields() {
@@ -3706,7 +3845,12 @@ export class PreloopFlowForm extends LitElement {
           : nothing
       }
 
-      <form @submit=${this.handleFormSubmit}>
+      <form
+        @submit=${this.handleFormSubmit}
+        @sl-input=${this.draftChanged}
+        @sl-change=${this.draftChanged}
+        @sl-invalid=${this.openInvalidField}
+      >
         ${this.renderReferenceListsWarning()}
         ${
           !this.flow.id
@@ -4059,12 +4203,24 @@ export class PreloopFlowForm extends LitElement {
                         model
                       </sl-button>
                     </div>
-                    ${this.renderModelRoutingEditor(selectableModels)}
-                    ${this.renderModelByLabelEditor(selectableModels)}
+                    <sl-details
+                      data-advanced="routing"
+                      summary=${`Advanced model routing: ${this.routingRules.length} routing rules, ${this.labelRules.length} label rules`}
+                      .open=${this.routingRules.length > 0 || this.labelRules.length > 0}
+                    >
+                      ${this.renderModelRoutingEditor(selectableModels)}
+                      ${this.renderModelByLabelEditor(selectableModels)}
+                    </sl-details>
                   `
           }
-          ${this.renderRunnerPoolField()} ${this.renderHostExecProfileField()}
-          ${this.renderCustomImageField()}
+          <sl-details
+            data-advanced="runtime"
+            summary=${`Advanced runtime: ${this.normalizedFlowRunnerPool() || 'account default runner'}${this.customImageValue ? ', custom image' : ''}${this.hostExecProfileName() ? ', host profile' : ''}`}
+            .open=${Boolean(this.flow.runner_pool || this.customImageValue || this.hostExecProfileName())}
+          >
+            ${this.renderRunnerPoolField()} ${this.renderHostExecProfileField()}
+            ${this.renderCustomImageField()}
+          </sl-details>
 
           <sl-textarea
             class="prompt"
@@ -4192,209 +4348,227 @@ export class PreloopFlowForm extends LitElement {
           </div>
         </sl-card>
 
-        <sl-card>
-          <div slot="header" class="card-header-title">
-            <sl-icon name="git"></sl-icon> Git clone configuration
-          </div>
-          <sl-checkbox
-            .checked=${this.flow.git_clone_config?.enabled || false}
-            @sl-change=${(e: any) =>
-              this.handleGitCloneToggle(e.target.checked)}
-            style="margin-bottom: var(--sl-spacing-medium);"
-          >
-            Enable git workspace cloning
-          </sl-checkbox>
+        <sl-details
+          data-advanced="git"
+          summary=${`Advanced Git workspace: ${this.flow.git_clone_config?.enabled ? 'cloning enabled' : 'off'}`}
+          .open=${Boolean(this.flow.git_clone_config?.enabled)}
+        >
+          <sl-card>
+            <div slot="header" class="card-header-title">
+              <sl-icon name="git"></sl-icon> Git clone configuration
+            </div>
+            <sl-checkbox
+              .checked=${this.flow.git_clone_config?.enabled || false}
+              @sl-change=${(e: any) =>
+                this.handleGitCloneToggle(e.target.checked)}
+              style="margin-bottom: var(--sl-spacing-medium);"
+            >
+              Enable git workspace cloning
+            </sl-checkbox>
 
-          ${
-            this.flow.git_clone_config?.enabled
-              ? html`
-                  <div
-                    class="form-grid"
-                    style="margin-top: var(--sl-spacing-medium);"
-                  >
-                    <sl-input
-                      label="Git author name"
-                      placeholder="Preloop"
-                      .value=${this.flow.git_clone_config?.git_user_name || ''}
-                      @sl-input=${(e: any) => {
-                        this.flow.git_clone_config = {
-                          ...this.flow.git_clone_config,
-                          git_user_name: e.target.value,
-                        };
-                      }}
-                    ></sl-input>
-
-                    <sl-input
-                      label="Git author email"
-                      placeholder="git@preloop.ai"
-                      .value=${this.flow.git_clone_config?.git_user_email || ''}
-                      @sl-input=${(e: any) => {
-                        this.flow.git_clone_config = {
-                          ...this.flow.git_clone_config,
-                          git_user_email: e.target.value,
-                        };
-                      }}
-                    ></sl-input>
-
-                    <sl-input
-                      label="Source branch"
-                      placeholder="main"
-                      .value=${this.flow.git_clone_config?.source_branch || ''}
-                      @sl-input=${(e: any) => {
-                        this.flow.git_clone_config = {
-                          ...this.flow.git_clone_config,
-                          source_branch: e.target.value,
-                        };
-                      }}
-                    ></sl-input>
-
-                    <div style="grid-column: 1 / -1;">
-                      <sl-checkbox
-                        data-git="create_pull_request"
-                        .checked=${
-                          this.flow.git_clone_config?.create_pull_request ||
-                          false
-                        }
-                        @sl-change=${(e: any) => {
+            ${
+              this.flow.git_clone_config?.enabled
+                ? html`
+                    <div
+                      class="form-grid"
+                      style="margin-top: var(--sl-spacing-medium);"
+                    >
+                      <sl-input
+                        label="Git author name"
+                        placeholder="Preloop"
+                        .value=${this.flow.git_clone_config?.git_user_name || ''}
+                        @sl-input=${(e: any) => {
                           this.flow.git_clone_config = {
                             ...this.flow.git_clone_config,
-                            create_pull_request: e.target.checked,
+                            git_user_name: e.target.value,
                           };
-                          this.requestUpdate();
                         }}
-                      >
-                        Create a pull or merge request on commit
-                      </sl-checkbox>
-                      <p class="checkbox-help" data-pr-options-hint>
-                        Enables PR review and CI follow-up, and the issue
-                        comment when an issue event triggers this flow.
-                      </p>
+                      ></sl-input>
+
+                      <sl-input
+                        label="Git author email"
+                        placeholder="git@preloop.ai"
+                        .value=${this.flow.git_clone_config?.git_user_email || ''}
+                        @sl-input=${(e: any) => {
+                          this.flow.git_clone_config = {
+                            ...this.flow.git_clone_config,
+                            git_user_email: e.target.value,
+                          };
+                        }}
+                      ></sl-input>
+
+                      <sl-input
+                        label="Source branch"
+                        placeholder="main"
+                        .value=${this.flow.git_clone_config?.source_branch || ''}
+                        @sl-input=${(e: any) => {
+                          this.flow.git_clone_config = {
+                            ...this.flow.git_clone_config,
+                            source_branch: e.target.value,
+                          };
+                        }}
+                      ></sl-input>
+
+                      <div style="grid-column: 1 / -1;">
+                        <sl-checkbox
+                          data-git="create_pull_request"
+                          .checked=${
+                            this.flow.git_clone_config?.create_pull_request ||
+                            false
+                          }
+                          @sl-change=${(e: any) => {
+                            this.flow.git_clone_config = {
+                              ...this.flow.git_clone_config,
+                              create_pull_request: e.target.checked,
+                            };
+                            this.requestUpdate();
+                          }}
+                        >
+                          Create a pull or merge request on commit
+                        </sl-checkbox>
+                        <p class="checkbox-help" data-pr-options-hint>
+                          Enables PR review and CI follow-up, and the issue
+                          comment when an issue event triggers this flow.
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                `
-              : nothing
-          }
-        </sl-card>
+                  `
+                : nothing
+            }
+          </sl-card>
+        </sl-details>
 
         ${this.opensPullRequest ? this.renderFeedbackControls() : nothing}
         ${
           this.showsIssueCommentOption
             ? html`
-                <sl-card data-notifications-card>
-                  <div slot="header" class="card-header-title">
-                    <sl-icon name="bell"></sl-icon> Notifications
-                  </div>
-                  <p class="notifications-help">
-                    Tell someone when this flow opens a pull request. The
-                    comment goes on the issue that triggered the run. Failed
-                    executions always appear on Overview.
-                  </p>
-                  <sl-checkbox
-                    data-notification="on_success_comment"
-                    .checked=${
-                      this.flow.notifications?.on_success
-                        ?.comment_on_trigger_issue || false
-                    }
-                    @sl-change=${(e: any) =>
-                      this.handleSuccessCommentToggle(e.target.checked)}
-                  >
-                    Comment on the triggering issue when a pull request is
-                    opened
-                  </sl-checkbox>
-                </sl-card>
+                <sl-details
+                  data-advanced="notifications"
+                  summary=${`Advanced notifications: ${this.flow.notifications?.on_success?.comment_on_trigger_issue ? 'issue comment enabled' : 'off'}`}
+                  .open=${Boolean(this.flow.notifications?.on_success?.comment_on_trigger_issue)}
+                >
+                  <sl-card data-notifications-card>
+                    <div slot="header" class="card-header-title">
+                      <sl-icon name="bell"></sl-icon> Notifications
+                    </div>
+                    <p class="notifications-help">
+                      Tell someone when this flow opens a pull request. The
+                      comment goes on the issue that triggered the run. Failed
+                      executions always appear on Overview.
+                    </p>
+                    <sl-checkbox
+                      data-notification="on_success_comment"
+                      .checked=${
+                        this.flow.notifications?.on_success
+                          ?.comment_on_trigger_issue || false
+                      }
+                      @sl-change=${(e: any) =>
+                        this.handleSuccessCommentToggle(e.target.checked)}
+                    >
+                      Comment on the triggering issue when a pull request is
+                      opened
+                    </sl-checkbox>
+                  </sl-card>
+                </sl-details>
               `
             : nothing
         }
 
-        <sl-card>
-          <div slot="header" class="card-header-title">
-            <sl-icon name="shield"></sl-icon> Execution limits and safety
-          </div>
-          <div class="form-grid">
-            <sl-input
-              type="number"
-              name="timeout_seconds"
-              label="Execution timeout (seconds)"
-              min=${FLOW_TIMEOUT_MIN_SECONDS}
-              max=${FLOW_TIMEOUT_MAX_SECONDS}
-              step="1"
-              placeholder="Deployment default"
-              help-text=${`Maximum duration of one execution: ${FLOW_TIMEOUT_MIN_SECONDS}–${FLOW_TIMEOUT_MAX_SECONDS} seconds (1 minute–24 hours). Leave blank to use the deployment default.`}
-              .value=${this.flow.timeout_seconds == null ? '' : String(this.flow.timeout_seconds)}
-              @sl-input=${(e: Event) => this.handleInputChange('timeout_seconds', e)}
-            ></sl-input>
+        <sl-details
+          data-advanced="limits"
+          summary=${`Advanced limits: ${this.flow.max_budget == null ? 'no spend limit' : '$' + this.flow.max_budget + ' per run'}, ${this.flow.max_iterations == null ? 'no model-call limit' : this.flow.max_iterations + ' model calls'}`}
+          .open=${Boolean(this.flow.timeout_seconds != null || this.flow.approval_window_seconds != null || this.flow.max_budget != null || this.flow.max_iterations != null)}
+        >
+          <sl-card>
+            <div slot="header" class="card-header-title">
+              <sl-icon name="shield"></sl-icon> Execution limits and safety
+            </div>
+            <div class="form-grid">
+              <sl-input
+                type="number"
+                name="timeout_seconds"
+                label="Execution timeout (seconds)"
+                min=${FLOW_TIMEOUT_MIN_SECONDS}
+                max=${FLOW_TIMEOUT_MAX_SECONDS}
+                step="1"
+                placeholder="Deployment default"
+                help-text=${`Maximum duration of one execution: ${FLOW_TIMEOUT_MIN_SECONDS}–${FLOW_TIMEOUT_MAX_SECONDS} seconds (1 minute–24 hours). Leave blank to use the deployment default.`}
+                .value=${this.flow.timeout_seconds == null ? '' : String(this.flow.timeout_seconds)}
+                @sl-input=${(e: Event) => this.handleInputChange('timeout_seconds', e)}
+              ></sl-input>
 
-            <!-- The approval window is the other half of the timeout: how
+              <!-- The approval window is the other half of the timeout: how
                  long a human has to answer a question this flow asks. While
                  the question is outstanding the run is parked, so this time
                  does not spend the execution timeout above. -->
-            <div class="approval-window-field">
+              <div class="approval-window-field">
+                <sl-input
+                  type="number"
+                  name="approval_window_amount"
+                  label="Approval window"
+                  min="1"
+                  step="1"
+                  placeholder="Default (5 minutes)"
+                  .value=${
+                    this.approvalWindowAmount == null
+                      ? ''
+                      : String(this.approvalWindowAmount)
+                  }
+                  @sl-input=${this.handleApprovalWindowAmountChange}
+                ></sl-input>
+                <sl-select
+                  name="approval_window_unit"
+                  label="Unit"
+                  .value=${this.approvalWindowUnit}
+                  @sl-change=${this.handleApprovalWindowUnitChange}
+                >
+                  ${APPROVAL_WINDOW_UNITS.map(
+                    (unit) =>
+                      html`<sl-option value=${unit.value}
+                        >${unit.label}</sl-option
+                      >`
+                  )}
+                </sl-select>
+              </div>
+              <p class="approval-window-help">
+                How long a human has to answer a question or approval this flow
+                raises (1 minute to 30 days). While the question is outstanding
+                the execution is parked: no container, no runner, and the
+                execution timeout above is paused. Leave blank for the
+                deployment default of 5 minutes.
+              </p>
+
               <sl-input
                 type="number"
-                name="approval_window_amount"
-                label="Approval window"
+                label="Spend limit per run (USD)"
+                data-field="max_budget"
+                min="0.01"
+                step="0.01"
+                placeholder="No limit"
+                help-text="The run stops when its estimated model spend reaches this amount. Leave blank for no limit."
+                .value=${this.flow.max_budget == null ? '' : String(this.flow.max_budget)}
+                @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
+              ></sl-input>
+
+              <sl-input
+                type="number"
+                label="Maximum model calls per run"
+                data-field="max_iterations"
                 min="1"
                 step="1"
-                placeholder="Default (5 minutes)"
+                placeholder="No limit"
+                help-text="The run stops after this many model requests (agent iterations). Leave blank for no limit."
                 .value=${
-                  this.approvalWindowAmount == null
+                  this.flow.max_iterations == null
                     ? ''
-                    : String(this.approvalWindowAmount)
+                    : String(this.flow.max_iterations)
                 }
-                @sl-input=${this.handleApprovalWindowAmountChange}
+                @sl-input=${(e: Event) =>
+                  this.handleInputChange('max_iterations', e)}
               ></sl-input>
-              <sl-select
-                name="approval_window_unit"
-                label="Unit"
-                .value=${this.approvalWindowUnit}
-                @sl-change=${this.handleApprovalWindowUnitChange}
-              >
-                ${APPROVAL_WINDOW_UNITS.map(
-                  (unit) =>
-                    html`<sl-option value=${unit.value}
-                      >${unit.label}</sl-option
-                    >`
-                )}
-              </sl-select>
             </div>
-            <p class="approval-window-help">
-              How long a human has to answer a question or approval this flow
-              raises (1 minute to 30 days). While the question is outstanding
-              the execution is parked: no container, no runner, and the
-              execution timeout above is paused. Leave blank for the deployment
-              default of 5 minutes.
-            </p>
-
-            <sl-input
-              type="number"
-              label="Spend limit per run (USD)"
-              data-field="max_budget"
-              min="0.01"
-              step="0.01"
-              placeholder="No limit"
-              help-text="The run stops when its estimated model spend reaches this amount. Leave blank for no limit."
-              .value=${this.flow.max_budget == null ? '' : String(this.flow.max_budget)}
-              @sl-input=${(e: Event) => this.handleInputChange('max_budget', e)}
-            ></sl-input>
-
-            <sl-input
-              type="number"
-              label="Maximum model calls per run"
-              data-field="max_iterations"
-              min="1"
-              step="1"
-              placeholder="No limit"
-              help-text="The run stops after this many model requests (agent iterations). Leave blank for no limit."
-              .value=${
-                this.flow.max_iterations == null
-                  ? ''
-                  : String(this.flow.max_iterations)
-              }
-              @sl-input=${(e: Event) =>
-                this.handleInputChange('max_iterations', e)}
-            ></sl-input>
-          </div>
-        </sl-card>
+          </sl-card>
+        </sl-details>
 
         ${
           this.formError
@@ -4407,9 +4581,7 @@ export class PreloopFlowForm extends LitElement {
             : nothing
         }
 
-        <div
-          style="display: flex; gap: var(--sl-spacing-medium); justify-content: flex-end; margin-bottom: var(--sl-spacing-2x-large);"
-        >
+        <div class="form-actions">
           <sl-button
             variant="default"
             @click=${this.handleCancel}

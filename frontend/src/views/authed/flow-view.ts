@@ -1,7 +1,8 @@
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { customElement, property, state } from 'lit/decorators.js';
-import { Router } from '../../router';
+import { Router, type RouterCommands, type RouterLocation } from '../../router';
+import type { PreloopFlowForm } from '../../components/preloop-flow-form';
 import {
   getFlow,
   getFlowExecutions,
@@ -1688,6 +1689,12 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     }
   }
 
+  async onBeforeLeave(_location: RouterLocation, commands: RouterCommands) {
+    const form =
+      this.shadowRoot?.querySelector<PreloopFlowForm>('preloop-flow-form');
+    if (form && !(await form.confirmLeave())) return commands.prevent();
+  }
+
   renderForm() {
     return repeat(
       this.flowReady ? [this._formInstanceId] : [],
@@ -1714,7 +1721,10 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     const payload = e.detail.flow;
     // Read the form now: once dispatch ends, a target inside this view's
     // shadow root is cleared, so a later server error had nowhere to go.
-    const form = e.target as { formError?: string } | null;
+    const form = e.target as {
+      formError?: string;
+      markSaved?: () => void;
+    } | null;
     try {
       if (this.isNew) {
         if (this.sourcePresetId) {
@@ -1724,9 +1734,13 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
           payload.preset_update_available = false;
         }
         const newFlow = await createFlow(payload);
+        if (e.detail.markSaved) e.detail.markSaved();
+        else form?.markSaved?.();
         Router.go(`/console/flows/${newFlow.id}`);
       } else {
         await updateFlow(this.flowId!, payload);
+        if (e.detail.markSaved) e.detail.markSaved();
+        else form?.markSaved?.();
         Router.go(`/console/flows/${this.flowId}`);
       }
     } catch (error: any) {
