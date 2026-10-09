@@ -58,6 +58,14 @@ Onboarding, the MCP firewall, human approvals, and cutting session cost. Recorde
 
 Guides: [docs.preloop.ai](https://docs.preloop.ai). Start here: [onboard local agents (60s)](https://docs.preloop.ai/quickstart-cli/).
 
+For an authorized corporate Claude pilot, see the experimental
+[Anthropic Enterprise hook guide](docs/operations/anthropic-inference-hooks.md),
+[self-hosted runner identity](docs/operations/anthropic-self-hosted-runner.md),
+[managed endpoint rollout](docs/operations/anthropic-managed-rollout.md) and
+[acceptance record](docs/operations/anthropic-acceptance.md). These distinguish
+synthetic fixtures and merged source from released, deployed and app-verified
+controls; tenant validation remains pending.
+
 [Event-driven employees](docs/guide/virtual-employees.md) reuse managed-agent identities and persistent Flows for bounded Codex or Nanobot tasks from tracker events, GlitchTip errors and selected Discord activity, with durable replay protection and scoped model credentials.
 
 A run in progress is not out of reach. [Operator notes](docs/guide/operator-notes.md) let an identified human (or, with an opt-in tool, another agent) steer a running agent: the note is delivered at the next turn boundary through the gateway or a hook, costs nothing when there is none, and is recorded with who sent it. Send one from the console, the API, or `preloop notes send`. The [account kill switch](docs/guide/account-kill-switch.md) goes the other way: it blocks gateway and tool traffic, freezes pending approval deadlines, and requests termination of active managed flow executions, with audited staged recovery.

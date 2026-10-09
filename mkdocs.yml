@@ -263,6 +263,10 @@ nav:
       - Accounts and CLI profiles: guide/accounts-and-profiles.md
 
   - Self-hosting and operations:
+      - Anthropic Enterprise hooks: operations/anthropic-inference-hooks.md
+      - Claude self-hosted runner identity: operations/anthropic-self-hosted-runner.md
+      - Managed Claude endpoint rollout: operations/anthropic-managed-rollout.md
+      - Anthropic acceptance and evidence: operations/anthropic-acceptance.md
       - Install the OSS stack: operations/installation.md
       - Windows: operations/windows-wsl2.md
       - TLS reverse proxy: operations/tls.md
