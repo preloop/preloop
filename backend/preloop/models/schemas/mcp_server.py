@@ -4,7 +4,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from preloop.models.schemas.grant_introspection import IntrospectionConfig
 from preloop.utils.redaction import REDACTED_STRING, _is_sensitive_key
@@ -180,6 +187,16 @@ class MCPServerBase(BaseModel):
         if value and value.get("introspection") is not None:
             IntrospectionConfig.model_validate(value["introspection"])
         return value
+
+    @model_validator(mode="after")
+    def introspection_requires_delegated_auth(self) -> "MCPServerBase":
+        """A grant check only applies to the bearer or OAuth token we forward."""
+        config = self.auth_config or {}
+        if config.get("introspection") is None:
+            return self
+        if self.auth_type not in ("bearer", "oauth"):
+            raise ValueError("introspection requires bearer or oauth authentication")
+        return self
 
 
 class MCPServerCreate(MCPServerBase):

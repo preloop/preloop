@@ -314,6 +314,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     collisions = script.get_revision("20261009_mcp_tool_shadow_prefix")
     assert collisions is not None
     assert collisions.down_revision == "20261009_oauth_receipt_anchor"
+    access = script.get_revision("20261009_access_rule_generation")
+    assert access.down_revision == "20261009_mcp_tool_shadow_prefix"
     grant = script.get_revision("20261009_grant_consent_index")
-    assert grant.down_revision == "20261009_mcp_tool_shadow_prefix"
+    assert grant.down_revision == "20261009_access_rule_generation"
     assert script.get_heads() == ["20261009_grant_consent_index"]

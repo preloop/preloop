@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from preloop.plugins.account_hooks import AuthorizationContext
+
 from preloop.api.auth import get_current_active_user
 from preloop.api.auth.ci import get_current_actor
 from preloop.api.loop_safety import run_db_off_loop
@@ -2455,7 +2457,12 @@ async def trigger_flow_execution(
                 test_mode=True,
                 trigger_event_data=trigger_event_data,
                 triggered_by=_display_name(current_user),
+                authorization_context=AuthorizationContext(
+                    account_id=current_user.account_id, db=db, user=current_user
+                ),
             )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except TriageControllerError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ModelRoutingError as exc:
@@ -2469,7 +2476,12 @@ async def trigger_flow_execution(
             test_mode=True,
             trigger_event_data=trigger_event_data,
             triggered_by=_display_name(current_user),
+            authorization_context=AuthorizationContext(
+                account_id=current_user.account_id, db=db, user=current_user
+            ),
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except TriageControllerError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelRoutingError as exc:
@@ -2539,7 +2551,12 @@ async def retry_flow_execution(
             trigger_event_data=trigger_data,
             retry_of_execution_id=original.id,
             triggered_by=_display_name(current_user),
+            authorization_context=AuthorizationContext(
+                account_id=current_user.account_id, db=db, user=current_user
+            ),
         )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except TriageControllerError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ModelRoutingError as exc:

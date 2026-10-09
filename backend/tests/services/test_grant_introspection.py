@@ -84,6 +84,15 @@ async def test_exact_upstream_bearer_and_client_auth(client_auth: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_oversized_introspection_body_is_unavailable() -> None:
+    body = b'{"active": true, "pad": "' + (b"x" * 1_048_577) + b'"}'
+    client = client_for(lambda request: httpx.Response(200, content=body))
+    result = await client.evaluate(TOKEN, config(), server_id="server-example")
+    assert result.deny_reason == "introspection_unavailable"
+    assert result.binding["available"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "payload,required,reason",
     [

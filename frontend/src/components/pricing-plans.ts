@@ -154,7 +154,7 @@ export class PricingPlanComparison extends LitElement {
       <section class="comparison-section">
         <div class="section-container">
           <h2 class="text-center">${comparison.title || this.fallbackTitle}</h2>
-          <div class="comparison-scroll">
+          <div class="comparison-scroll table-scroll">
             <table class="comparison-table">
               <thead>
                 <tr>

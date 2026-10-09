@@ -1,3 +1,5 @@
+import { parseUTCDate } from '../utils/date';
+import { formatUsd } from '../utils/money';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -64,10 +66,6 @@ const PROVIDER_LABELS: Record<SessionEmbeddingProvider, string> = {
 
 function formatCount(value: number): string {
   return value.toLocaleString('en-US');
-}
-
-function formatUsd(value: number): string {
-  return value.toFixed(2);
 }
 
 /**
@@ -276,7 +274,7 @@ export class SessionEmbeddingSettings extends LitElement {
       ${
         corpus.embedded_through
           ? html`Embedded through
-            ${new Date(corpus.embedded_through).toLocaleString()}.`
+            ${parseUTCDate(corpus.embedded_through).toLocaleString()}.`
           : nothing
       }
     </p>`;
@@ -299,7 +297,8 @@ export class SessionEmbeddingSettings extends LitElement {
       ${
         setting.degraded_at
           ? html`<span class="note"
-              >Recorded ${new Date(setting.degraded_at).toLocaleString()}.</span
+              >Recorded
+              ${parseUTCDate(setting.degraded_at).toLocaleString()}.</span
             >`
           : nothing
       }
@@ -451,7 +450,7 @@ export class SessionEmbeddingSettings extends LitElement {
             }}
           >
             <span slot="help-text" data-testid="embedding-cap-help"
-              >Leave empty to use the deployment default of $${deploymentCap} a
+              >Leave empty to use the deployment default of ${deploymentCap} a
               day. Reaching the cap pauses embedding until the next day; it is
               not an error.</span
             >

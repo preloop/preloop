@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import {
   renderSessionApproval,
   renderSessionActivity,
@@ -514,7 +515,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .example-provenance {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       line-height: 1.5;
     }
@@ -617,7 +618,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .message-footer {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       margin-top: var(--sl-spacing-x-small);
       text-transform: none;
@@ -835,7 +836,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .timeline-datetime-label {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: 0.62rem;
       position: absolute;
       top: 20px;
@@ -1073,7 +1074,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-threshold-slider::part(form-control-label) {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
     }
 
@@ -1110,7 +1111,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-summary-label {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       letter-spacing: 0.02em;
       text-transform: uppercase;
     }
@@ -1145,7 +1146,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-summary-sub {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
 
     .chat-thread {
@@ -1250,7 +1251,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-turn-time {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       font-weight: var(--sl-font-weight-normal);
     }
@@ -1265,7 +1266,7 @@ export class SessionReplayPanel extends LitElement {
     /* Per-turn token/cost/tool counts are secondary metadata: quiet, muted,
        lighter weight and a touch smaller than the conversation text. */
     .chat-turn-stat {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       font-weight: var(--sl-font-weight-normal);
       letter-spacing: 0.01em;
@@ -1283,7 +1284,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .chat-turn-empty {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: var(--sl-font-size-x-small);
       font-style: italic;
     }
@@ -1452,7 +1453,7 @@ export class SessionReplayPanel extends LitElement {
     }
 
     .optimize-range-label {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
       font-size: 0.58rem;
       position: absolute;
       top: 16px;
@@ -1687,7 +1688,7 @@ export class SessionReplayPanel extends LitElement {
 
   private formatTime(value: string | null | undefined): string {
     if (!value) return 'Unknown time';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleTimeString();
   }
@@ -1698,7 +1699,7 @@ export class SessionReplayPanel extends LitElement {
   // the label reflects render time — acceptable for a replay/history view.
   private formatRelativeTime(value: string | null | undefined): string {
     if (!value) return 'Unknown time';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     const elapsedMs = Date.now() - parsed.getTime();
     if (elapsedMs < 60_000) return 'just now';
@@ -1714,14 +1715,14 @@ export class SessionReplayPanel extends LitElement {
 
   private formatDateTime(value: string | null | undefined): string {
     if (!value) return 'Unknown time';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return parsed.toLocaleString();
   }
 
   private formatTimelineLabel(value: string | null | undefined): string {
     if (!value) return '';
-    const parsed = new Date(value);
+    const parsed = parseUTCDate(value);
     if (Number.isNaN(parsed.getTime())) return value;
     return `${parsed.toLocaleDateString(undefined, {
       month: 'short',
@@ -2067,8 +2068,8 @@ export class SessionReplayPanel extends LitElement {
       ...activityMessages,
     ].sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
     return this.replayReversed ? messages.reverse() : messages;
   }
@@ -2152,8 +2153,8 @@ export class SessionReplayPanel extends LitElement {
     }
     return Array.from(byId.values()).sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
   }
 
@@ -2184,11 +2185,15 @@ export class SessionReplayPanel extends LitElement {
       )
       .forEach((item) => {
         const timestamp = item.timestamp || null;
-        const itemTime = new Date(timestamp || 0).getTime();
+        const itemTime = parseUTCDate(
+          timestamp || '1970-01-01T00:00:00Z'
+        ).getTime();
         let nearestIndex = 0;
         let nearestDistance = Number.POSITIVE_INFINITY;
         messages.forEach((message, index) => {
-          const messageTime = new Date(message.timestamp || 0).getTime();
+          const messageTime = parseUTCDate(
+            message.timestamp || '1970-01-01T00:00:00Z'
+          ).getTime();
           const distance = Math.abs(messageTime - itemTime);
           if (distance < nearestDistance) {
             nearestDistance = distance;
@@ -3417,8 +3422,8 @@ export class SessionReplayPanel extends LitElement {
       )
       .sort(
         (left, right) =>
-          new Date(left.timestamp || 0).getTime() -
-          new Date(right.timestamp || 0).getTime()
+          parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+          parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
       )
       .map((item) => {
         const metadata = item.metadata ?? {};
@@ -3580,6 +3585,7 @@ export class SessionReplayPanel extends LitElement {
           </sl-button>
           <div class="timeline-wrap">
             <input
+              aria-label="Replay position"
               class="timeline-range"
               type="range"
               min="0"
@@ -3937,7 +3943,7 @@ export class SessionReplayPanel extends LitElement {
                     </label>
                   </div>
                   <div class="optimize-control-row">
-                    <label class="optimize-range" style="flex: 1 1 100%;">
+                    <div class="optimize-range" style="flex: 1 1 100%;">
                       <div class="event-meta">
                         Optimization scope (events
                         ${this.getEffectiveOptimizeBounds(messages).fromIndex} –
@@ -3963,10 +3969,10 @@ export class SessionReplayPanel extends LitElement {
                         <input
                           class="timeline-range"
                           type="range"
-                          aria-label="Range start"
                           min="0"
                           max=${String(lastIndex)}
                           .value=${String(this.optimizeFromIndex)}
+                          aria-label="Optimization scope range start"
                           @input=${(event: Event) => {
                             const value = Number(
                               (event.target as HTMLInputElement).value
@@ -3980,10 +3986,10 @@ export class SessionReplayPanel extends LitElement {
                         <input
                           class="timeline-range"
                           type="range"
-                          aria-label="Range end"
                           min="0"
                           max=${String(lastIndex)}
                           .value=${String(this.optimizeToIndex || lastIndex)}
+                          aria-label="Optimization scope range end"
                           @input=${(event: Event) => {
                             const value = Number(
                               (event.target as HTMLInputElement).value
@@ -3996,7 +4002,7 @@ export class SessionReplayPanel extends LitElement {
                         />
                       </div>
                       ${this.renderOptimizationRangeMarkers(messages)}
-                    </label>
+                    </div>
                   </div>
                   <div class="source-toggle-row">
                     ${REPLAY_MARKER_LEGEND.map(
@@ -4351,8 +4357,8 @@ export class SessionReplayPanel extends LitElement {
     }
     return rows.sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
   }
 
@@ -4593,8 +4599,8 @@ export class SessionReplayPanel extends LitElement {
       ...artifactTurns,
     ].sort(
       (left, right) =>
-        new Date(left.timestamp || 0).getTime() -
-        new Date(right.timestamp || 0).getTime()
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
     // Re-index in natural chat order so sort/filter can reorder in place while
     // preserving a stable oldest-first ordering reference.

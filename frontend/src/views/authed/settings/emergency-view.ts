@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -37,6 +38,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
  */
 @customElement('emergency-view')
 export class EmergencyView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private _haltStatus: KillSwitchStatus | null = null;
   /**
    * Whether `_haltStatus` can be trusted. Until the first read succeeds the

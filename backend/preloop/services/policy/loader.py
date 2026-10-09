@@ -591,6 +591,16 @@ def compute_policy_diff(
 
     # Compare tools
     diff_named_lists("$.tools", current.tools, incoming.tools)
+    diff_named_lists("$.access_rules", current.access_rules, incoming.access_rules)
+    if current.access_rule_mode != incoming.access_rule_mode:
+        changes.append(
+            PolicyDiffItem(
+                path="$.access_rule_mode",
+                operation="modify",
+                old_value=current.access_rule_mode,
+                new_value=incoming.access_rule_mode,
+            )
+        )
 
     # Compare model I/O rules by id
     def _model_io_name(item: Any) -> str:
@@ -830,6 +840,16 @@ class PolicyApplier:
                     self._result.errors.append(error)
                 return self._result
 
+            if policy.access_rules is not None or policy.access_rule_mode is not None:
+                from preloop.models.crud.access_rule import validate_policy_section
+
+                validate_policy_section(
+                    self.db,
+                    UUID(self.account_id),
+                    policy.access_rules,
+                    policy.access_rule_mode,
+                )
+
             # Resolve and authorize every workflow before mutating any policy object.
             self._prepare_approval_workflows(policy.approval_workflows or [])
 
@@ -851,6 +871,19 @@ class PolicyApplier:
 
             if policy.defaults and not self._apply_defaults(policy.defaults, dry_run):
                 return self._result
+
+            if not dry_run and (
+                policy.access_rules is not None or policy.access_rule_mode is not None
+            ):
+                from preloop.models.crud.access_rule import apply_policy_section
+
+                apply_policy_section(
+                    self.db,
+                    UUID(self.account_id),
+                    UUID(self.actor_id) if self.actor_id else None,
+                    policy.access_rules,
+                    policy.access_rule_mode,
+                )
 
             if not dry_run:
                 self.db.commit()
@@ -1851,6 +1884,13 @@ def export_current_policy(
         sensitive_data=sensitive_data if has_sensitive_data else None,
         defaults=DefaultsDefinition(),  # Default settings
     )
+    from preloop.models.crud.access_rule import policy_section
+
+    account_access = policy_section(db, UUID(account_id_str)) if account else {}
+    if account_access.get("access_rules"):
+        document_fields["access_rules"] = account_access["access_rules"]
+    if account_access.get("access_rule_mode"):
+        document_fields["access_rule_mode"] = account_access["access_rule_mode"]
     try:
         return PolicyDocument(**document_fields)
     except ValidationError as exc:

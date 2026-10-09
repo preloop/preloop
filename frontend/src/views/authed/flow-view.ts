@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { repeat } from 'lit/directives/repeat.js';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -139,6 +141,7 @@ export function flowRuntimeLabel(agentType: string | null | undefined): string {
 
 @customElement('flow-view')
 export class FlowView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private initialized = false;
   private _formInstanceId = 0;
   private _routeSearch = '';
@@ -163,138 +166,141 @@ export class FlowView extends LitElement {
   }
 
   static styles = [
-    consoleDialogStyles,
-    unsafeCSS(consoleStyles),
-    unsafeCSS(executionSubjectCss),
-    css`
-      /* No page geometry here: the shell owns the width and the side inset
+    tableScrollStyles,
+    [
+      consoleDialogStyles,
+      unsafeCSS(consoleStyles),
+      unsafeCSS(executionSubjectCss),
+      css`
+        /* No page geometry here: the shell owns the width and the side inset
          (styles/console-styles.css, "The page box"). */
-      :host {
-        display: block;
-      }
-      /* Named for a screen reader where a heading already says what it is. */
-      .sr-label::part(form-control-label) {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-        border: 0;
-      }
-      /* The subject column takes the slack: fixed layout plus a zero max
+        :host {
+          display: block;
+        }
+        /* Named for a screen reader where a heading already says what it is. */
+        .sr-label::part(form-control-label) {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+          white-space: nowrap;
+          border: 0;
+        }
+        /* The subject column takes the slack: fixed layout plus a zero max
          width makes the cell shrink to its share and ellipsise inside it,
          instead of a long repo name widening the whole table. */
-      .executions-table {
-        table-layout: fixed;
-      }
-      .executions-table .subject-cell {
-        max-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      /* The details grid: label column in the meta register (no colons, no
+        .executions-table {
+          table-layout: fixed;
+        }
+        .executions-table .subject-cell {
+          max-width: 0;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        /* The details grid: label column in the meta register (no colons, no
          bold), value column carrying the facts. This was the only place in
          the console that wrote "Name:" in bold. */
-      .detail-grid {
-        display: grid;
-        grid-template-columns: 150px 1fr;
-        gap: var(--sl-spacing-medium);
-        align-items: baseline;
-      }
-      .detail-label {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-      }
-      .execution-row {
-        cursor: pointer;
-      }
-      .row-link {
-        color: var(--console-link-color);
-        text-decoration: none;
-      }
-      .row-link:hover,
-      .row-link:focus-visible {
-        text-decoration: underline;
-      }
-      /* The way out of the ten rows, on its own hairline. */
-      .all-executions {
-        border-top: 1px solid var(--console-hairline);
-        display: block;
-        margin-top: var(--sl-spacing-small);
-        padding-top: var(--sl-spacing-small);
-      }
-      .all-executions a {
-        color: var(--console-link-color);
-        font-size: var(--console-text-meta);
-        text-decoration: none;
-      }
-      .all-executions a:hover,
-      .all-executions a:focus-visible {
-        text-decoration: underline;
-      }
-      /* Flow-specific styles */
-      .form-grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: var(--sl-spacing-large);
-      }
-      sl-card {
-        width: 100%;
-      }
-      sl-card::part(base) {
-        gap: var(--sl-spacing-large);
-      }
-      form {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-large);
-      }
-      sl-input,
-      sl-textarea,
-      sl-select {
-        margin-bottom: var(--sl-spacing-medium);
-      }
-      sl-input:last-child,
-      sl-textarea:last-child,
-      sl-select:last-child {
-        margin-bottom: 0;
-      }
+        .detail-grid {
+          display: grid;
+          grid-template-columns: 150px 1fr;
+          gap: var(--sl-spacing-medium);
+          align-items: baseline;
+        }
+        .detail-label {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+        }
+        .execution-row {
+          cursor: pointer;
+        }
+        .row-link {
+          color: var(--console-link-color);
+          text-decoration: none;
+        }
+        .row-link:hover,
+        .row-link:focus-visible {
+          text-decoration: underline;
+        }
+        /* The way out of the ten rows, on its own hairline. */
+        .all-executions {
+          border-top: 1px solid var(--console-hairline);
+          display: block;
+          margin-top: var(--sl-spacing-small);
+          padding-top: var(--sl-spacing-small);
+        }
+        .all-executions a {
+          color: var(--console-link-color);
+          font-size: var(--console-text-meta);
+          text-decoration: none;
+        }
+        .all-executions a:hover,
+        .all-executions a:focus-visible {
+          text-decoration: underline;
+        }
+        /* Flow-specific styles */
+        .form-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: var(--sl-spacing-large);
+        }
+        sl-card {
+          width: 100%;
+        }
+        sl-card::part(base) {
+          gap: var(--sl-spacing-large);
+        }
+        form {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-large);
+        }
+        sl-input,
+        sl-textarea,
+        sl-select {
+          margin-bottom: var(--sl-spacing-medium);
+        }
+        sl-input:last-child,
+        sl-textarea:last-child,
+        sl-select:last-child {
+          margin-bottom: 0;
+        }
 
-      sl-textarea.prompt {
-        max-height: 50rem;
-        overflow: auto;
-      }
+        sl-textarea.prompt {
+          max-height: 50rem;
+          overflow: auto;
+        }
 
-      .creation-mode-toggle {
-        margin-bottom: var(--sl-spacing-large);
-        padding: var(--sl-spacing-medium);
-        background: var(--sl-color-neutral-50);
-        border-radius: 8px;
-        border: 1px solid var(--sl-color-neutral-200);
-      }
-      .creation-mode-toggle h3 {
-        margin: 0 0 var(--sl-spacing-small) 0;
-        font-size: 1rem;
-      }
-      .preset-card {
-        cursor: pointer;
-        transition:
-          transform 0.2s ease,
-          box-shadow 0.2s ease;
-      }
-      .preset-card:hover {
-        transform: translateY(-2px);
-        box-shadow: var(--sl-shadow-large);
-      }
+        .creation-mode-toggle {
+          margin-bottom: var(--sl-spacing-large);
+          padding: var(--sl-spacing-medium);
+          background: var(--sl-color-neutral-50);
+          border-radius: 8px;
+          border: 1px solid var(--sl-color-neutral-200);
+        }
+        .creation-mode-toggle h3 {
+          margin: 0 0 var(--sl-spacing-small) 0;
+          font-size: 1rem;
+        }
+        .preset-card {
+          cursor: pointer;
+          transition:
+            transform 0.2s ease,
+            box-shadow 0.2s ease;
+        }
+        .preset-card:hover {
+          transform: translateY(-2px);
+          box-shadow: var(--sl-shadow-large);
+        }
 
-      div[slot='header'] > sl-icon {
-        margin-bottom: -2px;
-      }
-    `,
+        div[slot='header'] > sl-icon {
+          margin-bottom: -2px;
+        }
+      `,
+    ],
   ];
 
   @property()
@@ -1280,59 +1286,63 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               this.recentExecutions.length === 0
                 ? html`<p>No executions yet. Run now starts one.</p>`
                 : html`
-                    <table class="styled-table executions-table">
-                      <thead>
-                        <tr>
-                          <th>Subject</th>
-                          <th>Status</th>
-                          <th>Started</th>
-                          <th>Duration</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${this.recentExecutions.map(
-                          (exec) => html`
-                            <!-- The Started cell is the anchor to the run and
+                    <div class="table-scroll">
+                      <table class="styled-table executions-table">
+                        <thead>
+                          <tr>
+                            <th>Subject</th>
+                            <th>Status</th>
+                            <th>Started</th>
+                            <th>Duration</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${this.recentExecutions.map(
+                            (exec) => html`
+                              <!-- The Started cell is the anchor to the run and
                                  the whole row is a convenience on top of it,
                                  as on the executions list, so the keyboard
                                  and cmd-click keep a route the View column
                                  used to provide. -->
-                            <tr
-                              class="execution-row"
-                              @click=${(event: MouseEvent) =>
-                                this.openExecution(event, exec.id)}
-                            >
-                              <!-- Every row on this page is the same flow, so
+                              <tr
+                                class="execution-row"
+                                @click=${(event: MouseEvent) =>
+                                  this.openExecution(event, exec.id)}
+                              >
+                                <!-- Every row on this page is the same flow, so
                                    the subject is the only column that says
                                    which run is which; it keeps its link to
                                    the pull request or issue it came from. -->
-                              <td class="subject-cell">
-                                ${renderExecutionSubject(exec)}
-                              </td>
-                              <td>
-                                <sl-badge
-                                  class="chip"
-                                  pill
-                                  variant=${this.getStatusVariant(exec.status)}
-                                >
-                                  ${executionStatusLabel(exec.status)}
-                                </sl-badge>
-                              </td>
-                              <!-- Relative, absolute in the title, as every
+                                <td class="subject-cell">
+                                  ${renderExecutionSubject(exec)}
+                                </td>
+                                <td>
+                                  <sl-badge
+                                    class="chip"
+                                    pill
+                                    variant=${this.getStatusVariant(exec.status)}
+                                  >
+                                    ${executionStatusLabel(exec.status)}
+                                  </sl-badge>
+                                </td>
+                                <!-- Relative, absolute in the title, as every
                                    other list in the console states a time. -->
-                              <td title=${formatLocalDateTime(exec.start_time)}>
-                                <a
-                                  class="row-link"
-                                  href=${`/console/flows/executions/${exec.id}`}
-                                  >${formatRelativeTime(exec.start_time)}</a
+                                <td
+                                  title=${formatLocalDateTime(exec.start_time)}
                                 >
-                              </td>
-                              <td>${executionDurationText(exec) || 'n/a'}</td>
-                            </tr>
-                          `
-                        )}
-                      </tbody>
-                    </table>
+                                  <a
+                                    class="row-link"
+                                    href=${`/console/flows/executions/${exec.id}`}
+                                    >${formatRelativeTime(exec.start_time)}</a
+                                  >
+                                </td>
+                                <td>${executionDurationText(exec) || 'n/a'}</td>
+                              </tr>
+                            `
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                     ${this.renderAllExecutionsLink()}
                   `
             }
@@ -1964,7 +1974,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
     if (this._loadingReferenceData || this.availableTools.length === 0) {
       return html`
         <div
-          style="display: flex; align-items: center; gap: var(--sl-spacing-small); padding: var(--sl-spacing-medium); color: var(--sl-color-neutral-500);"
+          style="display: flex; align-items: center; gap: var(--sl-spacing-small); padding: var(--sl-spacing-medium); color: var(--console-meta-color);"
         >
           <sl-spinner style="font-size: 1rem;"></sl-spinner>
           Loading tools...
@@ -2374,6 +2384,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
               Example Payload
             </label>
             <sl-textarea
+              aria-label="Resolved prompt preview"
               readonly
               rows="6"
               value='{

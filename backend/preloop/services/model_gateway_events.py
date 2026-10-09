@@ -294,6 +294,9 @@ class ModelGatewayEventEmitter:
             "type": "model_gateway_call",
             "payload": {
                 "api_usage_id": str(usage.id),
+                "billing_path": meta_data.get("billing_path"),
+                "billing_model_id": meta_data.get("billing_model_id"),
+                "billing_model_name": meta_data.get("billing_model_name"),
                 "request_id": meta_data.get("request_id"),
                 "tools": self._extract_structured_tools(
                     request_payload, response_payload

@@ -709,6 +709,124 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         )
         return [row.flow_execution_id for row in rows]
 
+    def list_token_detail_repair_candidates(
+        self,
+        db: Session,
+        *,
+        account_id: Optional[Union[uuid.UUID, str]] = None,
+        since: Optional[datetime] = None,
+        until: Optional[datetime] = None,
+        limit: int = 1000,
+        after_id: Optional[uuid.UUID] = None,
+    ) -> List[ApiUsage]:
+        """Return gateway rows whose Responses usage details were not normalized.
+
+        Selects ``model_gateway`` rows whose retained
+        ``meta_data.usage_details`` carries a Responses detail field
+        (``input_tokens_details.cached_tokens`` /
+        ``.cache_creation_tokens``, ``output_tokens_details.reasoning_tokens``)
+        that holds a usable count (a non-negative integer, as
+        ``coerce_token_count`` accepts) while the matching normalized column is
+        NULL (#1401). Malformed values are never selected, so every candidate
+        can be repaired and bounded runs always make progress.
+
+        Args:
+            db: Database session.
+            account_id: Optional account scope.
+            since: Optional window start (inclusive).
+            until: Optional window end (exclusive).
+            limit: Maximum rows returned.
+            after_id: Keyset cursor; only rows with a greater id.
+
+        Returns:
+            Candidate rows ordered by id.
+        """
+        usage_details = ApiUsage.meta_data["usage_details"]
+        input_details = usage_details["input_tokens_details"]
+        output_details = usage_details["output_tokens_details"]
+
+        def _usable(value: Any) -> Any:
+            # Mirror coerce_token_count, so every candidate is repairable and
+            # a bounded run cannot stall on rows it can never fix.
+            text = value.astext
+            return or_(
+                and_(
+                    func.jsonb_typeof(value) == "number",
+                    text.op("~")(r"^[0-9]+(\.0+)?$"),
+                ),
+                and_(
+                    func.jsonb_typeof(value) == "string",
+                    text.op("~")(r"^\s*[0-9]+\s*$"),
+                ),
+            )
+
+        query = db.query(ApiUsage).filter(
+            ApiUsage.action_type == "model_gateway",
+            or_(
+                and_(
+                    ApiUsage.cache_read_tokens.is_(None),
+                    _usable(input_details["cached_tokens"]),
+                ),
+                and_(
+                    ApiUsage.cache_creation_tokens.is_(None),
+                    _usable(input_details["cache_creation_tokens"]),
+                ),
+                and_(
+                    ApiUsage.reasoning_tokens.is_(None),
+                    _usable(output_details["reasoning_tokens"]),
+                ),
+            ),
+        )
+        if account_id is not None:
+            query = query.filter(ApiUsage.account_id == account_id)
+        if since is not None:
+            query = query.filter(ApiUsage.timestamp >= since)
+        if until is not None:
+            query = query.filter(ApiUsage.timestamp < until)
+        if after_id is not None:
+            query = query.filter(ApiUsage.id > after_id)
+        return query.order_by(ApiUsage.id).limit(max(int(limit), 0)).all()
+
+    def fill_token_detail_columns(
+        self,
+        db: Session,
+        *,
+        api_usage_id: Union[uuid.UUID, str],
+        values: Mapping[str, Optional[int]],
+    ) -> Dict[str, int]:
+        """Fill NULL normalized token-detail columns on one usage row.
+
+        Only NULL columns are written and only with non-None values, so a
+        re-run is a no-op and a recorded value is never overwritten. The
+        caller owns the commit.
+
+        Args:
+            db: Database session.
+            api_usage_id: Target ``ApiUsage`` row id.
+            values: Candidate values keyed by column name
+                (``cache_read_tokens``, ``cache_creation_tokens``,
+                ``reasoning_tokens``).
+
+        Returns:
+            The columns actually written, with their new values.
+        """
+        db_obj = db.query(ApiUsage).filter(ApiUsage.id == api_usage_id).first()
+        if db_obj is None:
+            return {}
+        written: Dict[str, int] = {}
+        for column in (
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "reasoning_tokens",
+        ):
+            value = values.get(column)
+            if value is not None and getattr(db_obj, column) is None:
+                setattr(db_obj, column, int(value))
+                written[column] = int(value)
+        if written:
+            db.flush()
+        return written
+
     def update_cost_fields(
         self,
         db: Session,
@@ -3425,24 +3543,138 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         Returns:
             Total absorbed cost in USD (``0.0`` when none).
         """
-        absorbed = func.coalesce(
-            func.sum(cast(ApiUsage.meta_data["api_equivalent_cost"].astext, Float)),
-            0.0,
+        # Single source for the API-equivalent sum (#1401): the summary's
+        # jsonb_typeof guard keeps legacy non-numeric values out of the cast.
+        return self.get_subscription_usage_summary(
+            db, account_id=account_id, start=start, end=end
+        )["api_equivalent_cost"]
+
+    def get_subscription_usage_summary(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        end: datetime,
+        runtime_principal_id: Optional[str] = None,
+        exclude_retries: bool = False,
+    ) -> Dict[str, Any]:
+        """Summarize subscription-covered gateway workload in a window (#1401).
+
+        Subscription rows (``cost_source='subscription'``) record $0 marginal
+        spend; the API-equivalent figure in ``meta_data.api_equivalent_cost``
+        is a catalog ESTIMATE of what the same calls would cost on
+        pay-per-use pricing, not a billed amount. ``coverage_rows`` counts the
+        rows that carry that estimate, so callers can report how much of the
+        workload the estimate covers.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive window start.
+            end: Exclusive window end.
+            runtime_principal_id: Optional managed-agent principal filter.
+            exclude_retries: Drop rows marked as retries.
+
+        Returns:
+            Dict with ``request_count``, ``prompt_tokens``,
+            ``completion_tokens``, ``total_tokens``, ``coverage_rows`` and
+            ``api_equivalent_cost`` (sum over covered rows).
+        """
+        equivalent = ApiUsage.meta_data["api_equivalent_cost"]
+        # jsonb_typeof guards the float cast against legacy non-numeric
+        # values and treats JSON null as missing.
+        is_covered = func.jsonb_typeof(equivalent) == "number"
+        query = db.query(
+            func.count(ApiUsage.id).label("request_count"),
+            func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("prompt_tokens"),
+            func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                "completion_tokens"
+            ),
+            func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
+            func.coalesce(func.sum(case((is_covered, 1), else_=0)), 0).label(
+                "coverage_rows"
+            ),
+            func.coalesce(
+                func.sum(
+                    case((is_covered, cast(equivalent.astext, Float)), else_=None)
+                ),
+                0.0,
+            ).label("api_equivalent_cost"),
+        ).filter(
+            ApiUsage.action_type == "model_gateway",
+            ApiUsage.account_id == account_id,
+            ApiUsage.cost_source == "subscription",
+            exclude_replay_usage_condition(),
+            ApiUsage.timestamp >= start,
+            ApiUsage.timestamp < end,
         )
-        value = (
-            db.query(absorbed)
+        if runtime_principal_id:
+            query = query.filter(ApiUsage.runtime_principal_id == runtime_principal_id)
+        if exclude_retries:
+            query = query.filter(
+                or_(ApiUsage.is_retry.is_(None), ApiUsage.is_retry.is_(False))
+            )
+        row = query.one()
+        return {
+            "request_count": int(row.request_count or 0),
+            "prompt_tokens": int(row.prompt_tokens or 0),
+            "completion_tokens": int(row.completion_tokens or 0),
+            "total_tokens": int(row.total_tokens or 0),
+            "coverage_rows": int(row.coverage_rows or 0),
+            "api_equivalent_cost": float(row.api_equivalent_cost or 0.0),
+        }
+
+    def list_token_detail_rows(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        start: datetime,
+        limit: int = 2000,
+    ) -> List[Any]:
+        """Return recent gateway rows whose raw usage carries cache/reasoning detail.
+
+        Used by the accounting health check to compare the retained provider
+        payload with the normalized ``cache_read_tokens``,
+        ``cache_creation_tokens`` and ``reasoning_tokens`` columns. Bounded
+        by ``limit`` (newest first) so the check stays cheap.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            start: Inclusive window start.
+            limit: Maximum rows returned.
+
+        Returns:
+            Rows with ``usage_details`` and the three normalized columns.
+        """
+        usage_details = ApiUsage.meta_data["usage_details"]
+        return (
+            db.query(
+                usage_details.label("usage_details"),
+                ApiUsage.cache_read_tokens,
+                ApiUsage.cache_creation_tokens,
+                ApiUsage.reasoning_tokens,
+            )
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
-                ApiUsage.cost_source == "subscription",
-                ApiUsage.meta_data["api_equivalent_cost"].astext.isnot(None),
                 exclude_replay_usage_condition(),
                 ApiUsage.timestamp >= start,
-                ApiUsage.timestamp < end,
+                or_(
+                    usage_details.has_key("prompt_tokens_details"),
+                    usage_details.has_key("completion_tokens_details"),
+                    usage_details.has_key("input_tokens_details"),
+                    usage_details.has_key("output_tokens_details"),
+                    usage_details.has_key("cache_read_input_tokens"),
+                    usage_details.has_key("cache_creation_input_tokens"),
+                ),
             )
-            .scalar()
+            .order_by(ApiUsage.timestamp.desc())
+            .limit(max(int(limit), 0))
+            .all()
         )
-        return float(value or 0.0)
 
     # ------------------------------------------------------------------
     # Imported (observed) usage — spend the gateway cannot see (issue #123)

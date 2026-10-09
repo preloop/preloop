@@ -1,3 +1,9 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+import { formatUsd, formatUsdExact } from '../../utils/money';
+import {
+  replaceListFilters,
+  validFilterDate,
+} from '../../utils/list-filter-url';
 /**
  * Audit Log View - Unified Timeline
  *
@@ -157,6 +163,7 @@ const OUTCOME_OPTIONS = [
 
 @customElement('audit-view')
 export class AuditView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   // Timeline data
   @state() private _groups: AuditGroup[] = [];
   @state() private _loading = false;
@@ -214,24 +221,9 @@ export class AuditView extends AuthedElement {
   connectedCallback() {
     super.connectedCallback();
 
-    // Parse URL parameters to initialize filters
+    this._readFilterLocation();
+    window.addEventListener('popstate', this._onFilterPopState);
     const params = new URLSearchParams(window.location.search);
-    const eventType = params.get('event_type');
-    if (eventType) {
-      this._eventTypeFilters = [eventType];
-    }
-    const outcome = params.get('outcome');
-    if (outcome) {
-      this._outcomeFilters = [outcome];
-    }
-    const minCost = params.get('min_cost');
-    if (minCost) {
-      this._minCost = minCost;
-    }
-    const maxCost = params.get('max_cost');
-    if (maxCost) {
-      this._maxCost = maxCost;
-    }
     const event = params.get('event');
     if (event) {
       this._deepLinkEventId = event;
@@ -245,6 +237,7 @@ export class AuditView extends AuthedElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener('popstate', this._onFilterPopState);
     if (this._unsubscribeRealtime) {
       this._unsubscribeRealtime();
       this._unsubscribeRealtime = null;
@@ -489,12 +482,13 @@ export class AuditView extends AuthedElement {
       showToast('Event not in the current range', 'warning');
       return;
     }
-    const day = new Date(when);
+    const day = parseUTCDate(when);
     const next = new Date(day.getTime() + 24 * 3600 * 1000);
     this._startDate = day.toISOString().slice(0, 10);
     this._endDate = next.toISOString().slice(0, 10);
     this._page = 0;
     this._deepLinkPending = true;
+    this._syncFilterLocation();
     await this._loadTimeline();
     if (this._deepLinkPending) {
       this._deepLinkPending = false;
@@ -569,7 +563,37 @@ export class AuditView extends AuthedElement {
     showToast('Link copied', 'success');
   }
 
+  private _readFilterLocation(): void {
+    const params = new URLSearchParams(window.location.search);
+    this._eventTypeFilters = params.getAll('event_type');
+    this._outcomeFilters = params.getAll('outcome');
+    this._toolNameFilter = params.get('tool_name') ?? '';
+    this._startDate = validFilterDate(params.get('start_date'));
+    this._endDate = validFilterDate(params.get('end_date'));
+    this._minCost = params.get('min_cost') ?? '';
+    this._maxCost = params.get('max_cost') ?? '';
+  }
+
+  private _onFilterPopState = (): void => {
+    this._readFilterLocation();
+    this._page = 0;
+    void this._loadTimeline({ background: this._groups.length > 0 });
+  };
+
+  private _syncFilterLocation(): void {
+    replaceListFilters({
+      event_type: this._eventTypeFilters,
+      outcome: this._outcomeFilters,
+      tool_name: this._toolNameFilter,
+      start_date: this._startDate,
+      end_date: this._endDate,
+      min_cost: this._minCost,
+      max_cost: this._maxCost,
+    });
+  }
+
   private _applyFilters() {
+    this._syncFilterLocation();
     this._cancelToolSearch();
     this._page = 0;
     this._loadTimeline();
@@ -613,6 +637,7 @@ export class AuditView extends AuthedElement {
     this._endDate = '';
     this._minCost = '';
     this._maxCost = '';
+    this._syncFilterLocation();
     this._page = 0;
     this._loadTimeline();
   }
@@ -670,12 +695,6 @@ export class AuditView extends AuthedElement {
     return actor;
   }
 
-  private _formatCurrency(value?: number | null): string {
-    const amount = Number(value || 0);
-    if (amount === 0) return '$0.00';
-    return amount >= 0.01 ? `$${amount.toFixed(2)}` : `$${amount.toFixed(4)}`;
-  }
-
   private _getEventCost(details: Record<string, any> | null): number | null {
     if (!details || details.estimated_cost == null) return null;
     const value = Number(details.estimated_cost);
@@ -706,7 +725,9 @@ export class AuditView extends AuthedElement {
       }
       ${
         cost != null
-          ? html`<span class="event-cost">${this._formatCurrency(cost)}</span>`
+          ? html`<span class="event-cost"
+              >${html`<span title=${formatUsdExact(cost)}>${formatUsd(cost)}</span>`}</span
+            >`
           : nothing
       }
     `;
@@ -1578,6 +1599,7 @@ export class AuditView extends AuthedElement {
           @sl-input=${(e: Event) => {
             this._minCost = (e.target as HTMLInputElement).value;
           }}
+          @sl-change=${() => this._applyFilters()}
           @keydown=${(e: KeyboardEvent) => {
             if (e.key === 'Enter') this._applyFilters();
           }}
@@ -1594,6 +1616,7 @@ export class AuditView extends AuthedElement {
           @sl-input=${(e: Event) => {
             this._maxCost = (e.target as HTMLInputElement).value;
           }}
+          @sl-change=${() => this._applyFilters()}
           @keydown=${(e: KeyboardEvent) => {
             if (e.key === 'Enter') this._applyFilters();
           }}
@@ -1902,7 +1925,7 @@ export class AuditView extends AuthedElement {
       >
         <sl-icon
           name="book"
-          style="margin-right: 6px; color: var(--sl-color-neutral-500);"
+          style="margin-right: 6px; color: var(--console-meta-color);"
         ></sl-icon>
         <strong>Summary:</strong> ${story}
       </div>
@@ -2042,7 +2065,7 @@ export class AuditView extends AuthedElement {
         font-size: 0.65rem;
         font-weight: 600;
         letter-spacing: 0.05em;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         padding: 2px 6px;
         border-radius: 999px;
         background: var(--sl-color-neutral-100);
@@ -2084,7 +2107,7 @@ export class AuditView extends AuthedElement {
 
       .total-badge {
         font-size: 0.75rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         background: var(--sl-color-neutral-100);
         padding: 0.15rem 0.5rem;
         border-radius: 999px;
@@ -2128,7 +2151,7 @@ export class AuditView extends AuthedElement {
       }
       .empty-state {
         text-align: center;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         padding: 3rem 0;
         font-size: 0.9rem;
       }
@@ -2185,7 +2208,7 @@ export class AuditView extends AuthedElement {
       .copy-link {
         background: none;
         border: none;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         cursor: pointer;
         display: inline-flex;
         font-size: 0.85rem;
@@ -2229,7 +2252,7 @@ export class AuditView extends AuthedElement {
 
       .action-icon {
         font-size: 1rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
       }
       .primary-label {
@@ -2240,7 +2263,7 @@ export class AuditView extends AuthedElement {
       }
       .args-summary {
         font-size: 0.75rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-family: var(--sl-font-mono);
         white-space: nowrap;
         overflow: hidden;
@@ -2250,12 +2273,12 @@ export class AuditView extends AuthedElement {
 
       .exec-time {
         font-size: 0.7rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         font-family: var(--sl-font-mono);
       }
       .event-cost {
         font-size: 0.7rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-family: var(--sl-font-mono);
         white-space: nowrap;
       }
@@ -2269,12 +2292,12 @@ export class AuditView extends AuthedElement {
       }
       .timestamp {
         font-size: 0.7rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         white-space: nowrap;
       }
       .expand-icon {
         font-size: 0.9rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
       }
       .expand-toggle {
         background: none;
@@ -2309,7 +2332,7 @@ export class AuditView extends AuthedElement {
       }
       .detail-label {
         font-size: 0.68rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }
@@ -2335,7 +2358,7 @@ export class AuditView extends AuthedElement {
       .copy-id::part(base) {
         padding: 0;
         font-size: 0.78rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .detail-json {
         margin: 0;
@@ -2377,7 +2400,7 @@ export class AuditView extends AuthedElement {
 
       .sub-icon {
         font-size: 0.8rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         z-index: 1;
       }
@@ -2414,7 +2437,7 @@ export class AuditView extends AuthedElement {
       }
       .sub-actor {
         font-size: 0.68rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         max-width: 170px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2422,7 +2445,7 @@ export class AuditView extends AuthedElement {
       }
       .sub-timestamp {
         font-size: 0.65rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         white-space: nowrap;
       }
 
@@ -2437,7 +2460,7 @@ export class AuditView extends AuthedElement {
       }
       .page-info {
         font-size: 0.75rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .page-controls {
         display: flex;

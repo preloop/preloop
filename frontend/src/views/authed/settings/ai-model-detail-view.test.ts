@@ -1161,8 +1161,8 @@ describe('AIModelDetailView', () => {
       await element.updateComplete;
       const prompt = removeDialog(element).textContent!.replace(/\s+/g, ' ');
       expect(prompt).to.contain('anthropic/claude-sonnet-4');
-      expect(prompt).to.contain('input $0 per 1M');
-      expect(prompt).to.contain('output $0 per 1M');
+      expect(prompt).to.contain('input $0.00 per 1M');
+      expect(prompt).to.contain('output $0.00 per 1M');
       expect(prompt).to.contain('effective from Aug 1, 2026');
       expect(deletes(), 'the confirm alone sends nothing').to.have.length(0);
 
@@ -1275,6 +1275,25 @@ describe('AIModelDetailView', () => {
       expect(removeButton(element), 'nothing was removed').to.exist;
       expect((element as any).repriceSince).to.equal(null);
     });
+  });
+
+  it('explains a plan restriction on disabled price controls', async () => {
+    featureFlags = { model_price_overrides: false };
+    pricingResponse.fetch_supported = true;
+    const element = await mountModel();
+    (element as any).pricingEditOpen = true;
+    await element.updateComplete;
+    const card = pricingCard(element);
+    for (const selector of [
+      '[data-testid="fetch-price"]',
+      '[data-testid="save-price"]',
+    ]) {
+      const button = card.querySelector(selector);
+      expect(button, selector).to.exist;
+      expect(button!.getAttribute('title')).to.equal(
+        'Price overrides are part of Preloop Cloud and Enterprise'
+      );
+    }
   });
 
   it('leaves legacy async completion unconfirmed', async () => {

@@ -59,7 +59,7 @@ export class RepositoryChip extends LitElement {
     }
 
     .separator {
-      color: var(--sl-color-neutral-500);
+      color: var(--console-meta-color);
     }
 
     .remote.is-empty {

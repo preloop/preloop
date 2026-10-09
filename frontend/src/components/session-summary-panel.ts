@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, css, html } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -125,7 +126,7 @@ export class SessionSummaryPanel extends LitElement {
         }
         <div class="hint">
           Summary inspection cost:
-          ${estimatedCost > 0 ? `$${estimatedCost.toFixed(4)}` : '$0.00'}
+          ${html`<span title=${formatUsdExact(estimatedCost)}>${formatUsd(estimatedCost)}</span>`}
         </div>
       </div>
     `;

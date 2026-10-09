@@ -105,6 +105,9 @@ class Account(Base):
 
     # Generic metadata field for extensibility
     meta_data: Mapped[Dict] = mapped_column(JSON, nullable=True, default=dict)
+    access_rule_generation: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     # Durable policy/billing state must survive unrelated metadata replacements.
     subscription_history_retention_days: Mapped[Optional[int]] = mapped_column(
         Integer, nullable=True

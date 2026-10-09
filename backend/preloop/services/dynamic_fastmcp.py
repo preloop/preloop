@@ -1862,8 +1862,7 @@ async def {internal_name}({params_str}):
         )
 
         cause = _unwrap_exception_group(e)
-        server_obj = locals().get("mcp_server")
-        server_label = getattr(server_obj, "name", None) or "the MCP server"
+        server_label = snapshot.server_name
         logger.error(
             f"Error executing proxied tool {{tool_name}} via {{server_label}}: {{cause}}",
             exc_info=True,

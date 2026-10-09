@@ -118,7 +118,7 @@ export class ScheduleConfigEditor extends LitElement {
         color: var(--sl-color-danger-600);
       }
       .preview-hint {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin-top: var(--sl-spacing-x-small);
       }
     `,
@@ -456,6 +456,7 @@ export class ScheduleConfigEditor extends LitElement {
                 <div style="margin-bottom: var(--sl-spacing-medium);">
                   <label class="field-label">Repeats</label>
                   <sl-radio-group
+                    aria-label="Schedule type"
                     value=${config.type}
                     @sl-change=${(e: any) => this.switchType(e.target.value)}
                     style="display: flex; gap: var(--sl-spacing-large);"

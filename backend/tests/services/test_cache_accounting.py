@@ -134,6 +134,21 @@ class TestRequestAccounting:
         assert accounting.cache_read_tokens == 1_024
         assert accounting.cache_creation_tokens is None
 
+    def test_responses_cached_tokens_fallback(self):
+        """Un-repaired Responses rows read the split from usage_details (#1401)."""
+        accounting = build_request_cache_accounting(
+            _row(
+                prompt_tokens=2_000,
+                meta_data={
+                    "usage_details": {
+                        "input_tokens": 2_000,
+                        "input_tokens_details": {"cached_tokens": 1_500},
+                    }
+                },
+            )
+        )
+        assert accounting.cache_read_tokens == 1_500
+
     def test_reported_cache_miss_tokens_absent_returns_none(self):
         assert reported_cache_miss_tokens(None) is None
         assert reported_cache_miss_tokens({"usage_details": {}}) is None

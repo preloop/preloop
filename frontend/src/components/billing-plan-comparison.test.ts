@@ -690,7 +690,11 @@ describe('Billing plan comparison', () => {
       JSON.parse(calls('/plan-change-confirm')[0].args[1].body)
     ).to.deep.equal({ preview_id: 'signed-quote-a' });
     expect(text(el)).to.include('Plan change scheduled');
-    expect(button(el, 'preview').disabled).to.equal(true);
+    await waitUntil(() => calls('/plan-change-options').length >= 2);
+    expect(text(el))
+      .to.include('Pro')
+      .and.not.to.include('Refresh to see your subscription');
+    expect(button(el, 'preview').disabled).to.equal(false);
   });
   it('does not let an expired preview be confirmed', async () => {
     quote.expires_at = '2020-01-01T00:00:00Z';

@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { deactivateKillSwitch, getKillSwitchStatus } from '../api';
@@ -225,9 +226,7 @@ export class KillSwitchBanner extends LitElement {
   /** "12:41:05 UTC" style stamp for when the halt was activated. */
   private formatActivationTime(iso: string | null): string {
     if (!iso) return '';
-    const date = new Date(
-      /(?:Z|[+-]\d{2}:?\d{2})$/i.test(iso) ? iso : `${iso}Z`
-    );
+    const date = parseUTCDate(iso);
     if (Number.isNaN(date.getTime())) return '';
     return date.toLocaleString(undefined, {
       month: 'short',

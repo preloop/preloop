@@ -16,6 +16,8 @@ describe('CostView', () => {
   // Per-test copy of the payload so a test can add fields (e.g. the imported
   // usage block) without leaking into the others.
   let summaryPayload: Record<string, unknown>;
+  // Per-test accounting self-check answer (GET /cost/health).
+  let healthPayload: Record<string, unknown>;
   // Per-test feature flags; banner tests enable the override UI.
   let featuresPayload: Record<string, unknown>;
   // Per-test reprice POST response; set by banner tests.
@@ -156,6 +158,7 @@ describe('CostView', () => {
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
     summaryPayload = { ...summary };
+    healthPayload = { window_hours: 24, checks: [], status: 'skip' };
     featuresPayload = { billing: true };
     overridesGated = false;
     overridePayload = [];
@@ -248,6 +251,12 @@ describe('CostView', () => {
               headers: { 'Content-Type': 'application/json' },
             }
           );
+        }
+        if (url.includes('/api/v1/cost/health')) {
+          return new Response(JSON.stringify(healthPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
         }
         if (url.includes('/api/v1/cost/summary')) {
           return new Response(JSON.stringify(summaryPayload), {
@@ -402,6 +411,15 @@ describe('CostView', () => {
     expect(groups.find((row) => row.flowId === 'flow-older')?.cost).to.equal(6);
     expect(groups.find((row) => row.agentId === 'agent-1')?.cost).to.equal(8.5);
     expect(groups).to.have.length(3);
+    // Summary loading completes before the lazy Agents tab has rendered.
+    await waitUntil(
+      () =>
+        !!element.shadowRoot!.querySelector(
+          'a[href="/console/flows/flow-review"]'
+        ),
+      'the complete flow total row did not render',
+      { timeout: 5000 }
+    );
     const flowLink = element.shadowRoot!.querySelector(
       'a[href="/console/flows/flow-review"]'
     )!;
@@ -2066,6 +2084,114 @@ describe('CostView', () => {
     expect(element.shadowRoot?.textContent).to.contain(
       'Failed to fetch account details'
     );
+  });
+
+  describe('subscription workload and accounting health (#1401)', () => {
+    async function loadView(): Promise<CostView> {
+      const element = (await fixture(
+        html`<cost-view></cost-view>`
+      )) as CostView;
+      await waitUntil(
+        () => (element as unknown as { loading: boolean }).loading === false
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('shows subscription workload apart from spend, labelled as an estimate with coverage', async () => {
+      summaryPayload = {
+        ...summary,
+        subscription_usage: {
+          request_count: 4,
+          prompt_tokens: 300,
+          completion_tokens: 100,
+          total_tokens: 400,
+          api_equivalent_cost: 1.25,
+          api_equivalent_cost_is_estimate: true,
+          covered_requests: 3,
+          coverage: 0.75,
+          billed: null,
+          billed_available: false,
+        },
+      };
+      const element = await loadView();
+
+      const spend = element.shadowRoot?.querySelector(
+        '[aria-label="Cost summary metrics"]'
+      );
+      expect(spend?.textContent).to.contain('$8.50');
+      expect(spend?.textContent).not.to.contain('$1.25');
+
+      const block = element.shadowRoot?.querySelector(
+        '[aria-label="Subscription workload"]'
+      );
+      expect(block).to.exist;
+      const text = (block?.textContent ?? '').replace(/\s+/g, ' ');
+      expect(text).to.contain('not included in spend above');
+      expect(text).to.contain('API-equivalent cost (estimate)');
+      expect(text).to.contain('$1.25');
+      expect(text).to.contain('Coverage 75%: 3 of 4 requests');
+      const billed = block?.querySelector(
+        '[data-testid="subscription-billed"]'
+      );
+      expect(billed?.textContent).to.contain('Not tracked');
+    });
+
+    it('renders no subscription block when the window has none', async () => {
+      const element = await loadView();
+      expect(
+        element.shadowRoot?.querySelector(
+          '[aria-label="Subscription workload"]'
+        )
+      ).to.equal(null);
+      expect(
+        element.shadowRoot?.querySelector('[aria-label="Accounting health"]')
+      ).to.equal(null);
+    });
+
+    it('surfaces the subscription billing and token detail findings, not passing checks', async () => {
+      healthPayload = {
+        window_hours: 24,
+        status: 'warn',
+        checks: [
+          { key: 'costs_priced', status: 'pass', detail: 'priced fine' },
+          {
+            key: 'token_details_normalized',
+            status: 'warn',
+            detail:
+              '2 of 5 requests with provider cache/reasoning detail have normalized cache/reasoning columns that are missing or differ',
+          },
+          {
+            key: 'subscription_billing_coverage',
+            status: 'warn',
+            detail:
+              'Subscription billing coverage unavailable: API-equivalent cost is an estimate, billed subscription dollars are not tracked. 4 subscription requests in window.',
+          },
+        ],
+      };
+      const element = await loadView();
+      await waitUntil(
+        () =>
+          element.shadowRoot?.querySelector('[aria-label="Accounting health"]'),
+        'the accounting findings must render'
+      );
+      const alert = element.shadowRoot?.querySelector(
+        '[aria-label="Accounting health"]'
+      );
+      const items = Array.from(alert?.querySelectorAll('li') ?? []).map(
+        (item) => item.getAttribute('data-check')
+      );
+      expect(items).to.deep.equal([
+        'token_details_normalized',
+        'subscription_billing_coverage',
+      ]);
+      expect(alert?.textContent).to.contain(
+        'Subscription billing coverage unavailable'
+      );
+      expect(alert?.textContent).not.to.contain('priced fine');
+      // Health has its own lookback; say so next to the range-scoped block.
+      expect(alert?.textContent).to.contain('last 24 hours');
+    });
   });
 
   describe('digest from another account', () => {

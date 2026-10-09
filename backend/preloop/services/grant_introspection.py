@@ -18,6 +18,23 @@ import httpx
 
 from preloop.models.schemas.grant_introspection import IntrospectionConfig
 
+_MAX_INTROSPECTION_BYTES = 1_048_576
+
+
+async def _read_bounded_json(response: httpx.Response) -> Any:
+    """Read an introspection body without buffering more than one mebibyte."""
+    declared = response.headers.get("content-length")
+    if declared is not None and int(declared) > _MAX_INTROSPECTION_BYTES:
+        raise ValueError("introspection response exceeds bounds")
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > _MAX_INTROSPECTION_BYTES:
+            raise ValueError("introspection response exceeds bounds")
+        chunks.append(chunk)
+    return json.loads(b"".join(chunks))
+
 
 @dataclass(frozen=True)
 class GrantResult:
@@ -163,13 +180,11 @@ class GrantIntrospector:
                         follow_redirects=False,
                         trust_env=False,
                     ) as client:
-                        response = await client.post(
-                            str(config.endpoint), data=data, auth=auth
-                        )
-                        response.raise_for_status()
-                        if len(response.content) > 1_048_576:
-                            raise ValueError("introspection response exceeds bounds")
-                        payload = response.json()
+                        async with client.stream(
+                            "POST", str(config.endpoint), data=data, auth=auth
+                        ) as response:
+                            response.raise_for_status()
+                            payload = await _read_bounded_json(response)
                         binding = self._parse(payload, config)
                         # Compare decoded claims: JSON escaping must not hide
                         # quoted/backslash credentials. Check the original scope

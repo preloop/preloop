@@ -16,6 +16,8 @@ Preloop turns model gateway telemetry into explainable spend. The console **Cost
 - `currency`, `cost_source` (how the cost was derived), `usage_source`, and a retry flag
 - timestamps for trend charts and drill-down
 
+The gateway normalizes cache and reasoning counts from three provider usage shapes: OpenAI Chat Completions (`prompt_tokens_details.cached_tokens`, `completion_tokens_details.reasoning_tokens`), OpenAI Responses (`input_tokens_details.cached_tokens`, `output_tokens_details.reasoning_tokens`) and Anthropic Messages (top-level `cache_read_input_tokens` / `cache_creation_input_tokens`). An explicit `0` is recorded as zero; a missing, negative, boolean or malformed count is recorded as unknown (`NULL`), so an empty cache column never means "no caching" by itself. The raw provider payload is kept in `meta_data.usage_details`. Responses rows recorded before this was supported can be repaired from that payload with `python scripts/repair_usage_token_details.py` (dry run by default, `--apply` writes, `--reprice` re-prices the repaired rows).
+
 Spend summaries and breakdowns in open source are derived from this ledger plus gateway budget state.
 
 ---

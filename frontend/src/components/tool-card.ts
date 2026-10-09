@@ -1225,6 +1225,7 @@ export class ToolCard extends LitElement {
       <div class="form-field">
         <label class="form-label">Tool Argument</label>
         <sl-select
+          aria-label="Condition argument"
           placeholder="Select argument..."
           value=${this.conditionField}
           @sl-change=${(e: any) => {
@@ -1255,6 +1256,7 @@ export class ToolCard extends LitElement {
               <div class="form-field">
                 <label class="form-label">Operator</label>
                 <sl-select
+                  aria-label="Comparison operator"
                   value=${this.conditionOperator}
                   @sl-change=${(e: any) => {
                     this.conditionOperator = e.target.value;
@@ -1275,6 +1277,7 @@ export class ToolCard extends LitElement {
               <div class="form-field">
                 <label class="form-label">Value</label>
                 <sl-input
+                  aria-label="Comparison value"
                   placeholder="Enter value..."
                   value=${this.conditionValue}
                   @sl-input=${(e: any) => {
@@ -1315,6 +1318,7 @@ export class ToolCard extends LitElement {
           ${this.rawCelMode ? 'Raw CEL Expression Mode' : 'Condition Builder'}
         </span>
         <sl-switch
+          aria-label="Raw CEL expression mode"
           ?checked=${this.rawCelMode}
           @sl-change=${(e: any) => {
             this.rawCelMode = e.target.checked;
@@ -1403,6 +1407,7 @@ export class ToolCard extends LitElement {
       <div class="form-field">
         <label class="form-label">CEL Expression</label>
         <sl-textarea
+          aria-label="Condition expression"
           placeholder="args.amount > 100 && args.currency == 'USD'"
           value=${this.rawCelExpression}
           @sl-input=${(e: any) => {
@@ -1462,6 +1467,7 @@ export class ToolCard extends LitElement {
                   >Combine conditions with:</span
                 >
                 <sl-radio-group
+                  aria-label="Condition combination"
                   value=${this.conditionCombiner}
                   @sl-change=${(e: any) => {
                     this.conditionCombiner = e.target.value;
@@ -1504,6 +1510,7 @@ export class ToolCard extends LitElement {
               <div class="form-field" style="flex: 1;">
                 <label class="form-label">Argument</label>
                 <sl-select
+                  aria-label="Condition field"
                   placeholder="Select..."
                   size="small"
                   value=${condition.field}
@@ -1540,6 +1547,7 @@ export class ToolCard extends LitElement {
               <div class="form-field" style="flex: 1;">
                 <label class="form-label">Operator</label>
                 <sl-select
+                  aria-label="Comparison operator"
                   size="small"
                   value=${condition.operator}
                   @sl-change=${(e: any) => {
@@ -1561,6 +1569,7 @@ export class ToolCard extends LitElement {
               <div class="form-field" style="flex: 1;">
                 <label class="form-label">Value</label>
                 <sl-input
+                  aria-label="Comparison value"
                   size="small"
                   placeholder="Enter value..."
                   value=${condition.value}
@@ -1664,7 +1673,7 @@ export class ToolCard extends LitElement {
           <div class="tool-controls">
             <div class="control-row">
               <span class="control-label">Enabled</span>
-              <sl-switch
+              <sl-switch aria-label="Enable tool"
                 ?checked=${this.tool.is_enabled}
                 ?disabled=${!isSupported}
                 @sl-change=${this.handleEnabledToggle}
@@ -1684,6 +1693,7 @@ export class ToolCard extends LitElement {
                           </span>
                         </span>
                         <sl-switch
+                          aria-label="Require approval"
                           ?checked=${
                             this.tool.approval_workflow_id ||
                             this.pendingApproval
@@ -1701,6 +1711,7 @@ export class ToolCard extends LitElement {
                                   ? html`
                                       <div class="policy-selector">
                                         <sl-select
+                                          aria-label="Approval policy"
                                           size="small"
                                           placeholder="Select a policy..."
                                           value=${
@@ -1747,6 +1758,7 @@ export class ToolCard extends LitElement {
                                   ? html`
                                       <div class="policy-selector">
                                         <sl-select
+                                          aria-label="Approval policy"
                                           size="small"
                                           placeholder="Select a policy..."
                                           value=""
@@ -1965,6 +1977,7 @@ export class ToolCard extends LitElement {
                     <div class="form-field">
                       <label class="form-label">Policy Name *</label>
                       <sl-input
+                        aria-label="Policy name"
                         placeholder="e.g., Default Approval Workflow"
                         value=${this.newPolicyName}
                         @sl-input=${(e: any) => {
@@ -1977,6 +1990,7 @@ export class ToolCard extends LitElement {
                     <div class="form-field">
                       <label class="form-label">Description</label>
                       <sl-textarea
+                        aria-label="Policy description"
                         placeholder="Optional description"
                         value=${this.newPolicyDescription}
                         @sl-input=${(e: any) => {
@@ -1990,6 +2004,7 @@ export class ToolCard extends LitElement {
                     <div class="form-field">
                       <label class="form-label">Approval Type</label>
                       <sl-radio-group
+                        aria-label="Approval type"
                         value=${this.newPolicyType}
                         @sl-change=${(e: any) => {
                           e.preventDefault();
@@ -2041,6 +2056,7 @@ export class ToolCard extends LitElement {
                               <div class="form-field">
                                 <label class="form-label">AI Model *</label>
                                 <sl-select
+                                  aria-label="AI model"
                                   value=${this.newPolicyAiModel}
                                   @sl-change=${(e: any) => {
                                     e.stopPropagation();
@@ -2064,6 +2080,7 @@ export class ToolCard extends LitElement {
                               <div class="form-field">
                                 <label class="form-label">Guidelines</label>
                                 <sl-textarea
+                                  aria-label="AI approval guidelines"
                                   value=${this.newPolicyAiGuidelines}
                                   @sl-input=${(e: any) => {
                                     e.stopPropagation();
@@ -2103,7 +2120,7 @@ DENY if:
                                   style="--thumb-size: 18px;"
                                 ></sl-range>
                                 <div
-                                  style="display: flex; justify-content: space-between; font-size: var(--sl-font-size-x-small); color: var(--sl-color-neutral-500); margin-top: var(--sl-spacing-2x-small);"
+                                  style="display: flex; justify-content: space-between; font-size: var(--sl-font-size-x-small); color: var(--console-meta-color); margin-top: var(--sl-spacing-2x-small);"
                                 >
                                   <span>0% (always escalate)</span>
                                   <span>100% (very confident)</span>
@@ -2113,6 +2130,7 @@ DENY if:
                               <div class="form-field">
                                 <label class="form-label">When Uncertain</label>
                                 <sl-radio-group
+                                  aria-label="AI fallback behavior"
                                   value=${this.newPolicyAiFallbackBehavior}
                                   @sl-change=${(e: any) => {
                                     e.stopPropagation();
@@ -2141,6 +2159,7 @@ DENY if:
                                           >Escalation Workflow</label
                                         >
                                         <sl-select
+                                          aria-label="Escalation workflow"
                                           value=${
                                             this.newPolicyEscalationWorkflowId
                                           }
@@ -2225,6 +2244,7 @@ DENY if:
                             <div class="form-field">
                               <label class="form-label">Webhook URL *</label>
                               <sl-input
+                                aria-label="Webhook URL"
                                 type="url"
                                 placeholder="${
                                   this.newPolicyType === 'slack'
@@ -2256,6 +2276,7 @@ DENY if:
                                 Approvers (Optional)
                               </label>
                               <sl-select
+                                aria-label="Approvers"
                                 multiple
                                 clearable
                                 placeholder="Select users and teams who can approve..."
@@ -2324,6 +2345,7 @@ DENY if:
                                 >Number of Approvals Required</label
                               >
                               <sl-input
+                                aria-label="Approvals required"
                                 type="number"
                                 min="1"
                                 value=${this.newPolicyApprovalsRequired}
@@ -2341,6 +2363,7 @@ DENY if:
                                 >Approval Timeout (seconds)</label
                               >
                               <sl-input
+                                aria-label="Timeout in seconds"
                                 type="number"
                                 min="30"
                                 value=${this.newPolicyTimeoutSeconds}
@@ -2365,6 +2388,7 @@ DENY if:
                                         >Escalation (Optional)</label
                                       >
                                       <sl-select
+                                        aria-label="Escalation recipients"
                                         multiple
                                         clearable
                                         placeholder="Select users and teams for escalation..."
@@ -2454,6 +2478,7 @@ DENY if:
                           </div>
                         </div>
                         <sl-switch
+                          aria-label="Default approval policy"
                           ?checked=${this.newPolicyIsDefault}
                           @sl-change=${(e: any) => {
                             e.stopPropagation();
@@ -2472,6 +2497,7 @@ DENY if:
                                 >Channel (Optional)</label
                               >
                               <sl-input
+                                aria-label="Approval channel"
                                 placeholder="#approvals"
                                 value=${this.newPolicyChannel}
                                 @sl-input=${(e: any) => {
@@ -2485,6 +2511,7 @@ DENY if:
                             <div class="form-field">
                               <label class="form-label">User (Optional)</label>
                               <sl-input
+                                aria-label="Approval user"
                                 placeholder="@username"
                                 value=${this.newPolicyUser}
                                 @sl-input=${(e: any) => {

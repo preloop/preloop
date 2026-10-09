@@ -313,3 +313,126 @@ def test_cost_summary_unpriced_models_empty_when_all_priced(
 
     assert body["unpriced_requests"] == 0
     assert body["unpriced_models"] == []
+
+
+def test_cost_summary_reports_subscription_workload_separately(
+    client, db_session, test_user
+):
+    """Subscription workload is its own block: estimate, coverage, no billing."""
+    _log_usage(db_session, account_id=test_user.account_id, user_id=test_user.id)
+    for equivalent in (0.30, 0.20, None):
+        meta = {} if equivalent is None else {"api_equivalent_cost": equivalent}
+        _log_usage(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            meta_data=meta,
+        )
+    db_session.commit()
+
+    body = client.get(COST_SUMMARY).json()
+
+    # Marginal API spend is unchanged by subscription rows.
+    assert body["estimated_cost"] == 0.05
+    block = body["subscription_usage"]
+    assert block["request_count"] == 3
+    assert block["prompt_tokens"] == 36
+    assert block["completion_tokens"] == 24
+    assert block["total_tokens"] == 60
+    assert block["api_equivalent_cost"] == 0.5
+    assert block["api_equivalent_cost_is_estimate"] is True
+    assert block["covered_requests"] == 2
+    assert abs(block["coverage"] - 2 / 3) < 1e-9
+    assert block["billed"] is None
+    assert block["billed_available"] is False
+
+
+def test_cost_summary_subscription_block_absent_without_subscription_rows(
+    client, db_session, test_user
+):
+    _log_usage(db_session, account_id=test_user.account_id, user_id=test_user.id)
+    db_session.commit()
+
+    assert client.get(COST_SUMMARY).json()["subscription_usage"] is None
+
+
+def test_cost_summary_subscription_block_ignores_non_numeric_estimates(
+    client, db_session, test_user
+):
+    """Legacy non-numeric values count as uncovered instead of breaking the sum."""
+    for value in ("n/a", 0.0):
+        _log_usage(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            meta_data={"api_equivalent_cost": value},
+        )
+    db_session.commit()
+
+    block = client.get(COST_SUMMARY).json()["subscription_usage"]
+    assert block["request_count"] == 2
+    assert block["covered_requests"] == 1
+    assert block["api_equivalent_cost"] == 0.0
+    assert block["coverage"] == 0.5
+
+
+def test_cost_summary_subscription_block_follows_principal_and_retry_filters(
+    client, db_session, test_user
+):
+    """The block uses the same principal and retry selection as the spend."""
+    for principal, is_retry, equivalent in (
+        ("agent-a", False, 0.10),
+        ("agent-a", True, 0.20),
+        ("agent-b", False, 0.40),
+    ):
+        _log_usage(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            runtime_principal_id=principal,
+            is_retry=is_retry,
+            meta_data={"api_equivalent_cost": equivalent},
+        )
+    db_session.commit()
+
+    def block(**params):
+        return client.get(COST_SUMMARY, params=params).json()["subscription_usage"]
+
+    assert block()["request_count"] == 3
+    principal = block(runtime_principal_id="agent-a")
+    assert principal["request_count"] == 2
+    assert abs(principal["api_equivalent_cost"] - 0.30) < 1e-9
+    both = block(runtime_principal_id="agent-a", exclude_retries="true")
+    assert both["request_count"] == 1
+    assert abs(both["api_equivalent_cost"] - 0.10) < 1e-9
+    assert block(exclude_retries="true")["request_count"] == 2
+
+
+def test_subscription_absorbed_cost_delegates_to_guarded_sum(db_session, test_user):
+    """The legacy helper ignores non-numeric estimates like the summary does."""
+    from datetime import UTC, datetime, timedelta
+
+    for value in (0.25, "n/a"):
+        _log_usage(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            estimated_cost=0.0,
+            cost_source="subscription",
+            meta_data={"api_equivalent_cost": value},
+        )
+    db_session.flush()
+    now = datetime.now(UTC)
+    absorbed = crud_api_usage.get_subscription_absorbed_cost(
+        db_session,
+        account_id=test_user.account_id,
+        start=now - timedelta(hours=1),
+        end=now + timedelta(hours=1),
+    )
+    assert absorbed == 0.25

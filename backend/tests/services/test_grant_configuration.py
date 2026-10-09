@@ -66,6 +66,13 @@ def test_nested_secret_redaction_and_write_only_merge() -> None:
         auth_type="bearer",
         auth_config=auth,
     )
+    with pytest.raises(ValidationError, match="bearer or oauth"):
+        MCPServerCreate(
+            name="protected",
+            url="https://mcp.example.com/mcp",
+            auth_type="none",
+            auth_config=auth,
+        )
 
 
 @pytest.mark.parametrize(
@@ -75,6 +82,8 @@ def test_nested_secret_redaction_and_write_only_merge() -> None:
         ("grant['active'] == true", True),
         ("has(grant.scope)", True),
         ('args.label == "grant.active"', False),
+        ("args.grant.active == true", False),
+        ("subject.grant.consent == 'x'", False),
     ],
 )
 def test_binding_reference_ignores_quoted_literals(

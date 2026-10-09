@@ -668,6 +668,7 @@ export class PreloopFlowPresetPicker extends LitElement {
       <div class="header">
         <div class="label">Start from</div>
         <sl-input
+          aria-label="Search presets"
           class="search"
           size="small"
           clearable

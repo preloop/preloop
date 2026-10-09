@@ -84,6 +84,19 @@ describe('TeamBudgetsPanel', () => {
     resetConfirmDialogForTests();
   });
 
+  it('keeps exactly one scroll container around each loaded table', async () => {
+    const el = await fixture<TeamBudgetsPanel>(
+      html`<team-budgets-panel></team-budgets-panel>`
+    );
+    await waitUntil(
+      () => el.shadowRoot!.querySelectorAll('table').length === 2
+    );
+    expect(
+      el.shadowRoot!.querySelector('.table-scroll .table-scroll')
+    ).to.equal(null);
+    expect(el.shadowRoot!.querySelectorAll('.table-scroll')).to.have.length(2);
+  });
+
   it('lists spend per team and the team budgets', async () => {
     const el = (await fixture(
       html`<team-budgets-panel

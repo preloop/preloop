@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
@@ -23,6 +24,7 @@ interface TrackerSummary {
 
 @customElement('tracker-issue-view')
 export class TrackerIssueView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private _loading = true;
 

@@ -641,3 +641,20 @@ def test_emit_budget_webhooks_commits_before_a_later_caller_rollback():
     db.commit.assert_called_once()
     names = [call[0] for call in db.method_calls]
     assert names.index("commit") < names.index("rollback")
+
+
+def test_event_preserves_captured_resolved_billing_path() -> None:
+    """Alias naming never substitutes for the resolved request's billing source."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(
+        meta_data={
+            "billing_path": "your_key",
+            "billing_model_id": "own-model",
+            "billing_model_name": "Own example",
+            "requested_model": "hosted-looking-alias",
+        }
+    )
+    event = emitter._build_event(usage=usage, request_payload={}, response_payload={})
+    assert event["payload"]["billing_path"] == "your_key"
+    assert event["payload"]["billing_model_id"] == "own-model"
+    assert event["payload"]["billing_model_name"] == "Own example"

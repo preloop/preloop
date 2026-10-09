@@ -29,6 +29,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
+from preloop.services.usage_token_details import extract_token_details
+
 logger = logging.getLogger(__name__)
 
 # Provenance of a per-request cache-miss number.
@@ -124,27 +126,12 @@ def reported_cache_miss_tokens(meta_data: Any) -> Optional[int]:
 
 
 def _fallback_cache_read(details: Mapping[str, Any]) -> Optional[int]:
-    nested = _prompt_tokens_details(details)
-    for candidate in (
-        nested.get("cached_tokens"),
-        details.get("cache_read_input_tokens"),
-    ):
-        parsed = _as_int(candidate)
-        if parsed is not None:
-            return max(parsed, 0)
-    return None
+    # Shared normalizer: Chat Completions, Responses and Anthropic shapes.
+    return extract_token_details(dict(details))["cache_read_tokens"]
 
 
 def _fallback_cache_creation(details: Mapping[str, Any]) -> Optional[int]:
-    nested = _prompt_tokens_details(details)
-    for candidate in (
-        nested.get("cache_creation_tokens"),
-        details.get("cache_creation_input_tokens"),
-    ):
-        parsed = _as_int(candidate)
-        if parsed is not None:
-            return max(parsed, 0)
-    return None
+    return extract_token_details(dict(details))["cache_creation_tokens"]
 
 
 def uncached_input_tokens(

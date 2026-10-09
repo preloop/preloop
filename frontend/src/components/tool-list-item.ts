@@ -1,3 +1,4 @@
+import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
@@ -110,7 +111,7 @@ export class ToolListItem extends LitElement {
       }
 
       .expand-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         transition: transform 0.2s ease;
         flex-shrink: 0;
       }
@@ -131,7 +132,7 @@ export class ToolListItem extends LitElement {
 
       .tool-description {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -164,14 +165,14 @@ export class ToolListItem extends LitElement {
       }
 
       .usage-stat {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         white-space: nowrap;
         flex-shrink: 0;
       }
 
       .schema-tokens {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         white-space: nowrap;
         flex-shrink: 0;
@@ -212,7 +213,7 @@ export class ToolListItem extends LitElement {
       }
 
       .no-rules {
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
       }
 
@@ -233,7 +234,7 @@ export class ToolListItem extends LitElement {
       }
 
       .unsupported-overlay {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         font-style: italic;
       }
@@ -634,11 +635,11 @@ export class ToolListItem extends LitElement {
               (this.usageStat.invocation_count > 0 ||
                 this.usageStat.estimated_schema_cost > 0)
                 ? html`<sl-tooltip
-                    content=${`${this.usageStat.invocation_count} invocations · ${this.usageStat.estimated_schema_cost.toFixed(4)} schema cost (30d)`}
+                    content=${`${this.usageStat.invocation_count} invocations · ${formatUsdExact(this.usageStat.estimated_schema_cost)} schema cost (30d)`}
                   >
                     <span class="usage-stat"
                       >${this.usageStat.invocation_count} calls ·
-                      $${this.usageStat.estimated_schema_cost >= 0.01 ? this.usageStat.estimated_schema_cost.toFixed(2) : this.usageStat.estimated_schema_cost.toFixed(4)}</span
+                      ${html`<span title=${formatUsdExact(this.usageStat.estimated_schema_cost)}>${formatUsd(this.usageStat.estimated_schema_cost)}</span>`}</span
                     >
                   </sl-tooltip>`
                 : ''
@@ -692,6 +693,7 @@ export class ToolListItem extends LitElement {
 
           <div class="tool-toggle" @click=${(e: Event) => e.stopPropagation()}>
             <sl-switch
+              aria-label="Tool availability"
               size="small"
               ?checked=${
                 this._isNativeTool()

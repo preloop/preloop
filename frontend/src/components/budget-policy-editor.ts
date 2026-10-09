@@ -1,3 +1,4 @@
+import { EditPermissions } from '../controllers/edit-permissions';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import {
@@ -85,6 +86,11 @@ const SUBJECT_SEARCH_THRESHOLD = 8;
  */
 @customElement('budget-policy-editor')
 export class BudgetPolicyEditor extends LitElement {
+  private readonly editPermissions = new EditPermissions(this);
+  @property({ type: Boolean }) readOnly = false;
+  private get canManage(): boolean {
+    return !this.readOnly && this.editPermissions.allows('manage_budgets');
+  }
   @property({ type: String }) subjectType?: string;
   @property({ type: String }) subjectId?: string;
   /** Skip the features round-trip when the parent already knows billing is on. */
@@ -405,6 +411,7 @@ export class BudgetPolicyEditor extends LitElement {
   }
 
   private async handleDelete(id: string) {
+    if (!this.canManage) return;
     this.saving = true;
     this.error = '';
     try {
@@ -423,6 +430,7 @@ export class BudgetPolicyEditor extends LitElement {
   }
 
   private startAdd() {
+    if (!this.canManage) return;
     this.resetForm();
     this.editingPolicyId = null;
     this.error = '';
@@ -432,6 +440,7 @@ export class BudgetPolicyEditor extends LitElement {
   }
 
   private startEdit(policy: BudgetPolicy) {
+    if (!this.canManage) return;
     this.editingPolicyId = policy.id;
     this.error = '';
     this.formError = '';
@@ -530,6 +539,7 @@ export class BudgetPolicyEditor extends LitElement {
   }
 
   private async handleSave() {
+    if (!this.canManage) return;
     const hardLimit = this.newHardLimit ? parseFloat(this.newHardLimit) : null;
     const softLimit = this.newSoftLimit ? parseFloat(this.newSoftLimit) : null;
     const validationError = this.validate(softLimit, hardLimit);
@@ -676,24 +686,30 @@ export class BudgetPolicyEditor extends LitElement {
               </sl-tooltip>`
             : nothing
         }
-        <sl-dropdown hoist>
-          <sl-icon-button
-            slot="trigger"
-            name="three-dots-vertical"
-            label="Limit actions"
-            ?disabled=${this.saving}
-          ></sl-icon-button>
-          <sl-menu>
-            <sl-menu-item @click=${() => this.startEdit(policy)}>
-              <sl-icon slot="prefix" name="pencil"></sl-icon>
-              Edit
-            </sl-menu-item>
-            <sl-menu-item @click=${() => (this.pendingDeleteId = policy.id)}>
-              <sl-icon slot="prefix" name="trash"></sl-icon>
-              Delete
-            </sl-menu-item>
-          </sl-menu>
-        </sl-dropdown>
+        ${
+          this.canManage
+            ? html`<sl-dropdown hoist>
+                <sl-icon-button
+                  slot="trigger"
+                  name="three-dots-vertical"
+                  label="Limit actions"
+                  ?disabled=${this.saving}
+                ></sl-icon-button>
+                <sl-menu>
+                  <sl-menu-item @click=${() => this.startEdit(policy)}>
+                    <sl-icon slot="prefix" name="pencil"></sl-icon>
+                    Edit
+                  </sl-menu-item>
+                  <sl-menu-item
+                    @click=${() => (this.pendingDeleteId = policy.id)}
+                  >
+                    <sl-icon slot="prefix" name="trash"></sl-icon>
+                    Delete
+                  </sl-menu-item>
+                </sl-menu>
+              </sl-dropdown>`
+            : nothing
+        }
       </div>
     `;
   }
@@ -1051,14 +1067,18 @@ export class BudgetPolicyEditor extends LitElement {
             ? html`
                 <div class="header">
                   <h4 id="budget-policy-editor-title">Limits</h4>
-                  <sl-button
-                    size="small"
-                    variant="primary"
-                    @click=${this.startAdd}
-                  >
-                    <sl-icon slot="prefix" name="plus"></sl-icon>
-                    Add limit
-                  </sl-button>
+                  ${
+                    this.canManage
+                      ? html`<sl-button
+                          size="small"
+                          variant="primary"
+                          @click=${this.startAdd}
+                        >
+                          <sl-icon slot="prefix" name="plus"></sl-icon>
+                          Add limit
+                        </sl-button>`
+                      : nothing
+                  }
                 </div>
               `
             : nothing
@@ -1079,8 +1099,8 @@ export class BudgetPolicyEditor extends LitElement {
               `
             : nothing
         }
-        ${this.step === 'list' ? this.renderList() : this.renderForm()}
-        ${this.renderDeleteConfirm()}
+        ${!this.canManage || this.step === 'list' ? this.renderList() : this.renderForm()}
+        ${this.canManage ? this.renderDeleteConfirm() : nothing}
       </div>
     `;
   }

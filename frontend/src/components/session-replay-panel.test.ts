@@ -57,6 +57,28 @@ function previewEvent(
 }
 
 describe('SessionReplayPanel', () => {
+  it('names both optimization scope sliders distinctly', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="optimize"
+        .optimizationEnabled=${true}
+        .optimizationResult=${{ generated_by: 'local', suggestions: [] }}
+        .session=${SESSION}
+        .events=${[previewEvent('scope', '2026-10-02T10:00:00Z', [{ role: 'user', text: 'Hello' }])]}
+      ></session-replay-panel>
+    `);
+    const sliders = Array.from(
+      element.shadowRoot!.querySelectorAll('.optimize-range input')
+    );
+    expect(
+      sliders.map((slider) => slider.getAttribute('aria-label'))
+    ).to.deep.equal([
+      'Optimization scope range start',
+      'Optimization scope range end',
+    ]);
+    expect(sliders.every((slider) => !slider.closest('label'))).to.equal(true);
+  });
+
   it('renders correlated tool results once while retaining uncorrelated legacy bubbles', async () => {
     const event = previewEvent('tool-example', '2026-10-02T10:00:00Z', [], {
       tools: [

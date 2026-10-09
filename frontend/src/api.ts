@@ -81,6 +81,7 @@ import type {
   AIModelGatewayUsageSearchResponse,
   AIModel,
   CostAnalyticsSummaryResponse,
+  CostHealthResponse,
   CostReconciliationResponse,
   CopilotConnection,
   CopilotConnectionUpsert,
@@ -1469,6 +1470,17 @@ export async function getCostAnalyticsSummary(
     const refused = await historyUnavailableError(response);
     if (refused) throw refused;
     throw new Error('Failed to fetch cost analytics summary');
+  }
+  return response.json();
+}
+
+/** Gateway accounting self-check for the account (last `hours` hours). */
+export async function getCostHealth(hours = 24): Promise<CostHealthResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/cost/health?hours=${encodeURIComponent(String(hours))}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch accounting health');
   }
   return response.json();
 }
@@ -7735,6 +7747,41 @@ export async function updateDiscoveryCandidate(
   if (!response.ok) {
     throw new Error('Failed to update discovered agent');
   }
+  return response.json();
+}
+
+export interface HostedModelCatalog {
+  models: Array<{
+    id: string;
+    name: string;
+    provider_name: string;
+    model_identifier: string;
+    alias: string;
+    tariff: {
+      input_price_per_1k: number;
+      output_price_per_1k: number;
+      request_price: number;
+    } | null;
+    available: boolean;
+    operated_by: string;
+    billed_to: 'allowance';
+    own_alias_shadowing: boolean;
+  }>;
+  allowance: {
+    kind: 'one_time' | 'monthly';
+    included_usd: number | null;
+    spent_usd: number | null;
+    held_usd: number | null;
+    remaining_usd: number | null;
+    reset_at: string | null;
+    coverage: 'known' | 'unknown';
+  };
+}
+
+/** Account-bound, authenticated hosted inventory; absent on OSS backends. */
+export async function getHostedModels(): Promise<HostedModelCatalog> {
+  const response = await fetchWithAuth('/api/v1/account/hosted-models');
+  if (!response.ok) throw new Error('Could not load built-in hosted models.');
   return response.json();
 }
 

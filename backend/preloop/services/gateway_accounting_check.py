@@ -19,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from preloop.models.crud import crud_api_usage, crud_audit_log
+from preloop.services.usage_token_details import extract_token_details
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,19 @@ PROVIDER_USAGE_WARN_SHARE = 0.8
 PROVIDER_USAGE_FAIL_SHARE = 0.5
 
 NO_TRAFFIC_DETAIL = "no gateway traffic in window"
+
+# Rows compared per run by the raw-vs-normalized token detail check.
+TOKEN_DETAIL_SAMPLE_LIMIT = 2000
+TOKEN_DETAIL_COLUMNS = (
+    "cache_read_tokens",
+    "cache_creation_tokens",
+    "reasoning_tokens",
+)
+
+SUBSCRIPTION_BILLING_UNAVAILABLE = (
+    "Subscription billing coverage unavailable: API-equivalent cost is an "
+    "estimate, billed subscription dollars are not tracked."
+)
 
 # Process-level cache: audit_log presence does not flip without a migration.
 _AUDIT_TABLE_EXISTS: Optional[bool] = None
@@ -164,6 +178,85 @@ def _audit_events_check(
     )
 
 
+def _token_details_check(
+    db: Session, *, account_id: str, start: datetime
+) -> Dict[str, str]:
+    """Flag rows whose raw cache/reasoning detail disagrees with the columns.
+
+    A retained ``meta_data.usage_details`` value that the extractor can read
+    must match the normalized column. A NULL column next to a readable raw
+    value means the count was dropped (e.g. Responses rows recorded before
+    #1401), and empty cache columns would wrongly read as "no caching".
+    """
+    rows = crud_api_usage.list_token_detail_rows(
+        db, account_id=account_id, start=start, limit=TOKEN_DETAIL_SAMPLE_LIMIT
+    )
+    if not rows:
+        return _check(
+            "token_details_normalized",
+            "skip",
+            "no requests with provider cache/reasoning detail in window",
+        )
+    mismatched = 0
+    by_column = dict.fromkeys(TOKEN_DETAIL_COLUMNS, 0)
+    for row in rows:
+        raw = extract_token_details(row.usage_details)
+        row_mismatch = False
+        for column in TOKEN_DETAIL_COLUMNS:
+            if raw[column] is not None and raw[column] != getattr(row, column):
+                by_column[column] += 1
+                row_mismatch = True
+        mismatched += row_mismatch
+    sampled = f"{len(rows)} requests with provider cache/reasoning detail"
+    if len(rows) >= TOKEN_DETAIL_SAMPLE_LIMIT:
+        sampled += " (most recent sample)"
+    if not mismatched:
+        return _check(
+            "token_details_normalized",
+            "pass",
+            f"{sampled}; normalized cache/reasoning columns match the raw usage",
+        )
+    columns = ", ".join(f"{name}={count}" for name, count in by_column.items() if count)
+    return _check(
+        "token_details_normalized",
+        "warn",
+        f"{mismatched} of {sampled} have normalized cache/reasoning columns "
+        f"that are missing or differ from the raw provider usage ({columns}); "
+        "run scripts/repair_usage_token_details.py (dry run first) to repair",
+    )
+
+
+def _subscription_coverage_check(
+    db: Session, *, account_id: str, start: datetime
+) -> Dict[str, str]:
+    """Warn whenever subscription rows exist: billed dollars are not tracked.
+
+    A recorded ``api_equivalent_cost`` is a catalog estimate, so its presence
+    must not make the subscription spend look accounted for.
+    """
+    summary = crud_api_usage.get_subscription_usage_summary(
+        db,
+        account_id=account_id,
+        start=start,
+        end=datetime.now(timezone.utc) + timedelta(minutes=1),
+    )
+    requests = summary["request_count"]
+    if requests == 0:
+        return _check(
+            "subscription_billing_coverage",
+            "skip",
+            "no subscription-covered requests in window",
+        )
+    covered = summary["coverage_rows"]
+    return _check(
+        "subscription_billing_coverage",
+        "warn",
+        f"{SUBSCRIPTION_BILLING_UNAVAILABLE} {requests} subscription requests in "
+        f"window; {covered}/{requests} ({covered / requests:.0%}) carry an "
+        "API-equivalent estimate.",
+    )
+
+
 def run_accounting_checks(
     db: Session, *, account_id: str, window_hours: int
 ) -> Dict[str, Any]:
@@ -176,8 +269,8 @@ def run_accounting_checks(
 
     Returns:
         Dict with ``window_hours``, the ordered ``checks`` list, and the
-        aggregate ``status`` (fail if any check fails, else pass if any check
-        passes, else skip).
+        aggregate ``status`` (fail if any check fails, else warn if any check
+        warns, else pass if any check passes, else skip).
     """
     start = datetime.now(timezone.utc) - timedelta(hours=window_hours)
     try:
@@ -216,6 +309,19 @@ def run_accounting_checks(
         checks.append(_streaming_check(counters))
         checks.append(_costs_priced_check(counters))
         checks.append(_usage_source_check(counters))
+        for key, run in (
+            ("token_details_normalized", _token_details_check),
+            ("subscription_billing_coverage", _subscription_coverage_check),
+        ):
+            try:
+                checks.append(run(db, account_id=account_id, start=start))
+            except SQLAlchemyError as exc:
+                logger.warning(
+                    "Gateway accounting %s check failed: %s", key, exc, exc_info=True
+                )
+                checks.append(
+                    _check(key, "fail", f"query failed: {exc.__class__.__name__}")
+                )
         try:
             checks.append(_audit_events_check(db, account_id=account_id, start=start))
         except SQLAlchemyError as exc:
@@ -237,6 +343,8 @@ def run_accounting_checks(
             "streaming_usage_recorded",
             "costs_priced",
             "usage_source_health",
+            "token_details_normalized",
+            "subscription_billing_coverage",
             "audit_events_present",
         ):
             checks.append(_check(key, "skip", NO_TRAFFIC_DETAIL))
@@ -244,6 +352,9 @@ def run_accounting_checks(
     statuses = {check["status"] for check in checks}
     if "fail" in statuses:
         overall = "fail"
+    elif "warn" in statuses:
+        # A warning is never reported as healthy (#1401).
+        overall = "warn"
     elif "pass" in statuses:
         overall = "pass"
     else:

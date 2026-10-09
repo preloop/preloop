@@ -154,6 +154,7 @@ graph LR
 | [Frontend](docs/architecture/frontend.md) | Console structure (Lit, Vite, TypeScript, Shoelace). Tracker detail, tools page, and cost views. |
 | [Model gateway](docs/architecture/gateway.md) | OpenAI-, Anthropic- and Gemini-compatible ingress (`/openai/v1`, `/anthropic/v1`, `/gemini/v1beta`), accounting, budgets, and runtime session identity. |
 | [Governance](docs/architecture/governance.md) | Subject-scoped allowed models, tool access rules, and tool output filters. |
+| [Account access rules](docs/architecture/account-access-rules.md) | Closed policy syntax, audited CRUD/snapshots and committed H4 invalidation. |
 | [Approvals](docs/architecture/approvals.md) | Tool configuration, human-in-the-loop approval workflows, `ask_user`, and native-tool permission-check. |
 | [Agent Control](docs/architecture/agent-control.md) | Operator channel to managed agents, operator notes delivered at the next turn boundary through the gateway or a permission hook, CLI/desktop enrollment, mobile/watch voice contact, and persistent flow execution on a live Agent Control target. |
 | [Cost](docs/architecture/cost.md) | `ApiUsage` ledger, OSS spend and budget-health surfaces, and the Enterprise plugin boundary. |
@@ -389,6 +390,59 @@ before private provider delivery. Ambiguous writes become observable uncertain
 work rather than automatic duplicate operations. See
 [Chat connections](docs/chat-connections.md) for setup and operational limits.
 
+The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
+`enterprise` edition and the running backend `server_version`. Hosted instances
+are Cloud; self-hosted proprietary installations are Enterprise; other installs
+are OSS. Runtime deployment detection wins over static plugin declarations; plugin counts
+never determine the edition.
+Feature flags remain the authority for individual capability gates. The console
+reuses its cached features payload for the header help menu; documentation,
+release notes, and issue/support destinations come from brand URL configuration.
+
+
+### Hosted model visibility and request billing attribution
+
+The console loads entitled hosted models and durable allowance balances through
+the capability-gated `/account/hosted-models` API. Models, Cost, and Plan share
+the allowance display, including outstanding holds and the monthly reset date;
+one-time credit has no reset. Subscription details live on Plan, while Account
+links to that view. Gateway events preserve the billing path and actual resolved
+model row captured at request time, so later alias changes cannot relabel history.
+
+`preloop models list` separates your models from Preloop-hosted models and reports
+the allowance when supported. Before adding a system alias, operators can run
+`preloop models check-hosted-alias ALIAS` for aggregate collision warnings.
+The lookup exposes no account identifiers and does not change model routing.
+
+
+### Console edit permissions
+
+Edit controls use the cached user profile with three distinct states: a null
+permission list preserves OSS behavior, an RBAC list grants only named actions,
+and an unresolved or failed profile disables edits. Budget components also accept
+`readOnly` to display limits without add/edit/delete actions. Models use separate
+create/edit/delete grants; user actions use `manage_users`, invitations use
+`invite_users`, and team actions mirror the endpoint's create/edit/delete/manage
+permissions. Backend authorization remains the enforcement boundary.
+
+
+### Console list filter URLs
+
+Sessions, Audit, Approvals, and Tools apply filter changes as they are committed;
+text searches debounce typing. Filters use `replaceState` while preserving
+unrelated deep-link parameters and the URL hash. Sessions stores `source_type`,
+`status`, `has_artifacts`, `range`, `from`, and `to` beside its existing search
+and session selection fields. Audit repeats `event_type`/`outcome` for multiple
+values and stores tool/date/cost fields under their API names. Approvals stores
+`status`, `tool`, and `q`, retaining its latest-100 browser filtering model.
+Date strings from shared links are validated before timestamp conversion.
+
+Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
+`mcp_rule`, `mcp_workflow` plus `mcp_q`, and native filters as `native_agent`,
+`native_rule`, `native_q`. The `tab` parameter selects the visible tab without
+discarding either filter set. Successful initial loads, including empty catalogs,
+retain mounted content during subsequent background refreshes.
+
 ### Policy draft simulation
 
 `POST /api/v1/policies/evaluate` accepts one sample tool call and a stored
@@ -401,11 +455,21 @@ record usage. The console's `policy_simulation` capability exposes draft testing
 in the rule dialog and YAML editor. Paths are evaluated as submitted, without
 normalization, so operators can test traversal and repeated-slash samples.
 
-The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
-`enterprise` edition and the running backend `server_version`. Hosted instances
-are Cloud; self-hosted proprietary installations are Enterprise; other installs
-are OSS. Runtime deployment detection wins over static plugin declarations; plugin counts
-never determine the edition.
-Feature flags remain the authority for individual capability gates. The console
-reuses its cached features payload for the header help menu; documentation,
-release notes, and issue/support destinations come from brand URL configuration.
+Console monetary values use the shared USD formatter, with exact precision in tooltips; non-USD provider invoices retain their denomination through shared currency helpers. Server timestamps use the UTC-aware date utilities. Wide tables use the shared `table-scroll` stylesheet in both document CSS and Lit shadow roots so content scrolls within its container at phone widths. Full list-controller migration remains incremental.
+
+Model-price override edits and provider-price fetches require `edit_ai_models`; repricing and budget controls require `manage_budgets`. User role assignment requires `assign_roles`, independently of user management. Console capability copy is based on plan availability, separately from viewer permissions.
+
+
+### Console accessibility
+
+Console metadata uses the shared `--console-meta-color` token, whose contrast
+against the console surfaces is tested in both themes. The frontend test command
+checks source text colors and programmatic names on native and Shoelace controls.
+Placeholder text alone does not name an input.
+
+The console sidebar uses native navigation lists, links with `aria-current`, and
+expandable `details` groups. After a successful route change, the shell focuses
+the new view heading and announces its title; initial page load does not move
+focus. The shared `ConsoleStatus` controller supplies hidden polite status regions
+for asynchronous authenticated views, and the approvals view announces new live
+requests without moving keyboard focus. Empty capability-gated views stay silent.

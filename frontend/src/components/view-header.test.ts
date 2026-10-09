@@ -12,6 +12,7 @@ describe('ViewHeader', () => {
 
     const h1 = el.shadowRoot?.querySelector('h1');
     expect(h1).to.exist;
+    expect(h1?.getAttribute('tabindex')).to.equal('-1');
     expect(h1?.textContent).to.contain('Cost Analytics');
   });
 

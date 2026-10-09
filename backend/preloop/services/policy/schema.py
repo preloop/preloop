@@ -69,6 +69,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from preloop.models.schemas.grant_introspection import IntrospectionConfig
+from preloop.schemas.access_rule import AccessRuleDefinition, Action, Mode
 
 from preloop.services.sensitive_data.detectors import (
     BUILTIN_TYPE_IDS,
@@ -333,7 +334,8 @@ class ConditionType(str, Enum):
 def references_grant(expression: str) -> bool:
     """Find grant attribute/index access while ignoring quoted string literals."""
     tokens = re.finditer(
-        r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\bgrant\s*(?:\.|\[)", expression
+        r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|(?<![\w.])grant\s*(?:\.|\[)",
+        expression,
     )
     return any(token.group()[0] not in ("'", '"') for token in tokens)
 
@@ -1269,6 +1271,9 @@ class PolicyDocument(BaseModel):
     sensitive_data: Optional[SensitiveDataConfig] = Field(
         None, description="Sensitive data detectors shared by model and tool rules"
     )
+    access_rules: list[AccessRuleDefinition] | None = None
+    access_rule_mode: dict[Action, Mode] | None = None
+
     defaults: Optional[DefaultsDefinition] = Field(
         None, description="Default behavior settings"
     )
