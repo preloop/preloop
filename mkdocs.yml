@@ -76,6 +76,7 @@ plugins:
         guide/architecture.md: guide/functionality.md
         cli.md: guide/cli.md
         clients/claude-code.md: guide/clients/claude-code.md
+        clients/claude-desktop.md: guide/clients/claude-desktop.md
         clients/gemini-cli.md: guide/clients/gemini-cli.md
         clients/mobile-apps.md: guide/clients/mobile-apps.md
         clients/opencode.md: guide/clients/opencode.md
@@ -136,6 +137,7 @@ nav:
 
   - Onboarding agents:
       - Claude Code: guide/clients/claude-code.md
+      - Claude Desktop: guide/clients/claude-desktop.md
       - Codex CLI: guide/codex-cli.md
       - Gemini CLI: guide/clients/gemini-cli.md
       - OpenCode: guide/clients/opencode.md
