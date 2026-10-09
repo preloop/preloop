@@ -277,6 +277,29 @@ def tool_warnings_by_id(db: Session, server: Any) -> Dict[str, List[str]]:
     }
 
 
+def warnings_from_loaded(
+    servers: List[Any], tools_by_server: Dict[str, List[Any]]
+) -> Dict[str, List[str]]:
+    """Per-tool warnings from servers and tools the caller already loaded.
+
+    Avoids a second account-wide tool read when ``/tools`` has just batched
+    the same rows.
+    """
+    owner_by_name: Dict[str, Any] = {}
+    for server in sorted(servers, key=server_order_key):
+        if getattr(server, "status", None) != "active":
+            continue
+        for tool in sorted(tools_by_server.get(str(server.id), []), key=_tool_key):
+            owner_by_name.setdefault(
+                exposed_tool_name(server.tool_prefix, tool.name), server
+            )
+    result: Dict[str, List[str]] = {}
+    for server in servers:
+        for tool in tools_by_server.get(str(server.id), []):
+            result[str(tool.id)] = _tool_warnings(server, tool, owner_by_name)
+    return result
+
+
 def account_tool_warnings(db: Session, account_id: str) -> Dict[str, List[str]]:
     """Per-tool warnings for every own server of an account, by ``mcp_tool.id``."""
     return {
