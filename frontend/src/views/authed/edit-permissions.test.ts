@@ -267,3 +267,100 @@ describe('Model mutation permission split', () => {
     });
   }
 });
+
+describe('Endpoint permission regression guards', () => {
+  afterEach(() => {
+    sinon.restore();
+    localStorage.clear();
+    invalidateApiCaches();
+  });
+  for (const permissions of [
+    [],
+    ['manage_budgets'],
+    ['edit_ai_models'],
+    ['assign_roles'],
+  ]) {
+    it(`uses endpoint permissions for ${JSON.stringify(permissions)}`, async () => {
+      signInForTest();
+      invalidateApiCaches();
+      const mutations: string[] = [];
+      sinon.stub(window, 'fetch').callsFake(async (input, init) => {
+        const url = String(input);
+        if (init?.method && init.method !== 'GET') mutations.push(url);
+        const body = url.includes('/auth/users/me')
+          ? { permissions }
+          : url.includes('/features')
+            ? {
+                features: {
+                  model_price_overrides: true,
+                  user_management: true,
+                  billing: true,
+                },
+              }
+            : [];
+        return new Response(JSON.stringify(body), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      for (const [tag, methods] of [
+        ['ai-model-detail-view', ['loadData']],
+        ['cost-view', ['loadData', 'refresh']],
+        ['user-management-view', ['fetchUsers', 'fetchRoles']],
+      ] as const) {
+        const proto = customElements.get(tag)!.prototype;
+        for (const method of methods)
+          if (typeof proto[method] === 'function')
+            sinon.stub(proto, method).resolves();
+      }
+      const detail = await fixture<LitElement>(
+        '<ai-model-detail-view></ai-model-detail-view>'
+      );
+      const cost = await fixture<LitElement>('<cost-view></cost-view>');
+      const users = await fixture<LitElement>(
+        '<user-management-view></user-management-view>'
+      );
+      await waitUntil(
+        () =>
+          (detail as any).editPermissions.loaded &&
+          (cost as any).editPermissions.loaded &&
+          (users as any).editPermissions.loaded
+      );
+      const d = detail as any,
+        c = cost as any,
+        u = users as any;
+      d.priceOverridesEnabled = true;
+      d.modelId = 'model-example';
+      expect(d.canEditPrice).to.equal(permissions.includes('edit_ai_models'));
+      c.summary = {
+        price_catalog: {
+          fetched_at: '2020-01-01T00:00:00Z',
+          source: 'Example',
+          model_count: 1,
+        },
+      };
+      const catalog = document.createElement('div');
+      const { render } = await import('lit');
+      render(c.renderCatalogInfo(), catalog);
+      expect(!!catalog.querySelector('.catalog-action')).to.equal(
+        permissions.includes('edit_ai_models')
+      );
+      c.openPriceOverrideEditor(null);
+      expect(c.priceDialogOpen).to.equal(
+        permissions.includes('edit_ai_models')
+      );
+      if (!permissions.includes('edit_ai_models')) {
+        await d.fetchProviderPrice();
+        await d.savePrice();
+        await c.savePriceOverride();
+        await c.removeOverride();
+        expect(mutations).to.deep.equal([]);
+      }
+      await u.openRoleModal({ id: 'user-example', roles: [] });
+      expect(u.isRoleModalOpen).to.equal(permissions.includes('assign_roles'));
+      if (!permissions.includes('assign_roles')) {
+        await u.handleToggleRole('role-example', true);
+        expect(mutations).to.deep.equal([]);
+      }
+    });
+  }
+});

@@ -439,3 +439,4 @@ Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
 `native_rule`, `native_q`. The `tab` parameter selects the visible tab without
 discarding either filter set. Successful initial loads, including empty catalogs,
 retain mounted content during subsequent background refreshes.
+Model-price override edits and provider-price fetches require `edit_ai_models`; repricing and budget controls require `manage_budgets`. User role assignment requires `assign_roles`, independently of user management. Console capability copy is based on plan availability, separately from viewer permissions.
