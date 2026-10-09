@@ -331,9 +331,6 @@ class CRUDAccessRule:
             accounts = {
                 str(row.id): {
                     "id": str(row.id),
-                    "parent": str(row.parent_account_id)
-                    if row.parent_account_id
-                    else None,
                     "path": [str(key) for key in row.hierarchy_path],
                     "tags": {},
                 }
@@ -372,9 +369,6 @@ class CRUDAccessRule:
                 accounts[str(row.id)] = {
                     "id": str(row.id),
                     "path": [str(key) for key in row.hierarchy_path],
-                    "parent": str(row.parent_account_id)
-                    if row.parent_account_id
-                    else None,
                     "tags": {},
                 }
             for row in db.scalars(

@@ -132,6 +132,8 @@ def test_mode_generation_replay_and_bundle_secret_boundary(storage: Any) -> None
         )
     bundle = crud.bundle(account_id=account)
     assert bundle["modes"]["tool:call"] == "require_permit"
+    assert bundle["accounts"][str(account)]["path"] == [str(account)]
+    assert "parent" not in bundle["accounts"][str(account)]
     subject = bundle["subjects"][("user", str(user))]
     assert "hashed_password" not in subject
     assert "email" not in subject
@@ -220,6 +222,8 @@ def test_parent_rules_are_inherited_readonly_and_parent_mode_is_ceiling(
         }
     bundle = crud.bundle(account_id=child)
     assert bundle["modes"]["tool:call"] == "require_permit"
+    assert bundle["accounts"][str(child)]["path"] == [str(parent), str(child)]
+    assert "parent" not in bundle["accounts"][str(child)]
     assert bundle["ancestor_require_permit"] == ["tool:call"]
 
 
