@@ -90,6 +90,30 @@ separately approved route; the hook does not mint approval grants.
 | Direct model route outside the covered vendor surface | Network/resource control and route-specific verification | No universal detection or prevention claim |
 | Callback seen or successful connection test | Health and protocol observation | Does not prove complete coverage or effective vendor settings |
 
+The vendor [availability overview](https://platform.claude.com/docs/en/manage-claude/inference-hooks)
+was reviewed on 2026-10-10. Its conversation coverage and tool limitations are
+separate, and none of the named surfaces has a verified pilot result here:
+
+| Vendor surface | Published scope | Pilot state |
+| --- | --- | --- |
+| claude.ai on desktop, mobile and web | Eligible Enterprise conversation requests | Pending per client/version |
+| Cowork | Eligible Enterprise conversation requests; tool omissions below still apply | Pending |
+| Claude Code CLI | Eligible Enterprise conversation requests, including user fix/plugin sessions and local `/code-review` | Pending; source strings do not attest executable or host |
+| Claude Tag in Slack | Eligible conversation requests; post-reply measurement is excluded | Pending |
+| Platform/API organizations | Outside this organization hook | Excluded |
+| Amazon Bedrock and Google Cloud routes | Hook unavailable | Excluded |
+| Ancillary title generation | Outside conversational enforcement | Excluded |
+| Hosted Claude Security scans, hosted Code Review and smart reports | Outside this hook | Excluded; distinct from user fix/local review sessions |
+
+**Tool validation does not cover every tool action.** The reviewed vendor
+overview notes a small share of voice tool calls may be missed. Native
+connector/plugin/skills/research/search, model-switch, end-chat, time and
+past-chat-memory tool paths may be omitted from tool-call validation and become
+visible only in a subsequent prompt. Observing that next prompt cannot prevent
+a side effect that already occurred. Use independent resource authorization for
+those paths and record omissions in the actual pilot rather than claiming full
+tool interception from 100% prompt inspection.
+
 Health remains **coverage unverified**, **pilot pending**, and vendor settings
 **unknown** or administrator **declared** until actual evidence is recorded.
 Never translate a healthy endpoint into a verified-enforcement badge. See the
