@@ -385,6 +385,7 @@ def _runner_may_accept(
     runner: FlowRunner,
     pool: str,
     execution_id: UUID,
+    flow_id: Optional[str] = None,
 ) -> bool:
     """Whether the account authorizer (hook H4) lets ``runner`` take the job.
 
@@ -401,16 +402,20 @@ def _runner_may_accept(
 
     if get_authorizer() is None:
         return True
-    from preloop.models.crud import crud_flow_execution
+    if flow_id is None:
+        from preloop.models.crud import crud_flow_execution
 
-    execution = crud_flow_execution.get(db, id=str(execution_id), account_id=account_id)
+        execution = crud_flow_execution.get(
+            db, id=str(execution_id), account_id=account_id
+        )
+        flow_id = str(execution.flow_id) if execution else None
     ctx = AuthorizationContext(
         account_id=account_id,
         db=db,
         attributes={
             "pool": pool,
             "execution_id": str(execution_id),
-            "flow_id": str(execution.flow_id) if execution else None,
+            "flow_id": flow_id,
         },
     )
     return authorize(ctx, ACTION_RUNNER_ACCEPT, runner).allowed
@@ -458,6 +463,8 @@ def lease_job(
     ]
     required_profile = host_exec_profile_name(payload)
     stored = persistable_job_payload(payload)
+    execution = crud_flow_execution.get(db, id=str(execution_id), account_id=account_id)
+    flow_id = str(execution.flow_id) if execution else None
     for candidate in available:
         if not _runner_may_accept(
             db,
@@ -465,6 +472,7 @@ def lease_job(
             runner=candidate,
             pool=pool,
             execution_id=execution_id,
+            flow_id=flow_id,
         ):
             continue
         if required_profile and not runner_has_host_exec_profile(

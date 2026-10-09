@@ -590,19 +590,43 @@ class CRUDAccessRule:
         ready: threading.Event,
         stop: threading.Event,
     ) -> None:
-        """Consume committed generation events on a dedicated CRUD-owned connection."""
-        engine = self.engine or get_engine()
+        """Consume committed generation events on a connection that is not pooled.
+
+        The shared engine's checkout would return to the pool still in
+        autocommit with LISTEN registered. A private NullPool engine is
+        discarded with the listener.
+        """
+        import select
         from contextlib import closing
 
-        with closing(engine.raw_connection()) as connection:
-            driver = connection.driver_connection
-            driver.autocommit = True
-            driver.execute("LISTEN preloop_access")
-            ready.set()
-            while not stop.is_set():
-                for notification in driver.notifies(timeout=1, stop_after=1):
-                    data = json.loads(notification.payload)
-                    callback(str(data["account_id"]), int(data["generation"]))
+        from sqlalchemy import create_engine
+        from sqlalchemy.pool import NullPool
+
+        source = self.engine or get_engine()
+        engine = create_engine(source.url, poolclass=NullPool)
+        try:
+            with closing(engine.raw_connection()) as connection:
+                driver = connection.driver_connection
+                driver.autocommit = True
+                driver.execute("LISTEN preloop_access")
+                ready.set()
+                notifies = getattr(driver, "notifies", None)
+                while not stop.is_set():
+                    if callable(notifies):
+                        for notification in notifies(timeout=1, stop_after=1):
+                            _deliver_access_notification(notification, callback)
+                        continue
+                    select.select([driver], [], [], 1)
+                    driver.poll()
+                    while driver.notifies:
+                        _deliver_access_notification(driver.notifies.pop(0), callback)
+        finally:
+            engine.dispose()
+
+
+def _deliver_access_notification(notification: Any, callback: Callable) -> None:
+    data = json.loads(notification.payload)
+    callback(str(data["account_id"]), int(data["generation"]))
 
 
 crud_access_rule = CRUDAccessRule()

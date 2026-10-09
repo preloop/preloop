@@ -143,6 +143,7 @@ def downgrade() -> None:
     for name in (*_CHECKS, "fk_account_root", "fk_account_parent"):
         op.execute(f"ALTER TABLE account DROP CONSTRAINT IF EXISTS {name}")
     op.execute("DROP INDEX IF EXISTS ix_account_hierarchy_path")
+    op.execute("DROP TRIGGER IF EXISTS trg_access_generation ON account")
     op.execute("DROP INDEX IF EXISTS ix_account_root_account_id")
     op.execute("DROP INDEX IF EXISTS ix_account_parent_account_id")
     op.execute(
