@@ -14,7 +14,13 @@ def _clear_users_exist_cache():
     from preloop.api.endpoints.features import reset_users_exist_cache
 
     reset_users_exist_cache()
-    yield
+    with (
+        patch(
+            "preloop.services.instance_service.is_hosted_instance", return_value=False
+        ),
+        patch("preloop.services.instance_service._is_enterprise", return_value=False),
+    ):
+        yield
     reset_users_exist_cache()
 
 
@@ -448,8 +454,12 @@ def test_features_edition(hosted: bool, enterprise: bool, expected: str) -> None
     with (
         patch("preloop.api.endpoints.features.get_plugin_manager") as manager,
         patch("preloop.api.auth.bootstrap.crud_user") as users,
-        patch("preloop.api.endpoints.features.is_hosted_instance", return_value=hosted),
-        patch("preloop.api.endpoints.features._is_enterprise", return_value=enterprise),
+        patch(
+            "preloop.services.instance_service.is_hosted_instance", return_value=hosted
+        ),
+        patch(
+            "preloop.services.instance_service._is_enterprise", return_value=enterprise
+        ),
     ):
         manager.return_value.get_enabled_features.return_value = {
             "plugins": [{"name": "billing"}],
@@ -468,14 +478,42 @@ def test_plugin_edition_declaration(declared: str) -> None:
     with (
         patch("preloop.api.endpoints.features.get_plugin_manager") as manager,
         patch("preloop.api.auth.bootstrap.crud_user") as users,
-        patch("preloop.api.endpoints.features.is_hosted_instance", return_value=False),
-        patch("preloop.api.endpoints.features._is_enterprise", return_value=False),
+        patch(
+            "preloop.services.instance_service.is_hosted_instance", return_value=False
+        ),
+        patch("preloop.services.instance_service._is_enterprise", return_value=False),
     ):
         manager.return_value.get_enabled_features.return_value = {
             "plugins": [],
             "features": {"edition": declared},
         }
         users.has_any_users.return_value = True
-        assert get_features(db=MagicMock())["edition"] == (
-            declared if declared != "unknown" else "oss"
-        )
+        assert get_features(db=MagicMock())["edition"] == "oss"
+
+
+@pytest.mark.parametrize(
+    "hosted,enterprise,declared,expected",
+    [(True, True, "enterprise", "cloud"), (False, True, "cloud", "enterprise")],
+)
+def test_static_plugin_cannot_relabel_runtime_edition(
+    hosted: bool, enterprise: bool, declared: str, expected: str
+) -> None:
+    from preloop.api.endpoints.features import get_features
+
+    with (
+        patch("preloop.api.endpoints.features.get_plugin_manager") as manager,
+        patch("preloop.api.auth.bootstrap.crud_user") as users,
+        patch(
+            "preloop.services.instance_service.is_hosted_instance", return_value=hosted
+        ),
+        patch(
+            "preloop.services.instance_service._is_enterprise", return_value=enterprise
+        ),
+    ):
+        manager.return_value.get_enabled_features.return_value = {
+            "plugins": [{"name": "billing"}],
+            "edition": declared,
+            "features": {"edition": declared},
+        }
+        users.has_any_users.return_value = True
+        assert get_features(db=MagicMock())["edition"] == expected

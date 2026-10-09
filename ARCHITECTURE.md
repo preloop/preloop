@@ -379,7 +379,8 @@ work rather than automatic duplicate operations. See
 The public `/api/v1/features` payload reports an explicit `oss`, `cloud`, or
 `enterprise` edition and the running backend `server_version`. Hosted instances
 are Cloud; self-hosted proprietary installations are Enterprise; other installs
-are OSS. Plugins can declare an edition, but plugin counts never determine it.
+are OSS. Runtime deployment detection wins over static plugin declarations; plugin counts
+never determine the edition.
 Feature flags remain the authority for individual capability gates. The console
 reuses its cached features payload for the header help menu; documentation,
 release notes, and issue/support destinations come from brand URL configuration.
