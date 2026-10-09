@@ -899,3 +899,57 @@ def test_cross_tenant_disconnect_is_opaque_and_preserves_grant(storage: tuple) -
         crud.get_grant(account_id=owners[0][0], grant_id=grant["id"])["status"]
         == "active"
     )
+
+
+def test_receipt_anchor_rotation_and_secret_readiness(storage: tuple) -> None:
+    """Receipt anchors survive metadata writes; rotation replaces them atomically."""
+    crud, owners = storage
+    owner = owners[0]
+    _, grant, config = active(crud, owner)
+    assert config["has_client_secret"] is True
+    assert "client_secret_id" not in config
+    assert grant["issued_at"] is None  # Existing consumers remain compatible.
+    issued = datetime.now(timezone.utc)
+    pair = TokenPair(
+        "new-access",
+        "new-refresh",
+        issued + timedelta(seconds=300),
+        None,
+        "REPO_WRITE",
+        issued_at=issued,
+    )
+    rotated = crud.rotate(
+        account_id=owner[0],
+        grant_id=grant["id"],
+        expected_version=0,
+        refresh=lambda *_: pair,
+        timeout=1,
+    )
+    assert datetime.fromisoformat(rotated["issued_at"]) == issued
+    assert rotated["refresh_token_expires_at"] is None
+    assert datetime.fromisoformat(rotated["expires_at"]) - datetime.fromisoformat(
+        rotated["issued_at"]
+    ) == timedelta(seconds=300)
+    with crud._session() as db, db.begin():
+        row = db.get(models.OAuthToken, grant["id"])
+        row.provider_subject = "metadata-only-update"
+    reread = crud.get_grant(account_id=owner[0], grant_id=grant["id"])
+    assert datetime.fromisoformat(reread["issued_at"]) == issued
+    crud.disconnect(account_id=owner[0], grant_id=grant["id"], expected_version=1)
+    assert (
+        crud.get_grant(account_id=owner[0], grant_id=grant["id"])["issued_at"] is None
+    )
+
+
+def test_configuration_readiness_without_secret(storage: tuple) -> None:
+    crud, owners = storage
+    config = crud.create_configuration(
+        account_id=owners[0][0],
+        provider="bitbucket_dc",
+        instance="https://example.com/bitbucket",
+        client_id="synthetic",
+        client_secret=None,
+        callback_uri=CALLBACK,
+        selected_permissions=["REPO_READ"],
+    )
+    assert config["has_client_secret"] is False

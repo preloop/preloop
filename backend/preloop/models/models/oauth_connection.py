@@ -49,7 +49,10 @@ class OAuthProviderConfiguration(Base):
 
     def to_dict(self) -> dict:
         """Expose configuration metadata, excluding the encrypted secret."""
-        return {k: v for k, v in super().to_dict().items() if k != "client_secret_id"}
+        return {
+            **{k: v for k, v in super().to_dict().items() if k != "client_secret_id"},
+            "has_client_secret": self.client_secret_id is not None,
+        }
 
 
 class OAuthConnectionTransaction(Base):
