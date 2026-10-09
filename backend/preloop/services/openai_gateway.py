@@ -860,6 +860,51 @@ def _bounded_client_identity_headers(
     return identity
 
 
+# Codex routing headers relayed to chatgpt.com/backend-api/codex (issue
+# #1440). The Codex CLI says "ChatGPT derives cache affinity from the
+# Responses session-id header" (openai/codex codex-rs/core/src/client.rs), and
+# ``x-codex-turn-state`` is a sticky-routing token the upstream hands out and
+# expects replayed within a turn. Dropping them loses prompt-cache affinity.
+# Values are copied verbatim when bounded and printable; never invented.
+_CODEX_ROUTING_HEADER_LIMITS = {
+    "session-id": 256,
+    "thread-id": 256,
+    "x-client-request-id": 256,
+    "x-codex-turn-state": 8192,
+    "x-codex-window-id": 256,
+    "x-codex-turn-metadata": 8192,
+    "x-codex-parent-thread-id": 256,
+    "x-openai-subagent": 256,
+}
+CODEX_TURN_STATE_HEADER = "x-codex-turn-state"
+
+
+def _bounded_header_value(value: Any, limit: int) -> Optional[str]:
+    if (
+        isinstance(value, str)
+        and 0 < len(value) <= limit
+        and all(32 <= ord(character) <= 126 for character in value)
+    ):
+        return value
+    return None
+
+
+def _bounded_codex_routing_headers(
+    headers: Optional[Mapping[str, str]],
+) -> Dict[str, str]:
+    """Copy the Codex session/turn routing headers the client actually sent."""
+    routing: Dict[str, str] = {}
+    for name, value in (headers or {}).items():
+        key = name.lower()
+        limit = _CODEX_ROUTING_HEADER_LIMITS.get(key)
+        if limit is None:
+            continue
+        bounded = _bounded_header_value(value, limit)
+        if bounded is not None:
+            routing[key] = bounded
+    return routing
+
+
 #: Validate and normalize a client-supplied per-run session id: the trimmed id
 #: when it is non-empty, within the length cap and on the safe charset,
 #: otherwise ``None`` (caller falls back to the existing source-keyed
@@ -999,6 +1044,7 @@ class OpenAIGatewayService:
         client_identity_headers: Optional[Mapping[str, str]] = None,
         client_parent_session_id: Optional[str] = None,
         client_session_id_is_explicit: Optional[bool] = None,
+        codex_routing_headers: Optional[Mapping[str, str]] = None,
     ) -> None:
         self._owns_db_session = owns_db_session
         # The request dependency supplies a binding only. Every owned Session
@@ -1009,6 +1055,17 @@ class OpenAIGatewayService:
         self._client_identity_headers = _bounded_client_identity_headers(
             client_identity_headers
         )
+        # Codex routing headers default to the identity headers (/responses)
+        # but can be supplied alone (/chat/completions) without enabling the
+        # identity relay used by other passthroughs.
+        self._codex_routing_headers = _bounded_codex_routing_headers(
+            codex_routing_headers
+            if codex_routing_headers is not None
+            else client_identity_headers
+        )
+        # Upstream ``x-codex-turn-state`` from the last Codex call, relayed to
+        # the client by the /responses endpoint so it can replay it.
+        self.codex_turn_state: Optional[str] = None
         self.upstream_backend = upstream_backend or get_model_gateway_backend()
         self.budget_enforcer = budget_enforcer
         # Per-run session id supplied by the client (X-Preloop-Session-Id, or
@@ -5331,6 +5388,17 @@ class OpenAIGatewayService:
             "originator": "preloop",
             "User-Agent": "Preloop/1.0",
         }
+        routing = dict(getattr(self, "_codex_routing_headers", None) or {})
+        if "session-id" not in routing:
+            # Mirror codex-rs client.rs: the Responses session-id defaults to
+            # the prompt_cache_key, which is what ChatGPT keys affinity on.
+            fallback = _bounded_header_value(
+                upstream_payload.get("prompt_cache_key"),
+                _CODEX_ROUTING_HEADER_LIMITS["session-id"],
+            )
+            if fallback is not None:
+                routing["session-id"] = fallback
+        headers.update(routing)
         req = urllib_request.Request(
             "https://chatgpt.com/backend-api/codex/responses",
             data=json.dumps(upstream_payload).encode("utf-8"),
@@ -5344,6 +5412,7 @@ class OpenAIGatewayService:
         try:
             with urllib_request.urlopen(req, timeout=600) as response:
                 self._capture_rate_limit_headers(getattr(response, "headers", None))
+                self._capture_codex_turn_state(getattr(response, "headers", None))
                 return self._aggregate_codex_sse_stream(response)
         except urllib_error.HTTPError as exc:
             self._capture_rate_limit_headers(getattr(exc, "headers", None))
@@ -5365,6 +5434,17 @@ class OpenAIGatewayService:
                 status_code=502,
                 message="OpenAI Codex upstream returned invalid JSON",
             ) from exc
+
+    def _capture_codex_turn_state(self, headers: Any) -> None:
+        """Remember the upstream sticky-routing token for the client."""
+        if headers is None or not hasattr(headers, "get"):
+            return
+        value = _bounded_header_value(
+            headers.get(CODEX_TURN_STATE_HEADER),
+            _CODEX_ROUTING_HEADER_LIMITS[CODEX_TURN_STATE_HEADER],
+        )
+        if value is not None:
+            self.codex_turn_state = value
 
     def _aggregate_codex_sse_stream(self, response: Any) -> Dict[str, Any]:
         """Aggregate a Codex Responses SSE stream into a final response dict.
