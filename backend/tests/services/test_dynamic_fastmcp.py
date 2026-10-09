@@ -835,6 +835,62 @@ class TestListTools:
         names = {t.name for t in result}
         assert names == {"get_issue", "update_issue"}
 
+    async def test_list_tools_flow_allow_list_keeps_get_approval_status(
+        self, dynamic_mcp
+    ):
+        """A parked flow resumes after an approval and must be able to run
+        the approved call through get_approval_status even though presets do
+        not list it (live rehearsal 2026-10-09, reviewer approval loop)."""
+        user_context = UserContext(
+            user_id="1",
+            account_id="1",
+            username="test",
+            has_tracker=True,
+            enabled_default_tools=[],
+            enabled_proxied_tools=[],
+            tracker_types=["bitbucket"],
+            flow_execution_id="flow-exec-review",
+            allowed_flow_tools=["get_pull_request", "update_pull_request"],
+        )
+        dynamic_mcp._user_context_provider = lambda: user_context
+
+        default_tools = [
+            Tool(name="get_pull_request", description="g", parameters={}),
+            Tool(name="update_pull_request", description="u", parameters={}),
+            Tool(name="get_approval_status", description="s", parameters={}),
+            Tool(name="create_issue", description="c", parameters={}),
+        ]
+
+        with patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db:
+            mock_db = MagicMock()
+            mock_get_db.side_effect = lambda: iter([mock_db])
+
+            with (
+                patch(
+                    "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                    return_value=[],
+                ),
+                patch(
+                    "preloop.models.crud.crud_account.get",
+                    return_value=MagicMock(meta_data={}),
+                ),
+                patch.object(
+                    FastMCP, "list_tools", new=AsyncMock(return_value=default_tools)
+                ),
+            ):
+                result = await dynamic_mcp.list_tools()
+
+        names = {t.name for t in result}
+        assert names == {
+            "get_pull_request",
+            "update_pull_request",
+            "get_approval_status",
+        }
+
     async def test_list_tools_explicit_enable_overrides_default_disabled(
         self, dynamic_mcp, user_context
     ):
