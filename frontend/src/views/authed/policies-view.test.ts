@@ -881,6 +881,34 @@ describe('PoliciesView', () => {
       return { stub, calls };
     }
 
+    it('simulates the unsaved YAML draft when the capability is present', async () => {
+      const { stub } = createYamlStub();
+      fetchStub = stub;
+      const element = await fixture<PoliciesView>(
+        html`<policies-view></policies-view>`
+      );
+      await waitUntil(() => !(element as any)._loading);
+      const view = element as any;
+      view._activeTab = 'files';
+      view._features = { policy_simulation: true };
+      view._yamlDraft = 'version: "1.0"\nmetadata:\n  name: unsaved\n';
+      await element.updateComplete;
+      const simulate = Array.from(
+        element.shadowRoot!.querySelectorAll('.yaml-editor-actions sl-button')
+      ).find((button) =>
+        button.textContent!.includes('Simulate')
+      ) as HTMLElement;
+      expect(simulate).to.exist;
+      simulate.click();
+      await element.updateComplete;
+      const panel = element.shadowRoot!.querySelector(
+        'policy-simulator'
+      ) as any;
+      expect(panel.draftYaml).to.include('name: unsaved');
+      expect(panel.shadowRoot).to.equal(null);
+      expect((element as any)._yamlDraft).to.include('name: unsaved');
+    });
+
     it('seeds the editor with the exported policy YAML', async () => {
       const { stub } = createYamlStub();
       fetchStub = stub;
