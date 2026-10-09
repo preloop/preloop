@@ -903,6 +903,10 @@ export function brandPlugin(
       // Inject minimal runtime brand configuration (no content duplication)
       // Only includes styling/branding metadata, not SEO content
       const runtimeConfig = {
+        docs_url: brandConfig.docs_url,
+        support_url: brandConfig.support_url,
+        report_issue_url: brandConfig.report_issue_url,
+        changelog_url: brandConfig.changelog_url,
         name: brandConfig.name,
         domain: brandConfig.domain,
         edition: (brandConfig as any).edition || 'saas', // Default to 'saas' for backwards compatibility

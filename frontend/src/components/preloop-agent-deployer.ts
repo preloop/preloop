@@ -1,3 +1,5 @@
+import { getBrandConfig } from '../brand-config';
+import type { Edition } from '../api';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import type { TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -97,8 +99,8 @@ export class PreloopAgentDeployer extends LitElement {
   @property({ type: Boolean })
   computeFeatureEnabled = false;
 
-  @property({ type: Boolean })
-  isEnterprise = false;
+  @property({ type: String })
+  edition: Edition = 'oss';
 
   @property({ type: Boolean })
   isAdmin = false;
@@ -273,16 +275,33 @@ export class PreloopAgentDeployer extends LitElement {
     return `export PRELOOP_URL=${window.location.origin} && ${base}`;
   }
 
+  @state() private showComputeSupport = false;
+
+  private get supportUrl(): string {
+    try {
+      const brand = getBrandConfig();
+      return (
+        brand.support_url ||
+        brand.report_issue_url ||
+        'mailto:support@preloop.ai'
+      );
+    } catch {
+      return 'mailto:support@preloop.ai';
+    }
+  }
+
   private handleFreshVmSelection() {
     if (this.gcpConfigured) {
       this.deploySubStep = 'fresh-vm-premium';
     } else {
-      if (this.isEnterprise) {
+      if (this.edition === 'enterprise') {
         if (this.isAdmin) {
           this.showComputeSetupHelp = true;
         } else {
           this.showComputeAdminNotice = true;
         }
+      } else if (this.edition === 'cloud') {
+        this.showComputeSupport = true;
       } else {
         this.showComputePromo = true;
       }
@@ -589,6 +608,22 @@ export class PreloopAgentDeployer extends LitElement {
 
         <!-- Compute Backends Support Dialogs -->
         <sl-dialog
+          label="Contact support"
+          ?open=${this.showComputeSupport}
+          @sl-after-hide=${() => (this.showComputeSupport = false)}
+        >
+          <p>
+            Contact support to enable cloud VM provisioning for your workspace.
+          </p>
+          <sl-button
+            slot="footer"
+            href=${this.supportUrl}
+            target="_blank"
+            rel="noopener"
+            >Contact support</sl-button
+          >
+        </sl-dialog>
+        <sl-dialog
           label="Set up a compute backend"
           ?open=${this.showComputeSetupHelp}
           @sl-after-hide=${() => (this.showComputeSetupHelp = false)}
@@ -607,7 +642,8 @@ export class PreloopAgentDeployer extends LitElement {
             slot="footer"
             variant="primary"
             @click=${() => (this.showComputeSetupHelp = false)}
-            >Got it</sl-button
+            href="/console/settings/account"
+            >Open settings</sl-button
           >
         </sl-dialog>
 
@@ -679,16 +715,12 @@ export class PreloopAgentDeployer extends LitElement {
             this.requestUpdate();
           }
         )}
-        ${
-          this.isEnterprise || this.gcpConfigured
-            ? this.renderOptionCard(
-                'cpu',
-                'Deploy on a fresh cloud VM',
-                'Provision a new isolated VM managed by a Preloop compute backend.',
-                () => this.handleFreshVmSelection()
-              )
-            : nothing
-        }
+        ${this.renderOptionCard(
+          'cpu',
+          'Deploy on a fresh cloud VM',
+          'Provision a new isolated VM managed by a Preloop compute backend.',
+          () => this.handleFreshVmSelection()
+        )}
       </div>
 
       ${this.renderActions(!this.hideBackButton)}
