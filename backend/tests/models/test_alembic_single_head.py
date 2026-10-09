@@ -316,4 +316,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert collisions.down_revision == "20261009_oauth_receipt_anchor"
     access = script.get_revision("20261009_access_rule_generation")
     assert access.down_revision == "20261009_mcp_tool_shadow_prefix"
-    assert script.get_heads() == ["20261009_access_rule_generation"]
+    gateway_subject = script.get_revision("20261009_gateway_subject")
+    assert gateway_subject.down_revision == "20261009_access_rule_generation"
+    assert script.get_heads() == ["20261009_gateway_subject"]
