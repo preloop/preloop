@@ -21,6 +21,7 @@ from preloop.services.dynamic_fastmcp import (
     _correlation_id_var,
     _justification_var,
     create_dynamic_mcp_server,
+    flow_allowed_tool_names,
 )
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
@@ -2157,7 +2158,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     elif (
                         getattr(user_context, "allowed_flow_tools", None) is not None
                         and approval_request.tool_name
-                        not in user_context.allowed_flow_tools
+                        not in flow_allowed_tool_names(user_context.allowed_flow_tools)
                     ):
                         response["tool_execution_error"] = (
                             f"Tool '{approval_request.tool_name}' is not in this "

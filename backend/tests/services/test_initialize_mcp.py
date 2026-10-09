@@ -210,6 +210,55 @@ class TestRegisteredToolBehaviour:
         )
         other_replay.assert_not_awaited()
 
+    async def test_approval_replay_honours_flow_tool_aliases(
+        self, mcp_server: DynamicFastMCP
+    ) -> None:
+        """A flow allowing the deprecated ``search`` may call ``search_issues``
+        (#1044 alias); its approved call must replay, not be refused."""
+        tool = await mcp_server.get_tool("get_approval_status")
+        request_id = uuid4()
+        account_id = uuid4()
+        approval = models.ApprovalRequest(
+            id=request_id,
+            account_id=account_id,
+            status="approved",
+            tool_name="search_issues",
+            tool_args={"query": "x"},
+            responses=[],
+        )
+        approval_result = MagicMock()
+        approval_result.scalar_one_or_none.return_value = approval
+        events_result = MagicMock()
+        events_result.scalars.return_value = []
+        db = AsyncMock()
+        db.execute.side_effect = [approval_result, events_result, approval_result]
+
+        @asynccontextmanager
+        async def session() -> AsyncIterator[AsyncMock]:
+            yield db
+
+        with (
+            patch(
+                "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                return_value=SimpleNamespace(
+                    account_id=str(account_id), allowed_flow_tools=["search"]
+                ),
+            ),
+            patch("preloop.models.db.session.get_async_db_session", new=session),
+            patch.object(
+                mcp_server,
+                "call_registered_tool_without_policy",
+                new=AsyncMock(return_value="found"),
+            ) as replay,
+            patch(
+                "preloop.services.approval_service._log_approval_tool_executed_async"
+            ),
+        ):
+            result = json.loads(await tool.fn(request_id=str(request_id)))
+
+        replay.assert_awaited_once()
+        assert "tool_execution_error" not in result
+
     async def test_approval_replay_uses_namespaced_name_for_proxied_tool(
         self, mcp_server: DynamicFastMCP
     ) -> None:

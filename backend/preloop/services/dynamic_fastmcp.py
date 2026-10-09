@@ -1401,11 +1401,7 @@ class DynamicFastMCP(FastMCP):
         # it cannot call tools outside the flow's allowed list
         if user_context.allowed_flow_tools is not None:
             original_count = len(available_tools)
-            allowed = set(user_context.allowed_flow_tools)
-            # Backward-compatible alias matching (#1044): search and search_issues
-            for alias_src, alias_dst in TOOL_NAME_ALIASES.items():
-                if alias_src in allowed:
-                    allowed.add(alias_dst)
+            allowed = flow_allowed_tool_names(user_context.allowed_flow_tools)
             if allowed:
                 # A flow whose allowed tool is gated by an approval workflow
                 # is parked and resumed; the resumed run needs this tool to
@@ -3228,6 +3224,20 @@ async def {internal_name}({params_str}):
         finally:
             if translation_token is not None:
                 _is_proxy_translation_var.reset(translation_token)
+
+
+def flow_allowed_tool_names(allowed_flow_tools: Any) -> set[str]:
+    """A flow allow-list expanded with backward-compatible aliases (#1044).
+
+    Shared by ``list_tools`` (what a flow may call) and the approval replay in
+    ``get_approval_status`` (what a flow's approved call may run), so both
+    agree on ``search`` / ``search_issues``.
+    """
+    allowed = {str(name) for name in (allowed_flow_tools or [])}
+    for alias_src, alias_dst in TOOL_NAME_ALIASES.items():
+        if alias_src in allowed:
+            allowed.add(alias_dst)
+    return allowed
 
 
 def create_dynamic_mcp_server() -> DynamicFastMCP:
