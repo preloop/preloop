@@ -33,6 +33,19 @@ class _CacheEntry:
     expires_at: float
 
 
+def grant_denial_reason(
+    binding: dict[str, Any], config: IntrospectionConfig, *, now: float
+) -> str | None:
+    """Apply the shared pure grant gate to real or synthetic introspection data."""
+    if not binding["available"]:
+        return None if config.fail_open else "introspection_unavailable"
+    if not binding["active"] or (binding["exp"] is not None and binding["exp"] <= now):
+        return "grant_inactive"
+    if not set(config.required_scopes).issubset(binding["scope"]):
+        return "scope_not_granted"
+    return None
+
+
 class GrantIntrospector:
     """Introspect static bearer grants using an injectable HTTP client factory."""
 
@@ -181,17 +194,9 @@ class GrantIntrospector:
                 while len(self._cache) > self._max_entries:
                     self._cache.popitem(last=False)
 
-        reason = None
-        if not binding["available"]:
-            if not config.fail_open:
-                reason = "introspection_unavailable"
-        elif not binding["active"] or (
-            binding["exp"] is not None and binding["exp"] <= self._clock()
-        ):
-            reason = "grant_inactive"
-        elif not set(config.required_scopes).issubset(binding["scope"]):
-            reason = "scope_not_granted"
-        return GrantResult(binding, reason)
+        return GrantResult(
+            binding, grant_denial_reason(binding, config, now=self._clock())
+        )
 
 
 # The API uses one event loop per process; cache operations do not await.

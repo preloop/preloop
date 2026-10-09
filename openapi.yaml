@@ -29163,6 +29163,54 @@ components:
       - tracker_id
       title: GitCloneRepository
       description: Configuration for a single repository to clone.
+    GrantSample:
+      properties:
+        available:
+          type: boolean
+          title: Available
+          default: true
+        active:
+          type: boolean
+          title: Active
+        scope:
+          items:
+            type: string
+          type: array
+          maxItems: 128
+          title: Scope
+        sub:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Sub
+        client_id:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Client Id
+        consent_ref:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Consent Ref
+        exp:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exp
+        cached:
+          type: boolean
+          title: Cached
+          default: false
+      additionalProperties: false
+      type: object
+      required:
+      - active
+      title: GrantSample
+      description: Synthetic dry-run identity, never an upstream token or client credential.
     HTTPValidationError:
       properties:
         detail:
@@ -32852,6 +32900,10 @@ components:
             maxLength: 100000
           - type: 'null'
           title: Model Text
+        grant:
+          anyOf:
+          - $ref: '#/components/schemas/GrantSample'
+          - type: 'null'
       type: object
       required:
       - name

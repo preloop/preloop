@@ -94,3 +94,9 @@ The introspection client secret follows the MCP authentication secret redaction 
 The enterprise audit plugin records the delegated subject, scope list, client ID, consent reference, expiry and cache flag under the audit row's `details.grant`. Both tool-call rows and denied policy decisions retain this attribution. Token and introspection-secret fields are excluded before a write is queued.
 
 With permission to view audit logs, search a consent reference using `GET /api/v1/audit-logs?consent_ref=consent-example` or the grouped timeline at `GET /api/v1/audit-logs/grouped?consent_ref=consent-example`. Matching is exact and always scoped to your account. Pagination and the returned total use the same filter. A partial composite index on account and consent reference supports these lookups; its migration builds and removes the index concurrently to avoid blocking audit inserts.
+
+## Test a synthetic grant
+
+In the rule or YAML simulator, enter a synthetic grant JSON object alongside sample arguments, for example `{"active": true, "scope": ["records:read"], "sub": "subject-example"}`. Do not enter a bearer token or client secret. The sample schema rejects credential fields and incorrect types.
+
+For a configured server, simulation requires a sample and applies the same pure inactive, expiry, required-scope and fail-open gate before matching rules. It uses the declared draft configuration when present, otherwise the named account server configuration. Missing samples produce an error; the simulator never calls the authorization server, forwards a tool, creates an approval or writes an audit row. A rule draft without configured introspection can still test `grant.*` conditions against the supplied sample.
