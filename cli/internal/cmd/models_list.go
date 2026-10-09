@@ -19,6 +19,7 @@ type hostedModelInventory struct {
 		OwnAliasShadowing bool   `json:"own_alias_shadowing"`
 	} `json:"models"`
 	Allowance struct {
+		Kind      string   `json:"kind"`
 		Included  *float64 `json:"included_usd"`
 		Spent     *float64 `json:"spent_usd"`
 		Held      *float64 `json:"held_usd"`
@@ -82,10 +83,12 @@ func executeModelsList(client *api.Client, w io.Writer) error {
 			}
 		}
 		fmt.Fprintf(w, "  Included: %s; spent: %s; held (open reservations): %s; remaining: %s\n", moneyText(hosted.Allowance.Included), moneyText(hosted.Allowance.Spent), moneyText(hosted.Allowance.Held), moneyText(hosted.Allowance.Remaining))
-		if hosted.Allowance.Reset == nil {
+		if hosted.Allowance.Kind == "one_time" {
 			fmt.Fprintln(w, "  One-time credit does not reset.")
-		} else {
+		} else if hosted.Allowance.Reset != nil {
 			fmt.Fprintln(w, "  Resets:", *hosted.Allowance.Reset)
+		} else {
+			fmt.Fprintln(w, "  Monthly reset date is not yet verified.")
 		}
 	}
 	fmt.Fprintln(w, "Your models — billed to your provider key:")

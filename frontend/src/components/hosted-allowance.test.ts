@@ -12,7 +12,12 @@ describe('hosted inventory and durable allowance', () => {
     fetchStub.restore();
     localStorage.clear();
   });
-  function stub(enabled: boolean, unknown = false) {
+  function stub(
+    enabled: boolean,
+    unknown = false,
+    kind = 'monthly',
+    reset: string | null = '2026-11-01T00:00:00Z'
+  ) {
     fetchStub = sinon
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL) => {
@@ -37,12 +42,12 @@ describe('hosted inventory and durable allowance', () => {
                     },
                   ],
                   allowance: {
-                    kind: 'monthly',
+                    kind,
                     included_usd: 10,
                     spent_usd: unknown ? null : 3,
                     held_usd: unknown ? null : 2,
                     remaining_usd: unknown ? null : 5,
-                    reset_at: '2026-11-01T00:00:00Z',
+                    reset_at: reset,
                     coverage: unknown ? 'unknown' : 'known',
                   },
                 }
@@ -89,4 +94,20 @@ describe('hosted inventory and durable allowance', () => {
     ).to.equal(false);
     expect(el.shadowRoot!.querySelector('section')).to.equal(null);
   });
+  for (const [kind, expected] of [
+    ['monthly', 'Monthly reset date is not yet verified.'],
+    ['one_time', 'One-time credit does not reset.'],
+  ]) {
+    it(`uses ${kind} kind when the reset date is unknown`, async () => {
+      stub(true, true, kind, null);
+      const el = await fixture<HostedAllowance>(
+        html`<hosted-allowance></hosted-allowance>`
+      );
+      await waitUntil(() => el.shadowRoot!.textContent!.includes(expected));
+      if (kind === 'monthly')
+        expect(el.shadowRoot!.textContent).not.to.contain(
+          'One-time credit does not reset.'
+        );
+    });
+  }
 });
