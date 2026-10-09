@@ -10,7 +10,7 @@
 
 Preloop is one self-hostable service that sits between your AI agents and everything they reach, so every tool call and every model call is governed, attributed, and visible. Four pillars:
 
-- **MCP firewall.** Allow, deny, or require approval on any tool call.
+- **MCP firewall.** Allow, deny, or require approval on any tool call. Optional [delegated grant introspection](docs/guide/grant-introspection.md) checks upstream bearer grants and required scopes before policy matching.
 - **AI model gateway.** OpenAI-, Anthropic- and Gemini-compatible ingress, with budgets, allowed-model lists, token accounting, and attribution.
 - **Policy-as-code with human approvals.** YAML plus CEL. Approve from mobile, watch, Slack, Mattermost, email, or the CLI.
 - **Runtime session observability.** One timeline per session: tool calls, model calls, policy, approvals, spend, outcomes.

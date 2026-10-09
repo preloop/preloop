@@ -922,6 +922,9 @@ class PolicyApplier:
         """
         from preloop.models.crud import crud_approval_workflow, crud_mcp_server
 
+        from preloop.models.schemas.grant_introspection import IntrospectionConfig
+        from .schema import references_grant
+
         errors: List[str] = []
 
         # Build set of servers defined in the policy file
@@ -937,6 +940,10 @@ class PolicyApplier:
         # Get existing servers from the database
         existing_servers = crud_mcp_server.get_active_by_account(
             self.db, account_id=self.account_id
+        )
+        server_auth_configs = {s.name.lower(): s.auth_config for s in existing_servers}
+        server_auth_configs.update(
+            {s.name.lower(): s.auth_config for s in policy.mcp_servers or []}
         )
         existing_server_names = {s.name.lower() for s in existing_servers}
         all_available_servers = policy_servers | existing_server_names
@@ -955,6 +962,18 @@ class PolicyApplier:
             for tool in policy.tools:
                 # Check MCP server references
                 source_lower = tool.source.lower()
+                if any(
+                    references_grant(condition.expression)
+                    for condition in tool.conditions or []
+                ):
+                    auth = server_auth_configs.get(source_lower) or {}
+                    try:
+                        IntrospectionConfig.model_validate(auth.get("introspection"))
+                    except ValidationError:
+                        errors.append(
+                            f"Tool '{tool.name}' uses grant bindings but its named "
+                            f"MCP server '{tool.source}' has no valid introspection configuration"
+                        )
                 if not is_known_tool_source(source_lower):
                     # It's a custom MCP server name reference
                     if source_lower not in all_available_servers:

@@ -7,6 +7,8 @@ Phase 1B: Added support for proxied tools from external MCP servers.
 """
 
 import asyncio
+from copy import deepcopy
+from dataclasses import dataclass
 import copy
 import hashlib
 import inspect
@@ -30,11 +32,9 @@ from preloop.services.dynamic_mcp_server import (
     get_tracker_types,
 )
 from preloop.services.mcp_client_pool import get_mcp_client_pool
-from preloop.models.crud import (
-    crud_account,
-    crud_mcp_server,
-    crud_tool_configuration,
-)
+from preloop.models.schemas.grant_introspection import IntrospectionConfig
+from preloop.services.grant_introspection import GrantResult, grant_introspector
+from preloop.models.crud import crud_account, crud_mcp_server, crud_tool_configuration
 from preloop.services.mcp_tool_collisions import (
     exposed_tool_name,
     upstream_tool_name as _upstream_tool_name,
@@ -423,6 +423,123 @@ def _resolve_proxied_tool_server(db: Any, account_id: str, tool_name: str) -> An
         return None
     owner, enabled = candidates[0]
     return owner if enabled else None
+
+
+@dataclass(frozen=True)
+class GrantDispatchSnapshot:
+    """One resolved owner and copied configuration for this invocation only."""
+
+    account_id: str
+    tool_name: str
+    server_name: str
+    upstream_name: str
+    client_config: dict[str, Any]
+
+
+_grant_dispatch_var: ContextVar[Optional[GrantDispatchSnapshot]] = ContextVar(
+    "_grant_dispatch_var", default=None
+)
+
+
+_grant_binding_var: ContextVar[Optional[dict[str, Any]]] = ContextVar(
+    "_grant_binding_var", default=None
+)
+
+
+async def _evaluate_snapshot_grant(
+    snapshot: GrantDispatchSnapshot,
+) -> Optional[GrantResult]:
+    """Check grant state for the token on the copied dispatch configuration."""
+    auth = snapshot.client_config["auth_config"]
+    if not isinstance(auth, dict) or auth.get("introspection") is None:
+        return None
+    config = IntrospectionConfig.model_validate(auth["introspection"])
+    auth_type = snapshot.client_config["auth_type"]
+    if auth_type not in {"bearer", "oauth"}:
+        raise ValueError("introspection requires bearer or OAuth authentication")
+    token = auth.get("token" if auth_type == "bearer" else "access_token")
+    return await grant_introspector.evaluate(
+        token if isinstance(token, str) else None,
+        config,
+        server_id=snapshot.client_config["server_id"],
+    )
+
+
+async def _prepare_grant_dispatch(
+    account_id: str, tool_name: str
+) -> tuple[Optional[GrantDispatchSnapshot], Optional[GrantResult]]:
+    """Resolve through CRUD, release the DB, then introspect the forwarded token."""
+
+    def load() -> Optional[GrantDispatchSnapshot]:
+        db = next(get_db())
+        try:
+            server = _resolve_proxied_tool_server(db, account_id, tool_name)
+            if server is None:
+                return None
+            return GrantDispatchSnapshot(
+                account_id=account_id,
+                tool_name=tool_name,
+                server_name=server.name,
+                upstream_name=_upstream_tool_name(
+                    getattr(server, "tool_prefix", None), tool_name
+                ),
+                client_config={
+                    "server_id": str(server.id),
+                    "url": server.url,
+                    "auth_type": server.auth_type,
+                    "auth_config": deepcopy(server.auth_config),
+                    "transport": server.transport,
+                },
+            )
+        finally:
+            db.close()
+
+    snapshot = await asyncio.wait_for(asyncio.to_thread(load), timeout=30)
+    if snapshot is None:
+        return None, None
+    return snapshot, await _evaluate_snapshot_grant(snapshot)
+
+
+def _audit_grant_kwargs(
+    audit_service: Any, grant: Optional[dict[str, Any]]
+) -> dict[str, Any]:
+    """Keep older optional audit plugins compatible until their paired upgrade."""
+    if grant is None:
+        return {}
+    try:
+        params = inspect.signature(audit_service.log_tool_call_async).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "grant" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    ):
+        return {"grant": grant}
+    _warn_dropped_audit_field("grant")
+    return {}
+
+
+def _record_grant_denial(
+    account_id: str,
+    tool_name: str,
+    grant: GrantResult,
+    *,
+    user_id: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+) -> None:
+    """Record the hard grant gate through the existing policy-denial audit path."""
+    from preloop.services.policy_evaluator import _log_policy_decision_async
+
+    _log_policy_decision_async(
+        account_id=uuid.UUID(account_id),
+        tool_name=tool_name,
+        action="deny",
+        rule_description=grant.deny_reason or "introspection_unavailable",
+        condition_matched=None,
+        tool_args={},
+        user_id=uuid.UUID(user_id) if user_id else None,
+        correlation_id=correlation_id,
+        extra_details={"grant": grant.binding},
+    )
 
 
 def _proxied_exception_outcome(
@@ -925,6 +1042,11 @@ _WRAPPER_NAMESPACE_KEYS = (
     "tool_name",
     "_resolve_proxied_tool_server",
     "_upstream_tool_name",
+    "_grant_dispatch_var",
+    "_grant_binding_var",
+    "deepcopy",
+    "_prepare_grant_dispatch",
+    "_record_grant_denial",
     "param_names",
     "logger",
     "get_db",
@@ -951,6 +1073,8 @@ _WRAPPER_NAMESPACE_KEYS = (
 _RESERVED_WRAPPER_BODY_LOCALS = frozenset(
     {
         "ctx",
+        "snapshot",
+        "grant",
         "arguments",
         "user_context",
         "param_name",
@@ -1644,6 +1768,21 @@ async def {internal_name}({params_str}):
     from preloop.services.dynamic_fastmcp import _justification_var
     justification = _justification_var.get(None)
 
+    snapshot = _grant_dispatch_var.get(None)
+    if snapshot is None or snapshot.account_id != account_id or snapshot.tool_name != tool_name:
+        try:
+            snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name)
+        except Exception:
+            return _wrapper_tool_error("Access denied: introspection_unavailable", status="refused")
+        if grant is not None:
+            _grant_binding_var.set(deepcopy(grant.binding))
+        if grant is not None and grant.deny_reason:
+            _record_grant_denial(account_id, tool_name, grant, user_id=user_context.user_id,
+                                correlation_id=_correlation_id_var.get(None))
+            return _wrapper_tool_error(f"Access denied: {{grant.deny_reason}}", status="refused")
+    if snapshot is None:
+        return _wrapper_tool_error("Access denied: no active MCP server provides this tool", status="refused")
+
     # Check approval with streaming (we have Context!)
     # The workflow_id may have been set by _call_tool() after evaluating access rules.
     from preloop.services.approval_helper import require_approval
@@ -1659,90 +1798,66 @@ async def {internal_name}({params_str}):
         workflow_id=rule_workflow_id,
         correlation_id=corr_id,
         justification=justification,
-        server_name=self._proxied_tool_server_names.get(tool_name),
+        server_name=snapshot.server_name,
     )
 
     if not approved:
         return _wrapper_tool_error(error, status="refused")
 
+    denial = await self._grant_dispatch_denial(snapshot, user_context)
+    if denial:
+        return _wrapper_tool_error(denial, status="refused")
+
     # Call external MCP server
     try:
-        db_dependency = get_db()
-        db = next(db_dependency)
-        try:
-            # Resolve the server at call time from (account, tool name):
-            # own servers or ones shared here (account hook H3). A baked id
-            # would keep pointing at a deleted server after a recreate.
-            mcp_server = _resolve_proxied_tool_server(db, account_id, tool_name)
+        server_id = snapshot.client_config["server_id"]
+        server_name = snapshot.server_name
+        upstream_name = snapshot.upstream_name
+        client_pool = get_mcp_client_pool()
+        client = await client_pool.get_client(**snapshot.client_config)
 
-            if not mcp_server:
-                return _wrapper_tool_error(
-                    f"Error: no active MCP server provides tool '{{tool_name}}'",
-                    status="failed",
-                )
-            server_id = str(mcp_server.id)
-            # Agents call ``<prefix>_<tool>`` on a prefixed server; the
-            # upstream server only knows ``<tool>``.
-            upstream_name = _upstream_tool_name(
-                getattr(mcp_server, "tool_prefix", None), tool_name
+        # Approval and connection setup may outlive the initial halt check.
+        denial = await self._halt_dispatch_denial(account_id)
+        if denial:
+            return _wrapper_tool_error(denial, status="refused")
+        denial = await self._grant_dispatch_denial(snapshot, user_context)
+        if denial:
+            return _wrapper_tool_error(denial, status="refused")
+        # Call tool on external server
+        result = await client.call_tool(upstream_name, arguments)
+        # Keep isError/structuredContent before filters rebuild the list.
+        upstream = result
+        logger.info(
+            f"Tool {{tool_name}} returned from external server "
+            f"(is_error={{getattr(upstream, 'is_error', False)}})"
+        )
+        # Keep the raw content list for the outer call_tool finally
+        # (browser_step derivation). Filters and the string conversion
+        # below only shape what the agent receives.
+        _proxied_raw_result_var.set(result)
+
+        # Apply operator-configured output filters BEFORE the result
+        # reaches the agent, stripping unused fields to save context tokens.
+        if isinstance(result, list):
+            result = apply_output_filters(
+                result,
+                account_id=account_id,
+                tool_name=tool_name,
+                server_name=server_name,
+                managed_agent_id=getattr(
+                    user_context, "managed_agent_id", None
+                ),
             )
 
-            # Snapshot configuration before releasing the database connection.
-            # Connecting, approvals and remote tools can wait indefinitely.
-            server_name = mcp_server.name
-            client_config = {{
-                "server_id": server_id,
-                "url": mcp_server.url,
-                "auth_type": mcp_server.auth_type,
-                "auth_config": mcp_server.auth_config,
-                "transport": mcp_server.transport,
-            }}
-            db.close()
-            client_pool = get_mcp_client_pool()
-            client = await client_pool.get_client(**client_config)
-
-            # Approval and connection setup may outlive the initial halt check.
-            denial = await self._halt_dispatch_denial(account_id)
-            if denial:
-                return _wrapper_tool_error(denial, status="refused")
-            # Call tool on external server
-            result = await client.call_tool(upstream_name, arguments)
-            # Keep isError/structuredContent before filters rebuild the list.
-            upstream = result
-            logger.info(
-                f"Tool {{tool_name}} returned from external server "
-                f"(is_error={{getattr(upstream, 'is_error', False)}})"
+        # Convert result to string; forward isError/structuredContent.
+        if isinstance(result, list):
+            text = "\\n".join(
+                item.text if hasattr(item, "text") else str(item)
+                for item in result
             )
-            # Keep the raw content list for the outer call_tool finally
-            # (browser_step derivation). Filters and the string conversion
-            # below only shape what the agent receives.
-            _proxied_raw_result_var.set(result)
-
-            # Apply operator-configured output filters BEFORE the result
-            # reaches the agent, stripping unused fields to save context tokens.
-            if isinstance(result, list):
-                result = apply_output_filters(
-                    result,
-                    account_id=account_id,
-                    tool_name=tool_name,
-                    server_name=server_name,
-                    managed_agent_id=getattr(
-                        user_context, "managed_agent_id", None
-                    ),
-                )
-
-            # Convert result to string; forward isError/structuredContent.
-            if isinstance(result, list):
-                text = "\\n".join(
-                    item.text if hasattr(item, "text") else str(item)
-                    for item in result
-                )
-            else:
-                text = str(result)
-            return _proxied_upstream_result(text, upstream)
-
-        finally:
-            db.close()
+        else:
+            text = str(result)
+        return _proxied_upstream_result(text, upstream)
 
     except Exception as e:
         from preloop.services.mcp_client_pool import (
@@ -1751,8 +1866,7 @@ async def {internal_name}({params_str}):
         )
 
         cause = _unwrap_exception_group(e)
-        server_obj = locals().get("mcp_server")
-        server_label = getattr(server_obj, "name", None) or "the MCP server"
+        server_label = snapshot.server_name
         logger.error(
             f"Error executing proxied tool {{tool_name}} via {{server_label}}: {{cause}}",
             exc_info=True,
@@ -1782,6 +1896,11 @@ async def {internal_name}({params_str}):
             "tool_name": tool_name,
             "_resolve_proxied_tool_server": _resolve_proxied_tool_server,
             "_upstream_tool_name": _upstream_tool_name,
+            "_grant_dispatch_var": _grant_dispatch_var,
+            "_grant_binding_var": _grant_binding_var,
+            "deepcopy": deepcopy,
+            "_prepare_grant_dispatch": _prepare_grant_dispatch,
+            "_record_grant_denial": _record_grant_denial,
             "param_names": param_names,
             "logger": logger,
             "get_db": get_db,
@@ -1930,6 +2049,10 @@ async def {internal_name}({params_str}):
                 task_meta=task_meta,
             )
 
+        _grant_dispatch_var.set(None)
+        _grant_binding_var.set(None)
+        grant_binding = None
+
         # Get current user context before allocating a correlation id so a
         # missing-context return cannot leave the context var set.
         user_context = self._get_current_user_context()
@@ -1953,7 +2076,10 @@ async def {internal_name}({params_str}):
                 arguments=arguments,
                 reason=text,
                 correlation_id=correlation_id,
+                grant=grant_binding,
             )
+            _grant_dispatch_var.set(None)
+            _grant_binding_var.set(None)
             try:
                 self._persist_tool_call_activity(
                     user_context,
@@ -2176,6 +2302,41 @@ async def {internal_name}({params_str}):
             )
             return await _refuse(f"Access denied: Tool '{name}' is not available")
 
+        # Resolve the same prefix/first-wins owner used by dispatch once.
+        # Keep its copied credentials in memory through any synchronous wait.
+        if name in self._proxied_tool_servers:
+            try:
+                snapshot, grant = await _prepare_grant_dispatch(
+                    user_context.account_id, name
+                )
+            except Exception:
+                grant_binding = grant_introspector._unavailable()
+                _record_grant_denial(
+                    user_context.account_id,
+                    name,
+                    GrantResult(grant_binding, "introspection_unavailable"),
+                    user_id=user_context.user_id,
+                    correlation_id=correlation_id,
+                )
+                return await _refuse("Access denied: introspection_unavailable")
+            if snapshot is None:
+                return await _refuse(
+                    "Access denied: no active MCP server provides this tool"
+                )
+            _grant_dispatch_var.set(snapshot)
+            if grant is not None:
+                grant_binding = grant.binding
+                _grant_binding_var.set(grant_binding)
+                if grant.deny_reason:
+                    _record_grant_denial(
+                        user_context.account_id,
+                        name,
+                        grant,
+                        user_id=user_context.user_id,
+                        correlation_id=correlation_id,
+                    )
+                    return await _refuse(f"Access denied: {grant.deny_reason}")
+
         # ── Sensitive data rules on tool arguments (#1122) ───────────────
         # Runs before the access rules so their conditions can read the
         # detector bindings (pii.found, pii.types_found, pii.paths) next to
@@ -2184,6 +2345,8 @@ async def {internal_name}({params_str}):
         scope_server_name = self._proxied_tool_server_names.get(
             name, BUILTIN_SERVER_NAME
         )
+        if _grant_dispatch_var.get(None) is not None:
+            scope_server_name = _grant_dispatch_var.get().server_name
         scope_agent_id = getattr(user_context, "managed_agent_id", None)
         sensitive_config = None
         sensitive_detectors = None
@@ -2266,7 +2429,11 @@ async def {internal_name}({params_str}):
                     account_id=uuid.UUID(user_context.account_id),
                     user_id=uuid.UUID(user_context.user_id),
                     server_name=scope_server_name,
-                    extra_bindings=sensitive_bindings,
+                    extra_bindings=(
+                        {**(sensitive_bindings or {}), "grant": grant_binding}
+                        if grant_binding is not None
+                        else sensitive_bindings
+                    ),
                     subject_context={
                         "api_key_id": user_context.api_key_id,
                         "flow_id": getattr(user_context, "flow_id", None),
@@ -2286,6 +2453,11 @@ async def {internal_name}({params_str}):
                         "runtime_principal_name": user_context.runtime_principal_name,
                         "api_key_id": user_context.api_key_id,
                         "api_key_name": user_context.api_key_name,
+                        **(
+                            {"grant": grant_binding}
+                            if grant_binding is not None
+                            else {}
+                        ),
                     },
                 )
 
@@ -2452,6 +2624,9 @@ async def {internal_name}({params_str}):
                 )
             )
 
+            _grant_dispatch_var.set(None)
+            _grant_binding_var.set(None)
+
             # Clean up context vars after execution
             _rule_workflow_id_var.set(None)
             _rule_context_var.set(None)
@@ -2512,6 +2687,7 @@ async def {internal_name}({params_str}):
                         runtime_principal_name=user_context.runtime_principal_name,
                         api_key_id=user_context.api_key_id,
                         api_key_name=user_context.api_key_name,
+                        **_audit_grant_kwargs(audit_service, grant_binding),
                         **_audit_error_kwargs(
                             audit_service, audit_error_code, audit_error_reason
                         ),
@@ -3059,6 +3235,7 @@ async def {internal_name}({params_str}):
         arguments: Optional[dict[str, Any]],
         reason: str,
         correlation_id: Optional[str],
+        grant: Optional[dict[str, Any]] = None,
     ) -> None:
         """Write the audit ``tool_call`` row for a call refused before dispatch.
 
@@ -3130,6 +3307,7 @@ async def {internal_name}({params_str}):
                 runtime_principal_name=user_context.runtime_principal_name,
                 api_key_id=user_context.api_key_id,
                 api_key_name=user_context.api_key_name,
+                **_audit_grant_kwargs(audit_service, grant),
                 **_audit_error_kwargs(audit_service, "refused", _short_reason(reason)),
             )
         except Exception as audit_err:
@@ -3175,6 +3353,36 @@ async def {internal_name}({params_str}):
         except Exception as exc:  # pragma: no cover - best effort only
             logger.debug("Failed to persist refused tool call '%s': %s", name, exc)
 
+    async def _grant_dispatch_denial(
+        self, snapshot: GrantDispatchSnapshot, user_context: UserContext
+    ) -> Optional[str]:
+        """Recheck after human/connection waits, without resolving another owner."""
+        try:
+            grant = await _evaluate_snapshot_grant(snapshot)
+        except Exception:
+            grant = GrantResult(
+                grant_introspector._unavailable(), "introspection_unavailable"
+            )
+        if grant is None:
+            return None
+        # The central invocation holds this safe dictionary for final audit.
+        # Copy before mutating: a mocked/cache result may reuse the same object.
+        binding = _grant_binding_var.get(None)
+        fresh_binding = deepcopy(grant.binding)
+        if binding is not None:
+            binding.clear()
+            binding.update(fresh_binding)
+        if grant.deny_reason:
+            _record_grant_denial(
+                snapshot.account_id,
+                snapshot.tool_name,
+                grant,
+                user_id=user_context.user_id,
+                correlation_id=_correlation_id_var.get(None),
+            )
+            return f"Access denied: {grant.deny_reason}"
+        return None
+
     async def _halt_dispatch_denial(self, account_id: str) -> Optional[str]:
         """Check fresh halt state after waits and fail closed before dispatch."""
 
@@ -3207,6 +3415,8 @@ async def {internal_name}({params_str}):
         been approved and claimed for idempotent re-execution. A halt denial
         is recorded as refused when the polling request still has a session.
         """
+        _grant_dispatch_var.set(None)
+        _grant_binding_var.set(None)
         # The durable approval owns this dispatch, even without HTTP context.
         denial = await self._halt_dispatch_denial(account_id)
         if denial:

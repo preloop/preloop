@@ -10,8 +10,10 @@ from pydantic import (
     Field,
     field_serializer,
     field_validator,
+    model_validator,
 )
 
+from preloop.models.schemas.grant_introspection import IntrospectionConfig
 from preloop.utils.redaction import REDACTED_STRING, _is_sensitive_key
 
 #: auth_config keys that look sensitive by name but hold no secret. They stay
@@ -175,6 +177,26 @@ class MCPServerBase(BaseModel):
         from preloop.services.mcp_tool_collisions import validate_tool_prefix
 
         return validate_tool_prefix(value)
+
+    @field_validator("auth_config")
+    @classmethod
+    def validate_introspection(
+        cls, value: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Validate nested grant configuration without changing write-only secrets."""
+        if value and value.get("introspection") is not None:
+            IntrospectionConfig.model_validate(value["introspection"])
+        return value
+
+    @model_validator(mode="after")
+    def introspection_requires_delegated_auth(self) -> "MCPServerBase":
+        """A grant check only applies to the bearer or OAuth token we forward."""
+        config = self.auth_config or {}
+        if config.get("introspection") is None:
+            return self
+        if self.auth_type not in ("bearer", "oauth"):
+            raise ValueError("introspection requires bearer or oauth authentication")
+        return self
 
 
 class MCPServerCreate(MCPServerBase):

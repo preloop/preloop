@@ -68,6 +68,7 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from preloop.models.schemas.grant_introspection import IntrospectionConfig
 from preloop.schemas.access_rule import AccessRuleDefinition, Action, Mode
 
 from preloop.services.sensitive_data.detectors import (
@@ -154,6 +155,17 @@ class MCPServerDefinition(BaseModel):
     )
 
     model_config = ConfigDict(use_enum_values=True)
+
+    @model_validator(mode="after")
+    def validate_introspection(self) -> "MCPServerDefinition":
+        """Introspection guards the static bearer or OAuth token we forward."""
+        if self.auth_config and self.auth_config.get("introspection") is not None:
+            if self.auth_type not in ("bearer", "oauth"):
+                raise ValueError(
+                    "introspection requires bearer or oauth authentication"
+                )
+            IntrospectionConfig.model_validate(self.auth_config["introspection"])
+        return self
 
 
 class ApprovalWorkflowType(str, Enum):
@@ -317,6 +329,15 @@ class ConditionType(str, Enum):
 
     SIMPLE = "simple"
     CEL = "cel"
+
+
+def references_grant(expression: str) -> bool:
+    """Find grant attribute/index access while ignoring quoted string literals."""
+    tokens = re.finditer(
+        r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|(?<![\w.])grant\s*(?:\.|\[)",
+        expression,
+    )
+    return any(token.group()[0] not in ("'", '"') for token in tokens)
 
 
 class ToolCondition(BaseModel):
