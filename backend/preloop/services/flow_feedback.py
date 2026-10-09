@@ -153,11 +153,16 @@ def register_thread(
     tracker_id = details.get("tracker_id") or flow.trigger_event_source
     provider = details.get("source")
     trigger_source, trigger_tracker_id = provider, tracker_id
+    keyed_repository = repository
     if provider not in _CODE_HOSTS:
         bound = _bound_repository(db, flow, details)
         if bound is not None:
-            provider, tracker_id, repository = bound
-    repository_id = _repository_identity(provider, repository)
+            # The bound repository keys the thread only. The context keeps
+            # the trigger's own (empty) repository: a continuation payload
+            # naming the bound repository would narrow the clone config
+            # against the Jira project and drop the binding.
+            provider, tracker_id, keyed_repository = bound
+    repository_id = _repository_identity(provider, keyed_repository)
     parsed = urlparse(pr_url)
     parts = parsed.path.rstrip("/").split("/")
     try:

@@ -2136,6 +2136,10 @@ def test_register_thread_binds_jira_triggered_pr_to_bound_bitbucket_repo() -> No
     trigger = values["context"]["trigger"]
     assert trigger["source"] == "jira"
     assert trigger["tracker_id"] == jira_tracker
+    # The continuation payload is built from context["repository"]; naming
+    # the bound repository there made the orchestrator narrow the clone to
+    # the Jira project ("could not resolve repository URLs", live 18:03Z).
+    assert values["context"]["repository"] == {}
 
 
 def test_register_thread_jira_without_binding_still_refuses() -> None:
