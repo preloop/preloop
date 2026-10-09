@@ -1,3 +1,4 @@
+import { replaceListFilters } from '../../utils/list-filter-url';
 import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -523,6 +524,8 @@ export class ApprovalsView extends AuthedElement {
 
   async connectedCallback() {
     super.connectedCallback();
+    this.readFilterLocation();
+    window.addEventListener('popstate', this.onFilterPopState);
     this.addEventListener('keydown', this.onKeyDown);
     await this.loadApprovalRequests();
     this.connectWebSocket();
@@ -530,6 +533,9 @@ export class ApprovalsView extends AuthedElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener('popstate', this.onFilterPopState);
+    if (this.filterSearchTimer !== null)
+      window.clearTimeout(this.filterSearchTimer);
     this.removeEventListener('keydown', this.onKeyDown);
     this.unsubscribe?.();
     this.stopTicking();
@@ -1071,19 +1077,46 @@ export class ApprovalsView extends AuthedElement {
     }
   }
 
+  private filterSearchTimer: number | null = null;
+  private readFilterLocation(): void {
+    const params = new URLSearchParams(window.location.search);
+    this.statusFilter = params.get('status') ?? 'all';
+    this.toolFilter = params.get('tool') ?? 'all';
+    this.searchQuery = params.get('q') ?? '';
+  }
+  private onFilterPopState = (): void => {
+    this.readFilterLocation();
+    this.applyFilters();
+  };
+  private syncFilterLocation(): void {
+    replaceListFilters({
+      status: this.statusFilter === 'all' ? '' : this.statusFilter,
+      tool: this.toolFilter === 'all' ? '' : this.toolFilter,
+      q: this.searchQuery,
+    });
+  }
+
   private handleStatusFilterChange(e: CustomEvent) {
     this.statusFilter = (e.target as HTMLSelectElement).value;
+    this.syncFilterLocation();
     this.applyFilters();
   }
 
   private handleToolFilterChange(e: CustomEvent) {
     this.toolFilter = (e.target as HTMLSelectElement).value;
+    this.syncFilterLocation();
     this.applyFilters();
   }
 
   private handleSearchInput(e: CustomEvent) {
     this.searchQuery = (e.target as HTMLInputElement).value;
-    this.applyFilters();
+    this.syncFilterLocation();
+    if (this.filterSearchTimer !== null)
+      window.clearTimeout(this.filterSearchTimer);
+    this.filterSearchTimer = window.setTimeout(() => {
+      this.filterSearchTimer = null;
+      this.applyFilters();
+    }, 250);
   }
 
   private isQuestion(request: ApprovalRequest): boolean {

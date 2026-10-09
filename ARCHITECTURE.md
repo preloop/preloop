@@ -410,3 +410,15 @@ and an unresolved or failed profile disables edits. Budget components also accep
 create/edit/delete grants; user actions use `manage_users`, invitations use
 `invite_users`, and team actions mirror the endpoint's create/edit/delete/manage
 permissions. Backend authorization remains the enforcement boundary.
+
+
+### Console list filter URLs
+
+Sessions, Audit, Approvals, and Tools apply filter changes as they are committed;
+text searches debounce typing. Filters use `replaceState` while preserving
+unrelated deep-link parameters and the URL hash. Sessions stores `source_type`,
+`status`, `has_artifacts`, `range`, `from`, and `to` beside its existing search
+and session selection fields. Audit repeats `event_type`/`outcome` for multiple
+values and stores tool/date/cost fields under their API names. Approvals stores
+`status`, `tool`, and `q`, retaining its latest-100 browser filtering model.
+Date strings from shared links are validated before timestamp conversion.

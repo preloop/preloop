@@ -1,3 +1,4 @@
+import { validFilterDate } from '../../utils/list-filter-url';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -779,6 +780,25 @@ export class RuntimeSessionsView extends LitElement {
     this.searchQuery = params.get('q') ?? '';
     this.focusTurnId = params.get('turn');
     this.focusArtifactId = params.get('artifact');
+    const range = params.get('range');
+    this.selectedRange = [
+      'last-7',
+      'last-30',
+      'last-90',
+      'all',
+      'custom',
+    ].includes(range ?? '')
+      ? (range as DateRangePreset)
+      : 'last-30';
+    if (this.selectedRange === 'custom') {
+      this.startDate = validFilterDate(params.get('from'));
+      this.endDate = validFilterDate(params.get('to'));
+    } else {
+      this.applyPresetDates(this.selectedRange);
+    }
+    this.sessionSourceType = params.get('source_type') ?? 'all';
+    this.status = params.get('status') ?? 'all';
+    this.hasArtifacts = params.get('has_artifacts') ?? 'all';
   }
 
   /**
@@ -1305,11 +1325,24 @@ export class RuntimeSessionsView extends LitElement {
     } else {
       url.searchParams.delete('artifact');
     }
-    const target = `${url.pathname}${url.search}`;
+    const filters = {
+      range: this.selectedRange === 'last-30' ? '' : this.selectedRange,
+      source_type:
+        this.sessionSourceType === 'all' ? '' : this.sessionSourceType,
+      status: this.status === 'all' ? '' : this.status,
+      has_artifacts: this.hasArtifacts === 'all' ? '' : this.hasArtifacts,
+      from: this.selectedRange === 'custom' ? this.startDate : '',
+      to: this.selectedRange === 'custom' ? this.endDate : '',
+    };
+    for (const [key, value] of Object.entries(filters)) {
+      if (value) url.searchParams.set(key, value);
+      else url.searchParams.delete(key);
+    }
+    const target = `${url.pathname}${url.search}${url.hash}`;
     if (options.push) {
       window.history.pushState({}, '', target);
     } else {
-      window.history.replaceState({}, '', target);
+      window.history.replaceState(window.history.state, '', target);
     }
   }
 
@@ -1319,8 +1352,8 @@ export class RuntimeSessionsView extends LitElement {
     this.selectedRange = value;
     if (value !== 'custom') {
       this.applyPresetDates(value);
-      void this.loadSessions();
     }
+    void this.applyFilters();
   }
 
   private handleStartDateChange(event: Event) {
@@ -1328,11 +1361,13 @@ export class RuntimeSessionsView extends LitElement {
       event.target as HTMLInputElement & { value: string }
     ).value;
     this.selectedRange = 'custom';
+    void this.applyFilters();
   }
 
   private handleEndDateChange(event: Event) {
     this.endDate = (event.target as HTMLInputElement & { value: string }).value;
     this.selectedRange = 'custom';
+    void this.applyFilters();
   }
 
   /**
@@ -1376,16 +1411,19 @@ export class RuntimeSessionsView extends LitElement {
     this.sessionSourceType = (
       event.target as HTMLInputElement & { value: string }
     ).value;
+    void this.applyFilters();
   }
 
   private handleStatusChange(event: Event) {
     this.status = (event.target as HTMLInputElement & { value: string }).value;
+    void this.applyFilters();
   }
 
   private handleHasArtifactsChange(event: Event) {
     this.hasArtifacts = (
       event.target as HTMLInputElement & { value: string }
     ).value;
+    void this.applyFilters();
   }
 
   private handleInteractionQueryChange(event: Event) {
@@ -1414,7 +1452,7 @@ export class RuntimeSessionsView extends LitElement {
     if (this.isSearching) {
       // The filters bound the list as well, so it stays in step for the
       // moment the query is cleared.
-      await this.loadSessions();
+      await this.loadSessions(this.sessions !== null);
     }
   }
 
@@ -1429,7 +1467,7 @@ export class RuntimeSessionsView extends LitElement {
     this.interactionQuery = '';
     this.clearSearchResults();
     this.syncUrl();
-    await this.loadSessions();
+    await this.loadSessions(this.sessions !== null);
   }
 
   private applyInteractionSearch() {
@@ -2714,18 +2752,24 @@ export class RuntimeSessionsView extends LitElement {
                 <sl-option value="all">All time</sl-option>
                 <sl-option value="custom">Custom</sl-option>
               </sl-select>
-              <sl-input
-                type="date"
-                label="Start date"
-                .value=${this.startDate}
-                @sl-change=${this.handleStartDateChange}
-              ></sl-input>
-              <sl-input
-                type="date"
-                label="End date"
-                .value=${this.endDate}
-                @sl-change=${this.handleEndDateChange}
-              ></sl-input>
+              ${
+                this.selectedRange === 'custom'
+                  ? html`
+                      <sl-input
+                        type="date"
+                        label="Start date"
+                        .value=${this.startDate}
+                        @sl-change=${this.handleStartDateChange}
+                      ></sl-input>
+                      <sl-input
+                        type="date"
+                        label="End date"
+                        .value=${this.endDate}
+                        @sl-change=${this.handleEndDateChange}
+                      ></sl-input>
+                    `
+                  : nothing
+              }
               <sl-select
                 label="Source type"
                 value=${this.sessionSourceType}
@@ -2763,11 +2807,8 @@ export class RuntimeSessionsView extends LitElement {
                 <sl-option value="audio">Audio</sl-option>
               </sl-select>
               <div class="filter-actions">
-                <sl-button variant="primary" @click=${this.applyFilters}>
-                  Apply
-                </sl-button>
                 <sl-button variant="default" @click=${this.clearFilters}>
-                  Reset
+                  Clear filters
                 </sl-button>
               </div>
               <span slot="count">${this.sessionCountLabel}</span>

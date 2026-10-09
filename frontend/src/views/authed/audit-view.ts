@@ -1,3 +1,7 @@
+import {
+  replaceListFilters,
+  validFilterDate,
+} from '../../utils/list-filter-url';
 /**
  * Audit Log View - Unified Timeline
  *
@@ -214,24 +218,9 @@ export class AuditView extends AuthedElement {
   connectedCallback() {
     super.connectedCallback();
 
-    // Parse URL parameters to initialize filters
+    this._readFilterLocation();
+    window.addEventListener('popstate', this._onFilterPopState);
     const params = new URLSearchParams(window.location.search);
-    const eventType = params.get('event_type');
-    if (eventType) {
-      this._eventTypeFilters = [eventType];
-    }
-    const outcome = params.get('outcome');
-    if (outcome) {
-      this._outcomeFilters = [outcome];
-    }
-    const minCost = params.get('min_cost');
-    if (minCost) {
-      this._minCost = minCost;
-    }
-    const maxCost = params.get('max_cost');
-    if (maxCost) {
-      this._maxCost = maxCost;
-    }
     const event = params.get('event');
     if (event) {
       this._deepLinkEventId = event;
@@ -245,6 +234,7 @@ export class AuditView extends AuthedElement {
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    window.removeEventListener('popstate', this._onFilterPopState);
     if (this._unsubscribeRealtime) {
       this._unsubscribeRealtime();
       this._unsubscribeRealtime = null;
@@ -495,6 +485,7 @@ export class AuditView extends AuthedElement {
     this._endDate = next.toISOString().slice(0, 10);
     this._page = 0;
     this._deepLinkPending = true;
+    this._syncFilterLocation();
     await this._loadTimeline();
     if (this._deepLinkPending) {
       this._deepLinkPending = false;
@@ -569,7 +560,37 @@ export class AuditView extends AuthedElement {
     showToast('Link copied', 'success');
   }
 
+  private _readFilterLocation(): void {
+    const params = new URLSearchParams(window.location.search);
+    this._eventTypeFilters = params.getAll('event_type');
+    this._outcomeFilters = params.getAll('outcome');
+    this._toolNameFilter = params.get('tool_name') ?? '';
+    this._startDate = validFilterDate(params.get('start_date'));
+    this._endDate = validFilterDate(params.get('end_date'));
+    this._minCost = params.get('min_cost') ?? '';
+    this._maxCost = params.get('max_cost') ?? '';
+  }
+
+  private _onFilterPopState = (): void => {
+    this._readFilterLocation();
+    this._page = 0;
+    void this._loadTimeline({ background: this._groups.length > 0 });
+  };
+
+  private _syncFilterLocation(): void {
+    replaceListFilters({
+      event_type: this._eventTypeFilters,
+      outcome: this._outcomeFilters,
+      tool_name: this._toolNameFilter,
+      start_date: this._startDate,
+      end_date: this._endDate,
+      min_cost: this._minCost,
+      max_cost: this._maxCost,
+    });
+  }
+
   private _applyFilters() {
+    this._syncFilterLocation();
     this._cancelToolSearch();
     this._page = 0;
     this._loadTimeline();
@@ -613,6 +634,7 @@ export class AuditView extends AuthedElement {
     this._endDate = '';
     this._minCost = '';
     this._maxCost = '';
+    this._syncFilterLocation();
     this._page = 0;
     this._loadTimeline();
   }
@@ -1578,6 +1600,7 @@ export class AuditView extends AuthedElement {
           @sl-input=${(e: Event) => {
             this._minCost = (e.target as HTMLInputElement).value;
           }}
+          @sl-change=${() => this._applyFilters()}
           @keydown=${(e: KeyboardEvent) => {
             if (e.key === 'Enter') this._applyFilters();
           }}
@@ -1594,6 +1617,7 @@ export class AuditView extends AuthedElement {
           @sl-input=${(e: Event) => {
             this._maxCost = (e.target as HTMLInputElement).value;
           }}
+          @sl-change=${() => this._applyFilters()}
           @keydown=${(e: KeyboardEvent) => {
             if (e.key === 'Enter') this._applyFilters();
           }}
