@@ -1,0 +1,4 @@
+
+HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude
+    bootstrapUrl    REG_SZ    https://claude-gateway.internal.example.com/user/bootstrap
+    chatTabEnabled    REG_DWORD    0x1

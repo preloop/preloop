@@ -1,0 +1,62 @@
+# Claude apps gateway config for the local harness. Secrets come from the
+# environment (see ../.env.example); nothing here is a real credential.
+listen:
+  host: 0.0.0.0
+  port: 8080
+  # Loopback origin: Claude Code accepts plain http only for a loopback
+  # gateway host, and the client container shares this container's network.
+  public_url: http://localhost:8080
+
+oidc:
+  issuer: http://dex:5556/dex
+  client_id: claude-gateway
+  client_secret: ${OIDC_CLIENT_SECRET}
+  allowed_email_domains: [example.com]
+  userinfo_fallback: true
+
+session:
+  jwt_secret: ${GATEWAY_JWT_SECRET}
+  ttl_hours: 1
+
+store:
+  postgres_url: ${GATEWAY_POSTGRES_URL}
+
+upstreams:
+  # Preloop, reached through the header recorder (a transparent proxy).
+  - provider: anthropic
+    name: preloop
+    base_url: http://recorder:9000/anthropic
+    auth:
+      api_key: ${PRELOOP_UPSTREAM_KEY}
+    forward_user_identity: true
+    headers:
+      x-preloop-upstream-secret: ${PRELOOP_UPSTREAM_SECRET}
+  # Second upstream. verify.sh step 3 asserts it receives nothing when
+  # Preloop answers 429 to a request that carried the developer's email.
+  - provider: anthropic
+    name: spare
+    base_url: http://spare:9100
+    auth:
+      api_key: spare-upstream-placeholder-key
+    forward_user_identity: true
+
+access_control:
+  allow_cidrs: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, ::1/128]
+
+# verify.sh signs in several times per run from one container IP; the
+# default device-flow limits (30 and 10 per 10 minutes) would trip on reruns.
+rate_limits:
+  device_authorization: { max: 1000, window_seconds: 600 }
+  device_verify: { max: 1000, window_seconds: 600 }
+
+auto_include_builtin_models: true
+
+managed:
+  policies:
+    - match: {}
+      cli:
+        availableModels: [claude-sonnet-4-5, claude-haiku-4-5]
+        enforceAvailableModels: true
+        model: claude-sonnet-4-5
+      serve_to_desktop: true
+      desktop: {}

@@ -24,7 +24,7 @@ That gives you the MCP firewall (access rules, approvals, audit) for every tool 
 | [Hermes](../hermes.md) | Automatic | Automatic |
 | [OpenClaw](../integrations/openclaw.md) | Automatic | Automatic (OpenAI-compatible gateway) |
 | Cursor | Automatic | **Manual BYOK**: AI panel incl. Agent mode (see below) |
-| Claude Desktop | Automatic | Not available |
+| [Claude Desktop](claude-desktop.md) | Automatic | **Managed config**: `--model-route direct` or `apps-gateway` prints the MDM configuration |
 | Windsurf | Automatic | Not available |
 | VS Code / Copilot | Automatic | Not available |
 | Copilot CLI | Automatic (`~/.copilot/mcp-config.json`) | Not rewritten on onboard. `preloop copilot` sets the gateway env vars |
@@ -79,7 +79,7 @@ What to expect:
 
 ## Claude Desktop
 
-Discovered and onboarded for MCP governance. Claude Desktop has no mechanism for custom model endpoints, so model routing is not available.
+Discovered and onboarded for MCP governance. Model routing uses Claude Desktop's third-party gateway mode: `preloop agents onboard "Claude Desktop" --model-route direct` (or `--model-route apps-gateway` behind a Claude apps gateway) prints the managed configuration for macOS, Windows and Linux, which your MDM deploys. See [Claude Desktop](claude-desktop.md).
 
 ## Everything else
 

@@ -236,6 +236,32 @@ class TestAnswerProjection:
         )
         assert "Do not perform the action" in block
 
+    def test_approved_action_tool_block_points_at_get_approval_status(self):
+        """A gated action never ran; re-calling it parks the run again.
+
+        Live rehearsal 2026-10-09: a reviewer flow with update_pull_request
+        behind a manual approval re-called the tool after every resume and
+        opened six approvals without ever posting the review.
+        """
+        block = approval_park.answers_prompt_block(
+            {
+                "request_id": "r-gated",
+                "status": "approved",
+                "tool_name": "update_pull_request",
+            }
+        )
+        assert "has NOT run yet" in block
+        assert "Do not call that tool again" in block
+        assert "get_approval_status" in block
+        assert "r-gated" in block
+
+    def test_approved_question_block_has_no_replay_instruction(self):
+        """ask_user's approval is the answer itself: nothing to replay."""
+        block = approval_park.answers_prompt_block(
+            {"request_id": "r1", "status": "approved", "tool_name": "ask_user"}
+        )
+        assert "get_approval_status" not in block
+
     def test_answer_is_framed_as_data_not_instructions(self):
         block = approval_park.answers_prompt_block(
             {
