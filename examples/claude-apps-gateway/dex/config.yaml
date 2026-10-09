@@ -1,0 +1,27 @@
+# Test-only Dex IdP with two static users. Never use these credentials
+# anywhere else. The password for both users is "password".
+issuer: http://dex:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true
+  passwordConnector: local
+enablePasswordDB: true
+staticClients:
+  - id: claude-gateway
+    name: Claude apps gateway (harness)
+    secret: harness-dex-client-secret
+    redirectURIs:
+      - http://localhost:8080/oauth/callback
+staticPasswords:
+  # bcrypt of "password"
+  - email: alice@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: alice
+    userID: 0b4b5a8e-1a1f-4b7e-9e0b-a11ce0000001
+  - email: bob@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: bob
+    userID: 0b4b5a8e-1a1f-4b7e-9e0b-b0b000000002
