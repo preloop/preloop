@@ -435,7 +435,9 @@ func ensureTrustedUpstreamKey(client *api.Client, opts claudeDesktopRouteOptions
 	}
 	// An echoed scope does not prove the server enforces it: an older server
 	// stores any scope and drops context_data. Prove the secret is enforced
-	// before handing out the key, and revoke it if not.
+	// before handing out the key. On any verification failure (wrong status
+	// or transport error) the key and secret are never printed, so a key left
+	// behind would be an unusable trusted credential: revoke it either way.
 	if err := verifyTrustedUpstreamSecretEnforced(client.BaseURL(), key.Key, secret); err != nil {
 		if delErr := client.Delete("/api/v1/auth/api-keys/"+url.PathEscape(key.ID), nil); delErr != nil {
 			return trustedUpstreamKey{}, "", fmt.Errorf("%w; revoking key %s also failed: %v (delete it in the console)", err, key.ID, delErr)
