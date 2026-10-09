@@ -12,7 +12,6 @@ from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.usage_token_details import (
     coerce_token_count,
     extract_token_details,
-    has_token_detail_fields,
 )
 
 extract = OpenAIGatewayService._extract_token_details
@@ -186,13 +185,6 @@ def test_valid_payload_does_not_log(caplog) -> None:
     ]
 
 
-def test_has_token_detail_fields() -> None:
-    assert has_token_detail_fields({"input_tokens_details": {"cached_tokens": 0}})
-    assert has_token_detail_fields({"cache_read_input_tokens": 0})
-    assert not has_token_detail_fields({"input_tokens": 4})
-    assert not has_token_detail_fields(None)
-
-
 def test_configured_pricing_bills_responses_cache_reads_at_cache_rate() -> None:
     pricing = {
         "input_price_per_1k": 1.0,
@@ -268,3 +260,21 @@ def test_responses_usage_reaches_usage_row_through_gateway(
     assert row.cache_read_tokens == 80
     assert row.reasoning_tokens == 5
     assert row.cache_creation_tokens is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"usage": {"input_tokens_details": {"cached_tokens": 80}}},
+        {"input_tokens_details": {"cached_tokens": 80}},
+        {"usage_details": {"input_tokens_details": {"cached_tokens": 80}}},
+    ],
+)
+def test_context_analysis_reads_responses_cache_shape(payload) -> None:
+    from preloop.services.context_analysis import (
+        _payload_cache_creation_tokens,
+        _payload_cache_read_tokens,
+    )
+
+    assert _payload_cache_read_tokens(payload) == 80
+    assert _payload_cache_creation_tokens(payload) == 0

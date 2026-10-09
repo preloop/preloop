@@ -30,15 +30,6 @@ logger = logging.getLogger(__name__)
 
 _DIGITS = re.compile(r"\d+")
 
-#: Usage keys whose presence means a payload carries cache/reasoning detail.
-DETAIL_CONTAINER_KEYS = (
-    "prompt_tokens_details",
-    "completion_tokens_details",
-    "input_tokens_details",
-    "output_tokens_details",
-)
-TOP_LEVEL_CACHE_KEYS = ("cache_read_input_tokens", "cache_creation_input_tokens")
-
 
 def coerce_token_count(value: Any) -> Optional[int]:
     """Return ``value`` as a non-negative token count, or None if unusable.
@@ -151,19 +142,3 @@ def extract_token_details(
             ", ".join(rejected),
         )
     return result
-
-
-def has_token_detail_fields(usage_details: Any) -> bool:
-    """Return True when a raw usage payload carries any cache/reasoning field.
-
-    Args:
-        usage_details: Raw provider usage payload.
-
-    Returns:
-        True if any detail container or top-level cache key is present.
-    """
-    if not isinstance(usage_details, dict):
-        return False
-    return any(
-        isinstance(usage_details.get(key), dict) for key in DETAIL_CONTAINER_KEYS
-    ) or any(usage_details.get(key) is not None for key in TOP_LEVEL_CACHE_KEYS)
