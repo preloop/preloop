@@ -1,3 +1,7 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+import { tableScrollStyles } from '../../styles/table-scroll';
+import { formatUsd, formatUsdExact } from '../../utils/money';
+import { parseUTCDate } from '../../utils/date';
 import { html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -41,11 +45,10 @@ interface NamedOption {
   name: string;
 }
 
-/** Dollars with four decimals below a cent, two above. */
+/** Shared USD display, retaining the domain-specific missing-cost contract. */
 export function formatIssueCost(value: number | null | undefined): string {
   if (value === null || value === undefined) return '';
-  const digits = value !== 0 && Math.abs(value) < 0.01 ? 4 : 2;
-  return `$${value.toFixed(digits)}`;
+  return formatUsd(value);
 }
 
 /** What the Cost column says, and why, for one bucket (#1057). */
@@ -140,7 +143,7 @@ const RUN_COST_TITLE =
 
 function formatTime(value: string | null): string {
   if (!value) return '';
-  return new Date(value).toLocaleString();
+  return parseUTCDate(value).toLocaleString();
 }
 
 /** Only http(s) links are rendered; anything else is shown as text. */
@@ -158,6 +161,7 @@ function safeHref(url: string | null): string | null {
  */
 @customElement('issue-cost-view')
 export class IssueCostView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() report: IssueCostReport | null = null;
   @state() loading = false;
   @state() error: string | null = null;
@@ -177,56 +181,59 @@ export class IssueCostView extends AuthedElement {
   private unassignedRequest = 0;
 
   static styles = [
-    unsafeCSS(consoleStyles),
-    css`
-      :host {
-        display: block;
-      }
-      .page {
-        display: flex;
-        flex-direction: column;
-        gap: var(--sl-spacing-large);
-      }
-      .toolbar {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--sl-spacing-small);
-        align-items: center;
-      }
-      .toolbar sl-select {
-        min-width: 12rem;
-      }
-      .toolbar .spacer {
-        flex: 1;
-      }
-      .summaries {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
-        gap: var(--sl-spacing-large);
-      }
-      .num {
-        text-align: right;
-        white-space: nowrap;
-      }
-      .expand {
-        background: none;
-        border: none;
-        cursor: pointer;
-        color: inherit;
-        padding: 0 var(--sl-spacing-2x-small);
-      }
-      .detail td {
-        background: var(--sl-color-neutral-50);
-      }
-      .muted {
-        color: var(--sl-color-neutral-500);
-      }
-      .loading-state {
-        display: flex;
-        gap: var(--sl-spacing-small);
-        align-items: center;
-      }
-    `,
+    tableScrollStyles,
+    [
+      unsafeCSS(consoleStyles),
+      css`
+        :host {
+          display: block;
+        }
+        .page {
+          display: flex;
+          flex-direction: column;
+          gap: var(--sl-spacing-large);
+        }
+        .toolbar {
+          display: flex;
+          flex-wrap: wrap;
+          gap: var(--sl-spacing-small);
+          align-items: center;
+        }
+        .toolbar sl-select {
+          min-width: 12rem;
+        }
+        .toolbar .spacer {
+          flex: 1;
+        }
+        .summaries {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+          gap: var(--sl-spacing-large);
+        }
+        .num {
+          text-align: right;
+          white-space: nowrap;
+        }
+        .expand {
+          background: none;
+          border: none;
+          cursor: pointer;
+          color: inherit;
+          padding: 0 var(--sl-spacing-2x-small);
+        }
+        .detail td {
+          background: var(--sl-color-neutral-50);
+        }
+        .muted {
+          color: var(--console-meta-color);
+        }
+        .loading-state {
+          display: flex;
+          gap: var(--sl-spacing-small);
+          align-items: center;
+        }
+      `,
+    ],
   ];
 
   connectedCallback(): void {
@@ -366,42 +373,46 @@ export class IssueCostView extends AuthedElement {
     if (state === 'error') {
       return html`<span class="muted">Could not load the executions.</span>`;
     }
-    return html`<table class="styled-table" aria-label=${label}>
-      <thead>
-        <tr>
-          <th>Flow</th>
-          <th>Status</th>
-          ${showLink ? html`<th>Reason</th>` : nothing}
-          <th class="num">Cost</th>
-          <th>Start</th>
-          <th>End</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${state.map(
-          (execution) =>
-            html`<tr data-execution=${execution.execution_id}>
-              <td>
-                <a href="/console/flows/executions/${execution.execution_id}"
-                  >${execution.flow_name || execution.flow_id}</a
+    return html`<div class="table-scroll">
+      <table class="styled-table" aria-label=${label}>
+        <thead>
+          <tr>
+            <th>Flow</th>
+            <th>Status</th>
+            ${showLink ? html`<th>Reason</th>` : nothing}
+            <th class="num">Cost</th>
+            <th>Start</th>
+            <th>End</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${state.map(
+            (execution) =>
+              html`<tr data-execution=${execution.execution_id}>
+                <td>
+                  <a href="/console/flows/executions/${execution.execution_id}"
+                    >${execution.flow_name || execution.flow_id}</a
+                  >
+                </td>
+                <td>${execution.status}</td>
+                ${showLink ? html`<td>${execution.link}</td>` : nothing}
+                <td
+                  class="num"
+                  title=${
+                    execution.estimated_cost === null
+                      ? RUN_COST_TITLE
+                      : formatUsdExact(execution.estimated_cost)
+                  }
                 >
-              </td>
-              <td>${execution.status}</td>
-              ${showLink ? html`<td>${execution.link}</td>` : nothing}
-              <td
-                class="num"
-                title=${
-                  execution.estimated_cost === null ? RUN_COST_TITLE : nothing
-                }
-              >
-                ${formatIssueCost(execution.estimated_cost) || 'Unknown'}
-              </td>
-              <td>${formatTime(execution.start_time)}</td>
-              <td>${formatTime(execution.end_time)}</td>
-            </tr>`
-        )}
-      </tbody>
-    </table>`;
+                  ${formatIssueCost(execution.estimated_cost) || 'Unknown'}
+                </td>
+                <td>${formatTime(execution.start_time)}</td>
+                <td>${formatTime(execution.end_time)}</td>
+              </tr>`
+          )}
+        </tbody>
+      </table>
+    </div>`;
   }
 
   renderExecutions(row: IssueCostRow) {
@@ -418,84 +429,91 @@ export class IssueCostView extends AuthedElement {
     if (!report.issues.length) {
       return html`<p class="muted">No issue had agent work in this period.</p>`;
     }
-    return html`<table class="styled-table" aria-label="Cost per issue">
-      <thead>
-        <tr>
-          <th></th>
-          <th>Tracker</th>
-          <th>Issue</th>
-          <th class="num">Cost</th>
-          <th class="num">Tokens</th>
-          <th class="num">Runs</th>
-          <th class="num" title=${INTERVAL_TITLES.toPr}>Run to PR</th>
-          <th class="num" title=${INTERVAL_TITLES.toApproval}>
-            To recorded approval
-          </th>
-          <th class="num" title=${INTERVAL_TITLES.toMerge}>To merge</th>
-          <th class="num" title="The tracker's own estimate">Estimate</th>
-          <th>PR</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${report.issues.map(
-          (row) =>
-            html`<tr data-issue=${row.issue_key}>
-                <td>
-                  <button
-                    class="expand"
-                    aria-expanded=${this.expanded[row.id] ? 'true' : 'false'}
-                    aria-label="Show executions of ${row.issue_key}"
-                    @click=${() => void this.toggle(row)}
+    return html`<div class="table-scroll">
+      <table class="styled-table" aria-label="Cost per issue">
+        <thead>
+          <tr>
+            <th></th>
+            <th>Tracker</th>
+            <th>Issue</th>
+            <th class="num">Cost</th>
+            <th class="num">Tokens</th>
+            <th class="num">Runs</th>
+            <th class="num" title=${INTERVAL_TITLES.toPr}>Run to PR</th>
+            <th class="num" title=${INTERVAL_TITLES.toApproval}>
+              To recorded approval
+            </th>
+            <th class="num" title=${INTERVAL_TITLES.toMerge}>To merge</th>
+            <th class="num" title="The tracker's own estimate">Estimate</th>
+            <th>PR</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${report.issues.map(
+            (row) =>
+              html`<tr data-issue=${row.issue_key}>
+                  <td>
+                    <button
+                      class="expand"
+                      aria-expanded=${this.expanded[row.id] ? 'true' : 'false'}
+                      aria-label="Show executions of ${row.issue_key}"
+                      @click=${() => void this.toggle(row)}
+                    >
+                      ${this.expanded[row.id] ? '▾' : '▸'}
+                    </button>
+                  </td>
+                  <td>${row.tracker_name || row.tracker_type}</td>
+                  <td>
+                    ${this.renderLink(row.issue_url, row.issue_key)}
+                    ${
+                      row.title
+                        ? html`<div class="muted">${row.title}</div>`
+                        : nothing
+                    }
+                  </td>
+                  <td class="num cost" title=${issueCostTitle(row) || nothing}>
+                    ${formatIssueAmount(row)}
+                  </td>
+                  <td class="num">${row.total_tokens.toLocaleString()}</td>
+                  <td class="num">
+                    ${row.run_count}${
+                      row.failed_run_count
+                        ? html` <span class="muted"
+                            >(${row.failed_run_count} failed)</span
+                          >`
+                        : nothing
+                    }
+                  </td>
+                  <td
+                    class="num"
+                    title=${
+                      OPENED_SOURCE_TITLES[row.pr_opened_at_source ?? ''] ??
+                      nothing
+                    }
                   >
-                    ${this.expanded[row.id] ? '▾' : '▸'}
-                  </button>
-                </td>
-                <td>${row.tracker_name || row.tracker_type}</td>
-                <td>
-                  ${this.renderLink(row.issue_url, row.issue_key)}
-                  ${
-                    row.title
-                      ? html`<div class="muted">${row.title}</div>`
-                      : nothing
-                  }
-                </td>
-                <td class="num cost" title=${issueCostTitle(row) || nothing}>
-                  ${formatIssueAmount(row)}
-                </td>
-                <td class="num">${row.total_tokens.toLocaleString()}</td>
-                <td class="num">
-                  ${row.run_count}${
-                    row.failed_run_count
-                      ? html` <span class="muted"
-                          >(${row.failed_run_count} failed)</span
-                        >`
-                      : nothing
-                  }
-                </td>
-                <td
-                  class="num"
-                  title=${
-                    OPENED_SOURCE_TITLES[row.pr_opened_at_source ?? ''] ??
-                    nothing
-                  }
-                >
-                  ${formatIssueHours(row.first_event_to_pr_opened_hours)}
-                </td>
-                <td class="num">
-                  ${formatIssueHours(row.pr_opened_to_approved_hours)}
-                </td>
-                <td class="num">
-                  ${formatIssueHours(row.approved_to_merged_hours)}
-                </td>
-                <td class="num estimate" title=${estimateTitle(row) || nothing}>
-                  ${formatIssueEstimate(row)}
-                </td>
-                <td>${this.renderLink(row.pr_url, row.pr_url ? 'PR' : '')}</td>
-              </tr>
-              ${this.renderExecutions(row)}`
-        )}
-      </tbody>
-    </table>`;
+                    ${formatIssueHours(row.first_event_to_pr_opened_hours)}
+                  </td>
+                  <td class="num">
+                    ${formatIssueHours(row.pr_opened_to_approved_hours)}
+                  </td>
+                  <td class="num">
+                    ${formatIssueHours(row.approved_to_merged_hours)}
+                  </td>
+                  <td
+                    class="num estimate"
+                    title=${estimateTitle(row) || nothing}
+                  >
+                    ${formatIssueEstimate(row)}
+                  </td>
+                  <td>
+                    ${this.renderLink(row.pr_url, row.pr_url ? 'PR' : '')}
+                  </td>
+                </tr>
+                ${this.renderExecutions(row)}`
+          )}
+        </tbody>
+      </table>
+    </div>`;
   }
 
   renderSummary(label: string, items: IssueCostSummary[]) {
@@ -503,29 +521,34 @@ export class IssueCostView extends AuthedElement {
       <h3 slot="header">${label}</h3>
       ${
         items.length
-          ? html`<table class="styled-table" aria-label=${label}>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th class="num">Issues</th>
-                  <th class="num">Runs</th>
-                  <th class="num">Cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${items.map(
-                  (item) =>
-                    html`<tr>
-                      <td>${item.name || 'No project'}</td>
-                      <td class="num">${item.issue_count}</td>
-                      <td class="num">${item.run_count}</td>
-                      <td class="num" title=${issueCostTitle(item) || nothing}>
-                        ${formatIssueAmount(item)}
-                      </td>
-                    </tr>`
-                )}
-              </tbody>
-            </table>`
+          ? html`<div class="table-scroll">
+              <table class="styled-table" aria-label=${label}>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th class="num">Issues</th>
+                    <th class="num">Runs</th>
+                    <th class="num">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${items.map(
+                    (item) =>
+                      html`<tr>
+                        <td>${item.name || 'No project'}</td>
+                        <td class="num">${item.issue_count}</td>
+                        <td class="num">${item.run_count}</td>
+                        <td
+                          class="num"
+                          title=${issueCostTitle(item) || nothing}
+                        >
+                          ${formatIssueAmount(item)}
+                        </td>
+                      </tr>`
+                  )}
+                </tbody>
+              </table>
+            </div>`
           : html`<p class="muted">Nothing in this period.</p>`
       }
     </sl-card>`;

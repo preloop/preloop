@@ -8,7 +8,7 @@ import {
   type FlowContinuationPreview,
   type ContinuationRecoveryMode,
 } from '../api';
-import { formatUTCDateTime } from '../utils/date';
+import { formatUTCDateTime, parseUTCDate } from '../utils/date';
 import { consoleDialogStyles } from '../styles/console-dialog';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -197,7 +197,7 @@ export class PreloopExecutionContinuation extends LitElement {
   private checkpointExpiryText(): string {
     const raw = this.preview?.native_resume_expires_at;
     if (!raw) return '';
-    const date = new Date(raw);
+    const date = parseUTCDate(raw);
     return Number.isNaN(date.getTime())
       ? ''
       : ` until ${formatUTCDateTime(raw)}`;

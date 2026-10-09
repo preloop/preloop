@@ -62,6 +62,29 @@ describe('SessionRequestTimeline', () => {
     }),
   ];
 
+  it('uses visible wrapping labels as the native control names', async () => {
+    const el = await fixture<SessionRequestTimeline>(
+      html`<session-request-timeline
+        .requests=${requests}
+      ></session-request-timeline>`
+    );
+    const controls = [
+      ...el.shadowRoot!.querySelectorAll<HTMLInputElement | HTMLSelectElement>(
+        'input, select'
+      ),
+    ];
+    expect(controls).to.have.length(3);
+    expect(
+      controls.map(
+        (control) =>
+          control.labels?.[0].querySelector('.control-label')?.textContent
+      )
+    ).to.deep.equal(['Sort', 'Hide below', 'Threshold unit']);
+    expect(
+      controls.every((control) => !control.hasAttribute('aria-label'))
+    ).to.equal(true);
+  });
+
   it('renders one merged stream with tokens, cost and tools', async () => {
     const el = (await fixture(
       html`<session-request-timeline
@@ -256,7 +279,7 @@ describe('SessionRequestTimeline cache accounting', () => {
     ).to.include('300');
     expect(
       el.shadowRoot?.querySelector('[data-testid="cache-savings"]')?.textContent
-    ).to.include('$0.0125');
+    ).to.include('$0.01');
   });
 
   it('states coverage when some requests reported no cache data', async () => {
@@ -308,7 +331,7 @@ describe('SessionRequestTimeline cache accounting', () => {
     ).to.include('not reported');
   });
 
-  it('does not round a sub-cent savings figure down to $0.01', async () => {
+  it('retains the exact savings figure in its tooltip', async () => {
     const el = (await fixture(
       html`<session-request-timeline
         .requests=${plainRequests}
@@ -321,7 +344,12 @@ describe('SessionRequestTimeline cache accounting', () => {
     const text =
       el.shadowRoot?.querySelector('[data-testid="cache-savings"]')
         ?.textContent || '';
-    expect(text).to.include('$0.0125');
+    expect(text).to.include('$0.01');
+    expect(
+      el.shadowRoot
+        ?.querySelector('[data-testid="cache-savings"] span')
+        ?.getAttribute('title')
+    ).to.equal('$0.0125');
   });
 
   it('renders no rollup when no request carried cache data', async () => {

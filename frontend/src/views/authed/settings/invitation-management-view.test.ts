@@ -29,6 +29,12 @@ describe('InvitationManagementView', () => {
       .stub(window, 'fetch')
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/auth/users/me')) {
+          return new Response(JSON.stringify({ permissions: null }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         const method = (init?.method || 'GET').toUpperCase();
 
         if (url.includes('/api/v1/features')) {

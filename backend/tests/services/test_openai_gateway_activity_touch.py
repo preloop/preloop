@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy.exc import OperationalError
 
+from preloop.models import models
 from preloop.models.crud.runtime_session import crud_runtime_session
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.model_pricing import CostEstimate
@@ -270,8 +271,10 @@ def test_gateway_request_recording_survives_activity_touch_timeout():
             api_key=api_key,
         ),
     )
-    ai_model = SimpleNamespace(
+    ai_model = models.AIModel(
         id=uuid4(),
+        account_id=account_id,
+        name="Example gateway model",
         provider_name="openai",
         model_identifier="gpt-test",
         meta_data=None,

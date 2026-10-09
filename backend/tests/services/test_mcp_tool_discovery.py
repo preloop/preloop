@@ -301,6 +301,7 @@ class TestGetAllEnabledProxiedTools:
         server.id = uuid.uuid4()
         server.name = "Test Server"
         server.status = "active"
+        server.tool_prefix = None
 
         # Mock tools
         tool1 = MagicMock(spec=MCPTool)
@@ -315,7 +316,9 @@ class TestGetAllEnabledProxiedTools:
         def mock_query_side_effect(*args):
             mock_query = MagicMock()
             if args[0] == MCPServer:
-                mock_query.filter.return_value.all.return_value = [server]
+                mock_query.filter.return_value.order_by.return_value.all.return_value = [
+                    server
+                ]
             elif args[0] == ToolConfiguration:
                 mock_query.filter.return_value.all.return_value = []  # No configs
             elif args[0] == MCPTool:
@@ -342,6 +345,7 @@ class TestGetAllEnabledProxiedTools:
         server.id = uuid.uuid4()
         server.name = "Test Server"
         server.status = "active"
+        server.tool_prefix = None
 
         # Mock tools
         tool1 = MagicMock(spec=MCPTool)
@@ -362,7 +366,9 @@ class TestGetAllEnabledProxiedTools:
         def mock_query_side_effect(*args):
             mock_query = MagicMock()
             if args[0] == MCPServer:
-                mock_query.filter.return_value.all.return_value = [server]
+                mock_query.filter.return_value.order_by.return_value.all.return_value = [
+                    server
+                ]
             elif args[0] == ToolConfiguration:
                 mock_query.filter.return_value.all.return_value = [config]
             elif args[0] == MCPTool:

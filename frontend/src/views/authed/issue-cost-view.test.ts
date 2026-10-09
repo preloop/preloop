@@ -269,7 +269,7 @@ describe('IssueCostView', () => {
 
   it('formats cost and leaves missing intervals blank', () => {
     expect(formatIssueCost(2.875)).to.equal('$2.88');
-    expect(formatIssueCost(0.0042)).to.equal('$0.0042');
+    expect(formatIssueCost(0.0042)).to.equal('< $0.01');
     expect(formatIssueHours(null)).to.equal('');
     expect(formatIssueHours(2)).to.equal('2.0 h');
   });

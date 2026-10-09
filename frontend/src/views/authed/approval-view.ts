@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css, unsafeCSS } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import {
@@ -36,7 +37,7 @@ import {
 } from '../../utils/approvals';
 import { isDecidableRequest } from '../../actions/approval-actions';
 import { confirmDialog, showToast } from '../../components/confirm-dialog';
-import { formatRelativeTime } from '../../utils/date';
+import { formatRelativeTime, parseUTCDate } from '../../utils/date';
 import { formatAnswerValue } from '../../utils/question-form';
 import {
   normalizeScopedToolRules,
@@ -76,6 +77,7 @@ export interface ApprovalTimelineEntry {
 
 @customElement('approval-view')
 export class ApprovalView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @property({ type: String })
   requestId: string = '';
 
@@ -504,7 +506,7 @@ export class ApprovalView extends AuthedElement {
 
       .timeline-icon {
         flex: none;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 1rem;
         margin-top: 0.1rem;
       }
@@ -1065,7 +1067,7 @@ export class ApprovalView extends AuthedElement {
   }
 
   private formatDate(dateStr: string): string {
-    const date = new Date(dateStr);
+    const date = parseUTCDate(dateStr);
     return date.toLocaleString('en-US', {
       year: 'numeric',
       month: 'short',
@@ -1780,8 +1782,8 @@ export class ApprovalView extends AuthedElement {
   private decisionElapsed(request: ApprovalRequest): string | null {
     if (!request.resolved_at) return null;
     const elapsed =
-      new Date(request.resolved_at).getTime() -
-      new Date(request.requested_at).getTime();
+      parseUTCDate(request.resolved_at).getTime() -
+      parseUTCDate(request.requested_at).getTime();
     if (!Number.isFinite(elapsed) || elapsed < 0) return null;
     const seconds = Math.round(elapsed / 1000);
     if (seconds < 60) return `${seconds}s`;

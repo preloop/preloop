@@ -195,13 +195,13 @@ describe('ConsoleShell', () => {
     )) as ConsoleShell;
 
     await waitUntil(
-      () => el.shadowRoot?.querySelector('[role="navigation"]') !== null,
+      () => el.shadowRoot?.querySelector('nav') !== null,
       'Navigation did not render'
     );
 
     const sidebar = el.shadowRoot?.querySelector('.sidebar');
     expect(sidebar).to.exist;
-    expect(sidebar?.getAttribute('role')).to.equal('navigation');
+    expect(sidebar?.tagName).to.equal('NAV');
     expect(sidebar?.getAttribute('aria-label')).to.equal('Console navigation');
   });
 
@@ -355,7 +355,7 @@ describe('ConsoleShell', () => {
     const originalPath = window.location.pathname;
     window.history.replaceState({}, '', '/console/tools');
     document.documentElement.style.setProperty(
-      '--sl-color-primary-600',
+      '--console-link-color',
       'rgb(4, 5, 6)'
     );
 
@@ -386,7 +386,7 @@ describe('ConsoleShell', () => {
       expect(labelStyles.fontWeight).to.equal('600');
       expect(labelStyles.fontSize).to.equal('14px');
     } finally {
-      document.documentElement.style.removeProperty('--sl-color-primary-600');
+      document.documentElement.style.removeProperty('--console-link-color');
       window.history.replaceState({}, '', originalPath);
     }
   });
@@ -426,10 +426,16 @@ describe('ConsoleShell', () => {
     )) as ConsoleShell;
 
     await waitUntil(
-      () => el.shadowRoot?.querySelector('sl-menu') !== null,
+      () => el.shadowRoot?.querySelector('#console-nav > ul') !== null,
       'Sidebar menu did not render'
     );
 
+    expect(el.shadowRoot?.querySelector('#console-nav')?.tagName).to.equal(
+      'NAV'
+    );
+    expect(el.shadowRoot?.querySelector('sl-menu, sl-menu-item')).to.equal(
+      null
+    );
     const overviewLink = el.shadowRoot?.querySelector('a[href="/console"]');
     expect(overviewLink).to.exist;
 
@@ -656,9 +662,9 @@ describe('ConsoleShell', () => {
     const sessions = el.shadowRoot?.querySelector(
       'a[href="/console/runtime-sessions"]'
     );
-    const audit = approvals?.closest('sl-details.nav-section');
+    const audit = approvals?.closest('details.nav-section');
     expect(audit?.textContent).to.contain('Audit');
-    expect(sessions?.closest('sl-details.nav-section')).to.equal(audit);
+    expect(sessions?.closest('details.nav-section')).to.equal(audit);
     // Without audit_logs there is no All events entry.
     expect(el.shadowRoot?.querySelector('a[href="/console/audit"]')).to.not
       .exist;
@@ -689,11 +695,11 @@ describe('ConsoleShell', () => {
       'Policies link did not render'
     );
 
-    const menu = el.shadowRoot!.querySelector('#console-nav > sl-menu')!;
+    const menu = el.shadowRoot!.querySelector('#console-nav > ul')!;
     const rows = Array.from(menu.children)
       .map((child) =>
-        child.matches('sl-details.nav-section')
-          ? child.querySelector('[slot="summary"] .sidebar-label')?.textContent
+        child.matches('details.nav-section')
+          ? child.querySelector('summary .sidebar-label')?.textContent
           : child.querySelector('.sidebar-label')?.textContent
       )
       .filter((label): label is string => !!label)
@@ -739,7 +745,7 @@ describe('ConsoleShell', () => {
 
     const audit = el
       .shadowRoot!.querySelector('a[href="/console/audit"]')!
-      .closest('sl-details.nav-section')!;
+      .closest('details.nav-section')!;
     const hrefs = Array.from(audit.querySelectorAll('a.sidebar-link')).map(
       (a) => a.getAttribute('href')
     );
@@ -825,9 +831,9 @@ describe('ConsoleShell', () => {
     // visible without opening the group; an open group hides the copy.
     const audit = el
       .shadowRoot!.querySelector('a[href="/console/approvals"]')!
-      .closest('sl-details.nav-section') as HTMLElement & { open: boolean };
+      .closest('details.nav-section') as HTMLElement & { open: boolean };
     const headerBadge = audit.querySelector(
-      '[slot="summary"] sl-badge.nav-section-badge'
+      'summary sl-badge.nav-section-badge'
     ) as HTMLElement;
     expect(headerBadge?.textContent).to.contain('3');
     expect(audit.open).to.equal(false);
@@ -874,7 +880,7 @@ describe('ConsoleShell', () => {
       .exist;
 
     const settingsSections = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+      el.shadowRoot?.querySelectorAll('details.nav-section') ?? []
     );
     const settingsSection = settingsSections.find((section) =>
       section.textContent?.includes('Settings')
@@ -1088,7 +1094,7 @@ describe('ConsoleShell', () => {
 
       const link = recordsLink(el);
       expect(link).to.exist;
-      const group = link?.closest('sl-details.nav-section');
+      const group = link?.closest('details.nav-section');
       expect(group?.textContent).to.contain('Audit');
       expect(group?.textContent).to.not.contain('Settings');
     });
@@ -1099,7 +1105,7 @@ describe('ConsoleShell', () => {
 
       const link = recordsLink(el);
       expect(link).to.exist;
-      expect(link?.closest('sl-details.nav-section')?.textContent).to.contain(
+      expect(link?.closest('details.nav-section')?.textContent).to.contain(
         'Audit'
       );
     });
@@ -1181,7 +1187,7 @@ describe('ConsoleShell', () => {
       'Settings links did not render'
     );
     const labels = Array.from(
-      el.shadowRoot?.querySelectorAll('sl-menu-label.nav-group-label') ?? []
+      el.shadowRoot?.querySelectorAll('li.nav-group-label') ?? []
     ).map((label) => label.textContent?.trim());
     // No user or team management in the default stub: no people heading.
     expect(labels).to.deep.equal(['Account', 'Developers', 'Personal']);
@@ -1205,7 +1211,7 @@ describe('ConsoleShell', () => {
     const emergency = el.shadowRoot?.querySelector(
       'a[href="/console/settings/emergency"]'
     );
-    expect(emergency?.closest('sl-details')).to.equal(null);
+    expect(emergency?.closest('details')).to.equal(null);
   });
 
   it('shows All events under Audit when audit_logs is enabled', async () => {
@@ -1273,7 +1279,7 @@ describe('ConsoleShell', () => {
       );
 
       const auditSections = Array.from(
-        el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+        el.shadowRoot?.querySelectorAll('details.nav-section') ?? []
       );
       const auditSection = auditSections.find((section) =>
         section.textContent?.includes('Audit')
@@ -1299,7 +1305,7 @@ describe('ConsoleShell', () => {
 
     function auditSection(el: ConsoleShell): HTMLElement | undefined {
       return Array.from(
-        el.shadowRoot?.querySelectorAll('sl-details.nav-section') ?? []
+        el.shadowRoot?.querySelectorAll('details.nav-section') ?? []
       ).find((section) => section.textContent?.includes('Audit')) as
         HTMLElement | undefined;
     }
@@ -1354,7 +1360,7 @@ describe('ConsoleShell', () => {
         'a.sidebar-link.active[href="/console/approvals"]'
       );
       expect(approvals).to.exist;
-      expect(approvals?.closest('sl-details.nav-section')).to.equal(
+      expect(approvals?.closest('details.nav-section')).to.equal(
         auditSection(el)
       );
       expect(auditSection(el)?.hasAttribute('open')).to.be.true;

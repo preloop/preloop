@@ -411,6 +411,15 @@ describe('CostView', () => {
     expect(groups.find((row) => row.flowId === 'flow-older')?.cost).to.equal(6);
     expect(groups.find((row) => row.agentId === 'agent-1')?.cost).to.equal(8.5);
     expect(groups).to.have.length(3);
+    // Summary loading completes before the lazy Agents tab has rendered.
+    await waitUntil(
+      () =>
+        !!element.shadowRoot!.querySelector(
+          'a[href="/console/flows/flow-review"]'
+        ),
+      'the complete flow total row did not render',
+      { timeout: 5000 }
+    );
     const flowLink = element.shadowRoot!.querySelector(
       'a[href="/console/flows/flow-review"]'
     )!;

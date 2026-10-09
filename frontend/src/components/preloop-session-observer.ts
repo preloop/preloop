@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -675,7 +676,7 @@ export class PreloopSessionObserver extends LitElement {
       .optimize-hint-dismiss {
         background: none;
         border: none;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         cursor: pointer;
         font-size: var(--sl-font-size-medium);
         line-height: 1;
@@ -1232,8 +1233,8 @@ export class PreloopSessionObserver extends LitElement {
   private sortEventsDescending(events: FlowGatewayEvent[]): FlowGatewayEvent[] {
     return [...events].sort(
       (left, right) =>
-        new Date(right.timestamp || 0).getTime() -
-        new Date(left.timestamp || 0).getTime()
+        parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime() -
+        parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime()
     );
   }
 
@@ -1897,8 +1898,8 @@ export class PreloopSessionObserver extends LitElement {
       .filter((item) => isArtifactRow(item) && artifactRowMetadata(item))
       .sort(
         (left, right) =>
-          new Date(left.timestamp || 0).getTime() -
-          new Date(right.timestamp || 0).getTime()
+          parseUTCDate(left.timestamp || '1970-01-01T00:00:00Z').getTime() -
+          parseUTCDate(right.timestamp || '1970-01-01T00:00:00Z').getTime()
       );
   }
 
@@ -2881,6 +2882,7 @@ export class PreloopSessionObserver extends LitElement {
                       this.hideListSearch
                         ? nothing
                         : html`<sl-input
+                            aria-label="Search sessions"
                             placeholder="Search sessions"
                             clearable
                             .value=${this.searchQuery}

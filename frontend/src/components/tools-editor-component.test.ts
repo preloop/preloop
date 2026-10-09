@@ -205,6 +205,58 @@ function groupTitles(editor: ToolsEditorComponent): string[] {
   );
 }
 
+describe('ToolsEditorComponent – tool name collisions (#1135)', () => {
+  it('shows the server warnings and a Shadowed badge on the tool row', async () => {
+    const warning =
+      "Tool 'read_scope' on MCP server 'newer' is shadowed by MCP server 'older'.";
+    const server = {
+      id: 'srv-2',
+      name: 'newer',
+      url: 'https://newer.example.com/mcp',
+      tool_prefix: null,
+      warnings: [warning],
+    };
+    const tool = {
+      name: 'read_scope',
+      description: 'Read',
+      source: 'mcp',
+      source_id: 'srv-2',
+      source_name: 'newer',
+      schema: {},
+      is_enabled: true,
+      is_supported: true,
+      approval_workflow_id: null,
+      has_approval_condition: false,
+      config_id: null,
+      access_rules: [],
+      shadowed: true,
+      warnings: [warning],
+    };
+    const el = (await fixture(html`
+      <tools-editor-component
+        mode="global"
+        .mcpServers=${[server]}
+        .tools=${[tool]}
+      ></tools-editor-component>
+    `)) as ToolsEditorComponent;
+    await el.updateComplete;
+    const root = el.shadowRoot!;
+    expect(
+      root.querySelector('[data-testid="server-warning-badge"]')?.textContent
+    ).to.contain('1 warning');
+    const toggle = root.querySelector('.section-toggle') as HTMLElement;
+    if (!root.querySelector('[data-testid="server-warnings"]')) toggle.click();
+    await el.updateComplete;
+    expect(
+      root.querySelector('[data-testid="server-warnings"]')?.textContent
+    ).to.contain(warning);
+    const row = root.querySelector('tool-list-item') as any;
+    await row.updateComplete;
+    expect(row.shadowRoot.querySelector('[data-testid="tool-shadowed-badge"]'))
+      .to.exist;
+  });
+});
+
 describe('ToolsEditorComponent – native family', () => {
   const mixedTools: ToolWithRules[] = [
     makeTool({

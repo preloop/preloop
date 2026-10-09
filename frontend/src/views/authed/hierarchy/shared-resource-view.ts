@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -41,6 +42,7 @@ const VISIBLE_FIELDS: ReadonlyArray<[keyof SharedResource, string]> = [
  */
 @customElement('shared-resource-view')
 export class SharedResourceView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
     unsafeCSS(consoleStyles),
     css`

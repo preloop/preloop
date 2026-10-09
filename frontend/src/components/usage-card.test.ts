@@ -502,7 +502,7 @@ describe('usage-card', () => {
       // Colour-free: the delta is meta text, not a verdict. The sentinel
       // stands in for the theme sheet, which the test page does not load.
       document.documentElement.style.setProperty(
-        '--sl-color-neutral-500',
+        '--console-meta-color',
         'rgb(7, 8, 9)'
       );
       try {
@@ -511,7 +511,7 @@ describe('usage-card', () => {
         ) as HTMLElement;
         expect(getComputedStyle(delta).color).to.equal('rgb(7, 8, 9)');
       } finally {
-        document.documentElement.style.removeProperty('--sl-color-neutral-500');
+        document.documentElement.style.removeProperty('--console-meta-color');
       }
 
       // The unit toggle switches what the delta compares.

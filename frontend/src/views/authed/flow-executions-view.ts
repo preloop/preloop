@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+import { tableScrollStyles } from '../../styles/table-scroll';
 import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { router } from '../../router';
@@ -165,23 +167,26 @@ export const RANGE_OPTIONS: Array<{
 
 @customElement('flow-executions-view')
 export class FlowExecutionsView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
-    reducedMotionStyles,
-    unsafeCSS(consoleStyles),
-    // The sortable header button and the resize handle come from the table
-    // layer now, so every list that adopts it gets one recipe.
-    listTableStyles,
-    unsafeCSS(executionSubjectCss),
-    unsafeCSS(executionModelCss),
-    css`
-      :host {
-        display: block;
-      }
-      .table-wrapper {
-        overflow-x: auto;
-        margin-top: 1rem;
-      }
-      /* Fixed layout, because content-driven widths made this table 1250px
+    tableScrollStyles,
+    [
+      reducedMotionStyles,
+      unsafeCSS(consoleStyles),
+      // The sortable header button and the resize handle come from the table
+      // layer now, so every list that adopts it gets one recipe.
+      listTableStyles,
+      unsafeCSS(executionSubjectCss),
+      unsafeCSS(executionModelCss),
+      css`
+        :host {
+          display: block;
+        }
+        .table-wrapper {
+          overflow-x: auto;
+          margin-top: 1rem;
+        }
+        /* Fixed layout, because content-driven widths made this table 1250px
          wide inside a 1125px wrapper at 1440: the cost column and the kebab
          were off-screen behind a scrollbar that only appeared on hover. The
          widths are declared per column in EXECUTION_COLUMNS and set on the
@@ -191,227 +196,228 @@ export class FlowExecutionsView extends AuthedElement {
          floor for Subject, so the flexible column that names a run stays
          readable at the narrowest layout. Below that the wrapper scrolls
          horizontally rather than squeezing Subject to a sliver. */
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        min-width: 1080px;
-        table-layout: fixed;
-        font-size: var(--console-text-body);
-      }
-      /* A cell grid draws a box around every value in the table (wave 4).
+        table {
+          width: 100%;
+          border-collapse: collapse;
+          min-width: 1080px;
+          table-layout: fixed;
+          font-size: var(--console-text-body);
+        }
+        /* A cell grid draws a box around every value in the table (wave 4).
          Rows are separated by a hairline and nothing else, and the header is
          the semibold label, not a filled band. */
-      th,
-      td {
-        border: none;
-        border-bottom: 1px solid var(--console-hairline);
-        padding: 8px;
-        text-align: left;
-        vertical-align: middle;
-      }
-      th {
-        background-color: transparent;
-        color: var(--console-meta-color);
-        font-weight: var(--sl-font-weight-semibold);
-        font-size: var(--console-text-meta);
-        white-space: nowrap;
-      }
-      tbody tr:last-child td {
-        border-bottom: none;
-      }
-      .execution-row {
-        cursor: pointer;
-      }
-      .execution-row:hover td {
-        background-color: var(--console-hover-tint);
-      }
-      /* The flow name is the row's real anchor, so cmd-click opens a tab. */
-      .row-link {
-        color: var(--console-link-color);
-        display: block;
-        font-weight: var(--sl-font-weight-semibold);
-        overflow: hidden;
-        text-decoration: none;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .row-link:hover,
-      .row-link:focus-visible {
-        text-decoration: underline;
-      }
-      /* A table cell, not a flex row: as flex the name and the pool chip
+        th,
+        td {
+          border: none;
+          border-bottom: 1px solid var(--console-hairline);
+          padding: 8px;
+          text-align: left;
+          vertical-align: middle;
+        }
+        th {
+          background-color: transparent;
+          color: var(--console-meta-color);
+          font-weight: var(--sl-font-weight-semibold);
+          font-size: var(--console-text-meta);
+          white-space: nowrap;
+        }
+        tbody tr:last-child td {
+          border-bottom: none;
+        }
+        .execution-row {
+          cursor: pointer;
+        }
+        .execution-row:hover td {
+          background-color: var(--console-hover-tint);
+        }
+        /* The flow name is the row's real anchor, so cmd-click opens a tab. */
+        .row-link {
+          color: var(--console-link-color);
+          display: block;
+          font-weight: var(--sl-font-weight-semibold);
+          overflow: hidden;
+          text-decoration: none;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .row-link:hover,
+        .row-link:focus-visible {
+          text-decoration: underline;
+        }
+        /* A table cell, not a flex row: as flex the name and the pool chip
          shared one line, which pushed the whole row taller and the table
          wider. The chip now sits under the name, as it does on the flows
          list. */
-      .flow-cell {
-        display: table-cell;
-        overflow: hidden;
-      }
-      /* The subject is the primary way to tell executions apart, so it gets
+        .flow-cell {
+          display: table-cell;
+          overflow: hidden;
+        }
+        /* The subject is the primary way to tell executions apart, so it gets
          the width the fixed columns leave over. */
-      .subject-cell {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .subject-cell .execution-subject.is-fallback {
-        font-family: var(--sl-font-mono);
-      }
-      .model-cell {
-        overflow: hidden;
-      }
-      .status-cell {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 4px 8px;
-      }
-      .resume-line {
-        flex-basis: 100%;
-        font-size: var(--console-text-meta);
-        color: var(--console-meta-color);
-        line-height: 1.3;
-      }
-      .resume-line a {
-        color: var(--sl-color-primary-600);
-        text-decoration: none;
-      }
-      .resume-line a:hover {
-        text-decoration: underline;
-      }
-      /* One of the page's two ambient animations: the dot that says a run is
+        .subject-cell {
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+        .subject-cell .execution-subject.is-fallback {
+          font-family: var(--sl-font-mono);
+        }
+        .model-cell {
+          overflow: hidden;
+        }
+        .status-cell {
+          display: flex;
+          align-items: center;
+          flex-wrap: wrap;
+          gap: 4px 8px;
+        }
+        .resume-line {
+          flex-basis: 100%;
+          font-size: var(--console-text-meta);
+          color: var(--console-meta-color);
+          line-height: 1.3;
+        }
+        .resume-line a {
+          color: var(--sl-color-primary-600);
+          text-decoration: none;
+        }
+        .resume-line a:hover {
+          text-decoration: underline;
+        }
+        /* One of the page's two ambient animations: the dot that says a run is
          still going. The chip beside it stays a soft tint. */
-      .status-indicator {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        flex-shrink: 0;
-        animation: pulse 2s infinite;
-      }
-      .status-indicator.running {
-        background-color: var(--sl-color-primary-600);
-      }
-      .status-indicator.pending {
-        background-color: var(--sl-color-warning-600);
-      }
-      @keyframes pulse {
-        0%,
-        100% {
-          opacity: 1;
+        .status-indicator {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          flex-shrink: 0;
+          animation: pulse 2s infinite;
         }
-        50% {
-          opacity: 0.5;
+        .status-indicator.running {
+          background-color: var(--sl-color-primary-600);
         }
-      }
-      .started-cell,
-      .duration-cell {
-        color: var(--console-meta-color);
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }
-      /* A live label ("Running · 12m 30s") is far wider than a finished one
+        .status-indicator.pending {
+          background-color: var(--sl-color-warning-600);
+        }
+        @keyframes pulse {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.5;
+          }
+        }
+        .started-cell,
+        .duration-cell {
+          color: var(--console-meta-color);
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        /* A live label ("Running · 12m 30s") is far wider than a finished one
          ("4m 32s"), and the Duration column is fixed. Clip rather than paint
          over the Model cell if a future label outgrows the declared width;
          the title carries the full text either way. */
-      .duration-cell {
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      td.numeric,
-      th.numeric {
-        text-align: right;
-        font-variant-numeric: tabular-nums;
-        white-space: nowrap;
-      }
-      .actions-cell {
-        width: 72px;
-      }
-      .row-actions {
-        display: flex;
-        justify-content: flex-end;
-      }
-      /* Under the bar, not inside it: whether updates are live is a state of
+        .duration-cell {
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        td.numeric,
+        th.numeric {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+          white-space: nowrap;
+        }
+        .actions-cell {
+          width: 72px;
+        }
+        .row-actions {
+          display: flex;
+          justify-content: flex-end;
+        }
+        /* Under the bar, not inside it: whether updates are live is a state of
          the page, not a filter. */
-      .header-controls {
-        display: flex;
-        justify-content: flex-start;
-        align-items: center;
-        gap: 12px;
-        flex-wrap: wrap;
-        margin: 8px 0 16px;
-      }
-      list-toolbar {
-        margin-bottom: 4px;
-      }
-      list-toolbar sl-select {
-        min-width: 180px;
-      }
-      /* The selects carry a label so a screen reader does not meet two
+        .header-controls {
+          display: flex;
+          justify-content: flex-start;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+          margin: 8px 0 16px;
+        }
+        list-toolbar {
+          margin-bottom: 4px;
+        }
+        list-toolbar sl-select {
+          min-width: 180px;
+        }
+        /* The selects carry a label so a screen reader does not meet two
          unnamed comboboxes; the bar has no room to print it. */
-      list-toolbar sl-select::part(form-control-label) {
-        position: absolute;
-        width: 1px;
-        height: 1px;
-        padding: 0;
-        margin: -1px;
-        overflow: hidden;
-        clip: rect(0 0 0 0);
-        white-space: nowrap;
-        border: 0;
-      }
-      .reset-filters {
-        background: none;
-        border: 0;
-        padding: 0;
-        color: var(--sl-color-primary-600);
-        font-size: var(--console-text-meta);
-        cursor: pointer;
-        text-decoration: underline;
-      }
-      .connection-status {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: var(--console-text-meta);
-        color: var(--console-meta-color);
-      }
-      .connection-dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background-color: var(--sl-color-neutral-400);
-      }
-      .connection-dot.live {
-        background-color: var(--sl-color-success-600);
-      }
-      .connection-dot.dropped {
-        background-color: var(--sl-color-danger-600);
-      }
-      .result-count {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-        margin-bottom: 12px;
-      }
-      .load-error {
-        margin-bottom: 16px;
-      }
-      .load-error .retry-button {
-        display: block;
-        margin-top: 8px;
-      }
-      .pagination {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-top: 16px;
-        padding-top: 12px;
-        border-top: 1px solid var(--console-hairline);
-      }
-      .pagination-page {
-        color: var(--console-meta-color);
-        font-size: var(--console-text-meta);
-      }
-    `,
+        list-toolbar sl-select::part(form-control-label) {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          margin: -1px;
+          overflow: hidden;
+          clip: rect(0 0 0 0);
+          white-space: nowrap;
+          border: 0;
+        }
+        .reset-filters {
+          background: none;
+          border: 0;
+          padding: 0;
+          color: var(--sl-color-primary-600);
+          font-size: var(--console-text-meta);
+          cursor: pointer;
+          text-decoration: underline;
+        }
+        .connection-status {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: var(--console-text-meta);
+          color: var(--console-meta-color);
+        }
+        .connection-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background-color: var(--sl-color-neutral-400);
+        }
+        .connection-dot.live {
+          background-color: var(--sl-color-success-600);
+        }
+        .connection-dot.dropped {
+          background-color: var(--sl-color-danger-600);
+        }
+        .result-count {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+          margin-bottom: 12px;
+        }
+        .load-error {
+          margin-bottom: 16px;
+        }
+        .load-error .retry-button {
+          display: block;
+          margin-top: 8px;
+        }
+        .pagination {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-top: 16px;
+          padding-top: 12px;
+          border-top: 1px solid var(--console-hairline);
+        }
+        .pagination-page {
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+        }
+      `,
+    ],
   ];
 
   @state()
@@ -1452,19 +1458,21 @@ export class FlowExecutionsView extends AuthedElement {
                 : this.renderEmptyState()
               : html`
                   <div class="table-wrapper">
-                    <table>
-                      <thead>
-                        <tr>
-                          ${renderListHeaders(this.table)}
-                          <th class="actions-cell"></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${this.paginatedExecutions.map((exec) =>
-                          this.renderRow(exec)
-                        )}
-                      </tbody>
-                    </table>
+                    <div class="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            ${renderListHeaders(this.table)}
+                            <th class="actions-cell"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${this.paginatedExecutions.map((exec) =>
+                            this.renderRow(exec)
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
                   ${

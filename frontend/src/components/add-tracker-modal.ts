@@ -1,3 +1,4 @@
+import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import * as api from '../api';
@@ -1065,7 +1066,7 @@ export class AddTrackerModal extends LitElement {
                       Connect with GitHub
                     </sl-button>
                     <p
-                      style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
+                      style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--console-meta-color); font-size: var(--sl-font-size-small);"
                     >
                       Recommended: One-click OAuth connection
                     </p>
@@ -1323,7 +1324,7 @@ export class AddTrackerModal extends LitElement {
     const actor =
       status.actor?.display_name || status.actor?.nickname || 'unknown actor';
     const expiry = status.expires_at
-      ? new Date(status.expires_at).toLocaleString()
+      ? parseUTCDate(status.expires_at).toLocaleString()
       : 'reported by the provider when connected';
     return html`
       <sl-alert
@@ -1522,7 +1523,7 @@ export class AddTrackerModal extends LitElement {
           Connect Bitbucket
         </sl-button>
         <p
-          style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small);"
+          style="text-align: center; margin: 0.75rem 0 0.5rem 0; color: var(--console-meta-color); font-size: var(--sl-font-size-small);"
         >
           Recommended: browser consent with automatic token renewal
         </p>
