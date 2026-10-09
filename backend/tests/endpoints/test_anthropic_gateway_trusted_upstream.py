@@ -387,7 +387,34 @@ def test_subject_allowed_models_is_enforced(client, db_session, test_user):
 
     response = _post(client, token, _identity())
 
-    assert response.status_code == 403
+    # 429, not 403: the apps gateway would fail over around a 403.
+    assert response.status_code == 429
+    assert response.headers["x-should-retry"] == "false"
+    assert response.json()["error"]["type"] == "permission_error"
+
+    counted = client.post(
+        "/anthropic/v1/messages/count_tokens",
+        headers=_headers(token, **_identity()),
+        json={"model": ALIAS, "messages": [{"role": "user", "content": "Hi"}]},
+    )
+    assert counted.status_code == 429
+    assert counted.json()["error"]["type"] == "permission_error"
+
+    # Same allowlist on a plain request through the key scope stays 403.
+    plain_key, plain_token = _key(db_session, test_user, trusted=False, name="plain")
+    account.meta_data = set_subject_governance(
+        account.meta_data,
+        subject_type="api_keys",
+        subject_id=str(plain_key.id),
+        config={"allowed_models": ["some-other-model"]},
+    )
+    db_session.commit()
+    plain = client.post(
+        "/anthropic/v1/messages/count_tokens",
+        headers=_headers(plain_token),
+        json={"model": ALIAS, "messages": [{"role": "user", "content": "Hi"}]},
+    )
+    assert plain.status_code == 403
 
 
 # --- Sessions and attribution -----------------------------------------------

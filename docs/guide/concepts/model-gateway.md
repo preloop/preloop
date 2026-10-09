@@ -55,7 +55,7 @@ If you use Claude Code with a **Pro/Max subscription** instead of an API key, Pr
 
 Claude Desktop and Claude Code can reach Preloop's Anthropic surface in two ways.
 
-**Desktop direct.** Set Desktop's `inferenceProvider` to `gateway`, `inferenceGatewayBaseUrl` to `https://<your-preloop>/anthropic`, and the credential to a Preloop API key (`inferenceGatewayApiKey`, or `inferenceCredentialHelper` running `preloop auth gateway-credential --client claude-desktop`). Add `inferenceCustomHeaders: {"X-Preloop-Client": "claude-desktop"}` so usage rows record `client: claude_desktop`. Desktop's model picker reads `GET /anthropic/v1/models`. Attribution and budgets follow the API key, as for any other client.
+**Desktop direct.** Set Desktop's `inferenceProvider` to `gateway`, `inferenceGatewayBaseUrl` to `https://<your-preloop>/anthropic`, and `inferenceGatewayApiKey` to a Preloop API key. Add `inferenceCustomHeaders: {"X-Preloop-Client": "claude-desktop"}` so usage rows record `client: claude_desktop`. Desktop's model picker reads `GET /anthropic/v1/models`. Attribution and budgets follow the API key, as for any other client.
 
 **Claude apps gateway upstream.** A customer-run Claude apps gateway can use Preloop as its `provider: anthropic` upstream:
 
@@ -92,7 +92,7 @@ On a trusted upstream key Preloop reads the identity headers the apps gateway ad
 - Each developer becomes a **gateway subject**, keyed on the IdP `sub` and scoped to the key. When the email matches an existing member of the key's account, the subject is linked to that member, so the member's `user` budgets apply. Preloop never creates users, logins or permissions from these headers.
 - On any other credential the identity headers are ignored, because any client can forge them.
 - The secret is optional but recommended, because the key sits in the gateway's config file. When `trusted_upstream_secret` is set, a request without the matching `x-preloop-upstream-secret` header gets `401`. Preloop stores only a sha256 hash.
-- Budgets: a `gateway_subject` budget policy limits one developer; `per_subject_budget` on the key is the default for every developer without their own policy; the key's `api_key` budget still caps the gateway as a whole. Subject-scoped `allowed_models` (governance subject type `gateway_subjects`) also filter `GET /anthropic/v1/models`.
+- Budgets: a `gateway_subject` budget policy limits one developer; `per_subject_budget` on the key is the default for every developer without their own policy; the key's `api_key` budget still caps the gateway as a whole. Subject-scoped `allowed_models` (governance subject type `gateway_subjects`, keyed by the subject id) apply to messages, `count_tokens` and `GET /anthropic/v1/models`. There is no REST writer for `gateway_subjects` yet; until there is, per-developer model limits are set in the account's subject governance store, and the key's own `allowed_models` covers every developer behind it.
 - Usage rows carry `meta_data.gateway_source` (`claude_apps_gateway` or `direct`), `meta_data.client` (`claude_desktop`, `claude_code` or `unknown`), `gateway_subject_id` and `gateway_subject_email`. Audit entries name the subject.
 - Sessions keep Claude Code's `x-claude-code-session-id`. A request without it is grouped as `gw:<gateway_subject_id>:<UTC date>`.
 
@@ -106,7 +106,7 @@ x-should-retry: false
 {"type":"error","error":{"type":"billing_error","message":"Preloop budget exceeded for dev@example.com: ..."}}
 ```
 
-`retry-after` is whole seconds until the budget period resets. Rate limits return `429` with `"type": "rate_limit_error"`. Every other request keeps the `403` budget denial. A developer whose IdP sends no email gets the same `429`, but the apps gateway treats it as a capacity error and fails over; that cannot be fixed on Preloop's side.
+`retry-after` is whole seconds until the budget period resets. Rate limits return `429` with `"type": "rate_limit_error"`. The account kill switch and `allowed_models` denials return `429` with `"type": "permission_error"` and `x-should-retry: false` on this path too, so failover cannot route around them. Every other request keeps the `403` budget denial. A developer whose IdP sends no email gets the same `429`, but the apps gateway treats it as a capacity error and fails over; that cannot be fixed on Preloop's side.
 
 **Passthrough.** On the byte-faithful [subscription OAuth path](#subscription-oauth-passthrough), `anthropic-version`, `anthropic-beta` (any value) and every other `anthropic-*` request header are forwarded verbatim, as are unknown body fields and the `system` array. Models with a provider API key still go through the gateway's translation layer. Streams stay `text/event-stream`. Upstream error bodies and the `anthropic-ratelimit-unified-*` and `x-should-retry` response headers are relayed to the client.
 

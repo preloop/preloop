@@ -1766,40 +1766,9 @@ class OpenAIGatewayService:
         its agent), so a model picker never offers a model the gateway
         would refuse.
         """
-        from preloop.models.crud import crud_account
-        from preloop.services.model_allowlist import (
-            allowlist_permits_model,
-            normalize_allowed_models,
-        )
-        from preloop.services.subject_governance import (
-            get_subject_governance,
-            subject_scope_chain,
-        )
+        from preloop.services.model_allowlist import allowlist_permits_model
 
-        subject_context: Dict[str, Any] = (
-            build_subject_context_from_api_key(self.auth_context.api_key)
-            if self.auth_context.api_key
-            else {}
-        )
-        gateway_subject = getattr(self.auth_context, "gateway_subject", None)
-        if gateway_subject is not None:
-            subject_context["gateway_subject_id"] = str(gateway_subject.id)
-        allowlists: List[List[str]] = []
-        account = crud_account.get(self.db, id=self.auth_context.account_id)
-        if account is not None:
-            for subject_type, subject_id in subject_scope_chain(subject_context):
-                config = get_subject_governance(
-                    account.meta_data or {},
-                    subject_type=subject_type,
-                    subject_id=subject_id,
-                )
-                raw = config.get("allowed_models")
-                allowed = normalize_allowed_models(
-                    raw if isinstance(raw, list) else None
-                )
-                if allowed:
-                    allowlists.append(allowed)
-
+        allowlists = self._subject_model_allowlists()
         data: List[Dict[str, Any]] = []
         account_models = self._get_account_models()
         authorized_ids = self._authorized_model_ids(account_models)
@@ -1839,6 +1808,44 @@ class OpenAIGatewayService:
             "first_id": data[0]["id"] if data else None,
             "last_id": data[-1]["id"] if data else None,
         }
+
+    def _subject_model_allowlists(self) -> List[List[str]]:
+        """Non-empty ``allowed_models`` of every governance scope of this request.
+
+        Scopes: the gateway subject on a trusted upstream request, then the
+        API key, flow and managed agent. A model must be permitted by all.
+        """
+        from preloop.models.crud import crud_account
+        from preloop.services.model_allowlist import normalize_allowed_models
+        from preloop.services.subject_governance import (
+            get_subject_governance,
+            subject_scope_chain,
+        )
+
+        subject_context: Dict[str, Any] = (
+            build_subject_context_from_api_key(self.auth_context.api_key)
+            if self.auth_context.api_key
+            else {}
+        )
+        gateway_subject = getattr(self.auth_context, "gateway_subject", None)
+        if gateway_subject is not None:
+            subject_context["gateway_subject_id"] = str(gateway_subject.id)
+        allowlists: List[List[str]] = []
+        account = crud_account.get(self.db, id=self.auth_context.account_id)
+        if account is not None:
+            for subject_type, subject_id in subject_scope_chain(subject_context):
+                config = get_subject_governance(
+                    account.meta_data or {},
+                    subject_type=subject_type,
+                    subject_id=subject_id,
+                )
+                raw = config.get("allowed_models")
+                allowed = normalize_allowed_models(
+                    raw if isinstance(raw, list) else None
+                )
+                if allowed:
+                    allowlists.append(allowed)
+        return allowlists
 
     @gateway_database_scope
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -2534,6 +2541,7 @@ class OpenAIGatewayService:
         model = self._resolve_requested_model(
             payload.get("model"), provider="anthropic"
         )
+        self._raise_if_model_not_allowed(model, payload)
         upstream = self._anthropic_count_tokens_upstream(model)
         if upstream is None:
             estimate_payload = dict(payload)
@@ -2606,6 +2614,39 @@ class OpenAIGatewayService:
             return result
         finally:
             response.close()
+
+    def _raise_if_model_not_allowed(
+        self, ai_model: GatewayModel, payload: Dict[str, Any]
+    ) -> None:
+        """Apply subject ``allowed_models`` without any budget check.
+
+        Raises:
+            ModelGatewayAPIError: 403 ``model_not_allowed`` when any scope's
+                allowlist does not permit the model.
+        """
+        from preloop.services.model_allowlist import (
+            allowlist_permits_model,
+            format_model_not_allowed_detail,
+            requested_model_label,
+        )
+
+        spellings = ModelGatewayBudgetService._governed_model_spellings(
+            ai_model, payload
+        )
+        for allowed in self._subject_model_allowlists():
+            if not allowlist_permits_model(
+                allowed, ai_model, requested_spellings=spellings
+            ):
+                raise ModelGatewayAPIError(
+                    provider="anthropic",
+                    status_code=403,
+                    message=format_model_not_allowed_detail(
+                        requested_model_label(ai_model, payload.get("model"))
+                        or "unknown",
+                        allowed,
+                    ),
+                    code=MODEL_NOT_ALLOWED_ERROR_CODE,
+                )
 
     def _anthropic_count_tokens_upstream(
         self, ai_model: GatewayModel

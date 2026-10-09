@@ -165,3 +165,15 @@ def test_resolve_is_idempotent_and_never_creates_users(db_session, test_user):
     # Case-insensitive email match links the existing member.
     assert first.linked_user_id == test_user.id
     assert db_session.query(GatewaySubject).count() == 1
+
+
+@pytest.mark.parametrize("code", ["preloop_account_halted", "model_not_allowed"])
+def test_fail_closed_policy_denials_map_to_429(code):
+    exc = ModelGatewayAPIError(
+        provider="anthropic", status_code=403, message="halted", code=code
+    )
+    mapped = to_trusted_upstream_error(exc, _subject())
+    assert mapped.status_code == 429
+    assert mapped.to_payload()["error"]["type"] == "permission_error"
+    assert mapped.response_headers()["x-should-retry"] == "false"
+    assert mapped.response_headers()["retry-after"].isdigit()
