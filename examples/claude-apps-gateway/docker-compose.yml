@@ -1,0 +1,167 @@
+# Local end-to-end harness: Claude apps gateway -> Preloop -> stub model.
+# Test-only. Every service binds to loopback on the host.
+name: preloop-claude-apps-gateway
+
+x-preloop-env: &preloop-env
+  DATABASE_URL: postgresql+psycopg://postgres:postgres@preloop-db/preloop
+  NATS_URL: nats://nats:4222
+  SECRET_KEY: ${PRELOOP_SECRET_KEY}
+  JWT_ALGORITHM: HS256
+  PRELOOP_DISABLE_TELEMETRY: "true"
+  ENVIRONMENT: development
+  LOG_LEVEL: INFO
+
+services:
+  # ---- Preloop (built from this checkout) --------------------------------
+  preloop-db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: preloop
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      retries: 30
+
+  nats:
+    image: nats:alpine
+    command: ["-js"]
+
+  preloop-migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: preloop-cag-harness:local
+    depends_on:
+      preloop-db:
+        condition: service_healthy
+    environment: *preloop-env
+    command: python scripts/init_db.py --force
+    restart: "no"
+
+  preloop:
+    image: preloop-cag-harness:local
+    depends_on:
+      preloop-migrate:
+        condition: service_completed_successfully
+      nats:
+        condition: service_started
+    environment:
+      <<: *preloop-env
+      HOST: 0.0.0.0
+      PORT: "8000"
+      PRELOOP_SERVICE_ROLE: all
+    volumes:
+      - ./seed:/harness-seed:ro
+    command: python -m preloop.server
+    ports:
+      - "127.0.0.1:${HARNESS_PRELOOP_PORT:-18900}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 5s
+      retries: 60
+
+  # ---- Test doubles ------------------------------------------------------
+  stub-model:
+    image: python:3.12-alpine
+    environment:
+      HARNESS_ROLE: model
+      HARNESS_PORT: "9100"
+    volumes:
+      - ./stub:/stub:ro
+    command: ["python", "/stub/harness_server.py"]
+
+  recorder:
+    image: python:3.12-alpine
+    environment:
+      HARNESS_ROLE: recorder
+      HARNESS_PORT: "9000"
+      HARNESS_TARGET: http://preloop:8000
+    volumes:
+      - ./stub:/stub:ro
+    command: ["python", "/stub/harness_server.py"]
+    ports:
+      - "127.0.0.1:19000:9000"
+
+  spare:
+    image: python:3.12-alpine
+    environment:
+      HARNESS_ROLE: spare
+      HARNESS_PORT: "9100"
+      HARNESS_REPLY: SPARE_UPSTREAM_REPLY
+    volumes:
+      - ./stub:/stub:ro
+    command: ["python", "/stub/harness_server.py"]
+    ports:
+      - "127.0.0.1:19100:9100"
+
+  # ---- Claude apps gateway ----------------------------------------------
+  dex:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dex/config.yaml:/etc/dex/config.yaml:ro
+
+  gateway-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway
+      POSTGRES_DB: gateway
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway"]
+      interval: 3s
+      retries: 30
+
+  claude-gateway:
+    build:
+      context: ./gateway
+      args:
+        CLAUDE_CODE_VERSION: ${CLAUDE_CODE_VERSION}
+    image: preloop-cag-claude:${CLAUDE_CODE_VERSION}
+    depends_on:
+      gateway-db:
+        condition: service_healthy
+      dex:
+        condition: service_started
+      recorder:
+        condition: service_started
+      spare:
+        condition: service_started
+    environment:
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET}
+      GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET}
+      GATEWAY_POSTGRES_URL: postgres://gateway:gateway@gateway-db:5432/gateway
+      PRELOOP_UPSTREAM_KEY: ${PRELOOP_UPSTREAM_KEY}
+      PRELOOP_UPSTREAM_SECRET: ${PRELOOP_UPSTREAM_SECRET}
+      HOME: /var/lib/claude-gateway
+    volumes:
+      - ./gateway:/etc/claude-gateway:ro
+    # verify.sh step 6 swaps in gateway.rollback.yaml via GATEWAY_CONFIG_FILE.
+    command: ["claude", "gateway", "--config", "/etc/claude-gateway/${GATEWAY_CONFIG_FILE:-gateway.yaml}"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/readyz"]
+      interval: 3s
+      retries: 40
+    ports:
+      - "127.0.0.1:8080:8080"
+
+  # Claude Code client. Shares the gateway's network namespace so the
+  # gateway is a loopback origin (http://localhost:8080), which is the only
+  # plain-http origin Claude Code accepts. verify.sh runs `claude` here with
+  # a throwaway HOME; the host's own Claude config is never read or written.
+  client:
+    image: preloop-cag-claude:${CLAUDE_CODE_VERSION}
+    depends_on:
+      claude-gateway:
+        condition: service_healthy
+    network_mode: "service:claude-gateway"
+    environment:
+      PRELOOP_DISABLE_TELEMETRY: "true"
+      DISABLE_AUTOUPDATER: "1"
+      DISABLE_TELEMETRY: "1"
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+    volumes:
+      - ./client:/harness-client:ro
+    command: ["sleep", "infinity"]
