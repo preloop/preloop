@@ -38,7 +38,10 @@ def is_private_callback_event(event: dict[str, Any]) -> bool:
     """Recognize private callback requests without reading their bodies."""
     request = event.get("request") or {}
     path = urlsplit(str(request.get("url") or "")).path
-    return any(path.startswith(prefix) for prefix in _PRIVATE_CALLBACK_PREFIXES)
+    return any(
+        path == prefix.rstrip("/") or path.startswith(prefix)
+        for prefix in _PRIVATE_CALLBACK_PREFIXES
+    )
 
 
 def sentry_before_send_transaction(

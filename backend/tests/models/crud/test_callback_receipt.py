@@ -231,3 +231,27 @@ def test_binding_serializes_epoch_and_cross_tenant_registration() -> None:
     db.add.assert_called_once()
     db.flush.assert_called_once()
     db.commit.assert_not_called()
+
+
+def test_private_callback_namespace_includes_exact_admin_base_path() -> None:
+    from preloop.utils.sentry_filters import (
+        register_private_callback_prefix,
+        sentry_before_send,
+        sentry_before_send_transaction,
+    )
+
+    register_private_callback_prefix("/api/v1/synthetic-private-integration/")
+    event = {
+        "request": {
+            "url": "https://example.com/api/v1/synthetic-private-integration",
+            "data": {"signing_secret": "synthetic-secret"},
+        }
+    }
+    assert sentry_before_send(event, {}) is None
+    assert sentry_before_send_transaction(event, {}) is None
+    unrelated = {
+        "request": {
+            "url": "https://example.com/api/v1/synthetic-private-integration-unrelated"
+        }
+    }
+    assert sentry_before_send_transaction(unrelated, {}) is unrelated
