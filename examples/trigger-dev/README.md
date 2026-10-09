@@ -15,6 +15,7 @@ Guide: [docs/guide/integrations/trigger-dev.md](../../docs/guide/integrations/tr
 | `src/agent.ts` | The agent: `streamText` with a `refund` tool gated by `requestApproval()` |
 | `src/trigger/governed-agent.ts` | The trigger.dev task, one Preloop session per run |
 | `src/smoke.ts` | Runs the same agent as a plain Node script, without trigger.dev |
+| `src/preloop.test.ts` | Fail-closed tests for `requestApproval()` (`npm test`) |
 | `trigger.config.ts` | trigger.dev project config |
 
 ## 1. Prepare Preloop
@@ -31,6 +32,7 @@ Guide: [docs/guide/integrations/trigger-dev.md](../../docs/guide/integrations/tr
 npm install
 cp .env.example .env   # fill PRELOOP_URL, PRELOOP_AGENT_TOKEN, PRELOOP_MODEL
 npm run typecheck      # no trigger.dev account needed
+npm test               # fail-closed checks for requestApproval()
 ```
 
 ## 3. Run
@@ -55,10 +57,11 @@ trigger `governed-support-agent` with:
 
 ## Notes
 
-- No lockfile is committed: `npm install` resolves the current releases of the
-  SDKs, so you get their latest security fixes.
+- The example is not pinned on purpose: no lockfile is committed, so
+  `npm install` resolves the current releases of the SDKs and you get their
+  latest security fixes. Commit your own lockfile when you copy the example.
 
-- The approval call fails closed: an HTTP error or an expired approval is a
-  deny, and the tool tells the model the refund did not happen.
+- The approval call fails closed: a network error, an HTTP error, a malformed
+  reply or an expired approval is a deny, and the tool tells the model the refund did not happen.
 - Keep `maxDuration` in `trigger.config.ts` above the approval workflow
   timeout (300 seconds by default).

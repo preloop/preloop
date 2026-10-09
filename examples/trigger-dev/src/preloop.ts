@@ -61,21 +61,33 @@ export async function requestApproval(input: {
   reasoning: string;
   sessionId: string;
 }): Promise<ApprovalDecision> {
-  const response = await fetch(`${preloopUrl()}/api/v1/agents/permission-check`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${requireEnv("PRELOOP_AGENT_TOKEN")}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      tool_name: input.toolName,
-      tool_input: input.toolInput,
-      agent_reasoning: input.reasoning,
-      session_id: input.sessionId,
-      source: "trigger_dev",
-      // Omitted client_decision means "ask": escalate unless a rule decides.
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${preloopUrl()}/api/v1/agents/permission-check`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${requireEnv("PRELOOP_AGENT_TOKEN")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool_name: input.toolName,
+        tool_input: input.toolInput,
+        agent_reasoning: input.reasoning,
+        session_id: input.sessionId,
+        source: "trigger_dev",
+        // Omitted client_decision means "ask": escalate unless a rule decides.
+      }),
+    });
+  } catch (error) {
+    // Fail closed on transport errors too (Preloop unreachable, connection
+    // reset, a proxy closing the held request): the tool does not run.
+    return {
+      approved: false,
+      reason: `Preloop permission check unreachable: ${String(error)}`,
+      requestId: null,
+      timedOut: false,
+    };
+  }
   if (!response.ok) {
     // Fail closed: no decision from Preloop means the tool does not run.
     return {
@@ -85,7 +97,17 @@ export async function requestApproval(input: {
       timedOut: false,
     };
   }
-  const body = (await response.json()) as PermissionCheckResponse;
+  let body: PermissionCheckResponse;
+  try {
+    body = (await response.json()) as PermissionCheckResponse;
+  } catch {
+    return {
+      approved: false,
+      reason: "Preloop permission check returned a malformed reply",
+      requestId: null,
+      timedOut: false,
+    };
+  }
   return {
     approved: body.decision === "allow",
     reason: body.reason ?? "",

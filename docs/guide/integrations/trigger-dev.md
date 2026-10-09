@@ -4,7 +4,7 @@ Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this pa
 
 After this page you have a [trigger.dev](https://trigger.dev) task, written with the Vercel AI SDK, whose model calls go through the Preloop gateway and whose risky tool call (a refund) waits for a Preloop human approval before it runs.
 
-trigger.dev runs the agents you build: durable execution, queues, retries, checkpoints. Preloop governs the agents you run: model spend, budgets, approvals and the audit trail, across trigger.dev tasks and the coding agents your team already uses. The two fit together with two environment variables and one HTTP call.
+trigger.dev runs the agents you build: durable execution, queues, retries, checkpoints. Preloop governs the agents you run: model spend, budgets, approvals and the audit trail, across trigger.dev tasks and the coding agents your team already uses. The two fit together with three environment variables (the Preloop URL, an agent token and a model name) and one HTTP call.
 
 A runnable example lives in the repository at [`examples/trigger-dev`](https://github.com/preloop/preloop/tree/main/examples/trigger-dev).
 
@@ -106,7 +106,7 @@ What Preloop does with that call:
 1. Your rules for the tool run first: a blocked tool is denied, a matching rule decides without a human.
 2. Otherwise Preloop creates an approval request and notifies the approvers of the agent's approval workflow (the account default, or one pinned on the agent): mobile and watch push, email, Slack, Mattermost or a [signed webhook](../approvals/notifications.md#webhooks).
 3. The HTTP call stays open until someone decides or the workflow timeout expires (300 seconds unless the workflow sets another value). An expiry returns `decision: "deny"` with `timed_out: true`.
-4. Any HTTP error should be treated as a deny. The example does that.
+4. Treat anything other than an explicit `"allow"` as a deny: network errors, HTTP errors and malformed replies included. The example does that, with tests.
 
 Set the task's `maxDuration` above the approval workflow timeout so trigger.dev does not stop the run while a human is deciding.
 
