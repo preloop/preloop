@@ -228,7 +228,6 @@ export class SessionApprovalCard extends LitElement {
                 : html` ${requestNeedsForm(r) ? html`<answer-form .schema=${r.question_schema} .items=${r.question_items || []} .author=${this.author} .disabled=${this.busy}></answer-form>` : nothing}
                     <label
                       >Comment (optional)<textarea
-                        aria-label="Decision comment"
                         .value=${this.comment}
                         ?disabled=${this.busy}
                         @input=${(event: Event) => (this.comment = (event.target as HTMLTextAreaElement).value)}

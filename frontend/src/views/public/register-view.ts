@@ -154,7 +154,7 @@ export class RegisterView extends LitElement {
         display: flex;
         align-items: center;
         margin: 1.5rem 0;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
       }
 
@@ -174,7 +174,7 @@ export class RegisterView extends LitElement {
       }
 
       .first-account-note {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-small);
         line-height: 1.5;
         margin: 0 0 1rem;

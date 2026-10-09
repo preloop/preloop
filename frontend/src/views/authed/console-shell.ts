@@ -7,12 +7,8 @@ import {
   type TemplateResult,
 } from 'lit';
 import { customElement, query, state } from 'lit/decorators.js';
-import '@shoelace-style/shoelace/dist/components/menu/menu.js';
-import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
-import '@shoelace-style/shoelace/dist/components/menu-label/menu-label.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
-import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -283,20 +279,6 @@ export class ConsoleShell extends LitElement {
         }
       }
 
-      .sign-out-menu {
-        flex-grow: 0;
-      }
-
-      .sign-out-menu sl-menu-item::part(base) {
-        background-color: transparent;
-        color: var(--console-link-color);
-      }
-
-      .sign-out-menu sl-menu-item:hover::part(base) {
-        background-color: var(--console-hover-tint);
-        color: var(--sl-color-primary-700);
-      }
-
       .main-view {
         flex-grow: 1;
         display: grid;
@@ -428,159 +410,104 @@ export class ConsoleShell extends LitElement {
         margin-left: 0.5rem;
       }
 
-      sl-menu {
-        flex-grow: 1;
-        border-width: 0;
-        background-color: transparent;
-        padding: 0;
-        margin-left: -2px;
-      }
-
-      sl-details::part(base) {
-        width: 100%;
-        border-width: 0;
-        background-color: transparent;
-      }
-
-      sl-details::part(content) {
-        padding-top: 0;
-        padding-left: 1.5rem;
-      }
-
-      .sidebar-link {
-        display: block;
-        color: inherit;
-        text-decoration: none;
-        border-radius: var(--sl-border-radius-medium);
-        /* Reserved so the active rule appears without shifting the label. */
-        border-left: 3px solid transparent;
-      }
-
-      .sidebar-link:hover {
-        background-color: var(--console-hover-tint);
-      }
-
-      /* Style the anchor, not ::part — Shoelace shadow styles override ::part rules */
-      /* A translucent mix of one primary token is the same tint in both
-         themes; a named step (primary-50) is the palest blue in light and the
-         darkest navy in dark, which is how the active item became a block. */
-      .sidebar-link.active {
-        background-color: color-mix(
-          in srgb,
-          var(--sl-color-primary-500) 14%,
-          transparent
-        );
-        border-left-color: var(--sl-color-primary-600);
-      }
-
-      /* The active item is stated once, in colour and weight; bold on top of
-         a tinted rule was three signals for one fact. */
-      .sidebar-link.active .sidebar-label,
-      .sidebar-link.active sl-menu-item::part(label),
-      .sidebar-link.active sl-icon {
-        color: var(--sl-color-primary-700);
-        font-weight: 600;
-      }
-
-      /* No dark-mode override here on purpose: Shoelace's dark theme inverts
-         the palette scale, so primary-50 is already the dark tint and
-         primary-700 already the light ink. Hard-coding primary-950/300 for
-         dark inverted it twice and painted the active item near-white. */
-
-      .sidebar-link sl-icon,
-      sl-details.nav-section sl-icon {
-        font-size: 18px;
-      }
-
-      .sidebar-label {
-        font-size: var(--console-text-body);
-      }
-
-      sl-menu-item::part(base) {
-        padding: 0;
-        background-color: transparent;
-        border-radius: inherit;
-      }
-
-      sl-menu-item {
-        padding: 0.5em;
-      }
-
-      /* One icon column and one label column for every top-level row:
-         links, the Audit and Settings group headers, and Emergency. A link
-         row is the anchor's 3px rule, the item's inset, then the icon; a
-         group header gets the same 3px and the same inset, so the two kinds
-         line up. Shoelace reserves a check-mark column at the start of every
-         menu item; top-level rows never show a check, so they drop it
-         instead of carrying a hidden 1.5em gutter. */
-      #console-nav > sl-menu > .sidebar-link > sl-menu-item {
-        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
-      }
-
-      #console-nav
-        > sl-menu
-        > .sidebar-link
-        > sl-menu-item::part(checked-icon) {
-        display: none;
-      }
-
       #console-nav {
         --nav-row-inset: 1.25rem;
       }
-
-      sl-details.nav-section::part(header) {
-        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
-        border-left: 3px solid transparent;
+      .nav-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        font-size: var(--console-text-body);
       }
-
-      /* Centre icon and label on one axis; an inline icon sat on the text
-         baseline, a few pixels above the label's middle. */
-      sl-details.nav-section [slot='summary'] {
+      .sidebar-link {
         display: flex;
         align-items: center;
+        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
+        color: inherit;
+        text-decoration: none;
+        border-radius: var(--sl-border-radius-medium);
+        border-left: 3px solid transparent;
+      }
+      .sidebar-link:hover {
+        background-color: var(--console-hover-tint);
+      }
+      .sidebar-link.active {
+        background-color: var(--console-selected-tint);
+        border-left-color: var(--console-link-color);
+        color: var(--console-link-color);
+        font-weight: 600;
+      }
+      .nav-row {
+        display: flex;
+        align-items: center;
+        gap: var(--sl-spacing-x-small);
         width: 100%;
-        /* A menu item's line box, so group rows are as tall as link rows. */
+      }
+      .sidebar-link sl-icon,
+      details.nav-section sl-icon {
+        font-size: 18px;
+        flex: 0 0 auto;
+      }
+      .sidebar-label {
+        font-size: var(--console-text-body);
+      }
+      details.nav-section {
+        width: 100%;
+      }
+      details.nav-section > summary {
+        display: flex;
+        align-items: center;
+        cursor: pointer;
+        padding: 0.5em 0.5em 0.5em var(--nav-row-inset);
+        border-left: 3px solid transparent;
         min-height: calc(
           var(--sl-font-size-medium) * var(--sl-line-height-normal)
         );
       }
-
-      sl-details.nav-section [slot='summary'] sl-icon {
-        flex: 0 0 auto;
+      details.nav-section > summary::before {
+        content: '›';
+        width: 0.9em;
+        margin-left: -0.9em;
       }
-
-      /* A menu item puts the prefix gap (x-small) between icon and label;
-         the summary has no prefix slot, so it adds the same gap here. */
-      sl-details.nav-section [slot='summary'] .sidebar-label {
+      details.nav-section[open] > summary::before {
+        content: '⌄';
+      }
+      details.nav-section > summary::marker {
+        content: '';
+      }
+      details.nav-section > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.nav-section > summary .sidebar-label {
         margin-left: calc(0.5rem + var(--sl-spacing-x-small));
       }
-
+      details.nav-section > .nav-list {
+        padding-left: 1.5rem;
+      }
       .nav-section-badge {
         margin-left: auto;
         margin-right: var(--sl-spacing-x-small);
       }
-
-      sl-details.nav-section[open] .nav-section-badge {
+      details.nav-section[open] .nav-section-badge {
         display: none;
       }
-
-      sl-details.nav-section[open]::part(summary) {
-        font-weight: var(--sl-font-weight-bold);
-      }
-
-      /* Child links read at the same size as top-level ones; Shoelace's
-         default menu-item size made Audit and Settings children larger
-         than the items they sit under. */
-      sl-details sl-menu-item::part(label) {
-        font-size: var(--console-text-body);
-      }
-
-      sl-menu-label.nav-group-label::part(base) {
+      .nav-group-label {
         padding: var(--sl-spacing-small) 0.5em var(--sl-spacing-3x-small);
         font-size: var(--sl-font-size-x-small);
         letter-spacing: 0.04em;
         text-transform: uppercase;
         color: var(--console-meta-color);
+      }
+      .route-announcement {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
       }
 
       .nav-emergency sl-icon,
@@ -653,6 +580,11 @@ export class ConsoleShell extends LitElement {
     window.addEventListener('show-upgrade-modal', this._handleShowUpgradeModal);
     window.addEventListener('show-toast', this._handleShowToast);
     this.addEventListener('keydown', this._handleKeydown);
+    this.addEventListener(
+      'console-view-heading-ready',
+      this._handleHeadingReady
+    );
+    this.addEventListener('console-view-updated', this._handleHeadingReady);
     window.addEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     window.addEventListener(
       PENDING_APPROVALS_EVENT,
@@ -858,6 +790,72 @@ export class ConsoleShell extends LitElement {
     main?.focus();
   };
 
+  @state() private _navigationAnnouncement = '';
+  private _lastNavigationPath = window.location.pathname;
+  private _pendingFocusPath: string | null = null;
+
+  private _focusedHeading: HTMLElement | null = null;
+  private _focusedPath = '';
+  private _handleHeadingReady = () => {
+    if (
+      !this._pendingFocusPath &&
+      this._focusedHeading &&
+      !this._focusedHeading.isConnected &&
+      this._focusedPath === window.location.pathname
+    ) {
+      let active = document.activeElement;
+      while (active?.shadowRoot?.activeElement)
+        active = active.shadowRoot.activeElement;
+      if (
+        active === document.body ||
+        active === this.firstElementChild ||
+        active?.matches('lit-app, console-shell')
+      )
+        this._pendingFocusPath = this._focusedPath;
+    }
+    void this._focusNewView();
+  };
+
+  private async _focusNewView(): Promise<void> {
+    if (
+      !this._pendingFocusPath ||
+      this._pendingFocusPath !== window.location.pathname
+    )
+      return;
+    await this.updateComplete;
+    if (!this.isConnected || !this._pendingFocusPath) return;
+    const view = this.firstElementChild as
+      (HTMLElement & { updateComplete?: Promise<unknown> }) | null;
+    if (view?.updateComplete) await view.updateComplete;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve())
+    );
+    if (
+      !this._pendingFocusPath ||
+      this._pendingFocusPath !== window.location.pathname
+    )
+      return;
+    const find = (root: Element | DocumentFragment): HTMLElement | null => {
+      if (root instanceof Element && root.tagName === 'VIEW-HEADER') {
+        return root.shadowRoot?.querySelector<HTMLElement>('h1') ?? null;
+      }
+      for (const child of root.children) {
+        const heading =
+          (child.shadowRoot && find(child.shadowRoot)) || find(child);
+        if (heading) return heading;
+      }
+      return null;
+    };
+    const denied = this._deniedPermissionForPath(this._currentPath);
+    const heading = find(denied ? this.renderRoot : this);
+    if (!heading) return; // A loading view will emit heading-ready after it renders.
+    heading.focus({ preventScroll: true });
+    this._focusedHeading = heading;
+    this._focusedPath = this._pendingFocusPath;
+    this._navigationAnnouncement = `${heading.textContent?.trim() || 'Page'} page.`;
+    this._pendingFocusPath = null;
+  }
+
   private _handleLocationChanged = (event?: Event) => {
     this._fullBleed = false;
     this._currentPath = window.location.pathname;
@@ -880,6 +878,11 @@ export class ConsoleShell extends LitElement {
       this._scrolledPath = path;
     }
     this._historyTraversal = false;
+    if (path !== this._lastNavigationPath) {
+      this._lastNavigationPath = path;
+      this._pendingFocusPath = path;
+      void this._focusNewView();
+    }
   };
 
   private _handleNavClick = (e: Event) => {
@@ -931,8 +934,8 @@ export class ConsoleShell extends LitElement {
   ): TemplateResult | typeof nothing {
     const visible = links.filter((link) => link !== nothing);
     if (visible.length === 0) return nothing;
-    return html`<sl-menu-label class="nav-group-label">${label}</sl-menu-label
-      >${visible}`;
+    return html`<li class="nav-group-label">${label}</li>
+      ${visible}`;
   }
 
   /** True when any Audit child is visible for this user/edition. */
@@ -974,14 +977,16 @@ export class ConsoleShell extends LitElement {
     }
     const active = this._isNavActive(href, exact);
     return html`
-      <a
-        href=${href}
-        class="sidebar-link ${active ? 'active' : ''}"
-        aria-current=${active ? 'page' : nothing}
-        @click=${this._handleNavClick}
-      >
-        ${content}
-      </a>
+      <li>
+        <a
+          href=${href}
+          class="sidebar-link ${active ? 'active' : ''}"
+          aria-current=${active ? 'page' : nothing}
+          @click=${this._handleNavClick}
+        >
+          ${content}
+        </a>
+      </li>
     `;
   }
 
@@ -1020,6 +1025,11 @@ export class ConsoleShell extends LitElement {
     );
     window.removeEventListener('show-toast', this._handleShowToast);
     this.removeEventListener('keydown', this._handleKeydown);
+    this.removeEventListener(
+      'console-view-heading-ready',
+      this._handleHeadingReady
+    );
+    this.removeEventListener('console-view-updated', this._handleHeadingReady);
     window.removeEventListener(LOCATION_CHANGED, this._handleLocationChanged);
     window.removeEventListener('popstate', this._handleLocationChanged);
     window.removeEventListener(
@@ -1090,6 +1100,13 @@ export class ConsoleShell extends LitElement {
             >`
       }
 
+      <span
+        class="route-announcement"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        >${this._navigationAnnouncement}</span
+      >
       <div class="console-container">
         ${
           this._windowMode
@@ -1103,10 +1120,9 @@ export class ConsoleShell extends LitElement {
                 <!-- Hidden means out of the tab order too: a collapsed
                      sidebar (desktop) or a closed drawer (mobile) is inert,
                      so focus never lands on a link nobody can see. -->
-                <div
+                <nav
                   id="console-nav"
                   class="sidebar ${this._sidebarOpen ? 'open' : 'closed'}"
-                  role="navigation"
                   aria-label="Console navigation"
                   ?inert=${!this._sidebarOpen}
                 >
@@ -1115,54 +1131,54 @@ export class ConsoleShell extends LitElement {
                       ><logo-component></logo-component
                     ></a>
                   </div>
-                  <sl-menu style="font-size: var(--console-text-body);">
+                  <ul class="nav-list">
                     ${this._renderNavLink(
                       '/console',
                       html`
-                        <sl-menu-item>
+                        <span class="nav-row">
                           <sl-icon name="house" slot="prefix"></sl-icon>
                           <span class="sidebar-label">Overview</span>
-                        </sl-menu-item>
+                        </span>
                       `,
                       true
                     )}
                     ${this._renderNavLink(
                       '/console/agents',
                       html`
-                        <sl-menu-item>
+                        <span class="nav-row">
                           <sl-icon name="robot" slot="prefix"></sl-icon>
                           <span class="sidebar-label">Agents</span>
-                        </sl-menu-item>
+                        </span>
                       `
                     )}
                     ${this._renderNavLink(
                       '/console/flows',
                       html`
-                        <sl-menu-item>
+                        <span class="nav-row">
                           <sl-icon
                             src="/images/flow.svg"
                             slot="prefix"
                           ></sl-icon>
                           <span class="sidebar-label">Flows</span>
-                        </sl-menu-item>
+                        </span>
                       `
                     )}
                     ${this._renderNavLink(
                       '/console/ai-models',
                       html`
-                        <sl-menu-item>
+                        <span class="nav-row">
                           <sl-icon name="cpu" slot="prefix"></sl-icon>
                           <span class="sidebar-label">Models</span>
-                        </sl-menu-item>
+                        </span>
                       `
                     )}
                     ${this._renderNavLink(
                       '/console/tools',
                       html`
-                        <sl-menu-item>
+                        <span class="nav-row">
                           <sl-icon name="tools" slot="prefix"></sl-icon>
                           <span class="sidebar-label">Tools</span>
-                        </sl-menu-item>
+                        </span>
                       `
                     )}
                     ${
@@ -1170,13 +1186,13 @@ export class ConsoleShell extends LitElement {
                         ? this._renderNavLink(
                             '/console/policies',
                             html`
-                              <sl-menu-item>
+                              <span class="nav-row">
                                 <sl-icon
                                   name="shield-lock"
                                   slot="prefix"
                                 ></sl-icon>
                                 <span class="sidebar-label">Policies</span>
-                              </sl-menu-item>
+                              </span>
                             `
                           )
                         : nothing
@@ -1184,226 +1200,234 @@ export class ConsoleShell extends LitElement {
                     ${this._renderNavLink(
                       '/console/trackers',
                       html`
-                        <sl-menu-item>
+                        <span class="nav-row">
                           <sl-icon
                             src="/images/git.svg"
                             slot="prefix"
                           ></sl-icon>
                           <span class="sidebar-label">Trackers</span>
-                        </sl-menu-item>
+                        </span>
                       `
                     )}
                     ${this._renderNavLink(
                       '/console/cost',
                       html`
-                        <sl-menu-item>
+                        <span class="nav-row">
                           <sl-icon name="cash-coin" slot="prefix"></sl-icon>
                           <span class="sidebar-label">Cost</span>
-                        </sl-menu-item>
+                        </span>
                       `
                     )}
                     ${
                       this._hasAuditSection()
                         ? html`
-                            <sl-details
-                              class="nav-section"
-                              ?open=${this._isAuditActive()}
-                            >
-                              <span slot="summary">
-                                <sl-icon name="journal-text"></sl-icon>
-                                <span class="sidebar-label">Audit</span>
-                                ${
-                                  // The Approvals badge sits inside the
-                                  // group, so a closed group repeats the
-                                  // count on its header.
-                                  this._pendingApprovalsCount > 0 &&
-                                  this._canAccess('/console/approvals')
-                                    ? html`<sl-badge
-                                        class="nav-section-badge"
-                                        variant="primary"
-                                        pill
-                                        >${this._pendingApprovalsCount}</sl-badge
-                                      >`
-                                    : nothing
-                                }
-                              </span>
-                              <sl-menu>
-                                ${this._renderNavLink(
-                                  '/console/approvals',
-                                  html`<sl-menu-item
-                                    >Approvals${
-                                      this._pendingApprovalsCount > 0
-                                        ? html`<sl-badge
-                                            slot="suffix"
-                                            variant="primary"
-                                            pill
-                                            >${this._pendingApprovalsCount}</sl-badge
+                            <li class="nav-section-item">
+                              <details
+                                class="nav-section"
+                                ?open=${this._isAuditActive()}
+                              >
+                                <summary>
+                                  <sl-icon name="journal-text"></sl-icon>
+                                  <span class="sidebar-label">Audit</span>
+                                  ${
+                                    // The Approvals badge sits inside the
+                                    // group, so a closed group repeats the
+                                    // count on its header.
+                                    this._pendingApprovalsCount > 0 &&
+                                    this._canAccess('/console/approvals')
+                                      ? html`<sl-badge
+                                          class="nav-section-badge"
+                                          variant="primary"
+                                          pill
+                                          >${this._pendingApprovalsCount}</sl-badge
+                                        >`
+                                      : nothing
+                                  }
+                                </summary>
+                                <ul class="nav-list">
+                                  ${this._renderNavLink(
+                                    '/console/approvals',
+                                    html`<span class="nav-row"
+                                      >Approvals${
+                                        this._pendingApprovalsCount > 0
+                                          ? html`<sl-badge
+                                              slot="suffix"
+                                              variant="primary"
+                                              pill
+                                              >${this._pendingApprovalsCount}</sl-badge
+                                            >`
+                                          : nothing
+                                      }</span
+                                    >`
+                                  )}
+                                  ${this._renderNavLink(
+                                    '/console/runtime-sessions',
+                                    html`<span class="nav-row">Sessions</span>`
+                                  )}
+                                  ${
+                                    this._canShowAuditEvents()
+                                      ? this._renderNavLink(
+                                          '/console/audit',
+                                          html`<span class="nav-row"
+                                            >All events</span
                                           >`
-                                        : nothing
-                                    }</sl-menu-item
-                                  >`
-                                )}
-                                ${this._renderNavLink(
-                                  '/console/runtime-sessions',
-                                  html`<sl-menu-item>Sessions</sl-menu-item>`
-                                )}
-                                ${
-                                  this._canShowAuditEvents()
-                                    ? this._renderNavLink(
-                                        '/console/audit',
-                                        html`<sl-menu-item
-                                          >All events</sl-menu-item
-                                        >`
-                                      )
-                                    : nothing
-                                }
-                                ${this._renderNavLink(
-                                  '/console/artifacts',
-                                  html`<sl-menu-item>Artifacts</sl-menu-item>`
-                                )}
-                                ${
-                                  this._permissionsLoaded
-                                    ? this._renderNavLink(
-                                        '/console/settings/records',
-                                        html`<sl-menu-item
-                                          >Records</sl-menu-item
-                                        >`
-                                      )
-                                    : ''
-                                }
-                              </sl-menu>
-                            </sl-details>
+                                        )
+                                      : nothing
+                                  }
+                                  ${this._renderNavLink(
+                                    '/console/artifacts',
+                                    html`<span class="nav-row">Artifacts</span>`
+                                  )}
+                                  ${
+                                    this._permissionsLoaded
+                                      ? this._renderNavLink(
+                                          '/console/settings/records',
+                                          html`<span class="nav-row"
+                                            >Records</span
+                                          >`
+                                        )
+                                      : ''
+                                  }
+                                </ul>
+                              </details>
+                            </li>
                           `
                         : nothing
                     }
-                    <sl-details
-                      class="nav-section"
-                      ?open=${this._isSettingsActive()}
-                    >
-                      <span slot="summary">
-                        <sl-icon name="gear"></sl-icon>
-                        <span class="sidebar-label">Settings</span>
-                      </span>
-                      <sl-menu>
-                        ${this._renderNavGroup('Account', [
-                          // Account holds the account name and the session
-                          // artifact storage card, which every edition has
-                          // and core pages link to. It used to hang off
-                          // user_management, a flag only plugins set, so an
-                          // open-source install had no way in from the nav.
-                          this._renderNavLink(
-                            '/console/settings/account',
-                            html`<sl-menu-item>Account</sl-menu-item>`
-                          ),
-                          // Plans exist only where something is sold. Without
-                          // the billing plugin the deployment has no catalog,
-                          // no subscription and nothing for this page to say.
-                          // It sits under Account because that is what it is
-                          // about: what this account pays for.
-                          this.features.billing
-                            ? this._renderNavLink(
-                                '/console/settings/plan',
-                                html`<sl-menu-item>Plan</sl-menu-item>`
-                              )
-                            : nothing,
-                        ])}
-                        ${this._renderNavGroup('People & access', [
-                          this.features.user_management
-                            ? this._renderNavLink(
-                                '/console/settings/users',
-                                html`<sl-menu-item>Users</sl-menu-item>`
-                              )
-                            : nothing,
-                          this.features.team_management
-                            ? this._renderNavLink(
-                                '/console/settings/teams',
-                                html`<sl-menu-item>Teams</sl-menu-item>`
-                              )
-                            : nothing,
-                          this.features.user_management ||
-                          this.features.team_management
-                            ? this._renderNavLink(
-                                '/console/settings/invitations',
-                                html`<sl-menu-item>Invitations</sl-menu-item>`
-                              )
-                            : nothing,
-                          // Served by an extension plugin; the capability in
-                          // /features is the only switch. Subaccounts have no
-                          // entry: they are created from the Account page,
-                          // and people and teams get access to them from the
-                          // Users and Teams pages. This page is the overview
-                          // of every grant.
-                          hasCapability(this.features, 'account_hierarchy')
-                            ? this._renderNavLink(
-                                '/console/settings/access-grants',
-                                html`<sl-menu-item>Access grants</sl-menu-item>`
-                              )
-                            : nothing,
-                        ])}
-                        ${this._renderNavGroup('Developers', [
-                          this._ciSetupAvailable
-                            ? this._renderNavLink(
-                                '/console/settings/ci-identities',
-                                html`<sl-menu-item>Restricted CI</sl-menu-item>`
-                              )
-                            : nothing,
-                          this._renderNavLink(
-                            '/console/settings/api-keys',
-                            html`<sl-menu-item>API keys</sl-menu-item>`
-                          ),
-                          this._renderNavLink(
-                            '/console/settings/runners',
-                            html`<sl-menu-item>Runners</sl-menu-item>`
-                          ),
-                          this._renderNavLink(
-                            '/console/settings/webhooks',
-                            html`<sl-menu-item>Webhooks</sl-menu-item>`
-                          ),
-                          hasCapability(this.features, 'chat_connections')
-                            ? this._renderNavLink(
-                                '/console/settings/chat',
-                                html`<sl-menu-item
-                                  >Chat connections</sl-menu-item
-                                >`
-                              )
-                            : nothing,
-                        ])}
-                        ${this._renderNavGroup('Personal', [
-                          this._renderNavLink(
-                            '/console/settings/profile',
-                            html`<sl-menu-item>Profile</sl-menu-item>`
-                          ),
-                          this._renderNavLink(
-                            '/console/settings/security',
-                            html`<sl-menu-item>Security</sl-menu-item>`
-                          ),
-                          this._renderNavLink(
-                            '/console/settings/appearance',
-                            html`<sl-menu-item>Appearance</sl-menu-item>`
-                          ),
-                          this._renderNavLink(
-                            '/console/settings/notification-preferences',
-                            html`<sl-menu-item>Notifications</sl-menu-item>`
-                          ),
-                        ])}
-                      </sl-menu>
-                    </sl-details>
+                    <li class="nav-section-item">
+                      <details
+                        class="nav-section"
+                        ?open=${this._isSettingsActive()}
+                      >
+                        <summary>
+                          <sl-icon name="gear"></sl-icon>
+                          <span class="sidebar-label">Settings</span>
+                        </summary>
+                        <ul class="nav-list">
+                          ${this._renderNavGroup('Account', [
+                            // Account holds the account name and the session
+                            // artifact storage card, which every edition has
+                            // and core pages link to. It used to hang off
+                            // user_management, a flag only plugins set, so an
+                            // open-source install had no way in from the nav.
+                            this._renderNavLink(
+                              '/console/settings/account',
+                              html`<span class="nav-row">Account</span>`
+                            ),
+                            // Plans exist only where something is sold. Without
+                            // the billing plugin the deployment has no catalog,
+                            // no subscription and nothing for this page to say.
+                            // It sits under Account because that is what it is
+                            // about: what this account pays for.
+                            this.features.billing
+                              ? this._renderNavLink(
+                                  '/console/settings/plan',
+                                  html`<span class="nav-row">Plan</span>`
+                                )
+                              : nothing,
+                          ])}
+                          ${this._renderNavGroup('People & access', [
+                            this.features.user_management
+                              ? this._renderNavLink(
+                                  '/console/settings/users',
+                                  html`<span class="nav-row">Users</span>`
+                                )
+                              : nothing,
+                            this.features.team_management
+                              ? this._renderNavLink(
+                                  '/console/settings/teams',
+                                  html`<span class="nav-row">Teams</span>`
+                                )
+                              : nothing,
+                            this.features.user_management ||
+                            this.features.team_management
+                              ? this._renderNavLink(
+                                  '/console/settings/invitations',
+                                  html`<span class="nav-row">Invitations</span>`
+                                )
+                              : nothing,
+                            // Served by an extension plugin; the capability in
+                            // /features is the only switch. Subaccounts have no
+                            // entry: they are created from the Account page,
+                            // and people and teams get access to them from the
+                            // Users and Teams pages. This page is the overview
+                            // of every grant.
+                            hasCapability(this.features, 'account_hierarchy')
+                              ? this._renderNavLink(
+                                  '/console/settings/access-grants',
+                                  html`<span class="nav-row"
+                                    >Access grants</span
+                                  >`
+                                )
+                              : nothing,
+                          ])}
+                          ${this._renderNavGroup('Developers', [
+                            this._ciSetupAvailable
+                              ? this._renderNavLink(
+                                  '/console/settings/ci-identities',
+                                  html`<span class="nav-row"
+                                    >Restricted CI</span
+                                  >`
+                                )
+                              : nothing,
+                            this._renderNavLink(
+                              '/console/settings/api-keys',
+                              html`<span class="nav-row">API keys</span>`
+                            ),
+                            this._renderNavLink(
+                              '/console/settings/runners',
+                              html`<span class="nav-row">Runners</span>`
+                            ),
+                            this._renderNavLink(
+                              '/console/settings/webhooks',
+                              html`<span class="nav-row">Webhooks</span>`
+                            ),
+                            hasCapability(this.features, 'chat_connections')
+                              ? this._renderNavLink(
+                                  '/console/settings/chat',
+                                  html`<span class="nav-row"
+                                    >Chat connections</span
+                                  >`
+                                )
+                              : nothing,
+                          ])}
+                          ${this._renderNavGroup('Personal', [
+                            this._renderNavLink(
+                              '/console/settings/profile',
+                              html`<span class="nav-row">Profile</span>`
+                            ),
+                            this._renderNavLink(
+                              '/console/settings/security',
+                              html`<span class="nav-row">Security</span>`
+                            ),
+                            this._renderNavLink(
+                              '/console/settings/appearance',
+                              html`<span class="nav-row">Appearance</span>`
+                            ),
+                            this._renderNavLink(
+                              '/console/settings/notification-preferences',
+                              html`<span class="nav-row">Notifications</span>`
+                            ),
+                          ])}
+                        </ul>
+                      </details>
+                    </li>
                     <!-- The kill switch sits outside Settings, at the foot of
                          the nav: an operator in an incident reaches it in one
                          click instead of expanding Settings and scanning past
                          a dozen configuration pages. -->
                     ${this._renderNavLink(
                       '/console/settings/emergency',
-                      html`<sl-menu-item class="nav-emergency">
+                      html`<span class="nav-row nav-emergency">
                         <sl-icon
                           name="exclamation-octagon"
                           slot="prefix"
                         ></sl-icon>
                         <span class="sidebar-label">Emergency</span>
-                      </sl-menu-item>`
+                      </span>`
                     )}
-                  </sl-menu>
-                </div>
+                  </ul>
+                </nav>
               </div>`
         }
 

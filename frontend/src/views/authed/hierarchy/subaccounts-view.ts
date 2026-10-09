@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -39,6 +40,7 @@ const HIERARCHY_DOCS_URL =
  */
 @customElement('subaccounts-view')
 export class SubaccountsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
     tableScrollStyles,
     [

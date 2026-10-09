@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -25,6 +26,7 @@ import '../../../components/view-header';
 
 @customElement('security-view')
 export class SecurityView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private currentPassword = '';
 
@@ -434,7 +436,7 @@ export class SecurityView extends LitElement {
       }
 
       .passkey-item small {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin-left: 0.5rem;
       }
 

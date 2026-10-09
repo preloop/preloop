@@ -111,7 +111,7 @@ export class ToolListItem extends LitElement {
       }
 
       .expand-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         transition: transform 0.2s ease;
         flex-shrink: 0;
       }
@@ -132,7 +132,7 @@ export class ToolListItem extends LitElement {
 
       .tool-description {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -165,14 +165,14 @@ export class ToolListItem extends LitElement {
       }
 
       .usage-stat {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         white-space: nowrap;
         flex-shrink: 0;
       }
 
       .schema-tokens {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         white-space: nowrap;
         flex-shrink: 0;
@@ -213,7 +213,7 @@ export class ToolListItem extends LitElement {
       }
 
       .no-rules {
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
       }
 
@@ -234,7 +234,7 @@ export class ToolListItem extends LitElement {
       }
 
       .unsupported-overlay {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         font-style: italic;
       }
@@ -675,6 +675,7 @@ export class ToolListItem extends LitElement {
 
           <div class="tool-toggle" @click=${(e: Event) => e.stopPropagation()}>
             <sl-switch
+              aria-label="Tool availability"
               size="small"
               ?checked=${
                 this._isNativeTool()

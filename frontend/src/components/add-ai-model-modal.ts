@@ -1082,7 +1082,7 @@ export class AddAIModelModal extends LitElement {
       return html`
         <div
           class="models-provenance-notice"
-          style="color: var(--sl-color-neutral-500); font-size: 0.8125rem; margin-top: 0.5rem;"
+          style="color: var(--console-meta-color); font-size: 0.8125rem; margin-top: 0.5rem;"
         >
           Fetched ${this._modelSuggestions.length} models
         </div>

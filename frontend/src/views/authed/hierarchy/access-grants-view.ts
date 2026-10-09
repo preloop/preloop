@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -44,6 +45,7 @@ const LEVELS = GRANT_LEVELS;
  */
 @customElement('access-grants-view')
 export class AccessGrantsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
     tableScrollStyles,
     [

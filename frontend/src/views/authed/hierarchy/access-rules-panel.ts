@@ -294,6 +294,7 @@ export class AccessRulesPanel extends LitElement {
               <td>${action}</td>
               <td>
                 <sl-select
+                  aria-label="Access rule value"
                   size="small"
                   .value=${draft}
                   @sl-change=${(e: Event) =>
@@ -435,6 +436,7 @@ export class AccessRulesPanel extends LitElement {
       <section>
         <h3>YAML</h3>
         <sl-textarea
+          aria-label="Access rules YAML"
           id="rules-yaml"
           rows="10"
           .value=${this.yaml}

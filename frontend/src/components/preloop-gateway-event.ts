@@ -115,7 +115,7 @@ export class PreloopGatewayEvent extends LitElement {
         font-size: 0.7rem;
         font-weight: 600;
         text-transform: uppercase;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .gateway-event-value {
@@ -188,7 +188,7 @@ export class PreloopGatewayEvent extends LitElement {
       }
 
       .conversation-preview-redacted {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-style: italic;
       }
 

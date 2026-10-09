@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { formatUsd, formatUsdExact } from '../../../utils/money';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
@@ -109,6 +110,7 @@ const PER_1K_TO_PER_1M = 1000;
 
 @customElement('ai-model-detail-view')
 export class AIModelDetailView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private readonly editPermissions = new EditPermissions(this);
   @property({ type: String })
   modelId = '';
@@ -334,12 +336,12 @@ export class AIModelDetailView extends LitElement {
       }
 
       .price-cell-value.unknown {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-weight: 400;
       }
 
       .price-cell-unit {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
       }
 

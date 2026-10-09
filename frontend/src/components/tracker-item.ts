@@ -90,7 +90,7 @@ export class TrackerItem extends LitElement {
 
       .tracker-created {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin-top: var(--sl-spacing-medium);
       }
 

@@ -207,6 +207,7 @@ export class ProjectFilterModal extends LitElement {
         <div class="filter-section">
           <label class="filter-label">Issue status</label>
           <sl-radio-group
+            aria-label="Issue status"
             value=${this.draftSelectedStatus}
             @sl-change=${this.handleStatusChange}
           >
@@ -223,6 +224,7 @@ export class ProjectFilterModal extends LitElement {
             <div class="filter-section">
               <label class="filter-label">Resolution status</label>
               <sl-radio-group
+                aria-label="Issue resolution"
                 value=${this.draftSelectedResolution}
                 @sl-change=${this.handleResolutionChange}
               >

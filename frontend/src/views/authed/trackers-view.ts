@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { LitElement, html, unsafeCSS } from 'lit';
 import { customElement, state, query } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -17,6 +18,7 @@ import '../../components/view-header';
 
 @customElement('trackers-view')
 export class TrackersView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private isAddingTracker = false;
 

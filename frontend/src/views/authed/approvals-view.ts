@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { replaceListFilters } from '../../utils/list-filter-url';
 import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -95,6 +96,7 @@ interface ApprovalStats {
 
 @customElement('approvals-view')
 export class ApprovalsView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private approvalRequests: ApprovalRequest[] = [];
 
@@ -373,7 +375,7 @@ export class ApprovalsView extends AuthedElement {
       }
 
       .form-summary sl-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .approval-item:hover {
@@ -749,6 +751,8 @@ export class ApprovalsView extends AuthedElement {
     );
   }
 
+  private newApprovalCount = 0;
+
   private handleWebSocketMessage(message: any) {
     debugLog('Approvals view received update:', message);
 
@@ -804,6 +808,10 @@ export class ApprovalsView extends AuthedElement {
 
       // Add to the beginning of the list
       this.approvalRequests = [newApproval, ...this.approvalRequests];
+      this.newApprovalCount++;
+      this.accessibilityStatus.announce(
+        `${this.newApprovalCount} new approval ${this.newApprovalCount === 1 ? 'request' : 'requests'}.`
+      );
       this.applyFilters();
       this.calculateStats();
     }

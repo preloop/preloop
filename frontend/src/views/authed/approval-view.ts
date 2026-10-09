@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css, unsafeCSS } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import {
@@ -76,6 +77,7 @@ export interface ApprovalTimelineEntry {
 
 @customElement('approval-view')
 export class ApprovalView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @property({ type: String })
   requestId: string = '';
 
@@ -504,7 +506,7 @@ export class ApprovalView extends AuthedElement {
 
       .timeline-icon {
         flex: none;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: 1rem;
         margin-top: 0.1rem;
       }

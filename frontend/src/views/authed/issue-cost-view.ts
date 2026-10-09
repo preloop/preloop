@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { parseUTCDate } from '../../utils/date';
@@ -160,6 +161,7 @@ function safeHref(url: string | null): string | null {
  */
 @customElement('issue-cost-view')
 export class IssueCostView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() report: IssueCostReport | null = null;
   @state() loading = false;
   @state() error: string | null = null;
@@ -223,7 +225,7 @@ export class IssueCostView extends AuthedElement {
           background: var(--sl-color-neutral-50);
         }
         .muted {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
         }
         .loading-state {
           display: flex;

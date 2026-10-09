@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
@@ -38,6 +39,7 @@ import { roleLabel } from '../../../utils/role-label';
 
 @customElement('user-management-view')
 export class UserManagementView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private readonly editPermissions = new EditPermissions(this);
   @state()
   private users: User[] = [];

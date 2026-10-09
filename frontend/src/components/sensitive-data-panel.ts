@@ -1028,6 +1028,7 @@ export class SensitiveDataPanel extends LitElement {
         >Sample text (synthetic data only; it is not stored)</label
       >
       <textarea
+        aria-label="Sensitive data test text"
         id="sd-test-text"
         maxlength=${TEST_TEXT_LIMIT}
         .value=${this._testText}

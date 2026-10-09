@@ -257,7 +257,7 @@ export function budgetPeriodLabel(
 /** The tone classes and type for the forecast sentence, shared by both cards. */
 export const budgetForecastStyles = css`
   .budget-forecast {
-    color: var(--sl-color-neutral-500);
+    color: var(--console-meta-color);
     font-size: 0.8125rem;
     font-variant-numeric: tabular-nums;
   }

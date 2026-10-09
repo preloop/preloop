@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import {
   replaceListFilters,
@@ -162,6 +163,7 @@ const OUTCOME_OPTIONS = [
 
 @customElement('audit-view')
 export class AuditView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   // Timeline data
   @state() private _groups: AuditGroup[] = [];
   @state() private _loading = false;
@@ -1923,7 +1925,7 @@ export class AuditView extends AuthedElement {
       >
         <sl-icon
           name="book"
-          style="margin-right: 6px; color: var(--sl-color-neutral-500);"
+          style="margin-right: 6px; color: var(--console-meta-color);"
         ></sl-icon>
         <strong>Summary:</strong> ${story}
       </div>
@@ -2063,7 +2065,7 @@ export class AuditView extends AuthedElement {
         font-size: 0.65rem;
         font-weight: 600;
         letter-spacing: 0.05em;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         padding: 2px 6px;
         border-radius: 999px;
         background: var(--sl-color-neutral-100);
@@ -2105,7 +2107,7 @@ export class AuditView extends AuthedElement {
 
       .total-badge {
         font-size: 0.75rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         background: var(--sl-color-neutral-100);
         padding: 0.15rem 0.5rem;
         border-radius: 999px;
@@ -2149,7 +2151,7 @@ export class AuditView extends AuthedElement {
       }
       .empty-state {
         text-align: center;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         padding: 3rem 0;
         font-size: 0.9rem;
       }
@@ -2206,7 +2208,7 @@ export class AuditView extends AuthedElement {
       .copy-link {
         background: none;
         border: none;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         cursor: pointer;
         display: inline-flex;
         font-size: 0.85rem;
@@ -2250,7 +2252,7 @@ export class AuditView extends AuthedElement {
 
       .action-icon {
         font-size: 1rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         flex-shrink: 0;
       }
       .primary-label {
@@ -2261,7 +2263,7 @@ export class AuditView extends AuthedElement {
       }
       .args-summary {
         font-size: 0.75rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-family: var(--sl-font-mono);
         white-space: nowrap;
         overflow: hidden;
@@ -2271,12 +2273,12 @@ export class AuditView extends AuthedElement {
 
       .exec-time {
         font-size: 0.7rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         font-family: var(--sl-font-mono);
       }
       .event-cost {
         font-size: 0.7rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-family: var(--sl-font-mono);
         white-space: nowrap;
       }
@@ -2290,12 +2292,12 @@ export class AuditView extends AuthedElement {
       }
       .timestamp {
         font-size: 0.7rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         white-space: nowrap;
       }
       .expand-icon {
         font-size: 0.9rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
       }
       .expand-toggle {
         background: none;
@@ -2330,7 +2332,7 @@ export class AuditView extends AuthedElement {
       }
       .detail-label {
         font-size: 0.68rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         text-transform: uppercase;
         letter-spacing: 0.04em;
       }
@@ -2356,7 +2358,7 @@ export class AuditView extends AuthedElement {
       .copy-id::part(base) {
         padding: 0;
         font-size: 0.78rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .detail-json {
         margin: 0;
@@ -2398,7 +2400,7 @@ export class AuditView extends AuthedElement {
 
       .sub-icon {
         font-size: 0.8rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         z-index: 1;
       }
@@ -2435,7 +2437,7 @@ export class AuditView extends AuthedElement {
       }
       .sub-actor {
         font-size: 0.68rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         max-width: 170px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2443,7 +2445,7 @@ export class AuditView extends AuthedElement {
       }
       .sub-timestamp {
         font-size: 0.65rem;
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         white-space: nowrap;
       }
 
@@ -2458,7 +2460,7 @@ export class AuditView extends AuthedElement {
       }
       .page-info {
         font-size: 0.75rem;
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .page-controls {
         display: flex;

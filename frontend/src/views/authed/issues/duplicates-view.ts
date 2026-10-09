@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { getDuplicateIssues } from '../../../api';
@@ -8,6 +9,7 @@ import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 
 @customElement('duplicates-view')
 export class DuplicatesView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = css`
     :host {
       display: block;

@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -62,6 +63,7 @@ function issueStatusLabel(status: string | null | undefined): string {
 
 @customElement('issues-view')
 export class IssuesView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private _duplicates: DuplicatePair[] = [];
 

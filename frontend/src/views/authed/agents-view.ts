@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { editionOf } from '../../capabilities';
@@ -345,6 +346,7 @@ function gatewaySummaryDays(
 
 @customElement('agents-view')
 export class AgentsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   /**
    * Multi-select for the agent table and cards. Flow rows share this list but
    * carry no agent actions, so they are not selectable.

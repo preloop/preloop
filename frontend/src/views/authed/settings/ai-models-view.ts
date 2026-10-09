@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../../utils/money';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
@@ -113,6 +114,7 @@ export function filterModels(
 
 @customElement('ai-models-view')
 export class AIModelsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private readonly editPermissions = new EditPermissions(this);
   private static readonly FLEET_WINDOW_DAYS = 30;
 

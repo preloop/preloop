@@ -591,6 +591,30 @@ describe('ApprovalsView', () => {
       expect((element as any).focusedIndex).to.equal(0);
     });
 
+    it('announces live arrivals without moving keyboard focus', async () => {
+      const element = await renderList([baseRequest({ id: 'first' })]);
+      await press(element, 'j');
+      const active = element.shadowRoot?.activeElement;
+      for (const [id, message] of [
+        ['new-one', '1 new approval request.'],
+        ['new-two', '2 new approval requests.'],
+      ]) {
+        (element as any).handleWebSocketMessage({
+          type: 'approval_created',
+          approval_request_id: id,
+          tool_name: 'example_tool',
+        });
+        await element.updateComplete;
+        const status = element.shadowRoot?.querySelector(
+          '[data-console-status]'
+        );
+        expect(status?.getAttribute('role')).to.equal('status');
+        expect(status?.getAttribute('aria-live')).to.equal('polite');
+        expect(status?.textContent).to.equal(message);
+        expect(element.shadowRoot?.activeElement).to.equal(active);
+      }
+    });
+
     it('keeps a on the same request when a live insert lands above it', async () => {
       const element = await renderList([
         baseRequest({ id: 'first', expires_at: inMinutes(10) }),

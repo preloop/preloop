@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -85,6 +86,7 @@ interface TrackerDetail {
 
 @customElement('tracker-detail-view')
 export class TrackerDetailView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private _tracker: TrackerDetail | null = null;
 
@@ -470,7 +472,7 @@ export class TrackerDetailView extends LitElement {
         }
 
         .project-description {
-          color: var(--sl-color-neutral-500);
+          color: var(--console-meta-color);
           font-size: var(--sl-font-size-x-small);
           margin-top: 2px;
           overflow: hidden;
@@ -1159,7 +1161,7 @@ export class TrackerDetailView extends LitElement {
                 ? formatLocalDateTime(status.expires_at)
                 : 'none (reconnect required)'
             }
-            <span style="color: var(--sl-color-neutral-500);">
+            <span style="color: var(--console-meta-color);">
               (renewed by the provider service)</span
             >
           </dd>
@@ -1187,7 +1189,7 @@ export class TrackerDetailView extends LitElement {
           )}
         </ul>
         <p
-          style="color: var(--sl-color-neutral-500); font-size: var(--sl-font-size-small); margin: 0.5rem 0 0 0;"
+          style="color: var(--console-meta-color); font-size: var(--sl-font-size-small); margin: 0.5rem 0 0 0;"
         >
           Discovery succeeded. Push, approval and webhook capability are derived
           from consented scopes and are not tested until first use.

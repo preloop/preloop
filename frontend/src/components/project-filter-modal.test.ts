@@ -43,6 +43,14 @@ describe('ProjectFilterModal', () => {
     expect(orphan?.textContent?.trim()).to.equal('Orphan');
   });
 
+  it('names the status and resolution controls', async () => {
+    const el = await mount();
+    const names = [...el.shadowRoot!.querySelectorAll('sl-radio-group')].map(
+      (group) => group.getAttribute('aria-label')
+    );
+    expect(names).to.deep.equal(['Issue status', 'Issue resolution']);
+  });
+
   it('labels its sections in sentence case', async () => {
     const el = await mount();
     const labels = [

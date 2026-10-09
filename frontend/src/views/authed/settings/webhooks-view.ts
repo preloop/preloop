@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -37,6 +38,7 @@ const SHIM_SOURCE = 'approval_workflow';
 
 @customElement('webhooks-view')
 export class WebhooksView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private endpoints: WebhookEndpoint[] = [];
 

@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { validFilterDate } from '../../utils/list-filter-url';
@@ -153,6 +154,7 @@ const TURN_JUMP_KINDS = new Set([
 
 @customElement('runtime-sessions-view')
 export class RuntimeSessionsView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private sessions: AccountRuntimeSessionListResponse | null = null;
 
@@ -695,7 +697,7 @@ export class RuntimeSessionsView extends LitElement {
       }
 
       .snippet-text.muted {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-style: italic;
       }
 

@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
@@ -33,6 +34,7 @@ import consoleStyles from '../../../styles/console-styles.css?inline';
 
 @customElement('invitation-management-view')
 export class InvitationManagementView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   private readonly editPermissions = new EditPermissions(this);
   @state()
   private invitations: UserInvitation[] = [];

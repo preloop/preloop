@@ -63,7 +63,7 @@ export class NotFoundView extends LitElement {
     }
 
     sl-icon {
-      color: var(--sl-color-neutral-400);
+      color: var(--console-meta-color);
       font-size: 3rem;
     }
 

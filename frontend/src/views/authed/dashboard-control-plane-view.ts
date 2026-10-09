@@ -1,3 +1,5 @@
+import { ConsoleStatus } from '../../controllers/console-status';
+
 import { editionOf } from '../../capabilities';
 import type { Edition } from '../../api';
 import { css, html, nothing, unsafeCSS } from 'lit';
@@ -279,6 +281,7 @@ interface DashboardMetric {
 
 @customElement('dashboard-view')
 export class DashboardView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private loading = true;
   @state() private fetchingGatewaySummary = true;
   /**
@@ -753,7 +756,7 @@ export class DashboardView extends AuthedElement {
         border-color: var(--sl-color-neutral-200);
       }
       .attention-strip.low-only .attention-strip-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
       .attention-strip.low-only .attention-strip-count {
         color: var(--sl-color-neutral-700);
@@ -782,7 +785,7 @@ export class DashboardView extends AuthedElement {
         text-decoration: underline;
       }
       .next-step-mark {
-        color: var(--sl-color-neutral-400);
+        color: var(--console-meta-color);
         flex-shrink: 0;
         font-size: 16px;
       }

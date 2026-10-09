@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -166,6 +167,7 @@ export const RANGE_OPTIONS: Array<{
 
 @customElement('flow-executions-view')
 export class FlowExecutionsView extends AuthedElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   static styles = [
     tableScrollStyles,
     [

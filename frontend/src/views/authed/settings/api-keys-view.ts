@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -58,6 +59,7 @@ interface GovernanceToolDefinition {
 
 @customElement('api-keys-view')
 export class ApiKeysView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private apiKeys: ApiKey[] = [];
 

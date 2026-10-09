@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -231,6 +232,7 @@ const DETECTOR_FACTS: Array<{
 
 @customElement('policies-view')
 export class PoliciesView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private _activeTab = 'rules';
   @state() private _ruleFilter:
     'all' | 'tools' | 'model.request' | 'model.response' = 'all';
@@ -450,7 +452,7 @@ export class PoliciesView extends LitElement {
 
       .model-io-hint {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         margin: var(--sl-spacing-2x-small) 0 var(--sl-spacing-medium);
         line-height: 1.5;
       }
@@ -559,14 +561,14 @@ export class PoliciesView extends LitElement {
 
       .preset-meta {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .detector-facts {
         margin: var(--sl-spacing-x-small) 0 0;
         padding-left: var(--sl-spacing-large);
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         line-height: 1.7;
       }
 
@@ -778,7 +780,7 @@ export class PoliciesView extends LitElement {
 
       .version-date {
         font-size: var(--sl-font-size-x-small);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .version-badges {
@@ -814,13 +816,13 @@ export class PoliciesView extends LitElement {
       }
 
       .version-stat sl-icon {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .empty-versions {
         text-align: center;
         padding: var(--sl-spacing-2x-large);
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
       }
 
       .rollback-preview {
@@ -2229,6 +2231,7 @@ export class PoliciesView extends LitElement {
         <div class="form-group">
           <label>What does this rule govern?</label>
           <sl-radio-group
+            aria-label="Rule type"
             data-testid="rule-type"
             .value=${form.ruleType}
             @sl-change=${(e: any) =>
@@ -2252,6 +2255,7 @@ export class PoliciesView extends LitElement {
                 <div class="form-group">
                   <label>Tool</label>
                   <sl-select
+                    aria-label="Policy tool"
                     .value=${
                       form.toolName ? encodeURIComponent(form.toolName) : ''
                     }
@@ -2273,6 +2277,7 @@ export class PoliciesView extends LitElement {
                 <div class="form-group">
                   <label>Which side of the call?</label>
                   <sl-radio-group
+                    aria-label="Rule target"
                     data-testid="rule-target"
                     .value=${form.target}
                     @sl-change=${(e: any) =>
@@ -2290,6 +2295,7 @@ export class PoliciesView extends LitElement {
                 <div class="form-group">
                   <label>Rule id</label>
                   <sl-input
+                    aria-label="Policy ID"
                     .value=${form.id}
                     placeholder="deny-pii-in-prompts"
                     ?disabled=${Boolean(this._editingModelIOId)}
@@ -2306,6 +2312,7 @@ export class PoliciesView extends LitElement {
         <div class="form-group">
           <label>Action</label>
           <sl-select
+            aria-label="Policy action"
             .value=${form.action}
             @sl-change=${(e: any) =>
               this._patchModelIOForm({ action: e.target.value })}
@@ -2347,6 +2354,7 @@ export class PoliciesView extends LitElement {
                         `
                       : html`
                           <sl-select
+                            aria-label="Approval workflow"
                             .value=${form.approvalWorkflow}
                             @sl-change=${(e: any) =>
                               this._patchModelIOForm({
@@ -2381,6 +2389,7 @@ export class PoliciesView extends LitElement {
                 <div class="form-group">
                   <label>If a detector times out</label>
                   <sl-select
+                    aria-label="Detector timeout behavior"
                     .value=${form.onDetectorTimeout}
                     @sl-change=${(e: any) =>
                       this._patchModelIOForm({
@@ -2442,6 +2451,7 @@ export class PoliciesView extends LitElement {
       <div class="form-group">
         <label>When should it fire?</label>
         <sl-textarea
+          aria-label="Policy expression"
           rows="2"
           placeholder="Leave empty to apply to every call to this tool"
           .value=${form.expression}
@@ -2484,6 +2494,7 @@ export class PoliciesView extends LitElement {
       <div class="form-group">
         <label>When should it fire?</label>
         <sl-radio-group
+          aria-label="Condition mode"
           data-testid="condition-mode"
           .value=${form.conditionMode}
           @sl-change=${(e: any) => this._setConditionMode(e.target.value)}
@@ -2526,6 +2537,7 @@ export class PoliciesView extends LitElement {
           : html`
               <div class="form-group">
                 <sl-textarea
+                  aria-label="Condition expression"
                   rows="2"
                   data-testid="condition-expression"
                   placeholder="pii.found == true"
@@ -2544,6 +2556,7 @@ export class PoliciesView extends LitElement {
               <div class="form-group">
                 <label>Condition language</label>
                 <sl-select
+                  aria-label="Condition type"
                   data-testid="condition-type"
                   .value=${form.conditionType}
                   @sl-change=${(e: any) =>
@@ -2993,6 +3006,7 @@ defaults:
         <div class="form-field">
           <label class="form-label">Description</label>
           <sl-textarea
+            aria-label="Version description"
             placeholder="Optional description of this version"
             .value=${this._versionForm.description}
             @sl-input=${(e: any) =>
@@ -3007,6 +3021,7 @@ defaults:
         <div class="form-field">
           <label class="form-label">Tag (optional)</label>
           <sl-input
+            aria-label="Version tag"
             placeholder="e.g., production-v1, stable, release-2024-01"
             .value=${this._versionForm.tag}
             @sl-input=${(e: any) =>
@@ -3015,7 +3030,7 @@ defaults:
                 tag: e.target.value,
               })}
           ></sl-input>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             Tagged versions can be protected from pruning.
           </small>
         </div>
@@ -3051,6 +3066,7 @@ defaults:
         <div class="form-field">
           <label class="form-label">Keep versions newer than (days)</label>
           <sl-input
+            aria-label="Days of versions to keep"
             type="number"
             min="1"
             .value=${String(this._pruneForm.keepDays)}
@@ -3065,6 +3081,7 @@ defaults:
         <div class="form-field">
           <label class="form-label">Minimum versions to keep</label>
           <sl-input
+            aria-label="Minimum versions to keep"
             type="number"
             min="1"
             .value=${String(this._pruneForm.minVersionsToKeep)}
@@ -3092,7 +3109,7 @@ defaults:
                 })}
             ></sl-switch>
           </div>
-          <small style="color: var(--sl-color-neutral-500);">
+          <small style="color: var(--console-meta-color);">
             Tagged versions will not be deleted regardless of age.
           </small>
         </div>
@@ -3136,6 +3153,7 @@ defaults:
                 <div class="form-field">
                   <label class="form-label">Tag</label>
                   <sl-input
+                    aria-label="Version tag"
                     placeholder="e.g., production-v1, stable"
                     .value=${this._tagForm.tag}
                     @sl-input=${(e: any) =>
@@ -3626,6 +3644,7 @@ defaults:
       </view-header>
 
       <input
+        aria-label="Import policy file"
         type="file"
         id="policy-file-input"
         accept=".yaml,.yml,.json"

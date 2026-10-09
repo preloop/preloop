@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 /**
  * The talk page: one agent, one session, one composer.
@@ -69,6 +70,7 @@ const EVENT_PAGE_SIZE = 50;
 
 @customElement('agent-talk-view')
 export class AgentTalkView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private agentId = '';
   @state() private agent: ManagedAgentSummary | null = null;
   @state() private sessions: RuntimeSessionSummary[] = [];

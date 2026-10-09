@@ -434,7 +434,7 @@ p.lead {
 }
 
 .carousel-nav {
-  color: var(--sl-color-neutral-400);
+  color: var(--console-meta-color);
   transition: color 0.3s;
   pointer-events: all;
 }

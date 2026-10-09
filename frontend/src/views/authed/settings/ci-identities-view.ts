@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -17,6 +18,7 @@ import {
 
 @customElement('ci-identities-view')
 export class CiIdentitiesView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() private loading = true;
   @state() private busy = false;
   @state() private capabilities: CiCapabilities | null = null;

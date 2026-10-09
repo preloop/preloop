@@ -1,3 +1,4 @@
+import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { billingAttribution } from '../../utils/billing-attribution';
@@ -72,6 +73,7 @@ const DATE_RANGE_OPTIONS: Array<{ value: TimeRangeKey; label: string }> = [
 
 @customElement('api-usage-view')
 export class ApiUsageView extends LitElement {
+  private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private summary: AccountGatewayUsageSummaryResponse | null = null;
 

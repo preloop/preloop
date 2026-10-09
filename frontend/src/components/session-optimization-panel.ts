@@ -319,7 +319,7 @@ export class SessionOptimizationPanel extends LitElement {
       }
 
       .transparency {
-        color: var(--sl-color-neutral-500);
+        color: var(--console-meta-color);
         font-size: var(--sl-font-size-x-small);
         margin-top: var(--sl-spacing-x-small);
       }
