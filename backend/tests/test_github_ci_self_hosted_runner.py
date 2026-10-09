@@ -10,7 +10,7 @@ the suite. Two properties matter enough to pin down here:
 2. The fallback is unconditional. ``pick-runner`` must never fail the
    workflow and must never leave ``backend_plan`` unset: a missing secret,
    a token without ``administration: read``, or an API error all have to
-   land on eight hosted shards. Otherwise an unrelated PR goes red over
+   land on eighteen hosted shards. Otherwise an unrelated PR goes red over
    CI plumbing.
 """
 
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tests.ci_workflow import load_ci_jobs
+from tests.ci_workflow import load_ci_jobs, step_script
 from tests.test_github_ci_backend_shards import BACKEND_TEST_SPLITS
 
 BACKEND_SHARD = "[matrix.group]"
@@ -52,22 +52,23 @@ def _pick_script() -> str:
 
 
 def _hosted_slot() -> dict[str, Any]:
-    """Public ubuntu-latest shard: host Postgres, no job container."""
+    """Public ubuntu-latest shard. Postgres is the machine's, not a service."""
     return {
         "runner": "ubuntu-latest",
         "container": None,
-        "db_host": "localhost",
-        "postgres_ports": ["5432:5432"],
     }
 
 
 def _overflow_slot(pyver: str = "3.11") -> dict[str, Any]:
-    """Idle self-hosted shard: bookworm job container, service hostname Postgres."""
+    """Idle self-hosted shard. Same machine Postgres, no nested container.
+
+    ``pyver`` is unused. The VM supplies Python 3.11; a nested
+    ``python:3.11-bookworm`` would hide ``127.0.0.1:5432``.
+    """
+    del pyver
     return {
         "runner": ["self-hosted", "Linux", "X64"],
-        "container": {"image": f"python:{pyver}-bookworm"},
-        "db_host": "postgres",
-        "postgres_ports": [],
+        "container": None,
     }
 
 
@@ -143,11 +144,11 @@ def test_pick_runner_falls_back_to_the_public_runner() -> None:
     assert "could not parse the runner list" in script
     # `set -e` would turn any of the above into a red required check.
     assert "set -e" not in script
-    # Fallback must emit hosted Postgres, not a job container.
-    assert 'db_host:"localhost"' in script
+    # Fallback is hosted runners with no nested container. Postgres is
+    # decided later by scripts/ci_postgres.py, not by this plan.
     assert "container:null" in script
-    assert 'db_host:"postgres"' in script
-    assert "postgres_ports:[]" in script
+    assert "bookworm" not in script
+    assert "postgres_ports" not in script
     # All-or-nothing self-hosted routing is what made CI slower.
     assert 'pick "$SELF_HOSTED"' not in script
     assert "emit 0 " in script
@@ -162,30 +163,25 @@ def test_pick_runner_requires_an_idle_matching_runner() -> None:
     for label in ("self-hosted", "Linux", "X64"):
         assert f'index("{label}")' in script
     # Hosted first; idle VMs take the tail of the matrix.
-    assert "range(0;8)" in script
-    assert ". >= (8 - $idle)" in script
+    assert "SPLITS=18" in script
+    assert "range(0; $splits)" in script
+    assert ". >= ($splits - $idle)" in script
     # Dummy at [0] so YAML can index with matrix.group (no minus).
     assert "[null] +" in script
-    assert "[null,{" in script
+    assert "]*18" in script
 
 
 def test_three_idle_runners_only_overflow_the_last_three_shards() -> None:
-    """Three VMs take shards 6-8; groups 1-5 (including the long pole) stay hosted."""
+    """Three VMs take shards 16-18; groups 1-15 stay hosted."""
     plan = _backend_plan(3)
     assert plan[0] is None
     assert len(plan) == BACKEND_TEST_SPLITS + 1
-    hosted = plan[1:6]
-    overflow = plan[6:]
+    hosted = plan[1:16]
+    overflow = plan[16:]
     assert all(slot["runner"] == "ubuntu-latest" for slot in hosted)
     assert all(slot["container"] is None for slot in hosted)
-    assert all(slot["db_host"] == "localhost" for slot in hosted)
-    assert all(slot["postgres_ports"] == ["5432:5432"] for slot in hosted)
     assert all(slot["runner"] == ["self-hosted", "Linux", "X64"] for slot in overflow)
-    assert all(
-        slot["container"] == {"image": "python:3.11-bookworm"} for slot in overflow
-    )
-    assert all(slot["db_host"] == "postgres" for slot in overflow)
-    assert all(slot["postgres_ports"] == [] for slot in overflow)
+    assert all(slot["container"] is None for slot in overflow)
 
 
 def test_zero_idle_runners_keeps_every_shard_on_hosted() -> None:
@@ -240,22 +236,19 @@ def test_test_jobs_are_bounded_and_start_clean() -> None:
         assert checkout["with"]["clean"] is True, name
 
 
-def test_backend_postgres_network_follows_the_shard_plan() -> None:
-    """Hosted shards keep localhost:5432; overflow shards do not bind the host port."""
+def test_backend_postgres_reuses_a_listening_instance() -> None:
+    """Shards do not start a service container before checking the machine."""
     pick = load_ci_jobs()["pick-runner"]
     assert pick["outputs"]["backend_plan"] == ("${{ steps.pick.outputs.backend_plan }}")
     script = _pick_script()
-    assert "python:" in script and "-bookworm" in script
-    assert 'postgres_ports:["5432:5432"]' in script
+    assert "bookworm" not in script
 
     backend = load_ci_jobs()["test-backend"]
+    assert "services" not in backend
     assert BACKEND_SHARD in backend["container"]
-    assert backend["services"]["postgres"]["ports"] == (
-        "${{ fromJSON(needs.pick-runner.outputs.backend_plan)"
-        f"{BACKEND_SHARD}.postgres_ports }}}}"
-    )
-    assert BACKEND_SHARD in backend["env"]["DATABASE_URL"]
-    assert "db_host" in backend["env"]["DATABASE_URL"]
+    prepare = step_script(backend, "Prepare Postgres")
+    assert "scripts/ci_postgres.py prepare" in prepare
+    assert "DATABASE_URL" not in backend["env"]
     for name in HOSTED_JOBS:
         assert "container" not in load_ci_jobs()[name]
         assert "services" not in load_ci_jobs()[name]

@@ -14,7 +14,7 @@ from tests.ci_workflow import REPO_ROOT, load_ci_jobs, step_script
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
-BACKEND_TEST_SPLITS = 8
+BACKEND_TEST_SPLITS = 18
 
 
 def test_pytest_split_is_a_dev_dependency() -> None:
@@ -39,8 +39,18 @@ def test_backend_shards_partition_with_pytest_split() -> None:
     assert f"--splits {BACKEND_TEST_SPLITS}" in script
     assert "--group ${{ matrix.group }}" in script
     assert "--splitting-algorithm=duration_based_chunks" in script
+    assert "--durations-path .github/pytest-split-durations.json" in script
     assert "--splitting-algorithm=least_duration" not in script
     assert "--cov-fail-under" not in script
+    prepare = step_script(backend, "Prepare Postgres")
+    assert "scripts/ci_postgres.py prepare" in prepare
+    drop = next(
+        step for step in backend["steps"] if step.get("name") == "Drop CI database"
+    )
+    assert drop.get("if") == "always()"
+    assert "scripts/ci_postgres.py drop" in drop["run"]
+    assert "services" not in backend
+    assert backend["timeout-minutes"] <= 15
     coverage_upload = next(
         step for step in backend["steps"] if step.get("name") == "Upload coverage data"
     )

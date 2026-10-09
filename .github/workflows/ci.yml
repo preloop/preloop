@@ -5,7 +5,7 @@
 # long tail after tests go green).
 #
 # PR jobs are path-filtered so a docs-only or frontend-only change does not
-# pay for eight Postgres shards. Filters are job-level, not workflow-level:
+# pay for the backend shards. Filters are job-level, not workflow-level:
 # a workflow `on.pull_request.paths` skip made stacked PRs look clean because
 # no checks ran at all. `main` and tags always run every suite.
 #
@@ -160,12 +160,12 @@ jobs:
   # test job to three VMs serializes the suite and is slower than before.
   #
   # Frontend, plugins, and coverage stay on ubuntu-latest and do not wait
-  # for this job. Backend is eight shards; this job emits `backend_plan`,
-  # an array of eight {runner, container, db_host, postgres_ports} entries.
-  # The first 8-N shards stay hosted (group 1 is the long pole). The last
-  # N shards — the excess — go to idle self-hosted runners, each in a
-  # python:<PYTHON_VERSION>-bookworm container so two listeners on one VM
-  # do not collide on host 5432. N is min(idle matching runners, 8).
+  # for this job. Backend is eighteen shards; this job emits `backend_plan`,
+  # an array of eighteen {runner, container} entries. The first 18-N shards
+  # stay hosted. The last N shards — the excess — go to idle self-hosted
+  # runners. N is min(idle matching runners, 18). Both kinds of runner
+  # execute on the machine, not in a nested container, so 127.0.0.1:5432
+  # is that machine's Postgres. See .github/self-hosted-runners.md.
   #
   # Anything else, including every failure mode below, is N=0 (all hosted).
   # This job NEVER fails the workflow: a PR must not go red because the
@@ -190,8 +190,8 @@ jobs:
   # interpreter (needs python3.11-venv on Debian) and only then falls
   # back to setup-python. Hosted ubuntu-latest has no system 3.11, so
   # those jobs still download from the Ubuntu manifest. Self-hosted
-  # backend shards additionally run in python:<PYTHON_VERSION>-bookworm,
-  # so they see that image's interpreter rather than the VM's.
+  # backend shards use the same action, so the VM needs python3.11 and
+  # python3.11-venv. They no longer run inside python:3.11-bookworm.
   pick-runner:
     name: Pick test runner
     runs-on: ubuntu-latest
@@ -210,30 +210,32 @@ jobs:
         run: |
           set -uo pipefail
 
+          # Eighteen shards. Measured on the green main run 37987118309:
+          # with no durations, group 2/8 spent 25.2m in pytest. Balanced
+          # with .github/pytest-split-durations.json, the slowest of 18
+          # chunks is about 3.3m of test time, which stays under 7m once
+          # checkout and pip are added.
+          SPLITS=18
+
           emit() {
             idle="$1"
             reason="$2"
             case "$idle" in
               ''|*[!0-9]*) idle=0 ;;
             esac
-            if [ "$idle" -gt 8 ]; then idle=8; fi
+            if [ "$idle" -gt "$SPLITS" ]; then idle=$SPLITS; fi
 
-            plan=$(IDLE="$idle" PYVER="${PYTHON_VERSION:-3.11}" jq -cn '
-              def public:
-                {runner:"ubuntu-latest",container:null,db_host:"localhost",
-                 postgres_ports:["5432:5432"]};
-              def private:
-                {runner:["self-hosted","Linux","X64"],
-                 container:{image:("python:"+$ENV.PYVER+"-bookworm")},
-                 db_host:"postgres",postgres_ports:[]};
+            plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
+              def slot($runner): {runner:$runner, container:null};
               ($ENV.IDLE|tonumber) as $idle
-              | [null] + [range(0;8) | if . >= (8 - $idle) then private else public end]
+              | ($ENV.SPLITS|tonumber) as $splits
+              | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64"]) else slot("ubuntu-latest") end]
             ') || plan=""
 
             if [ -z "$plan" ]; then
               idle=0
               reason="$reason (plan fallback: all public)"
-              plan='[null,{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]}]'
+              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-latest","container":None}]*18))')
             fi
 
             {
@@ -430,61 +432,46 @@ jobs:
           PRELOOP_DISABLE_TELEMETRY: 'true'
         run: python -m pytest backend/tests/helm -q
 
-  # Eight shards, each with its own Postgres. GitLab splits this suite into
-  # dozens of per-file jobs; that is a poor fit here because each GitHub
-  # runner spends ~1.5m on checkout/pip/migrations before pytest starts.
-  # Four shards left group 1 (the first duration_based_chunks slice) as the
-  # wall-clock pole: ~7-9m vs ~3-4.5m for the others. Eight shards cut that
-  # first slice in half without going back to per-file jobs.
-  # pytest-split keeps new tests in the partition automatically. Use
-  # duration_based_chunks (not least_duration): without a timings file,
-  # least_duration round-robins individual tests across shards and breaks
-  # unittest setUp isolation plus tests that share a process-wide DB
-  # session. Chunks keep collection order, so files stay together. The 60%
-  # coverage floor is applied after shards are combined -- a single shard
-  # only sees part of the tree.
+  # Eighteen shards. On the green main run 37987118309, eight count-based
+  # shards left group 2 at 26.7m (25.2m of that in pytest) while group 6
+  # was 4.8m. .github/pytest-split-durations.json makes
+  # duration_based_chunks cut on measured time; the slowest chunk is
+  # about 3.3m of tests, and hosted setup is about 1.5m, so a shard stays
+  # under 7m. least_duration is still wrong here: it round-robins
+  # individual tests and breaks unittest setUp isolation plus tests that
+  # share a process-wide DB session. Chunks keep collection order, so
+  # files stay together. The 60% coverage floor is applied after shards
+  # are combined -- a single shard only sees part of the tree.
+  #
+  # Postgres is not a service container. scripts/ci_postgres.py checks
+  # 127.0.0.1:5432 first. A server that accepts test_user gets one new
+  # database for this job. A refused connection starts
+  # pgvector/pgvector:pg16 and the drop step removes that container.
+  # Runner setup: .github/self-hosted-runners.md.
   #
   # Runner: ubuntu-latest is the default. pick-runner may send the last
-  # N shards (idle self-hosted count) to private VMs as overflow. Public
-  # shards stay on the VM with Postgres at localhost:5432. Overflow
-  # shards run in python:<version>-bookworm and reach Postgres by the
-  # service hostname, with no host port, so two listeners on one machine
-  # do not collide on 5432. The VM still needs Docker and the runner
-  # user in the docker group.
+  # N shards (idle self-hosted count) to private VMs as overflow. Shards
+  # run on the machine, not in a nested container, so that address is the
+  # VM's Postgres. The VM needs Docker for the fallback start, and the
+  # runner user in the docker group. A persistent server avoids the pull.
   test-backend:
-    name: Backend Tests (${{ matrix.group }}/8)
+    name: Backend Tests (${{ matrix.group }}/18)
     runs-on: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
     container: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].container }}
     needs: [changes, pick-runner]
     if: needs.changes.outputs.backend == 'true'
-    timeout-minutes: 45
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8]
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_DB: test_db
-          POSTGRES_USER: test_user
-          POSTGRES_PASSWORD: test_password
-        ports: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].postgres_ports }}
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 
     env:
-      DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
-      # Explicit opt-in for isolated schema lease/crash/lifecycle fixtures.
-      FLOW_FEEDBACK_TEST_DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
-      CHAT_TEST_DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
       OPENAI_API_KEY: mock_key
       ANTHROPIC_API_KEY: mock_key
       PRELOOP_DISABLE_TELEMETRY: "true"
       COVERAGE_FILE: coverage-data.${{ matrix.group }}
+      PRELOOP_CI_SHARD: ${{ matrix.group }}
 
     steps:
       # clean: true is the default, but a self-hosted workspace is reused
@@ -514,6 +501,9 @@ jobs:
           pip install --require-hashes -r .github/requirements/app-dev.txt
           pip install --no-deps -e .
 
+      - name: Prepare Postgres
+        run: python scripts/ci_postgres.py prepare
+
       - name: Initialize database
         run: python scripts/init_db.py --force
 
@@ -521,12 +511,17 @@ jobs:
         run: |
           pytest -v \
             -m "not integration" \
-            --splits 8 \
+            --splits 18 \
             --group ${{ matrix.group }} \
             --splitting-algorithm=duration_based_chunks \
+            --durations-path .github/pytest-split-durations.json \
             --cov=preloop \
             --cov-report= \
             --junitxml=test-results.xml
+
+      - name: Drop CI database
+        if: always()
+        run: python scripts/ci_postgres.py drop
 
       - name: Upload coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -585,8 +580,8 @@ jobs:
       - name: Combine coverage and enforce floor
         run: |
           mapfile -t coverage_files < <(find coverage-shards -name 'coverage-data.*' -type f | sort)
-          if [ ${#coverage_files[@]} -ne 8 ]; then
-            echo "Expected 8 shard coverage files, found ${#coverage_files[@]}"
+          if [ ${#coverage_files[@]} -ne 18 ]; then
+            echo "Expected 18 shard coverage files, found ${#coverage_files[@]}"
             find coverage-shards -type f -print
             exit 1
           fi
