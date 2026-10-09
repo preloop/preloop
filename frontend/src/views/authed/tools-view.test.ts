@@ -1171,6 +1171,8 @@ describe('ToolsView – tabs and toolbar', () => {
         composed: true,
       })
     );
+    expect((el as any)._getFilteredTools()).to.have.lengthOf(2);
+    await waitUntil(() => (el as any).filters.query === 'alpha');
     await el.updateComplete;
 
     const names = ((el as any)._getFilteredTools() as { name: string }[]).map(

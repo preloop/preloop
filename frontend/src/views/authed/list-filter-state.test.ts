@@ -10,6 +10,7 @@ import {
 import './runtime-sessions-view';
 import './audit-view';
 import './approvals-view';
+import './tools-view';
 
 const event = (value: string) => ({ target: { value } });
 
@@ -171,4 +172,167 @@ describe('List filter navigation', () => {
     expect(restored.toolFilter).to.equal('new-example');
     expect(restored.searchQuery).to.equal('updated query');
   });
+  it('round-trips both Tools tab filters without discarding deep-link state', async () => {
+    const proto = customElements.get('tools-view')!.prototype;
+    sinon.stub(proto, 'loadData').resolves();
+    history.replaceState(
+      { example: true },
+      '',
+      '/console/tools?tab=native&unrelated=keep#anchor'
+    );
+    const element = (await fixture<LitElement>(
+      document.createElement('tools-view')
+    )) as any;
+    element._setFilterValues({
+      query: 'MCP example',
+      statuses: ['enabled'],
+      servers: ['server-example'],
+      rules: ['none'],
+      workflows: ['workflow-example'],
+    });
+    element._setNativeFilterValues({
+      query: 'Native example',
+      agents: ['agent-example'],
+      rules: ['rules'],
+    });
+    const params = new URLSearchParams(location.search);
+    expect(params.get('mcp_q')).to.equal('MCP example');
+    expect(params.getAll('native_agent')).to.deep.equal(['agent-example']);
+    expect(params.get('unrelated')).to.equal('keep');
+    expect(location.hash).to.equal('#anchor');
+    element.remove();
+    const restored = (await fixture<LitElement>(
+      document.createElement('tools-view')
+    )) as any;
+    expect(restored.activeTab).to.equal('native');
+    expect(restored.filters).to.deep.equal({
+      query: 'MCP example',
+      statuses: ['enabled'],
+      servers: ['server-example'],
+      rules: ['none'],
+      workflows: ['workflow-example'],
+    });
+    expect(restored.nativeFilters).to.deep.equal({
+      query: 'Native example',
+      agents: ['agent-example'],
+      rules: ['rules'],
+    });
+    restored._clearFilters();
+    expect(new URLSearchParams(location.search).has('mcp_q')).to.equal(false);
+    expect(new URLSearchParams(location.search).get('native_q')).to.equal(
+      'Native example'
+    );
+    history.replaceState({}, '', '/console/tools?tab=mcp&mcp_status=disabled');
+    window.dispatchEvent(new PopStateEvent('popstate'));
+    expect(restored.activeTab).to.equal('mcp');
+    expect(restored.filters.statuses).to.deep.equal(['disabled']);
+  });
+
+  for (const initialEmpty of [false, true]) {
+    it(`keeps the Tools tab mounted during refresh (initially empty: ${initialEmpty})`, async () => {
+      const fetch = window.fetch as sinon.SinonStub;
+      let release: ((response: Response) => void) | undefined;
+      let refresh = false;
+      const tool = {
+        name: 'example_tool',
+        source: 'builtin',
+        source_id: null,
+        source_name: 'Built-in',
+        description: 'Example',
+        schema: {},
+        is_enabled: true,
+        is_supported: true,
+        approval_workflow_id: null,
+        has_approval_condition: false,
+        config_id: 'config-example',
+      };
+      fetch.callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes('/tools/summary') && refresh)
+          return new Promise<Response>((resolve) => {
+            release = resolve;
+          });
+        const body = url.includes('/tools/summary')
+          ? initialEmpty
+            ? []
+            : [tool]
+          : url.includes('/features')
+            ? { features: {} }
+            : url.includes('/auth/users/me')
+              ? { permissions: null }
+              : [];
+        return new Response(JSON.stringify(body), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+      const element = (await fixture<LitElement>(
+        document.createElement('tools-view')
+      )) as any;
+      const { waitUntil } = await import('@open-wc/testing');
+      await waitUntil(() => !element.loading && !element.toolsContextLoading);
+      const tabs = element.shadowRoot.querySelector('sl-tab-group');
+      expect(tabs).to.exist;
+      const column = element.shadowRoot.querySelector(
+        '.main-column'
+      ) as HTMLElement;
+      column.style.height = '50px';
+      column.style.overflow = 'auto';
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      column.scrollTop = 25;
+      const scroll = column.scrollTop;
+      expect(scroll).to.be.greaterThan(0);
+      refresh = true;
+      element.toolsSchemasReady = true;
+      const settled = sinon.spy();
+      const rejected = sinon.spy();
+      const pending = initialEmpty
+        ? element.loadData()
+        : element._handleSaveRule(
+            new CustomEvent('save-rule', {
+              detail: {
+                tool,
+                existingRule: null,
+                formData: {
+                  action: 'allow',
+                  condition_expression: '',
+                  condition_type: 'cel',
+                  description: '',
+                  is_enabled: true,
+                },
+                resolve: settled,
+                reject: rejected,
+              },
+            })
+          );
+      await waitUntil(() => !!release);
+      await element.updateComplete;
+      expect(element.loading).to.equal(false);
+      expect(element.refreshing).to.equal(true);
+      expect(element.shadowRoot.querySelector('sl-tab-group')).to.equal(tabs);
+      expect(column.scrollTop).to.equal(scroll);
+      expect(element.shadowRoot.textContent).to.contain('Refreshing tools');
+      release!(
+        new Response(JSON.stringify([tool]), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+      );
+      await pending;
+      await element.updateComplete;
+      expect(element.refreshing).to.equal(false);
+      if (!initialEmpty) {
+        expect(settled.calledOnce).to.equal(true);
+        expect(rejected.called).to.equal(false);
+        expect(
+          fetch
+            .getCalls()
+            .some(
+              (call) =>
+                call.args[1]?.method === 'POST' &&
+                String(call.args[0]).includes('access-rules')
+            )
+        ).to.equal(true);
+      }
+      expect(element.shadowRoot.querySelector('sl-tab-group')).to.equal(tabs);
+    });
+  }
 });

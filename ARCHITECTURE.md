@@ -433,3 +433,9 @@ notification hooks. Simulation does not dispatch tools, create approvals or
 record usage. The console's `policy_simulation` capability exposes draft testing
 in the rule dialog and YAML editor. Paths are evaluated as submitted, without
 normalization, so operators can test traversal and repeated-slash samples.
+
+Tools stores independent MCP filters as repeated `mcp_status`, `mcp_server`,
+`mcp_rule`, `mcp_workflow` plus `mcp_q`, and native filters as `native_agent`,
+`native_rule`, `native_q`. The `tab` parameter selects the visible tab without
+discarding either filter set. Successful initial loads, including empty catalogs,
+retain mounted content during subsequent background refreshes.
