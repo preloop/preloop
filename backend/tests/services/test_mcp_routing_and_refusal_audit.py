@@ -196,7 +196,9 @@ async def test_deleted_server_without_replacement_is_a_clean_error(
     mcp, pool, _ = _proxied_setup(monkeypatch, user_context, lambda: [])
     result = await mcp.call_tool("read_scope", {"scope": "daily"})
     assert result.is_error
-    assert "no active MCP server provides tool 'read_scope'" in result.content[0].text
+    assert result.content[0].text == (
+        "Access denied: no active MCP server provides this tool"
+    )
     pool.get_client.assert_not_awaited()
 
 
