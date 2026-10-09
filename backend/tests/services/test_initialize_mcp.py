@@ -200,12 +200,67 @@ class TestRegisteredToolBehaviour:
             result = json.loads(await tool.fn(request_id=str(request_id)))
 
         assert result["tool_result"] == {"text": "Replay completed"}
+        # get_issue is built in: replayed under its own name. The namespaced
+        # name is refused as "not available" (no exception), so trying it
+        # first never reached the built-in tool (live rehearsal 2026-10-09).
         replay.assert_awaited_once_with(
-            f"account_{str(account_id).replace('-', '_')}_get_issue",
+            "get_issue",
             {"issue": "ABC-1"},
             account_id=str(account_id),
         )
         other_replay.assert_not_awaited()
+
+    async def test_approval_replay_uses_namespaced_name_for_proxied_tool(
+        self, mcp_server: DynamicFastMCP
+    ) -> None:
+        """An external MCP tool is registered under the account namespace."""
+        tool = await mcp_server.get_tool("get_approval_status")
+        request_id = uuid4()
+        account_id = uuid4()
+        internal = f"account_{str(account_id).replace('-', '_')}_deploy"
+        approval = models.ApprovalRequest(
+            id=request_id,
+            account_id=account_id,
+            status="approved",
+            tool_name="deploy",
+            tool_args={"env": "dev"},
+            responses=[],
+        )
+        approval_result = MagicMock()
+        approval_result.scalar_one_or_none.return_value = approval
+        events_result = MagicMock()
+        events_result.scalars.return_value = []
+        db = AsyncMock()
+        db.execute.side_effect = [approval_result, events_result, approval_result]
+
+        @asynccontextmanager
+        async def session() -> AsyncIterator[AsyncMock]:
+            yield db
+
+        mcp_server._registered_proxied_tools.add(internal)
+        try:
+            with (
+                patch(
+                    "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+                    return_value=SimpleNamespace(account_id=str(account_id)),
+                ),
+                patch("preloop.models.db.session.get_async_db_session", new=session),
+                patch.object(
+                    mcp_server,
+                    "call_registered_tool_without_policy",
+                    new=AsyncMock(return_value="Deployed"),
+                ) as replay,
+                patch(
+                    "preloop.services.approval_service._log_approval_tool_executed_async"
+                ),
+            ):
+                json.loads(await tool.fn(request_id=str(request_id)))
+        finally:
+            mcp_server._registered_proxied_tools.discard(internal)
+
+        replay.assert_awaited_once_with(
+            internal, {"env": "dev"}, account_id=str(account_id)
+        )
 
     async def test_approval_replay_refuses_tool_outside_flow_allow_list(
         self, mcp_server: DynamicFastMCP

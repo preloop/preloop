@@ -2222,8 +2222,19 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                             _approved_answer_var.set(approver_answer)
                             _approved_id_var.set(str(req_id))
                             try:
-                                # Try internal (namespaced) name first, fall
-                                # back to original name for built-in tools.
+                                # Namespaced name for a proxied (external MCP)
+                                # tool, original name for a built-in one. The
+                                # namespaced call of a built-in tool does not
+                                # raise "not found": the access check answers
+                                # "not available", so pick the name up front.
+                                proxied = getattr(
+                                    replay_server, "_registered_proxied_tools", None
+                                )
+                                if (
+                                    isinstance(proxied, (set, frozenset))
+                                    and internal_name not in proxied
+                                ):
+                                    internal_name = tool_name
                                 try:
                                     tool_result = await replay_server.call_registered_tool_without_policy(
                                         internal_name,
