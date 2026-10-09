@@ -10,6 +10,7 @@ import asyncio
 import copy
 import hashlib
 import inspect
+import threading
 import json
 import keyword
 import logging
@@ -451,6 +452,22 @@ def post_approval_exec_outcome(tool_result: Any) -> tuple[str, Optional[str]]:
     return AUDIT_TOOL_CALL_FAILED, error
 
 
+_DROPPED_AUDIT_ERROR_FIELDS: set[str] = set()
+_DROPPED_AUDIT_ERROR_FIELDS_LOCK = threading.Lock()
+
+
+def _warn_dropped_audit_field(field: str) -> None:
+    """Warn once per field without including upstream content or credentials."""
+    with _DROPPED_AUDIT_ERROR_FIELDS_LOCK:
+        if field in _DROPPED_AUDIT_ERROR_FIELDS:
+            return
+        _DROPPED_AUDIT_ERROR_FIELDS.add(field)
+    logger.warning(
+        "Audit service does not accept %s; upstream error detail was dropped",
+        field,
+    )
+
+
 def _audit_error_kwargs(
     audit_service: Any, error_code: Optional[str], error_reason: Optional[str]
 ) -> dict[str, Any]:
@@ -460,12 +477,17 @@ def _audit_error_kwargs(
     try:
         params = inspect.signature(audit_service.log_tool_call_async).parameters
     except (TypeError, ValueError):
+        for key, value in (("error_code", error_code), ("error_reason", error_reason)):
+            if value is not None:
+                _warn_dropped_audit_field(key)
         return {}
     accepts_any = any(p.kind is p.VAR_KEYWORD for p in params.values())
     out: dict[str, Any] = {}
     for key, value in (("error_code", error_code), ("error_reason", error_reason)):
         if value is not None and (accepts_any or key in params):
             out[key] = value
+        elif value is not None:
+            _warn_dropped_audit_field(key)
     return out
 
 

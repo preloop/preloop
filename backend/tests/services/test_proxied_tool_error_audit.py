@@ -360,3 +360,38 @@ async def test_post_approval_replay_reports_upstream_error(monkeypatch, user_con
     # Stamps are cleared, so a later success is not misread.
     ok = ToolResult(content=[types.TextContent(type="text", text="ok")])
     assert post_approval_exec_outcome(ok) == ("executed", None)
+
+
+async def test_dropped_audit_fields_warn_once_without_logging_values(
+    monkeypatch, caplog
+):
+    from preloop.services import dynamic_fastmcp as module
+
+    monkeypatch.setattr(module, "_DROPPED_AUDIT_ERROR_FIELDS", set(), raising=False)
+    monkeypatch.setattr(module.logger, "propagate", False)
+    monkeypatch.setattr(module.logger, "handlers", [caplog.handler])
+    service = MagicMock()
+    service.log_tool_call_async = lambda: None
+    for _ in range(2):
+        assert (
+            module._audit_error_kwargs(service, "private-code", "private-reason") == {}
+        )
+    messages = [record.message for record in caplog.records]
+    assert len(messages) == 2
+    assert any("error_code" in message for message in messages)
+    assert any("error_reason" in message for message in messages)
+    assert all("private-" not in message for message in messages)
+
+
+async def test_uninspectable_audit_service_warns_once(monkeypatch, caplog):
+    from preloop.services import dynamic_fastmcp as module
+
+    monkeypatch.setattr(module, "_DROPPED_AUDIT_ERROR_FIELDS", set(), raising=False)
+    monkeypatch.setattr(module.logger, "propagate", False)
+    monkeypatch.setattr(module.logger, "handlers", [caplog.handler])
+    with patch.object(module.inspect, "signature", side_effect=ValueError):
+        for _ in range(2):
+            assert module._audit_error_kwargs(MagicMock(), None, "private-reason") == {}
+    assert len(caplog.records) == 1
+    assert "error_reason" in caplog.records[0].message
+    assert "private-reason" not in caplog.records[0].message
