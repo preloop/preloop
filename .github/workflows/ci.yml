@@ -508,15 +508,15 @@ jobs:
             docker run --rm --user 0 --entrypoint chown -v "$ws:/w" \
               pgvector/pgvector:pg16 -R "$uid:$gid" /w
           fi
-          if left=$(find "$ws" ! -user "$uid" -print -quit 2>/dev/null) && [ -n "$left" ]; then
-            echo "::error::still not owned by runner user: $left (see host runbook)"
+          left=$(find "$ws" ! -user "$uid" -print -quit 2>/dev/null || true)
+          if [ -n "$left" ]; then
+            echo "::error::still not owned by runner user: $left (see .github/self-hosted-runners.md, Workspace ownership)"
             exit 1
           fi
 
       # clean: true is the default, but a self-hosted workspace is reused
       # between runs, so say it out loud.
-      - id: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           clean: true
