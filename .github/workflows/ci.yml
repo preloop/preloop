@@ -488,7 +488,10 @@ jobs:
         shell: bash
         run: |
           set -u
-          ws="$GITHUB_WORKSPACE"
+          # The whole runnerN/_work, not only the checkout: the old
+          # container also left a root-owned venv in _temp/preloop-python
+          # that setup-ci-python must delete.
+          ws=$(dirname "$RUNNER_TEMP")
           [ -d "$ws" ] || exit 0
           uid=$(id -u); gid=$(id -g)
           foreign=$(find "$ws" ! -user "$uid" -print -quit 2>/dev/null || true)
@@ -519,6 +522,7 @@ jobs:
           clean: true
 
       - name: Set up Python
+        id: setup-python
         uses: ./.github/actions/setup-ci-python
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -556,10 +560,10 @@ jobs:
             --cov-report= \
             --junitxml=test-results.xml
 
-      # Only after a real checkout: otherwise python and the script are
-      # absent and a checkout failure is reported twice (exit 127).
+      # Only once Python is set up: otherwise python is absent and an
+      # earlier failure is reported twice (exit 127).
       - name: Drop CI database
-        if: always() && steps.checkout.outcome == 'success'
+        if: always() && steps.setup-python.outcome == 'success'
         run: python scripts/ci_postgres.py drop
 
       - name: Upload coverage data
