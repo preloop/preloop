@@ -1644,7 +1644,7 @@ async def _route_managed_agent_prompt(
         command_id=envelope.message_id,
         managed_agent_id=agent.id,
         runtime_session_id=history_session.id
-        if history_session
+        if history_session and str(agent.account_id) != str(current_user.account_id)
         else envelope.runtime_session_id,
         target_session_id=(
             history_session.id
