@@ -25,6 +25,7 @@ import {
   getCostAnalyticsSummary,
   getCostHealth,
   getCostReconciliation,
+  getCopilotUsage,
   getFeatures,
   getProviderBillingConnections,
   getUsers,
@@ -42,6 +43,8 @@ import type {
   CostReconciliationResponse,
   CostReconciliationRow,
   GatewayTokenUsage,
+  GatewayUsageByDay,
+  GatewayUsageByModel,
   GatewayUsageBySession,
   GatewayUsageByTool,
   ImportedUsageByConversation,
@@ -80,6 +83,10 @@ import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tab-panel/tab-panel.js';
 import { consoleDialogStyles } from '../../styles/console-dialog';
 import { hasCapability } from '../../capabilities';
+import { Router } from '../../router';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 
 /** Where an operator learns why a model can have no price. */
 const MODEL_PRICING_DOCS_URL =
@@ -108,6 +115,10 @@ type SortState = {
 
 // A single sortable column. `value` extracts the sort key from a row; `numeric`
 // selects numeric vs. locale-string comparison.
+// Outlier alerts live on Attention; Spend settings links there rather than
+// embedding the alert engine.
+const SPEND_OUTLIERS_HREF = '/console/attention#spend-outliers';
+
 type SortColumn<T> = {
   key: string;
   label: string;
@@ -297,6 +308,12 @@ export class CostView extends AuthedElement {
   @state() private sessionSort: SortState = { key: 'cost', dir: 'desc' };
   @state() private userSort: SortState = { key: 'cost', dir: 'desc' };
   @state() private importedSort: SortState = { key: 'cost', dir: 'desc' };
+  @state() private modelSort: SortState = { key: 'cost', dir: 'desc' };
+  // Copilot is an import, so its tab waits for a connection: a Copilot
+  // connection, or a Copilot provider billing connection. Checked once per
+  // visit; the Imports destination in Spend settings reveals it to set one up.
+  @state() private copilotConnected = false;
+  @state() private copilotRevealed = false;
 
   private get modelPriceOverridesEnabled(): boolean {
     return this.featureFlags.model_price_overrides === true;
@@ -350,6 +367,53 @@ export class CostView extends AuthedElement {
 
         /* Wide enough for "Last month"; the shared control is 96px by default,
          which is sized for 24h/7d/30d chips. */
+        .daily-spend {
+          display: flex;
+          align-items: flex-end;
+          gap: var(--sl-spacing-medium);
+          flex-wrap: wrap;
+        }
+
+        .daily-spend-summary {
+          display: flex;
+          flex-direction: column;
+          font-size: var(--sl-font-size-small);
+          color: var(--sl-color-neutral-600);
+        }
+
+        .daily-spend-title {
+          font-weight: var(--sl-font-weight-semibold);
+          color: var(--sl-color-neutral-800);
+        }
+
+        .daily-bars {
+          display: flex;
+          align-items: flex-end;
+          gap: 2px;
+          height: 32px;
+          flex: 1;
+          min-width: 120px;
+        }
+
+        .daily-bar {
+          flex: 1;
+          height: 100%;
+          display: flex;
+          align-items: flex-end;
+        }
+
+        .daily-bar span {
+          display: block;
+          width: 100%;
+          border-radius: 2px 2px 0 0;
+          background: var(--sl-color-primary-500);
+        }
+
+        .model-provider {
+          font-size: var(--sl-font-size-x-small);
+          color: var(--sl-color-neutral-600);
+        }
+
         .toolbar time-range-select {
           --time-range-select-width: 140px;
         }
@@ -726,6 +790,31 @@ export class CostView extends AuthedElement {
     this.readUrlPeriod();
     window.addEventListener('popstate', this.restoreUrlPeriod);
     void this.load();
+    void this.loadCopilotConnection();
+  }
+
+  private async loadCopilotConnection() {
+    const [copilot, billing] = await Promise.allSettled([
+      getCopilotUsage({}),
+      getProviderBillingConnections(),
+    ]);
+    const viaCopilot =
+      copilot.status === 'fulfilled' && copilot.value?.connection != null;
+    const viaBilling =
+      billing.status === 'fulfilled' &&
+      Array.isArray(billing.value) &&
+      billing.value.some((connection) =>
+        String(connection.provider).toLowerCase().includes('copilot')
+      );
+    this.copilotConnected = viaCopilot || viaBilling;
+  }
+
+  private get copilotTabShown(): boolean {
+    return (
+      this.copilotConnected ||
+      this.copilotRevealed ||
+      this.activeTab === 'copilot'
+    );
   }
 
   private readUrlPeriod() {
@@ -971,6 +1060,10 @@ export class CostView extends AuthedElement {
       if (!this.digestPeriod)
         void this.loadPreviousRangeSummary(generation, range);
       void this.loadTab(this.activeTab, generation);
+      // The daily strip is small and always visible, so it loads with the page.
+      this.loadBreakdowns(['days'], generation).catch(() => {
+        // Decoration only: the strip stays hidden without its data.
+      });
       if (summary.imported_usage?.event_count)
         void this.loadTab('imported', generation);
     } catch (error) {
@@ -1142,6 +1235,7 @@ export class CostView extends AuthedElement {
       return;
     const sections: Record<string, CostUsageBreakdown[]> = {
       agents: ['sessions', 'flows'],
+      models: ['models'],
       sessions: ['sessions'],
       users: ['sessions'],
       tools: ['tools'],
@@ -2618,6 +2712,12 @@ export class CostView extends AuthedElement {
             ?active=${this.activeTab === 'agents'}
             >Agents</sl-tab
           >
+          <sl-tab
+            slot="nav"
+            panel="models"
+            ?active=${this.activeTab === 'models'}
+            >Models</sl-tab
+          >
           <sl-tab slot="nav" panel="tools" ?active=${this.activeTab === 'tools'}
             >Tools</sl-tab
           >
@@ -2630,12 +2730,16 @@ export class CostView extends AuthedElement {
           <sl-tab slot="nav" panel="users" ?active=${this.activeTab === 'users'}
             >Users</sl-tab
           >
-          <sl-tab
-            slot="nav"
-            panel="copilot"
-            ?active=${this.activeTab === 'copilot'}
-            >Copilot</sl-tab
-          >
+          ${
+            this.copilotTabShown
+              ? html`<sl-tab
+                  slot="nav"
+                  panel="copilot"
+                  ?active=${this.activeTab === 'copilot'}
+                  >Copilot</sl-tab
+                >`
+              : nothing
+          }
           ${
             this.teamBudgetsEnabled
               ? html`<sl-tab
@@ -2656,6 +2760,9 @@ export class CostView extends AuthedElement {
           <sl-tab-panel name="agents"
             >${this.renderTab('agents', () => this.renderAgentsTab())}</sl-tab-panel
           >
+          <sl-tab-panel name="models"
+            >${this.renderTab('models', () => this.renderModelsTab())}</sl-tab-panel
+          >
           <sl-tab-panel name="tools"
             >${this.renderTab('tools', () => this.renderToolsTab())}</sl-tab-panel
           >
@@ -2665,9 +2772,13 @@ export class CostView extends AuthedElement {
           <sl-tab-panel name="users"
             >${this.renderTab('users', () => this.renderUsersTab())}</sl-tab-panel
           >
-          <sl-tab-panel name="copilot"
-            >${this.renderTab('copilot', () => this.renderCopilotTab())}</sl-tab-panel
-          >
+          ${
+            this.copilotTabShown
+              ? html`<sl-tab-panel name="copilot"
+                  >${this.renderTab('copilot', () => this.renderCopilotTab())}</sl-tab-panel
+                >`
+              : nothing
+          }
           ${
             this.teamBudgetsEnabled
               ? html`<sl-tab-panel name="teams"
@@ -2768,6 +2879,181 @@ export class CostView extends AuthedElement {
     } catch {
       // The health card keeps its last list; the next load refreshes it.
     }
+  }
+
+  private renderModelsTab() {
+    const columns: SortColumn<GatewayUsageByModel>[] = [
+      {
+        key: 'model',
+        label: 'Model',
+        numeric: false,
+        value: (r) => r.model_alias || '',
+      },
+      {
+        key: 'requests',
+        label: 'Requests',
+        numeric: true,
+        value: (r) => r.request_count,
+      },
+      {
+        key: 'tokens',
+        label: 'Tokens',
+        numeric: true,
+        value: (r) => r.token_usage?.total_tokens ?? 0,
+      },
+      {
+        key: 'cost',
+        label: 'Cost',
+        numeric: true,
+        value: (r) => r.estimated_cost,
+      },
+    ];
+    const rows = this.sortRows(
+      this.summary?.usage_by_model ?? [],
+      columns,
+      this.modelSort
+    );
+    if (!rows.length) {
+      return html`<div class="empty">
+        No model-level usage is available for this period.
+      </div>`;
+    }
+    return html`<div class="analytics-table-wrap">
+      <div class="table-scroll">
+        <table class="styled-table" aria-label="Spend by model">
+          <thead>
+            <tr>
+              ${columns.map((column) =>
+                this.renderSortableHeader(
+                  column,
+                  this.modelSort,
+                  (key) =>
+                    (this.modelSort = this.toggleSort(this.modelSort, key))
+                )
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(
+              (row) =>
+                html`<tr>
+                  <td>
+                    <div class="model-name">
+                      ${row.model_alias || 'Unnamed model'}
+                    </div>
+                    <div class="model-provider">
+                      ${row.provider_name || 'Unknown provider'}
+                    </div>
+                  </td>
+                  <td>${this.formatNumber(row.request_count)}</td>
+                  <td>
+                    <token-figures
+                      .usage=${row.token_usage}
+                      expanded
+                    ></token-figures>
+                  </td>
+                  <td>
+                    <span title=${formatUsdExact(row.estimated_cost)}
+                      >${formatUsd(row.estimated_cost)}</span
+                    >
+                  </td>
+                </tr>`
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  // A small per-day strip above the tabs: one bar per day, height by
+  // estimated cost, with the window's total spend and requests beside it.
+  private renderDailySpend() {
+    const days: GatewayUsageByDay[] = this.summary?.requests_by_day ?? [];
+    if (!this.readyBreakdowns.has('days') || !days.length) return nothing;
+    const peak = Math.max(...days.map((day) => day.estimated_cost), 0);
+    const totalCost = days.reduce((sum, day) => sum + day.estimated_cost, 0);
+    const totalRequests = days.reduce((sum, day) => sum + day.request_count, 0);
+    return html`<div
+      class="daily-spend"
+      data-testid="daily-spend"
+      role="group"
+      aria-label="Daily spend"
+    >
+      <div class="daily-spend-summary">
+        <span class="daily-spend-title">Daily spend</span>
+        <span
+          >${formatUsd(totalCost)} across ${this.formatNumber(totalRequests)}
+          ${totalRequests === 1 ? 'request' : 'requests'}</span
+        >
+      </div>
+      <div class="daily-bars">
+        ${days.map((day) => {
+          const label = `${day.date}: ${formatUsd(day.estimated_cost)}, ${this.formatNumber(day.request_count)} ${day.request_count === 1 ? 'request' : 'requests'}`;
+          const height = peak > 0 ? (day.estimated_cost / peak) * 100 : 0;
+          return html`<div
+            class="daily-bar"
+            role="img"
+            aria-label=${label}
+            title=${label}
+          >
+            <span style="height: ${Math.max(height, 2)}%"></span>
+          </div>`;
+        })}
+      </div>
+    </div>`;
+  }
+
+  private openSpendSetting(destination: string) {
+    if (destination === 'outliers') {
+      Router.go(SPEND_OUTLIERS_HREF);
+      return;
+    }
+    if (destination === 'imports') {
+      this.copilotRevealed = true;
+      this.activeTab = 'copilot';
+      void this.loadTab('copilot');
+      // The Copilot tab is created in this same update, so the ?active
+      // binding alone does not reach sl-tab-group: show() syncs the panels.
+      void this.updateComplete.then(() => {
+        const group = this.renderRoot.querySelector('sl-tab-group') as
+          (HTMLElement & { show?: (panel: string) => void }) | null;
+        group?.show?.('copilot');
+        group?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      return;
+    }
+    const target = this.renderRoot.querySelector(
+      destination === 'budgets' ? '#panel-budgets' : '#panel-pricing'
+    ) as HTMLElement | null;
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    target?.focus({ preventScroll: true });
+  }
+
+  private renderSpendSettings() {
+    const pricingAvailable =
+      this.pricingContextReady && this.modelPriceOverridesEnabled;
+    return html`<sl-dropdown class="spend-settings" hoist>
+      <sl-button slot="trigger" size="small" caret>
+        <sl-icon slot="prefix" name="sliders"></sl-icon>
+        Spend settings
+      </sl-button>
+      <sl-menu
+        aria-label="Spend settings"
+        @sl-select=${(event: CustomEvent<{ item: { value: string } }>) =>
+          this.openSpendSetting(event.detail.item.value)}
+      >
+        <sl-menu-item value="budgets" ?disabled=${!this.budgetContextReady}
+          >Budget limits</sl-menu-item
+        >
+        <sl-menu-item value="pricing" ?disabled=${!pricingAvailable}
+          >Price overrides</sl-menu-item
+        >
+        <sl-menu-item value="imports">Imports</sl-menu-item>
+        <sl-menu-item value="outliers" data-href=${SPEND_OUTLIERS_HREF}
+          >Outlier alerts</sl-menu-item
+        >
+      </sl-menu>
+    </sl-dropdown>`;
   }
 
   private renderCopilotTab() {
@@ -3319,6 +3605,8 @@ export class CostView extends AuthedElement {
   private renderBudgets() {
     return html`
       <budget-health-card
+        id="panel-budgets"
+        tabindex="-1"
         .summary=${this.summary}
         .policies=${this.budgetPolicies}
         .teamNames=${this.teamNames}
@@ -3589,7 +3877,7 @@ export class CostView extends AuthedElement {
       this.isOverrideInForce(override)
     ).length;
     return html`
-      <sl-card id="panel-pricing">
+      <sl-card id="panel-pricing" tabindex="-1">
         ${this.renderSectionHeader('tags', 'Pricing overrides')}
         <div class="action-card-body">
           <div>
@@ -4053,6 +4341,7 @@ export class CostView extends AuthedElement {
           <a class="issue-cost-link" href="/console/cost/by-issue"
             >Cost per issue</a
           >
+          ${this.renderSpendSettings()}
         </div>
 
         ${
@@ -4092,7 +4381,8 @@ export class CostView extends AuthedElement {
                     ${this.renderAccountingFindings()}
                     <div class="column-layout dashboard extra-wide">
                       <div class="main-column">
-                        ${this.renderBreakdown()} ${this.renderImportedUsage()}
+                        ${this.renderDailySpend()} ${this.renderBreakdown()}
+                        ${this.renderImportedUsage()}
                       </div>
                       <div class="side-column">${this.renderControls()}</div>
                     </div>

@@ -980,6 +980,39 @@ describe('AttentionView', () => {
       ).to.be.true;
     });
 
+    it('opens the alert settings from the #spend-outliers link', async () => {
+      permissions = ['view_cost', 'manage_budgets'];
+      window.location.hash = '#spend-outliers';
+      try {
+        const el = await mount();
+        await el.updateComplete;
+        await el.updateComplete;
+        expect(
+          el
+            .shadowRoot!.querySelector('spend-outlier-settings-dialog')!
+            .hasAttribute('open')
+        ).to.be.true;
+      } finally {
+        window.location.hash = '';
+      }
+    });
+
+    it('does not open the alert settings from the link without manage_budgets', async () => {
+      permissions = ['view_cost'];
+      window.location.hash = '#spend-outliers';
+      try {
+        const el = await mount();
+        await el.updateComplete;
+        expect(
+          el
+            .shadowRoot!.querySelector('spend-outlier-settings-dialog')
+            ?.hasAttribute('open') ?? false
+        ).to.be.false;
+      } finally {
+        window.location.hash = '';
+      }
+    });
+
     it('hides the alert settings from a member without manage_budgets', async () => {
       permissions = ['view_cost'];
       spendOutliersResponse = [spendFinding()];
