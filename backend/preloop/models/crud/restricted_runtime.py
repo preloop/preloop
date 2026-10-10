@@ -9,6 +9,7 @@ rather than minting renewed authority, even after a policy generation change.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from copy import deepcopy
 from dataclasses import dataclass
@@ -111,6 +112,19 @@ def _session_key(external_session_id: str) -> str:
 
 def _time(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _context_digest(context: dict[str, Any]) -> str:
+    """Bind the exact key context without duplicating its whole resource ceiling."""
+    try:
+        encoded = json.dumps(
+            context, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
+    except (TypeError, ValueError):
+        raise RestrictedRuntimeDeniedError(
+            "restricted_runtime_credential_denied"
+        ) from None
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _reference(
@@ -372,7 +386,7 @@ def exchange(
     sessions[digest] = {
         "status": "issued",
         "api_key_id": str(key.id),
-        "context": deepcopy(context),
+        "context_digest": _context_digest(context),
         "scopes": list(scopes),
         "expires_at": expires_at.timestamp(),
     }
@@ -472,7 +486,7 @@ def authorize(
         not isinstance(record, dict)
         or record.get("status") != "issued"
         or record.get("api_key_id") != str(key.id)
-        or record.get("context") != context
+        or record.get("context_digest") != _context_digest(context)
         or record.get("scopes") != key.scopes
         or record.get("expires_at") != _time(key.expires_at).timestamp()
         or type(authority.get("generation")) is not int

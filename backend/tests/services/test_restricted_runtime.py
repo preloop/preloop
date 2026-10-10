@@ -492,6 +492,19 @@ def test_malformed_requested_scope_never_mints(state: Any, scopes: Any) -> None:
     assert not state.stored
 
 
+def test_replay_state_is_compact_and_still_binds_the_complete_context(
+    state: Any,
+) -> None:
+    issue(state)
+    record = next(iter(state.reference.meta_data[authority.SESSIONS_KEY].values()))
+    assert "context" not in record
+    assert len(record["context_digest"]) == 64
+    key = state.stored[-1]
+    key.context_data = {**key.context_data, "unexpected_owner_context": "changed"}
+    with pytest.raises(authority.RestrictedRuntimeDeniedError):
+        authorize(state)
+
+
 @pytest.mark.parametrize("with_user", [False, True])
 @pytest.mark.parametrize("mode", ["restricted_runtime", "restricted_ci"])
 def test_model_gateway_never_falls_back_to_machine_key_owner(
