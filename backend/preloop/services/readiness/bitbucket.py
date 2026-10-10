@@ -41,10 +41,14 @@ class ConflictProbe(Protocol):
 
 def identities(pr: dict[str, Any]) -> tuple[str | None, str | None]:
     """Immutable identity pair; missing identities cannot establish readiness."""
-    return tuple(
-        (pr.get(side) or {}).get("commit", {}).get("hash")
-        for side in ("source", "destination")
-    )  # type: ignore[return-value]
+
+    def commit_hash(side: str) -> str | None:
+        endpoint = pr.get(side)
+        commit = endpoint.get("commit") if isinstance(endpoint, dict) else None
+        value = commit.get("hash") if isinstance(commit, dict) else None
+        return value if isinstance(value, str) and value else None
+
+    return commit_hash("source"), commit_hash("destination")
 
 
 def _status_state(statuses: list[dict[str, Any]], key: str) -> tuple[GateState, str]:

@@ -205,3 +205,18 @@ async def test_provider_enforced_is_explicitly_unsupported_without_reads() -> An
     assert observation.state == "unknown"
     assert observation.reasons == ("provider_enforced_unsupported",)
     assert not requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("side", ["source", "destination"])
+@pytest.mark.parametrize(
+    "endpoint", [{"commit": None}, {"commit": []}, None, "malformed"]
+)
+async def test_malformed_commit_identity_becomes_unknown(
+    side: str, endpoint: Any
+) -> Any:
+    client, requests = tracker(pr_changes={side: endpoint})
+    result = await run(client)
+    assert result.state == "unknown"
+    assert "identity_unavailable" in result.reasons
+    assert len(requests) == 1

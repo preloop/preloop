@@ -158,13 +158,33 @@ def test_policy_cas_replays_regression_and_new_series(
     readiness.persist_ticket_creation(
         db, account_id=account, rollup_id=rollup.id, evidence=creation
     )
+    readiness.persist_ticket_creation(
+        db,
+        account_id=account,
+        rollup_id=rollup.id,
+        evidence=creation.model_copy(
+            update={
+                "created_at": None,
+                "retrieved_at": T0 + timedelta(minutes=5),
+                "reason": "jira_unavailable",
+            }
+        ),
+    )
     ticket, series, reason = readiness.report_evidence(
         db, account_id=account, rollup_id=rollup.id
     )
     assert ticket.created_at == T0
+    assert ticket.retrieved_at == creation.retrieved_at
     assert reason is None
     assert series[0][0].observation_id == first.observation_id
     assert series[0][1].state == "not_ready"
+    from preloop.services.readiness.report import readiness_fields
+
+    fields = readiness_fields(ticket, series, reason, now=latest.completed_at)
+    assert fields["ticket_to_observed_ready_hours"] is not None
+    assert readiness.report_evidence_many(db, account_id=account, rollups=[rollup])[
+        rollup.id
+    ] == (ticket, series, reason, selected.version)
     revised = selected.model_copy(update={"version": uuid4()})
     readiness.activate_policy(
         db, account_id=account, project_id=project.id, policy=revised
@@ -416,6 +436,16 @@ def test_explicit_flow_binding_overrides_project_default(
     assert context is not None
     assert context[3].id == host.id
     assert context[4] == "example/repo"
+    assert (
+        readiness.schedule_repository(
+            db_session,
+            account_id=account,
+            tracker_id=host.id,
+            repository="example/repo",
+            now=T0,
+        )
+        == 1
+    )
 
 
 @pytest.mark.asyncio
@@ -508,3 +538,83 @@ def test_expired_observer_cannot_persist_after_lease_replacement(
         )
         is None
     )
+
+
+@pytest.mark.parametrize("identity", [None, "", "not-a-uuid", 123])
+def test_malformed_repository_binding_is_unknown(
+    db_session: Any, test_user: Any, identity: Any
+) -> Any:
+    project, rollup, pr, jira, host, selected = seed(db_session, test_user.account_id)
+    project.settings = {
+        "repository_bindings": [{"repository": "example/repo", "tracker_id": identity}]
+    }
+    if identity is None:
+        project.settings["repository_bindings"][0].pop("tracker_id")
+    db_session.flush()
+    assert (
+        readiness.observation_context(
+            db_session, account_id=test_user.account_id, pr_record_id=pr.id
+        )
+        is None
+    )
+    assert (
+        readiness.schedule_repository(
+            db_session,
+            account_id=test_user.account_id,
+            tracker_id=host.id,
+            repository="example/repo",
+            now=T0,
+        )
+        == 0
+    )
+
+
+def test_repository_schedule_batches_binding_reads(
+    db_session: Any, test_user: Any, monkeypatch: Any
+) -> Any:
+    from sqlalchemy import event
+
+    account = test_user.account_id
+    project, rollup, pr, jira, host, selected = seed(db_session, account)
+    for number in range(2, 22):
+        extra = crud_issue_cost.get_or_create_pull_request(
+            db_session,
+            account_id=account,
+            pr_key=f"https://bitbucket.org/example/repo/pull-requests/{number}",
+        )
+        extra.rollup_id = rollup.id
+    db_session.flush()
+    selected_ids = []
+    host_id = host.id
+    monkeypatch.setattr(
+        readiness, "schedule", lambda db, **kwargs: selected_ids.append(kwargs["pr_id"])
+    )
+    reads = []
+
+    def capture(
+        connection: Any,
+        cursor: Any,
+        statement: str,
+        parameters: Any,
+        context: Any,
+        many: Any,
+    ) -> None:
+        if statement.lstrip().upper().startswith("SELECT"):
+            reads.append(statement)
+
+    event.listen(db_session.bind, "before_cursor_execute", capture)
+    try:
+        assert (
+            readiness.schedule_repository(
+                db_session,
+                account_id=account,
+                tracker_id=host_id,
+                repository="example/repo",
+                now=T0,
+            )
+            == 21
+        )
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", capture)
+    assert len(set(selected_ids)) == 21
+    assert len(reads) == 3

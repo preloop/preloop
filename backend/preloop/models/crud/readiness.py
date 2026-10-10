@@ -3,6 +3,7 @@
 from datetime import datetime
 from dataclasses import dataclass, field
 from uuid import UUID
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -285,6 +286,9 @@ def persist_ticket_creation(
     else:
         old = TicketCreationEvidence.model_validate(row.evidence)
         if old.retrieved_at <= evidence.retrieved_at:
+            if old.created_at is not None and evidence.created_at is None:
+                # A failed refresh cannot erase the historical source fact.
+                return
             row.evidence = evidence.model_dump(mode="json")
     db.flush()
 
@@ -587,26 +591,12 @@ def observation_context(
             )
         )
     )
-    explicit = [
-        binding
-        for config in flow_configs
-        if isinstance(config, dict)
-        for binding in config.get("repository_bindings", [])
-        if isinstance(binding, dict) and binding.get("repository") == repository
-    ]
-    candidates = explicit or [
-        binding
-        for binding in (project.settings or {}).get("repository_bindings", [])
-        if isinstance(binding, dict) and binding.get("repository") == repository
-    ]
-    bindings = list(
-        {str(binding.get("tracker_id")): binding for binding in candidates}.values()
-    )
-    if len(bindings) != 1:
+    host_tracker_id = _bound_tracker_id(project.settings, flow_configs, repository)
+    if host_tracker_id is None:
         return None
     host_tracker = db.scalar(
         select(models.Tracker).where(
-            models.Tracker.id == UUID(str(bindings[0]["tracker_id"])),
+            models.Tracker.id == host_tracker_id,
             models.Tracker.account_id == account_id,
             models.Tracker.tracker_type == "bitbucket",
         )
@@ -622,26 +612,95 @@ def project_exists(db: Session, *, account_id: UUID, project_id: UUID) -> bool:
     return _project(db, account_id, project_id, lock=False) is not None
 
 
+def _bound_tracker_id(
+    settings: dict[str, Any] | None, flow_configs: list[Any], repository: str
+) -> UUID | None:
+    """Select a validated unique binding, with explicit flows taking precedence."""
+
+    def matching(config: object) -> list[dict[str, Any]]:
+        if not isinstance(config, dict):
+            return []
+        bindings = config.get("repository_bindings")
+        if not isinstance(bindings, list):
+            return []
+        return [
+            binding
+            for binding in bindings
+            if isinstance(binding, dict) and binding.get("repository") == repository
+        ]
+
+    explicit = [binding for config in flow_configs for binding in matching(config)]
+    candidates = explicit or matching(settings)
+    identities = {str(binding.get("tracker_id")) for binding in candidates}
+    if len(identities) != 1:
+        return None
+    try:
+        return UUID(identities.pop())
+    except (ValueError, TypeError):
+        return None
+
+
 def schedule_repository(
     db: Session, *, account_id: UUID, tracker_id: UUID, repository: str, now: datetime
 ) -> int:
-    """Status events queue only PRs bound to this account and code-host tracker."""
-    prs = list(
-        db.scalars(
-            select(models.IssueCostPullRequest).where(
+    """Batch-resolve repository bindings before scheduling account-owned PRs."""
+    host = db.scalar(
+        select(models.Tracker.id).where(
+            models.Tracker.id == tracker_id,
+            models.Tracker.account_id == account_id,
+            models.Tracker.tracker_type == "bitbucket",
+        )
+    )
+    if host is None:
+        return 0
+    rows = list(
+        db.execute(
+            select(models.IssueCostPullRequest, models.Project.settings)
+            .join(
+                models.IssueCostRollup,
+                models.IssueCostPullRequest.rollup_id == models.IssueCostRollup.id,
+            )
+            .join(
+                models.Project, models.IssueCostRollup.project_id == models.Project.id
+            )
+            .join(
+                models.Tracker, models.IssueCostRollup.tracker_id == models.Tracker.id
+            )
+            .where(
                 models.IssueCostPullRequest.account_id == account_id,
+                models.IssueCostRollup.account_id == account_id,
+                models.Tracker.account_id == account_id,
+                models.Tracker.tracker_type == "jira",
                 models.IssueCostPullRequest.pr_key.startswith(
                     f"https://bitbucket.org/{repository}/pull-requests/"
                 ),
                 models.IssueCostPullRequest.merged_at.is_(None),
                 models.IssueCostPullRequest.ambiguous.is_(False),
             )
-        )
+        ).all()
     )
+    if not rows:
+        return 0
+    configs_by_binding: dict[tuple[UUID, str], list[Any]] = {}
+    for rollup_id, pr_key, config in db.execute(
+        select(
+            models.IssueCostExecution.rollup_id,
+            models.IssueCostExecution.pr_key,
+            models.Flow.git_clone_config,
+        )
+        .join(models.Flow, models.IssueCostExecution.flow_id == models.Flow.id)
+        .where(
+            models.Flow.account_id == account_id,
+            models.IssueCostExecution.account_id == account_id,
+            models.IssueCostExecution.rollup_id.in_([pr.rollup_id for pr, _ in rows]),
+            models.IssueCostExecution.pr_key.in_([pr.pr_key for pr, _ in rows]),
+        )
+    ).all():
+        configs_by_binding.setdefault((rollup_id, pr_key), []).append(config)
     count = 0
-    for pr in prs:
-        context = observation_context(db, account_id=account_id, pr_record_id=pr.id)
-        if context and context[3].id == tracker_id:
+    for pr, settings in rows:
+        configs = configs_by_binding.get((pr.rollup_id, pr.pr_key), [])
+        if _bound_tracker_id(settings, configs, repository) == tracker_id:
             schedule(db, account_id=account_id, pr_id=pr.id, now=now)
             count += 1
     return count
@@ -726,8 +785,12 @@ def report_evidence_many(
         ).all()
     }
     result = {}
+    bound_by_rollup: dict[UUID, list[models.IssueCostPullRequest]] = {}
+    for pr in prs:
+        if pr.rollup_id is not None:
+            bound_by_rollup.setdefault(pr.rollup_id, []).append(pr)
     for rollup in rollups:
-        bound = [pr for pr in prs if pr.rollup_id == rollup.id]
+        bound = bound_by_rollup.get(rollup.id, [])
         version = policies.get(rollup.project_id) if rollup.project_id else None
         details = []
         if version:
