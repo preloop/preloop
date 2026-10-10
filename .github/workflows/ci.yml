@@ -206,12 +206,11 @@ jobs:
           GH_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           REPO: ${{ github.repository }}
-          PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
         run: |
           set -uo pipefail
 
           # Eighteen shards. Measured on the green main run 37987118309:
-          # with no durations, group 2/8 spent 25.2m in pytest. Balanced
+          # with no durations, group 2 of 8 spent 25.2m in pytest. Balanced
           # with .github/pytest-split-durations.json, the slowest of 18
           # chunks is about 3.3m of test time, which stays under 7m once
           # checkout and pip are added.
@@ -244,8 +243,8 @@ jobs:
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
             echo "reason: $reason"
-            echo "overflow shards on self-hosted: $idle / 8"
-            echo "- overflow self-hosted backend shards: \`$idle / 8\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "overflow shards on self-hosted: $idle / $SPLITS"
+            echo "- overflow self-hosted backend shards: \`$idle / $SPLITS\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- reason: $reason" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }

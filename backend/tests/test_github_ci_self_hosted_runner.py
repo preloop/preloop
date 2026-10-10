@@ -67,12 +67,12 @@ def _overflow_slot(pyver: str = "3.11") -> dict[str, Any]:
 
 
 def _backend_plan(idle: int, pyver: str = "3.11") -> list[dict[str, Any] | None]:
-    """Hosted-first overflow: last ``idle`` of eight shards go to private VMs.
+    """Hosted-first overflow: the last ``idle`` shards go to private VMs.
 
     GitHub expressions cannot subtract, so the array is 1-based: a dummy
-    ``null`` at index 0 lets ``[matrix.group]`` address groups 1-8. Mirrors
-    pick-runner's jq in Python so GitLab's unit image (no ``jq``) can still
-    pin the routing.
+    ``null`` at index 0 lets ``[matrix.group]`` address groups 1 through
+    the shard count. Mirrors pick-runner's jq in Python so GitLab's unit
+    image (no ``jq``) can still pin the routing.
     """
     idle = max(0, min(int(idle), BACKEND_TEST_SPLITS))
     threshold = BACKEND_TEST_SPLITS - idle
@@ -155,6 +155,8 @@ def test_pick_runner_requires_an_idle_matching_runner() -> None:
         assert f'index("{label}")' in script
     # Hosted first; idle VMs take the tail of the matrix.
     assert "SPLITS=18" in script
+    assert "$idle / $SPLITS" in script
+    assert "/ 8" not in script
     assert "range(0; $splits)" in script
     assert ". >= ($splits - $idle)" in script
     # Dummy at [0] so YAML can index with matrix.group (no minus).

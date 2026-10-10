@@ -16,22 +16,29 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import quote_plus
 
+_CI_DATABASE_NAME = re.compile(r"^preloop_ci_[0-9]+_[0-9]+_[0-9]+$")
+
 POSTGRES_IMAGE = "pgvector/pgvector:pg16"
-EPHEMERAL_CONTAINER = "preloop-ci-ephemeral"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5432
+# Ephemeral fallbacks avoid 5432, which is the persistent server. One port
+# per shard so two jobs on one VM do not bind the same address.
+EPHEMERAL_PORT_BASE = 15432
 DEFAULT_USER = "test_user"
 DEFAULT_PASSWORD = "test_password"
 DEFAULT_MAINTENANCE_DB = "postgres"
 CONNECT_TIMEOUT_SECONDS = 3
 START_TIMEOUT_SECONDS = 60
+STALE_DATABASE_TTL_SECONDS = 6 * 60 * 60
 
 Connect = Callable[[str, int, str, str, str], Any]
 
@@ -69,6 +76,28 @@ def job_database_name(run_id: str, attempt: str, shard: str) -> str:
     if len(name) > 63:
         raise ValueError(f"database name {name!r} exceeds 63 characters")
     return name
+
+
+def ephemeral_container_name(run_id: str, attempt: str, shard: str) -> str:
+    """Return a Docker name that belongs to one job and no other."""
+    job_database_name(run_id, attempt, shard)
+    return f"preloop-ci-{run_id}-{attempt}-{shard}"
+
+
+def ephemeral_host_port(shard: str, listen_port: int) -> int:
+    """Return the host port for a server this job starts.
+
+    The default listen port stays reserved for a persistent server. Each
+    shard gets its own fallback port so two jobs on one machine do not
+    bind the same address or delete each other's container. An explicit
+    ``PRELOOP_CI_POSTGRES_PORT`` is that one server, so the fallback uses
+    it unchanged.
+    """
+    if listen_port != DEFAULT_PORT:
+        return listen_port
+    if not shard.isdigit():
+        raise ValueError(f"PRELOOP_CI_SHARD must be decimal digits, got {shard!r}")
+    return EPHEMERAL_PORT_BASE + int(shard)
 
 
 def database_url(user: str, host: str, port: int, name: str) -> str:
@@ -165,10 +194,12 @@ def _ensure_database(connection: Any, name: str) -> None:
     print(f"created database {name}")
 
 
-def _start_ephemeral_server(user: str, password: str, port: int) -> None:
-    """Start pgvector on localhost. Remove only a previous ephemeral container."""
+def _start_ephemeral_server(
+    user: str, password: str, port: int, container: str
+) -> None:
+    """Start pgvector on localhost. Remove only this job's container name."""
     subprocess.run(
-        ["docker", "rm", "-f", EPHEMERAL_CONTAINER],
+        ["docker", "rm", "-f", container],
         check=False,
         capture_output=True,
         text=True,
@@ -179,7 +210,7 @@ def _start_ephemeral_server(user: str, password: str, port: int) -> None:
             "run",
             "-d",
             "--name",
-            EPHEMERAL_CONTAINER,
+            container,
             "-p",
             f"127.0.0.1:{port}:5432",
             "-e",
@@ -199,13 +230,56 @@ def _start_ephemeral_server(user: str, password: str, port: int) -> None:
             "POSTGRES_DB": "postgres",
         },
     )
-    print(f"started {POSTGRES_IMAGE} as {EPHEMERAL_CONTAINER}")
+    print(f"started {POSTGRES_IMAGE} as {container} on 127.0.0.1:{port}")
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _sweep_stale_databases(connection: Any, keep: str) -> None:
+    """Drop ``preloop_ci_*`` databases older than the TTL.
+
+    A cancelled job may never reach its drop step. ``pg_database`` has no
+    creation time; the data directory's ``PG_VERSION`` mtime is the age.
+    Failures are logged. A sweep must not stop the job that is starting.
+    """
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT d.datname,
+                       (pg_stat_file('base/' || d.oid || '/PG_VERSION')).modification
+                FROM pg_database d
+                WHERE d.datname LIKE 'preloop_ci_%'
+                  AND d.datname <> %s
+                """,
+                (keep,),
+            )
+            rows = cursor.fetchall()
+    except Exception as exc:
+        print(f"skipping stale database sweep: {exc}", file=sys.stderr)
+        return
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=STALE_DATABASE_TTL_SECONDS)
+    for datname, modified in rows:
+        if datname == keep:
+            continue
+        if not isinstance(datname, str) or _CI_DATABASE_NAME.fullmatch(datname) is None:
+            continue
+        if not isinstance(modified, datetime) or _as_utc(modified) >= cutoff:
+            continue
+        try:
+            _drop_database(connection, datname)
+        except Exception as exc:
+            print(f"could not drop stale database {datname}: {exc}", file=sys.stderr)
 
 
 def prepare(
     *,
     opener: Connect = connect,
-    start_server: Callable[[str, str, int], None] = _start_ephemeral_server,
+    start_server: Callable[[str, str, int, str], None] = _start_ephemeral_server,
 ) -> str:
     """Reuse a listening Postgres, or start one, then create the job database.
 
@@ -218,26 +292,29 @@ def prepare(
         ValueError: The run id, attempt, or shard is not numeric.
     """
     host = os.environ.get("PRELOOP_CI_POSTGRES_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("PRELOOP_CI_POSTGRES_PORT", str(DEFAULT_PORT)))
+    listen_port = int(os.environ.get("PRELOOP_CI_POSTGRES_PORT", str(DEFAULT_PORT)))
     user = os.environ.get("PRELOOP_CI_POSTGRES_USER", DEFAULT_USER)
     password = os.environ.get("PRELOOP_CI_POSTGRES_PASSWORD", DEFAULT_PASSWORD)
     maintenance = os.environ.get("PRELOOP_CI_MAINTENANCE_DB", DEFAULT_MAINTENANCE_DB)
-    name = job_database_name(
-        os.environ.get("GITHUB_RUN_ID", ""),
-        os.environ.get("GITHUB_RUN_ATTEMPT", "1"),
-        os.environ.get("PRELOOP_CI_SHARD", ""),
-    )
+    run_id = os.environ.get("GITHUB_RUN_ID", "")
+    attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    shard = os.environ.get("PRELOOP_CI_SHARD", "")
+    name = job_database_name(run_id, attempt, shard)
+    container_name = ephemeral_container_name(run_id, attempt, shard)
+    port = listen_port
     started = False
     try:
-        connection = opener(host, port, user, password, maintenance)
+        connection = opener(host, listen_port, user, password, maintenance)
     except PostgresRejectedError:
         raise
     except PostgresUnavailableError:
+        port = ephemeral_host_port(shard, listen_port)
         print(
-            f"no Postgres at {host}:{port}; starting {POSTGRES_IMAGE}",
+            f"no Postgres at {host}:{listen_port}; starting {POSTGRES_IMAGE} "
+            f"on 127.0.0.1:{port}",
             file=sys.stderr,
         )
-        start_server(user, password, port)
+        start_server(user, password, port, container_name)
         started = True
         deadline = time.monotonic() + START_TIMEOUT_SECONDS
         connection = None
@@ -254,7 +331,8 @@ def prepare(
                 f"{POSTGRES_IMAGE} did not accept connections: {last_error}"
             )
     else:
-        print(f"reusing Postgres at {host}:{port}")
+        print(f"reusing Postgres at {host}:{listen_port}")
+        _sweep_stale_databases(connection, name)
 
     try:
         _ensure_database(connection, name)
@@ -269,7 +347,7 @@ def prepare(
             "port": port,
             "user": user,
             "maintenance_db": maintenance,
-            "container": EPHEMERAL_CONTAINER if started else None,
+            "container": container_name if started else None,
         }
     )
     _publish(url)

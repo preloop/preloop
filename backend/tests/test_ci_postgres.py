@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,9 @@ class _Cursor:
     def fetchone(self) -> tuple[int, ...] | None:
         return self._row
 
+    def fetchall(self) -> list[tuple[Any, ...]]:
+        return []
+
 
 class _Connection:
     def __init__(self, databases: set[str]) -> None:
@@ -79,8 +83,8 @@ def test_prepare_reuses_a_listening_server_and_only_creates_a_database(
     def opener(*_args: object) -> _Connection:
         return _Connection(databases)
 
-    def start_server(user: str, password: str, port: int) -> None:
-        started.append((user, password, port))
+    def start_server(user: str, password: str, port: int, container: str) -> None:
+        started.append((user, password, port, container))
 
     url = ci_postgres.prepare(opener=opener, start_server=start_server)
 
@@ -111,13 +115,14 @@ def test_prepare_starts_pgvector_only_when_nothing_is_listening(
 
     url = ci_postgres.prepare(
         opener=opener,
-        start_server=lambda _user, _password, port: started.append(port),
+        start_server=lambda _user, _password, port, _container: started.append(port),
     )
 
-    assert started == [5432]
+    assert started == [ci_postgres.EPHEMERAL_PORT_BASE + 18]
     assert url.endswith("/preloop_ci_15_2_18")
     marker = json.loads((tmp_path / "preloop-ci-postgres.json").read_text())
-    assert marker["container"] == ci_postgres.EPHEMERAL_CONTAINER
+    assert marker["container"] == "preloop-ci-15-2-18"
+    assert marker["port"] == ci_postgres.EPHEMERAL_PORT_BASE + 18
 
 
 def test_prepare_does_not_start_a_server_that_rejects_the_role(
@@ -134,7 +139,9 @@ def test_prepare_does_not_start_a_server_that_rejects_the_role(
     with pytest.raises(ci_postgres.PostgresRejectedError):
         ci_postgres.prepare(
             opener=opener,
-            start_server=lambda _user, _password, port: started.append(port),
+            start_server=lambda _user, _password, port, _container: started.append(
+                port
+            ),
         )
     assert started == []
 
@@ -153,7 +160,7 @@ def test_drop_removes_the_job_database_and_only_an_ephemeral_container(
                 "port": 5432,
                 "user": "test_user",
                 "maintenance_db": "postgres",
-                "container": ci_postgres.EPHEMERAL_CONTAINER,
+                "container": "preloop-ci-15-1-3",
             }
         ),
         encoding="utf-8",
@@ -170,7 +177,7 @@ def test_drop_removes_the_job_database_and_only_an_ephemeral_container(
     ci_postgres.drop(opener=opener)
 
     assert "preloop_ci_15_1_3" not in databases
-    assert removed == [["docker", "rm", "-f", ci_postgres.EPHEMERAL_CONTAINER]]
+    assert removed == [["docker", "rm", "-f", "preloop-ci-15-1-3"]]
     assert not (tmp_path / "preloop-ci-postgres.json").exists()
 
 
@@ -218,3 +225,40 @@ def test_prepare_publishes_the_three_ci_urls(
     assert "test_password" not in published
     assert "FLOW_FEEDBACK_TEST_DATABASE_URL=" in published
     assert "CHAT_TEST_DATABASE_URL=" in published
+
+
+def test_ephemeral_fallback_does_not_share_a_name_or_port() -> None:
+    assert ci_postgres.ephemeral_host_port("4", 5432) == 15436
+    assert ci_postgres.ephemeral_host_port("4", 5433) == 5433
+    assert ci_postgres.ephemeral_container_name("9", "1", "4") == "preloop-ci-9-1-4"
+
+
+def test_sweep_drops_only_stale_ci_databases() -> None:
+    old = datetime.now(timezone.utc) - timedelta(hours=7)
+    fresh = datetime.now(timezone.utc)
+    dropped: list[str] = []
+
+    class _Sweep:
+        def cursor(self) -> _Sweep:
+            return self
+
+        def __enter__(self) -> _Sweep:
+            return self
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+        def execute(self, sql: str, _params: object = None) -> None:
+            if sql.startswith("DROP DATABASE"):
+                dropped.append(sql.split()[-1])
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return [
+                ("preloop_ci_1_1_1", old),
+                ("preloop_ci_2_1_1", fresh),
+                ("preloop_ci_9_1_2", old),
+                ("not_a_ci_database", old),
+            ]
+
+    ci_postgres._sweep_stale_databases(_Sweep(), keep="preloop_ci_9_1_2")
+    assert dropped == ["preloop_ci_1_1_1"]

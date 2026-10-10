@@ -23,10 +23,18 @@ docker run -d --name preloop-postgres --restart unless-stopped \
   pgvector/pgvector:pg16
 ```
 
-The disk-reclaim job prunes stopped containers and unused images. A running
-`preloop-postgres` keeps its image. Do not name this container
-`preloop-ci-ephemeral`; that name belongs to a server a job started itself
-and will remove.
+A running `preloop-postgres` keeps its image if a later cleanup prunes
+stopped containers. Do not reuse a name that starts with `preloop-ci-`.
+That prefix belongs to a server a job started itself, named
+`preloop-ci-<run>-<attempt>-<shard>`, and the job removes only that
+container. The fallback listens on `15432 + shard` (15433 through 15450),
+not on 5432, so two shards on one machine do not delete each other's
+server. One runner process still takes one job; the separate ports cover
+a VM that runs more than one.
+
+If a job is cancelled before it can drop its database, the next job that
+reuses this server drops `preloop_ci_*` databases whose files are older
+than six hours.
 
 Python on the VM must be 3.11 with venv. Backend shards run on the runner,
 not inside `python:3.11-bookworm`, so `127.0.0.1:5432` is this server.
@@ -40,6 +48,23 @@ python3.11 -m venv /tmp/preloop-python-check && /tmp/preloop-python-check/bin/py
 
 The runner user must be allowed to talk to the local Docker daemon. The
 fallback path, used only when nothing is listening on 5432, runs `docker`.
+
+These environment variables override the defaults. Leave them unset when
+the server above is what CI should use.
+
+| Variable | Default |
+| --- | --- |
+| `PRELOOP_CI_POSTGRES_HOST` | `127.0.0.1` |
+| `PRELOOP_CI_POSTGRES_PORT` | `5432` |
+| `PRELOOP_CI_POSTGRES_USER` | `test_user` |
+| `PRELOOP_CI_POSTGRES_PASSWORD` | `test_password` |
+| `PRELOOP_CI_MAINTENANCE_DB` | `postgres` |
+
+`PRELOOP_CI_POSTGRES_PORT` is the server to reuse. Set it only when the
+persistent server is not on 5432. The per-shard fallback ports apply when
+this stays at 5432 and nothing is listening. The password is also read
+from `PGPASSWORD`, which the workflow sets, so the database URL does not
+contain it.
 
 ## Check the server
 
