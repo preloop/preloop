@@ -189,7 +189,13 @@ def _export(request: Request, signal: str, raw: RawBody, db: Session) -> Respons
         body = otlp.decompress_body(raw.data, request.headers.get("content-encoding"))
         message = otlp.decode_request(signal, body, encoding)
     except otlp.OtlpError as exc:
-        return _error(exc.status_code, str(exc))
+        logger.info(
+            "OTLP %s export refused (%d): %s",
+            signal,
+            exc.status_code,
+            type(exc).__name__,
+        )
+        return _error(exc.status_code, exc.public_message)
     rejected, error_message = _process(db, signal, message, key)
     return Response(
         content=otlp.encode_response(

@@ -1241,3 +1241,26 @@ def test_late_keyed_row_of_the_same_member_supersedes(
     _post(client, LOGS, token, _relayed_event(email=test_user.email))
     _keyed_row(db_session, test_user)
     assert _otlp_rows(db_session, test_user.account_id) == []
+
+
+def test_error_bodies_are_fixed_messages(client, ingest_key):
+    """No exception text or client input is echoed (CodeQL py/stack-trace-exposure)."""
+    _, token = ingest_key
+    response = client.post(
+        LOGS,
+        content=b"x",
+        headers={"Content-Type": "text/<script>", "x-api-key": token},
+    )
+    assert response.status_code == 415
+    assert "<script>" not in response.text
+    assert response.json()["message"] == otlp.OtlpUnsupportedMediaError.public_message
+    response = client.post(
+        LOGS,
+        content=b"x",
+        headers={"Content-Type": PB, "Content-Encoding": "br-evil", "x-api-key": token},
+    )
+    assert "br-evil" not in response.text
+    response = client.post(
+        LOGS, content=b"\xff\xff\xff", headers={"Content-Type": PB, "x-api-key": token}
+    )
+    assert response.json()["message"] == otlp.OtlpDecodeError.public_message

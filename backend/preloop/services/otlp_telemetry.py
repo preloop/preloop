@@ -150,27 +150,38 @@ _TEMPORALITY_CUMULATIVE = 2
 
 
 class OtlpError(Exception):
-    """Base for request-level OTLP failures, carrying the HTTP status."""
+    """Base for request-level OTLP failures, carrying the HTTP status.
+
+    ``public_message`` is the only text a client sees; the exception's own
+    message (which may quote client input) stays in server logs.
+    """
 
     status_code = 400
+    public_message = "Bad request"
 
 
 class OtlpDecodeError(OtlpError):
     """Undecodable body (400)."""
 
     status_code = 400
+    public_message = "Undecodable OTLP request body"
 
 
 class OtlpTooLargeError(OtlpError):
     """Body over the decompressed size limit (413)."""
 
     status_code = 413
+    public_message = "Request body exceeds 4 MiB after decompression"
 
 
 class OtlpUnsupportedMediaError(OtlpError):
     """Content type or content encoding not supported (415)."""
 
     status_code = 415
+    public_message = (
+        "Unsupported media: send application/x-protobuf or application/json, "
+        "optionally gzip encoded"
+    )
 
 
 # --- Transport ----------------------------------------------------------------
