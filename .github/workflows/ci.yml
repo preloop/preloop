@@ -70,6 +70,10 @@ jobs:
         if: github.event_name == 'pull_request'
         id: filter
         with:
+          # Negated globs (`!requirements/docs.txt`) are inert under the
+          # default `some` quantifier: a negated pattern matches every other
+          # path, so the backend filter would select every non-empty PR.
+          predicate-quantifier: 'some-with-excludes'
           filters: |
             backend:
               - 'backend/**'
@@ -79,6 +83,9 @@ jobs:
               - 'environments/preloop/Dockerfile'
               - 'pyproject.toml'
               - 'requirements/**'
+              # mkdocs lock only. Backend shards install app-dev.txt, not this.
+              - '!requirements/docs.in'
+              - '!requirements/docs.txt'
               - '.github/requirements/app-dev.txt'
               - '.github/requirements/coverage.txt'
               - '.github/requirements/test.txt'

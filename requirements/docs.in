@@ -4,3 +4,5 @@ mkdocs>=1.6,<2
 mkdocs-material
 mkdocs-mermaid2-plugin
 mkdocs-redirects
+# Offline evidence guard tests run as a MkDocs build hook.
+jsonschema>=4.0

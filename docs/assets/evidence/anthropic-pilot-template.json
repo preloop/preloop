@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "kind": "live_application",
+  "captured_at": "2026-10-09T23:29:29.982196+00:00",
+  "enforcement_state": "unverified",
+  "test_tenant_ref": "test-tenant-001",
+  "surface_ref": null,
+  "settings_artifact_ref": null,
+  "versions": {
+    "core": "unknown",
+    "backend": "unknown",
+    "cli": "unknown",
+    "client": "unknown",
+    "os": "unknown"
+  },
+  "cases": [
+    {
+      "id": "allowed_prompt",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "denied_prompt",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "denied_tool_batch",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "unknown_identity",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "unknown_source",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "unknown_event",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "endpoint_outage",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "policy_change",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "revoked_credential",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "alternate_covered_client",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "direct_route_attempt",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    },
+    {
+      "id": "rollback",
+      "status": "pending",
+      "evidence_kind": "live_application",
+      "observations": [],
+      "artifact_refs": [],
+      "side_effect_count": null
+    }
+  ]
+}
