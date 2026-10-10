@@ -1789,6 +1789,60 @@ class TestGatewayEndpointValidation:
         existing = SimpleNamespace(api_endpoint="http://localhost:1234/v1")
         CRUDAIModel._validate_local_api_endpoint({"name": "renamed"}, existing)
 
+    def test_unresolvable_hostname_is_not_a_validation_error(self, monkeypatch) -> None:
+        """No address means nothing to dial; DNS failure must not become a 400.
+
+        The call-time recheck still refuses the name once it resolves to a
+        refused address.
+        """
+        import socket
+
+        from preloop.services import ai_model_provider
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        def no_dns(*_args, **_kwargs):
+            raise socket.gaierror(socket.EAI_NONAME, "no such host")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+        endpoint = "https://custom.example.invalid/v1"
+        assert ai_model_provider._resolve_endpoint_host("custom.example.invalid") == []
+        assert validate_gateway_api_endpoint(endpoint) == endpoint
+
+        def loopback_dns(*_args, **_kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", loopback_dns)
+        with pytest.raises(ValueError, match="localhost"):
+            validate_gateway_api_endpoint(endpoint)
+
+    def test_aux_credentials_refuse_a_legacy_localhost_row(self) -> None:
+        """Auxiliary flows get the same refusal as the gateway, as a 400."""
+        from types import SimpleNamespace
+
+        from preloop.services.model_credentials import resolve_model_call_credentials
+        from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+        model = SimpleNamespace(
+            provider_name="lmstudio",
+            model_identifier="local-model",
+            api_endpoint="http://[::ffff:127.0.0.1]:1234/v1",
+        )
+        with pytest.raises(ModelGatewayAPIError) as error:
+            resolve_model_call_credentials(model)
+        assert error.value.status_code == 400
+
+    def test_non_string_api_base_is_not_validated(self) -> None:
+        """Only stored strings are dialed; mock stand-ins pass through unchanged."""
+        from unittest.mock import MagicMock, patch
+
+        from preloop.services.openai_gateway import checked_model_api_base
+
+        sentinel = MagicMock()
+        with patch(
+            "preloop.services.openai_gateway.model_api_base", return_value=sentinel
+        ):
+            assert checked_model_api_base(object(), provider="openai") is sentinel
+
 
 class TestDiscoveryEndpointValidation:
     """SSRF guard on the user-supplied discovery endpoint.

@@ -1027,6 +1027,9 @@ def checked_model_api_base(ai_model: Any, *, provider: str) -> Optional[str]:
     api_base = model_api_base(ai_model)
     if not api_base:
         return None
+    if not isinstance(api_base, str):
+        # Only stored strings are dialed; non-string stand-ins pass through.
+        return api_base
     from preloop.services.ai_model_provider import (
         ProviderValidationError,
         validate_gateway_api_endpoint,

@@ -25,9 +25,9 @@
  *      (run from preloop/backend)
  *   3. The backend, seeded with the admin test account:
  *        cd preloop/backend
- *        INIT_TEST_DATA=true TESTING=true python -m preloop.server   # :8000
+ *        MODEL_ENDPOINT_ALLOWED_CIDRS=127.0.0.0/8 INIT_TEST_DATA=true TESTING=true python -m preloop.server   # :8000
  *      then seed the gateway-enabled fake model:
- *        PRELOOP_E2E_FAKE_UPSTREAM=http://127.0.0.1:8081/v1 \
+ *        MODEL_ENDPOINT_ALLOWED_CIDRS=127.0.0.0/8 PRELOOP_E2E_FAKE_UPSTREAM=http://127.0.0.1:8081/v1 \
  *          python -m tests.e2e_support.seed_gateway_model
  *   4. The frontend dev server is started automatically by Playwright's
  *      `webServer` (npm run dev on :5173, proxying /api + /openai to :8000).

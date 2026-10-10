@@ -16,8 +16,8 @@
  *   1. Postgres.
  *   2. cd preloop/backend
  *      python -m tests.e2e_support.fake_upstream --port 8081
- *   3. INIT_TEST_DATA=true TESTING=true python -m preloop.server        # :8000
- *      PRELOOP_E2E_FAKE_UPSTREAM=http://127.0.0.1:8081/v1 \
+ *   3. MODEL_ENDPOINT_ALLOWED_CIDRS=127.0.0.0/8 INIT_TEST_DATA=true TESTING=true python -m preloop.server        # :8000
+ *      MODEL_ENDPOINT_ALLOWED_CIDRS=127.0.0.0/8 PRELOOP_E2E_FAKE_UPSTREAM=http://127.0.0.1:8081/v1 \
  *        python -m tests.e2e_support.seed_gateway_model
  *   4. Give the account something to show. An empty account renders empty
  *      cards and measures nothing: loop a few hundred completions through the

@@ -87,6 +87,36 @@ def _prune_stale_days(store: dict[tuple[str, date], Any], today: date) -> None:
         del store[key]
 
 
+def _refuse_unsafe_aux_api_base(model: Any, api_base: Any) -> None:
+    """Apply the gateway endpoint check to auxiliary (non-gateway) calls.
+
+    Policy generation, duplicates, dependencies, and compliance build their
+    ``api_base`` here, so a legacy row holding a loopback or private endpoint
+    is refused on those paths too, not only on the gateway.
+
+    Raises:
+        ModelGatewayAPIError: 400 when the stored endpoint is refused.
+    """
+    if not isinstance(api_base, str):
+        # Only stored strings are dialed; non-string stand-ins pass through.
+        return
+    from preloop.services.ai_model_provider import (
+        ProviderValidationError,
+        validate_gateway_api_endpoint,
+    )
+    from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+    try:
+        validate_gateway_api_endpoint(api_base)
+    except ProviderValidationError as exc:
+        raise ModelGatewayAPIError(
+            provider=str(getattr(model, "provider_name", None) or "openai"),
+            status_code=400,
+            message=str(exc),
+            error_type="invalid_request_error",
+        ) from exc
+
+
 def resolve_model_call_credentials(
     model: AIModel, *, db: Optional[Session] = None
 ) -> dict[str, Any]:
@@ -117,21 +147,7 @@ def resolve_model_call_credentials(
     # Routing is independent of credentials. Set it outside the try so a secret
     # backend failure cannot silently send the request to the wrong endpoint.
     if api_base := model_api_base(model):
-        from preloop.services.ai_model_provider import (
-            ProviderValidationError,
-            validate_gateway_api_endpoint,
-        )
-        from preloop.services.model_gateway_errors import ModelGatewayAPIError
-
-        try:
-            validate_gateway_api_endpoint(api_base)
-        except ProviderValidationError as exc:
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=400,
-                message=str(exc),
-                error_type="invalid_request_error",
-            ) from exc
+        _refuse_unsafe_aux_api_base(model, api_base)
         kwargs["api_base"] = api_base
 
     try:

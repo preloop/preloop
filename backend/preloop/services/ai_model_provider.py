@@ -335,10 +335,13 @@ def _resolve_endpoint_host(
 
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except socket.gaierror as exc:
-        raise ProviderValidationError(
-            "api_endpoint host could not be resolved"
-        ) from exc
+    except (socket.gaierror, UnicodeError):
+        # Nothing to dial means nothing to refuse. Failing closed here would
+        # turn a transient DNS error into a 400 (and block saving an endpoint
+        # whose server is not up yet) without adding protection: the check
+        # runs again immediately before the upstream call, against whatever
+        # the name resolves to then.
+        return []
     found: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
     seen: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for info in infos:
@@ -350,8 +353,6 @@ def _resolve_endpoint_host(
         if ip not in seen:
             seen.add(ip)
             found.append(ip)
-    if not found:
-        raise ProviderValidationError("api_endpoint host could not be resolved")
     return found
 
 
