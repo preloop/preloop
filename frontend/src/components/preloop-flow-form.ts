@@ -2511,13 +2511,27 @@ export class PreloopFlowForm extends LitElement {
    * Explain what a host profile does with this flow's checkout settings.
    *
    * A host runner clones the flow's repositories only when its local
-   * profile sets allow_checkout. It never opens a pull request, so a flow
-   * that publishes one is refused.
+   * profile sets allow_checkout. A Copilot profile that also sets
+   * allow_publish pushes one repository and the control plane opens the
+   * pull request (#1069); Cursor never publishes, so that flow is refused.
    */
   private renderHostExecCloneNotice(label: string) {
     const clone = this.flow.git_clone_config;
     if (!clone?.enabled) {
       return nothing;
+    }
+    if (clone.create_pull_request && label === 'Copilot') {
+      return html`<sl-alert
+        variant="primary"
+        open
+        data-host-exec-clone-notice="publish"
+      >
+        <sl-icon slot="icon" name="info-circle"></sl-icon>
+        This flow publishes a pull request. A Copilot runner takes it only when
+        its host profile sets <code>allow_checkout</code> and
+        <code>allow_publish</code>, and the flow clones exactly one repository.
+        Saving fails while no runner in the pool advertises publication.
+      </sl-alert>`;
     }
     if (clone.create_pull_request) {
       return html`<sl-alert

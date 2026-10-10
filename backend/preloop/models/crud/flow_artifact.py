@@ -226,6 +226,85 @@ def reuse_identical_workspace(
     return newest
 
 
+def reuse_identical_evidence(
+    db: Session,
+    *,
+    account_id: UUID,
+    flow_id: UUID,
+    thread_id: str,
+    execution_id: UUID,
+    sha256: str,
+    members_digest: str | None = None,
+    expires_at: datetime,
+    require_execution_open: bool = True,
+) -> models.FlowArtifact | None:
+    """Return the newest identical evidence pack, its expiry extended.
+
+    A hosted run can upload the same evidence twice for one exit. When the
+    newest available evidence artifact of this execution and thread has the
+    same archive ``sha256``, or the same pack ``members_digest`` (the files
+    match even though a repack changed the gzip timestamp), nothing new is
+    stored and the existing row's expiry moves to ``expires_at`` (never
+    earlier). The manifest and payload stay unchanged; ``updated_at``
+    advances through its ``onupdate`` default. The scope stays inside one
+    execution because evidence is looked up by execution. Returns None, with
+    the locks still held, when a new row must be stored.
+    """
+    if not sha256:
+        return None
+    _lock_for_put(
+        db,
+        account_id=account_id,
+        execution_id=execution_id,
+        require_execution_open=require_execution_open,
+    )
+    found: Any = (
+        db.query(
+            models.FlowArtifact,
+            models.FlowArtifact.ciphertext.isnot(None).label("has_payload"),
+        )
+        .options(defer(models.FlowArtifact.ciphertext))
+        .filter(
+            models.FlowArtifact.account_id == account_id,
+            models.FlowArtifact.flow_id == flow_id,
+            models.FlowArtifact.thread_id == thread_id,
+            models.FlowArtifact.execution_id == execution_id,
+            models.FlowArtifact.kind == "evidence",
+        )
+        .order_by(
+            models.FlowArtifact.created_at.desc(),
+            models.FlowArtifact.updated_at.desc(),
+        )
+        .populate_existing()
+        .with_for_update()
+        .first()
+    )
+    newest, has_payload = found if found is not None else (None, False)
+    manifest = newest.manifest if newest is not None else None
+    stored_sha = manifest.get("sha256") if isinstance(manifest, dict) else None
+    stored_meta = manifest.get("metadata") if isinstance(manifest, dict) else None
+    stored_members = (
+        stored_meta.get("members_digest") if isinstance(stored_meta, dict) else None
+    )
+    same_bytes = stored_sha == sha256
+    same_content = bool(members_digest) and stored_members == members_digest
+    if (
+        newest is None
+        or newest.availability != "available"
+        or not has_payload
+        or not (same_bytes or same_content)
+    ):
+        # Keep the locks: the caller's store() runs in this same transaction,
+        # so no concurrent upload can slip in between the check and insert.
+        return None
+    if newest.expires_at is None or newest.expires_at < expires_at:
+        newest.expires_at = expires_at
+    db.commit()
+    # Reload only what artifact_reference reads; the payload must stay unloaded.
+    db.refresh(newest, attribute_names=["id", "execution_id", "manifest_sha256"])
+    return newest
+
+
 def store(
     db: Session,
     *,

@@ -428,6 +428,14 @@ the profile opts in:
 {"name": "copilot-review", "executable": "copilot", "allow_checkout": true}
 ```
 
+A Copilot profile that may also push one repository for a flow that opens a
+pull request adds `allow_publish` (see
+[Copilot CLI publication](../copilot-cli.md#review-and-implementation-flows)):
+
+```json
+{"name": "copilot-publish", "executable": "copilot", "allow_checkout": true, "allow_publish": true}
+```
+
 Without `allow_checkout` the run fails with `host_checkout_not_allowed`.
 With it, the runner:
 
@@ -454,8 +462,10 @@ user in that directory, so repository instructions and tool configuration
 reach it. Enable `allow_checkout` only on a profile whose runner user and
 tool rules suit the repositories the flow clones, and use a dedicated OS
 user or VM when stronger isolation is needed. Host runs do not push
-branches or open pull requests; use the Docker harness for flows that
-publish.
+branches or open pull requests unless a Copilot profile also sets
+`"allow_publish": true`; see
+[Copilot CLI publication](../copilot-cli.md#review-and-implementation-flows).
+Otherwise use the Docker harness for flows that publish.
 
 ### Copilot CLI profiles
 

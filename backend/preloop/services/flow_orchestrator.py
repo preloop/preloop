@@ -3182,9 +3182,28 @@ class FlowExecutionOrchestrator:
                 git_clone_config=clone_config,
                 custom_commands=self.flow.custom_commands,
                 publication_mode=publication_mode,
+                agent_type=effective_agent_type,
             )
             if error:
                 raise ValueError(error)
+            # Old runners never advertise host_publication: fail now rather
+            # than queue a publishing lease no runner may take.
+            from preloop.services.host_exec_publication import (
+                account_has_publishing_runner,
+                host_publication_requested,
+            )
+
+            if host_publication_requested(clone_config) and not (
+                account_has_publishing_runner(
+                    self.db,
+                    account_id=self.flow.account_id,
+                    runner_pool=self.flow.runner_pool,
+                    profile=profile or "",
+                )
+            ):
+                from preloop.services.host_exec import PULL_REQUEST_UNAVAILABLE
+
+                raise ValueError(PULL_REQUEST_UNAVAILABLE)
             if workspace_files or (self.trigger_event_data or {}).get("_resume"):
                 raise ValueError(
                     "Host profiles do not support remote workspace seeds or native resume"
@@ -5227,17 +5246,23 @@ class FlowExecutionOrchestrator:
             git_config.get("create_pull_request")
         )
 
-    async def _publication_tracker_clients(self) -> List[Any]:
+    async def _publication_tracker_clients(
+        self, context: Optional[Dict[str, Any]] = None
+    ) -> List[Any]:
         """Tracker clients for the repositories the post-exec block pushes to.
 
         Repositories that name a ``project_id`` resolve their own client.
         Otherwise the trigger project is the push target, as in the
         container's clone fallback (``_resolve_git_clone_repositories``).
+        ``context`` overrides the execution context (host checkout context).
         """
         from preloop.api.common import get_tracker_client
         from preloop.models.crud import crud_project
 
-        git_config = self._publication_context().get("git_clone_config")
+        publication_context = (
+            context if context is not None else self._publication_context()
+        )
+        git_config = publication_context.get("git_clone_config")
         if not isinstance(git_config, dict):
             git_config = {}
         project_ids = []
@@ -5246,7 +5271,7 @@ class FlowExecutionOrchestrator:
                 if repo["project_id"] not in project_ids:
                     project_ids.append(repo["project_id"])
         if not project_ids:
-            trigger_project_id = self._publication_context().get("trigger_project_id")
+            trigger_project_id = publication_context.get("trigger_project_id")
             if trigger_project_id:
                 project_ids.append(trigger_project_id)
         if not project_ids:
@@ -5283,6 +5308,97 @@ class FlowExecutionOrchestrator:
             if client is not None:
                 clients.append(client)
         return clients
+
+    async def _open_host_published_pr(self, final_status: str) -> Optional[str]:
+        """Open and bind the PR for a branch a host runner pushed (#1069).
+
+        Reads only the runner-authored ``host_publication`` receipt the
+        completion path stored. The branch must equal the managed branch the
+        control plane planned; the agent never supplies a URL. Lookup comes
+        before create, so a retry after a lost create response binds the
+        existing pull request instead of opening another.
+
+        Returns:
+            An actionable ``publication_failed`` message, or None when there
+            was nothing to do or the pull request is bound.
+        """
+        from preloop.services.host_exec import host_exec_profile_name
+        from preloop.services.host_exec_delivery import (
+            build_host_exec_checkout,
+            host_exec_target_branch,
+        )
+        from preloop.services.host_exec_publication import (
+            HOST_PUBLICATION_RESULT_KEY,
+            open_and_bind_host_pull_request,
+        )
+        from preloop.utils.pr_metadata import select_metadata
+
+        if final_status != "SUCCEEDED" or self.execution_log is None:
+            return None
+        if not host_exec_profile_name(getattr(self.flow, "agent_config", None)):
+            return None
+        try:
+            self.db.refresh(self.execution_log)
+        except Exception:
+            logger.debug("Could not refresh execution before host PR", exc_info=True)
+        result = getattr(self.execution_log, "result", None)
+        receipt = (
+            result.get(HOST_PUBLICATION_RESULT_KEY)
+            if isinstance(result, dict)
+            else None
+        )
+        if not isinstance(receipt, dict) or receipt.get("status") != "pushed":
+            return None
+        branch = str(receipt.get("branch") or "")
+        failed = (
+            f"publication_failed: branch {branch} was pushed but the pull request "
+            "could not be opened"
+        )
+        try:
+            context = await self.prepare_host_exec_checkout_context()
+            checkout = build_host_exec_checkout(context) if context else None
+            if not context or not checkout or len(checkout["repositories"]) != 1:
+                return f"{failed}: the flow no longer has one repository"
+            if branch != host_exec_target_branch(context):
+                return f"{failed}: the runner reported an unexpected branch"
+            if result.get("pr_url"):
+                return None
+            clients = await self._publication_tracker_clients(context)
+            if len(clients) != 1:
+                return f"{failed}: no single code-host tracker for the repository"
+            trigger = self.trigger_event_data or {}
+            configured = context.get("git_clone_config") or {}
+            from preloop.agents.container import interpolate_git_config_text
+
+            title, body, _ = select_metadata(
+                json.dumps(result, default=str).encode(),
+                configured_title=interpolate_git_config_text(
+                    configured.get("pull_request_title"), trigger
+                ),
+                configured_body=interpolate_git_config_text(
+                    configured.get("pull_request_description"), trigger
+                ),
+                commit_title=str(self.flow.name or ""),
+            )
+            found = await open_and_bind_host_pull_request(
+                self.db,
+                execution_id=self.execution_log.id,
+                client=clients[0],
+                branch=branch,
+                base_branch=str(checkout["repositories"][0].get("branch") or "main"),
+                title=title,
+                description=body,
+            )
+        except Exception as error:
+            logger.warning("Host publication PR failed: %s", _exception_message(error))
+            return (
+                f"{failed}; the branch is kept, retry the run's publication or "
+                "open the pull request from the branch"
+            )
+        self._opened_pr = {"url": found["url"], "branch": branch}
+        self._opened_pr_bound = True
+        self.execution_logger.log_milestone("pull_request_opened", dict(found))
+        return None
 
     @staticmethod
     def _tracker_kind(client: Any) -> Optional[str]:
@@ -9026,6 +9142,18 @@ class FlowExecutionOrchestrator:
                 # evidence-status endpoint, including when the persist above
                 # failed and the receipt says so.
                 self._refresh_product_dossier_after_evidence(agent_result)
+
+            # Managed host publication (#1069): the runner pushed the branch;
+            # the control plane opens and binds the pull request.
+            host_publication_error = await self._open_host_published_pr(final_status)
+            if host_publication_error is not None:
+                final_status = "FAILED"
+                agent_result = {
+                    **agent_result,
+                    "status": "FAILED",
+                    "error_message": host_publication_error,
+                    "failure_category": FAILURE_CATEGORY_PUBLICATION_MISSING,
+                }
 
             # The wrapper opens PRs with a raw curl whose response never
             # reaches Python; bind it here, before the refresh below, so the

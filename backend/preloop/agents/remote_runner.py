@@ -28,6 +28,10 @@ from preloop.services.host_exec import (
     host_exec_unavailable_reason,
     is_host_exec_agent_type,
 )
+from preloop.services.host_exec_publication import (
+    HOST_PUBLICATION_LEASE_KEY,
+    host_publication_requested,
+)
 
 from .base import AgentExecutionResult, AgentExecutor, AgentStatus
 from .images import agent_config_has_image, default_agent_image
@@ -385,6 +389,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                 resume_from=resume_from,
                 session_id=context.get("session_id"),
                 custom_commands=context_or_flow("custom_commands"),
+                agent_type=kind,
             )
             if blocked:
                 raise ValueError(blocked)
@@ -452,6 +457,10 @@ class RemoteRunnerExecutor(AgentExecutor):
             payload = {key: value for key, value in payload.items() if key in allowed}
             payload["agent_config"] = {"host_exec_profile": profile}
             payload["completion_protocol"] = "host_exec"
+            if host_publication_requested(git_clone_config):
+                # Data only: assignment requires a host_publication runner
+                # and delivery replaces it with the transient runner plan.
+                payload[HOST_PUBLICATION_LEASE_KEY] = {"mode": "legacy"}
         else:
             # Docker launch already carries the prompt as chunked launch env.
             # Leaving it on the lease makes the runner CLI copy it into
