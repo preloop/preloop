@@ -299,7 +299,10 @@ async def guarded_fetch_json(
             timeout=FETCH_TIMEOUT_SECONDS,
             follow_redirects=False,
             transport=transport,
+            # No proxy or CA from the environment: a proxy would bypass the
+            # address guard. A private CA comes only from the setting.
             trust_env=False,
+            verify=_tls_verify(),
         ) as client:
             for _ in range(MAX_REDIRECTS + 1):
                 await asyncio.to_thread(
@@ -338,6 +341,18 @@ async def guarded_fetch_json(
             raise IssuerUnavailableError("too many redirects")
     except httpx.HTTPError as exc:
         raise IssuerUnavailableError(type(exc).__name__) from exc
+
+
+def _tls_verify() -> Any:
+    """Public roots, or the operator's CA bundle (``gateway_idp_ca_bundle``)."""
+    from preloop.config import settings
+
+    bundle = (settings.gateway_idp_ca_bundle or "").strip()
+    if not bundle:
+        return True
+    import ssl
+
+    return ssl.create_default_context(cafile=bundle)
 
 
 def _max_age(cache_control: Optional[str]) -> Optional[int]:

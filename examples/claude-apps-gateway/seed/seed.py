@@ -124,6 +124,12 @@ def main() -> int:
         db.commit()
         admin = _user(db, account.id, ADMIN, "harness-admin@example.com")
     account_id = admin.account_id
+    # The harness admin is the account's primary user, so an account admin
+    # (needed for the #1414 identity provider API).
+    account = crud_account.get(db, id=account_id)
+    if account is not None and account.primary_user_id is None:
+        account.primary_user_id = admin.id
+        db.commit()
     # alice is a Preloop member (subject links to her); bob is not.
     _user(db, account_id, "alice", "alice@example.com")
 
@@ -172,9 +178,20 @@ def main() -> int:
             },
         },
     )
+    # #1414: binding key for the Claude Desktop IdP provider registered by
+    # verify.sh step 7. Its per-subject budget applies to IdP users.
+    idp_key = _key(
+        db,
+        ADMIN,
+        "harness desktop idp binding",
+        "pl-harness-idp-binding-key-000",
+        [TRUSTED_SCOPE],
+        {"per_subject_budget": {"hard_limit_usd": per_subject, "period": "monthly"}},
+    )
     json.dump(
         {
             "account_id": str(account_id),
+            "idp_key_id": str(idp_key.id),
             "admin_key": admin_key.key,
             "direct_key": direct_key.key,
             "direct_key_id": str(direct_key.id),

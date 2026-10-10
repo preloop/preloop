@@ -540,3 +540,37 @@ def test_pyjwt_rejects_hmac_with_rsa_public_key_material():
 
     with pytest.raises(jwt.PyJWTError):
         jwt.PyJWK(public_jwk(RSA_KEY, "rsa-1", "RS256"), algorithm="HS256")
+
+
+def test_tls_verify_uses_public_roots_unless_a_ca_bundle_is_set(monkeypatch, tmp_path):
+    import ssl
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+    from datetime import datetime, timedelta, timezone
+
+    from preloop.config import settings
+
+    monkeypatch.setattr(settings, "gateway_idp_ca_bundle", "")
+    assert idp._tls_verify() is True
+
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test ca")])
+    now = datetime.now(timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(RSA_KEY.public_key())
+        .serial_number(1)
+        .not_valid_before(now)
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), True)
+        .sign(RSA_KEY, hashes.SHA256())
+    )
+    bundle = tmp_path / "ca.pem"
+    bundle.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    monkeypatch.setattr(settings, "gateway_idp_ca_bundle", str(bundle))
+    context = idp._tls_verify()
+    assert isinstance(context, ssl.SSLContext)
+    assert context.cert_store_stats()["x509_ca"] == 1

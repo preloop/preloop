@@ -100,7 +100,7 @@ Provider settings:
 | `max_token_lifetime_seconds` | `86400` | Tokens with a longer `exp - iat` are rejected |
 | `allowed_algorithms` | `RS256`, `ES256` | Asymmetric only; `none` and HMAC can never be configured |
 | `allowed_jwks_hosts` | empty | Extra exact hosts `jwks_uri` may use (for example `www.googleapis.com` for Google) |
-| `allow_private_network_issuer` | `false` | Fetch discovery and keys from private addresses; honoured only when the instance setting `GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS` is also on (self-hosted) |
+| `allow_private_network_issuer` | `false` | Fetch discovery and keys from private addresses; honoured only when the instance setting `GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS` is also on (self-hosted). An IdP behind a private CA needs `GATEWAY_IDP_CA_BUNDLE` (path to a PEM bundle) |
 | `enabled` | `true` | A disabled provider stops its tokens on the next request |
 
 ### What Preloop checks
