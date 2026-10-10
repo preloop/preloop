@@ -201,6 +201,24 @@ def test_ci_aggregator_fails_when_pick_runner_fails() -> None:
     raise AssertionError("ci aggregator has no result-check step")
 
 
+RECLAIM_STEP = "Reclaim self-hosted workspace ownership"
+
+
+def test_workspace_reclaim_runs_before_checkout_on_self_hosted_only() -> None:
+    """Root-owned residue in _work must be fixed before checkout, without
+    requiring sudo: the only sudo use is probed with ``sudo -n true``."""
+    steps = load_ci_jobs()["test-backend"]["steps"]
+    assert steps[0].get("name") == RECLAIM_STEP
+    assert "actions/checkout@" in steps[1].get("uses", "")
+    reclaim = steps[0]
+    assert reclaim.get("if") == "runner.environment == 'self-hosted'"
+    script = reclaim["run"]
+    assert 'dirname "$RUNNER_TEMP"' in script
+    assert "if sudo -n true" in script
+    assert "sudo " not in script.replace("sudo -n", "")
+    assert "pgvector/pgvector:pg16" in script
+
+
 def test_root_only_steps_are_gated_to_the_github_image() -> None:
     """sudo/apt steps must not run on a VM whose user may have no sudo."""
     jobs = load_ci_jobs()
@@ -208,6 +226,8 @@ def test_root_only_steps_are_gated_to_the_github_image() -> None:
         for step in jobs[name]["steps"]:
             script = step.get("run", "")
             if not isinstance(script, str):
+                continue
+            if step.get("name") == RECLAIM_STEP:
                 continue
             if "sudo" in script or "apt-get" in script:
                 assert step.get("if") == "runner.environment == 'github-hosted'", (
