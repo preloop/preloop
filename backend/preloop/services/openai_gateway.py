@@ -3890,11 +3890,10 @@ class OpenAIGatewayService:
                             completion_key="completion_tokens",
                             output_names=("completion_tokens", "output_tokens"),
                         )
-                        final_usage = {
-                            "input_tokens": usage["prompt_tokens"],
-                            "output_tokens": usage["completion_tokens"],
-                            "total_tokens": usage["total_tokens"],
-                        }
+                        # Keep the cache/reasoning breakdown (#1472).
+                        final_usage = self._responses_api_usage(
+                            final_usage_details, usage
+                        )
 
                 # litellm's transcoded chunks never carry the OpenRouter
                 # usage-accounting cost fields; recover them from the raw

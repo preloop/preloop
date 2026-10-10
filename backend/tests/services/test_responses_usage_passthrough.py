@@ -309,3 +309,54 @@ def test_search_row_explicit_zero_is_a_reported_miss():
         GatewayTokenUsage.from_row({"prompt_tokens": 100, **split}).cache_hit_ratio
         == 0.0
     )
+
+
+def test_chat_bridged_responses_stream_keeps_details_in_completed():
+    """Streamed /responses over a chat-completions upstream (transcode)."""
+    model = SimpleNamespace(
+        id="model-2",
+        provider_name="openai-compatible",
+        model_identifier="chat-example",
+        api_endpoint="https://llm.example.com/v1",
+    )
+    chat_usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 7,
+        "total_tokens": 107,
+        "prompt_tokens_details": {"cached_tokens": 64},
+        "completion_tokens_details": {"reasoning_tokens": 3},
+    }
+    chunks = [
+        {"choices": [{"delta": {"content": "OK"}}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": chat_usage},
+    ]
+    service = _service()
+    with (
+        patch.object(service, "_resolve_requested_model", return_value=model),
+        patch.object(service, "_check_budget", return_value=None),
+        patch.object(service, "_emit_gateway_request_started"),
+        patch.object(service, "_record_gateway_request"),
+        patch.object(service, "_defer_stream_record"),
+        patch.object(service, "_finish_stream_generator"),
+        patch.object(service, "_is_openai_codex_model", return_value=False),
+        patch(
+            "preloop.services.openai_gateway.should_use_responses_passthrough",
+            return_value=False,
+        ),
+        patch.object(service, "_open_upstream_stream", return_value=iter(chunks)),
+    ):
+        events = list(
+            service.stream_response({"model": "openai/chat-example", "input": "Hi"})
+        )
+    completed = next(
+        p
+        for p in _sse_payloads(events)
+        if isinstance(p, dict) and p.get("type") == "response.completed"
+    )
+    assert completed["response"]["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 7,
+        "total_tokens": 107,
+        "input_tokens_details": {"cached_tokens": 64},
+        "output_tokens_details": {"reasoning_tokens": 3},
+    }
