@@ -102,6 +102,7 @@ def _record_change(
     user_id: UUID | None,
     action: str,
     details: dict[str, Any],
+    resource_type: str = "access_rule",
 ) -> None:
     from preloop.models.crud.audit_log import crud_audit_log
     from preloop.services.policy.loader import export_current_policy
@@ -136,7 +137,7 @@ def _record_change(
         account_id=account_id,
         user_id=user_id,
         action="configuration_change",
-        resource_type="access_rule",
+        resource_type=resource_type,
         status="success",
         details={"config_type": "access_rules", "operation": action, **details},
         commit=False,
@@ -492,6 +493,65 @@ class CRUDAccessRule:
                             "home_account": accounts[str(account_id)],
                             "tags": tags.get((kind, key), {}),
                         }
+            shared_agents = db.scalars(
+                select(models.ManagedAgent)
+                .join(
+                    models.ResourceShareRecipient,
+                    models.ResourceShareRecipient.resource_id == models.ManagedAgent.id,
+                )
+                .where(
+                    models.ResourceShareRecipient.recipient_account_id == account_id,
+                    models.ResourceShareRecipient.resource_type == "managed_agent",
+                )
+                .distinct()
+            ).all()
+            from preloop.models.crud.resource_share import crud_resource_share
+
+            # Issued consumer-session credentials preserve their agent identity
+            # after rescinding; only new targeting depends on live recipients.
+            by_id = {agent.id: agent for agent in shared_agents}
+            for key in db.scalars(
+                select(models.ApiKey).where(
+                    models.ApiKey.account_id == account_id,
+                    models.ApiKey.context_data["shared_agent_owner_account_id"]
+                    .as_string()
+                    .is_not(None),
+                )
+            ):
+                agent = crud_resource_share.bound_agent(db, key=key)
+                if agent is not None:
+                    by_id[agent.id] = agent
+            shared_agents = list(by_id.values())
+            # A detached consumer may still finish an issued session; its
+            # former owner is no longer in the hierarchy path.
+            missing_owners = {
+                agent.account_id
+                for agent in shared_agents
+                if str(agent.account_id) not in accounts
+            }
+            for owner in db.scalars(
+                select(models.Account).where(models.Account.id.in_(missing_owners))
+            ):
+                accounts[str(owner.id)] = {
+                    "id": str(owner.id),
+                    "path": [str(key) for key in owner.hierarchy_path],
+                    "tags": {},
+                }
+            shared_agent_ids = {
+                str(agent.id): str(agent.account_id) for agent in shared_agents
+            }
+            for agent in shared_agents:
+                key = str(agent.id)
+                subjects[("agent", key)] = {
+                    "kind": "agent",
+                    "id": key,
+                    "roles": [],
+                    "teams": [],
+                    "membership_kind": "inherited",
+                    "account": accounts[str(account_id)],
+                    "home_account": accounts[str(agent.account_id)],
+                    "tags": tags.get(("managed_agent", key), {}),
+                }
             key_agents = {
                 str(row.api_key_id): str(row.managed_agent_id)
                 for row in db.scalars(
@@ -536,6 +596,12 @@ class CRUDAccessRule:
                         "home_account",
                     ):
                         subject[attribute] = owner[attribute]
+                shared_id = str((row.context_data or {}).get("managed_agent_id") or "")
+                shared_owner = str(
+                    (row.context_data or {}).get("shared_agent_owner_account_id") or ""
+                )
+                if shared_agent_ids.get(shared_id) == shared_owner:
+                    key_agents[str(row.id)] = shared_id
                 if str(row.id) not in key_agents:
                     runtime = str(
                         (row.context_data or {}).get("runtime_session_id") or ""

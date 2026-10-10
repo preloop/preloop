@@ -54,6 +54,7 @@ from preloop.schemas.attention import (
     AttentionDismissalResponse,
     AttentionDismissalUpsertRequest,
 )
+from preloop.schemas.resource_share import SharedResourceRead
 from preloop.schemas.gateway_usage import (
     AccountManagedAgentListResponse,
     AccountGatewayUsageSearchResponse,
@@ -788,8 +789,10 @@ def _enrich_managed_agent_summaries(
     Returns:
         The same summaries list with enrichment fields applied.
     """
+    all_summaries = summaries
+    summaries = [summary for summary in summaries if not summary.get("is_shared")]
     if not summaries:
-        return summaries
+        return all_summaries
 
     agent_ids = [str(summary["id"]) for summary in summaries]
     enrollments_by_agent = crud_managed_agent_enrollment.list_latest_by_agents(
@@ -951,7 +954,7 @@ def _enrich_managed_agent_summaries(
                     ai_model, "model_identifier", None
                 )
                 primary_binding["ai_model_name"] = getattr(ai_model, "name", None)
-    return summaries
+    return all_summaries
 
 
 def _enrich_managed_agent_summary(
@@ -1573,11 +1576,11 @@ def list_account_controllable_agents(
     items = [
         item
         for item in items
-        if item["control_enabled"]
+        if item.get("control_enabled")
         or item.get("control_state") == AGENT_CONTROL_STATE_INSTALL_PENDING
     ]
     if online_only:
-        items = [item for item in items if item["control_online"]]
+        items = [item for item in items if item.get("control_online")]
     return AccountManagedAgentListResponse(
         status="active",
         total=len(items),
@@ -1668,7 +1671,9 @@ async def extract_agent_name(
     return AgentNameExtractionResponse(name=name)
 
 
-@router.get("/agents/{agent_id}", response_model=ManagedAgentDetailResponse)
+@router.get(
+    "/agents/{agent_id}", response_model=SharedResourceRead | ManagedAgentDetailResponse
+)
 @require_permission("view_agents")
 def get_account_managed_agent(
     agent_id: str,
@@ -1680,6 +1685,17 @@ def get_account_managed_agent(
     end_date: Optional[datetime] = Query(None),
 ):
     """Return one enrolled external agent for the current account."""
+    from preloop.models.crud.resource_share import crud_resource_share
+
+    shared = crud_resource_share.public_read(
+        db, account_id=account.id, resource_type="managed_agent", resource_id=agent_id
+    )
+    if shared is not None:
+        from preloop.plugins.account_hooks import VISIBLE_MANAGED_AGENT, filter_viewable
+
+        if not filter_viewable(db, current_user, VISIBLE_MANAGED_AGENT, [shared]):
+            raise HTTPException(404, "Resource not found")
+        return shared
     response = _build_managed_agent_detail_response(
         db,
         account_id=str(account.id),
@@ -1693,6 +1709,28 @@ def get_account_managed_agent(
             status_code=status.HTTP_404_NOT_FOUND, detail="Managed agent not found"
         )
     return response
+
+
+@router.get("/agents/{agent_id}/shared-sessions")
+@require_permission("view_agents")
+def list_owned_agent_shared_sessions(
+    agent_id: str,
+    account: Annotated[Account, Depends(get_account_for_user)],
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> list[dict[str, Any]]:
+    """Show the parent the sessions its shared agent ran for consumers."""
+    from preloop.models.crud.resource_share import (
+        ShareConflictError,
+        crud_resource_share,
+    )
+
+    try:
+        return crud_resource_share.owner_agent_sessions(
+            db, owner_account_id=account.id, agent_id=agent_id
+        )
+    except ShareConflictError:
+        raise HTTPException(404, "Managed agent not found") from None
 
 
 @router.get(
@@ -1976,7 +2014,7 @@ async def get_account_managed_agent_governance(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
-    agent = crud_managed_agent.get_for_account(
+    agent = crud_managed_agent.get_visible_target(
         db, account_id=str(account.id), agent_id=agent_id
     )
     if agent is None:
@@ -2008,7 +2046,7 @@ async def update_account_managed_agent_governance(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
-    agent = crud_managed_agent.get_for_account(
+    agent = crud_managed_agent.get_visible_target(
         db, account_id=str(account.id), agent_id=agent_id
     )
     if agent is None:

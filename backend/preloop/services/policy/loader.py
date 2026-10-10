@@ -592,6 +592,12 @@ def compute_policy_diff(
     # Compare tools
     diff_named_lists("$.tools", current.tools, incoming.tools)
     diff_named_lists("$.access_rules", current.access_rules, incoming.access_rules)
+    diff_named_lists(
+        "$.resource_shares",
+        current.resource_shares,
+        incoming.resource_shares,
+        name_field="id",
+    )
     if current.access_rule_mode != incoming.access_rule_mode:
         changes.append(
             PolicyDiffItem(
@@ -850,6 +856,18 @@ class PolicyApplier:
                     policy.access_rule_mode,
                 )
 
+            if policy.resource_shares is not None:
+                from preloop.models.crud.resource_share import (
+                    validate_policy_section as validate_shares,
+                )
+
+                validate_shares(
+                    self.db,
+                    UUID(self.account_id),
+                    UUID(self.actor_id) if self.actor_id else None,
+                    policy.resource_shares,
+                )
+
             # Resolve and authorize every workflow before mutating any policy object.
             self._prepare_approval_workflows(policy.approval_workflows or [])
 
@@ -883,6 +901,18 @@ class PolicyApplier:
                     UUID(self.actor_id) if self.actor_id else None,
                     policy.access_rules,
                     policy.access_rule_mode,
+                )
+
+            if not dry_run and policy.resource_shares is not None:
+                from preloop.models.crud.resource_share import (
+                    apply_policy_section as apply_shares,
+                )
+
+                apply_shares(
+                    self.db,
+                    UUID(self.account_id),
+                    UUID(self.actor_id),
+                    policy.resource_shares,
                 )
 
             if not dry_run:
@@ -1884,6 +1914,12 @@ def export_current_policy(
         sensitive_data=sensitive_data if has_sensitive_data else None,
         defaults=DefaultsDefinition(),  # Default settings
     )
+    from preloop.models.crud.resource_share import policy_section as share_section
+
+    if account:
+        resource_shares = share_section(db, UUID(account_id_str))
+        if resource_shares:
+            document_fields["resource_shares"] = resource_shares
     from preloop.models.crud.access_rule import policy_section
 
     account_access = policy_section(db, UUID(account_id_str)) if account else {}
