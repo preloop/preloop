@@ -267,7 +267,9 @@ class CRUDAIModel(CRUDBase[AIModel]):
         candidates = [
             ai_model
             for ai_model in query.order_by(
-                self.model.account_id, self.model.created_at
+                self.model.account_id,
+                self.model.created_at.asc(),
+                self.model.id.asc(),
             ).all()
             if self._model_kind(ai_model) == normalized_model_kind
             and ai_model.supports_server_side_generation
