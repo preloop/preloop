@@ -41,12 +41,36 @@ def register_private_callback_prefix(prefix: str) -> None:
     _PRIVATE_CALLBACK_PREFIXES.add(prefix)
 
 
+def unregister_private_callback_prefix(prefix: str) -> None:
+    """Drop one registered prefix so tests do not leak exclusions."""
+    _PRIVATE_CALLBACK_PREFIXES.discard(prefix)
+
+
+def _callback_paths(event: dict[str, Any]) -> list[str]:
+    """Paths a callback event might carry, including off-request captures."""
+    paths: list[str] = []
+    request = event.get("request") or {}
+    url = str(request.get("url") or "")
+    if url:
+        paths.append(urlsplit(url).path)
+    transaction = event.get("transaction")
+    if isinstance(transaction, str) and transaction:
+        path = urlsplit(transaction).path
+        paths.append(path or (transaction if transaction.startswith("/") else ""))
+    tags = event.get("tags") or {}
+    if isinstance(tags, dict):
+        tagged = tags.get("url") or tags.get("transaction")
+        if isinstance(tagged, str) and tagged:
+            path = urlsplit(tagged).path
+            paths.append(path or (tagged if tagged.startswith("/") else ""))
+    return paths
+
+
 def is_private_callback_event(event: dict[str, Any]) -> bool:
     """Recognize private callback requests without reading their bodies."""
-    request = event.get("request") or {}
-    path = urlsplit(str(request.get("url") or "")).path
     return any(
         path == prefix.rstrip("/") or path.startswith(prefix)
+        for path in _callback_paths(event)
         for prefix in _PRIVATE_CALLBACK_PREFIXES
     )
 

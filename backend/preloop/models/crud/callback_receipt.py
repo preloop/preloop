@@ -21,6 +21,57 @@ _CALLBACK_BINDING_LOCK_KEY = int.from_bytes(
     byteorder="big",
     signed=True,
 )
+# Previous signing keys stay usable only inside this window, then stay reserved.
+MAX_KEY_OVERLAP = timedelta(hours=24)
+_HEX = frozenset("0123456789abcdef")
+
+
+def _server_digest_key() -> bytes:
+    """Server key for callback fingerprints. Empty config fails closed."""
+    from preloop.config import settings
+
+    raw = settings.security.encryption_key or settings.security.secret_key
+    if not raw:
+        raise CallbackBindingConflictError("Server digest key is not configured")
+    return raw.encode()
+
+
+def callback_fingerprint(domain: str, material: str) -> str:
+    """HMAC-SHA256 of adapter material, domain-separated and server-keyed.
+
+    Adapters must store this digest, not an unkeyed hash of a webhook secret.
+    The raw material never belongs in ``callback_key_binding``.
+    """
+    if (
+        not isinstance(domain, str)
+        or not domain
+        or any(char in domain for char in "/\x00")
+    ):
+        raise ValueError("Invalid callback digest domain")
+    if not isinstance(material, str) or material == "":
+        raise ValueError("Callback fingerprint material is required")
+    return hmac.digest(
+        _server_digest_key(),
+        f"preloop/callback/{domain}/v1/".encode() + material.encode(),
+        "sha256",
+    ).hex()
+
+
+def callback_digest_epoch() -> str:
+    """Stable epoch of the server digest key. Key rotation changes it."""
+    return hmac.digest(
+        _server_digest_key(),
+        b"preloop/callback-epoch/v1",
+        "sha256",
+    ).hex()[:32]
+
+
+def _is_lower_hex(value: str, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(char in _HEX for char in value)
+    )
 
 
 class CallbackReplayConflictError(ValueError):
@@ -54,14 +105,16 @@ class CRUDCallbackReceipt(CRUDBase[models.CallbackReceipt]):
         This method owns transaction completion. Auth and body/header identity
         checks must run before calling it, including on retries. A mismatched
         digest raises CallbackReplayConflictError; database failures propagate.
+
+        Replay protection ends when ``prune`` deletes the receipt. An adapter's
+        signature-timestamp tolerance MUST be shorter than ``retention_seconds``.
         """
         if not 100 <= wait_timeout_ms <= 5000:
             raise ValueError("Invalid callback lock deadline")
         if not 600 <= retention_seconds <= 86400:
             raise ValueError("Invalid callback retention")
         if any(
-            len(value) != 64 or any(c not in "0123456789abcdef" for c in value)
-            for value in (delivery_digest, body_digest)
+            not _is_lower_hex(value, 64) for value in (delivery_digest, body_digest)
         ):
             raise ValueError("Callback identifiers must be keyed hex digests")
         try:
@@ -76,6 +129,7 @@ class CRUDCallbackReceipt(CRUDBase[models.CallbackReceipt]):
                 .filter(
                     models.SecretReference.id == integration_id,
                     models.SecretReference.account_id == account_id,
+                    models.SecretReference.status == "active",
                 )
                 .first()
             )
@@ -108,7 +162,14 @@ class CRUDCallbackReceipt(CRUDBase[models.CallbackReceipt]):
             if not hmac.compare_digest(row.body_digest, body_digest):
                 raise CallbackReplayConflictError("Changed callback replay")
             if row.verdict is None:
-                row.verdict, row.evidence = evaluate(row.id)
+                verdict, evidence = evaluate(row.id)
+                if not isinstance(verdict, dict) or not verdict:
+                    raise ValueError(
+                        "Callback evaluator must return a completed verdict"
+                    )
+                if not isinstance(evidence, dict):
+                    raise ValueError("Callback evidence must be an object")
+                row.verdict, row.evidence = verdict, evidence
                 db.flush()
             db.commit()
             return row
@@ -189,9 +250,15 @@ class CRUDCallbackKeyBinding(CRUDBase[models.CallbackKeyBinding]):
         records the registration time in UTC (naive values are already UTC).
         On any failure this rolls back the transaction, including new config.
         """
-        if len(signing_key_digest) != 64 or len(digest_epoch) != 32:
+        if not _is_lower_hex(signing_key_digest, 64) or not _is_lower_hex(
+            digest_epoch, 32
+        ):
             raise ValueError("Invalid binding fingerprint")
         try:
+            if not hmac.compare_digest(digest_epoch, callback_digest_epoch()):
+                raise CallbackBindingConflictError(
+                    "Signing digest epoch requires offline maintenance"
+                )
             db.execute(select(func.set_config("statement_timeout", "5000ms", True)))
             # Serialize registration across epochs as well as tenant accounts.
             db.execute(select(func.pg_advisory_xact_lock(_CALLBACK_BINDING_LOCK_KEY)))
@@ -200,6 +267,7 @@ class CRUDCallbackKeyBinding(CRUDBase[models.CallbackKeyBinding]):
                 .filter(
                     models.SecretReference.id == integration_id,
                     models.SecretReference.account_id == account_id,
+                    models.SecretReference.status == "active",
                 )
                 .first()
             )
@@ -247,9 +315,24 @@ class CRUDCallbackKeyBinding(CRUDBase[models.CallbackKeyBinding]):
         account_id: UUID,
         integration_id: UUID,
         signing_key_digest: str,
+        now: datetime,
         expires_at: datetime,
     ) -> None:
-        """Bound the previous key overlap without freeing its fingerprint."""
+        """Bound the previous key overlap without freeing its fingerprint.
+
+        Overlap must be in the future and no longer than ``MAX_KEY_OVERLAP``.
+        A key that already has an expiry cannot be extended or un-retired.
+        """
+        current = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+        expiry = (
+            expires_at
+            if expires_at.tzinfo is not None
+            else expires_at.replace(tzinfo=timezone.utc)
+        )
+        if not current < expiry <= current + MAX_KEY_OVERLAP:
+            raise CallbackBindingConflictError(
+                "Signing key overlap is outside the allowed window"
+            )
         row = (
             db.query(self.model)
             .filter(
@@ -258,8 +341,12 @@ class CRUDCallbackKeyBinding(CRUDBase[models.CallbackKeyBinding]):
                 self.model.signing_key_digest == signing_key_digest,
             )
             .with_for_update()
-            .one()
+            .first()
         )
+        if row is None:
+            raise CallbackBindingConflictError("Signing key is not bound")
+        if row.expires_at is not None:
+            raise CallbackBindingConflictError("Signing key overlap is already bounded")
         row.expires_at = expires_at
         db.flush()
 
@@ -274,6 +361,10 @@ class CRUDCallbackKeyBinding(CRUDBase[models.CallbackKeyBinding]):
         now: datetime,
     ) -> bool:
         """Verify a current uniquely bound key; rotation epoch changes fail closed."""
+        if not _is_lower_hex(digest_epoch, 32) or not hmac.compare_digest(
+            digest_epoch, callback_digest_epoch()
+        ):
+            return False
         row = (
             db.query(self.model)
             .filter(

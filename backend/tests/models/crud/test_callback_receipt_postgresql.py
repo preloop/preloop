@@ -22,6 +22,7 @@ from preloop.models import models
 from preloop.models.crud.callback_receipt import (
     CallbackBindingConflictError,
     CallbackReplayConflictError,
+    callback_digest_epoch,
     crud_callback_key_binding,
     crud_callback_receipt,
 )
@@ -158,7 +159,7 @@ def test_cross_tenant_same_key_registration_is_atomic(synthetic_database) -> Non
                     account_id=accounts[index],
                     integration_id=integrations[index],
                     signing_key_digest="c" * 64,
-                    digest_epoch="d" * 32,
+                    digest_epoch=callback_digest_epoch(),
                     now=datetime.now(timezone.utc),
                 )
                 db.commit()
@@ -181,7 +182,7 @@ def test_rotation_expiry_and_epoch_change_do_not_reassign(synthetic_database) ->
             account_id=accounts[0],
             integration_id=integrations[0],
             signing_key_digest="c" * 64,
-            digest_epoch="d" * 32,
+            digest_epoch=callback_digest_epoch(),
             now=now,
         )
         db.commit()
@@ -190,7 +191,7 @@ def test_rotation_expiry_and_epoch_change_do_not_reassign(synthetic_database) ->
             account_id=accounts[0],
             integration_id=integrations[0],
             signing_key_digest="e" * 64,
-            digest_epoch="d" * 32,
+            digest_epoch=callback_digest_epoch(),
             now=now,
         )
         crud_callback_key_binding.retire(
@@ -198,6 +199,7 @@ def test_rotation_expiry_and_epoch_change_do_not_reassign(synthetic_database) ->
             account_id=accounts[0],
             integration_id=integrations[0],
             signing_key_digest="c" * 64,
+            now=now,
             expires_at=now + timedelta(seconds=120),
         )
         db.commit()
@@ -205,7 +207,7 @@ def test_rotation_expiry_and_epoch_change_do_not_reassign(synthetic_database) ->
             "account_id": accounts[0],
             "integration_id": integrations[0],
             "signing_key_digest": "c" * 64,
-            "digest_epoch": "d" * 32,
+            "digest_epoch": callback_digest_epoch(),
         }
         assert crud_callback_key_binding.assert_usable(db, now=now, **args)
         assert not crud_callback_key_binding.assert_usable(
@@ -217,7 +219,7 @@ def test_rotation_expiry_and_epoch_change_do_not_reassign(synthetic_database) ->
                 account_id=accounts[1],
                 integration_id=integrations[1],
                 signing_key_digest="c" * 64,
-                digest_epoch="d" * 32,
+                digest_epoch=callback_digest_epoch(),
                 now=now + timedelta(seconds=121),
             )
         with pytest.raises(CallbackBindingConflictError):

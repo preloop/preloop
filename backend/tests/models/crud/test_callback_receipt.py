@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.models.crud.callback_receipt import (
     CallbackReplayConflictError,
+    callback_digest_epoch,
+    callback_fingerprint,
     crud_callback_receipt,
 )
 
@@ -166,6 +168,12 @@ def test_private_callback_drops_error_and_transaction_payloads() -> None:
     assert sentry_before_send_transaction(event, {}) is None
     ordinary = {"request": {"url": "https://example.com/api/v1/ordinary"}}
     assert sentry_before_send_transaction(ordinary, {}) is ordinary
+    background = {"transaction": "/api/v1/example-private-callback/opaque"}
+    assert sentry_before_send(background, {}) is None
+    from preloop.utils.sentry_filters import unregister_private_callback_prefix
+
+    unregister_private_callback_prefix("/api/v1/example-private-callback/")
+    assert sentry_before_send(background, {}) is background
 
 
 def test_binding_reuse_and_epoch_drift_roll_back_config() -> None:
@@ -189,7 +197,9 @@ def test_binding_reuse_and_epoch_drift_roll_back_config() -> None:
                 account_id=uuid4(),
                 integration_id=uuid4(),
                 signing_key_digest="a" * 64,
-                digest_epoch="b" * 32,
+                digest_epoch=(
+                    "b" * 32 if conflict == "epoch" else callback_digest_epoch()
+                ),
                 now=datetime.now(timezone.utc),
             )
         db.rollback.assert_called_once()
@@ -208,7 +218,7 @@ def test_previous_key_overlap_is_strictly_bounded() -> None:
         "account_id": uuid4(),
         "integration_id": uuid4(),
         "signing_key_digest": "a" * 64,
-        "digest_epoch": "b" * 32,
+        "digest_epoch": callback_digest_epoch(),
     }
     assert crud_callback_key_binding.assert_usable(db, now=now, **args)
     assert not crud_callback_key_binding.assert_usable(db, now=row.expires_at, **args)
@@ -229,7 +239,7 @@ def test_binding_serializes_epoch_and_cross_tenant_registration() -> None:
         account_id=uuid4(),
         integration_id=uuid4(),
         signing_key_digest="a" * 64,
-        digest_epoch="b" * 32,
+        digest_epoch=callback_digest_epoch(),
         now=now,
     )
     assert "pg_advisory_xact_lock" in str(db.execute.call_args_list[1].args[0])
@@ -301,14 +311,16 @@ def test_retire_changes_only_scoped_overlap_without_commit() -> None:
 
     db = MagicMock(spec=Session)
     row = SimpleNamespace(expires_at=None)
-    db.query.return_value.filter.return_value.with_for_update.return_value.one.return_value = row
-    expiry = datetime.now(timezone.utc) + timedelta(seconds=120)
+    db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = row
+    now = datetime.now(timezone.utc)
+    expiry = now + timedelta(seconds=120)
     account_id, integration_id = uuid4(), uuid4()
     crud_callback_key_binding.retire(
         db,
         account_id=account_id,
         integration_id=integration_id,
         signing_key_digest="a" * 64,
+        now=now,
         expires_at=expiry,
     )
     assert row.expires_at == expiry
@@ -322,6 +334,62 @@ def test_retire_changes_only_scoped_overlap_without_commit() -> None:
     db.query.return_value.filter.return_value.with_for_update.assert_called_once_with()
     db.flush.assert_called_once()
     db.commit.assert_not_called()
+
+
+def test_empty_verdict_is_not_committed() -> None:
+    db, row, args = context()
+    with pytest.raises(ValueError, match="completed verdict"):
+        crud_callback_receipt.complete_once(
+            db, evaluate=MagicMock(return_value=(None, {})), **args
+        )
+    assert row.verdict is None
+    db.commit.assert_not_called()
+    db.rollback.assert_called_once()
+
+
+def test_fingerprint_is_domain_separated() -> None:
+    left = callback_fingerprint("webhook", "synthetic-secret")
+    right = callback_fingerprint("other", "synthetic-secret")
+    assert left != right
+    assert left == callback_fingerprint("webhook", "synthetic-secret")
+    assert len(left) == 64
+    assert len(callback_digest_epoch()) == 32
+
+
+def test_non_hex_binding_is_rejected_before_database() -> None:
+    from preloop.models.crud.callback_receipt import crud_callback_key_binding
+
+    db = MagicMock(spec=Session)
+    with pytest.raises(ValueError, match="fingerprint"):
+        crud_callback_key_binding.bind(
+            db,
+            account_id=uuid4(),
+            integration_id=uuid4(),
+            signing_key_digest="whsec_" + "K" * 58,
+            digest_epoch=callback_digest_epoch(),
+            now=datetime.now(timezone.utc),
+        )
+    db.execute.assert_not_called()
+
+
+def test_retire_rejects_unbounded_overlap_before_lookup() -> None:
+    from preloop.models.crud.callback_receipt import (
+        CallbackBindingConflictError,
+        crud_callback_key_binding,
+    )
+
+    db = MagicMock(spec=Session)
+    now = datetime.now(timezone.utc)
+    with pytest.raises(CallbackBindingConflictError):
+        crud_callback_key_binding.retire(
+            db,
+            account_id=uuid4(),
+            integration_id=uuid4(),
+            signing_key_digest="a" * 64,
+            now=now,
+            expires_at=now + timedelta(days=30),
+        )
+    db.query.assert_not_called()
 
 
 @pytest.mark.parametrize(
