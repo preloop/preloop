@@ -152,7 +152,11 @@ from .security_maintenance import (
     SecurityMaintenanceSweep,
 )
 
+from .callback_receipt import CallbackKeyBinding, CallbackReceipt
+
 __all__ = [
+    "CallbackKeyBinding",
+    "CallbackReceipt",
     "ChatConnection",
     "ChatIdentity",
     "ChatLinkCode",

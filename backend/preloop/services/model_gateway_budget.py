@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 import math
 from typing import Any, Dict, Optional
 
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -22,12 +21,18 @@ from preloop.models.crud.plan import subscription as crud_subscription
 from preloop.models.models.ai_model import AIModel
 from preloop.models.models.flow import Flow
 from preloop.services.model_allowlist import (
+    MODEL_NOT_ALLOWED_ERROR_CODE,
     allowlist_permits_model,
     format_model_not_allowed_detail,
     normalize_allowed_models,
     requested_model_label,
 )
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
+from preloop.services.model_gateway_denials import (
+    BUDGET_LIMIT_EXCEEDED_CODE,
+    budget_denial_error,
+)
+from preloop.services.model_gateway_errors import GatewayProvider, ModelGatewayAPIError
 from preloop.services.model_pricing import estimate_ai_model_usage_cost
 from preloop.services.model_runtime_resolver import gateway_model_alias_candidates
 from preloop.services.subject_governance import (
@@ -289,9 +294,26 @@ class ModelGatewayBudgetService:
         )
 
     def enforce_or_raise(
-        self, ai_model: AIModel, payload: Dict[str, Any]
+        self,
+        ai_model: AIModel,
+        payload: Dict[str, Any],
+        *,
+        provider: GatewayProvider = "openai",
     ) -> BudgetCheckResult:
-        """Run the preflight check and raise if a hard limit is exceeded."""
+        """Run the preflight check and raise if a hard limit is exceeded.
+
+        Args:
+            ai_model: Model the request resolved to.
+            payload: Request body.
+            provider: Gateway router format for the error body.
+
+        Returns:
+            The preflight result when no hard limit is exceeded.
+
+        Raises:
+            BudgetDenialError: 429 for every spend reason (#1447).
+            ModelGatewayAPIError: 403 for a model allowlist denial (policy).
+        """
         result = self.preflight_check(ai_model, payload)
         if result.hard_limit_exceeded:
             detail = "Model gateway budget exceeded"
@@ -323,15 +345,22 @@ class ModelGatewayBudgetService:
             if result.reset_at:
                 detail += f", try again at {result.reset_at.isoformat()}"
 
-            headers = {}
+            if result.enforcement_reason == "subject_model_not_allowed":
+                raise ModelGatewayAPIError(
+                    provider=provider,
+                    status_code=403,
+                    message=detail,
+                    code=MODEL_NOT_ALLOWED_ERROR_CODE,
+                )
+            reset_seconds = None
             if result.reset_at:
-                retry_after = max(
+                reset_seconds = max(
                     int((result.reset_at - datetime.now(timezone.utc)).total_seconds()),
                     1,
                 )
-                headers["Retry-After"] = str(retry_after)
-
-            raise HTTPException(status_code=403, detail=detail, headers=headers)
+            raise budget_denial_error(
+                provider, BUDGET_LIMIT_EXCEEDED_CODE, detail, reset_seconds
+            )
         return result
 
     @staticmethod

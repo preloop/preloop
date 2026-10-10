@@ -1,7 +1,7 @@
 """Customer OIDC providers trusted on the Anthropic gateway (#1414).
 
 Revision ID: 20261010_gateway_idp
-Revises: 20261009_resource_sharing_intent
+Revises: 20261010_callback_receipt
 """
 
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "20261010_gateway_idp"
-down_revision = "20261009_resource_sharing_intent"
+down_revision = "20261010_callback_receipt"
 branch_labels = None
 depends_on = None
 

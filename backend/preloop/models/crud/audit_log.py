@@ -99,6 +99,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
         action: Optional[str] = None,
         status: Optional[str] = None,
         resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         consent_ref: Optional[str] = None,
@@ -113,6 +114,7 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             action: Filter by action type
             status: Filter by status
             resource_type: Filter by resource type
+            resource_id: Filter by the affected resource id
             start_date: Filter by start date
             consent_ref: Exact delegated grant consent reference
             end_date: Filter by end date
@@ -129,6 +131,8 @@ class CRUDAuditLog(CRUDBase[AuditLog]):
             query = query.filter(AuditLog.status == status)
         if resource_type:
             query = query.filter(AuditLog.resource_type == resource_type)
+        if resource_id is not None:
+            query = query.filter(AuditLog.resource_id == resource_id)
         if consent_ref is not None:
             query = query.filter(
                 AuditLog.details.op("->")("grant").op("->>")("consent_ref")

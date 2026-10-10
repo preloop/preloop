@@ -1188,11 +1188,11 @@ class SchedulePreviewResponse(BaseModel):
 
 
 class FlowFailureNotifications(BaseModel):
-    """Failure-side keys, all ignored.
+    """Failure-side keys: a consecutive-failure alert plus two ignored keys.
 
-    Both options were removed. The block itself is kept so a flow stored
-    before the removal, or a client that still sends the keys, parses instead
-    of failing with a 422.
+    ``comment_on_trigger_issue`` and ``attention_item`` were removed; they are
+    still parsed and dropped so a flow stored before the removal, or a client
+    that still sends them, parses instead of failing with a 422.
     """
 
     comment_on_trigger_issue: bool = Field(
@@ -1210,6 +1210,16 @@ class FlowFailureNotifications(BaseModel):
             "Ignored. Failed executions always appear as console attention "
             "items of kind ``flow`` on Overview and /console/attention. "
             "Kept so stored JSON that set this flag still parses."
+        ),
+    )
+    alert_after_consecutive_failures: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=100,
+        description=(
+            "Notify the account's owners after this many consecutive failed "
+            "executions of the flow. Unset means the default of 3. A successful "
+            "execution resets the streak; the alert fires once per streak."
         ),
     )
 

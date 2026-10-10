@@ -203,6 +203,17 @@ The orchestrator verifies the branch against its own plan, looks up an open pull
 request for it before creating one through the bound Bitbucket tracker, and
 binds it with `record_opened_pr`, so a lost create response never yields a second
 pull request.
+A succeeded publishing run stores its validated Copilot session (with profile
+and model alias) on `cli_session`. Feedback on that pull request reaches the host
+flow through the existing feedback thread `_resume`; the orchestrator validates it
+with `resolve_host_continuation` (`services/host_exec_continuation.py`): same
+flow, same profile and model alias, a confirmed pull request on the resume
+branch, and an originating runner that advertises `host_continuation`. Anything
+else fails `resume_unavailable` instead of starting a fresh implementation. The
+lease carries a control-plane `host_exec_resume`, is pinned to the originating
+runner, and the runner adds `--resume=<session>` itself, checks the session is on
+the host, and pushes onto the existing pull request branch. A completion naming a
+different session fails `resume_identity_mismatch`.
 
 A flow with an enabled `git_clone_config.backport` block runs in a
 control-plane mode: the orchestrator cherry-picks the merge commit onto each
@@ -503,6 +514,8 @@ tenant-scoped CRUD live in `preloop.models`; commercial correlation/read policy
 lives in the optional plugin. Candidate deduplication and discovered events
 remain unchanged. Collector assertions preserve provenance and scan gaps, and
 do not establish runtime verification or device attestation.
+
+Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](docs/architecture/callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
 
 ### Restricted external runtime authority
 

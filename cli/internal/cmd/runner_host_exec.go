@@ -248,7 +248,7 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 			caps = append(caps, harness)
 		}
 		if hostExecProfileMayPublish(profile, harness) {
-			caps = append(caps, hostExecCapabilityPublication)
+			caps = append(caps, hostExecCapabilityPublication, hostExecCapabilityContinuation)
 		}
 		models := make([]string, 0, len(profile.ModelMap))
 		for requested := range profile.ModelMap {
@@ -595,6 +595,7 @@ type hostExecRun struct {
 	workspace   string
 	checkout    *hostExecCheckout
 	publication *hostExecPublication
+	resume      *hostExecResume
 	cleanup     func()
 }
 
@@ -663,6 +664,13 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 			hostExecPublishNotAllowed, profile.Name, hostExecProfilesFileName,
 		)
 	}
+	resume, err := jobHostExecResume(job)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateHostExecResume(resume, profile, wantHarness, publication); err != nil {
+		return nil, err
+	}
 	executionID, _ := job["execution_id"].(string)
 	root, err := hostExecWorkspaceRoot(profile)
 	if err != nil {
@@ -708,6 +716,11 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		if err = prepareCopilotHostExecHooks(profile); err == nil {
 			args, err = buildCopilotHostExecArgs(profile, job, mcpArgs...)
 		}
+		if err == nil && resume != nil {
+			// Runner-owned: --resume is a managed flag a profile argv
+			// cannot set, and the id comes only from the control plane.
+			args = append(args, "--resume="+resume.SessionID)
+		}
 		env = copilotHostExecEnv(env)
 	} else {
 		args, err = buildHostExecArgs(profile, job, workspace, mcpArgs...)
@@ -732,6 +745,7 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		workspace:   workspace,
 		checkout:    checkout,
 		publication: publication,
+		resume:      resume,
 		cleanup:     cleanup,
 	}, nil
 }
@@ -905,6 +919,7 @@ func beginHostExecJob(
 				outcome.result["requested_model"] = requested
 			}
 		}
+		outcome = checkResumedSession(outcome, run.resume)
 		if run.publication != nil && outcome.status == "SUCCEEDED" {
 			outcome = publishHostExecOutcome(outcome, run, gate, halted, timeout, buffer)
 		}

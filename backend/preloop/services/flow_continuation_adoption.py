@@ -153,11 +153,30 @@ def _load_source(
                 native = None
         now = datetime.now(UTC)
 
+        def recoverable(artifact: Any) -> bool:
+            """True when restore can still read this row.
+
+            A clean workspace checkpoint stores no ciphertext. It is recoverable
+            when the manifest says so, matching ``get_artifact``. Any other
+            kind still needs a payload.
+            """
+            if artifact is None:
+                return False
+            if artifact.ciphertext is not None:
+                return True
+            manifest = artifact.manifest if isinstance(artifact.manifest, dict) else {}
+            metadata = manifest.get("metadata")
+            return bool(
+                getattr(artifact, "kind", None) == "workspace"
+                and getattr(artifact, "availability", None) == "available"
+                and isinstance(metadata, dict)
+                and metadata.get("metadata_only") is True
+            )
+
         def available(artifact: Any) -> bool:
             return bool(
-                artifact is not None
+                recoverable(artifact)
                 and artifact.execution_id == execution_id
-                and artifact.ciphertext is not None
                 and artifact.expires_at.replace(tzinfo=UTC) > now
             )
 

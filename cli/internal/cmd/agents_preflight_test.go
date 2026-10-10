@@ -431,7 +431,7 @@ func TestPrintAgentOnboardingSummaryShowsSupportLevelReason(t *testing.T) {
 }
 
 func TestMCPOnlyAgentModelNoteLeadsWithSupportLabel(t *testing.T) {
-	for _, name := range []string{"Cursor", "Claude Desktop", "Antigravity", "Devin", "Windsurf"} {
+	for _, name := range []string{"Cursor", "VSCode / Copilot", "Claude Desktop", "Antigravity", "Devin", "Windsurf"} {
 		note := mcpOnlyAgentModelNote(AgentConfig{Name: name})
 		if !strings.HasPrefix(note, mcpOnlySupportLabel) {
 			t.Fatalf("expected %s note to lead with the support label, got %q", name, note)

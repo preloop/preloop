@@ -1,0 +1,184 @@
+[
+  {
+    "id": "allowed_prompt",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "allow",
+        "reference_id": "fixture-000"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "allow",
+        "reference_id": "fixture-000"
+      }
+    }
+  },
+  {
+    "id": "denied_prompt",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-001"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-001"
+      }
+    }
+  },
+  {
+    "id": "denied_tool_batch",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-002"
+      },
+      "side_effect_count": 0
+    },
+    "expected": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-002"
+      },
+      "side_effect_count": 0
+    }
+  },
+  {
+    "id": "unknown_identity",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-003"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-003"
+      }
+    }
+  },
+  {
+    "id": "unknown_source",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-004"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-004"
+      }
+    }
+  },
+  {
+    "id": "unknown_event",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-005"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-005"
+      }
+    }
+  },
+  {
+    "id": "endpoint_outage",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "callback_error": true,
+      "failure_mode": "block"
+    },
+    "expected": {
+      "callback_error": true,
+      "failure_mode": "block"
+    }
+  },
+  {
+    "id": "policy_change",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-007"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-007"
+      }
+    }
+  },
+  {
+    "id": "revoked_credential",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-008"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "deny",
+        "reference_id": "fixture-008"
+      }
+    }
+  },
+  {
+    "id": "alternate_covered_client",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "verdict": {
+        "action": "allow",
+        "reference_id": "fixture-009"
+      }
+    },
+    "expected": {
+      "verdict": {
+        "action": "allow",
+        "reference_id": "fixture-009"
+      }
+    }
+  },
+  {
+    "id": "direct_route_attempt",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "covered": false,
+      "claim": "unverified"
+    },
+    "expected": {
+      "covered": false,
+      "claim": "unverified"
+    }
+  },
+  {
+    "id": "rollback",
+    "source": "explicit_simulated_outcome",
+    "outcome": {
+      "enabled": false,
+      "claim": "unverified"
+    },
+    "expected": {
+      "enabled": false,
+      "claim": "unverified"
+    }
+  }
+]

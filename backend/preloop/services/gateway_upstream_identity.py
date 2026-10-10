@@ -23,7 +23,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
+# ``is_budget_denial`` lives next to the 429 helper (#1447); it stays
+# importable from this module for existing callers.
+from preloop.services.model_gateway_denials import (
+    budget_denial_error,
+    is_budget_denial,
+)
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
 
 logger = logging.getLogger(__name__)
 
@@ -222,7 +229,6 @@ def per_subject_budget(api_key: Any) -> Optional[dict[str, Any]]:
         return None
 
 
-_BUDGET_DENIAL_CODES = {"budget_limit_exceeded", "execution_budget_exceeded"}
 #: Fail-closed policy denials (kill switch, model allowlist, model
 #: authorization, content policy / unapproved approval holds) that must not be
 #: bypassable through apps gateway failover either.
@@ -232,21 +238,6 @@ _POLICY_DENIAL_CODES = {
     "model_not_authorized",
     "content_policy_denied",
 }
-
-
-def is_budget_denial(exc: ModelGatewayAPIError) -> bool:
-    """Whether a gateway error is a Preloop budget denial."""
-    if exc.status_code != 403:
-        return False
-    message = (exc.message or "").lower()
-    return (
-        exc.code in _BUDGET_DENIAL_CODES
-        or "budget exceeded" in message
-        or "budget hard limit exceeded" in message
-        or "limit for hosted model reached" in message
-        or "limit for hosted models reached" in message
-        or "budget enforcement requires pricing information" in message
-    )
 
 
 def seconds_until(reset_at: Optional[datetime], now: Optional[datetime] = None) -> int:
@@ -301,20 +292,12 @@ def to_trusted_upstream_error(
         message = f"Preloop budget exceeded for {subject.label}"
         if detail:
             message = f"{message}: {detail}"
-        denial = TrustedUpstreamDenialError(
-            provider="anthropic",
-            status_code=429,
-            message=message,
-            error_type="billing_error",
-            code=exc.code,
-            retry_after_seconds=(
-                getattr(exc, "budget_reset_seconds", None)
-                or exc.retry_after_seconds
-                or 3600
-            ),
+        return budget_denial_error(
+            "anthropic",
+            exc.code,
+            message,
+            getattr(exc, "budget_reset_seconds", None) or exc.retry_after_seconds,
         )
-        denial.should_retry = False
-        return denial
     if exc.status_code == 403 and exc.code in _POLICY_DENIAL_CODES:
         # Kill switch, allowlist, authorization and content policy must hold too: on 403 the apps
         # gateway would fail over to an upstream that ignores them.

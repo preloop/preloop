@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
-from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -23,6 +22,8 @@ from preloop.services.model_gateway_budget import (
     ModelGatewayBudgetService,
     _chars_per_token,
 )
+from preloop.services.model_gateway_denials import BudgetDenialError
+from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.subject_governance import (
     SUBJECT_TYPE_API_KEYS,
     set_subject_governance,
@@ -72,11 +73,12 @@ def test_enforce_or_raise_reports_trial_hosted_model_limit(db_session, test_user
         ModelGatewayAuthContext(token="trial-token", user=test_user),
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(BudgetDenialError) as exc_info:
         service.enforce_or_raise(ai_model, {"model": "openai/gpt-5", "input": "Hi"})
 
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == (
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.response_headers()["x-should-retry"] == "false"
+    assert exc_info.value.message == (
         "Preloop trial limit for hosted model reached. Please configure your own "
         "OpenAI/Anthropic API key."
     )
@@ -147,11 +149,11 @@ def test_free_account_hosted_model_is_capped(db_session, test_user):
         ModelGatewayAuthContext(token="free-token", user=test_user),
     )
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(BudgetDenialError) as exc_info:
         service.enforce_or_raise(ai_model, {"model": "openai/gpt-5", "input": "Hi"})
 
-    assert exc_info.value.status_code == 403
-    assert "free-tier limit" in exc_info.value.detail
+    assert exc_info.value.status_code == 429
+    assert "free-tier limit" in exc_info.value.message
 
 
 def test_free_account_non_hosted_model_not_capped(db_session, test_user):
@@ -619,13 +621,15 @@ def test_enforce_or_raise_names_model_and_allowlist_when_not_allowed(
     api_key = _key_scoped_allowlist(db_session, test_user, ["Beta Flash", "Alpha Chat"])
     service = _governed_service(db_session, test_user, api_key)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ModelGatewayAPIError) as exc_info:
         service.enforce_or_raise(
             ai_model, {"model": "vendor/alpha-chat", "input": "hi"}
         )
 
+    # An allowlist denial is policy, not spend: it stays 403 (#1447).
     assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == (
+    assert exc_info.value.code == "model_not_allowed"
+    assert exc_info.value.message == (
         "Model 'vendor/alpha-chat' is not in this agent's allowed models "
         "(Beta Flash, Alpha Chat). Edit the agent's governance in the Preloop "
         "console or pick an allowed model."
@@ -640,11 +644,13 @@ def test_enforce_or_raise_elides_long_allowlists(db_session, test_user):
     )
     service = _governed_service(db_session, test_user, api_key)
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ModelGatewayAPIError) as exc_info:
         service.enforce_or_raise(ai_model, {"model": "claude-opus-4-1"})
 
-    assert "(model-0, model-1, model-2, model-3, model-4, ...)" in exc_info.value.detail
-    assert "model-5" not in exc_info.value.detail
+    assert "(model-0, model-1, model-2, model-3, model-4, ...)" in (
+        exc_info.value.message
+    )
+    assert "model-5" not in exc_info.value.message
 
 
 @pytest.mark.parametrize("pricing_override", [None, {"price_per_1k": 1.0}])

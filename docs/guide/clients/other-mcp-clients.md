@@ -26,12 +26,12 @@ That gives you the MCP firewall (access rules, approvals, audit) for every tool 
 | Cursor | Automatic | **Manual BYOK**: AI panel incl. Agent mode (see below) |
 | [Claude Desktop](claude-desktop.md) | Automatic | **Managed config**: `--model-route direct` or `apps-gateway` prints the MDM configuration |
 | Windsurf | Automatic | Not available |
-| VS Code / Copilot | Automatic | Not available |
+| VS Code / Copilot | Automatic | **Manual BYOK**: Chat: Manage Language Models -> Add Models -> Custom Endpoint (see below) |
 | Copilot CLI | Automatic (`~/.copilot/mcp-config.json`) | Not rewritten on onboard. `preloop copilot` sets the gateway env vars |
 | Antigravity | Automatic | Not available: locked to Google-hosted models, no custom base URL |
 | Devin | Automatic | Not available: inference runs in Cognition's cloud |
 
-"Automatic" means `preloop agents discover` / `preloop agents onboard <agent>` handles it. Clients without model routing keep using their own provider credentials: tool calls are governed and audited, but their model spend is not metered live, so model budgets do not apply to them. Spend that is not metered live can still be brought into Cost analytics after the fact by importing it, see [Importing usage from Cursor](../cost/importing-cursor-usage.md).
+"Automatic" means `preloop agents discover` / `preloop agents onboard <agent>` handles it. Clients with no model routing keep using their own provider credentials: tool calls are governed and audited, and their model spend is not metered live, so model budgets do not apply to them. Manual BYOK meters the calls aimed at the gateway and leaves the client's own hosted models alone. Spend that is not metered live can still be brought into Cost analytics after the fact by importing it, see [Importing usage from Cursor](../cost/importing-cursor-usage.md).
 
 ## Cursor
 
@@ -73,6 +73,22 @@ What to expect:
 - Privacy note: Cursor still relays these requests through its own backend for prompt assembly, and Cursor's Zero Data Retention does not apply to custom-key traffic.
 - On Cursor Teams and Enterprise plans, BYOK requests additionally consume Cursor's Token Rate ($0.25 per million tokens) on the Cursor side; that residue does not appear in Preloop Cost analytics. Enterprise admins can also restrict personal API keys entirely, which blocks this override pattern on managed teams.
 
+## VS Code / Copilot Chat
+
+Onboarding writes `~/.vscode/mcp.json` and leaves model routing alone. Copilot Chat's Custom Endpoint is the manual BYOK path, the same class as Cursor's Settings -> Models override. There is no config file `preloop agents onboard` can rewrite: `github.copilot.chat.customOAIModels` is deprecated.
+
+Click path: **Chat: Manage Language Models** -> **Add Models** -> **Custom Endpoint** (`vendor` `customendpoint`), then `chatLanguageModels.json`.
+
+Set `toolCalling` to `true`. Point each model's `url` at the full gateway path:
+
+- Chat Completions: `https://YOUR_PRELOOP_URL/openai/v1/chat/completions`
+- Responses: `https://YOUR_PRELOOP_URL/openai/v1/responses`
+- Messages: `https://YOUR_PRELOOP_URL/anthropic/v1/messages`
+
+The `apiKey` is the Preloop agent credential. A URL with no API path gets `/v1/<api>` appended, so use the full path. Chat and Agent mode (and utility tasks you point at the gateway) are the metered surfaces. Inline completions, semantic search, and embeddings stay on GitHub.
+
+Plan entitlement, checked 2026-10-10 against the [VS Code language models doc](https://code.visualstudio.com/docs/agent-customization/language-models), the [2026-06-18 BYOK post](https://code.visualstudio.com/blogs/2026/06/18/byok-vscode), [GitHub's bring-your-own-key page](https://docs.github.com/en/copilot/concepts/models/bring-your-own-key), and [Changing the AI model for GitHub Copilot Chat](https://docs.github.com/en/copilot/how-tos/use-ai-models/change-the-chat-model): BYOK works with no Copilot plan. Those pages do not name Copilot Free, Pro, and Pro+ as separate rows. Copilot Business and Copilot Enterprise need an admin policy (**Bring Your Own Language Model Key in VS Code** on the VS Code page, **Bring Your Own Language Model Key in Select IDEs** on the GitHub chat-model page). A licensed Business or Enterprise seat was not checked. The sanitized file, the six-step founder checklist, and the console Cost and Models checks are in [VS Code Copilot Chat](vscode-copilot.md).
+
 ## Copilot CLI
 
 `preloop agents onboard "Copilot CLI"` backs up `~/.copilot/mcp-config.json` and adds the Preloop MCP server (`/mcp/v1`). The CLI does not read VS Code's `.vscode/mcp.json`. Onboarding does not rewrite model traffic. `preloop copilot` starts the `copilot` binary with `COPILOT_PROVIDER_BASE_URL` pointed at the Preloop gateway. IDE Copilot chat and inline completions are a different client (VS Code / Copilot, above) and are not covered by that launcher.
@@ -88,6 +104,7 @@ If your client is MCP-capable but not in the table, add the endpoint manually (U
 ## Related
 
 - [Importing usage from Cursor](../cost/importing-cursor-usage.md): get bundled-model spend into Cost analytics
+- [VS Code Copilot Chat](vscode-copilot.md): Custom Endpoint click path and founder checklist
 - [CLI Reference: support levels](../cli.md#support-levels)
 - [Connect Your MCP Client](../getting-started/connect-mcp-client.md): generic setup steps
 - [Subject-Scoped Governance](../concepts/subject-scoped-governance.md): scoping tools/models per client key

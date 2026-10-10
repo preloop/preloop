@@ -133,8 +133,8 @@ def _run(
     """Run a service call, mapping denials to the trusted upstream contract.
 
     Only a trusted upstream request that named a developer gets the 429
-    contract; every other request keeps its error unchanged (403 for budget
-    denials). Relayable upstream response headers ride on the error too.
+    contract; every other request keeps its error unchanged (budget denials
+    are already 429 there, #1447). Relayable upstream response headers ride on the error too.
     """
     try:
         return call()

@@ -74,14 +74,20 @@ def send_email(
     if not SMTP_USERNAME or not SMTP_PASSWORD:
         logger.warning(
             "Email not sent: SMTP credentials not configured. "
-            f"Would have sent email to {to_email} with subject '{subject}'"
+            "Would have sent email to %s",
+            to_email,
         )
-        # The body is NOT logged. Several senders put single-use credentials in
-        # it: send_verification_email and send_password_reset_email embed an
-        # auth token in a link, and send_invitation_email does the same. Logging
-        # the body would write those tokens to the log in clear text, where they
-        # stay valid and readable by anyone with log access. The length is
-        # enough to tell an operator that a body was composed.
+        # Neither the subject nor the body is logged. Several senders put
+        # single-use credentials in the body: send_verification_email and
+        # send_password_reset_email embed an auth token in a link, and
+        # send_invitation_email does the same. The subject can also carry
+        # caller-supplied text (a flow or tool name), so logging it is a
+        # clear-text sink that static analysis cannot tell apart from a
+        # secret. The lengths are enough to tell an operator a message was
+        # composed.
+        logger.debug(
+            "Email subject suppressed from logs (%d chars)", len(subject or "")
+        )
         logger.debug("Email body suppressed from logs (%d chars)", len(body_text))
         # Don't raise error - just return gracefully to avoid HTTP 500 in dev/CI environments
         return
@@ -92,7 +98,7 @@ def send_email(
             server.starttls()  # Secure the connection
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(from_email, to_email, msg.as_string())
-            logger.info(f"Email sent to {to_email}: {subject}")
+            logger.info("Email sent to %s", to_email)
     except Exception as e:
         logger.error(f"Failed to send email: {str(e)}")
         raise EmailError(f"Failed to send email: {str(e)}")

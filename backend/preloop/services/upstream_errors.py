@@ -27,6 +27,9 @@ ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED = "upstream_quota_exhausted"
 ERROR_CLASS_UPSTREAM_AUTH = "upstream_auth"
 ERROR_CLASS_UPSTREAM_PROTOCOL = "upstream_protocol"
 ERROR_CLASS_UPSTREAM_ERROR = "upstream_error"
+#: The gateway's own budget hard limit (#1447). Not an upstream class: it is
+#: recorded so the 429 it now answers with is never counted as a rate limit.
+ERROR_CLASS_BUDGET_EXCEEDED = "budget_exceeded"
 ERROR_CLASS_UPSTREAM_DISCONNECT = "upstream_disconnect"
 ERROR_CLASS_CLIENT_CANCELLED = "client_cancelled"
 # A deployment-provided hosted model the operator has not given a verified
@@ -139,6 +142,35 @@ _QUOTA_MARKERS = (
     "billing",
     "quota",
 )
+
+# The gateway's own budget denial (#1447). It is a 429 whose OpenAI body says
+# ``insufficient_quota``, so without this guard the recorded-row classifier
+# would file it as an upstream rate limit or upstream quota exhaustion. It is
+# neither: Preloop refused the request before any upstream call.
+PRELOOP_BUDGET_DENIAL_MARKERS = (
+    "model gateway budget exceeded",
+    "model gateway budget enforcement requires pricing",
+    "execution budget exceeded",
+    "preloop budget exceeded",
+    "budget_limit_exceeded",
+    "execution_budget_exceeded",
+    "limit for hosted model reached",
+    "limit for hosted models reached",
+)
+
+
+def is_preloop_budget_denial_detail(detail: Optional[str]) -> bool:
+    """Whether an error text is the gateway's own budget denial.
+
+    Args:
+        detail: Recorded error detail or exception text.
+
+    Returns:
+        True for a Preloop budget denial in any status shape (the ``429``
+        since #1447 or the legacy ``403``).
+    """
+    return _contains((detail or "").lower(), PRELOOP_BUDGET_DENIAL_MARKERS)
+
 
 # Markers indicating transient provider overload (Anthropic 529
 # "overloaded_error", OpenAI "engine is currently overloaded", generic 502
@@ -442,6 +474,8 @@ _NON_RETRYABLE_ERROR_CLASSES = frozenset(
         ERROR_CLASS_STREAM_ABANDONED,
         ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
         ERROR_CLASS_GATEWAY_TRANSLATION,
+        # A budget refill is an operator action; retrying cannot clear it.
+        ERROR_CLASS_BUDGET_EXCEEDED,
     }
 )
 
@@ -526,7 +560,9 @@ def classify_recorded_error(
 
     Used by ``_record_gateway_request`` when no richer classification was
     attached to the exception (#118). Returns ``None`` for successes and for
-    failures that are not upstream-related (validation, budget denials…).
+    failures that are not upstream-related (validation and similar), and
+    ``budget_exceeded`` for the gateway's own budget denial (#1447) so its
+    429 is never read as an upstream rate limit.
 
     Note: without the original exception, this helper cannot always tell
     ``upstream_disconnect`` from a generic ``upstream_error``. Streaming
@@ -543,6 +579,9 @@ def classify_recorded_error(
         return ERROR_CLASS_GATEWAY_TRANSLATION
     if status_code == 499:
         return ERROR_CLASS_CLIENT_CANCELLED
+    if _contains(text, PRELOOP_BUDGET_DENIAL_MARKERS):
+        # Preloop's budget, not the upstream's (#1447).
+        return ERROR_CLASS_BUDGET_EXCEEDED
     if status_code == 429:
         if _contains(text, _QUOTA_MARKERS):
             return ERROR_CLASS_UPSTREAM_QUOTA_EXHAUSTED
