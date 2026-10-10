@@ -1854,6 +1854,36 @@ class TestGatewayEndpointValidation:
         assert len(calls) == 2
         ai_model_provider._clear_endpoint_resolution_cache()
 
+    def test_resolution_cache_stays_bounded(self, monkeypatch) -> None:
+        """Many distinct hostnames cannot grow the cache past its cap."""
+        import socket
+
+        from preloop.services import ai_model_provider
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        ai_model_provider._clear_endpoint_resolution_cache()
+        monkeypatch.setattr(ai_model_provider, "_ENDPOINT_RESOLUTION_CACHE_MAX", 4)
+        clock = [1000.0]
+        monkeypatch.setattr(ai_model_provider.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *_a, **_k: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
+            ],
+        )
+        for index in range(10):
+            validate_gateway_api_endpoint(f"https://h{index}.example.test/v1")
+            assert len(ai_model_provider._endpoint_resolution_cache) <= 4
+        assert "h9.example.test" in ai_model_provider._endpoint_resolution_cache
+
+        clock[0] += ai_model_provider._ENDPOINT_RESOLUTION_TTL_SECONDS + 1
+        validate_gateway_api_endpoint("https://fresh.example.test/v1")
+        assert list(ai_model_provider._endpoint_resolution_cache) == [
+            "fresh.example.test"
+        ]
+        ai_model_provider._clear_endpoint_resolution_cache()
+
     def test_aux_credentials_refuse_a_legacy_localhost_row(self) -> None:
         """Auxiliary flows get the same refusal as the gateway, as a 400."""
         from types import SimpleNamespace
@@ -1869,6 +1899,7 @@ class TestGatewayEndpointValidation:
         with pytest.raises(ModelGatewayAPIError) as error:
             resolve_model_call_credentials(model)
         assert error.value.status_code == 400
+        assert error.value.provider == "openai"
 
     def test_non_string_api_base_is_not_validated(self) -> None:
         """Only stored strings are dialed; mock stand-ins pass through unchanged."""

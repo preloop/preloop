@@ -110,7 +110,9 @@ def _refuse_unsafe_aux_api_base(model: Any, api_base: Any) -> None:
         validate_gateway_api_endpoint(api_base)
     except ProviderValidationError as exc:
         raise ModelGatewayAPIError(
-            provider=str(getattr(model, "provider_name", None) or "openai"),
+            # Auxiliary calls are OpenAI-shaped (litellm.completion), so the
+            # error envelope is OpenAI's regardless of the model's provider.
+            provider="openai",
             status_code=400,
             message=str(exc),
             error_type="invalid_request_error",

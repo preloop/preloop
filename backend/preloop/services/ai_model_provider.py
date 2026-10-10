@@ -332,6 +332,9 @@ def _allowed_endpoint_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6N
 #: Seconds a successful endpoint resolution is reused. Bounds how often the
 #: request path (CRUD and every upstream call) blocks on the system resolver.
 _ENDPOINT_RESOLUTION_TTL_SECONDS = 30.0
+#: Upper bound on cached hostnames. Expired entries are purged when it is
+#: reached, and the oldest entries go if every entry is still fresh.
+_ENDPOINT_RESOLUTION_CACHE_MAX = 512
 _endpoint_resolution_cache: dict[
     str, tuple[float, list[ipaddress.IPv4Address | ipaddress.IPv6Address]]
 ] = {}
@@ -367,8 +370,28 @@ def _resolve_endpoint_host(
     found = _resolve_endpoint_host_uncached(host)
     if found:
         with _endpoint_resolution_lock:
-            _endpoint_resolution_cache[host] = (now, list(found))
+            _store_endpoint_resolution(host, now, found)
     return found
+
+
+def _store_endpoint_resolution(
+    host: str,
+    now: float,
+    found: list[ipaddress.IPv4Address | ipaddress.IPv6Address],
+) -> None:
+    """Cache one answer, keeping the cache bounded. Caller holds the lock."""
+    cache = _endpoint_resolution_cache
+    cache.pop(host, None)
+    if len(cache) >= _ENDPOINT_RESOLUTION_CACHE_MAX:
+        for key in [
+            key
+            for key, (stamp, _ips) in cache.items()
+            if now - stamp >= _ENDPOINT_RESOLUTION_TTL_SECONDS
+        ]:
+            del cache[key]
+        while len(cache) >= _ENDPOINT_RESOLUTION_CACHE_MAX:
+            del cache[next(iter(cache))]
+    cache[host] = (now, list(found))
 
 
 def _resolve_endpoint_host_uncached(
