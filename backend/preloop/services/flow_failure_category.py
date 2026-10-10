@@ -76,9 +76,10 @@ it*, not about severity:
     The agent process itself exited non-zero without a classifiable cause.
 ``budget_exceeded``
     The execution crossed a ceiling an operator set on the run itself
-    (``agent_config.limits``): total tokens, USD, or turns. The gateway
-    refuses further model requests once the ceiling is reached and the run
-    ends here. Unlike ``provider_billing`` (the upstream says "pay us"), this
+    (``agent_config.limits``): total tokens, USD, or turns, or a model
+    gateway budget hard limit (the gateway's ``429`` budget denial, #1447).
+    The gateway refuses further model requests once the limit is reached and
+    the run ends here. Unlike ``provider_billing`` (the upstream says "pay us"), this
     is the account's own per-run cap doing its job.
 ``model_stream_idle``
     The execution exceeded its wall-clock budget while the model stream was
@@ -271,7 +272,13 @@ _HOSTED_TARIFF_RE = re.compile(
 # the provider rules: the agent may also log an upstream 429/5xx it produced
 # while retrying the same refused request, and the money rule is the cause.
 _EXECUTION_BUDGET_RE = re.compile(
-    r"execution budget exceeded|execution [_a-z]+ ceiling reached",
+    r"execution budget exceeded|execution [_a-z]+ ceiling reached"
+    # The gateway's own budget denial (account, flow, user, key, subject or
+    # per-model hard limit). Since #1447 it is a 429 whose OpenAI body also
+    # says ``insufficient_quota``, so it must win over the provider billing
+    # and rate limit rules: it is Preloop's cap, not the upstream's.
+    r"|model gateway budget exceeded|preloop budget exceeded"
+    r"|budget_limit_exceeded|execution_budget_exceeded",
     re.IGNORECASE,
 )
 # "zai does not support parameters: ['parallel_tool_calls']",

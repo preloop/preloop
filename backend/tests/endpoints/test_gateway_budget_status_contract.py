@@ -179,6 +179,9 @@ def test_budget_denial_is_429_on_every_router(
         .all()
     )
     assert [row.status_code for row in rows] == [429]
+    # Recorded as Preloop's budget, never as an upstream rate limit.
+    assert rows[0].error_class == "budget_exceeded"
+    assert not (rows[0].meta_data or {}).get("rate_limit")
 
 
 def test_budget_429_keeps_budget_audit_vocabulary():

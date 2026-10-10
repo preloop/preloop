@@ -178,6 +178,7 @@ func ensureSelectedModelAllowed(
 
 // liveCheckDeniedByAllowedModels reports whether a live validation failure
 // was the gateway's allowed-models denial (the 403 detail names the policy).
+// Budget denials are 429 since #1447 and never match.
 func liveCheckDeniedByAllowedModels(outcome *managedLiveValidationOutcome, err error) bool {
 	texts := make([]string, 0, 2)
 	if err != nil {

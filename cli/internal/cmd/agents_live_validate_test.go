@@ -1582,3 +1582,33 @@ func TestLiveValidationRollbackError_ExitAndHintSemantics(t *testing.T) {
 		t.Fatalf("expected rollback reason in summary, got %q", outcome.Reason)
 	}
 }
+
+// A Preloop budget 429 (#1447) is neither an upstream rate limit nor an
+// upstream billing failure, and the probe must not retry it.
+func TestPreloopBudgetDenialIsNotUpstreamRateLimit(t *testing.T) {
+	budget := &api.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Body: `{"error":{"message":"Model gateway budget exceeded: account monthly limit reached",` +
+			`"type":"insufficient_quota","code":"insufficient_quota","preloop_code":"budget_limit_exceeded"}}`,
+	}
+	if !isPreloopBudgetDenialValidationError(budget) {
+		t.Fatal("budget 429 must be detected as a Preloop budget denial")
+	}
+	if isUpstreamRateLimitedValidationError(budget) {
+		t.Fatal("budget 429 must not be classified as an upstream rate limit")
+	}
+	if isUpstreamBillingValidationError(budget) {
+		t.Fatal("budget 429 must not be classified as upstream billing")
+	}
+	if isPreloopBudgetDenialValidationError(&api.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       `{"error":{"type":"rate_limit_error","message":"slow down"}}`,
+	}) {
+		t.Fatal("a plain upstream 429 is not a budget denial")
+	}
+	calls := 0
+	attempts, err := postGatewayProbeWithRetry(func() error { calls++; return budget })
+	if err == nil || attempts != 1 || calls != 1 {
+		t.Fatalf("budget denial must not be retried: attempts=%d calls=%d err=%v", attempts, calls, err)
+	}
+}

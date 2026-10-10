@@ -316,12 +316,23 @@ def classify_rate_limit_subtype(
         error_detail: The recorded upstream error message, if any.
 
     Returns:
-        Tuple of (subtype, subtype_source). Both are None for non-429 rows.
+        Tuple of (subtype, subtype_source). Both are None for non-429 rows
+        and for the gateway's own budget denial.
         Source is ``"taxonomy"`` (shared #141 classifier) or ``"heuristic"``
         (local fallback).
     """
     if status_code != 429:
         return None, None
+    try:
+        from preloop.services.upstream_errors import (
+            is_preloop_budget_denial_detail,
+        )
+
+        if is_preloop_budget_denial_detail(error_detail):
+            # The gateway's own budget 429 (#1447) is not a rate limit.
+            return None, None
+    except ImportError:
+        pass
     # Telemetry classification must never break request recording: any
     # failure importing or running the shared taxonomy (#141) falls back to
     # the local heuristic.

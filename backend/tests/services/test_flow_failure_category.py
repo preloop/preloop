@@ -421,3 +421,27 @@ class TestApiDescription:
 
         missing = [c for c in FAILURE_CATEGORIES if c not in description]
         assert missing == []
+
+
+# The gateway's budget denial is a 429 since #1447. Whatever status and body
+# shape the harness logs, it is Preloop's budget, never an upstream rate limit
+# or an upstream billing failure.
+GATEWAY_BUDGET_429_MESSAGES = [
+    "APIError: 429 {'error': {'message': 'Model gateway budget exceeded: "
+    "account monthly limit reached', 'type': 'insufficient_quota', 'code': "
+    "'insufficient_quota', 'preloop_code': 'budget_limit_exceeded'}}",
+    'API Error: 429 {"type":"error","error":{"type":"billing_error","message":'
+    '"Model gateway budget exceeded: flow monthly limit reached"}}',
+    "exceeded retry limit, last status: 429 Too Many Requests, "
+    "preloop_code execution_budget_exceeded",
+    '[API Error: {"error":{"code":429,"message":"Model gateway budget exceeded",'
+    '"status":"RESOURCE_EXHAUSTED"}}]',
+]
+
+
+@pytest.mark.parametrize("message", GATEWAY_BUDGET_429_MESSAGES)
+def test_gateway_budget_429_is_budget_not_rate_limit(message):
+    assert (
+        derive_failure_category(status="FAILED", error_message=message)
+        == "budget_exceeded"
+    )
