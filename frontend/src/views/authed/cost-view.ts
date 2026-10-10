@@ -3012,11 +3012,14 @@ export class CostView extends AuthedElement {
       this.copilotRevealed = true;
       this.activeTab = 'copilot';
       void this.loadTab('copilot');
-      void this.updateComplete.then(() =>
-        this.renderRoot
-          .querySelector('sl-tab-group')
-          ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      );
+      // The Copilot tab is created in this same update, so the ?active
+      // binding alone does not reach sl-tab-group: show() syncs the panels.
+      void this.updateComplete.then(() => {
+        const group = this.renderRoot.querySelector('sl-tab-group') as
+          (HTMLElement & { show?: (panel: string) => void }) | null;
+        group?.show?.('copilot');
+        group?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
       return;
     }
     const target = this.renderRoot.querySelector(
@@ -3874,7 +3877,7 @@ export class CostView extends AuthedElement {
       this.isOverrideInForce(override)
     ).length;
     return html`
-      <sl-card id="panel-pricing">
+      <sl-card id="panel-pricing" tabindex="-1">
         ${this.renderSectionHeader('tags', 'Pricing overrides')}
         <div class="action-card-body">
           <div>

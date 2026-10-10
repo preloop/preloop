@@ -80,10 +80,10 @@ import {
 /** Rows in a section this small are open on arrival; longer lists start shut. */
 const AUTO_EXPAND_MAX_ROWS = 3;
 
-/** Long enough to notice after a jump, short enough not to look like state. */
 /** The Attention link Cost's Spend settings menu uses for outlier alerts. */
 const SPEND_OUTLIERS_HASH = '#spend-outliers';
 
+/** Long enough to notice after a jump, short enough not to look like state. */
 const HIGHLIGHT_MS = 2400;
 
 const DISMISS_REASON_LABELS: Record<string, string> = {

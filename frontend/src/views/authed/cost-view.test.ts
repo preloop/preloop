@@ -938,6 +938,33 @@ describe('CostView', () => {
     expect((element as unknown as { activeTab: string }).activeTab).to.equal(
       'copilot'
     );
+    // The panel itself is selected, not only the tab indicator.
+    const copilotPanel = element.shadowRoot!.querySelector(
+      'sl-tab-panel[name="copilot"]'
+    ) as HTMLElement & { active: boolean };
+    await waitUntil(() => copilotPanel.active, 'the Copilot panel is shown');
+    const agentsPanel = element.shadowRoot!.querySelector(
+      'sl-tab-panel[name="agents"]'
+    ) as HTMLElement & { active: boolean };
+    expect(agentsPanel.active).to.equal(false);
+    await waitUntil(
+      () => copilotPanel.querySelector('copilot-usage-panel'),
+      'the Copilot setup panel renders'
+    );
+  });
+
+  it('moves focus to the section a Spend settings destination opens', async () => {
+    featuresPayload = { billing: true, model_price_overrides: true };
+    const element = await loadedView();
+    await waitUntil(
+      () => element.shadowRoot!.querySelector('#panel-pricing'),
+      'the pricing card renders'
+    );
+    element['openSpendSetting']('pricing');
+    expect(element.shadowRoot!.activeElement?.id).to.equal('panel-pricing');
+    await waitUntil(() => element.shadowRoot!.querySelector('#panel-budgets'));
+    element['openSpendSetting']('budgets');
+    expect(element.shadowRoot!.activeElement?.id).to.equal('panel-budgets');
   });
 
   it('shows the Copilot tab once a Copilot connection exists', async () => {
