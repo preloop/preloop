@@ -139,6 +139,13 @@ from preloop.services.model_gateway_budget import (
 )
 from preloop.services.subject_governance import build_subject_context_from_api_key
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
+from preloop.services.gateway_upstream_identity import seconds_until
+from preloop.services.model_gateway_denials import (
+    BUDGET_LIMIT_EXCEEDED_CODE,
+    EXECUTION_BUDGET_EXCEEDED_CODE,
+    budget_denial_error,
+    is_budget_denial,
+)
 from preloop.services.model_gateway_errors import (
     GatewayProvider,
     ModelGatewayAPIError,
@@ -1950,10 +1957,11 @@ class OpenAIGatewayService:
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
+            denial = self._preflight_denial_error(budget_result, "openai", detail)
             self._record_gateway_request(
                 endpoint="/openai/v1/chat/completions",
                 method="POST",
-                status_code=403,
+                status_code=denial.status_code,
                 duration=time.perf_counter() - started_at,
                 ai_model=model,
                 requested_model=payload.get("model"),
@@ -1964,12 +1972,7 @@ class OpenAIGatewayService:
                 error_detail=detail,
                 request_payload=payload,
             )
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=403,
-                message=detail,
-                code=self._budget_denial_code(budget_result),
-            )
+            raise denial
 
         try:
             self._emit_gateway_request_started(
@@ -2127,10 +2130,11 @@ class OpenAIGatewayService:
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
+            denial = self._preflight_denial_error(budget_result, "openai", detail)
             self._record_gateway_request(
                 endpoint="/openai/v1/responses",
                 method="POST",
-                status_code=403,
+                status_code=denial.status_code,
                 duration=time.perf_counter() - started_at,
                 ai_model=model,
                 requested_model=payload.get("model"),
@@ -2141,12 +2145,7 @@ class OpenAIGatewayService:
                 error_detail=detail,
                 request_payload=payload,
             )
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=403,
-                message=detail,
-                code=self._budget_denial_code(budget_result),
-            )
+            raise denial
         try:
             self._emit_gateway_request_started(
                 ai_model=model,
@@ -2288,10 +2287,11 @@ class OpenAIGatewayService:
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
+            denial = self._preflight_denial_error(budget_result, "openai", detail)
             self._record_gateway_request(
                 endpoint="/openai/v1/embeddings",
                 method="POST",
-                status_code=403,
+                status_code=denial.status_code,
                 duration=time.perf_counter() - started_at,
                 ai_model=model,
                 requested_model=payload.get("model"),
@@ -2302,12 +2302,7 @@ class OpenAIGatewayService:
                 error_detail=detail,
                 request_payload=payload,
             )
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=403,
-                message=detail,
-                code=self._budget_denial_code(budget_result),
-            )
+            raise denial
 
         try:
             self._emit_gateway_request_started(
@@ -2461,10 +2456,11 @@ class OpenAIGatewayService:
         )
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
+            denial = self._preflight_denial_error(budget_result, "anthropic", detail)
             self._record_gateway_request(
                 endpoint="/anthropic/v1/messages",
                 method="POST",
-                status_code=403,
+                status_code=denial.status_code,
                 duration=time.perf_counter() - started_at,
                 ai_model=model,
                 requested_model=payload.get("model"),
@@ -2475,12 +2471,7 @@ class OpenAIGatewayService:
                 error_detail=detail,
                 request_payload=payload,
             )
-            raise ModelGatewayAPIError(
-                provider="anthropic",
-                status_code=403,
-                message=detail,
-                code=self._budget_denial_code(budget_result),
-            )
+            raise denial
 
         try:
             self._emit_gateway_request_started(
@@ -2803,10 +2794,11 @@ class OpenAIGatewayService:
         )
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
+            denial = self._preflight_denial_error(budget_result, "anthropic", detail)
             self._record_gateway_request(
                 endpoint="/anthropic/v1/messages",
                 method="POST",
-                status_code=403,
+                status_code=denial.status_code,
                 duration=time.perf_counter() - started_at,
                 ai_model=model,
                 requested_model=payload.get("model"),
@@ -2817,12 +2809,7 @@ class OpenAIGatewayService:
                 error_detail=detail,
                 request_payload=payload,
             )
-            raise ModelGatewayAPIError(
-                provider="anthropic",
-                status_code=403,
-                message=detail,
-                code=self._budget_denial_code(budget_result),
-            )
+            raise denial
 
         passthrough_connection: Optional[tuple[httpx.Client, httpx.Response]] = None
         try:
@@ -3262,10 +3249,11 @@ class OpenAIGatewayService:
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
+            denial = self._preflight_denial_error(budget_result, "openai", detail)
             self._record_gateway_request(
                 endpoint="/openai/v1/chat/completions",
                 method="POST",
-                status_code=403,
+                status_code=denial.status_code,
                 duration=time.perf_counter() - started_at,
                 ai_model=model,
                 requested_model=payload.get("model"),
@@ -3276,12 +3264,7 @@ class OpenAIGatewayService:
                 error_detail=detail,
                 request_payload=payload,
             )
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=403,
-                message=detail,
-                code=self._budget_denial_code(budget_result),
-            )
+            raise denial
 
         try:
             self._emit_gateway_request_started(
@@ -3578,10 +3561,11 @@ class OpenAIGatewayService:
         budget_result = self._check_budget(model, payload, gateway_provider="openai")
         if budget_result and budget_result.hard_limit_exceeded:
             detail = self._budget_denial_detail(budget_result)
+            denial = self._preflight_denial_error(budget_result, "openai", detail)
             self._record_gateway_request(
                 endpoint="/openai/v1/responses",
                 method="POST",
-                status_code=403,
+                status_code=denial.status_code,
                 duration=time.perf_counter() - started_at,
                 ai_model=model,
                 requested_model=payload.get("model"),
@@ -3592,12 +3576,7 @@ class OpenAIGatewayService:
                 error_detail=detail,
                 request_payload=payload,
             )
-            raise ModelGatewayAPIError(
-                provider="openai",
-                status_code=403,
-                message=detail,
-                code=self._budget_denial_code(budget_result),
-            )
+            raise denial
 
         try:
             self._emit_gateway_request_started(
@@ -9109,6 +9088,10 @@ class OpenAIGatewayService:
                     exc_info=True,
                 )
 
+        if status_code == 429 and error_type == "throttling_error":
+            # litellm's own label, not a provider type: render the provider's
+            # rate limit type instead (#1447 status contract).
+            error_type = None
         return ModelGatewayAPIError(
             provider=provider,
             status_code=status_code,
@@ -11008,11 +10991,11 @@ class OpenAIGatewayService:
             # another turn toward max_turns (turns == api_requests).
             if self._owns_db_session:
                 self.release_db_for_wait()
-            raise ModelGatewayAPIError(
-                provider=gateway_provider,
-                status_code=403,
-                message=exc.message,
-                code="execution_budget_exceeded",
+            raise budget_denial_error(
+                gateway_provider,
+                EXECUTION_BUDGET_EXCEEDED_CODE,
+                exc.message,
+                None,
             ) from exc
 
     def _check_budget(
@@ -11071,27 +11054,25 @@ class OpenAIGatewayService:
         *,
         gateway_provider: GatewayProvider,
     ) -> ModelGatewayAPIError:
-        """Render budget denials in the client format for the active gateway."""
-        message = exc.message
-        is_budget_denial = (
-            exc.code == "budget_limit_exceeded"
-            or "model gateway budget exceeded" in message.lower()
-            or "budget hard limit exceeded" in message.lower()
-        )
-        if not is_budget_denial:
+        """Render budget denials in the client format for the active gateway.
+
+        Extension enforcers may still raise the legacy ``403``; every budget
+        denial leaves here as the ``429`` contract (#1447), keeping its
+        machine code and window reset. Other errors pass through unchanged.
+        """
+        message = (exc.message or "").lower()
+        if not (
+            is_budget_denial(exc)
+            or "model gateway budget exceeded" in message
+            or "budget hard limit exceeded" in message
+        ):
             return exc
-        normalized = ModelGatewayAPIError(
-            provider=gateway_provider,
-            status_code=exc.status_code,
-            message=message,
-            code="budget_limit_exceeded" if gateway_provider == "openai" else exc.code,
+        return budget_denial_error(
+            gateway_provider,
+            exc.code if exc.code == EXECUTION_BUDGET_EXCEEDED_CODE else None,
+            exc.message,
+            getattr(exc, "budget_reset_seconds", None) or exc.retry_after_seconds,
         )
-        # Carried for the trusted upstream 429 (``retry-after``); never
-        # rendered on the 403 itself.
-        normalized.budget_reset_seconds = getattr(  # type: ignore[attr-defined]
-            exc, "budget_reset_seconds", None
-        )
-        return normalized
 
     @staticmethod
     def _budget_meta_data(
@@ -11147,6 +11128,32 @@ class OpenAIGatewayService:
             )
         return "Model gateway budget exceeded"
 
+    @classmethod
+    def _preflight_denial_error(
+        cls,
+        budget_result: BudgetCheckResult,
+        provider: GatewayProvider,
+        detail: str,
+    ) -> ModelGatewayAPIError:
+        """The error for a preflight hard-limit result (#1447).
+
+        Allowlist denials are policy and stay ``403``; every spend reason is
+        a ``429`` budget denial with the window reset in ``retry-after``.
+        """
+        if budget_result.enforcement_reason == "subject_model_not_allowed":
+            return ModelGatewayAPIError(
+                provider=provider,
+                status_code=403,
+                message=detail,
+                code=cls._budget_denial_code(budget_result),
+            )
+        return budget_denial_error(
+            provider,
+            BUDGET_LIMIT_EXCEEDED_CODE,
+            detail,
+            seconds_until(budget_result.reset_at) if budget_result.reset_at else None,
+        )
+
     @staticmethod
     def _budget_denial_code(budget_result: BudgetCheckResult) -> Optional[str]:
         """OpenAI-shaped ``error.code`` for a preflight denial.
@@ -11162,14 +11169,16 @@ class OpenAIGatewayService:
     def _audit_outcome(status_code: int, error_detail: Optional[str]) -> str:
         # Allowlist denials share the budget_denied outcome: that is the only
         # denial vocabulary the audit views and activity feeds understand.
+        # Budget denials are 429 since #1447; 403 rows predate it.
         if (
-            status_code == 403
+            status_code in (403, 429)
             and error_detail
             and (
                 "budget exceeded" in error_detail.lower()
                 or "budget enforcement requires pricing information"
                 in error_detail.lower()
-                or is_model_not_allowed_detail(error_detail)
+                or "limit for hosted model" in error_detail.lower()
+                or (status_code == 403 and is_model_not_allowed_detail(error_detail))
             )
         ):
             return "budget_denied"
@@ -11201,7 +11210,7 @@ class OpenAIGatewayService:
         if status_code == 403 and is_model_not_allowed_detail(error_detail):
             return MODEL_NOT_ALLOWED_ERROR_CODE
         if (
-            status_code == 403
+            status_code in (403, 429)
             and error_detail
             and (
                 "budget exceeded" in error_detail.lower()

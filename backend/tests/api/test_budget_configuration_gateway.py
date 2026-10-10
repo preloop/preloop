@@ -123,6 +123,9 @@ def test_api_created_budget_blocks_priced_gateway_dispatch(
                 "max_tokens": 10,
             },
         )
-    assert response.status_code == 403, response.text
-    assert "budget_limit_exceeded" in response.text
+    assert response.status_code == 429, response.text
+    assert response.json()["error"]["code"] == "insufficient_quota"
+    assert response.json()["error"]["preloop_code"] == "budget_limit_exceeded"
+    assert response.headers["x-should-retry"] == "false"
+    assert int(response.headers["retry-after"]) > 0
     provider.assert_not_called()

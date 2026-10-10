@@ -108,7 +108,7 @@ def _blocked(db: Session, user: models.User, key: models.ApiKey) -> bool:
     try:
         ModelGatewayBudgetEnforcer().enforce_or_raise(db, auth, _model(), PAYLOAD)
     except ModelGatewayAPIError as exc:
-        assert exc.status_code == 403
+        assert exc.status_code == 429
         return True
     return False
 
