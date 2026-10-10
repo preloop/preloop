@@ -369,6 +369,9 @@ type leasedJobOutcome struct {
 	errMsg                  string
 	lines                   []string
 	evidenceUpload          string
+	// hostPublication is the runner-authored managed publication receipt
+	// ({status, branch, head_sha, reason}); never agent output.
+	hostPublication map[string]any
 }
 
 func nextRunnerBackoff(current time.Duration) time.Duration {
@@ -451,6 +454,9 @@ func writeJobOutcome(conn *websocket.Conn, outcome leasedJobOutcome) error {
 	}
 	if outcome.evidenceUpload != "" {
 		message["evidence_upload"] = outcome.evidenceUpload
+	}
+	if outcome.hostExec && outcome.hostPublication != nil {
+		message["host_publication"] = outcome.hostPublication
 	}
 	if err := writeRunnerJSON(conn, message); err != nil {
 		return err

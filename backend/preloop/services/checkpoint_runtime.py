@@ -154,6 +154,11 @@ if [ -n "${PRELOOP_CHECKPOINT_GET_TOKEN:-}" ]; then
 fi
 _preloop_checkpoint() { python3 /tmp/preloop-checkpoint-client.py capture; }
 _preloop_upload_evidence() {
+    # The Kubernetes wrapper exports this before the child starts and PUTs
+    # the pack itself. Docker never sets it, so this trap stays the upload.
+    if [ -n "${PRELOOP_EVIDENCE_WRAPPER_OWNS_UPLOAD:-}" ]; then
+        return 0
+    fi
     if [ -n "${PRELOOP_EVIDENCE_PUT_TOKEN:-}" ]; then
         python3 /tmp/preloop-checkpoint-client.py evidence || true
     fi
@@ -176,7 +181,12 @@ def evidence_shell(context: dict[str, Any]) -> str:
     return (
         _artifact_client_install()
         + """
-_preloop_upload_evidence() { python3 /tmp/preloop-checkpoint-client.py evidence || true; }
+_preloop_upload_evidence() {
+    if [ -n "${PRELOOP_EVIDENCE_WRAPPER_OWNS_UPLOAD:-}" ]; then
+        return 0
+    fi
+    python3 /tmp/preloop-checkpoint-client.py evidence || true
+}
 trap '_preloop_upload_evidence' EXIT
 """
     )
