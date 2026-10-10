@@ -252,7 +252,7 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
     )
     # One head, without pinning which: later migrations build on this one.
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20261010_otlp_telemetry_ingest"]
+    assert len(script.get_heads()) == 1
     assert script.get_revision("20261009_discovery_observation") is not None
     assert (
         script.get_revision("20261010_gateway_idp").down_revision

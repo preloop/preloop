@@ -20,6 +20,7 @@ from preloop.models.models.gateway_identity_provider import GatewayIdentityProvi
 from preloop.models.models.gateway_subject import GatewaySubject
 from preloop.services import gateway_idp_auth as idp
 from preloop.services.gateway_idp_auth import JwksCache
+from preloop.api.auth.key_scopes import TELEMETRY_INGEST_SCOPE
 from preloop.services.gateway_upstream_identity import TRUSTED_UPSTREAM_SCOPE
 from tests.endpoints.test_anthropic_gateway_trusted_upstream import (
     _LITELLM_MESSAGE,
@@ -520,6 +521,41 @@ def test_binding_key_must_belong_to_account(app, client, db_session, test_user):
     other = _second_account_admin(db_session)
     foreign_key, _ = _binding_key(db_session, other)
     assert _create_provider(client, foreign_key).status_code == 422
+
+
+def test_telemetry_ingest_key_cannot_bind_a_provider(client, db_session, test_user):
+    """A telemetry:ingest key is single-purpose and cannot bind an IdP."""
+    api_key, _ = crud_api_key.create_runtime_key(
+        db_session,
+        name="otlp only",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        scopes=[TELEMETRY_INGEST_SCOPE],
+        context_data={},
+    )
+    response = _create_provider(client, api_key)
+    assert response.status_code == 422
+    assert "model gateway key" in response.json()["detail"]
+    # Auth path refuses the same key even if a provider row already pointed at it.
+    provider = idp.ProviderConfig(
+        id=uuid.uuid4(),
+        account_id=test_user.account_id,
+        api_key_id=api_key.id,
+        issuer=ISSUER,
+        audiences=(AUDIENCE,),
+        allowed_email_domains=(),
+        email_claim="email",
+        require_email_verified=False,
+        groups_claim=None,
+        allowed_groups=(),
+        required_claims={},
+        clock_skew_seconds=60,
+        max_token_lifetime_seconds=86400,
+        allowed_algorithms=("RS256",),
+        allowed_jwks_hosts=(),
+        allow_private=False,
+    )
+    assert idp.binding_key_context(db_session, provider) is None
 
 
 def test_binding_key_serves_one_provider(client, db_session, test_user):

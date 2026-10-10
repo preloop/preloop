@@ -180,7 +180,7 @@ services:
   # OTLP relay on the gateway's loopback (localhost:4318), forwarding to
   # Preloop's /api/v1/telemetry/otlp receiver (#1412). A forward_to URL must
   # be https or loopback, so the relay shares the gateway's network
-  # namespace. It records what the gateway relayed for verify.sh step 7.
+  # namespace. It records what the gateway relayed for verify.sh step 8.
   telemetry-relay:
     image: python:3.12-alpine
     depends_on:
