@@ -3204,10 +3204,6 @@ class FlowExecutionOrchestrator:
                 from preloop.services.host_exec import PULL_REQUEST_UNAVAILABLE
 
                 raise ValueError(PULL_REQUEST_UNAVAILABLE)
-            if workspace_files or (self.trigger_event_data or {}).get("_resume"):
-                raise ValueError(
-                    "Host profiles do not support remote workspace seeds or native resume"
-                )
             host_agent_type = (
                 effective_agent_type.strip().lower()
                 if isinstance(effective_agent_type, str)
@@ -3216,7 +3212,31 @@ class FlowExecutionOrchestrator:
             host_model = host_exec_model_identifier(
                 host_agent_type, self.flow.agent_config
             )
-            return {
+            resume = (self.trigger_event_data or {}).get("_resume")
+            host_resume = None
+            if (
+                resume
+                and not workspace_files
+                and host_publication_requested(clone_config)
+            ):
+                # Feedback continuation (#1069): resume the originating
+                # Copilot session on its runner, or fail resume_unavailable.
+                from preloop.services.host_exec_continuation import (
+                    resolve_host_continuation,
+                )
+
+                host_resume = resolve_host_continuation(
+                    self.db,
+                    flow=self.flow,
+                    resume=resume,
+                    profile=profile or "",
+                    model_identifier=host_model,
+                )
+            elif workspace_files or resume:
+                raise ValueError(
+                    "Host profiles do not support remote workspace seeds or native resume"
+                )
+            host_context = {
                 "flow_id": str(self.flow_id),
                 "flow_name": self.flow.name,
                 "execution_id": str(self.execution_log.id),
@@ -3231,6 +3251,12 @@ class FlowExecutionOrchestrator:
                 "model_identifier": host_model
                 or (self.ai_model.model_identifier if self.ai_model else None),
             }
+            if host_resume is not None:
+                host_context["host_exec_resume"] = {
+                    "session_id": host_resume["session_id"],
+                    "execution_id": host_resume["execution_id"],
+                }
+            return host_context
 
         # A Jira-triggered flow has no repository of its own: the binding
         # names the code-host repository. Raises RepositoryBindingError (a

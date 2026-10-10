@@ -380,6 +380,27 @@ class RemoteRunnerExecutor(AgentExecutor):
 
         git_clone_config = context_or_flow("git_clone_config")
         resume_from = _resume_from_execution_id(context, self.execution)
+        host_resume = context.get("host_exec_resume") if profile else None
+        if (
+            profile
+            and resume_from
+            and not isinstance(host_resume, dict)
+            and flow is not None
+            and host_publication_requested(git_clone_config)
+        ):
+            # Delayed lease: no orchestrator context, so validate the
+            # continuation again from the rows (#1069).
+            host_resume = _host_continuation_from_rows(
+                self.db, flow, self.execution, profile, kind
+            )
+        if isinstance(host_resume, dict) and (
+            host_resume.get("execution_id") == resume_from or resume_from is None
+        ):
+            # The orchestrator validated this continuation and owns the
+            # resume argument; it is not a generic native resume.
+            resume_from = None
+        else:
+            host_resume = None
         if profile:
             # Isolated mode is decided after the snapshot lookup below so a
             # missing snapshot keeps its existing error. Passing the mode
@@ -461,6 +482,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                 # Data only: assignment requires a host_publication runner
                 # and delivery replaces it with the transient runner plan.
                 payload[HOST_PUBLICATION_LEASE_KEY] = {"mode": "legacy"}
+                if host_resume is not None:
+                    payload["host_exec_resume"] = {
+                        "session_id": str(host_resume["session_id"]),
+                        "execution_id": str(host_resume["execution_id"]),
+                    }
         else:
             # Docker launch already carries the prompt as chunked launch env.
             # Leaving it on the lease makes the runner CLI copy it into
@@ -547,6 +573,33 @@ async def _push_job(runner_id: UUID, payload: Dict[str, Any]) -> None:
         await push_job_to_runner(runner_id, payload)
     except Exception as exc:
         logger.debug("live job push skipped: %s", exc)
+
+
+def _host_continuation_from_rows(
+    db: Any, flow: Any, execution: Any, profile: str, kind: str
+) -> Dict[str, str]:
+    """Re-validate a Copilot continuation for a lease built without context.
+
+    Raises:
+        HostContinuationError: ``resume_unavailable`` when it cannot run.
+    """
+    from preloop.services.host_exec import host_exec_model_identifier
+    from preloop.services.host_exec_continuation import resolve_host_continuation
+
+    trigger = getattr(execution, "trigger_event_details", None) or {}
+    resolved = resolve_host_continuation(
+        db,
+        flow=flow,
+        resume=trigger.get("_resume") if isinstance(trigger, dict) else None,
+        profile=profile,
+        model_identifier=host_exec_model_identifier(
+            kind, getattr(flow, "agent_config", None)
+        ),
+    )
+    return {
+        "session_id": resolved["session_id"],
+        "execution_id": resolved["execution_id"],
+    }
 
 
 def _resume_from_execution_id(

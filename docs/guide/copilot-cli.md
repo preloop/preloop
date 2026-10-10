@@ -168,8 +168,21 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   advertises `host_publication` (an older CLI or a profile without
   `allow_publish`), and those runners never take the lease. Isolated
   publication, more than one repository and Cursor profiles stay refused.
-  Feedback continuation (resuming the Copilot session from a review
-  comment) is not part of this release step.
+- **Feedback continuation.** Review or CI feedback on a pull request that
+  a Copilot host run published continues the same run: the existing
+  feedback thread queues a continuation, and the control plane pins it to
+  the runner that ran the original, which must advertise
+  `host_continuation` (same opt-in as publication). The runner resumes the
+  Copilot session recorded from the original run's validated result with
+  its own `--resume` flag (a profile argv cannot set it), on a fresh
+  checkout of the pull request branch, and pushes any new commit to that
+  branch fast-forward. The pull request is looked up and bound again; no
+  second one is opened. The continuation fails with `resume_unavailable`,
+  and Copilot does not start a fresh implementation, when the session is
+  no longer on that runner, the runner is gone or not capable, the flow's
+  profile or Copilot model changed, or the original pull request is not
+  confirmed. A result naming another session fails with
+  `resume_identity_mismatch` and pushes nothing.
 - **MCP tools.** When the flow allows MCP tools or servers, the runner adds
   a `preloop-flow` MCP server to this run only
   (`--additional-mcp-config`, written to a `0600` file in the run
@@ -239,6 +252,8 @@ Named errors:
 | `host_publication_not_allowed` | The flow opens a pull request but the profile does not set `allow_publish` (and `allow_checkout`), or is not a Copilot profile. |
 | `publication_failed: push_conflict` | The managed branch already exists on the remote with other commits. Nothing was force-pushed; the commit stays in the run directory. |
 | `publication_failed: credential_rejected` | The repository refused the tracker credential for the push. Reconnect the code-host tracker with write access and run again. |
+| `resume_unavailable` | A feedback continuation cannot resume: the Copilot session is not on the originating runner, that runner is gone or lacks `host_continuation`, the profile or model changed, or the original pull request is not confirmed. Nothing restarts. |
+| `resume_identity_mismatch` | Copilot reported a different session than the one resumed; nothing is pushed. |
 | `publication_missing` | A publishing run ended without a pushed branch, for example because Copilot made no changes. |
 | `git_not_installed` | The flow clones repositories and `git` is not on the runner's `PATH`. |
 | `copilot_hooks_unavailable` | Preloop could not install or read its own hooks file under `~/.copilot/hooks` (or `$COPILOT_HOME/hooks`). The run fails before Copilot starts. |
@@ -251,8 +266,8 @@ the missing capability; they are not silently dropped. See
 [host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
 for the shared rules, and
 [#1069](https://github.com/preloop/preloop/issues/1069) for the open work
-on Bitbucket publication and feedback continuation, which this page does
-not describe as shipped.
+on publication retry from retained local work and managed OAuth
+credential delivery, which this page does not describe as shipped.
 
 Copilot plan terms govern how a seat may be used. A developer running
 flows on their own machine with their own seat is ordinary use. Check

@@ -197,6 +197,10 @@ def apply_host_publication_completion(
             "publication_missing: the runner did not report a managed push",
             result,
         )
+    if receipt["status"] == "no_changes" and pending_job.get("host_exec_resume"):
+        # Feedback can be answered without a code change; the pull request
+        # already exists, so a continuation with no commit is not a failure.
+        return status, error, result
     if receipt["status"] == "no_changes":
         return (
             "FAILED",
