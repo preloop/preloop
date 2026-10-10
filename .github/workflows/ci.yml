@@ -475,9 +475,45 @@ jobs:
       PGPASSWORD: test_password
 
     steps:
+      # Self-hosted shards once ran in a root job container (fa51a329d)
+      # with the workspace bind-mounted, which left root-owned
+      # __pycache__, egg-info, and .pytest_cache in runnerN/_work. The
+      # host runner user cannot unlink them, so checkout fails with
+      # EACCES. Give the tree back to the runner user before checkout:
+      # passwordless sudo if the VM has it, otherwise a throwaway
+      # container (the runner user is in the docker group, see
+      # .github/self-hosted-runners.md). Hosted runners skip this.
+      - name: Reclaim self-hosted workspace ownership
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -u
+          ws="$GITHUB_WORKSPACE"
+          [ -d "$ws" ] || exit 0
+          uid=$(id -u); gid=$(id -g)
+          foreign=$(find "$ws" ! -user "$uid" -print -quit 2>/dev/null || true)
+          if [ -z "$foreign" ]; then
+            echo "workspace already owned by $(id -un)"
+            exit 0
+          fi
+          echo "foreign-owned path found: $foreign"
+          if sudo -n true 2>/dev/null; then
+            sudo -n chown -R "$uid:$gid" "$ws"
+          else
+            # pgvector is already on every VM (ci_postgres.py), so no
+            # Docker Hub pull and no anonymous rate limit.
+            docker run --rm --user 0 --entrypoint chown -v "$ws:/w" \
+              pgvector/pgvector:pg16 -R "$uid:$gid" /w
+          fi
+          if left=$(find "$ws" ! -user "$uid" -print -quit 2>/dev/null) && [ -n "$left" ]; then
+            echo "::error::still not owned by runner user: $left (see host runbook)"
+            exit 1
+          fi
+
       # clean: true is the default, but a self-hosted workspace is reused
       # between runs, so say it out loud.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           clean: true
@@ -520,8 +556,10 @@ jobs:
             --cov-report= \
             --junitxml=test-results.xml
 
+      # Only after a real checkout: otherwise python and the script are
+      # absent and a checkout failure is reported twice (exit 127).
       - name: Drop CI database
-        if: always()
+        if: always() && steps.checkout.outcome == 'success'
         run: python scripts/ci_postgres.py drop
 
       - name: Upload coverage data
