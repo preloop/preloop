@@ -157,6 +157,36 @@ def _rebuild_metadata_archive(metadata: Mapping[str, Any]) -> bytes:
     return body
 
 
+def _evidence_members_digest(archive: bytes) -> str | None:
+    """Content identity from ``manifest.json``, ignoring pack timestamps.
+
+    ``pack_evidence`` stamps the gzip header and ``generated_at`` from the
+    clock, so two packs of the same files are not byte-identical. Their
+    ``members_digest`` is. None when the archive has no readable digest;
+    a missing or unreadable manifest does not fail the upload.
+    """
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            try:
+                member = tar.getmember("manifest.json")
+            except KeyError:
+                return None
+            if not member.isfile() or member.size > 65536:
+                return None
+            body = tar.extractfile(member)
+            if body is None:
+                return None
+            document = json.loads(body.read())
+    except (tarfile.TarError, OSError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    digest = document.get("members_digest")
+    if not isinstance(digest, str) or not digest:
+        return None
+    return digest
+
+
 def manifest_digest(manifest: dict[str, Any]) -> str:
     """Stable identity for an immutable manifest."""
     return hashlib.sha256(
@@ -830,6 +860,27 @@ def put_artifact(
         ciphertext = None
     else:
         digest = hashlib.sha256(archive).hexdigest()
+        if kind == "evidence":
+            # A byte-identical retry matches sha256. A second pack of the same
+            # files does not: the gzip header and generated_at move.
+            # members_digest is that content identity. Checked before
+            # encryption so a duplicate never meets the quota or the signer.
+            members_digest = _evidence_members_digest(archive)
+            if members_digest:
+                metadata = {**metadata, "members_digest": members_digest}
+            existing = crud.reuse_identical_evidence(
+                db,
+                account_id=account_id,
+                flow_id=flow_id,
+                thread_id=thread_id,
+                execution_id=execution_id,
+                sha256=digest,
+                members_digest=members_digest,
+                expires_at=expires_at,
+                require_execution_open=require_execution_open,
+            )
+            if existing is not None:
+                return artifact_reference(existing, deduplicated=True)
         size_bytes = len(archive)
         expanded_bytes = expanded
         ciphertext = _get_fernet().encrypt(archive)

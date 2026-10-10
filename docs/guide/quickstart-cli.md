@@ -102,7 +102,7 @@ preloop agents onboard <name>  # Explicitly onboard a known agent
 preloop agents install-plugin <name>  # Install Agent Control runtime plugin (OpenClaw/Hermes)
 preloop agents validate <name> # Verify MCP, gateway, and Agent Control readiness
 
-preloop policy list            # List policies on your account
+preloop policy list            # List policy versions, newest first
 preloop policy validate <file> # Validate YAML before applying
 preloop policy apply <file>    # Apply a policy
 preloop approvals pending      # List approvals waiting on you

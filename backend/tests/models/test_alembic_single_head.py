@@ -322,4 +322,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert grant.down_revision == "20261009_gateway_subject"
     observation = script.get_revision("20261009_discovery_observation")
     assert observation.down_revision == "20261009_grant_consent_index"
-    assert script.get_heads() == ["20261009_discovery_observation"]
+    sharing = script.get_revision("20261009_resource_sharing_intent")
+    assert sharing.down_revision == "20261009_discovery_observation"
+    assert script.get_heads() == ["20261009_resource_sharing_intent"]

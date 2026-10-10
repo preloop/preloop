@@ -1047,6 +1047,10 @@ async def _sleep_before_job_create_retry(seconds: float) -> None:
 #
 # Direct upload (PRELOOP_EVIDENCE_PUT_TOKEN): the wrapper never prints
 # evidence or result.json bytes. Markers report uploaded/absent/error only.
+# The child script's EXIT trap would PUT the same pack. The wrapper exports
+# PRELOOP_EVIDENCE_WRAPPER_OWNS_UPLOAD before the child starts so that trap
+# skips, and this epilogue is the only evidence emit. Docker has no wrapper,
+# so its trap still uploads once.
 # The Kubernetes log channel remains the legacy path when the token is unset
 # and PRELOOP_EVIDENCE_LOG_PLAINTEXT is not 0. When plaintext is 0 and the
 # token is absent, the wrapper prints unavailable/skipped markers and no bytes.
@@ -1169,6 +1173,9 @@ elif [ -n "${{{K8S_INNER_SCRIPT_ENV}:-}}" ]; then
 else
     echo "ERROR: {K8S_INNER_SCRIPT_ENV} is not set" >&2
     exit 1
+fi
+if [ -n "${{PRELOOP_EVIDENCE_PUT_TOKEN:-}}" ]; then
+    export PRELOOP_EVIDENCE_WRAPPER_OWNS_UPLOAD=1
 fi
 bash "$_pl_inner"
 _preloop_rc=$?

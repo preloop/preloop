@@ -57,6 +57,7 @@
   "GET /api/v1/agents/{agent_id}/enrollments": "deny",
   "GET /api/v1/agents/{agent_id}/governance": "deny",
   "GET /api/v1/agents/{agent_id}/model-bindings": "deny",
+  "GET /api/v1/agents/{agent_id}/shared-sessions": "deny",
   "GET /api/v1/ai-models": "deny",
   "GET /api/v1/ai-models/overview": "deny",
   "GET /api/v1/ai-models/providers/{provider}/available-models": "deny",

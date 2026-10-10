@@ -719,9 +719,22 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
         )
 
     # Add external MCP tools
-    mcp_servers = crud_mcp_server.get_active_by_account(db, account_id=str(account.id))
+    from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, extra_visible_ids
+
+    has_shared_servers = bool(extra_visible_ids(db, account.id, VISIBLE_MCP_SERVER))
+    list_servers = (
+        crud_mcp_server.get_active_visible_by_account
+        if has_shared_servers
+        else crud_mcp_server.get_active_by_account
+    )
+    mcp_servers = list_servers(db, account_id=str(account.id))
+    list_tools = (
+        crud_mcp_tool.get_by_visible_servers_for_account
+        if has_shared_servers
+        else crud_mcp_tool.get_by_servers_for_account
+    )
     tools_by_server: Dict[str, list] = {}
-    for tool in crud_mcp_tool.get_by_servers_for_account(
+    for tool in list_tools(
         db, account_id=str(account.id), server_ids=[server.id for server in mcp_servers]
     ):
         tools_by_server.setdefault(str(tool.mcp_server_id), []).append(tool)
@@ -857,7 +870,7 @@ async def create_tool_configuration(
     """
     # An agent-scoped configuration must reference an agent of this account.
     if config_data.managed_agent_id:
-        agent = crud_managed_agent.get_for_account(
+        agent = crud_managed_agent.get_visible_target(
             db,
             account_id=str(account.id),
             agent_id=str(config_data.managed_agent_id),

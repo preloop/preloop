@@ -109,9 +109,16 @@ def _managed_agent_for_api_key(
     )
     managed_agent_id = context_data.get("managed_agent_id")
     if managed_agent_id:
-        return crud_managed_agent.get_for_account(
+        own = crud_managed_agent.get_for_account(
             session, account_id=api_key.account_id, agent_id=managed_agent_id
         )
+        if own is not None:
+            return own
+        if context_data.get("shared_agent_owner_account_id"):
+            from preloop.models.crud.resource_share import crud_resource_share
+
+            return crud_resource_share.bound_agent(session, key=api_key)
+        return None
 
     runtime_principal = (
         context_data.get("runtime_principal")
@@ -168,6 +175,7 @@ def _authenticate_with_api_key(
     *,
     allow_stale_runtime_session: bool = False,
     allow_ended_runtime_session: bool = False,
+    allow_restricted_runtime: bool = False,
 ) -> User:
     """Validate an API key and return its active owner.
 
@@ -183,6 +191,21 @@ def _authenticate_with_api_key(
         api_key is not None
         and getattr(api_key, "requires_machine_authorization", False) is True
     ):
+        if allow_restricted_runtime and api_key.credential_type == "restricted_runtime":
+            from preloop.models.crud import crud_restricted_runtime
+
+            try:
+                user = crud_restricted_runtime.authorize(
+                    session, account_id=api_key.account_id, api_key_id=api_key.id
+                )
+            except crud_restricted_runtime.RestrictedRuntimeDeniedError:
+                raise HTTPException(
+                    403, "restricted_runtime_credential_denied"
+                ) from None
+            # Transport identity only. The MCP invocation checks the immutable
+            # resource and current authority again before any upstream dispatch.
+            user._auth_api_key = api_key  # type: ignore[attr-defined]
+            return user
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
@@ -930,7 +953,9 @@ def get_current_active_user_optional(
         return None
 
 
-async def get_user_from_token_if_valid(token: str, db_session: Any) -> Optional[User]:
+async def get_user_from_token_if_valid(
+    token: str, db_session: Any, *, allow_restricted_runtime: bool = False
+) -> Optional[User]:
     """
     Manually attempts to retrieve a user from a token string.
     Returns None if the token is invalid, expired, or the user doesn't exist.
@@ -939,7 +964,9 @@ async def get_user_from_token_if_valid(token: str, db_session: Any) -> Optional[
     from preloop.api.loop_safety import run_db_off_loop
 
     def authenticate() -> Optional[User]:
-        user = get_user_from_token_if_valid_sync(token, db_session)
+        user = get_user_from_token_if_valid_sync(
+            token, db_session, allow_restricted_runtime=allow_restricted_runtime
+        )
         if user is not None:
             # API-key last-used commits expire the user. Hydrate its scalar
             # fields here so async callers do not issue a lazy SELECT.
@@ -954,6 +981,7 @@ def get_user_from_token_if_valid_sync(
     db_session: Any,
     *,
     allow_ended_runtime_session: bool = False,
+    allow_restricted_runtime: bool = False,
 ) -> Optional[User]:
     """Sync variant for short-lived sessions in WebSocket handlers.
 
@@ -969,12 +997,17 @@ def get_user_from_token_if_valid_sync(
 
     try:
         if "." not in token:
-            api_key = crud_api_key.get_by_key(db_session, key=token)
+            api_key = crud_api_key.get_by_key(
+                db_session,
+                key=token,
+                include_restricted_runtime=allow_restricted_runtime,
+            )
             if api_key:
                 return _authenticate_with_api_key(
                     db_session,
                     api_key,
                     allow_ended_runtime_session=allow_ended_runtime_session,
+                    allow_restricted_runtime=allow_restricted_runtime,
                 )
 
         token_data = decode_token(token)

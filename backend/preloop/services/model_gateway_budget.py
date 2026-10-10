@@ -146,6 +146,23 @@ class ModelGatewayBudgetService:
         governed_model_spellings = self._governed_model_spellings(ai_model, payload)
         denied_allowed_models: Optional[list[str]] = None
 
+        from preloop.models.crud.resource_share import crud_resource_share
+
+        owner_config = crud_resource_share.shared_agent_governance(
+            self.db,
+            account_id=self.auth_context.account_id,
+            agent_id=subject_context.get("managed_agent_id"),
+        )
+        owner_allowed = normalize_allowed_models(owner_config.get("allowed_models"))
+        if owner_allowed and not allowlist_permits_model(
+            owner_allowed,
+            ai_model,
+            requested_spellings=governed_model_spellings,
+        ):
+            hard_limit_exceeded = True
+            enforcement_reason = "subject_model_not_allowed"
+            denied_allowed_models = owner_allowed
+
         # 1. Check subject allowed models. Every scope in the chain (API key,
         # then managed agent) must permit the resolved model; an entry may be
         # a gateway alias, an AIModel id, or an AIModel display name (the
@@ -153,7 +170,7 @@ class ModelGatewayBudgetService:
         # allowlist that names neither the resolved model nor any of its
         # spellings denies the request, including the degenerate case where
         # the request names no model at all.
-        if account is not None:
+        if account is not None and not hard_limit_exceeded:
             for subject_type, subject_id in subject_scope_chain(subject_context):
                 config = get_subject_governance(
                     account.meta_data or {},
@@ -182,7 +199,8 @@ class ModelGatewayBudgetService:
             self.db, account_id=str(self.auth_context.account_id)
         )
         if (
-            subscription
+            not hard_limit_exceeded
+            and subscription
             and is_live_trial(subscription)
             and self._is_built_in_hosted_model(ai_model)
         ):
@@ -210,7 +228,8 @@ class ModelGatewayBudgetService:
                 hard_limit_exceeded = True
                 enforcement_reason = "trial_hosted_model_budget_exceeded"
         elif (
-            subscription is None
+            not hard_limit_exceeded
+            and subscription is None
             and settings.billing_enforce_entitlements
             and self._is_built_in_hosted_model(ai_model)
         ):
