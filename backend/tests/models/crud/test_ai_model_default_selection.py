@@ -17,6 +17,7 @@ path resolves through:
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -99,7 +100,14 @@ def test_first_byok_model_wins_when_nothing_is_flagged(db_session, create_accoun
     account = create_account()
     _make_oauth_model(db_session, account, name="Claude Code")
     first_byok = _make_api_key_model(db_session, account, name="First BYOK")
-    _make_api_key_model(db_session, account, name="Second BYOK")
+    second_byok = _make_api_key_model(db_session, account, name="Second BYOK")
+    # created_at is second-resolution; pin an older stamp so UUID id order
+    # cannot steal the "first" win when both rows share a timestamp.
+    older = datetime.now(UTC).replace(tzinfo=None) - timedelta(seconds=5)
+    newer = older + timedelta(seconds=1)
+    first_byok.created_at = older
+    second_byok.created_at = newer
+    db_session.commit()
 
     resolved = crud_ai_model.get_default_active_model(
         db_session, account_id=str(account.id)
