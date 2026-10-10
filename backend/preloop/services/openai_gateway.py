@@ -1902,6 +1902,19 @@ class OpenAIGatewayService:
                 )
                 if allowed:
                     allowlists.append(allowed)
+        from preloop.models.crud.resource_share import crud_resource_share
+        from preloop.services.model_gateway_auth import (
+            resolve_managed_agent_id_for_context,
+        )
+
+        owner_config = crud_resource_share.shared_agent_governance(
+            self.db,
+            account_id=self.auth_context.account_id,
+            agent_id=resolve_managed_agent_id_for_context(self.db, self.auth_context),
+        )
+        owner_allowed = normalize_allowed_models(owner_config.get("allowed_models"))
+        if owner_allowed:
+            allowlists.append(owner_allowed)
         return allowlists
 
     @gateway_database_scope
@@ -4316,10 +4329,19 @@ class OpenAIGatewayService:
             )
             if autoregistered is not None:
                 return autoregistered
+            from preloop.models.crud.resource_share import crud_resource_share
+
+            formerly_shared = crud_resource_share.formerly_shared_model_alias(
+                self.db,
+                account_id=self.auth_context.account_id,
+                alias=str(requested_model),
+            )
             raise ModelGatewayAPIError(
                 provider=provider,
                 status_code=404,
-                message="Requested model not found",
+                message="model no longer shared with this account"
+                if formerly_shared
+                else "Requested model not found",
             )
 
         if bound_model_id is not None:
@@ -10886,9 +10908,25 @@ class OpenAIGatewayService:
         carrying the distinct ``preloop_account_halted`` error code.
         """
         account_id = self.auth_context.account_id
+        from preloop.models.crud.resource_share import crud_resource_share
+        from preloop.services.model_gateway_auth import (
+            resolve_managed_agent_id_for_context,
+        )
+
+        agent_id = resolve_managed_agent_id_for_context(self.db, self.auth_context)
+        owner = (
+            crud_resource_share.shared_agent_spend_owner(
+                self.db, account_id=account_id, agent_id=agent_id
+            )
+            if agent_id
+            else None
+        )
+        halt_account = account_id
         if not kill_switch_service.gateway_halted(self.db, account_id):
-            return
-        reason = kill_switch_service.halt_reason(self.db, account_id, "gateway")
+            if not owner or not kill_switch_service.gateway_halted(self.db, owner):
+                return
+            halt_account = owner
+        reason = kill_switch_service.halt_reason(self.db, halt_account, "gateway")
         error = kill_switch_service.gateway_halt_error(
             provider=gateway_provider, reason=reason
         )

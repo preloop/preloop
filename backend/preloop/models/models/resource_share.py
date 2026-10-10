@@ -22,6 +22,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -29,7 +30,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .access_values import SHARE_RESOURCE_TYPES, SHARE_TARGET_MODES, in_list_check
@@ -58,10 +59,19 @@ class ResourceShare(Base):
     )
     access_rule_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("access_rule.id", ondelete="RESTRICT"),
+        ForeignKey("access_rule.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
         comment="Rule selecting recipients; set exactly when target_mode is rule",
+    )
+    selected_account_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list, server_default="{}"
+    )
+    is_automatic: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    require_approval: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
     created_by: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("user.id", ondelete="SET NULL"), nullable=True

@@ -65,6 +65,7 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         source: Optional[str] = None,
         created_by_user_id: Optional[Union[uuid.UUID, str]] = None,
         expires_at: Optional[datetime] = None,
+        consuming_account_id: Optional[Union[uuid.UUID, str]] = None,
         commit: bool = True,
     ) -> AgentControlCommand:
         """Persist one command envelope as pending before any delivery."""
@@ -76,6 +77,7 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         record = AgentControlCommand(
             created_at=datetime.now(timezone.utc).replace(tzinfo=None),
             account_id=account_id,
+            consuming_account_id=consuming_account_id,
             managed_agent_id=managed_agent_id,
             runtime_session_id=runtime_session_id,
             command_id=command_id,
@@ -92,6 +94,26 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         else:
             db.flush()
         return record
+
+    def get_for_consumer(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        command_id: str,
+        managed_agent_id: Union[uuid.UUID, str],
+    ) -> Optional[AgentControlCommand]:
+        """Read the consumer's in-flight receipt, including after share revocation."""
+        return db.scalar(
+            select(self.model).where(
+                or_(
+                    self.model.account_id == account_id,
+                    self.model.consuming_account_id == account_id,
+                ),
+                self.model.command_id == command_id,
+                self.model.managed_agent_id == managed_agent_id,
+            )
+        )
 
     def get_by_command_id(
         self,

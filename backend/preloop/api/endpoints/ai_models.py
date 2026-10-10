@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.models.crud import crud_account
+from preloop.schemas.resource_share import SharedResourceRead
 from preloop.schemas.ai_model import (
     AIModelCatalogSyncProviderResult,
     AIModelCatalogSyncRequest,
@@ -267,7 +268,7 @@ def create_ai_model(
 
 @router.get(
     "/ai-models",
-    response_model=List[AIModelRead],
+    response_model=List[SharedResourceRead | AIModelRead],
     summary="List AI Models",
     tags=["AI Models"],
 )
@@ -275,12 +276,17 @@ def create_ai_model(
 def list_ai_models(
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
-) -> List[AIModelRead]:
+) -> List[SharedResourceRead | AIModelRead]:
     """List all AI Models associated with the authenticated user's account."""
     from preloop.plugins.account_hooks import VISIBLE_AI_MODEL, filter_viewable
 
     models = crud_ai_model.get_by_account(db=db, account_id=current_user.account_id)
-    return filter_viewable(db, current_user, VISIBLE_AI_MODEL, models)
+    from preloop.models.crud.resource_share import crud_resource_share
+
+    shared = crud_resource_share.public_list(
+        db, account_id=current_user.account_id, resource_type="ai_model"
+    )
+    return filter_viewable(db, current_user, VISIBLE_AI_MODEL, [*models, *shared])
 
 
 @router.get(
@@ -404,7 +410,7 @@ def get_ai_models_overview(
 
 @router.get(
     "/ai-models/{model_id}",
-    response_model=AIModelRead,
+    response_model=SharedResourceRead | AIModelRead,
     summary="Get AI Model by ID",
     tags=["AI Models"],
 )
@@ -413,8 +419,22 @@ def get_ai_model(
     model_id: uuid.UUID,
     db: Session = Depends(get_db_session),
     current_user: User = Depends(get_current_active_user),
-) -> AIModelRead:
+) -> SharedResourceRead | AIModelRead:
     """Retrieve a specific AI Model by its ID."""
+    from preloop.models.crud.resource_share import crud_resource_share
+
+    shared = crud_resource_share.public_read(
+        db,
+        account_id=current_user.account_id,
+        resource_type="ai_model",
+        resource_id=model_id,
+    )
+    if shared is not None:
+        from preloop.plugins.account_hooks import VISIBLE_AI_MODEL, filter_viewable
+
+        if not filter_viewable(db, current_user, VISIBLE_AI_MODEL, [shared]):
+            raise HTTPException(404, "Resource not found")
+        return shared
     return _get_account_ai_model(db=db, model_id=model_id, current_user=current_user)
 
 

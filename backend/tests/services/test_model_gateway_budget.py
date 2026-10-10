@@ -6,6 +6,9 @@ from unittest.mock import Mock
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from preloop.models import models
 
 from preloop.models.crud import (
     crud_account,
@@ -778,3 +781,40 @@ def test_preflight_embedding_token_array_is_priced_from_input_tokens(
     assert tokens == 4
     assert result.pricing_available is True
     assert result.estimated_request_cost_usd == pytest.approx(tokens / 1000.0)
+
+
+@pytest.mark.parametrize("trial", [True, False])
+def test_owner_allowlist_denial_precedes_consumer_and_hosted_caps(
+    db_session: Session,
+    test_user: models.User,
+    monkeypatch: pytest.MonkeyPatch,
+    trial: bool,
+) -> None:
+    from types import SimpleNamespace
+    from preloop.models.crud.resource_share import crud_resource_share
+    from preloop.config import settings
+
+    model = _hosted_model(db_session, test_user)
+    key = _key_scoped_allowlist(db_session, test_user, ["consumer-only-model"])
+    service = _governed_service(db_session, test_user, key)
+    monkeypatch.setattr(
+        crud_resource_share,
+        "shared_agent_governance",
+        lambda *args, **kwargs: {"allowed_models": ["owner-only-model"]},
+    )
+    monkeypatch.setattr(
+        crud_subscription,
+        "get_active_for_account",
+        lambda *args, **kwargs: SimpleNamespace(status="trialing") if trial else None,
+    )
+    monkeypatch.setattr(
+        "preloop.services.model_gateway_budget.is_live_trial", lambda subscription: True
+    )
+    monkeypatch.setattr(settings, "billing_enforce_entitlements", True)
+    cap_probe = Mock(side_effect=AssertionError("owner denial must decide first"))
+    monkeypatch.setattr(service, "_get_trial_hosted_model_spend", cap_probe)
+    result = service.preflight_check(model, {"model": "openai/gpt-5", "input": "hi"})
+    assert result.hard_limit_exceeded
+    assert result.enforcement_reason == "subject_model_not_allowed"
+    assert result.allowed_models == ("owner-only-model",)
+    cap_probe.assert_not_called()

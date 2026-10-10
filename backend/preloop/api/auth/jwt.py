@@ -109,9 +109,16 @@ def _managed_agent_for_api_key(
     )
     managed_agent_id = context_data.get("managed_agent_id")
     if managed_agent_id:
-        return crud_managed_agent.get_for_account(
+        own = crud_managed_agent.get_for_account(
             session, account_id=api_key.account_id, agent_id=managed_agent_id
         )
+        if own is not None:
+            return own
+        if context_data.get("shared_agent_owner_account_id"):
+            from preloop.models.crud.resource_share import crud_resource_share
+
+            return crud_resource_share.bound_agent(session, key=api_key)
+        return None
 
     runtime_principal = (
         context_data.get("runtime_principal")
