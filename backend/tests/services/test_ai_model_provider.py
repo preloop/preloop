@@ -1803,6 +1803,7 @@ class TestGatewayEndpointValidation:
         def no_dns(*_args, **_kwargs):
             raise socket.gaierror(socket.EAI_NONAME, "no such host")
 
+        ai_model_provider._clear_endpoint_resolution_cache()
         monkeypatch.setattr(socket, "getaddrinfo", no_dns)
         endpoint = "https://custom.example.invalid/v1"
         assert ai_model_provider._resolve_endpoint_host("custom.example.invalid") == []
@@ -1814,6 +1815,44 @@ class TestGatewayEndpointValidation:
         monkeypatch.setattr(socket, "getaddrinfo", loopback_dns)
         with pytest.raises(ValueError, match="localhost"):
             validate_gateway_api_endpoint(endpoint)
+        ai_model_provider._clear_endpoint_resolution_cache()
+
+    def test_resolution_is_cached_and_rebinding_is_caught_after_expiry(
+        self, monkeypatch
+    ) -> None:
+        """Successful answers are reused for the TTL, failures are not.
+
+        Documents the residual rebinding gap: a name that flips from public to
+        loopback passes while the public answer is cached and is refused on
+        the first call after it expires. The connection is not pinned.
+        """
+        import socket
+
+        from preloop.services import ai_model_provider
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        ai_model_provider._clear_endpoint_resolution_cache()
+        answers = iter(["93.184.216.34", "127.0.0.1"])
+        calls: list[str] = []
+
+        def flipping_dns(host, *_args, **_kwargs):
+            calls.append(host)
+            ip = next(answers)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+        clock = [1000.0]
+        monkeypatch.setattr(socket, "getaddrinfo", flipping_dns)
+        monkeypatch.setattr(ai_model_provider.time, "monotonic", lambda: clock[0])
+        endpoint = "https://rebind.example.test/v1"
+        assert validate_gateway_api_endpoint(endpoint) == endpoint
+        assert validate_gateway_api_endpoint(endpoint) == endpoint
+        assert calls == ["rebind.example.test"]
+
+        clock[0] += ai_model_provider._ENDPOINT_RESOLUTION_TTL_SECONDS + 1
+        with pytest.raises(ValueError, match="localhost"):
+            validate_gateway_api_endpoint(endpoint)
+        assert len(calls) == 2
+        ai_model_provider._clear_endpoint_resolution_cache()
 
     def test_aux_credentials_refuse_a_legacy_localhost_row(self) -> None:
         """Auxiliary flows get the same refusal as the gateway, as a 400."""

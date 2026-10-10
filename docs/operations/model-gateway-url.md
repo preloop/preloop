@@ -64,3 +64,39 @@ row works in both places without a per-row URL.
 The two paths in one line: agent Jobs get the in-cluster gateway Service,
 runners get the public origin, and an explicit `meta_data.gateway.url`
 overrides both.
+
+## Model endpoints on localhost or a private network
+
+The gateway refuses a model `api_endpoint` that points at the Preloop process
+itself or at an internal network. On create, on update, and again before
+every upstream call, it rejects:
+
+- `localhost`, loopback (`127.0.0.0/8`, `::1`), and hostnames that resolve
+  there;
+- private ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, IPv6
+  ULA), including hostnames such as `host.docker.internal` that resolve to a
+  private Docker address;
+- link-local (`169.254.0.0/16`, which includes cloud metadata, and
+  `fe80::/10`) and the unspecified address. These are refused even when
+  allowlisted.
+
+A self-hosted install whose model server is on the LAN, or on the same host
+for a native single-host setup, opts that range back in with a
+comma-separated list of CIDRs:
+
+```bash
+MODEL_ENDPOINT_ALLOWED_CIDRS=192.168.1.0/24
+# native single-host setup with LM Studio on the same machine
+MODEL_ENDPOINT_ALLOWED_CIDRS=127.0.0.0/8,::1/128
+```
+
+Preloop Cloud leaves it empty. Upgrading a self-hosted install whose saved
+model uses a LAN or `host.docker.internal` endpoint requires setting this
+variable; until then those calls return 400. A saved row that is refused can
+still be renamed or disabled; replacing its endpoint, or allowlisting the
+range, makes it callable again.
+
+The hostname check is best-effort against DNS rebinding: the upstream client
+resolves the name again and the connection is not pinned to the checked
+address. A hostname that does not resolve is not refused, since there is
+nothing to dial.

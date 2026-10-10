@@ -13,6 +13,8 @@ import asyncio
 import ipaddress
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
@@ -327,10 +329,52 @@ def _allowed_endpoint_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6N
     return networks
 
 
+#: Seconds a successful endpoint resolution is reused. Bounds how often the
+#: request path (CRUD and every upstream call) blocks on the system resolver.
+_ENDPOINT_RESOLUTION_TTL_SECONDS = 30.0
+_endpoint_resolution_cache: dict[
+    str, tuple[float, list[ipaddress.IPv4Address | ipaddress.IPv6Address]]
+] = {}
+_endpoint_resolution_lock = threading.Lock()
+
+
+def _clear_endpoint_resolution_cache() -> None:
+    """Drop cached endpoint resolutions (tests, or after a DNS change)."""
+    with _endpoint_resolution_lock:
+        _endpoint_resolution_cache.clear()
+
+
 def _resolve_endpoint_host(
     host: str,
 ) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
-    """Resolve every address a hostname dials, unwrapping IPv4-mapped answers."""
+    """Resolve every address a hostname dials, unwrapping IPv4-mapped answers.
+
+    Successful answers are cached for ``_ENDPOINT_RESOLUTION_TTL_SECONDS`` so
+    a hostname endpoint does not hit the blocking resolver on every call.
+    Failures are not cached.
+
+    This is a policy check on what the name points at, not a DNS-rebinding
+    barrier: litellm/httpx resolve the name again when they connect, and
+    nothing pins that connection to the address checked here. A name that
+    answers publicly now and with loopback later is caught on a later call
+    once the cached answer expires, not on the connection that races it.
+    """
+    now = time.monotonic()
+    with _endpoint_resolution_lock:
+        cached = _endpoint_resolution_cache.get(host)
+    if cached is not None and now - cached[0] < _ENDPOINT_RESOLUTION_TTL_SECONDS:
+        return list(cached[1])
+    found = _resolve_endpoint_host_uncached(host)
+    if found:
+        with _endpoint_resolution_lock:
+            _endpoint_resolution_cache[host] = (now, list(found))
+    return found
+
+
+def _resolve_endpoint_host_uncached(
+    host: str,
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """One system-resolver lookup for :func:`_resolve_endpoint_host`."""
     import socket
 
     try:
@@ -394,6 +438,10 @@ def validate_gateway_api_endpoint(
     resolved, and every answer is checked, so a name that points at a
     private or loopback address is refused the same way as the address
     itself. The check runs again immediately before the upstream call.
+    A name that does not resolve has nothing to dial and is not refused.
+    The hostname check is best-effort against DNS rebinding: the upstream
+    client resolves again and the connection is not pinned (see
+    :func:`_resolve_endpoint_host`).
 
     Args:
         api_endpoint: Stored or submitted base URL.
