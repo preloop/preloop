@@ -7,6 +7,10 @@ from .agent_control_command import AgentControlCommand
 from .api_key import ApiKey
 from .gateway_subject import GatewaySubject
 from .telemetry_ingest import TelemetryIngestDedup, TelemetryMetricSeries
+from .gateway_identity_provider import (
+    GatewayIdentityProvider,
+    GatewayIdentityProviderAudience,
+)
 from .ci_principal import CiPrincipal
 from .api_usage import ApiUsage
 from .audit_log import AuditLog
@@ -192,6 +196,8 @@ __all__ = [
     "GatewaySubject",
     "TelemetryIngestDedup",
     "TelemetryMetricSeries",
+    "GatewayIdentityProvider",
+    "GatewayIdentityProviderAudience",
     "CiPrincipal",
     "ApiUsage",
     "AuditLog",

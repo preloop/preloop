@@ -54,6 +54,11 @@ class ModelGatewayAuthContext:
     # identity headers. ``None`` on every other credential.
     gateway_subject: GatewaySubjectRef | None = None
     trusted_upstream: bool = False
+    # Set only when the bearer was a customer IdP token (#1414): ``"idp"``
+    # and the provider that verified it. ``api_key`` is then the provider's
+    # binding key and ``token`` is empty.
+    auth_method: str | None = None
+    idp_provider_id: Any | None = None
 
     @property
     def account_id(self) -> Any:
@@ -122,6 +127,8 @@ class ModelGatewayAuthContext:
             else None,
             gateway_subject=self.gateway_subject,
             trusted_upstream=self.trusted_upstream,
+            auth_method=self.auth_method,
+            idp_provider_id=self.idp_provider_id,
         )
 
 

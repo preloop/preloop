@@ -4,9 +4,11 @@
 # with a throwaway HOME; the host's own Claude config, managed preferences,
 # registry and /etc/claude-desktop are never read or written.
 #
-# Usage: ./verify.sh            bring the stack up (if needed) and run 1-7
+# Usage: ./verify.sh            bring the stack up (if needed) and run 1-8
 #        STRICT=1 ./verify.sh   treat PENDING (backend contract absent) as FAIL
 #        KEEP_UP=0 ./verify.sh  run `docker compose down -v` at the end
+#        IDP_ONLY=1 ./verify.sh only step 7 (Claude Desktop IdP token, #1414);
+#                               starts Preloop, dex-idp and the stub model only
 set -uo pipefail
 export PRELOOP_DISABLE_TELEMETRY=true
 cd "$(dirname "$0")" || exit 2
@@ -52,12 +54,56 @@ wait_usage_after() { # wait until the newest row for key $1 differs from $2
 }
 newest_id() { latest_usage "$1" | jq -r '.api_usage_id // ""'; }
 
+# ------------------------- step 7: Claude Desktop IdP token as bearer (#1414)
+# Dex (dex-idp, https) issues an ID token for the Desktop client id; Preloop
+# verifies it against the provider registered here and serves the request.
+idp_step() {
+  api "/account/gateway-identity-providers" | jq -r '.[]? | .id' | while read -r id; do
+    api "/account/gateway-identity-providers/$id" -X DELETE >/dev/null
+  done
+  local created provider_id token status row meta before tampered
+  created="$(api "/account/gateway-identity-providers" -X POST -H 'content-type: application/json' -d "$(jq -nc \
+    --arg key "$IDP_KEY_ID" '{name:"harness dex",issuer:"https://dex-idp:5557/dex",audiences:["claude-desktop"],
+      api_key_id:$key,allowed_email_domains:["example.com"],allow_private_network_issuer:true}')")"
+  echo "$created" | jq . >"$RUN_DIR/step7-provider.json"
+  provider_id="$(jq -r '.id // ""' <<<"$created")"
+  check "7 provider" 0 "identity provider registered through the admin API (id ${provider_id:-none})" test -n "$provider_id"
+  api "/account/gateway-identity-providers/$provider_id/test" -X POST >"$RUN_DIR/step7-test.json"
+  check "7 discovery" 0 "POST .../test fetched discovery and JWKS ($(jq -r '[.keys[]?.kid] | length' "$RUN_DIR/step7-test.json") keys)" \
+    test "$(jq -r .ok "$RUN_DIR/step7-test.json")" = true
+  token="$(DC exec -T preloop python /harness-seed/idp_token.py alice@example.com 2>"$RUN_DIR/step7-token.err")"
+  check "7 dex token" 0 "Dex issued an ID token for the claude-desktop client" test "$(tr -cd . <<<"$token" | wc -c | tr -d ' ')" = 2
+  before="$(newest_id "$IDP_KEY_ID")"
+  status="$(curl -s -o "$RUN_DIR/step7-body.json" -w '%{http_code}' "$PRELOOP/anthropic/v1/messages" \
+    -H "authorization: Bearer $token" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+    -H 'x-preloop-client: claude-desktop' \
+    -d '{"model":"claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}')"
+  check "7 served" 0 "IdP bearer answered $status from the stub model" \
+    bash -c '[ "$1" = 200 ] && grep -q PRELOOP_STUB_OK "$2"' _ "$status" "$RUN_DIR/step7-body.json"
+  row="$(wait_usage_after "$IDP_KEY_ID" "$before")"
+  echo "$row" | jq . >"$RUN_DIR/step7-usage-row.json"
+  meta="$(jq -c '.meta_data // {}' <<<"$row")"
+  check "7 usage subject" 0 "usage row on the binding key: auth_method=$(jq -r .auth_method <<<"$meta"), subject=$(jq -r .gateway_subject_email <<<"$meta")" \
+    bash -c '[ "$(jq -r .auth_method <<<"$1")" = idp ] && [ "$(jq -r .gateway_subject_email <<<"$1")" = alice@example.com ] && [ "$(jq -r .gateway_source <<<"$1")" = direct ]' _ "$meta"
+  # Change the last signature character (A<->B) so the token always differs.
+  if [ "${token: -1}" = A ]; then tampered="${token%?}B"; else tampered="${token%?}A"; fi
+  status="$(curl -s -o "$RUN_DIR/step7-tampered.json" -D "$RUN_DIR/step7-tampered.headers" -w '%{http_code}' "$PRELOOP/anthropic/v1/messages" \
+    -H "authorization: Bearer $tampered" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+    -d '{"model":"claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}')"
+  check "7 tampered" 0 "a token with a modified signature answered $status with WWW-Authenticate" \
+    bash -c '[ "$1" = 401 ] && grep -qi "^www-authenticate: Bearer error=\"invalid_token\"" "$2"' _ "$status" "$RUN_DIR/step7-tampered.headers"
+}
+
 # ---------------------------------------------------------------- bring-up
 log "# Claude apps gateway harness run $(date -u +%FT%TZ)"
 log ""
-DC up -d --build --wait >"$RUN_DIR/compose-up.log" 2>&1 || {
+UP_SERVICES=""
+[ "${IDP_ONLY:-0}" = 1 ] && UP_SERVICES="preloop dex-idp stub-model"
+# shellcheck disable=SC2086
+DC up -d --build --wait $UP_SERVICES >"$RUN_DIR/compose-up.log" 2>&1 || {
   echo "compose up failed, see $RUN_DIR/compose-up.log" >&2; tail -30 "$RUN_DIR/compose-up.log" >&2; exit 2; }
 SEED="$(DC exec -T -e PRELOOP_UPSTREAM_KEY -e PRELOOP_UPSTREAM_SECRET preloop python /harness-seed/seed.py 2>/dev/null | tail -1)"
+IDP_KEY_ID="$(jq -r .idp_key_id <<<"$SEED")"
 ADMIN_KEY="$(jq -r .admin_key <<<"$SEED")"
 DIRECT_KEY="$(jq -r .direct_key <<<"$SEED")"
 DIRECT_KEY_ID="$(jq -r .direct_key_id <<<"$SEED")"
@@ -68,7 +114,8 @@ TRUSTED_KEY_ID="$(jq -r .trusted_key_id <<<"$SEED")"
 MODELS_STATUS="$(curl -s -o /dev/null -w '%{http_code}' "$PRELOOP/anthropic/v1/models" \
   -H "x-api-key: $DIRECT_KEY" -H 'anthropic-version: 2023-06-01')"
 CONTRACT=0; [ "$MODELS_STATUS" = 200 ] && CONTRACT=1
-GW_VERSION="$(CX 'claude --version' | head -1)"
+GW_VERSION="not started (IDP_ONLY)"
+[ "${IDP_ONLY:-0}" = 1 ] || GW_VERSION="$(CX 'claude --version' | head -1)"
 DEX_IMAGE="$(DC config --images 2>/dev/null | grep dex | head -1)"
 PRELOOP_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 log "## Versions"
@@ -78,6 +125,15 @@ log "- Preloop commit: $PRELOOP_COMMIT$(git diff --quiet 2>/dev/null || echo ' (
 log "- Backend contract (#1409) detected: $([ $CONTRACT = 1 ] && echo yes || echo "no (GET /anthropic/v1/models -> $MODELS_STATUS)")"
 log ""
 log "## Steps"
+if [ "${IDP_ONLY:-0}" = 1 ]; then
+  idp_step
+  log ""
+  log "## Result: $PASS passed, $FAIL failed, $PENDING pending"
+  [ "${KEEP_UP:-1}" = 0 ] && DC down -v >/dev/null 2>&1
+  echo "report: $REPORT"
+  [ "$FAIL" = 0 ] || exit 1
+  exit 0
+fi
 check "0 stub tests" 0 "harness recorder unit tests (stub/test_harness_server.py)" \
   python3 stub/test_harness_server.py
 curl -s -X DELETE "$RECORDER/_harness/requests" >/dev/null
@@ -183,6 +239,8 @@ log "  - paths: $PATHS"
 # What the gateway relayed during steps 2-3 (step 6 recreates the relay).
 RELAYED="$(DC logs --no-log-prefix telemetry-relay 2>/dev/null | grep -o 'POST /api/v1/telemetry/otlp/v1/[a-z]* HTTP/1.1" [0-9]*' | sed 's/ HTTP\/1.1"//' | sort | uniq -c | awk '{printf "%s%s %s x%s", sep, $3, $4, $1; sep=", "}')"
 
+idp_step
+
 # ------------------------------------------------------- step 6: rollback
 DC exec -T -e PRELOOP_UPSTREAM_KEY preloop python /harness-seed/seed.py --revoke-upstream >/dev/null 2>&1
 curl -s -X DELETE "$SPARE/_harness/requests" >/dev/null
@@ -203,30 +261,30 @@ check "6 upstream removed" 0 "gateway without the Preloop upstream serves from t
 DC up -d --wait --force-recreate --no-deps claude-gateway >>"$RUN_DIR/compose-up.log" 2>&1
 DC up -d --wait --force-recreate --no-deps client telemetry-relay >>"$RUN_DIR/compose-up.log" 2>&1
 
-# ------------------------------------ step 7: OTLP telemetry ingest (#1412)
+# ------------------------------------ step 8: OTLP telemetry ingest (#1412)
 OTLP="$(DC exec -T -e PRELOOP_TELEMETRY_KEY -e DIRECT_KEY="$DIRECT_KEY" preloop \
-  python /harness-seed/otlp_check.py 2>"$RUN_DIR/step7-otlp-check.err" | tail -1)"
-echo "$OTLP" | jq . >"$RUN_DIR/step7-otlp-check.json" 2>/dev/null
+  python /harness-seed/otlp_check.py 2>"$RUN_DIR/step8-otlp-check.err" | tail -1)"
+echo "$OTLP" | jq . >"$RUN_DIR/step8-otlp-check.json" 2>/dev/null
 otlp_true() { test "$(jq -r ".$1" <<<"$OTLP" 2>/dev/null)" = true; }
-check "7 json export" 0 "OTLP JSON logs export answered $(jq -r .json_status <<<"$OTLP")" \
+check "8 json export" 0 "OTLP JSON logs export answered $(jq -r .json_status <<<"$OTLP")" \
   test "$(jq -r .json_status <<<"$OTLP")" = 200
-check "7 protobuf export" 0 "OTLP protobuf logs export answered $(jq -r .protobuf_status <<<"$OTLP")" \
+check "8 protobuf export" 0 "OTLP protobuf logs export answered $(jq -r .protobuf_status <<<"$OTLP")" \
   test "$(jq -r .protobuf_status <<<"$OTLP")" = 200
-check "7 enrichment" 0 "api_request matching a gateway row's x-client-request-id enriches meta_data.telemetry" otlp_true enriched
-check "7 enrichment no row" 0 "a matched api_request creates no usage row" otlp_true enrich_created_no_row
-check "7 estimate row" 0 "an unmatched api_request creates one telemetry_estimate row" otlp_true estimate_row
-check "7 replay" 0 "re-sending the same export creates nothing" otlp_true replay_noop
-check "7 late gateway row" 0 "a gateway row after the telemetry leaves exactly one row" otlp_true late_gateway_one_row
-check "7 privacy" 0 "the prompt attribute is not stored" otlp_true prompt_not_stored
+check "8 enrichment" 0 "api_request matching a gateway row's x-client-request-id enriches meta_data.telemetry" otlp_true enriched
+check "8 enrichment no row" 0 "a matched api_request creates no usage row" otlp_true enrich_created_no_row
+check "8 estimate row" 0 "an unmatched api_request creates one telemetry_estimate row" otlp_true estimate_row
+check "8 replay" 0 "re-sending the same export creates nothing" otlp_true replay_noop
+check "8 late gateway row" 0 "a gateway row after the telemetry leaves exactly one row" otlp_true late_gateway_one_row
+check "8 privacy" 0 "the prompt attribute is not stored" otlp_true prompt_not_stored
 log "  - exports the apps gateway relayed to Preloop (path status count): ${RELAYED:-none}"
 # Steps 2-3 ran real Claude Code sessions through the gateway with logs and
 # metrics relayed to Preloop: none of that telemetry may double count.
 RELAY="$(DC exec -T -e PRELOOP_TELEMETRY_KEY -e DIRECT_KEY="$DIRECT_KEY" preloop \
-  python /harness-seed/otlp_check.py --relayed 2>>"$RUN_DIR/step7-otlp-check.err" | tail -1)"
-echo "$RELAY" | jq . >"$RUN_DIR/step7-relayed.json" 2>/dev/null
-check "7 relayed telemetry" 0 "relayed exports reached Preloop: $(jq -r .telemetry_records <<<"$RELAY") records" \
+  python /harness-seed/otlp_check.py --relayed 2>>"$RUN_DIR/step8-otlp-check.err" | tail -1)"
+echo "$RELAY" | jq . >"$RUN_DIR/step8-relayed.json" 2>/dev/null
+check "8 relayed telemetry" 0 "relayed exports reached Preloop: $(jq -r .telemetry_records <<<"$RELAY") records" \
   test "$(jq -r '.telemetry_records > 0' <<<"$RELAY" 2>/dev/null)" = true
-check "7 relayed no double count" 0 "apps gateway rows $(jq -r .apps_gateway_rows <<<"$RELAY"), enriched $(jq -r .enriched_gateway_rows <<<"$RELAY"), duplicate telemetry rows $(jq -r .duplicate_rows <<<"$RELAY"), aggregates next to logs or gateway rows $(jq -r .overlapping_aggregates <<<"$RELAY")" \
+check "8 relayed no double count" 0 "apps gateway rows $(jq -r .apps_gateway_rows <<<"$RELAY"), enriched $(jq -r .enriched_gateway_rows <<<"$RELAY"), duplicate telemetry rows $(jq -r .duplicate_rows <<<"$RELAY"), aggregates next to logs or gateway rows $(jq -r .overlapping_aggregates <<<"$RELAY")" \
   test "$(jq -r '.duplicate_rows == 0 and .overlapping_aggregates == 0' <<<"$RELAY" 2>/dev/null)" = true
 
 # ----------------------------------------------------------------- summary

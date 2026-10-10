@@ -993,6 +993,13 @@ def _register_control_plane_routes(
     app.include_router(
         telemetry_otlp.router, prefix="/api/v1", tags=["Telemetry ingest"]
     )
+    from preloop.api.endpoints import gateway_identity_providers
+
+    app.include_router(
+        gateway_identity_providers.router,
+        prefix="/api/v1",
+        tags=["Gateway Identity Providers"],
+    )
     app.include_router(
         account.router,
         prefix="/api/v1",

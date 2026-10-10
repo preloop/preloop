@@ -33,6 +33,7 @@ recorder (records header names)  -->  Preloop (built from this checkout)  -->  s
 | `claude-gateway` | `claude gateway --config gateway.yaml` | 8080 |
 | `client` | Claude Code, shares the gateway's network namespace so the gateway is `http://localhost:8080` (Claude Code accepts plain http only for loopback) | none |
 | `dex` | OIDC IdP, users `alice@example.com` and `bob@example.com`, password `password` | none |
+| `dex-idp` | https OIDC IdP for the Claude Desktop IdP sign-in check (#1414), client `claude-desktop`, same users; certificate from a throwaway CA made by `idp-tls` | none |
 | `recorder` / `spare` / `stub-model` | test doubles | 19000 / 19100 / none |
 
 ## Run
@@ -62,7 +63,8 @@ names. Steps 2 to 4 assert on Preloop API responses
 | 4 | Forged `x-claude-gateway-user-*` headers on a normal key are ignored; a wrong `x-preloop-upstream-secret` on the trusted key is `401` |
 | 5 | Lists every request header name Preloop received from the gateway |
 | 6 | Rollback: revoking the key makes the gateway fail over (documented on 401); a gateway config without the Preloop upstream sends Preloop nothing |
-| 7 | OTLP telemetry ingest (#1412): `seed/otlp_check.py` posts a JSON and a protobuf logs export with the `telemetry:ingest` key; a matching `x-client-request-id` enriches the gateway row and creates nothing, an unmatched event creates one `telemetry_estimate` row, a replay creates nothing, and a later gateway row leaves exactly one row. Also lists what the gateway relayed through `telemetry.forward_to` (the `telemetry-relay` service on the gateway loopback) |
+| 7 | Claude Desktop IdP sign-in (#1414): registers `dex-idp` as a gateway identity provider through the admin API, runs its discovery test, gets an ID token for the `claude-desktop` client from Dex (password grant, standing in for Desktop's PKCE sign-in), sends it as the bearer to `/anthropic/v1/messages` and checks the stub reply, a usage row with `auth_method=idp` and the subject, and a `401` with `WWW-Authenticate` for a tampered token. Runs after step 5; `IDP_ONLY=1 ./verify.sh` runs it alone with only Preloop, `dex-idp` and the stub model |
+| 8 | OTLP telemetry ingest (#1412): `seed/otlp_check.py` posts a JSON and a protobuf logs export with the `telemetry:ingest` key; a matching `x-client-request-id` enriches the gateway row and creates nothing, an unmatched event creates one `telemetry_estimate` row, a replay creates nothing, and a later gateway row leaves exactly one row. Also lists what the gateway relayed through `telemetry.forward_to` (the `telemetry-relay` service on the gateway loopback) |
 
 Checks that need the #1409 backend contract report **PENDING** (not FAIL)
 when Preloop does not serve `GET /anthropic/v1/models`. `STRICT=1` turns

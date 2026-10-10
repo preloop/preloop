@@ -1,0 +1,31 @@
+# Test-only Dex for the #1414 check: Claude Desktop signs in with this IdP
+# and its ID token goes to Preloop as the bearer. https, because Preloop only
+# trusts https issuers; the CA comes from the idp-tls service. Same static
+# users as dex/config.yaml, password "password".
+issuer: https://dex-idp:5557/dex
+storage:
+  type: memory
+web:
+  https: 0.0.0.0:5557
+  tlsCert: /idp-tls/tls.crt
+  tlsKey: /idp-tls/tls.key
+oauth2:
+  skipApprovalScreen: true
+  passwordConnector: local
+enablePasswordDB: true
+staticClients:
+  # The Claude Desktop app registration. Its id is the token audience.
+  - id: claude-desktop
+    name: Claude Desktop (harness)
+    secret: harness-desktop-client-secret
+    redirectURIs:
+      - http://127.0.0.1/callback
+staticPasswords:
+  - email: alice@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: alice
+    userID: 0b4b5a8e-1a1f-4b7e-9e0b-a11ce0000001
+  - email: bob@example.com
+    hash: "$2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W"
+    username: bob
+    userID: 0b4b5a8e-1a1f-4b7e-9e0b-b0b000000002
