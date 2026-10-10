@@ -1,7 +1,7 @@
 """Add the Anthropic usage import connection and actor mappings (#1413).
 
 Revision ID: 20261010_anthropic_import
-Revises: 20261010_ticket_readiness
+Revises: 20261010_gateway_idp
 Create Date: 2026-10-10
 
 Imported rows reuse ``provider_billing_snapshot`` (``usage_source``,
