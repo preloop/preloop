@@ -44,15 +44,17 @@ FLOW_MCP_FACTS = (
 BOUNDARY_FACTS = (
     "create_pull_request",
     "native CLI session resume",
-    "not the full ticket-to-PR factory",
+    "allow_publish",
+    "host_publication",
+    "Other publication and feedback are refused, not queued silently.",
 )
 
 #: The sentence that marks the tracking issue as open work, not as shipped.
 #: It is matched whole, link and marker included, so the check does not
 #: depend on where the issue number is first mentioned on the page.
 OPEN_ISSUE_TRACKING = (
-    "[#1069](https://github.com/preloop/preloop/issues/1069) tracks Bitbucket "
-    "publication and feedback continuation for host flows. It is open."
+    "[#1069](https://github.com/preloop/preloop/issues/1069) tracks feedback "
+    "continuation and publication retry for host flows. It is open."
 )
 
 

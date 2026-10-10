@@ -156,7 +156,11 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   commits any changes (repository hooks are disabled), and pushes the
   commit to the managed branch `preloop/issue-<KEY>-<execution>` with the
   same URL-scoped header credential it cloned with. It never force-pushes
-  and pushes to the planned URL, not the `origin` remote. The control
+  and pushes to the planned URL, not the `origin` remote. The push runs
+  from a fresh runner-owned bare repository with no global, system or
+  checkout git config, so nothing Copilot writes to `.git/config` or
+  `~/.gitconfig` (a proxy, CA file, URL rewrite or credential helper) can
+  reach the credential. The control
   plane then opens the pull request through the bound Bitbucket tracker
   and binds it to the execution; the agent never supplies a pull request
   URL. Saving such a flow, or starting it, fails with the original
@@ -235,7 +239,6 @@ Named errors:
 | `host_publication_not_allowed` | The flow opens a pull request but the profile does not set `allow_publish` (and `allow_checkout`), or is not a Copilot profile. |
 | `publication_failed: push_conflict` | The managed branch already exists on the remote with other commits. Nothing was force-pushed; the commit stays in the run directory. |
 | `publication_failed: credential_rejected` | The repository refused the tracker credential for the push. Reconnect the code-host tracker with write access and run again. |
-| `publication_failed: repository_config_unsafe` | The checkout's `.git/config` rewrites remote URLs (`url.*`), so the runner refused to push. |
 | `publication_missing` | A publishing run ended without a pushed branch, for example because Copilot made no changes. |
 | `git_not_installed` | The flow clones repositories and `git` is not on the runner's `PATH`. |
 | `copilot_hooks_unavailable` | Preloop could not install or read its own hooks file under `~/.copilot/hooks` (or `$COPILOT_HOME/hooks`). The run fails before Copilot starts. |

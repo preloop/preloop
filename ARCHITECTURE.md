@@ -194,7 +194,9 @@ a transient `host_exec_publication` plan (checkout path, managed
 `preloop/issue-<KEY>-<exec8>` branch from the shared branch-plan resolver, commit
 message); the push reuses the checkout's URL-scoped header credential and nothing
 is persisted. After the CLI succeeds the runner commits with hooks disabled,
-pushes without force to the planned URL and reports a `host_publication` receipt
+copies the head into a fresh runner-owned bare repository and pushes from there
+without force, with no repository, global or system git config, to the planned
+URL, and reports a `host_publication` receipt
 on the completion envelope. The completion path keeps only that runner receipt
 (agent JSON cannot author it) and fails a publishing run without a pushed branch.
 The orchestrator verifies the branch against its own plan, looks up an open pull

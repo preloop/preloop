@@ -39,9 +39,7 @@ PUBLICATION_UNSUPPORTED_TRACKER = (
 )
 
 _RECEIPT_STATUSES = frozenset({"pushed", "no_changes", "failed"})
-_RECEIPT_REASONS = frozenset(
-    {"push_conflict", "credential_rejected", "repository_config_unsafe", "push_failed"}
-)
+_RECEIPT_REASONS = frozenset({"push_conflict", "credential_rejected", "push_failed"})
 _BRANCH_RE = re.compile(r"^preloop/[A-Za-z0-9._/+-]{1,240}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 

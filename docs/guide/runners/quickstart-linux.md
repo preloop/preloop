@@ -428,6 +428,14 @@ the profile opts in:
 {"name": "copilot-review", "executable": "copilot", "allow_checkout": true}
 ```
 
+A Copilot profile that may also push one repository for a flow that opens a
+pull request adds `allow_publish` (see
+[Copilot CLI publication](../copilot-cli.md#review-and-implementation-flows)):
+
+```json
+{"name": "copilot-publish", "executable": "copilot", "allow_checkout": true, "allow_publish": true}
+```
+
 Without `allow_checkout` the run fails with `host_checkout_not_allowed`.
 With it, the runner:
 

@@ -33,7 +33,6 @@ const (
 const (
 	hostPublishReasonConflict   = "push_conflict"
 	hostPublishReasonCredential = "credential_rejected"
-	hostPublishReasonUnsafeRepo = "repository_config_unsafe"
 	hostPublishReasonFailed     = "push_failed"
 )
 
@@ -165,11 +164,6 @@ func publishHostExecWork(ctx context.Context, workspace string, plan *hostExecPu
 	}
 	dir := filepath.Join(workspace, filepath.FromSlash(plan.Path))
 	localEnv := hostExecGitEnv(os.Environ(), hostExecCheckoutRepo{})
-	// url.<base>.insteadOf / pushInsteadOf in the repository's own config
-	// would redirect the push. The CLI can write .git/config, so refuse.
-	if out, _ := hostPublishGitOutput(ctx, gitBin, dir, localEnv, "config", "--local", "--get-regexp", `^url\.`); out != "" {
-		return nil, &hostPublicationFailure{reason: hostPublishReasonUnsafeRepo, detail: "the repository config rewrites remote URLs; remove url.* entries from .git/config and retry"}
-	}
 	if _, err := hostPublishGitOutput(ctx, gitBin, dir, localEnv, "add", "--all", "--", "."); err != nil {
 		return nil, &hostPublicationFailure{reason: hostPublishReasonFailed, detail: "could not stage the changes"}
 	}
@@ -189,12 +183,58 @@ func publishHostExecWork(ctx context.Context, workspace string, plan *hostExecPu
 		return map[string]any{"status": "no_changes", "branch": plan.Branch}, nil
 	}
 	logf(fmt.Sprintf("preloop runner: pushing %s to %s", head[:12], plan.Branch))
-	// Push to the planned URL, never the "origin" remote the CLI could
-	// have repointed. The credential header is scoped to that URL.
-	pushEnv := hostExecGitEnv(os.Environ(), plan.repo)
-	cmd := exec.CommandContext(ctx, gitBin, hostPublishGitArgs("push", "--porcelain", "--", plan.repo.URL, head+":refs/heads/"+plan.Branch)...)
-	cmd.Dir = dir
-	cmd.Env = pushEnv
+	return pushHostPublication(ctx, gitBin, dir, plan, head)
+}
+
+// hostPublishIsolatedEnv is the environment of git processes in the
+// runner-owned publish repository: no global or system config, so nothing
+// the CLI wrote to ~/.gitconfig (http.proxy, http.sslCAInfo,
+// credential.helper, url.*.insteadOf, ...) applies.
+func hostPublishIsolatedEnv(repo hostExecCheckoutRepo, protocols string) []string {
+	env := hostExecGitEnv(os.Environ(), repo)
+	out := make([]string, 0, len(env)+4)
+	for _, entry := range env {
+		key := strings.ToUpper(strings.SplitN(entry, "=", 2)[0])
+		if key == "GIT_ALLOW_PROTOCOL" || key == "HOME" || key == "XDG_CONFIG_HOME" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out,
+		"GIT_ALLOW_PROTOCOL="+protocols,
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"HOME="+os.DevNull,
+	)
+}
+
+// pushHostPublication copies the committed head into a fresh runner-owned
+// bare repository and pushes from there. The checkout's own .git/config is
+// writable by the CLI, so the credential-bearing push never runs in it: the
+// fetch from the checkout carries no credential, and the push runs with no
+// repository, global or system config the CLI could have influenced.
+func pushHostPublication(ctx context.Context, gitBin, dir string, plan *hostExecPublication, head string) (map[string]any, error) {
+	isolated, err := os.MkdirTemp("", "preloop-publish-")
+	if err != nil {
+		return nil, &hostPublicationFailure{reason: hostPublishReasonFailed, head: head, detail: "could not prepare the publish repository"}
+	}
+	defer os.RemoveAll(isolated)
+	ref := "refs/heads/" + plan.Branch
+	localEnv := hostPublishIsolatedEnv(hostExecCheckoutRepo{}, "file")
+	if _, err := hostPublishGitOutput(ctx, gitBin, isolated, localEnv, "init", "--quiet", "--bare", isolated); err != nil {
+		return nil, &hostPublicationFailure{reason: hostPublishReasonFailed, head: head, detail: "could not prepare the publish repository"}
+	}
+	if _, err := hostPublishGitOutput(ctx, gitBin, isolated, localEnv, "--git-dir="+isolated, "fetch", "--quiet", "--no-tags", "--", dir, "HEAD:"+ref); err != nil {
+		return nil, &hostPublicationFailure{reason: hostPublishReasonFailed, head: head, detail: "could not read the committed work"}
+	}
+	// The checkout could have moved between rev-parse and fetch; publish
+	// only the head that was committed and reported.
+	if fetched, err := hostPublishGitOutput(ctx, gitBin, isolated, localEnv, "--git-dir="+isolated, "rev-parse", "--verify", ref); err != nil || fetched != head {
+		return nil, &hostPublicationFailure{reason: hostPublishReasonFailed, head: head, detail: "the checkout changed during publication"}
+	}
+	cmd := exec.CommandContext(ctx, gitBin, hostPublishGitArgs("--git-dir="+isolated, "push", "--porcelain", "--", plan.repo.URL, ref+":"+ref)...)
+	cmd.Dir = isolated
+	cmd.Env = hostPublishIsolatedEnv(plan.repo, "https:http")
 	cmd.SysProcAttr = hostExecSysProcAttr()
 	cmd.Cancel = func() error {
 		killRunnerJobProcess(cmd)

