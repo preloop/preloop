@@ -987,6 +987,13 @@ def _register_control_plane_routes(
         tags=["Agent discovery"],
         dependencies=[Depends(get_current_active_user)],
     )
+    from preloop.api.endpoints import gateway_identity_providers
+
+    app.include_router(
+        gateway_identity_providers.router,
+        prefix="/api/v1",
+        tags=["Gateway Identity Providers"],
+    )
     app.include_router(
         account.router,
         prefix="/api/v1",

@@ -1276,6 +1276,25 @@ class Settings(BaseSettings):
             "deployments legitimately post to internal collectors."
         ),
     )
+    gateway_idp_allow_private_issuers: bool = Field(
+        False,
+        description=(
+            "Self-hosted only (GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS). Lets an "
+            "Anthropic gateway identity provider marked "
+            "allow_private_network_issuer fetch its discovery document and "
+            "JWKS from loopback or private addresses, for an IdP on the same "
+            "private network. Leave off on any multi-tenant instance."
+        ),
+    )
+    gateway_idp_ca_bundle: str = Field(
+        "",
+        description=(
+            "Self-hosted only (GATEWAY_IDP_CA_BUNDLE). Path to a PEM CA bundle "
+            "trusted, instead of the public roots, when fetching an Anthropic "
+            "gateway identity provider's discovery document and JWKS, for an "
+            "IdP behind a private CA. Empty uses the public roots."
+        ),
+    )
 
     workspace_snapshot_max_bytes: int = Field(
         512 * 1024 * 1024,

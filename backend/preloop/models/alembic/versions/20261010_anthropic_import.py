@@ -16,7 +16,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20261010_anthropic_import"
-down_revision: Union[str, None] = "20261010_ticket_readiness"
+down_revision: Union[str, None] = "20261010_gateway_idp"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

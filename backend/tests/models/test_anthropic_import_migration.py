@@ -55,4 +55,4 @@ def test_downgrade_then_upgrade_restores_the_model_shape(db_session):
 def test_revision_sits_on_the_previous_head():
     migration = _load_migration()
     assert migration.revision == "20261010_anthropic_import"
-    assert migration.down_revision == "20261010_ticket_readiness"
+    assert migration.down_revision == "20261010_gateway_idp"
