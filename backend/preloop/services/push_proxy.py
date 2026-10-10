@@ -79,7 +79,9 @@ async def send_push_via_proxy(
             if response.status_code == 200:
                 result = response.json()
                 if result.get("success"):
-                    logger.debug(f"Push sent via proxy: {title[:50]}...")
+                    # The title is caller-supplied and may carry sensitive text
+                    # (a flow name or alert summary); log only the outcome.
+                    logger.debug("Push sent via proxy")
                     return {"success": True, "result": result.get("details")}
                 else:
                     return {"success": False, "error": result.get("error")}

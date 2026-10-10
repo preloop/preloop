@@ -224,6 +224,43 @@ def send_push_notices(
     db: Session, hit: models.PolicyNoticeHit, owners: List[models.User]
 ) -> int:
     """Push to every owner device with mobile push on. Returns the count."""
+    payload = build_push_payload(hit)
+    return send_push_to_owners(
+        db,
+        owners,
+        title=payload["aps"]["alert"]["title"],
+        body=payload["aps"]["alert"]["body"],
+        data=payload["data"],
+        thread_id="policy-notices",
+    )
+
+
+def send_push_to_owners(
+    db: Session,
+    owners: List[models.User],
+    *,
+    title: str,
+    body: str,
+    data: Dict[str, Any],
+    thread_id: Optional[str] = None,
+) -> int:
+    """Push one message to every owner device with mobile push on.
+
+    Generic form of :func:`send_push_notices` so other per-owner alerts (for
+    example the flow consecutive-failure alert) reuse the same device-token
+    lookup, preference checks and transports.
+
+    Args:
+        db: Database session.
+        owners: Recipients whose device tokens to look up.
+        title: Notification title.
+        body: Notification body (truncated the way the notice payload is).
+        data: Custom payload data.
+        thread_id: Optional APNs thread id that groups related pushes.
+
+    Returns:
+        The number of successful deliveries.
+    """
     from preloop.services.approval_service import _send_android_push_transport
     from preloop.services.push_notifications import (
         get_apns_service,
@@ -251,10 +288,14 @@ def send_push_notices(
     apns = get_apns_service()
     fcm_available = is_fcm_configured()
     use_proxy = apns is None and is_push_proxy_configured()
-    payload = build_push_payload(hit)
-    title = payload["aps"]["alert"]["title"]
-    body = payload["aps"]["alert"]["body"]
-    data = payload["data"]
+    payload = {
+        "aps": {
+            "alert": {"title": title, "body": body[:180]},
+            "sound": "default",
+            **({"thread-id": thread_id} if thread_id else {}),
+        },
+        "data": data,
+    }
 
     async def _send_all() -> int:
         sent = 0

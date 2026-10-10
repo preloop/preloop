@@ -7714,6 +7714,11 @@ class FlowExecutionOrchestrator:
             # A Jira-triggered run that opened a pull request writes it back
             # onto the issue whatever flow.notifications says (issue #957).
             jira_comment_posted = await self._write_pull_request_back_to_jira(result)
+            # The consecutive-failure alert runs for every terminal run,
+            # independently of the tracker-comment notifications below, so a
+            # flow with no ``notifications`` blob still has the safety net
+            # (#1421).
+            await self._notify_failure_streak(status)
             notifications = getattr(self.flow, "notifications", None)
             if not notifications:
                 return
@@ -7749,6 +7754,65 @@ class FlowExecutionOrchestrator:
             logger.warning(
                 "Flow terminal notification failed for execution %s",
                 getattr(self.execution_log, "id", "unknown"),
+                exc_info=True,
+            )
+
+    async def _notify_failure_streak(self, status: str) -> None:
+        """Alert the flow's owners after N consecutive failures (#1421).
+
+        Best-effort and independent of ``flow.notifications``: the streak
+        counter/cross-replica dedup live in
+        :mod:`preloop.services.flow_failure_alerts`, which never raises.
+
+        The CRUD reads, the per-owner SMTP sends and the push transports run
+        off the event loop on a short-lived session. A slow transport on one
+        failure streak must not stall the other in-flight executions a worker
+        is babysitting; :func:`~preloop.services.db_executor.run_db_async` is
+        the shared off-loop database pool used elsewhere for the same reason.
+        The run that just finished is classified here, from the row already
+        held, so the scan keeps its success fast path without reading an ORM
+        instance across threads.
+        """
+        flow_id = getattr(self.flow, "id", None)
+        execution_id = getattr(self.execution_log, "id", "unknown")
+        if flow_id is None:
+            return
+        try:
+            from types import SimpleNamespace
+
+            from preloop.services.db_executor import run_db_async
+            from preloop.services.flow_failure_alerts import (
+                evaluate_failure_streak,
+            )
+
+            execution = SimpleNamespace(
+                id=execution_id,
+                status=getattr(self.execution_log, "status", None),
+                model_output_summary=getattr(
+                    self.execution_log, "model_output_summary", None
+                ),
+                result=getattr(self.execution_log, "result", None),
+            )
+
+            def _evaluate(db: Session) -> Optional[Any]:
+                flow = crud_flow.get(db, id=flow_id)
+                if flow is None:
+                    return None
+                return evaluate_failure_streak(db, flow=flow, execution=execution)
+
+            outcome = await run_db_async(_evaluate)
+            if outcome is not None and outcome.alerted:
+                logger.info(
+                    "Flow failure alert sent for %s after terminal status %s "
+                    "(%s recipients)",
+                    flow_id,
+                    status,
+                    outcome.recipients,
+                )
+        except Exception:
+            logger.warning(
+                "Flow failure streak notification failed for execution %s",
+                execution_id,
                 exc_info=True,
             )
 
