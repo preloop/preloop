@@ -47,6 +47,12 @@ def init_repo(path: Path, filename: str = "tracked.txt") -> str:
         check=True,
         capture_output=True,
     )
+    # The cloned commit is already on the code host. A remote-tracking ref is
+    # what proves that; without it every local commit looks unpushed.
+    subprocess.run(
+        ["git", "-C", str(path), "update-ref", "refs/remotes/origin/main", "HEAD"],
+        check=True,
+    )
     return git(path, "rev-parse", "HEAD")
 
 
@@ -109,6 +115,49 @@ class TestCaptureCleanCheckout:
         body = cc.capture(tmp_path, max_bytes=2_000_000)
 
         assert "workspace/notes.txt" in members(body)
+        assert checkpoint_document(body).get("metadata_only") is not True
+
+    def test_stash_is_a_full_archive(self, tmp_path: Path, monkeypatch) -> None:
+        sha = init_repo(tmp_path)
+        expect_heads(monkeypatch, {".": sha})
+        (tmp_path / "tracked.txt").write_text("stashed edit\n")
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "stash", "push", "-m", "wip"],
+            check=True,
+            capture_output=True,
+        )
+
+        body = cc.capture(tmp_path, max_bytes=2_000_000)
+
+        assert "workspace/.git/refs/stash" in members(body)
+        assert checkpoint_document(body).get("metadata_only") is not True
+
+    def test_unpushed_branch_is_a_full_archive(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        sha = init_repo(tmp_path)
+        expect_heads(monkeypatch, {".": sha})
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "-b", "local-work"],
+            check=True,
+            capture_output=True,
+        )
+        (tmp_path / "tracked.txt").write_text("unpushed\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "tracked.txt"], check=True)
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "commit", "-m", "local only"],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "checkout", "main"],
+            check=True,
+            capture_output=True,
+        )
+
+        body = cc.capture(tmp_path, max_bytes=2_000_000)
+
+        assert "workspace/.git/refs/heads/local-work" in members(body)
         assert checkpoint_document(body).get("metadata_only") is not True
 
     def test_head_mismatch_is_a_full_archive(self, tmp_path: Path, monkeypatch) -> None:

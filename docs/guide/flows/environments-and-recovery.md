@@ -241,8 +241,9 @@ metadata-only checkpoint: the manifest `repositories` block (`branch`,
 toward the account quota, so a full quota does not block publication of a
 clean review. Restore logs the checkpoint age as usual and clones the commit
 again, because the code host already has it. A dirty tree, an untracked file
-the snapshot would keep, or a `HEAD` that is not the cloned commit still stores
-a full snapshot.
+the snapshot would keep, a `HEAD` that is not the cloned commit, a stash, or a
+commit on a local branch that is not on a remote still stores a full snapshot.
+A metadata-only restore reclones, so those refs would otherwise be lost.
 
 `agent_config.workspace_snapshots` selects the policy: `when_dirty` (the
 default), `always` (a full snapshot on every capture), or `never` (do not

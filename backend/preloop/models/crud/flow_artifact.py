@@ -261,9 +261,24 @@ def store(
         .scalar()
     )
     ciphertext = values.get("ciphertext")
-    incoming = len(ciphertext) if isinstance(ciphertext, (bytes, bytearray)) else 0
-    # A metadata-only checkpoint has no ciphertext. Zero incoming bytes cannot
-    # push the account further over the quota, so a full quota still accepts it.
+    manifest = values.get("manifest")
+    metadata = manifest.get("metadata") if isinstance(manifest, dict) else None
+    # A metadata-only workspace checkpoint has no ciphertext. Zero incoming
+    # bytes cannot push the account further over the quota, so a full quota
+    # still accepts it. Any other missing payload is a caller bug: charging
+    # zero would let it bypass the quota.
+    metadata_only_workspace = (
+        values.get("kind") == "workspace"
+        and ciphertext is None
+        and isinstance(metadata, dict)
+        and metadata.get("metadata_only") is True
+    )
+    if metadata_only_workspace:
+        incoming = 0
+    elif isinstance(ciphertext, (bytes, bytearray)):
+        incoming = len(ciphertext)
+    else:
+        raise TypeError("artifact ciphertext must be bytes")
     if incoming > 0 and size + incoming > quota_bytes:
         raise ArtifactQuotaExceeded(
             retained_bytes=size, quota_bytes=quota_bytes, incoming_bytes=incoming

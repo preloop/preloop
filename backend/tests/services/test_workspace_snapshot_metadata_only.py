@@ -210,6 +210,42 @@ def test_metadata_only_counts_zero_bytes_when_quota_is_full(
         )
 
 
+def test_missing_ciphertext_is_rejected_for_other_kinds(db_session, scope) -> None:
+    """Only a metadata-only workspace may be stored with no payload."""
+    expires_at = datetime.now(UTC) + timedelta(hours=1)
+    base = {
+        "account_id": scope["account_id"],
+        "flow_id": scope["flow_id"],
+        "thread_id": scope["thread_id"],
+        "execution_id": scope["execution_id"],
+        "manifest_sha256": "a" * 64,
+        "availability": "available",
+        "expires_at": expires_at,
+    }
+    with pytest.raises(TypeError, match="ciphertext"):
+        crud.store(
+            db_session,
+            values={
+                **base,
+                "kind": "evidence",
+                "ciphertext": None,
+                "manifest": {"metadata": {}},
+            },
+            quota_bytes=1,
+        )
+    with pytest.raises(TypeError, match="ciphertext"):
+        crud.store(
+            db_session,
+            values={
+                **base,
+                "kind": "workspace",
+                "ciphertext": None,
+                "manifest": {"metadata": {"metadata_only": False}},
+            },
+            quota_bytes=1,
+        )
+
+
 def test_smuggled_payload_still_counts_against_quota(
     db_session, scope, monkeypatch
 ) -> None:

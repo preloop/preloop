@@ -318,10 +318,33 @@ def _permitted_untracked(repo: Path, root: Path, tracked: set[str]) -> bool:
     return False
 
 
+def _local_only_git_state(repo: Path) -> bool | None:
+    """True when a stash or an unpushed branch commit would be lost on reclone.
+
+    ``git status`` and the untracked walk both skip ``.git``, so those refs
+    are invisible to the worktree check. None means git could not answer,
+    which is treated as not clean.
+    """
+    stash = _git_bytes(repo, "stash", "list")
+    if stash is None:
+        return None
+    if stash.strip():
+        return True
+    unpushed = _git_bytes(
+        repo, "log", "--branches", "--not", "--remotes", "-1", "--format=%H"
+    )
+    if unpushed is None:
+        return None
+    return bool(unpushed.strip())
+
+
 def repo_is_clean(repo: Path, root: Path, expected: str | None) -> bool:
     """True when this checkout matches the cloned commit and has nothing extra."""
     head = _normalize_sha(git_value(repo, "rev-parse", "HEAD"))
     if not expected or head != expected:
+        return False
+    local_only = _local_only_git_state(repo)
+    if local_only is None or local_only:
         return False
     paths = _porcelain_paths(repo)
     tracked = _tracked_paths(repo)

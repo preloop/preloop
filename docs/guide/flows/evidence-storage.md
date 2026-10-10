@@ -169,7 +169,8 @@ threads or accounts, because recovery looks a snapshot up by execution.
 The archive still crosses the wire: the runner cannot prove to the API that
 an earlier upload committed, so the API decides.
 
-A clean checkout whose `HEAD` is still the cloned commit skips the payload.
+A clean checkout whose `HEAD` is still the cloned commit, with no stash and no
+commit that exists only on a local branch, skips the payload.
 The stored row keeps the checkpoint metadata and counts zero ciphertext bytes
 toward `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES`. The marker is
 `PRELOOP_CHECKPOINT skipped clean_checkout`. Open source defaults
