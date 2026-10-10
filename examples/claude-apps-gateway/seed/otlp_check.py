@@ -197,9 +197,12 @@ def relayed() -> int:
         value = identity.get("user.email")
         return str(value).lower() if value else None
 
-    # Pair 1:1, closest in time, as the ingest does.
+    # Pair 1:1, closest in time, as the ingest does. A gateway row that
+    # already carries telemetry is paired with its own event, so a telemetry
+    # row next to it is a different request (in step 6, the request the
+    # spare upstream served while Preloop's key was revoked).
     duplicates = 0
-    taken: set[Any] = set()
+    taken: set[Any] = {gw.id for gw in gateway if "telemetry" in (gw.meta_data or {})}
     for row in sorted(rows, key=lambda r: r.timestamp):
         candidates = [
             gw
