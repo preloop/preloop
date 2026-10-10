@@ -504,6 +504,8 @@ lives in the optional plugin. Candidate deduplication and discovered events
 remain unchanged. Collector assertions preserve provenance and scan gaps, and
 do not establish runtime verification or device attestation.
 
+Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](docs/architecture/callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
+
 ### Restricted external runtime authority
 
 The default-disabled restricted runtime primitive reuses SecretReference policy

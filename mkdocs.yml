@@ -310,6 +310,7 @@ nav:
   - Architecture (for contributors):
       - System overview: architecture/overview.md
       - Data model: architecture/data-model.md
+      - Durable callback receipts: architecture/callback-receipts.md
       - Technical decisions: architecture/decisions.md
       - Agent Control: architecture/agent-control.md
       - Tool configuration and approvals: architecture/approvals.md

@@ -251,7 +251,7 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
         "script_location", str(root / "backend/preloop/models/alembic")
     )
     assert ScriptDirectory.from_config(config).get_heads() == [
-        "20261009_resource_sharing_intent"
+        "20261010_callback_receipt"
     ]
 
 
