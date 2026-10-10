@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Highlights: **Bitbucket Cloud on Copilot host flows** publishes a managed
+branch and pull request from a native Copilot host profile and continues
+review feedback on the originating runner, while **Bitbucket Data Center 10.2
+LTS** arrives as an opt-in tracker with authenticated, replay-safe webhooks
+(behind `PRELOOP_BITBUCKET_DC_ENABLED`). **Native restricted CI credentials**
+bind a machine identity to one project and hosted flow, set up from the
+console, the API or `preloop ci`. **Claude Desktop and Claude apps** can use
+the gateway directly, and **budget denials return `429`** on every gateway
+router. **Codex** keeps ChatGPT prompt-cache affinity, and an **upstream
+Responses WebSocket** relay is available behind `CODEX_UPSTREAM_WEBSOCKET`,
+which is off by default. The console **Cost** page gains a **Models tab** and
+a daily spend strip, accounts can store **attribute-based access rules** (the
+open-source half of ABAC; the evaluator ships in Enterprise), same-named
+**MCP tools** resolve first-wins with shadow warnings and an optional
+`tool_prefix`, and backend CI runs as **18 duration-balanced shards**.
+
+### Breaking or behavior changes
+
+- Model gateway budget denials return `429` with a provider-shaped body and
+  `retry-after` on `/openai/v1`, `/anthropic/v1` and `/gemini/v1beta`,
+  instead of `403`. Policy denials stay `403`. Integrations that match `403`
+  for budgets must also handle `429`
+  ([#1458](https://github.com/preloop/preloop/pull/1458)).
+- OAuth `credential_payload` with the wrong keys is rejected with `422` at
+  write time instead of being stored and failing later
+  ([#1028](https://github.com/preloop/preloop/pull/1028)).
+- `agent_config.workspace_snapshots` defaults to `when_dirty`: a clean
+  checkout already on the code host stores metadata only. Set `always` for
+  the previous behavior or `never` to skip upload
+  ([#1464](https://github.com/preloop/preloop/pull/1464)).
+- Same-named MCP tools across servers in one account now resolve first-wins
+  (oldest active server); later duplicates are marked shadowed unless their
+  server sets `tool_prefix`
+  ([#1390](https://github.com/preloop/preloop/pull/1390)).
+
 ### Security
 
 - WebSocket execution commands now require authentication, the
@@ -746,6 +781,338 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   approval; the read-only config also sets `approval_policy = "never"`
   so a resume cannot wait on a person. Any other value, including the
   preset default `exec`, is unchanged.
+
+### Pull requests by area
+
+Every pull request merged to `main` between `v0.16.0` and this release (325).
+
+#### Gateway
+
+- Opt a plain API key into runtime sessions with X-Preloop-Session-Id ([#922](https://github.com/preloop/preloop/pull/922))
+- Opt plain API keys into runtime sessions with X-Preloop-Session-Id ([#926](https://github.com/preloop/preloop/pull/926))
+- Onboard Codex CLI for Agent Control ([#933](https://github.com/preloop/preloop/pull/933))
+- Codex CLI sidecar and console gate ([#934](https://github.com/preloop/preloop/pull/934))
+- Keep one live Codex OAuth secret across enrollment rows ([#954](https://github.com/preloop/preloop/pull/954))
+- Keep Preloop's Codex OAuth copy in sync with the local ChatGPT login ([#962](https://github.com/preloop/preloop/pull/962))
+- Verify a claude-* identifier upstream before the Claude family autoregister creates a catalog row ([#963](https://github.com/preloop/preloop/pull/963))
+- Agents refresh must prefer a verified family alias, not the longest dated row in the catalog ([#964](https://github.com/preloop/preloop/pull/964))
+- Alert on spend outliers per developer and model ([#971](https://github.com/preloop/preloop/pull/971))
+- Bind API-key and gateway authentication to the key's account ([#991](https://github.com/preloop/preloop/pull/991))
+- Bedrock and Azure OpenAI onboarding guides with an end-to-end smoke check ([#995](https://github.com/preloop/preloop/pull/995))
+- Refresh the upstream price map at runtime and log every miss ([#1003](https://github.com/preloop/preloop/pull/1003))
+- Bound the Codex stream idle wait and name a silent-stream timeout ([#1015](https://github.com/preloop/preloop/pull/1015))
+- Pull Preloop's rotated Codex OAuth bundle back into the local login ([#1030](https://github.com/preloop/preloop/pull/1030))
+- Follow Claude Code stock family defaults ([#1053](https://github.com/preloop/preloop/pull/1053))
+- Accept Codex cross-chat deliveries without call_id ([#1114](https://github.com/preloop/preloop/pull/1114))
+- Fix Claude and Codex subscription recovery without re-onboarding ([#1158](https://github.com/preloop/preloop/pull/1158))
+- Microsoft Entra ID and managed identity auth for Azure OpenAI ([#1168](https://github.com/preloop/preloop/pull/1168))
+- Require live OAuth recovery before offboard cleanup ([#1187](https://github.com/preloop/preloop/pull/1187))
+- User budgets include API-key traffic; reserve the team subject ([#1188](https://github.com/preloop/preloop/pull/1188))
+- Support AWS Bedrock Quickstart API keys ([#1273](https://github.com/preloop/preloop/pull/1273))
+- Fix Responses API translation for openai-compatible providers (unhashable dict in litellm params) ([#1322](https://github.com/preloop/preloop/pull/1322))
+- Diagnose and accept Codex multi-agent deliveries without call_id in Responses history ([#1329](https://github.com/preloop/preloop/pull/1329))
+- Truncate upstream bodies in gateway alerts; pin openai-compatible reasoning wire shape ([#1338](https://github.com/preloop/preloop/pull/1338))
+- Resolve gateway aliases to the account's own model before a system hosted row ([#1371](https://github.com/preloop/preloop/pull/1371))
+- Persist stable gateway aliases for API key model selections ([#1391](https://github.com/preloop/preloop/pull/1391))
+- Expose dropped upstream audit error details ([#1395](https://github.com/preloop/preloop/pull/1395))
+- Normalize Responses API cache and reasoning token details ([#1402](https://github.com/preloop/preloop/pull/1402))
+- Show subscription workload separately from marginal API spend ([#1403](https://github.com/preloop/preloop/pull/1403))
+- Fix Codex MCP canary canonical search tool expectation ([#1406](https://github.com/preloop/preloop/pull/1406))
+- CLI and docs: onboard Claude Desktop model routing ([#1427](https://github.com/preloop/preloop/pull/1427))
+- Anthropic gateway: Claude Desktop and Claude apps gateway upstream compatibility ([#1429](https://github.com/preloop/preloop/pull/1429))
+- E2E harness for Claude apps gateway and Claude Desktop routing ([#1430](https://github.com/preloop/preloop/pull/1430))
+- Keep Codex OAuth prompt-cache affinity (session-id, x-codex-turn-state) ([#1441](https://github.com/preloop/preloop/pull/1441))
+- Upstream Responses WebSocket with incremental relay for the Codex path ([#1457](https://github.com/preloop/preloop/pull/1457))
+- Model gateway: return 429 for budget denials on every router ([#1458](https://github.com/preloop/preloop/pull/1458))
+- Anthropic gateway: accept organization IdP tokens ([#1461](https://github.com/preloop/preloop/pull/1461))
+- OTLP/HTTP ingest for Claude client telemetry ([#1465](https://github.com/preloop/preloop/pull/1465))
+- Pass upstream Responses usage through; expose cache split on indexed records ([#1473](https://github.com/preloop/preloop/pull/1473))
+
+#### Flows and CI
+
+- Route the model and the reasoning effort by complexity label, and make the implementation preset commit as it goes ([#858](https://github.com/preloop/preloop/pull/858))
+- Unprivileged harness pods cannot clone into CRI workingDir ([#867](https://github.com/preloop/preloop/pull/867))
+- Stop empty-allowlist Codex reviews from hanging on MCP and shell ([#873](https://github.com/preloop/preloop/pull/873))
+- Trust reviewer names and continue a session-less PR repair ([#875](https://github.com/preloop/preloop/pull/875))
+- Let Pi and DeepSeek check out a root-owned workspace ([#876](https://github.com/preloop/preloop/pull/876))
+- Retry a follow-up that failed before it stored a session ([#877](https://github.com/preloop/preloop/pull/877))
+- Pick up a follow-up that stopped before the agent ran ([#878](https://github.com/preloop/preloop/pull/878))
+- Per-execution token, turn and cost ceilings ([#879](https://github.com/preloop/preloop/pull/879))
+- Preserve full command result payload on terminal mark ([#880](https://github.com/preloop/preloop/pull/880))
+- Legacy publication upserts execution provenance on continuation, with an explicit mode by provider matrix ([#921](https://github.com/preloop/preloop/pull/921))
+- Legacy publication upserts execution provenance on continuation ([#927](https://github.com/preloop/preloop/pull/927))
+- Fail closed on isolated publication mode for native runner profiles ([#932](https://github.com/preloop/preloop/pull/932))
+- Define the persistent workspace contract for flow execution ([#935](https://github.com/preloop/preloop/pull/935))
+- Fail closed on isolated publication mode for native runner profiles, with or without a stored snapshot ([#936](https://github.com/preloop/preloop/pull/936))
+- Skip an oversized workspace checkpoint instead of failing the run ([#941](https://github.com/preloop/preloop/pull/941))
+- Allow review resumes without checkpoint uploads and show chain cost ([#948](https://github.com/preloop/preloop/pull/948))
+- Implement the persistent workspace contract ([#953](https://github.com/preloop/preloop/pull/953))
+- Bind the published PR deterministically and stop the false transient retry ([#965](https://github.com/preloop/preloop/pull/965))
+- Honor a repository compatibility policy and run version linters when relevant files change ([#969](https://github.com/preloop/preloop/pull/969))
+- Run Copilot CLI from flows: private-runner host execution profile first, container harness second ([#972](https://github.com/preloop/preloop/pull/972))
+- Add a backport preset for release branches ([#973](https://github.com/preloop/preloop/pull/973))
+- Review every non-draft PR on prod from GitHub Actions ([#992](https://github.com/preloop/preloop/pull/992))
+- Add a Perl toolchain to the flow agent image ([#994](https://github.com/preloop/preloop/pull/994))
+- Delete a persistent runner and rotate its token ([#1010](https://github.com/preloop/preloop/pull/1010))
+- Windows and macOS private runners with host execution profiles for Cursor and Copilot CLI ([#1016](https://github.com/preloop/preloop/pull/1016))
+- Ship a ready backend test venv in the flow environment image ([#1024](https://github.com/preloop/preloop/pull/1024))
+- Stop superseded and orphaned workflow runs from filling the runner queue ([#1029](https://github.com/preloop/preloop/pull/1029))
+- Apply the repository binding to host-exec checkouts ([#1031](https://github.com/preloop/preloop/pull/1031))
+- Stop PR review executions when the PR is merged, closed or superseded ([#1034](https://github.com/preloop/preloop/pull/1034))
+- Stop the execution when preloop flow trigger --wait is interrupted ([#1035](https://github.com/preloop/preloop/pull/1035))
+- Match a flow trigger to the repository in its payload ([#1071](https://github.com/preloop/preloop/pull/1071))
+- Runner log lines with NUL bytes no longer lose the batch ([#1200](https://github.com/preloop/preloop/pull/1200))
+- Keep refused resumes off the repair budget; fail runs that never opened their PR ([#1204](https://github.com/preloop/preloop/pull/1204))
+- Ready-for-development spec, risk and readiness tags, opt-in dispatch label ([#1212](https://github.com/preloop/preloop/pull/1212))
+- Scheduled runs carry the previous fire time and a time window ([#1215](https://github.com/preloop/preloop/pull/1215))
+- Audio transcription agent preset ([#1227](https://github.com/preloop/preloop/pull/1227))
+- Trigger_config.labels_all to route issues by tag ([#1246](https://github.com/preloop/preloop/pull/1246))
+- Agent pods: configurable runtimeClassName (Kata / Firecracker / gVisor) and node placement ([#1247](https://github.com/preloop/preloop/pull/1247))
+- Add opt-in Perl toolchain image for Codex and verify image selection ([#1249](https://github.com/preloop/preloop/pull/1249))
+- Let a maintainer opt a fork PR into the prod reviewer with a label ([#1264](https://github.com/preloop/preloop/pull/1264))
+- Add fail-closed restricted CI identity foundation ([#1271](https://github.com/preloop/preloop/pull/1271))
+- Restore CI identity test and scanner compatibility ([#1272](https://github.com/preloop/preloop/pull/1272))
+- Enforce restricted CI REST authorization boundary ([#1274](https://github.com/preloop/preloop/pull/1274))
+- Add native restricted CI setup, recovery and operator verification ([#1316](https://github.com/preloop/preloop/pull/1316))
+- Make execution stop durable: record the request, refuse launch after stop, confirm termination separately ([#1325](https://github.com/preloop/preloop/pull/1325))
+- Enforce timeout_seconds as a wall-clock deadline from launch ([#1326](https://github.com/preloop/preloop/pull/1326))
+- Release the orchestrator transaction before slow work in the runtime-session loop ([#1327](https://github.com/preloop/preloop/pull/1327))
+- Checkpoint client: report HTTP status and reason, never exceed the ingress body cap ([#1337](https://github.com/preloop/preloop/pull/1337))
+- Flow artifact quota refusals report retained, quota and incoming bytes; add account usage endpoint ([#1364](https://github.com/preloop/preloop/pull/1364))
+- Skip duplicate workspace snapshots within a thread ([#1369](https://github.com/preloop/preloop/pull/1369))
+- Alert the owner after N consecutive failures of a flow ([#1428](https://github.com/preloop/preloop/pull/1428))
+- Safe generated branch names; fail when a required PR is skipped ([#1432](https://github.com/preloop/preloop/pull/1432))
+- Chunk large Docker launch scripts like Kubernetes ([#1433](https://github.com/preloop/preloop/pull/1433))
+- Verify a resumed PR branch against its PR base ([#1435](https://github.com/preloop/preloop/pull/1435))
+- Keep platform evidence out of agent commits ([#1436](https://github.com/preloop/preloop/pull/1436))
+- Keep each backend CI shard under seven minutes ([#1445](https://github.com/preloop/preloop/pull/1445))
+- Stop storing the evidence pack twice per hosted exit ([#1462](https://github.com/preloop/preloop/pull/1462))
+- Skip the workspace snapshot when the checkout is already on the code host ([#1464](https://github.com/preloop/preloop/pull/1464))
+- Reclaim root-owned self-hosted workspace before backend checkout ([#1467](https://github.com/preloop/preloop/pull/1467))
+
+#### Console
+
+- List, edit and remove model price overrides ([#860](https://github.com/preloop/preloop/pull/860))
+- Emit absolute og:image and twitter:image URLs ([#866](https://github.com/preloop/preloop/pull/866))
+- Remember flow execution list filters across navigation ([#942](https://github.com/preloop/preloop/pull/942))
+- Show a run's findings and report from its evidence pack ([#947](https://github.com/preloop/preloop/pull/947))
+- Paint the execution page from the detail row and stream the rest ([#966](https://github.com/preloop/preloop/pull/966))
+- Edit review_instructions on the flow form ([#996](https://github.com/preloop/preloop/pull/996))
+- Expose unknown and partial per-issue cost coverage for subscription-backed runs ([#1075](https://github.com/preloop/preloop/pull/1075))
+- Artifacts inline in the session timeline, with count and kind icons in the session header (Closes #1083) ([#1118](https://github.com/preloop/preloop/pull/1118))
+- Exact digest periods and full-window model/agent rankings ([#1140](https://github.com/preloop/preloop/pull/1140))
+- Flow runs dispatched from GitHub Actions show up as "Manual Test Run" in the console ([#1198](https://github.com/preloop/preloop/pull/1198))
+- Make the executions list cost its page, not the table ([#1205](https://github.com/preloop/preloop/pull/1205))
+- Fix continuation navigation and test memory retention ([#1209](https://github.com/preloop/preloop/pull/1209))
+- Make console loading progressive and reduce list API work ([#1225](https://github.com/preloop/preloop/pull/1225))
+- Artifacts page with filters, gallery and empty states ([#1229](https://github.com/preloop/preloop/pull/1229))
+- Fix model rule form: send condition_type and keep PII types and extra conditions on edit ([#1248](https://github.com/preloop/preloop/pull/1248))
+- Running rows on the Flow executions page overlap the model column ([#1252](https://github.com/preloop/preloop/pull/1252))
+- Console UX review: fixes for broken flows, silent failures, governance safety, navigation and accessibility ([#1277](https://github.com/preloop/preloop/pull/1277))
+- Coalesce live audit refreshes so the list renders under traffic ([#1284](https://github.com/preloop/preloop/pull/1284))
+- Sessions and Approvals lists: page past the first 50/100 and label counts honestly ([#1301](https://github.com/preloop/preloop/pull/1301))
+- Console audit list never renders under live traffic: each LIVE event restarts the load and shows the spinner ([#1302](https://github.com/preloop/preloop/pull/1302))
+- Console nav: promote Approvals and Sessions out of "Audit" and add a "Needs attention" entry ([#1303](https://github.com/preloop/preloop/pull/1303))
+- One estimated cost per run across list, header and chain total ([#1305](https://github.com/preloop/preloop/pull/1305))
+- Flow edit form: keep saved trigger events state and validate only what the API requires ([#1370](https://github.com/preloop/preloop/pull/1370))
+- Console nav: Approvals and Sessions back under Audit, drop Needs attention entry, align rows ([#1375](https://github.com/preloop/preloop/pull/1375))
+- New account in the switcher, Subaccounts card on the Account page ([#1381](https://github.com/preloop/preloop/pull/1381))
+- Report explicit edition and add branded console help menu ([#1386](https://github.com/preloop/preloop/pull/1386))
+- Collapse advanced flow settings and guard unsaved changes ([#1392](https://github.com/preloop/preloop/pull/1392))
+- Clarify subscriptions and show hosted model allowance and attribution ([#1394](https://github.com/preloop/preloop/pull/1394))
+- Fix Cost budget discrepancy with Overview ([#1405](https://github.com/preloop/preloop/pull/1405))
+- Models tab, daily spend strip, Spend settings and API usage nav entry ([#1468](https://github.com/preloop/preloop/pull/1468))
+
+#### CLI
+
+- `preloop agents install-runtime --desktop` installs a loopback-only headless desktop; deployment API passes it through ([#901](https://github.com/preloop/preloop/pull/901))
+- Make CLI chain verification canonicalize rows exactly as the server seals them ([#943](https://github.com/preloop/preloop/pull/943))
+- Make CLI JWT logins individually revocable ([#1002](https://github.com/preloop/preloop/pull/1002))
+- Console views and CLI profiles for multi-account and account hierarchy ([#1017](https://github.com/preloop/preloop/pull/1017))
+- Scrub PRELOOP_TOKEN and PRELOOP_URL from CLI unit tests ([#1043](https://github.com/preloop/preloop/pull/1043))
+- Preloop sessions list with server-side filters, live state and steer/attach ids ([#1153](https://github.com/preloop/preloop/pull/1153))
+- Make discovery JSON safe and add offline inventory ([#1190](https://github.com/preloop/preloop/pull/1190))
+- Preloop artifacts put, ls, get ([#1223](https://github.com/preloop/preloop/pull/1223))
+- Sessions attach sends commands to managed agents as new turns ([#1228](https://github.com/preloop/preloop/pull/1228))
+- Approval decisions from the CLI are recorded via console; docs say api ([#1300](https://github.com/preloop/preloop/pull/1300))
+- Synchronize the offboard recovery test fixture ([#1323](https://github.com/preloop/preloop/pull/1323))
+- Keep validated runtime when desktop fails; make desktop install work on Ubuntu 24.04 ([#1361](https://github.com/preloop/preloop/pull/1361))
+- Export offline managed Claude Code hook bundles ([#1439](https://github.com/preloop/preloop/pull/1439))
+
+#### Agent Control
+
+- Usage logs cannot tell a refused tool call from a successful one ([#874](https://github.com/preloop/preloop/pull/874))
+- Add encrypted, account-isolated runtime_session_artifact store ([#899](https://github.com/preloop/preloop/pull/899))
+- Browser_step activity contract, batch ingestion API and search indexing ([#900](https://github.com/preloop/preloop/pull/900))
+- Purge, legal-hold and expiry coverage for runtime_session_artifact ([#907](https://github.com/preloop/preloop/pull/907))
+- Allowlist egress proxy image for sandboxed browser traffic ([#908](https://github.com/preloop/preloop/pull/908))
+- Per-account storage budget for session artifacts with eviction and session marker ([#909](https://github.com/preloop/preloop/pull/909))
+- Advertise desktop capability from runtime plugins and expose it on the managed agent ([#910](https://github.com/preloop/preloop/pull/910))
+- Browser profile , Playwright MCP inside the sandbox, forced through the egress proxy sidecar ([#911](https://github.com/preloop/preloop/pull/911))
+- Resolve repository identity at the permission hook and show it on approvals and the session timeline ([#928](https://github.com/preloop/preloop/pull/928))
+- Aggregation-first session breakdown and hashed daily buckets bring one-year summaries under 300 ms ([#929](https://github.com/preloop/preloop/pull/929))
+- Resolve repository identity at the permission hook and show it on approvals and the session timeline ([#930](https://github.com/preloop/preloop/pull/930))
+- Aggregation-first session breakdown and timeseries query shape with parity tests and one-year benchmark ([#931](https://github.com/preloop/preloop/pull/931))
+- Park long windows when the request is created ([#937](https://github.com/preloop/preloop/pull/937))
+- Add a notify-only action for model-call policies ([#980](https://github.com/preloop/preloop/pull/980))
+- Add account hierarchy, person, grant, share, tag and rule schema ([#999](https://github.com/preloop/preloop/pull/999))
+- Screenshot artifacts on browser steps with per-session bound ([#1005](https://github.com/preloop/preloop/pull/1005))
+- Opt an account in to semantic session search ([#1007](https://github.com/preloop/preloop/pull/1007))
+- Add no-op account hierarchy extension hooks in auth, gateway, budgets, kill switch and usage ([#1018](https://github.com/preloop/preloop/pull/1018))
+- Show originating session and model in approval requests ([#1050](https://github.com/preloop/preloop/pull/1050))
+- Audit tool calls under the name the client called ([#1072](https://github.com/preloop/preloop/pull/1072))
+- Artifact kinds, per-kind caps and media allowlist, labels and provenance columns (Closes #1079) ([#1110](https://github.com/preloop/preloop/pull/1110))
+- Render browser steps and screenshots in the session timeline (Closes #869) ([#1111](https://github.com/preloop/preloop/pull/1111))
+- Artifact deposit and list REST API (Closes #1080) ([#1112](https://github.com/preloop/preloop/pull/1112))
+- Rename search to search_issues and trim search_sessions schema (Closes #1044) ([#1116](https://github.com/preloop/preloop/pull/1116))
+- Index transcript and document artifact text into session search with label filters (Closes #1082) ([#1117](https://github.com/preloop/preloop/pull/1117))
+- Live session UX: explicit model activity, structured tool cards, and inline approvals ([#1131](https://github.com/preloop/preloop/pull/1131))
+- Show live session tools, processing and inline approvals ([#1132](https://github.com/preloop/preloop/pull/1132))
+- Bound policy-notice and spend-outlier digest sections to one account and reporting window ([#1154](https://github.com/preloop/preloop/pull/1154))
+- Opt-in discovery reporting and agent.discovered event ([#1170](https://github.com/preloop/preloop/pull/1170))
+- Disclose independent agent control support and probe evidence ([#1189](https://github.com/preloop/preloop/pull/1189))
+- Allow overriding governance policies per flow ([#1214](https://github.com/preloop/preloop/pull/1214))
+- Account-wide artifact search endpoint ([#1216](https://github.com/preloop/preloop/pull/1216))
+- Artifact counts and kind icons on the session list ([#1219](https://github.com/preloop/preloop/pull/1219))
+- Per-account opt-in for storing audio artifacts ([#1220](https://github.com/preloop/preloop/pull/1220))
+- Include session artifacts in evidence export with per-file sha256 and an A2A manifest (Closes #1088) ([#1221](https://github.com/preloop/preloop/pull/1221))
+- Scheduled transcript evaluation preset (suggestions via ask_user, actions via request_approval, report artifact) ([#1224](https://github.com/preloop/preloop/pull/1224))
+- Audit policy apply, rollback and version deletion ([#1242](https://github.com/preloop/preloop/pull/1242))
+- Show standalone policy denies, search tool name while typing ([#1251](https://github.com/preloop/preloop/pull/1251))
+- Render browser_step rows inline in the session chat view with screenshot lightbox and thumbnail strip ([#1255](https://github.com/preloop/preloop/pull/1255))
+- Let a conductor steer the runs it started (lineage, list_sessions, spawn-time id) ([#1256](https://github.com/preloop/preloop/pull/1256))
+- Add a shared sensitive-data detector library with regulated types, custom patterns and keywords ([#1257](https://github.com/preloop/preloop/pull/1257))
+- Add a redact action and redact sensitive data on every storage write path ([#1261](https://github.com/preloop/preloop/pull/1261))
+- Add reference-only logging for selected tools, servers and agents ([#1263](https://github.com/preloop/preloop/pull/1263))
+- Keep result fields and matched rule on reference-only tool_call rows ([#1373](https://github.com/preloop/preloop/pull/1373))
+- Keep rule saves open and test draft policies without side effects ([#1389](https://github.com/preloop/preloop/pull/1389))
+- Validated account access rules and committed H4 invalidation ([#1396](https://github.com/preloop/preloop/pull/1396))
+- Let a parked flow run its approved tool call ([#1431](https://github.com/preloop/preloop/pull/1431))
+- Enforce shared-resource boundaries and consumer runtime attribution ([#1448](https://github.com/preloop/preloop/pull/1448))
+- List policy versions from preloop policy list ([#1460](https://github.com/preloop/preloop/pull/1460))
+
+#### Integrations
+
+- Onboard GitHub Copilot CLI through the MCP firewall ([#917](https://github.com/preloop/preloop/pull/917))
+- Record Copilot CLI sessions and gate native tool calls ([#919](https://github.com/preloop/preloop/pull/919))
+- Point the Copilot cloud agent at Preloop MCP ([#920](https://github.com/preloop/preloop/pull/920))
+- Roll up cost and cycle time per tracker issue ([#974](https://github.com/preloop/preloop/pull/974))
+- Import GitHub Copilot usage, seats, and premium request spend ([#975](https://github.com/preloop/preloop/pull/975))
+- Bind a Jira project to a code host repository ([#981](https://github.com/preloop/preloop/pull/981))
+- Add a Bitbucket Cloud tracker with pull request review ([#982](https://github.com/preloop/preloop/pull/982))
+- Honor global flags before preloop copilot and close out #896 ([#997](https://github.com/preloop/preloop/pull/997))
+- Persist edits from the console and surface the real registration error ([#1011](https://github.com/preloop/preloop/pull/1011))
+- Make Copilot host execution profiles complete for review and implementation flows ([#1020](https://github.com/preloop/preloop/pull/1020))
+- Bitbucket pull request creation, publication and feedback paths ([#1025](https://github.com/preloop/preloop/pull/1025))
+- Derive browser_step rows from Playwright MCP tool calls in the firewall ([#1033](https://github.com/preloop/preloop/pull/1033))
+- Fix GitHub App tracker installation ID validation ([#1052](https://github.com/preloop/preloop/pull/1052))
+- Correct Copilot flow MCP coverage and document publication and cost boundaries ([#1074](https://github.com/preloop/preloop/pull/1074))
+- Warehouse-sim MCP server with synthetic transcripts for artifact demos and tests (Closes #1091) ([#1108](https://github.com/preloop/preloop/pull/1108))
+- Artifact content shape mapping to MCP ContentBlock, A2A Part and OTel GenAI parts (Closes #1078) ([#1109](https://github.com/preloop/preloop/pull/1109))
+- Deposit_artifact builtin tool for agents (Closes #1081) ([#1115](https://github.com/preloop/preloop/pull/1115))
+- Let webhook receivers decide with one documented call ([#1129](https://github.com/preloop/preloop/pull/1129))
+- Forward upstream tool errors and audit their real outcome ([#1147](https://github.com/preloop/preloop/pull/1147))
+- Add opt-in Bitbucket Data Center 10.2 LTS provider ([#1157](https://github.com/preloop/preloop/pull/1157))
+- Agent.onboarded event when an agent is enrolled and validated ([#1169](https://github.com/preloop/preloop/pull/1169))
+- Add governed event-driven employees and private chat integrations ([#1178](https://github.com/preloop/preloop/pull/1178))
+- One row per provider issue; triage stores unsynced deliveries ([#1199](https://github.com/preloop/preloop/pull/1199))
+- Browser Use adapter that reports steps and screenshots to the session timeline ([#1217](https://github.com/preloop/preloop/pull/1217))
+- Search_artifacts and get_artifact builtin tools with label and time-window filters ([#1218](https://github.com/preloop/preloop/pull/1218))
+- Skyvern importer that attaches task steps, screenshots and artifacts to a session ([#1222](https://github.com/preloop/preloop/pull/1222))
+- Publish paths for the Codex sidecar and Nanobot plugin ([#1226](https://github.com/preloop/preloop/pull/1226))
+- Resolve policy references to existing MCP servers and workflows ([#1240](https://github.com/preloop/preloop/pull/1240))
+- GET /api/v1/mcp-servers/{id}/tools returns 500: UUID vs str in MCPToolResponse ([#1241](https://github.com/preloop/preloop/pull/1241))
+- Define issue cycle-time semantics and reconcile a Jira and Bitbucket export ([#1245](https://github.com/preloop/preloop/pull/1245))
+- Add authenticated Bitbucket Data Center webhooks with replay-safe triggers ([#1253](https://github.com/preloop/preloop/pull/1253))
+- Feed mapped Copilot premium-request spend into outlier evaluation with delayed-day replay ([#1254](https://github.com/preloop/preloop/pull/1254))
+- Run sensitive-data detectors on MCP tool arguments and results ([#1258](https://github.com/preloop/preloop/pull/1258))
+- Wire managed Bitbucket Cloud grants through onboarding, REST and late Git publication ([#1260](https://github.com/preloop/preloop/pull/1260))
+- Approval request summary stays null when the model summary fails; fallback only used for the webhook ([#1304](https://github.com/preloop/preloop/pull/1304))
+- Pick up MCP server config changes, route proxied tools at call time, audit refusals ([#1372](https://github.com/preloop/preloop/pull/1372))
+- Trigger.dev integration guide and example ([#1385](https://github.com/preloop/preloop/pull/1385))
+- Same-named MCP tools: first-wins, shadowed warnings, explicit tool_prefix ([#1390](https://github.com/preloop/preloop/pull/1390))
+- Bind Jira-triggered PRs to the bound code-host repository ([#1434](https://github.com/preloop/preloop/pull/1434))
+- Run the implementer on a Jira issue of a bound project ([#1437](https://github.com/preloop/preloop/pull/1437))
+- Add durable callback receipts and unique signing bindings ([#1451](https://github.com/preloop/preloop/pull/1451))
+- Import Claude Code analytics from the Anthropic Admin API ([#1459](https://github.com/preloop/preloop/pull/1459))
+- Managed Bitbucket publication for Copilot host profiles (#1069, part 1) ([#1463](https://github.com/preloop/preloop/pull/1463))
+- Copilot host feedback continuation on the originating runner (#1069, part 2) ([#1466](https://github.com/preloop/preloop/pull/1466))
+- Document VS Code Copilot Chat manual BYOK ([#1470](https://github.com/preloop/preloop/pull/1470))
+- Let restricted CI credentials reach the webhook subscription handlers ([#1471](https://github.com/preloop/preloop/pull/1471))
+
+#### Security
+
+- Pin harness image dependencies and clear CodeQL quality findings ([#902](https://github.com/preloop/preloop/pull/902))
+- Audit integrity, retention, legal holds and signed exports without the CLI ([#944](https://github.com/preloop/preloop/pull/944))
+- Pass our own Release Security Audit (per-component SBOM suppliers, pip/setuptools in the runtime image, build-only npm advisories) ([#945](https://github.com/preloop/preloop/pull/945))
+- VEX for undici-types git-range matches and drop the vulnerable lodash.camelcase ([#968](https://github.com/preloop/preloop/pull/968))
+- Count team-granted roles in has_permission ([#989](https://github.com/preloop/preloop/pull/989))
+- Resolve email verification and password reset to an exact user row ([#990](https://github.com/preloop/preloop/pull/990))
+- Remove the unused OSS get_user_permissions helper ([#1000](https://github.com/preloop/preloop/pull/1000))
+- Fix get_user_permissions to share the team-role resolver ([#1008](https://github.com/preloop/preloop/pull/1008))
+- Enforce MCP scopes on API keys ([#1014](https://github.com/preloop/preloop/pull/1014))
+- Close the CRA gap register items on our own repository (runbooks, default credentials, repo hygiene, secrets baseline, workflow audit) ([#1022](https://github.com/preloop/preloop/pull/1022))
+- Read the account from the auth context in the content policy ([#1023](https://github.com/preloop/preloop/pull/1023))
+- Validate OAuth credential_payload keys at write time ([#1028](https://github.com/preloop/preloop/pull/1028))
+- Redact auth_config secrets on every read path ([#1141](https://github.com/preloop/preloop/pull/1141))
+- Dispatch channel_configs webhooks, show signing secret once, record real decision channel ([#1143](https://github.com/preloop/preloop/pull/1143))
+- Add tenant-bound managed OAuth grants and atomic rotation CRUD ([#1156](https://github.com/preloop/preloop/pull/1156))
+- Enforce account scoping in project and organization lookups ([#1191](https://github.com/preloop/preloop/pull/1191))
+- Server-side sign out with a generic session hook ([#1259](https://github.com/preloop/preloop/pull/1259))
+- Clear Scorecard dependency and pinning findings ([#1276](https://github.com/preloop/preloop/pull/1276))
+- Bind restricted CI review executions to approved heads and principal ownership ([#1279](https://github.com/preloop/preloop/pull/1279))
+- Fix main frontend test and open security findings ([#1320](https://github.com/preloop/preloop/pull/1320))
+- Require authenticated owner for WebSocket execution commands ([#1321](https://github.com/preloop/preloop/pull/1321))
+- Keep CodeQL on merged PR heads and upgrade nanobot-ai ([#1330](https://github.com/preloop/preloop/pull/1330))
+- Redact database credentials from connection log lines ([#1374](https://github.com/preloop/preloop/pull/1374))
+- Persist provider receipt anchors for managed OAuth expiry ([#1388](https://github.com/preloop/preloop/pull/1388))
+- Enforce delegated grant introspection on MCP tool dispatch ([#1404](https://github.com/preloop/preloop/pull/1404))
+- Enforce one-time restricted runtime authority at exact MCP boundaries ([#1456](https://github.com/preloop/preloop/pull/1456))
+
+#### Docs/Ops
+
+- Open or update a tracking issue when the freshness gate fails ([#856](https://github.com/preloop/preloop/pull/856))
+- Keep changelog notes on disk to avoid ARG_MAX ([#865](https://github.com/preloop/preloop/pull/865))
+- Honest plaintext switch for the Kubernetes evidence log channel ([#923](https://github.com/preloop/preloop/pull/923))
+- Measure SBOM minimum elements on the platform and derive severity counts from findings ([#939](https://github.com/preloop/preloop/pull/939))
+- Send the cost digest on Monday, not after every deploy ([#940](https://github.com/preloop/preloop/pull/940))
+- Keep supplier contacts schema-valid (urls are not emails) ([#946](https://github.com/preloop/preloop/pull/946))
+- Resolve the findings of the 2026-09-25 full-repo code health review ([#970](https://github.com/preloop/preloop/pull/970))
+- Make three intermittently failing main tests deterministic ([#998](https://github.com/preloop/preloop/pull/998))
+- Copilot coverage matrix (what Preloop governs and meters per surface) ([#1001](https://github.com/preloop/preloop/pull/1001))
+- Document the compatibility policy for public surfaces ([#1004](https://github.com/preloop/preloop/pull/1004))
+- Mark findings and design-note guide pages as non-normative ([#1006](https://github.com/preloop/preloop/pull/1006))
+- Accept numeric-string epss on findings with a recorded correction instead of failing the audit ([#1009](https://github.com/preloop/preloop/pull/1009))
+- Resolve the three findings of the 2026-09-27 code health rerun ([#1012](https://github.com/preloop/preloop/pull/1012))
+- Accurate PR timestamps, terminal-path hooks and a scheduled rebuild for per-issue cost and cycle time ([#1013](https://github.com/preloop/preloop/pull/1013))
+- Findings closed by valid VEX and input-absent cross-checks no longer hold a clean audit at pass_with_findings ([#1019](https://github.com/preloop/preloop/pull/1019))
+- Fill component licenses from package metadata so the license flag clears ([#1021](https://github.com/preloop/preloop/pull/1021))
+- Make the OSS repo the single source of the documentation site ([#1046](https://github.com/preloop/preloop/pull/1046))
+- Refresh documentation and landing screenshots from the 0.16 console ([#1047](https://github.com/preloop/preloop/pull/1047))
+- Increase agent memory and refresh GitHub publication credentials ([#1051](https://github.com/preloop/preloop/pull/1051))
+- Session artifacts guide and fix the browser-agents console claim (Closes #1090) ([#1119](https://github.com/preloop/preloop/pull/1119))
+- Trim warehouse-sim to the fixture, move demo seeding private ([#1146](https://github.com/preloop/preloop/pull/1146))
+- Stop 500 on POST /projects and add repository transfer ([#1160](https://github.com/preloop/preloop/pull/1160))
+- OTLP attribute stability policy and drift test ([#1166](https://github.com/preloop/preloop/pull/1166))
+- Reference sizing for Helm on AKS ([#1167](https://github.com/preloop/preloop/pull/1167))
+- Restore the User reference in websockets (main CI red since #1155 merge) ([#1206](https://github.com/preloop/preloop/pull/1206))
+- Serve Swagger UI and ReDoc assets locally so API docs work on air-gapped installs ([#1306](https://github.com/preloop/preloop/pull/1306))
+- Stamp LLM##:2026 identifiers on the OWASP coverage page ([#1313](https://github.com/preloop/preloop/pull/1313))
+- Give vendored braces a supplier so the release SBOM passes ([#1324](https://github.com/preloop/preloop/pull/1324))
+- Fix owner websocket stop test teardown mock ([#1328](https://github.com/preloop/preloop/pull/1328))
+- Native Windows support wording and public session-content commitment ([#1363](https://github.com/preloop/preloop/pull/1363))
+- Compare footer block and VS_PAGE_META entries for new comparison pages ([#1387](https://github.com/preloop/preloop/pull/1387))
+- Explain sensitive-data detection and reference logging ([#1393](https://github.com/preloop/preloop/pull/1393))
+- Preserve versioned safe source observations ([#1442](https://github.com/preloop/preloop/pull/1442))
+- Reclaim self-hosted disk before backend tests ([#1443](https://github.com/preloop/preloop/pull/1443))
+- Guide experimental Anthropic governance pilots and evidence ([#1450](https://github.com/preloop/preloop/pull/1450))
+- Measure ticket creation to sampled configured-policy PR readiness ([#1452](https://github.com/preloop/preloop/pull/1452))
+- Revert "Reclaim self-hosted disk before backend tests" ([#1453](https://github.com/preloop/preloop/pull/1453))
+- ADR 0001 and compatibility policy text for API versioning before 1.0 ([#1469](https://github.com/preloop/preloop/pull/1469))
+
+#### Dependencies
+
+- Dependency and toolchain updates: [#861](https://github.com/preloop/preloop/pull/861), [#863](https://github.com/preloop/preloop/pull/863), [#864](https://github.com/preloop/preloop/pull/864), [#1036](https://github.com/preloop/preloop/pull/1036), [#1037](https://github.com/preloop/preloop/pull/1037), [#1038](https://github.com/preloop/preloop/pull/1038), [#1039](https://github.com/preloop/preloop/pull/1039), [#1040](https://github.com/preloop/preloop/pull/1040), [#1041](https://github.com/preloop/preloop/pull/1041), [#1042](https://github.com/preloop/preloop/pull/1042), [#1049](https://github.com/preloop/preloop/pull/1049), [#1062](https://github.com/preloop/preloop/pull/1062), [#1144](https://github.com/preloop/preloop/pull/1144), [#1210](https://github.com/preloop/preloop/pull/1210), [#1307](https://github.com/preloop/preloop/pull/1307), [#1309](https://github.com/preloop/preloop/pull/1309), [#1310](https://github.com/preloop/preloop/pull/1310), [#1311](https://github.com/preloop/preloop/pull/1311), [#1312](https://github.com/preloop/preloop/pull/1312), [#1318](https://github.com/preloop/preloop/pull/1318), [#1376](https://github.com/preloop/preloop/pull/1376), [#1377](https://github.com/preloop/preloop/pull/1377), [#1378](https://github.com/preloop/preloop/pull/1378), [#1379](https://github.com/preloop/preloop/pull/1379), [#1380](https://github.com/preloop/preloop/pull/1380).
 
 ## [0.16.0] - 2026-09-21
 
