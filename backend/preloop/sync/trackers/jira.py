@@ -14,6 +14,7 @@ import httpx
 from jira import JIRA, JIRAError
 from sqlalchemy.orm import Session
 
+from preloop.schemas.readiness import TicketCreationEvidence
 from preloop.models.crud import crud_webhook, crud_organization, crud_project
 from preloop.services.issue_estimate import synced_estimate_fields
 from preloop.schemas.tracker_models import (
@@ -34,6 +35,7 @@ from ..exceptions import (
     TrackerAuthenticationError,
     TrackerConnectionError,
     TrackerResponseError,
+    TrackerError,
 )
 from .base import BaseTracker
 from .utils import (
@@ -365,6 +367,40 @@ class JiraTracker(BaseTracker):
         ]
 
         return issues, total
+
+    async def get_ticket_creation_evidence(
+        self, issue_key: str
+    ) -> "TicketCreationEvidence":
+        """Fetch authoritative Jira creation without the mapper's fallback."""
+        from datetime import UTC
+        from uuid import UUID
+
+        from preloop.schemas.readiness import parse_jira_created
+
+        from urllib.parse import quote
+
+        reason = "ticket_creation_unavailable"
+        created = None
+        try:
+            data = await self._make_request(
+                "GET",
+                f"issue/{quote(issue_key, safe='')}",
+                params={"fields": "created"},
+                api_version="3",
+            )
+            if isinstance(data, dict) and data.get("key") == issue_key:
+                created = parse_jira_created((data.get("fields") or {}).get("created"))
+            else:
+                reason = "ticket_identity_mismatch"
+        except TrackerError:
+            reason = "ticket_creation_unreadable"
+        return TicketCreationEvidence(
+            created_at=created,
+            tracker_id=UUID(self.tracker_id),
+            issue_key=issue_key,
+            retrieved_at=datetime.now(UTC),
+            reason=None if created is not None else reason,
+        )
 
     async def get_issue(self, issue_id: str) -> Issue:
         """Get a specific issue by ID or key.

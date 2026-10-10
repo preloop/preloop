@@ -9085,6 +9085,130 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/projects/{project_id}/readiness-policy:
+    get:
+      tags:
+      - Projects
+      summary: Get Readiness Policy
+      description: Read this project's immutable configured-policy revision.
+      operationId: get_readiness_policy_api_v1_projects__project_id__readiness_policy_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/ReadinessPolicy'
+                - type: 'null'
+                title: Response Get Readiness Policy Api V1 Projects  Project Id  Readiness
+                  Policy Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Projects
+      summary: Put Readiness Policy
+      description: Authorize and audit a new policy series; old observations stay
+        unchanged.
+      operationId: put_readiness_policy_api_v1_projects__project_id__readiness_policy_put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReadinessPolicyInput'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessPolicy'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    delete:
+      tags:
+      - Projects
+      summary: Disable Readiness Policy
+      description: Unconfigure current observation while retaining audit policy series.
+      operationId: disable_readiness_policy_api_v1_projects__project_id__readiness_policy_delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: boolean
+                title: Response Disable Readiness Policy Api V1 Projects  Project
+                  Id  Readiness Policy Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/projects/{project_id}/pull-requests:
     get:
       tags:
@@ -12894,6 +13018,45 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/cost/by-issue/readiness-observations/{observation_id}:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Get Readiness Observation
+      description: Retained compact sampled evidence, including historical first-ready
+        gates.
+      operationId: get_readiness_observation_api_v1_cost_by_issue_readiness_observations__observation_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: observation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Observation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessObservation'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/cost/copilot:
     get:
@@ -28546,6 +28709,58 @@ components:
         ``extra=''forbid''``: a misspelled key here is an issue filed somewhere
 
         else, or not at all.'
+    GateEvidence:
+      properties:
+        name:
+          type: string
+          title: Name
+        state:
+          type: string
+          enum:
+          - pass
+          - fail
+          - unknown
+          title: State
+        source:
+          type: string
+          title: Source
+        retrieved_at:
+          type: string
+          format: date-time
+          title: Retrieved At
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        source_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Sha
+        target_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Sha
+        probe_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Probe Version
+        strategy:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Strategy
+      type: object
+      required:
+      - name
+      - state
+      - source
+      - retrieved_at
+      title: GateEvidence
+      description: One retrieval; gates are sampled, not an atomic forge snapshot.
     GatewayBudgetSummary:
       properties:
         monthly_limit_usd:
@@ -30552,6 +30767,96 @@ components:
           title: Estimate Points Source
           description: Where estimate_points was read, for example jira:customfield_10016,
             gitlab:weight or label:points:.
+        ticket_created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ticket Created At
+        ticket_created_at_provenance:
+          anyOf:
+          - $ref: '#/components/schemas/TicketCreationEvidence'
+          - type: 'null'
+        first_ready_observed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: First Ready Observed At
+        ticket_to_observed_ready_hours:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Ticket To Observed Ready Hours
+          description: Elapsed UTC hours to first complete sampled ready observation;
+            not an exact forge transition.
+        readiness_scope:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Readiness Scope
+        readiness_policy_version:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Readiness Policy Version
+        first_ready_source_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Ready Source Sha
+        first_ready_target_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: First Ready Target Sha
+        first_ready_observation_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: First Ready Observation Id
+        latest_readiness_state:
+          type: string
+          title: Latest Readiness State
+          default: unknown
+        latest_readiness_coverage:
+          type: string
+          title: Latest Readiness Coverage
+          default: unsupported
+        latest_readiness_observed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Latest Readiness Observed At
+        forge_coverage:
+          type: string
+          title: Forge Coverage
+          default: unknown
+        readiness_unknown_reasons:
+          items:
+            type: string
+          type: array
+          title: Readiness Unknown Reasons
+        readiness_observation_started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Readiness Observation Started At
+        readiness_observation_completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Readiness Observation Completed At
+        readiness_observations:
+          items:
+            $ref: '#/components/schemas/ReadinessObservation'
+          type: array
+          title: Readiness Observations
         execution_ids:
           anyOf:
           - items:
@@ -34881,6 +35186,166 @@ components:
       - issue_revision
       title: ReadinessContract
       description: A proposal can be incomplete; readiness explains each missing decision.
+    ReadinessObservation:
+      properties:
+        observation_id:
+          type: string
+          format: uuid
+          title: Observation Id
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        tracker_id:
+          type: string
+          format: uuid
+          title: Tracker Id
+        repository:
+          type: string
+          title: Repository
+        pr_id:
+          type: integer
+          title: Pr Id
+        source_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Sha
+        target_sha:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Sha
+        policy_version:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Policy Version
+        scope:
+          type: string
+          enum:
+          - configured_policy
+          - provider_enforced
+          title: Scope
+          default: configured_policy
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        completed_at:
+          type: string
+          format: date-time
+          title: Completed At
+        state:
+          type: string
+          enum:
+          - ready
+          - not_ready
+          - unknown
+          title: State
+        coverage:
+          type: string
+          enum:
+          - complete
+          - partial
+          - unsupported
+          title: Coverage
+        forge_coverage:
+          type: string
+          const: unknown
+          title: Forge Coverage
+          default: unknown
+        gates:
+          items:
+            $ref: '#/components/schemas/GateEvidence'
+          type: array
+          title: Gates
+          default: []
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+          default: []
+      type: object
+      required:
+      - observation_id
+      - account_id
+      - tracker_id
+      - repository
+      - pr_id
+      - source_sha
+      - target_sha
+      - policy_version
+      - started_at
+      - completed_at
+      - state
+      - coverage
+      title: ReadinessObservation
+      description: Read-only assessment for exact identities and one captured policy.
+    ReadinessPolicy:
+      properties:
+        required_build_keys:
+          items:
+            type: string
+          type: array
+          title: Required Build Keys
+        minimum_approvals:
+          type: integer
+          minimum: 0.0
+          title: Minimum Approvals
+        changes_requests_block:
+          type: boolean
+          title: Changes Requests Block
+        unresolved_tasks_block:
+          type: boolean
+          title: Unresolved Tasks Block
+        version:
+          type: string
+          format: uuid
+          title: Version
+        scope:
+          type: string
+          const: configured_policy
+          title: Scope
+          default: configured_policy
+      additionalProperties: false
+      type: object
+      required:
+      - required_build_keys
+      - minimum_approvals
+      - changes_requests_block
+      - unresolved_tasks_block
+      - version
+      title: ReadinessPolicy
+      description: Immutable opt-in policy. Missing keys are deliberately not defaults.
+    ReadinessPolicyInput:
+      properties:
+        required_build_keys:
+          items:
+            type: string
+          type: array
+          title: Required Build Keys
+        minimum_approvals:
+          type: integer
+          minimum: 0.0
+          title: Minimum Approvals
+        changes_requests_block:
+          type: boolean
+          title: Changes Requests Block
+        unresolved_tasks_block:
+          type: boolean
+          title: Unresolved Tasks Block
+      additionalProperties: false
+      type: object
+      required:
+      - required_build_keys
+      - minimum_approvals
+      - changes_requests_block
+      - unresolved_tasks_block
+      title: ReadinessPolicyInput
+      description: Every gate choice must be explicit when opting a project in.
     ReadyRequest:
       properties:
         issue_revision:
@@ -40214,6 +40679,43 @@ components:
       - input
       title: TextToSpeechRequest
       description: Text payload for server-side TTS fallback.
+    TicketCreationEvidence:
+      properties:
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        tracker_id:
+          type: string
+          format: uuid
+          title: Tracker Id
+        issue_key:
+          type: string
+          title: Issue Key
+        retrieved_at:
+          type: string
+          format: date-time
+          title: Retrieved At
+        source_field:
+          type: string
+          const: fields.created
+          title: Source Field
+          default: fields.created
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - created_at
+      - tracker_id
+      - issue_key
+      - retrieved_at
+      title: TicketCreationEvidence
+      description: Authoritative Jira field, distinct from local/parser creation times.
     Token:
       properties:
         access_token:

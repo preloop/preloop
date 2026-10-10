@@ -424,6 +424,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             service_role,
         )
 
+    readiness_sweeper = None
+    if not is_testing and is_api_role and settings.ticket_readiness_enabled:
+        from preloop.services.readiness.scheduler import ReadinessSweeper
+
+        readiness_sweeper = ReadinessSweeper()
+        await readiness_sweeper.start()
+
     # Start the session search backfill sweeper (skip in testing mode). It
     # walks existing session history into the search corpus, newest first,
     # inside a row and wall-clock budget. Disabled unless
@@ -751,6 +758,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error(
                 f"Error stopping discovery candidate purge: {e}", exc_info=True
             )
+
+    if readiness_sweeper:
+        await readiness_sweeper.stop()
 
     if not is_testing and issue_cost_rebuild_sweeper:
         try:

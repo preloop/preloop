@@ -63,6 +63,7 @@ class TestGetFeatures:
                 "multi_account": False,
                 "account_hierarchy": False,
                 "abac_rules": False,
+                "ticket_readiness": False,
             },
         }
         mock_get_plugin_manager.assert_called_once()
@@ -101,6 +102,7 @@ class TestGetFeatures:
                 "multi_account": False,
                 "account_hierarchy": False,
                 "abac_rules": False,
+                "ticket_readiness": False,
             },
         }
 
@@ -131,7 +133,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 16
+        assert len(result["features"]) == 17
         assert result["features"]["policy_simulation"] is True
         assert result["features"]["session_optimization"] is True
         assert result["features"]["chat_connections"] is True

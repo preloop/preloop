@@ -259,6 +259,8 @@ Chat assistant connections for Slack, Mattermost, and Discord are described in
 [Chat connections](docs/chat-connections.md), including identity linking, scoped
 questions, approval votes, operator notes, and the separate durable worker.
 
+Ticket readiness reporting can be explicitly enabled with versioned project policies. See [sampled ticket readiness](docs/guide/ticket-readiness.md) for coverage, provenance and runtime requirements.
+
 ### Restricted external runtime credentials (experimental)
 
 Trusted provider adapters can exchange verified external session identity through
