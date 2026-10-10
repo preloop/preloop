@@ -223,8 +223,10 @@ jobs:
           # PRs / non-main refs: force hosted while the self-hosted pool
           # cancels overflow shards before acquisition. main keeps the
           # CI_SELF_HOSTED_TESTS repository-variable knob above.
+          SELF_HOSTED_REASON=""
           if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
             SELF_HOSTED_TESTS=false
+            SELF_HOSTED_REASON="non-main ref ${GITHUB_REF:-unknown} forces hosted while self-hosted overflow flakes"
           fi
 
           # Eighteen shards. Measured on the green main run 37987118309:
@@ -268,7 +270,7 @@ jobs:
           }
 
           if [ "${SELF_HOSTED_TESTS:-true}" = "false" ]; then
-            emit 0 "repository variable CI_SELF_HOSTED_TESTS is false"
+            emit 0 "${SELF_HOSTED_REASON:-repository variable CI_SELF_HOSTED_TESTS is false}"
           fi
 
           if [ -z "${GH_TOKEN:-}" ]; then
