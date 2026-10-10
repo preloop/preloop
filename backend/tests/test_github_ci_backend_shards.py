@@ -174,11 +174,22 @@ def test_docs_lock_does_not_select_backend_shards() -> None:
         assert filter_step["with"].get("predicate-quantifier") == "some-with-excludes"
 
 
-def test_build_and_push_waits_for_combined_backend_coverage() -> None:
-    """Image publish must not proceed on a shard pass with incomplete coverage."""
-    needs = load_ci_jobs()["build-and-push"]["needs"]
-    assert "test-backend-coverage" in needs
-    assert "test-backend" not in needs
+def test_ci_does_not_publish_container_images() -> None:
+    """CI must not push images. Release.yml does that, on version tags only.
+
+    The old ``build-and-push`` job published after the coverage floor. A
+    shard pass is no longer an image publish, so the job and its registry
+    login are gone.
+    """
+    jobs = load_ci_jobs()
+    assert "build-and-push" not in jobs
+    for name, job in jobs.items():
+        permissions = job.get("permissions") or {}
+        assert "packages" not in permissions, name
+        for step in job.get("steps") or []:
+            uses = str(step.get("uses") or "")
+            assert "docker/build-push-action" not in uses, name
+            assert "docker/login-action" not in uses, name
 
 
 def test_ci_aggregator_fails_when_changes_fails() -> None:
