@@ -4,7 +4,7 @@
 # with a throwaway HOME; the host's own Claude config, managed preferences,
 # registry and /etc/claude-desktop are never read or written.
 #
-# Usage: ./verify.sh            bring the stack up (if needed) and run 1-6
+# Usage: ./verify.sh            bring the stack up (if needed) and run 1-7
 #        STRICT=1 ./verify.sh   treat PENDING (backend contract absent) as FAIL
 #        KEEP_UP=0 ./verify.sh  run `docker compose down -v` at the end
 set -uo pipefail
@@ -61,6 +61,7 @@ SEED="$(DC exec -T -e PRELOOP_UPSTREAM_KEY -e PRELOOP_UPSTREAM_SECRET preloop py
 ADMIN_KEY="$(jq -r .admin_key <<<"$SEED")"
 DIRECT_KEY="$(jq -r .direct_key <<<"$SEED")"
 DIRECT_KEY_ID="$(jq -r .direct_key_id <<<"$SEED")"
+TELEMETRY_KEY_ID="$(jq -r .telemetry_key_id <<<"$SEED")"
 TRUSTED_KEY_ID="$(jq -r .trusted_key_id <<<"$SEED")"
 [ -n "$ADMIN_KEY" ] && [ "$ADMIN_KEY" != null ] || { echo "seed failed: $SEED" >&2; exit 2; }
 
@@ -179,6 +180,9 @@ log "  - x-claude-code-session-id forwarded: $(grep -q 'x-claude-code-session-id
 log "  - user-agent forwarded: $(grep -qw 'user-agent' <<<"$NAMES" && echo "yes ($UAS)" || echo no)"
 log "  - paths: $PATHS"
 
+# What the gateway relayed during steps 2-3 (step 6 recreates the relay).
+RELAYED="$(DC logs --no-log-prefix telemetry-relay 2>/dev/null | grep -o 'POST /api/v1/telemetry/otlp/v1/[a-z]* HTTP/1.1" [0-9]*' | sed 's/ HTTP\/1.1"//' | sort | uniq -c | awk '{printf "%s%s %s x%s", sep, $3, $4, $1; sep=", "}')"
+
 # ------------------------------------------------------- step 6: rollback
 DC exec -T -e PRELOOP_UPSTREAM_KEY preloop python /harness-seed/seed.py --revoke-upstream >/dev/null 2>&1
 curl -s -X DELETE "$SPARE/_harness/requests" >/dev/null
@@ -189,7 +193,7 @@ check "6 key revoked" 0 "Preloop answers 401 and the gateway fails over to the n
 DC exec -T -e PRELOOP_UPSTREAM_KEY preloop python /harness-seed/seed.py --restore-upstream >/dev/null 2>&1
 curl -s -X DELETE "$RECORDER/_harness/requests" >/dev/null
 GATEWAY_CONFIG_FILE=gateway.rollback.yaml DC up -d --wait --force-recreate --no-deps claude-gateway >>"$RUN_DIR/compose-up.log" 2>&1
-DC up -d --wait --force-recreate --no-deps client >>"$RUN_DIR/compose-up.log" 2>&1
+DC up -d --wait --force-recreate --no-deps client telemetry-relay >>"$RUN_DIR/compose-up.log" 2>&1
 HOME_R="/tmp/harness-home-rollback-$$"
 CX "bash /harness-client/signin.sh $HOME_R alice@example.com password" >"$RUN_DIR/signin-rollback.log" 2>&1
 OUT6B="$(claude_p "$HOME_R" 'Reply with the word ok')"
@@ -197,7 +201,33 @@ PRELOOP6="$(curl -s "$RECORDER/_harness/requests" | jq '.requests | length')"
 check "6 upstream removed" 0 "gateway without the Preloop upstream serves from the remaining upstream; Preloop received $PRELOOP6 requests" \
   bash -c 'grep -q SPARE_UPSTREAM_REPLY <<<"$1" && [ "$2" = 0 ]' _ "$OUT6B" "$PRELOOP6"
 DC up -d --wait --force-recreate --no-deps claude-gateway >>"$RUN_DIR/compose-up.log" 2>&1
-DC up -d --wait --force-recreate --no-deps client >>"$RUN_DIR/compose-up.log" 2>&1
+DC up -d --wait --force-recreate --no-deps client telemetry-relay >>"$RUN_DIR/compose-up.log" 2>&1
+
+# ------------------------------------ step 7: OTLP telemetry ingest (#1412)
+OTLP="$(DC exec -T -e PRELOOP_TELEMETRY_KEY -e DIRECT_KEY="$DIRECT_KEY" preloop \
+  python /harness-seed/otlp_check.py 2>"$RUN_DIR/step7-otlp-check.err" | tail -1)"
+echo "$OTLP" | jq . >"$RUN_DIR/step7-otlp-check.json" 2>/dev/null
+otlp_true() { test "$(jq -r ".$1" <<<"$OTLP" 2>/dev/null)" = true; }
+check "7 json export" 0 "OTLP JSON logs export answered $(jq -r .json_status <<<"$OTLP")" \
+  test "$(jq -r .json_status <<<"$OTLP")" = 200
+check "7 protobuf export" 0 "OTLP protobuf logs export answered $(jq -r .protobuf_status <<<"$OTLP")" \
+  test "$(jq -r .protobuf_status <<<"$OTLP")" = 200
+check "7 enrichment" 0 "api_request matching a gateway row's x-client-request-id enriches meta_data.telemetry" otlp_true enriched
+check "7 enrichment no row" 0 "a matched api_request creates no usage row" otlp_true enrich_created_no_row
+check "7 estimate row" 0 "an unmatched api_request creates one telemetry_estimate row" otlp_true estimate_row
+check "7 replay" 0 "re-sending the same export creates nothing" otlp_true replay_noop
+check "7 late gateway row" 0 "a gateway row after the telemetry leaves exactly one row" otlp_true late_gateway_one_row
+check "7 privacy" 0 "the prompt attribute is not stored" otlp_true prompt_not_stored
+log "  - exports the apps gateway relayed to Preloop (path status count): ${RELAYED:-none}"
+# Steps 2-3 ran real Claude Code sessions through the gateway with logs and
+# metrics relayed to Preloop: none of that telemetry may double count.
+RELAY="$(DC exec -T -e PRELOOP_TELEMETRY_KEY -e DIRECT_KEY="$DIRECT_KEY" preloop \
+  python /harness-seed/otlp_check.py --relayed 2>>"$RUN_DIR/step7-otlp-check.err" | tail -1)"
+echo "$RELAY" | jq . >"$RUN_DIR/step7-relayed.json" 2>/dev/null
+check "7 relayed telemetry" 0 "relayed exports reached Preloop: $(jq -r .telemetry_records <<<"$RELAY") records" \
+  test "$(jq -r '.telemetry_records > 0' <<<"$RELAY" 2>/dev/null)" = true
+check "7 relayed no double count" 0 "apps gateway rows $(jq -r .apps_gateway_rows <<<"$RELAY"), enriched $(jq -r .enriched_gateway_rows <<<"$RELAY"), duplicate telemetry rows $(jq -r .duplicate_rows <<<"$RELAY"), aggregates next to logs or gateway rows $(jq -r .overlapping_aggregates <<<"$RELAY")" \
+  test "$(jq -r '.duplicate_rows == 0 and .overlapping_aggregates == 0' <<<"$RELAY" 2>/dev/null)" = true
 
 # ----------------------------------------------------------------- summary
 log ""

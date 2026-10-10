@@ -14,6 +14,10 @@ Spans follow [OpenTelemetry GenAI semantic conventions](https://opentelemetry.io
 where they apply. Runtime session identity is emitted as
 `gen_ai.conversation.id` (see [Runtime Session Identity](../architecture/gateway.md)).
 
+This page covers telemetry Preloop sends out. To receive Claude Code,
+Claude Desktop and Cowork telemetry in Preloop (the opposite direction), see
+[Claude client telemetry ingest](clients/claude-telemetry-ingest.md).
+
 Which attribute and metric names are stable, and how renames are
 announced, is set out in the
 [OTLP attribute stability policy](otlp-attribute-stability.md).

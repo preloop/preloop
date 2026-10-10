@@ -62,6 +62,7 @@ names. Steps 2 to 4 assert on Preloop API responses
 | 4 | Forged `x-claude-gateway-user-*` headers on a normal key are ignored; a wrong `x-preloop-upstream-secret` on the trusted key is `401` |
 | 5 | Lists every request header name Preloop received from the gateway |
 | 6 | Rollback: revoking the key makes the gateway fail over (documented on 401); a gateway config without the Preloop upstream sends Preloop nothing |
+| 7 | OTLP telemetry ingest (#1412): `seed/otlp_check.py` posts a JSON and a protobuf logs export with the `telemetry:ingest` key; a matching `x-client-request-id` enriches the gateway row and creates nothing, an unmatched event creates one `telemetry_estimate` row, a replay creates nothing, and a later gateway row leaves exactly one row. Also lists what the gateway relayed through `telemetry.forward_to` (the `telemetry-relay` service on the gateway loopback) |
 
 Checks that need the #1409 backend contract report **PENDING** (not FAIL)
 when Preloop does not serve `GET /anthropic/v1/models`. `STRICT=1` turns

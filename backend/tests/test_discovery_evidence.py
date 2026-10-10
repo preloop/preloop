@@ -250,9 +250,10 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
     config.set_main_option(
         "script_location", str(root / "backend/preloop/models/alembic")
     )
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20261009_resource_sharing_intent"
-    ]
+    # One head, without pinning which: later migrations build on this one.
+    script = ScriptDirectory.from_config(config)
+    assert len(script.get_heads()) == 1
+    assert script.get_revision("20261009_discovery_observation") is not None
 
 
 def test_changed_replay_plugin_error_is_a_409() -> None:

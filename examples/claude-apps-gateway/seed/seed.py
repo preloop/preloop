@@ -27,6 +27,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.api_key import ApiKey
 
 TRUSTED_SCOPE = "model_gateway:trusted_upstream"
+TELEMETRY_SCOPE = "telemetry:ingest"
 ORG = "Claude apps gateway harness"
 ADMIN = "harness-admin"
 # The apps gateway rewrites bare ids to dated ids from its built-in catalog
@@ -172,9 +173,19 @@ def main() -> int:
             },
         },
     )
+    telemetry = _key(
+        db,
+        ADMIN,
+        "harness telemetry ingest",
+        os.environ.get(
+            "PRELOOP_TELEMETRY_KEY", "pl-harness-telemetry-ingest-key-0000000000"
+        ),
+        [TELEMETRY_SCOPE],
+    )
     json.dump(
         {
             "account_id": str(account_id),
+            "telemetry_key_id": str(telemetry.id),
             "admin_key": admin_key.key,
             "direct_key": direct_key.key,
             "direct_key_id": str(direct_key.id),

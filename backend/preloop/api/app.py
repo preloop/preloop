@@ -976,6 +976,13 @@ def _register_control_plane_routes(
         tags=["Agent discovery"],
         dependencies=[Depends(get_current_active_user)],
     )
+    # OTLP/HTTP receiver (#1412). Authenticates its own telemetry:ingest key
+    # (Bearer or x-api-key), so no user dependency here.
+    from preloop.api.endpoints import telemetry_otlp
+
+    app.include_router(
+        telemetry_otlp.router, prefix="/api/v1", tags=["Telemetry ingest"]
+    )
     app.include_router(
         account.router,
         prefix="/api/v1",

@@ -216,6 +216,22 @@ prompts, completions and tool arguments are not attached. Exporter errors are
 logged and never fail the user-facing call. It supplements the `ApiUsage`
 ledger rather than replacing it. See [OTLP export](docs/guide/observability-otlp.md).
 
+### Telemetry ingest
+
+The opposite direction: `POST /api/v1/telemetry/otlp/v1/{metrics,logs,traces}`
+(`preloop.api.endpoints.telemetry_otlp`, `preloop.services.otlp_telemetry`)
+receives Claude Code, Claude Desktop and Cowork OTLP/HTTP exports, directly
+or relayed by a Claude apps gateway's `telemetry.forward_to`. A key scoped
+only to `telemetry:ingest` reaches nothing else. An allowlist keeps
+`api_request`/`api_error` events and the cost, token and session metrics
+and drops everything that could carry prompts, commands or paths. Events
+enrich the matching gateway usage row (by `x-client-request-id`) or create
+one `telemetry_estimate` row, which a later gateway row for the same request
+replaces in its own transaction; metrics build hourly aggregates only for
+sessions with no log events and no gateway rows. Dedup keys in
+`telemetry_ingest_dedup` make exporter retries no-ops. See
+[Claude client telemetry ingest](docs/guide/clients/claude-telemetry-ingest.md).
+
 ### Agent launch payload (custom images and runners)
 
 Linux caps one `execve` string (a single argv element or a single

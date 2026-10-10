@@ -14,7 +14,7 @@ from preloop.api.auth.jwt import (
     get_user_from_token_if_valid_sync,
     _managed_agent_for_api_key,
 )
-from preloop.api.auth.key_scopes import is_device_scoped_api_key
+from preloop.api.auth.key_scopes import is_single_purpose_api_key
 from preloop.models import models
 from preloop.models.db.gateway_session import release_gateway_session
 from preloop.models.crud import (
@@ -236,7 +236,7 @@ def _resolve_bearer_context(
             and getattr(presented_key, "requires_machine_authorization", False) is True
         ):
             return None
-        if is_device_scoped_api_key(presented_key):
+        if is_single_purpose_api_key(presented_key):
             logger.info(
                 "Denied device-scoped API key %s on the model gateway",
                 getattr(presented_key, "id", None),

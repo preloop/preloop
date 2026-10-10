@@ -1339,6 +1339,96 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/telemetry/otlp/v1/metrics:
+    post:
+      tags:
+      - Telemetry ingest
+      summary: Export Metrics
+      description: Ingest an OTLP metrics export (cost, token and session counters).
+      operationId: export_metrics_api_v1_telemetry_otlp_v1_metrics_post
+      responses:
+        '200':
+          description: Export*ServiceResponse, partial_success when records were dropped
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: Undecodable body
+        '401':
+          description: Missing or invalid API key
+        '403':
+          description: API key lacks the telemetry:ingest scope
+        '413':
+          description: Body over 4 MiB after decompression
+        '415':
+          description: Content type other than application/x-protobuf or application/json
+        '429':
+          description: Per-key rate limit; honour Retry-After
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/telemetry/otlp/v1/logs:
+    post:
+      tags:
+      - Telemetry ingest
+      summary: Export Logs
+      description: Ingest an OTLP logs export (``api_request`` and ``api_error`` events).
+      operationId: export_logs_api_v1_telemetry_otlp_v1_logs_post
+      responses:
+        '200':
+          description: Export*ServiceResponse, partial_success when records were dropped
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: Undecodable body
+        '401':
+          description: Missing or invalid API key
+        '403':
+          description: API key lacks the telemetry:ingest scope
+        '413':
+          description: Body over 4 MiB after decompression
+        '415':
+          description: Content type other than application/x-protobuf or application/json
+        '429':
+          description: Per-key rate limit; honour Retry-After
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/telemetry/otlp/v1/traces:
+    post:
+      tags:
+      - Telemetry ingest
+      summary: Export Traces
+      description: Acknowledge an OTLP traces export. Traces are counted, not stored.
+      operationId: export_traces_api_v1_telemetry_otlp_v1_traces_post
+      responses:
+        '200':
+          description: Export*ServiceResponse, partial_success when records were dropped
+          content:
+            application/json:
+              schema: {}
+        '400':
+          description: Undecodable body
+        '401':
+          description: Missing or invalid API key
+        '403':
+          description: API key lacks the telemetry:ingest scope
+        '413':
+          description: Body over 4 MiB after decompression
+        '415':
+          description: Content type other than application/x-protobuf or application/json
+        '429':
+          description: Per-key rate limit; honour Retry-After
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/account/details:
     get:
       tags:
@@ -40926,7 +41016,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

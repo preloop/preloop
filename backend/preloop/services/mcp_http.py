@@ -17,7 +17,7 @@ from starlette.authentication import AuthCredentials, AuthenticationBackend
 from starlette.requests import HTTPConnection
 
 from preloop.api.auth.jwt import get_user_from_token_if_valid
-from preloop.api.auth.key_scopes import is_device_scoped_api_key
+from preloop.api.auth.key_scopes import is_single_purpose_api_key
 from preloop.services.dynamic_mcp_server import (
     DynamicMCPServer,
     has_tracker,
@@ -191,7 +191,7 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
         without this check the key would receive the account's MCP tools.
         """
         key = api_key_obj or getattr(current_user, "_auth_api_key", None)
-        if is_device_scoped_api_key(key):
+        if is_single_purpose_api_key(key):
             logger.info(
                 "Denied device-scoped API key %s on /mcp",
                 getattr(key, "id", None),

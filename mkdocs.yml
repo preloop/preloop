@@ -138,6 +138,7 @@ nav:
   - Onboarding agents:
       - Claude Code: guide/clients/claude-code.md
       - Claude Desktop: guide/clients/claude-desktop.md
+      - Claude telemetry ingest: guide/clients/claude-telemetry-ingest.md
       - Codex CLI: guide/codex-cli.md
       - Gemini CLI: guide/clients/gemini-cli.md
       - OpenCode: guide/clients/opencode.md
