@@ -1076,14 +1076,13 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             if str(row.id) in shared_ids:
                 from preloop.models.crud.resource_share import crud_resource_share
 
-                public = crud_resource_share.public_read(
-                    db,
-                    account_id=account_id,
-                    resource_type="managed_agent",
-                    resource_id=row.id,
+                agent = self.get(db, id=row.id)
+                if agent is None:
+                    continue
+                public = crud_resource_share.public_projection(
+                    db, resource_type="managed_agent", row=agent
                 )
-                if public is not None:
-                    items.append(public.model_dump(mode="json"))
+                items.append(public.model_dump(mode="json"))
                 continue
             aggregate = aggregates.get(
                 (row.session_source_type, row.session_source_id),

@@ -327,6 +327,12 @@ class CRUDResourceShare:
         )
         if row is None or row.account_id == _id(account_id):
             return None
+        return self.public_projection(db, resource_type=resource_type, row=row)
+
+    def public_projection(
+        self, db: Session, *, resource_type: str, row: Any
+    ) -> SharedResourceRead:
+        """Project an already visibility-authorized row without private metadata."""
         owner = db.get(models.Account, row.account_id)
         control_enabled = False
         control_online = False
