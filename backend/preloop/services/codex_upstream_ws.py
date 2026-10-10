@@ -134,7 +134,7 @@ class IncrementalPlan:
 
     mode: str  # "incremental" | "full"
     reason: str  # "incremental" or the mismatch reason
-    items: List[Any]
+    items: Any  # the items to send; a string ``input`` is kept as-is
     previous_response_id: Optional[str] = None
 
 
@@ -142,7 +142,16 @@ def plan_request(
     entry: Optional["WsEntry"], payload: Dict[str, Any]
 ) -> IncrementalPlan:
     """Apply the Codex incremental rule to a post-hook upstream payload."""
-    current_input = list(payload.get("input") or [])
+    raw_input = payload.get("input")
+    if not isinstance(raw_input, list):
+        # A string (or absent) ``input`` is sent exactly as the HTTP path
+        # would send it and can never be a continuation.
+        return IncrementalPlan(
+            mode="full",
+            reason="input_not_a_list",
+            items=raw_input if raw_input is not None else [],
+        )
+    current_input = list(raw_input)
     full = IncrementalPlan(mode="full", reason="", items=current_input)
     if entry is None or entry.last_input is None:
         full.reason = "no_previous_request"
@@ -262,8 +271,10 @@ class WsEntry:
     last_input: Optional[List[Any]] = None
     last_response_id: Optional[str] = None
     last_output: Optional[List[Any]] = None
-    turn_state: Optional[str] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
+    #: Set (under ``lock``) once the socket is closed or about to be; a
+    #: request that acquires the lock afterwards must not use the socket.
+    retired: bool = False
 
     def reset_chain(self) -> None:
         self.fingerprint = None
@@ -272,6 +283,7 @@ class WsEntry:
         self.last_output = None
 
     def close(self) -> None:
+        self.retired = True
         try:
             self.socket.close()
         except Exception:  # noqa: BLE001 - closing is best effort
@@ -415,20 +427,42 @@ class CodexWsRegistry:
             return entry
 
     def put(self, entry: WsEntry) -> None:
+        """Insert ``entry``; evict least-recently-used idle entries over the cap.
+
+        Only entries whose lock is free are evicted (and they are retired
+        under that lock), so an in-flight call never loses its socket; the
+        cap may be exceeded briefly while every older entry is busy.
+        """
         evicted: List[WsEntry] = []
         with self._lock:
             old = self._entries.pop(entry.key, None)
-            if old is not None and old is not entry:
-                evicted.append(old)
             self._entries[entry.key] = entry
-            while len(self._entries) > self.max_entries:
-                _, oldest = self._entries.popitem(last=False)
-                evicted.append(oldest)
+            if old is not None and old is not entry:
+                if old.lock.acquire(blocking=False):
+                    old.retired = True
+                    old.lock.release()
+                    evicted.append(old)
+                else:
+                    # In flight: its holder closes it when releasing.
+                    old.retired = True
+            overflow = len(self._entries) - self.max_entries
+            for key, candidate in list(self._entries.items()):
+                if overflow <= 0:
+                    break
+                if candidate is entry or not candidate.lock.acquire(blocking=False):
+                    continue
+                candidate.retired = True
+                candidate.lock.release()
+                self._entries.pop(key, None)
+                evicted.append(candidate)
                 count("evicted_lru")
+                overflow -= 1
         for stale in evicted:
             stale.close()
 
     def drop(self, entry: WsEntry) -> None:
+        """Remove and close ``entry``. Callers hold ``entry.lock``."""
+        entry.retired = True
         with self._lock:
             if self._entries.get(entry.key) is entry:
                 self._entries.pop(entry.key, None)
@@ -442,6 +476,7 @@ class CodexWsRegistry:
                 reason = self.expiry_reason(entry)
                 if reason and entry.lock.acquire(blocking=False):
                     try:
+                        entry.retired = True
                         self._entries.pop(key, None)
                         expired.append((entry, reason))
                     finally:

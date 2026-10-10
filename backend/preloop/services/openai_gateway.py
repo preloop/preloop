@@ -5556,9 +5556,12 @@ class OpenAIGatewayService:
                     else registry.expiry_reason(entry)
                 )
                 if drop_reason is not None and entry.lock.acquire(blocking=False):
-                    entry.lock.release()
+                    try:
+                        # Retire under the lock so no request can pick it up.
+                        registry.drop(entry)
+                    finally:
+                        entry.lock.release()
                     self._codex_ws_fallback(drop_reason, "reconnect_full")
-                    registry.drop(entry)
                     entry = None
             warm = entry is not None
             if entry is None:
@@ -5588,6 +5591,11 @@ class OpenAIGatewayService:
             if not entry.lock.acquire(blocking=False):
                 # Another request of this session is in flight on the socket.
                 self._codex_ws_fallback("socket_busy", "http")
+                return None
+            if entry.retired:
+                # Evicted or expired between lookup and lock; never reuse.
+                entry.lock.release()
+                self._codex_ws_fallback("socket_retired", "http")
                 return None
             try:
                 codex_ws.count("socket_reused" if warm else "socket_new")
@@ -5626,7 +5634,11 @@ class OpenAIGatewayService:
                         message=exc.message,
                     ) from exc
                 entry.fingerprint = codex_ws.request_fingerprint(upstream_payload)
-                entry.last_input = list(upstream_payload.get("input") or [])
+                sent_input = upstream_payload.get("input")
+                # Only a list input can anchor a continuation.
+                entry.last_input = (
+                    list(sent_input) if isinstance(sent_input, list) else None
+                )
                 entry.last_response_id = response.get("id")
                 entry.last_output = list(response.get("output") or [])
                 entry.last_used = registry.clock()
@@ -5639,6 +5651,8 @@ class OpenAIGatewayService:
                 }
                 return response
             finally:
+                if entry.retired:
+                    entry.close()
                 entry.lock.release()
         return None
 

@@ -199,6 +199,15 @@ def test_plan_full_when_response_items_were_not_resent():
     assert (plan.mode, plan.reason) == ("full", "input_mismatch")
 
 
+def test_string_input_is_sent_as_is_and_never_incremental():
+    """Review on #1457: a string ``input`` must not become a character list."""
+    entry = _chained_entry(["h"], ["e"])
+    plan = cw.plan_request(entry, _payload("hello"))
+    assert (plan.mode, plan.reason) == ("full", "input_not_a_list")
+    frame = cw.build_frame(_payload("hello"), plan, None)
+    assert frame["input"] == "hello"
+
+
 def test_build_frame_carries_turn_state_in_client_metadata():
     payload = _payload([_user_msg("a")], client_metadata={"k": "v"})
     plan = cw.IncrementalPlan(
@@ -269,6 +278,43 @@ def test_registry_age_cap_and_http_only_ttl():
     assert registry.http_only_reason(("a", "s")) == "http_426"
     clock.now += 31
     assert registry.http_only_reason(("a", "s")) is None
+
+
+def test_lru_eviction_never_closes_a_socket_in_use():
+    """Review on #1457: an in-flight entry is skipped, not closed."""
+    registry = cw.CodexWsRegistry(max_entries=1)
+    busy = cw.WsEntry(
+        key=("a", "busy"),
+        socket=MagicMock(),
+        auth_digest="d",
+        opened_at=0,
+        last_used=0,
+    )
+    registry.put(busy)
+    with busy.lock:
+        registry.put(
+            cw.WsEntry(
+                key=("a", "new"),
+                socket=MagicMock(),
+                auth_digest="d",
+                opened_at=0,
+                last_used=0,
+            )
+        )
+        busy.socket.close.assert_not_called()
+        assert not busy.retired
+        assert len(registry) == 2  # cap exceeded briefly rather than kill it
+    registry.put(
+        cw.WsEntry(
+            key=("a", "third"),
+            socket=MagicMock(),
+            auth_digest="d",
+            opened_at=0,
+            last_used=0,
+        )
+    )
+    busy.socket.close.assert_called_once()
+    assert len(registry) == 1
 
 
 # --------------------------------------------------------------------------
@@ -617,6 +663,28 @@ def test_full_resend_error_surfaces_like_http():
         _call(_Upstream([socket]), _payload(FIRST))
     assert raised.value.status_code == 429
     assert len(cw.REGISTRY) == 0
+
+
+def test_string_input_over_ws_matches_http_body():
+    http = _Upstream([], flag=False)
+    _call(http, _payload("hello"))
+    socket = _FakeSocket([_events("resp_1", _tool_call(1))])
+    _call(_Upstream([socket]), _payload("hello"))
+    assert socket.sent[0]["input"] == json.loads(http.http_requests[0].data)["input"]
+    assert socket.sent[0]["input"] == "hello"
+    # The next call cannot chain off a string input.
+    assert cw.REGISTRY.get(("account-1", "sess-1")).last_input is None
+
+
+def test_retired_entry_is_never_reused():
+    socket = _FakeSocket([_events("resp_1", _tool_call(1))])
+    upstream = _Upstream([socket])
+    _call(upstream, _payload(FIRST))
+    entry = cw.REGISTRY.get(("account-1", "sess-1"))
+    entry.retired = True
+    _, response = _call(upstream, _payload(SECOND))
+    assert response["id"] == "resp_http"
+    assert len(socket.sent) == 1
 
 
 def test_busy_socket_falls_back_to_http():
