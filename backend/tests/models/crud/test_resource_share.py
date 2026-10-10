@@ -651,3 +651,193 @@ def test_shared_mcp_owner_approval_and_secret_projection(
         )
     finally:
         register_visibility_provider(None)
+
+
+def test_rule_tag_and_hierarchy_writes_materialize_in_transaction(
+    db_session: Session, tree: Any
+) -> None:
+    from sqlalchemy import select
+
+    owner, child, sibling, outsider, user, resources = tree
+    model = resources["ai_model"]
+
+    def selector(
+        rules: list[dict[str, Any]],
+        subject: dict[str, Any],
+        resource: dict[str, Any],
+        rule_id: Any,
+    ) -> bool:
+        return any(
+            rule["id"] == rule_id
+            and rule["effect"] == "permit"
+            and subject["id"] in rule["subject_selector"].get("ids", [])
+            and all(
+                resource["tags"].get(key) == value
+                for key, value in rule["resource_selector"]
+                .get("matchLabels", {})
+                .items()
+            )
+            for rule in rules
+        )
+
+    install_materializer(selector)
+    rule = models.AccessRule(
+        account_id=owner.id,
+        name="Tagged child models",
+        effect="permit",
+        actions=["resource:share"],
+        scope="subaccounts",
+        resource_type="ai_model",
+        resource_selector={"matchLabels": {"shared": "children"}},
+        subject_selector={"ids": [str(child.id)]},
+        conditions={},
+    )
+    db_session.add(rule)
+    db_session.commit()
+    automatic = db_session.scalar(
+        select(models.ResourceShare).where(
+            models.ResourceShare.access_rule_id == rule.id,
+            models.ResourceShare.is_automatic.is_(True),
+        )
+    )
+    assert automatic is not None and automatic.target_mode == "rule"
+    assert (
+        crud.visible_ids(db_session, account_id=child.id, resource_type="ai_model")
+        == []
+    )
+    tag = models.ResourceTag(
+        account_id=owner.id,
+        resource_type="ai_model",
+        resource_id=model.id,
+        key="shared",
+        value="children",
+    )
+    db_session.add(tag)
+    db_session.commit()
+    assert crud.visible_ids(
+        db_session, account_id=child.id, resource_type="ai_model"
+    ) == [model.id]
+    explicit = crud.create(
+        db_session,
+        owner_account_id=owner.id,
+        user_id=user.id,
+        definition=ResourceShareDefinition(
+            resource_type="ai_model",
+            resource_id=model.id,
+            target_mode="rule",
+            access_rule_id=rule.id,
+        ),
+    )
+    assert explicit["recipient_account_ids"] == [str(child.id)]
+    rule.subject_selector = {"ids": [str(sibling.id)]}
+    db_session.commit()
+    assert (
+        crud.visible_ids(db_session, account_id=child.id, resource_type="ai_model")
+        == []
+    )
+    assert crud.visible_ids(
+        db_session, account_id=sibling.id, resource_type="ai_model"
+    ) == [model.id]
+    db_session.delete(tag)
+    db_session.commit()
+    assert (
+        crud.visible_ids(db_session, account_id=sibling.id, resource_type="ai_model")
+        == []
+    )
+    db_session.add(
+        models.ResourceTag(
+            account_id=owner.id,
+            resource_type="ai_model",
+            resource_id=model.id,
+            key="shared",
+            value="children",
+        )
+    )
+    db_session.commit()
+    assert crud.visible_ids(
+        db_session, account_id=sibling.id, resource_type="ai_model"
+    ) == [model.id]
+    rule.is_enabled = False
+    db_session.commit()
+    assert (
+        crud.visible_ids(db_session, account_id=sibling.id, resource_type="ai_model")
+        == []
+    )
+    rule.is_enabled = True
+    db_session.commit()
+    assert crud.visible_ids(
+        db_session, account_id=sibling.id, resource_type="ai_model"
+    ) == [model.id]
+    sibling.parent_account_id = None
+    sibling.root_account_id = sibling.id
+    sibling.hierarchy_path = [sibling.id]
+    sibling.hierarchy_depth = 0
+    db_session.commit()
+    assert (
+        crud.visible_ids(db_session, account_id=sibling.id, resource_type="ai_model")
+        == []
+    )
+    db_session.delete(rule)
+    db_session.commit()
+    assert crud.list(db_session, owner_account_id=owner.id) == []
+
+
+def test_no_intent_owner_skips_tree_scan_and_agent_heartbeat_skips_reconcile(
+    db_session: Session, tree: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import Mock
+    from preloop.models.crud import resource_share
+
+    owner, child, sibling, outsider, user, resources = tree
+    scan = Mock(side_effect=AssertionError("unneeded tree scan"))
+    with monkeypatch.context() as patcher:
+        patcher.setattr(resource_share, "descendants", scan)
+        crud.reconcile(db_session, owner_account_ids=[owner.id])
+    scan.assert_not_called()
+    crud.create(
+        db_session,
+        owner_account_id=owner.id,
+        user_id=user.id,
+        definition=ResourceShareDefinition(
+            resource_type="managed_agent",
+            resource_id=resources["managed_agent"].id,
+            target_mode="all",
+        ),
+    )
+    spy = Mock(wraps=crud.reconcile)
+    monkeypatch.setattr(crud, "reconcile", spy)
+    resources["managed_agent"].last_seen_at = datetime.now(timezone.utc)
+    db_session.commit()
+    spy.assert_not_called()
+    assert crud.visible_ids(
+        db_session, account_id=child.id, resource_type="managed_agent"
+    ) == [resources["managed_agent"].id]
+
+
+def test_legacy_empty_selected_share_does_not_break_policy_export(
+    db_session: Session, tree: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    from preloop.models.crud.resource_share import policy_section
+    from preloop.services.policy.loader import export_current_policy
+
+    owner, child, sibling, outsider, user, resources = tree
+    db_session.add(
+        models.ResourceShare(
+            owner_account_id=owner.id,
+            resource_type="ai_model",
+            resource_id=resources["ai_model"].id,
+            target_mode="selected",
+            selected_account_ids=[],
+        )
+    )
+    db_session.flush()
+    assert policy_section(db_session, owner.id) == []
+    assert export_current_policy(db_session, owner.id).resource_shares is None
+    assert "no selected targets" in caplog.text
+    with pytest.raises(ValueError):
+        ResourceShareDefinition(
+            resource_type="ai_model",
+            resource_id=resources["ai_model"].id,
+            target_mode="selected",
+            selected_account_ids=[],
+        )

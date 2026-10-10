@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
 from typing import Any
@@ -14,6 +15,8 @@ from preloop.models import models
 from preloop.models.models.hierarchy import descendants
 from preloop.schemas.access_rule import AccessRuleDefinition
 from preloop.schemas.resource_share import ResourceShareDefinition, SharedResourceRead
+
+logger = logging.getLogger(__name__)
 
 RESOURCE_MODELS = {
     "ai_model": models.AIModel,
@@ -51,6 +54,9 @@ def policy_section(db: Session, account_id: UUID) -> list[dict[str, Any]]:
         )
         .order_by(models.ResourceShare.id)
     ).all()
+    for row in shares:
+        if row.target_mode == "selected" and not row.selected_account_ids:
+            logger.warning("Skipping legacy share %s with no selected targets", row.id)
     return [
         ResourceShareDefinition(
             id=row.id,
@@ -62,6 +68,7 @@ def policy_section(db: Session, account_id: UUID) -> list[dict[str, Any]]:
             require_approval=row.require_approval,
         ).model_dump(mode="json")
         for row in shares
+        if row.target_mode != "selected" or row.selected_account_ids
     ]
 
 
@@ -697,6 +704,26 @@ class CRUDResourceShare:
             )
         )
         for owner in owners:
+            shares = list(
+                db.scalars(
+                    select(models.ResourceShare).where(
+                        models.ResourceShare.owner_account_id == owner.id,
+                        models.ResourceShare.revoked_at.is_(None),
+                    )
+                )
+            )
+            if not shares and not db.scalar(
+                select(models.AccessRule.id)
+                .where(
+                    models.AccessRule.account_id == owner.id,
+                    models.AccessRule.is_enabled.is_(True),
+                    models.AccessRule.effect == "permit",
+                    models.AccessRule.scope != "self",
+                    models.AccessRule.actions.contains(["resource:share"]),
+                )
+                .limit(1)
+            ):
+                continue
             children = list(descendants(db, owner))
             path_ids = list(owner.hierarchy_path or [owner.id])
             rules = db.scalars(
@@ -747,14 +774,6 @@ class CRUDResourceShare:
                 for kind, model in RESOURCE_MODELS.items()
                 for row in db.scalars(select(model).where(model.account_id == owner.id))
             }
-            shares = list(
-                db.scalars(
-                    select(models.ResourceShare).where(
-                        models.ResourceShare.owner_account_id == owner.id,
-                        models.ResourceShare.revoked_at.is_(None),
-                    )
-                )
-            )
             # Permit share rules are standing intent: tagged resources join or
             # leave without requiring an endpoint write for each resource.
             existing_auto = {
@@ -894,6 +913,13 @@ def _collect_changes(db: Session, flush_context: Any, instances: Any) -> None:
                 )
                 removed[share.id] = (share.owner_account_id, share.resource_id, targets)
     for row in [*db.new, *db.dirty, *db.deleted]:
+        if (
+            isinstance(row, models.ManagedAgent)
+            and row not in db.new
+            and row not in db.deleted
+            and not inspect(row).attrs.account_id.history.has_changes()
+        ):
+            continue
         if isinstance(
             row,
             (

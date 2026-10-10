@@ -233,15 +233,9 @@ class AgentControlExecutor(AgentExecutor):
                 category="runner_error",
             )
         account_id = self._account_id(execution_context)
-        agent = crud_managed_agent.get_for_account(
-            self.db,
-            account_id=account_id,
-            agent_id=target_id,
+        agent = crud_managed_agent.get_visible_target(
+            self.db, account_id=account_id, agent_id=target_id
         )
-        if agent is None:
-            agent = crud_managed_agent.get_visible_target(
-                self.db, account_id=account_id, agent_id=target_id
-            )
         if agent is None:
             raise AgentStartError(
                 f"persistent target {target_id} was not found in this account",

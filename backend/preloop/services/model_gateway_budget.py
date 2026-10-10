@@ -170,7 +170,7 @@ class ModelGatewayBudgetService:
         # allowlist that names neither the resolved model nor any of its
         # spellings denies the request, including the degenerate case where
         # the request names no model at all.
-        if account is not None:
+        if account is not None and not hard_limit_exceeded:
             for subject_type, subject_id in subject_scope_chain(subject_context):
                 config = get_subject_governance(
                     account.meta_data or {},
@@ -199,7 +199,8 @@ class ModelGatewayBudgetService:
             self.db, account_id=str(self.auth_context.account_id)
         )
         if (
-            subscription
+            not hard_limit_exceeded
+            and subscription
             and is_live_trial(subscription)
             and self._is_built_in_hosted_model(ai_model)
         ):
@@ -227,7 +228,8 @@ class ModelGatewayBudgetService:
                 hard_limit_exceeded = True
                 enforcement_reason = "trial_hosted_model_budget_exceeded"
         elif (
-            subscription is None
+            not hard_limit_exceeded
+            and subscription is None
             and settings.billing_enforce_entitlements
             and self._is_built_in_hosted_model(ai_model)
         ):
