@@ -68,6 +68,16 @@ if [ ! -x "${venv_dir}/bin/python" ] || [ ! -x "${venv_dir}/bin/pip" ]; then
   exit 0
 fi
 
+# Debian 12's venv bundles pip 23.0.1, which rejects a transitive extra
+# (fastmcp-slim -> "pydantic[email]>=...") under --require-hashes even
+# though app-dev.txt pins pydantic. setup-python ships a current pip, so
+# hosted shards never saw it. Match that before the hashed install.
+if ! "${venv_dir}/bin/python" -m pip install --quiet --disable-pip-version-check "pip==25.2"; then
+  echo "venv at ${venv_dir} could not upgrade pip; will use actions/setup-python"
+  rm -rf "${venv_dir}"
+  exit 0
+fi
+
 echo "${venv_dir}/bin" >> "${GITHUB_PATH}"
 use_setup=false
 echo "Using system Python ${py} (${MM}) via venv ${venv_dir}"

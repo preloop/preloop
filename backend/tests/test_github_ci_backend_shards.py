@@ -47,7 +47,10 @@ def test_backend_shards_partition_with_pytest_split() -> None:
     drop = next(
         step for step in backend["steps"] if step.get("name") == "Drop CI database"
     )
-    assert drop.get("if") == "always()"
+    # Runs after test failures, but not when Python never got set up
+    # (a failed checkout would otherwise add a misleading exit 127).
+    assert drop.get("if") == "always() && steps.setup-python.outcome == 'success'"
+    assert any(step.get("id") == "setup-python" for step in backend["steps"])
     assert "scripts/ci_postgres.py drop" in drop["run"]
     assert "services" not in backend
     assert backend["timeout-minutes"] <= 15
