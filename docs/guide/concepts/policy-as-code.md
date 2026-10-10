@@ -170,7 +170,7 @@ preloop policy apply policies/ -r
 # Export current config as YAML (stdout, or -o file)
 preloop policy export -o my-policy.yaml
 
-# List all policies
+# List policy versions, newest first
 preloop policy list
 
 # Generate a policy with AI (see Policy Generation)

@@ -1,7 +1,7 @@
 """Durable content-free callback verdict receipts.
 
 Revision ID: 20261010_callback_receipt
-Revises: 20261009_discovery_observation
+Revises: 20261009_resource_sharing_intent
 """
 
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "20261010_callback_receipt"
-down_revision = "20261009_discovery_observation"
+down_revision = "20261009_resource_sharing_intent"
 branch_labels = None
 depends_on = None
 

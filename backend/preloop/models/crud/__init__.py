@@ -40,6 +40,7 @@ from ..models import (
     WebAuthnCredential,
     Webhook,
 )
+from . import restricted_runtime as crud_restricted_runtime
 from . import notification_preferences
 from . import runtime_session_artifact as crud_runtime_session_artifact
 from . import tool_approval_condition
@@ -348,6 +349,7 @@ __all__ = [
     "crud_comment",
     "crud_ai_model",
     "crud_secret_reference",
+    "crud_restricted_runtime",
     "crud_webauthn_credential",
     "crud_webhook",
     "crud_flow",

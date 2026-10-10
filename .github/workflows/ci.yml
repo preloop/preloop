@@ -5,7 +5,7 @@
 # long tail after tests go green).
 #
 # PR jobs are path-filtered so a docs-only or frontend-only change does not
-# pay for eight Postgres shards. Filters are job-level, not workflow-level:
+# pay for the backend shards. Filters are job-level, not workflow-level:
 # a workflow `on.pull_request.paths` skip made stacked PRs look clean because
 # no checks ran at all. `main` and tags always run every suite.
 #
@@ -160,12 +160,12 @@ jobs:
   # test job to three VMs serializes the suite and is slower than before.
   #
   # Frontend, plugins, and coverage stay on ubuntu-latest and do not wait
-  # for this job. Backend is eight shards; this job emits `backend_plan`,
-  # an array of eight {runner, container, db_host, postgres_ports} entries.
-  # The first 8-N shards stay hosted (group 1 is the long pole). The last
-  # N shards — the excess — go to idle self-hosted runners, each in a
-  # python:<PYTHON_VERSION>-bookworm container so two listeners on one VM
-  # do not collide on host 5432. N is min(idle matching runners, 8).
+  # for this job. Backend is eighteen shards; this job emits `backend_plan`,
+  # an array of eighteen {runner} entries. The first 18-N shards
+  # stay hosted. The last N shards — the excess — go to idle self-hosted
+  # runners. N is min(idle matching runners, 18). Both kinds of runner
+  # execute on the machine, not in a nested container, so 127.0.0.1:5432
+  # is that machine's Postgres. See .github/self-hosted-runners.md.
   #
   # Anything else, including every failure mode below, is N=0 (all hosted).
   # This job NEVER fails the workflow: a PR must not go red because the
@@ -190,23 +190,14 @@ jobs:
   # interpreter (needs python3.11-venv on Debian) and only then falls
   # back to setup-python. Hosted ubuntu-latest has no system 3.11, so
   # those jobs still download from the Ubuntu manifest. Self-hosted
-  # backend shards additionally run in python:<PYTHON_VERSION>-bookworm,
-  # so they see that image's interpreter rather than the VM's.
+  # backend shards use the same action, so the VM needs python3.11 and
+  # python3.11-venv. They no longer run inside python:3.11-bookworm.
   pick-runner:
     name: Pick test runner
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       backend_plan: ${{ steps.pick.outputs.backend_plan }}
-      # Idle self-hosted Linux/X64 count, capped at 8. "0" means every
-      # backend shard stays on ubuntu-latest, including the no-token and
-      # no-runner fallbacks. reclaim-runner-disk skips on 0 so it cannot
-      # queue forever and block the hosted shards.
-      idle_self_hosted: ${{ steps.pick.outputs.idle_self_hosted }}
-      # JSON array of slot numbers, length == idle_self_hosted. "[1]" when
-      # idle is 0 so the matrix expression stays valid; the reclaim job's
-      # if skips that case before any runner is requested.
-      reclaim_slots: ${{ steps.pick.outputs.reclaim_slots }}
     steps:
       - name: Assign overflow backend shards to idle self-hosted runners
         id: pick
@@ -215,9 +206,15 @@ jobs:
           GH_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           REPO: ${{ github.repository }}
-          PYTHON_VERSION: ${{ env.PYTHON_VERSION }}
         run: |
           set -uo pipefail
+
+          # Eighteen shards. Measured on the green main run 37987118309:
+          # with no durations, group 2 of 8 spent 25.2m in pytest. Balanced
+          # with .github/pytest-split-durations.json, the slowest of 18
+          # chunks is about 3.3m of test time, which stays under 7m once
+          # checkout and pip are added.
+          SPLITS=18
 
           emit() {
             idle="$1"
@@ -225,24 +222,19 @@ jobs:
             case "$idle" in
               ''|*[!0-9]*) idle=0 ;;
             esac
-            if [ "$idle" -gt 8 ]; then idle=8; fi
+            if [ "$idle" -gt "$SPLITS" ]; then idle=$SPLITS; fi
 
-            plan=$(IDLE="$idle" PYVER="${PYTHON_VERSION:-3.11}" jq -cn '
-              def public:
-                {runner:"ubuntu-latest",container:null,db_host:"localhost",
-                 postgres_ports:["5432:5432"]};
-              def private:
-                {runner:["self-hosted","Linux","X64"],
-                 container:{image:("python:"+$ENV.PYVER+"-bookworm")},
-                 db_host:"postgres",postgres_ports:[]};
+            plan=$(IDLE="$idle" SPLITS="$SPLITS" jq -cn '
+              def slot($runner): {runner:$runner};
               ($ENV.IDLE|tonumber) as $idle
-              | [null] + [range(0;8) | if . >= (8 - $idle) then private else public end]
+              | ($ENV.SPLITS|tonumber) as $splits
+              | [null] + [range(0; $splits) | if . >= ($splits - $idle) then slot(["self-hosted","Linux","X64"]) else slot("ubuntu-latest") end]
             ') || plan=""
 
             if [ -z "$plan" ]; then
               idle=0
               reason="$reason (plan fallback: all public)"
-              plan='[null,{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]},{"runner":"ubuntu-latest","container":null,"db_host":"localhost","postgres_ports":["5432:5432"]}]'
+              plan=$(python3 -c 'import json; print(json.dumps([None]+[{"runner":"ubuntu-latest"}]*18))')
             fi
 
             {
@@ -250,18 +242,9 @@ jobs:
               echo "$plan"
               echo "EOF"
             } >> "$GITHUB_OUTPUT"
-            if [ "$idle" -gt 0 ]; then
-              reclaim_slots=$(jq -cn --argjson n "$idle" '[range(1; $n + 1)]') || reclaim_slots='[1]'
-            else
-              reclaim_slots='[1]'
-            fi
-            {
-              echo "idle_self_hosted=$idle"
-              echo "reclaim_slots=$reclaim_slots"
-            } >> "$GITHUB_OUTPUT"
             echo "reason: $reason"
-            echo "overflow shards on self-hosted: $idle / 8"
-            echo "- overflow self-hosted backend shards: \`$idle / 8\`" >> "$GITHUB_STEP_SUMMARY"
+            echo "overflow shards on self-hosted: $idle / $SPLITS"
+            echo "- overflow self-hosted backend shards: \`$idle / $SPLITS\`" >> "$GITHUB_STEP_SUMMARY"
             echo "- reason: $reason" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           }
@@ -448,128 +431,89 @@ jobs:
           PRELOOP_DISABLE_TELEMETRY: 'true'
         run: python -m pytest backend/tests/helm -q
 
-  # Eight shards, each with its own Postgres. GitLab splits this suite into
-  # dozens of per-file jobs; that is a poor fit here because each GitHub
-  # runner spends ~1.5m on checkout/pip/migrations before pytest starts.
-  # Four shards left group 1 (the first duration_based_chunks slice) as the
-  # wall-clock pole: ~7-9m vs ~3-4.5m for the others. Eight shards cut that
-  # first slice in half without going back to per-file jobs.
-  # pytest-split keeps new tests in the partition automatically. Use
-  # duration_based_chunks (not least_duration): without a timings file,
-  # least_duration round-robins individual tests across shards and breaks
-  # unittest setUp isolation plus tests that share a process-wide DB
-  # session. Chunks keep collection order, so files stay together. The 60%
-  # coverage floor is applied after shards are combined -- a single shard
-  # only sees part of the tree.
+  # Eighteen shards. On the green main run 37987118309, eight count-based
+  # shards left group 2 at 26.7m (25.2m of that in pytest) while group 6
+  # was 4.8m. .github/pytest-split-durations.json makes
+  # duration_based_chunks cut on measured time; the slowest chunk is
+  # about 3.3m of tests, and hosted setup is about 1.5m, so a shard stays
+  # under 7m. least_duration is still wrong here: it round-robins
+  # individual tests and breaks unittest setUp isolation plus tests that
+  # share a process-wide DB session. Chunks keep collection order, so
+  # files stay together. The 60% coverage floor is applied after shards
+  # are combined -- a single shard only sees part of the tree.
+  #
+  # Postgres is not a service container. scripts/ci_postgres.py checks
+  # 127.0.0.1:5432 first. A server that accepts test_user gets one new
+  # database for this job. A refused connection starts
+  # pgvector/pgvector:pg16 and the drop step removes that container.
+  # Runner setup: .github/self-hosted-runners.md.
   #
   # Runner: ubuntu-latest is the default. pick-runner may send the last
-  # N shards (idle self-hosted count) to private VMs as overflow. Public
-  # shards stay on the VM with Postgres at localhost:5432. Overflow
-  # shards run in python:<version>-bookworm and reach Postgres by the
-  # service hostname, with no host port, so two listeners on one machine
-  # do not collide on 5432. The VM still needs Docker and the runner
-  # user in the docker group.
-  #
-  # Those VMs keep every pulled image. Once the disk is full, the
-  # backend container pull fails before a step can delete anything.
-  # Reclaim unused images on each idle VM first. The job has no
-  # container of its own, so it can start when a pull would fail.
-  #
-  # Skip, rather than queue, when pick-runner sent every shard to
-  # ubuntu-latest. A queued self-hosted job is not a failure:
-  # continue-on-error and timeout-minutes apply only after a runner
-  # picks the job up, and GitHub waits forever on a self-hosted
-  # runs-on (see the pick-runner comment). A skipped job leaves
-  # needs.reclaim-runner-disk.result == skipped, which test-backend
-  # already allows. When self-hosted shards were selected and a VM
-  # then goes offline, those shards queue anyway.
-  #
-  # deb1-deb8 share the labels self-hosted, Linux, and X64. There is
-  # no per-VM label, so a slot cannot be pinned to a name. One
-  # concurrent job per idle runner is the spread: a runner becomes
-  # busy when it accepts a job, and the next slot lands on another
-  # idle VM. The slot count is the same idle count pick-runner uses
-  # for overflow shards, capped at 8, so a fifth-through-eighth VM is
-  # not left full while four jobs prune the same machine twice.
-  reclaim-runner-disk:
-    name: Reclaim self-hosted disk (${{ matrix.slot }})
-    runs-on: [self-hosted, Linux, X64]
-    needs: [changes, pick-runner]
-    if: >-
-      needs.changes.outputs.backend == 'true' &&
-      needs.pick-runner.outputs.idle_self_hosted != '0' &&
-      needs.pick-runner.outputs.idle_self_hosted != ''
-    timeout-minutes: 10
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      max-parallel: 8
-      matrix:
-        slot: ${{ fromJSON(needs.pick-runner.outputs.reclaim_slots) }}
-    steps:
-      - name: Remove unused Docker data
-        run: |
-          set -u
-          docker container prune -f || true
-          docker builder prune -af || true
-          # Keep images pulled in the last 48h. An unconditional
-          # `image prune -af` deletes pgvector and the bookworm image,
-          # and the next shards then hit Docker Hub's anonymous rate
-          # limit (toomanyrequests / auth.docker.io timeouts).
-          docker image prune -af --filter until=48h || true
-          root=$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || true)
-          if [ -z "${root}" ]; then
-            root=/var/lib/docker
-          fi
-          used=$(df -P "$root" 2>/dev/null | awk 'NR==2 {gsub(/%/,"",$5); print $5}')
-          case "$used" in
-            ''|*[!0-9]*) used=0 ;;
-          esac
-          if [ "$used" -ge 85 ]; then
-            docker image prune -af || true
-          fi
-          df -h "$root" || df -h /
-
+  # N shards (idle self-hosted count) to private VMs as overflow. Shards
+  # run on the machine, not in a nested container, so that address is the
+  # VM's Postgres. The VM needs Docker for the fallback start, and the
+  # runner user in the docker group. A persistent server avoids the pull.
   test-backend:
-    name: Backend Tests (${{ matrix.group }}/8)
+    name: Backend Tests (${{ matrix.group }}/18)
     runs-on: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].runner }}
-    container: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].container }}
-    needs: [changes, pick-runner, reclaim-runner-disk]
-    if: >-
-      always() &&
-      needs.changes.outputs.backend == 'true' &&
-      needs.reclaim-runner-disk.result != 'cancelled' &&
-      (needs.pick-runner.result == 'success' || needs.pick-runner.result == 'skipped')
-    timeout-minutes: 45
+    needs: [changes, pick-runner]
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4, 5, 6, 7, 8]
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_DB: test_db
-          POSTGRES_USER: test_user
-          POSTGRES_PASSWORD: test_password
-        ports: ${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].postgres_ports }}
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        group: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 
     env:
-      DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
-      # Explicit opt-in for isolated schema lease/crash/lifecycle fixtures.
-      FLOW_FEEDBACK_TEST_DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
-      CHAT_TEST_DATABASE_URL: postgresql://test_user:test_password@${{ fromJSON(needs.pick-runner.outputs.backend_plan)[matrix.group].db_host }}:5432/test_db
       OPENAI_API_KEY: mock_key
       ANTHROPIC_API_KEY: mock_key
       PRELOOP_DISABLE_TELEMETRY: "true"
       COVERAGE_FILE: coverage-data.${{ matrix.group }}
+      PRELOOP_CI_SHARD: ${{ matrix.group }}
+      # Fixture role from .github/self-hosted-runners.md. The database URL
+      # omits it; libpq reads PGPASSWORD. Not a production credential.
+      PGPASSWORD: test_password
 
     steps:
+      # Self-hosted shards once ran in a root job container (fa51a329d)
+      # with the workspace bind-mounted, which left root-owned
+      # __pycache__, egg-info, and .pytest_cache in runnerN/_work. The
+      # host runner user cannot unlink them, so checkout fails with
+      # EACCES. Give the tree back to the runner user before checkout:
+      # passwordless sudo if the VM has it, otherwise a throwaway
+      # container (the runner user is in the docker group, see
+      # .github/self-hosted-runners.md). Hosted runners skip this.
+      - name: Reclaim self-hosted workspace ownership
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: |
+          set -u
+          # The whole runnerN/_work, not only the checkout: the old
+          # container also left a root-owned venv in _temp/preloop-python
+          # that setup-ci-python must delete.
+          ws=$(dirname "$RUNNER_TEMP")
+          [ -d "$ws" ] || exit 0
+          uid=$(id -u); gid=$(id -g)
+          foreign=$(find "$ws" ! -user "$uid" -print -quit 2>/dev/null || true)
+          if [ -z "$foreign" ]; then
+            echo "workspace already owned by $(id -un)"
+            exit 0
+          fi
+          echo "foreign-owned path found: $foreign"
+          if sudo -n true 2>/dev/null; then
+            sudo -n chown -R "$uid:$gid" "$ws"
+          else
+            # pgvector is already on every VM (ci_postgres.py), so no
+            # Docker Hub pull and no anonymous rate limit.
+            docker run --rm --user 0 --entrypoint chown -v "$ws:/w" \
+              pgvector/pgvector:pg16 -R "$uid:$gid" /w
+          fi
+          left=$(find "$ws" ! -user "$uid" -print -quit 2>/dev/null || true)
+          if [ -n "$left" ]; then
+            echo "::error::still not owned by runner user: $left (see .github/self-hosted-runners.md, Workspace ownership)"
+            exit 1
+          fi
+
       # clean: true is the default, but a self-hosted workspace is reused
       # between runs, so say it out loud.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -578,6 +522,7 @@ jobs:
           clean: true
 
       - name: Set up Python
+        id: setup-python
         uses: ./.github/actions/setup-ci-python
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -597,6 +542,9 @@ jobs:
           pip install --require-hashes -r .github/requirements/app-dev.txt
           pip install --no-deps -e .
 
+      - name: Prepare Postgres
+        run: python scripts/ci_postgres.py prepare
+
       - name: Initialize database
         run: python scripts/init_db.py --force
 
@@ -604,12 +552,19 @@ jobs:
         run: |
           pytest -v \
             -m "not integration" \
-            --splits 8 \
+            --splits 18 \
             --group ${{ matrix.group }} \
             --splitting-algorithm=duration_based_chunks \
+            --durations-path .github/pytest-split-durations.json \
             --cov=preloop \
             --cov-report= \
             --junitxml=test-results.xml
+
+      # Only once Python is set up: otherwise python is absent and an
+      # earlier failure is reported twice (exit 127).
+      - name: Drop CI database
+        if: always() && steps.setup-python.outcome == 'success'
+        run: python scripts/ci_postgres.py drop
 
       - name: Upload coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -668,8 +623,8 @@ jobs:
       - name: Combine coverage and enforce floor
         run: |
           mapfile -t coverage_files < <(find coverage-shards -name 'coverage-data.*' -type f | sort)
-          if [ ${#coverage_files[@]} -ne 8 ]; then
-            echo "Expected 8 shard coverage files, found ${#coverage_files[@]}"
+          if [ ${#coverage_files[@]} -ne 18 ]; then
+            echo "Expected 18 shard coverage files, found ${#coverage_files[@]}"
             find coverage-shards -type f -print
             exit 1
           fi

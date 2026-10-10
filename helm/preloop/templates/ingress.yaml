@@ -115,6 +115,10 @@ metadata:
         "nginx.ingress.kubernetes.io/proxy-connect-timeout" $proxy.connectTimeout
         "nginx.ingress.kubernetes.io/proxy-body-size" $proxy.bodySize
         "nginx.ingress.kubernetes.io/proxy-buffering" "off" }}
+  {{- $affinity := .Values.gateway.sessionAffinity | default dict }}
+  {{- if $affinity.enabled }}
+  {{- $_ := set $gatewayAnnotations "nginx.ingress.kubernetes.io/upstream-hash-by" ($affinity.hashBy | default "$http_session_id$remote_addr") }}
+  {{- end }}
   {{- $gatewayAnnotations = merge (deepCopy (.Values.ingress.annotations | default dict)) $gatewayAnnotations }}
   {{- /* cert-manager must issue once, from the console Ingress. Duplicating
        the issuer annotation on this object races the same TLS secret. */}}
