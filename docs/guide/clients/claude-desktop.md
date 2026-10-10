@@ -13,6 +13,7 @@ Tool governance is separate and unchanged: `preloop agents onboard "Claude Deskt
 | Route | Use it when | Identity at Preloop | What you run |
 |-------|-------------|---------------------|--------------|
 | **Direct** (`--model-route direct`) | Any Desktop fleet, including Preloop Cloud with no gateway of your own | The signed-in user's Preloop API key, minted by the CLI credential helper | Nothing beyond MDM |
+| **Direct with your IdP** (`--model-route direct --auth idp`) | You want per-user identity without distributing Preloop keys, and your IdP speaks OpenID Connect | The user's IdP token, verified by Preloop against your issuer | Nothing beyond MDM and one admin setting |
 | **Apps gateway** (`--model-route apps-gateway`) | You already run, or want, the Claude apps gateway for SSO, RBAC and policy | The developer's IdP identity, forwarded by the gateway on a trusted upstream key | `claude gateway` on your private network |
 
 ## Direct route
@@ -54,6 +55,70 @@ preloop auth gateway-credential --client claude-desktop
 Desktop runs this command, reads stdout and sends the result as `x-api-key` to Preloop. It prints one bare token and nothing else; diagnostics go to stderr. On first use it mints a Preloop API key for the signed-in CLI user and caches it in `~/.preloop/gateway-credentials/claude-desktop.json` (mode 0600). It checks that the cached key still exists on each run and mints a new one when the key was revoked. When the user is not signed in it exits non-zero with an empty stdout, so Desktop shows its credential error instead of sending a bad key. Each user runs `preloop login` once on the device.
 
 Gateway calls made with this key are attributed to that user: user budgets, allowed-model lists, usage, sessions and audit apply as for any other Preloop key. Usage rows record `client: claude_desktop` from the `X-Preloop-Client` header.
+
+## Sign in with your identity provider
+
+Claude Desktop can sign each user in with your organization's OpenID Connect identity provider and send the resulting IdP token to Preloop as the bearer credential. Preloop verifies the token against your issuer, names the user as a gateway subject and applies the binding key's models, budgets and audit. No Preloop key is distributed and no credential helper runs on the device.
+
+### Admin setup
+
+1. **Register a Desktop app at your IdP**: a public client with PKCE and the loopback redirect URI `http://127.0.0.1/callback` (Okta needs the exact port: register `http://127.0.0.1:<port>/callback` and set `redirectPort`). Include the `email` claim, and `email_verified` if you restrict email domains. With Desktop's default `id_token` bearer, the token audience is this app's client ID.
+2. **Create a binding API key** in Preloop (an account admin). Its account, allowed models and `per_subject_budget` apply to every IdP user. A trusted upstream key (`model_gateway:trusted_upstream`) is the way to set a `per_subject_budget`; the upstream secret is not used on this route.
+3. **Register the issuer** under Settings, Gateway identity providers, or with the API (account admins only; create, update and delete are audited):
+
+    ```bash
+    curl -X POST https://YOUR_PRELOOP_URL/api/v1/account/gateway-identity-providers \
+      -H "Authorization: Bearer $PRELOOP_TOKEN" -H "Content-Type: application/json" \
+      -d '{"name": "Okta", "issuer": "https://YOUR_ORG.okta.com", "audiences": ["DESKTOP_CLIENT_ID"],
+           "api_key_id": "BINDING_KEY_ID", "allowed_email_domains": ["corp.example"]}'
+    curl -X POST https://YOUR_PRELOOP_URL/api/v1/account/gateway-identity-providers/PROVIDER_ID/test \
+      -H "Authorization: Bearer $PRELOOP_TOKEN"   # fetches discovery and JWKS, lists key ids
+    ```
+
+4. **Generate and deploy the Desktop configuration**:
+
+    ```bash
+    preloop agents onboard "Claude Desktop" --model-route direct --auth idp \
+      --issuer https://YOUR_ORG.okta.com --client-id DESKTOP_CLIENT_ID
+    ```
+
+    It sets `inferenceProvider: gateway`, `inferenceGatewayBaseUrl: https://YOUR_PRELOOP_URL/anthropic`, `inferenceCredentialKind: external-idp`, and `inferenceIdpOidc` (`issuer`, `clientId`, `scopes`, default `openid profile email offline_access`; change with `--scopes`). It repeats the block as `inferenceGatewayOidc` for Desktop releases that predate `inferenceIdpOidc`. `--auth key` (the default) keeps the credential helper configuration above.
+
+Provider settings:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `issuer` | required | Exact `iss` string, `https://` only |
+| `audiences` | required | Accepted `aud` values. `(issuer, audience)` is unique across all Preloop accounts |
+| `api_key_id` | required | The binding key; one provider per key |
+| `allowed_email_domains` | empty (any) | Email domain allowlist; needs a verified email |
+| `email_claim` | `email` | Claim holding the email |
+| `require_email_verified` | `true` | Reject `email_verified: false`; without the claim the email is not used for linking or the domain check |
+| `groups_claim`, `allowed_groups` | none | Group allowlist; groups are recorded on the first-seen audit event |
+| `required_claims` | `{}` | Claim to exact value, for example a tenant id |
+| `clock_skew_seconds` | `60` (max 300) | Leeway for `exp`, `nbf`, `iat` |
+| `max_token_lifetime_seconds` | `86400` | Tokens with a longer `exp - iat` are rejected |
+| `allowed_algorithms` | `RS256`, `ES256` | Asymmetric only; `none` and HMAC can never be configured |
+| `allowed_jwks_hosts` | empty | Extra exact hosts `jwks_uri` may use (for example `www.googleapis.com` for Google) |
+| `allow_private_network_issuer` | `false` | Fetch discovery and keys from private addresses; honoured only when the instance setting `GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS` is also on (self-hosted) |
+| `enabled` | `true` | A disabled provider stops its tokens on the next request |
+
+### What Preloop checks
+
+A bearer is treated as an IdP token only when it is a JWT whose `iss` equals an enabled provider's issuer; everything else (Preloop API keys, Preloop session tokens, `x-api-key`) is handled exactly as before. Preloop then checks the signature against the issuer's JWKS (found through `<issuer>/.well-known/openid-configuration`), the algorithm, `iss`, `aud` (and `azp` when `aud` has several values), `exp`, `nbf`, `iat`, the lifetime cap, required claims, email domain, `email_verified`, groups and `sub` (at most 255 characters). The user becomes a gateway subject keyed on `sub` under the binding key; the email links to an existing member only, and no user is ever created. Usage rows record `gateway_source: direct`, `auth_method: idp` and `idp_provider_id`. Budgets and policy denials render as on the trusted identity path (see Budgets and 429 below).
+
+A rejected token gets `401` with an Anthropic `authentication_error`, `WWW-Authenticate: Bearer error="invalid_token"` and a short reason code (`expired`, `bad_audience`, `bad_signature`, `domain_not_allowed`, `issuer_unavailable` and similar), so Desktop asks the user to sign in again. An unreachable JWKS also answers `401`, never a 5xx. Tokens are never logged; log lines carry a short fingerprint.
+
+### Threat model
+
+- **Token replay**: IdP tokens are bearer credentials, accepted only within `exp` plus skew and the lifetime cap. There is no replay cache, so the replay window equals the token lifetime. Revocation is the IdP's; disabling the provider, or deactivating the linked member, stops access on the next request.
+- **Audience confusion**: `aud` must match a configured audience, `azp` is checked on multi-audience tokens, and `(issuer, audience)` is globally unique, so a shared multi-tenant issuer cannot cross accounts. A token naming audiences of two providers is rejected.
+- **Issuer spoofing**: the unverified `iss` only selects a candidate; trust comes from the signature against keys fetched from that issuer's discovery document over https. The discovery document's `issuer` must equal the configured string, and `jwks_uri` must be https on the issuer host, a subdomain of it, or a host the admin listed.
+- **Algorithm attacks**: `alg: none`, HMAC (including HS256 with the public key as the secret) and algorithms outside the allowlist are rejected; symmetric keys in a JWKS are ignored; `kid` must match a fetched key.
+- **Email-claim trust**: the email links to a member only when `email_verified` is true (when required) and the domain is allowed. The subject key is `sub`, so an email change does not move budgets to someone else. Linking never grants console or REST access.
+- **JWKS SSRF**: issuer URLs are fetched server side over https only, with private, loopback, link-local, shared and cloud metadata ranges refused by default, no cross-host redirects, a 5 second timeout and a 256 KiB size cap. DNS is checked before each fetch; a name that re-resolves between check and connect is not caught.
+- **Denial of service**: the key set is cached per issuer for 5 to 60 minutes (from `Cache-Control`); an unknown `kid` or a failed fetch triggers at most one refetch per minute per issuer. Bearers over 16 KiB are rejected before parsing, and validation finishes before any database write.
+- **Fail closed**: once a token's `iss` matched a provider, any error is a `401`; it never falls through to API key authentication.
 
 ## Apps gateway route
 
@@ -108,7 +173,7 @@ Discovery reads the managed configuration (read-only) and reports Claude Desktop
 
 - Tool governance stays on MCP (the bridge or a custom connector). Cowork and Code built-in tools are governed by Desktop and the gateway policy, not by Preloop; Preloop sees them only as model traffic.
 - Behind an apps gateway, Preloop cannot tell Claude Desktop traffic from Claude Code traffic: usage records `client: unknown`.
-- Desktop single sign-on validated by Preloop itself (`inferenceIdpOidc` tokens) is not supported yet.
+- IdP tokens are accepted on `/anthropic/v1` only, not on the OpenAI or Gemini gateways, the REST API or the console login. Opaque (non-JWT) access tokens and token introspection are not supported.
 
 ## Related
 

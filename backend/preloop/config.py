@@ -1239,6 +1239,16 @@ class Settings(BaseSettings):
             "deployments legitimately post to internal collectors."
         ),
     )
+    gateway_idp_allow_private_issuers: bool = Field(
+        False,
+        description=(
+            "Self-hosted only (GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS). Lets an "
+            "Anthropic gateway identity provider marked "
+            "allow_private_network_issuer fetch its discovery document and "
+            "JWKS from loopback or private addresses, for an IdP on the same "
+            "private network. Leave off on any multi-tenant instance."
+        ),
+    )
 
     workspace_snapshot_max_bytes: int = Field(
         512 * 1024 * 1024,

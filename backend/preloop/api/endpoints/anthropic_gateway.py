@@ -32,6 +32,7 @@ from preloop.services.gateway_upstream_identity import (
     fallback_session_id,
     to_trusted_upstream_error,
 )
+from preloop.services.gateway_idp_auth import authenticate_idp_bearer
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
     authenticate_bearer_token,
@@ -77,6 +78,12 @@ async def get_anthropic_gateway_auth_context(
             message="Missing API key",
         )
 
+    if not x_api_key:
+        # Only a bearer can be a customer IdP token; ``x-api-key`` never is.
+        idp_context = await authenticate_idp_bearer(token, db)
+        if idp_context is not None:
+            return idp_context
+
     auth_context = await authenticate_bearer_token(token, db, owns_db_session=True)
     if not auth_context:
         raise ModelGatewayAPIError(
@@ -102,7 +109,7 @@ def _attribution(
 ) -> Dict[str, Any]:
     """Usage ``meta_data`` attribution fields for this request."""
     subject = auth_context.gateway_subject
-    return {
+    attribution = {
         "gateway_source": (
             GATEWAY_SOURCE_APPS_GATEWAY
             if auth_context.trusted_upstream
@@ -112,6 +119,10 @@ def _attribution(
         "gateway_subject_id": str(subject.id) if subject is not None else None,
         "gateway_subject_email": subject.email if subject is not None else None,
     }
+    if auth_context.auth_method is not None:
+        attribution["auth_method"] = auth_context.auth_method
+        attribution["idp_provider_id"] = str(auth_context.idp_provider_id)
+    return attribution
 
 
 def _run(

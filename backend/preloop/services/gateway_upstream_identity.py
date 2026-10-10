@@ -388,6 +388,47 @@ async def apply_trusted_upstream(
     if identity is None:
         return replace(auth_context, trusted_upstream=True)
 
+    return await attach_gateway_subject(
+        auth_context,
+        db,
+        external_subject=identity.external_subject,
+        email=identity.email,
+        trusted_upstream=True,
+    )
+
+
+async def attach_gateway_subject(
+    auth_context: Any,
+    db: Any,
+    *,
+    external_subject: str,
+    email: Optional[str],
+    trusted_upstream: bool,
+    after_resolve: Optional[Any] = None,
+    **context_fields: Any,
+) -> Any:
+    """Resolve the gateway subject for the context's key and attach it.
+
+    Shared by the trusted upstream path (identity headers) and the IdP token
+    path (verified claims). The subject is keyed on the context's API key,
+    so the key's per-subject budget, allowed models and audit apply.
+
+    Args:
+        auth_context: Authenticated ``ModelGatewayAuthContext`` with a key.
+        db: Request session; only its engine is used, the upsert runs in its
+            own short session off the event loop.
+        external_subject: IdP ``sub``.
+        email: Email to record and link by, when trusted.
+        trusted_upstream: Value for ``auth_context.trusted_upstream``.
+        after_resolve: Optional ``(session, subject, created)`` callback run
+            in the resolve session before it is released; may raise.
+        **context_fields: Extra ``ModelGatewayAuthContext`` fields to set.
+
+    Returns:
+        A copy of ``auth_context`` with ``gateway_subject`` set.
+    """
+    from dataclasses import replace
+
     from sqlalchemy.orm import Session
 
     from preloop.api.loop_safety import run_db_off_loop
@@ -396,16 +437,18 @@ async def apply_trusted_upstream(
 
     bind = db.get_bind()
     account_id = auth_context.account_id
-    api_key_id = api_key.id
+    api_key_id = auth_context.api_key.id
 
     def resolve() -> GatewaySubjectRef:
+        now = datetime.now(timezone.utc)
         with Session(bind=bind, expire_on_commit=False) as session:
             subject = crud_gateway_subject.resolve(
                 session,
                 account_id=account_id,
                 api_key_id=api_key_id,
-                external_subject=identity.external_subject,
-                email=identity.email,
+                external_subject=external_subject,
+                email=email,
+                now=now,
             )
             ref = GatewaySubjectRef(
                 id=subject.id,
@@ -414,8 +457,17 @@ async def apply_trusted_upstream(
                 linked_user_id=subject.linked_user_id,
                 api_key_id=subject.api_key_id,
             )
-            release_gateway_session(session)
+            try:
+                if after_resolve is not None:
+                    after_resolve(session, ref, subject.first_seen_at == now)
+            finally:
+                release_gateway_session(session)
             return ref
 
     subject_ref = await run_db_off_loop(resolve)
-    return replace(auth_context, trusted_upstream=True, gateway_subject=subject_ref)
+    return replace(
+        auth_context,
+        trusted_upstream=trusted_upstream,
+        gateway_subject=subject_ref,
+        **context_fields,
+    )
