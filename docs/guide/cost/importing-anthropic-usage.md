@@ -27,7 +27,7 @@ The rows land in the provider billing snapshot table with provider `anthropic_cc
 
 ## Never counted twice
 
-Usage on an Anthropic key that Preloop itself uses as an upstream credential was already metered by the gateway. Preloop finds those keys by matching each Anthropic model's configured key against the organization's key list (`GET /v1/organizations/api_keys`, by `partial_key_hint`). You can also list key names on the connection. Rows for those keys are stored with `metered_by_gateway: true`, shown separately as "Already metered by the gateway", and left out of every total.
+Usage on an Anthropic key that Preloop itself uses as an upstream credential was already metered by the gateway. Preloop finds those keys by matching each Anthropic model's configured key against the organization's key list (`GET /v1/organizations/api_keys`, by `partial_key_hint`). You can also list key names on the connection. Rows for those keys are stored with `metered_by_gateway: true`, shown separately as "Already metered by the gateway", and left out of every total. Listed names are read from the connection each time the Cost page loads, so adding or removing a name re-classifies days that are already imported without a re-import.
 
 Rows for people signed in with OAuth (subscription or console sign in) are counted as usage outside the gateway, the same treatment Copilot rows get.
 
@@ -67,7 +67,7 @@ Set `ANTHROPIC_USAGE_SYNC_ENABLED=false` to turn the schedule off. Without a con
 
 ## Who is who
 
-An actor's email maps to a Preloop member with the same email, and the matching gateway subject (if one exists) is shown alongside. An explicit mapping wins over the email match, and is the only way to attribute an API key actor. Nothing is created: unknown emails stay unmapped.
+An actor's email maps to an active Preloop member with the same email, and the matching gateway subject (if one exists) is shown alongside. An explicit mapping wins over the email match, and is the only way to attribute an API key actor. Nothing is created: unknown emails stay unmapped.
 
 ## What is not attributable
 

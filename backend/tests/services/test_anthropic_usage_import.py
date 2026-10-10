@@ -189,6 +189,7 @@ def test_pages_both_actor_types_and_models_into_rows(db_session, test_user):
         "customer_type",
         "subscription_type",
         "metered_by_gateway",
+        "gateway_match",
     }
     assert db_session.query(models.ApiUsage).count() == 0
 
@@ -430,3 +431,83 @@ def test_connection_payload_never_carries_the_key(db_session, test_user):
     assert ADMIN_KEY not in json.dumps(payload, default=str)
     assert payload["has_key"] is True
     assert payload["key_hint"] == "7Kq9"
+
+
+def test_editing_listed_names_reclassifies_stored_days(db_session, test_user):
+    """A listed name is read from the connection at summary time."""
+    connection = _connect(
+        db_session, test_user.account_id, gateway_key_names=["ci-bot"]
+    )
+    _sync(db_session, connection, FakeAnthropic())
+    assert _summary(db_session, test_user.account_id)["excluded_metered_by_gateway"][
+        "actors"
+    ] == ["key:ci-bot"]
+
+    crud_anthropic_import_connection.update(
+        db_session, db_obj=connection, obj_in={"gateway_key_names": []}
+    )
+    summary = _summary(db_session, test_user.account_id)
+    assert summary["excluded_metered_by_gateway"]["actors"] == []
+    assert "key:ci-bot" in {a["actor"] for a in summary["by_actor"]}
+
+    crud_anthropic_import_connection.update(
+        db_session,
+        db_obj=connection,
+        obj_in={"gateway_key_names": ["preloop-gateway"]},
+    )
+    summary = _summary(db_session, test_user.account_id)
+    assert summary["excluded_metered_by_gateway"]["actors"] == ["key:preloop-gateway"]
+    assert summary["total_estimated_cost"] == pytest.approx(1.23)
+
+
+def test_upstream_match_stays_excluded_after_list_edits(db_session, test_user):
+    _upstream_model(db_session, test_user.account_id)
+    connection = _connect(db_session, test_user.account_id)
+    _sync(db_session, connection, FakeAnthropic())
+    crud_anthropic_import_connection.update(
+        db_session, db_obj=connection, obj_in={"gateway_key_names": ["other"]}
+    )
+    rows = {r.user_login: r for r in _rows(db_session, test_user.account_id)}
+    assert rows["key:preloop-gateway"].raw["gateway_match"] == "upstream_key"
+    assert _summary(db_session, test_user.account_id)["excluded_metered_by_gateway"][
+        "actors"
+    ] == ["key:preloop-gateway"]
+
+
+def test_inactive_member_is_not_matched_by_email(db_session, test_user):
+    crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "email": "dev@corp.example",
+            "username": "dev-gone",
+            "full_name": "Gone",
+            "is_active": False,
+            "email_verified": True,
+            "hashed_password": "x",
+            "user_source": "local",
+        },
+    )
+    connection = _connect(db_session, test_user.account_id)
+    _sync(db_session, connection, FakeAnthropic())
+
+    dev = {
+        a["actor"]: a for a in _summary(db_session, test_user.account_id)["by_actor"]
+    }["dev@corp.example"]
+    assert dev["user_id"] is None
+    assert dev["mapping_source"] is None
+
+
+def test_member_lookup_is_one_batched_query(db_session, test_user, mocker):
+    connection = _connect(db_session, test_user.account_id)
+    _sync(db_session, connection, FakeAnthropic())
+    batched = mocker.spy(crud_anthropic_usage, "active_members_by_email")
+    single = mocker.patch(
+        "preloop.models.crud.gateway_subject.CRUDGatewaySubject.find_member_by_email",
+        side_effect=AssertionError("per-actor lookup"),
+    )
+
+    _summary(db_session, test_user.account_id)
+
+    assert batched.call_count == 1
+    single.assert_not_called()

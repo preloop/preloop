@@ -126,6 +126,51 @@ def test_mapping_round_trip(client, test_user) -> None:
     assert client.delete(f"{MAPPINGS_URL}/dev@corp.example").status_code == 404
 
 
+CLIENT_FACTORY = "preloop.api.endpoints.anthropic_usage._default_http_client"
+TEST_URL = "/api/v1/anthropic-usage/connection/test"
+
+
+def _mock_client(status: int, seen: list):
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(status, json={"data": [], "has_more": False})
+
+    return lambda: httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_connection_test_without_connection_is_404(client) -> None:
+    assert client.post(TEST_URL).status_code == 404
+
+
+def test_connection_test_success_uses_one_cheap_read(client, caplog) -> None:
+    client.put(CONNECTION_URL, json={"admin_key": ADMIN_KEY})
+    seen: list = []
+    with patch(CLIENT_FACTORY, _mock_client(200, seen)):
+        with caplog.at_level(logging.DEBUG):
+            response = client.post(TEST_URL)
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "error": None}
+    assert len(seen) == 1
+    assert seen[0].url.path == "/v1/organizations/api_keys"
+    assert seen[0].url.params["limit"] == "1"
+    assert seen[0].headers["x-api-key"] == ADMIN_KEY
+    assert ADMIN_KEY not in response.text
+    assert ADMIN_KEY not in caplog.text
+
+
+def test_connection_test_failure_reports_without_raising(client) -> None:
+    client.put(CONNECTION_URL, json={"admin_key": ADMIN_KEY})
+    with patch(CLIENT_FACTORY, _mock_client(401, [])):
+        response = client.post(TEST_URL)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert "401" in body["error"]
+    assert ADMIN_KEY not in response.text
+
+
 def test_non_admin_cannot_write_or_sync(db_session, test_viewer_user) -> None:
     with _client_as(db_session, test_viewer_user) as viewer:
         put = viewer.put(CONNECTION_URL, json={"admin_key": ADMIN_KEY})

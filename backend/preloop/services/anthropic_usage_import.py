@@ -46,7 +46,6 @@ from preloop.models.crud import (
     crud_anthropic_import_connection,
     crud_anthropic_usage,
     crud_anthropic_user_mapping,
-    crud_gateway_subject,
     crud_secret_reference,
 )
 from preloop.models.crud.anthropic_import import (
@@ -283,11 +282,11 @@ def upstream_key_values(db: Session, account_id: Any) -> List[str]:
     return values
 
 
-def gateway_key_names(
-    api_keys: Iterable[dict], upstream_keys: Iterable[str], listed: Iterable[str]
+def upstream_key_names(
+    api_keys: Iterable[dict], upstream_keys: Iterable[str]
 ) -> Set[str]:
-    """Anthropic key names that belong to Preloop upstream credentials."""
-    names = {name.strip() for name in listed if isinstance(name, str) and name.strip()}
+    """Anthropic key names whose hint matches a Preloop upstream credential."""
+    names: Set[str] = set()
     upstream = list(upstream_keys)
     for key in api_keys:
         name = key.get("name")
@@ -296,6 +295,13 @@ def gateway_key_names(
         ):
             names.add(name)
     return names
+
+
+def listed_key_names(listed: Optional[Iterable[str]]) -> Set[str]:
+    """Key names an admin listed on the connection, trimmed."""
+    return {
+        name.strip() for name in listed or [] if isinstance(name, str) and name.strip()
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +384,8 @@ def build_day_rows(
     records: Iterable[dict],
     *,
     day: date,
-    gateway_names: Set[str],
+    upstream_names: Set[str],
+    listed_names: Set[str],
     fetched_at: datetime,
 ) -> List[Dict[str, Any]]:
     """Turn one day's records into snapshot rows, one per (actor, model).
@@ -443,9 +450,14 @@ def build_day_rows(
 
     rows: List[Dict[str, Any]] = []
     for login, entry in per_actor.items():
-        metered = entry["actor_type"] == "api_actor" and (
-            login[len(API_KEY_ACTOR_PREFIX) :] in gateway_names
-        )
+        gateway_match: Optional[str] = None
+        if entry["actor_type"] == "api_actor":
+            key_name = login[len(API_KEY_ACTOR_PREFIX) :]
+            if key_name in upstream_names:
+                gateway_match = "upstream_key"
+            elif key_name in listed_names:
+                gateway_match = "listed"
+        metered = gateway_match is not None
         raw_common = {
             "source": PROVENANCE,
             "report_date": day.isoformat(),
@@ -456,6 +468,7 @@ def build_day_rows(
             "customer_type": entry["customer_type"],
             "subscription_type": entry["subscription_type"],
             "metered_by_gateway": metered,
+            "gateway_match": gateway_match,
         }
         model_items = list(entry["models"].items()) or [(None, None)]
         for model, bucket in model_items:
@@ -541,7 +554,7 @@ def sync_connection(
             raise AnthropicImportError("The Admin API key is missing.")
         with http_client_factory() as http:
             client = AnthropicAdminClient(http, admin_key, sleep=sleep)
-            listed = connection.gateway_key_names or []
+            listed = listed_key_names(connection.gateway_key_names)
             try:
                 api_keys = fetch_api_keys(client)
             except AnthropicImportError as exc:
@@ -550,13 +563,17 @@ def sync_connection(
                     "Could not list the organization's API keys, so only the key "
                     f"names listed on the connection count as gateway keys ({exc})"
                 )
-            names = gateway_key_names(
-                api_keys, upstream_key_values(db, connection.account_id), listed
+            upstream = upstream_key_names(
+                api_keys, upstream_key_values(db, connection.account_id)
             )
             for day in days:
                 records = fetch_claude_code_day(client, day)
                 rows = build_day_rows(
-                    records, day=day, gateway_names=names, fetched_at=now
+                    records,
+                    day=day,
+                    upstream_names=upstream,
+                    listed_names=listed,
+                    fetched_at=now,
                 )
                 written += crud_anthropic_usage.replace_day_rows(
                     db,
@@ -636,6 +653,26 @@ def _tokens(row: models.ProviderBillingSnapshot) -> int:
     )
 
 
+def _is_gateway_metered(
+    row: models.ProviderBillingSnapshot, raw: Dict[str, Any], listed: Set[str]
+) -> bool:
+    """Whether a row's usage was already metered by the gateway.
+
+    A key matched to an upstream credential at import stays excluded; a
+    listed name is checked against the connection's current list, so adding
+    or removing a name re-classifies stored days without a re-import.
+    """
+    if raw.get("gateway_match") == "upstream_key":
+        return True
+    if raw.get("gateway_match") is None and raw.get("metered_by_gateway"):
+        return True
+    login = row.user_login or ""
+    return (
+        login.startswith(API_KEY_ACTOR_PREFIX)
+        and login[len(API_KEY_ACTOR_PREFIX) :] in listed
+    )
+
+
 def build_anthropic_summary(
     db: Session, *, account_id: str, start: datetime, end: datetime
 ) -> Dict[str, Any]:
@@ -644,7 +681,7 @@ def build_anthropic_summary(
     Rows flagged ``metered_by_gateway`` are reported separately and never
     enter the totals, so gateway-metered usage is not counted twice.
     Identity mapping is read only: an explicit mapping wins, then an
-    account member with the actor's email; a gateway subject with that email
+    active account member with the actor's email (one batched query); a gateway subject with that email
     is shown when one exists. Nothing is created.
     """
     connection = crud_anthropic_import_connection.get_for_account(
@@ -670,6 +707,10 @@ def build_anthropic_summary(
     subjects = crud_anthropic_usage.subjects_by_email(
         db, account_id=account_id, emails=emails
     )
+    members = crud_anthropic_usage.active_members_by_email(
+        db, account_id=account_id, emails=emails
+    )
+    listed = listed_key_names(connection.gateway_key_names if connection else None)
 
     total_cost = 0.0
     total_tokens = 0
@@ -684,7 +725,7 @@ def build_anthropic_summary(
         login = row.user_login or "unknown"
         cost = float(row.cost_amount or 0.0)
         tokens = _tokens(row)
-        if raw.get("metered_by_gateway"):
+        if _is_gateway_metered(row, raw, listed):
             excluded_cost += cost
             excluded_tokens += tokens
             excluded_actors.add(login)
@@ -728,9 +769,7 @@ def build_anthropic_summary(
         user_id = explicit.get(login)
         source = "mapping" if user_id else None
         if user_id is None and not login.startswith(API_KEY_ACTOR_PREFIX):
-            user_id = crud_gateway_subject.find_member_by_email(
-                db, account_id=account_id, email=login
-            )
+            user_id = members.get(login)
             source = "member_email" if user_id else None
         subject = subjects.get(login)
         actor["user_id"] = user_id

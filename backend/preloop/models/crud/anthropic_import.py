@@ -223,6 +223,33 @@ class CRUDAnthropicUsage(CRUDProviderBillingSnapshot):
         ).scalars()
         return {subject.email.lower(): subject for subject in rows if subject.email}
 
+    @staticmethod
+    def active_members_by_email(
+        db: Session, *, account_id: Union[uuid.UUID, str], emails: Iterable[str]
+    ) -> Dict[str, uuid.UUID]:
+        """Active members of the account keyed by lowercased email, one query.
+
+        Same preference as ``find_member_by_email`` (a direct member wins
+        over an inherited one), restricted to active users like explicit
+        mappings. Read only.
+        """
+        wanted = sorted({email.lower() for email in emails if email})
+        if not wanted:
+            return {}
+        rows = db.execute(
+            select(User.id, User.email, User.membership_kind).where(
+                User.account_id == account_id,
+                User.is_active.is_(True),
+                func.lower(User.email).in_(wanted),
+            )
+        ).all()
+        found: Dict[str, uuid.UUID] = {}
+        for row in sorted(
+            rows, key=lambda r: 0 if r.membership_kind == "direct" else 1
+        ):
+            found.setdefault(row.email.lower(), row.id)
+        return found
+
 
 class CRUDAnthropicUserMapping(CRUDBase[AnthropicUserMapping]):
     """Operator-written mappings from imported actors to Preloop users."""
