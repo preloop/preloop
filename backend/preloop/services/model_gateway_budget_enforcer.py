@@ -33,7 +33,10 @@ from sqlalchemy.orm import Session
 from preloop.models import models
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
-from preloop.services.model_gateway_errors import ModelGatewayAPIError
+from preloop.services.model_gateway_denials import (
+    BUDGET_LIMIT_EXCEEDED_CODE,
+    budget_denial_error,
+)
 from preloop.services.model_gateway_budget import ModelGatewayBudgetService
 from preloop.services.gateway_upstream_identity import (
     BUDGET_SUBJECT_GATEWAY_SUBJECT,
@@ -275,7 +278,7 @@ class ModelGatewayBudgetEnforcer:
         ai_model: models.AIModel,
         payload: Dict[str, Any],
     ) -> Optional[str]:
-        """Check budgets and raise 403 if a priced hard limit is exceeded.
+        """Check budgets and raise 429 if a priced hard limit is exceeded.
 
         Args:
             db: Database session.
@@ -289,7 +292,7 @@ class ModelGatewayBudgetEnforcer:
             price), or ``None`` when every applicable budget was evaluated.
 
         Raises:
-            ModelGatewayAPIError: 403 when a priced request would cross a
+            BudgetDenialError: 429 when a priced request would cross a
                 configured hard limit.
         """
         # 1. Estimate cost
@@ -538,27 +541,23 @@ class ModelGatewayBudgetEnforcer:
                         current_spend_usd=projected_spend,
                     )
 
-                denial = ModelGatewayAPIError(
-                    provider=provider,
-                    status_code=403,
-                    message=(
+                period_end = get_period_end(now, policy.period)
+                raise budget_denial_error(
+                    provider,
+                    BUDGET_LIMIT_EXCEEDED_CODE,
+                    (
                         "Model gateway budget exceeded: "
                         f"{display_subject_type} {policy.period.name} hard limit "
                         f"of ${policy.hard_limit_usd:.2f} reached "
                         f"(current spend ${current_spend:.2f}, "
                         f"projected ${projected_spend:.2f})"
                     ),
-                    code="budget_limit_exceeded",
+                    (
+                        max(1, int((period_end - now).total_seconds()))
+                        if period_end is not None
+                        else None
+                    ),
                 )
-                # Not rendered on the 403 (its headers stay as they were); the
-                # trusted upstream 429 uses it for ``retry-after``.
-                period_end = get_period_end(now, policy.period)
-                denial.budget_reset_seconds = (  # type: ignore[attr-defined]
-                    max(1, int((period_end - now).total_seconds()))
-                    if period_end is not None
-                    else None
-                )
-                raise denial
 
         return None
 

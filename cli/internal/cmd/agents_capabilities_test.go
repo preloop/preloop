@@ -94,6 +94,44 @@ func TestControlDisclosureText(t *testing.T) {
 	}
 }
 
+func TestVSCodeCopilotDiscoverHelpDocumentsManualBYOK(t *testing.T) {
+	note := mcpOnlyAgentModelNote(AgentConfig{Name: "VSCode / Copilot"})
+	help := agentsDiscoverCmd.Long
+	for _, fragment := range []string{
+		"Manual BYOK",
+		"Chat: Manage Language Models",
+		"Custom Endpoint",
+		"chatLanguageModels.json",
+		"toolCalling",
+		"/openai/v1/chat/completions",
+		"/openai/v1/responses",
+		"/anthropic/v1/messages",
+	} {
+		if !strings.Contains(note, fragment) {
+			t.Fatalf("VS Code onboard note missing %q: %s", fragment, note)
+		}
+		if !strings.Contains(help, fragment) {
+			t.Fatalf("discover help missing %q: %s", fragment, help)
+		}
+	}
+	agent := AgentConfig{Name: "VSCode / Copilot"}
+	if capabilitiesForAgent(agent).ModelRoute != controlUnsupported {
+		t.Fatal("VS Code model routing stays manual; automatic gateway rewrite is unsupported")
+	}
+	if !strings.HasPrefix(note, mcpOnlySupportLabel) {
+		t.Fatalf("VS Code note must keep the adapter support label: %s", note)
+	}
+	if !strings.Contains(note, "Onboarding writes the MCP firewall entry only") {
+		t.Fatalf("VS Code note must say onboarding writes only the MCP entry: %s", note)
+	}
+	if strings.Contains(note, "does not configure") {
+		t.Fatalf("VS Code note must document Manual BYOK, not an unconfigured adapter: %s", note)
+	}
+	if !strings.Contains(help, "chatLanguageModels.json alone") {
+		t.Fatalf("discover help must say onboard leaves chatLanguageModels.json alone: %s", help)
+	}
+}
+
 func TestControlDisclosureHelpMatchesDispatch(t *testing.T) {
 	for _, spec := range agentSpecs {
 		if !strings.Contains(agentDiscoverySearchLabel(), spec.Name) {

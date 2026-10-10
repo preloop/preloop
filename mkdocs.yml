@@ -5,6 +5,9 @@ repo_url: https://github.com/preloop/preloop
 repo_name: preloop/preloop
 edit_uri: edit/main/docs/
 docs_dir: docs
+# CI and local documentation builds execute the evidence integrity guards.
+hooks:
+  - docs/scripts/anthropic_evidence_hook.py
 # Tooling that lives next to the docs, not pages.
 exclude_docs: |
   scripts/
@@ -147,6 +150,7 @@ nav:
       - Copilot coverage: guide/copilot.md
       - Copilot CLI: guide/copilot-cli.md
       - Copilot cloud agent: guide/copilot-cloud-agent.md
+      - VS Code Copilot Chat: guide/clients/vscode-copilot.md
       - OpenClaw: guide/integrations/openclaw.md
       - OpenClaw policy examples: guide/examples/policies/openclaw/README.md
       - trigger.dev: guide/integrations/trigger-dev.md
@@ -265,6 +269,10 @@ nav:
       - Accounts and CLI profiles: guide/accounts-and-profiles.md
 
   - Self-hosting and operations:
+      - Anthropic Enterprise hooks: operations/anthropic-inference-hooks.md
+      - Claude self-hosted runner identity: operations/anthropic-self-hosted-runner.md
+      - Managed Claude endpoint rollout: operations/anthropic-managed-rollout.md
+      - Anthropic acceptance and evidence: operations/anthropic-acceptance.md
       - Install the OSS stack: operations/installation.md
       - Windows: operations/windows-wsl2.md
       - TLS reverse proxy: operations/tls.md
@@ -305,6 +313,7 @@ nav:
   - Architecture (for contributors):
       - System overview: architecture/overview.md
       - Data model: architecture/data-model.md
+      - Durable callback receipts: architecture/callback-receipts.md
       - Technical decisions: architecture/decisions.md
       - Agent Control: architecture/agent-control.md
       - Tool configuration and approvals: architecture/approvals.md

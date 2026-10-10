@@ -40,8 +40,11 @@ type hostExecPublication struct {
 	Path          string `json:"path"`
 	Branch        string `json:"branch"`
 	CommitMessage string `json:"commit_message"`
-	repo          hostExecCheckoutRepo
-	baseHead      string
+	// Continuation pushes onto the existing pull request branch, which is
+	// also the branch the checkout cloned.
+	Continuation bool `json:"continuation"`
+	repo         hostExecCheckoutRepo
+	baseHead     string
 }
 
 // jobHostExecPublication decodes the delivered publication plan and binds it
@@ -80,7 +83,10 @@ func jobHostExecPublication(job map[string]any, checkout *hostExecCheckout) (*ho
 	if plan.repo.Token == "" {
 		return nil, fmt.Errorf("host_exec_publication requires a repository credential")
 	}
-	if plan.repo.Branch != "" && plan.repo.Branch == plan.Branch {
+	if plan.Continuation && plan.repo.Branch != plan.Branch {
+		return nil, fmt.Errorf("host_exec_publication continuation must push the checked out branch")
+	}
+	if !plan.Continuation && plan.repo.Branch != "" && plan.repo.Branch == plan.Branch {
 		return nil, fmt.Errorf("host_exec_publication.branch must differ from the base branch")
 	}
 	return &plan, nil

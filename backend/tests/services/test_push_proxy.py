@@ -1,5 +1,6 @@
 """Unit tests for push notification proxy service."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -84,6 +85,51 @@ class TestSendPushViaProxy:
             )
             assert result["success"] is True
             assert "result" in result
+
+    @patch("preloop.services.push_proxy.is_push_proxy_configured", return_value=True)
+    @patch("preloop.services.push_proxy.PUSH_PROXY_URL", "https://proxy.example.com")
+    @patch("preloop.services.push_proxy.PUSH_PROXY_API_KEY", "test-key")
+    async def test_success_log_omits_the_title(self, mock_configured):
+        """The success log must not echo the caller-supplied title.
+
+        Regression for py/clear-text-logging-sensitive-data in the flow-failure
+        alert path, which derives the push title from the flow name.
+        """
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True, "details": {}}
+
+        records = []
+
+        class _Handler(logging.Handler):
+            def emit(self, record):
+                records.append(record.getMessage())
+
+        handler = _Handler(level=logging.DEBUG)
+        push_logger = logging.getLogger("preloop.services.push_proxy")
+        previous_level = push_logger.level
+        push_logger.addHandler(handler)
+        push_logger.setLevel(logging.DEBUG)
+        try:
+            with patch("httpx.AsyncClient") as mock_client_class:
+                mock_client = AsyncMock()
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=None)
+                mock_client.post = AsyncMock(return_value=mock_response)
+                mock_client_class.return_value = mock_client
+
+                await send_push_via_proxy(
+                    platform="ios",
+                    device_token="token456",
+                    title="TITLE-SENTINEL-should-not-be-logged",
+                    body="Body",
+                )
+        finally:
+            push_logger.removeHandler(handler)
+            push_logger.setLevel(previous_level)
+
+        assert records, "no log records captured; assertion would be vacuous"
+        assert "TITLE-SENTINEL-should-not-be-logged" not in "\n".join(records)
 
     @patch("preloop.services.push_proxy.is_push_proxy_configured", return_value=True)
     @patch("preloop.services.push_proxy.PUSH_PROXY_URL", "https://proxy.example.com")

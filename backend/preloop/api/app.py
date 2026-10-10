@@ -1055,11 +1055,13 @@ def _register_control_plane_routes(
         prefix="/api/v1",
         dependencies=[Depends(get_current_active_user)],
     )
-    app.include_router(
-        event_webhooks.router,
-        prefix="/api/v1",
-        dependencies=[Depends(get_current_active_user)],
-    )
+    # Every webhook handler declares its own actor dependency: the five
+    # principal-owned subscription operations use get_current_actor so a
+    # restricted CI credential classified by the ASGI guard can reach them,
+    # and the human-only operations keep get_current_active_user. A router
+    # level human dependency would run first and reject the machine token
+    # with 401 (see tests/api/test_ci_subscription_app_wiring.py).
+    app.include_router(event_webhooks.router, prefix="/api/v1")
     app.include_router(
         retention.router,
         prefix="/api/v1",

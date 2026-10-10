@@ -333,8 +333,12 @@ def test_linked_user_budget_applies_to_gateway_subject(client, db_session, test_
     assert unlinked.status_code == 200
 
 
-def test_same_budget_denial_on_normal_key_stays_403(client, db_session, test_user):
-    """Regression: only trusted identity requests get the 429 contract."""
+def test_same_budget_denial_on_normal_key_is_429(client, db_session, test_user):
+    """Since #1447 every budget denial is 429; only the message differs.
+
+    The trusted identity request names the developer; a normal key keeps the
+    historical ``Model gateway budget exceeded`` text.
+    """
     _model(db_session, test_user.account_id)
     api_key, token = _key(db_session, test_user, trusted=False)
     db_session.add(
@@ -350,15 +354,17 @@ def test_same_budget_denial_on_normal_key_stays_403(client, db_session, test_use
 
     response = _post(client, token, _identity())
 
-    assert response.status_code == 403
-    assert response.json()["error"]["type"] == "permission_error"
-    assert "x-should-retry" not in response.headers
+    assert response.status_code == 429
+    assert response.json()["error"]["type"] == "billing_error"
+    assert response.headers["x-should-retry"] == "false"
     assert response.json()["error"]["message"].startswith(
         "Model gateway budget exceeded"
     )
 
 
-def test_trusted_key_without_identity_keeps_403(client, db_session, test_user):
+def test_trusted_key_without_identity_budget_denial_is_429(
+    client, db_session, test_user
+):
     _model(db_session, test_user.account_id)
     api_key, token = _key(db_session, test_user)
     db_session.add(
@@ -374,7 +380,8 @@ def test_trusted_key_without_identity_keeps_403(client, db_session, test_user):
 
     response = _post(client, token)
 
-    assert response.status_code == 403
+    assert response.status_code == 429
+    assert response.json()["error"]["type"] == "billing_error"
 
 
 def test_subject_allowed_models_is_enforced(client, db_session, test_user):

@@ -1,0 +1,258 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://docs.preloop.ai/assets/schemas/anthropic-evidence.schema.json",
+  "title": "Content-free Anthropic governance evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "captured_at",
+    "enforcement_state",
+    "test_tenant_ref",
+    "surface_ref",
+    "settings_artifact_ref",
+    "versions",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "synthetic_protocol",
+        "live_application"
+      ]
+    },
+    "captured_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?\\+00:00$"
+    },
+    "enforcement_state": {
+      "enum": [
+        "unverified",
+        "verified_for_recorded_surface"
+      ]
+    },
+    "test_tenant_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^test-tenant-[0-9]{3}$"
+    },
+    "surface_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^surface-[a-z0-9-]{1,40}$"
+    },
+    "settings_artifact_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^artifact-[0-9]{3}$"
+    },
+    "versions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "core",
+        "backend",
+        "cli",
+        "client",
+        "os"
+      ],
+      "properties": {
+        "core": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,80}$"
+        },
+        "backend": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,80}$"
+        },
+        "cli": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,80}$"
+        },
+        "client": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,80}$"
+        },
+        "os": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,80}$"
+        }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 12,
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status",
+          "evidence_kind",
+          "observations",
+          "artifact_refs",
+          "side_effect_count"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "allowed_prompt",
+              "denied_prompt",
+              "denied_tool_batch",
+              "unknown_identity",
+              "unknown_source",
+              "unknown_event",
+              "endpoint_outage",
+              "policy_change",
+              "revoked_credential",
+              "alternate_covered_client",
+              "direct_route_attempt",
+              "rollback"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail",
+              "pending"
+            ]
+          },
+          "evidence_kind": {
+            "enum": [
+              "synthetic_protocol",
+              "live_application"
+            ]
+          },
+          "observations": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 12,
+            "items": {
+              "enum": [
+                "fixture_matches",
+                "fixture_mismatch",
+                "allowed",
+                "denied",
+                "side_effects_absent",
+                "identity_rejected",
+                "source_rejected",
+                "event_rejected",
+                "outage_blocked",
+                "policy_applied",
+                "revoked_access_rejected",
+                "alternate_client_covered",
+                "direct_route_rejected",
+                "rollback_observed"
+              ]
+            }
+          },
+          "artifact_refs": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "pattern": "^artifact-[0-9]{3}$"
+            }
+          },
+          "side_effect_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "synthetic_protocol"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "enforcement_state": {
+            "const": "unverified"
+          },
+          "test_tenant_ref": {
+            "type": "null"
+          },
+          "cases": {
+            "items": {
+              "properties": {
+                "evidence_kind": {
+                  "const": "synthetic_protocol"
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "test_tenant_ref": {
+            "type": "string",
+            "pattern": "^test-tenant-[0-9]{3}$"
+          },
+          "cases": {
+            "items": {
+              "properties": {
+                "evidence_kind": {
+                  "const": "live_application"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "enforcement_state": {
+            "const": "verified_for_recorded_surface"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "kind": {
+            "const": "live_application"
+          },
+          "surface_ref": {
+            "type": "string"
+          },
+          "settings_artifact_ref": {
+            "type": "string"
+          },
+          "cases": {
+            "items": {
+              "properties": {
+                "status": {
+                  "const": "pass"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

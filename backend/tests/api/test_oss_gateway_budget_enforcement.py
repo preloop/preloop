@@ -24,13 +24,13 @@ from preloop.services.model_gateway_budget_enforcer import ModelGatewayBudgetEnf
 @pytest.mark.parametrize(
     "limit, pricing, policy_alias, expected_status",
     [
-        (0.00001, True, None, 403),
-        (0.0, True, None, 403),
+        (0.00001, True, None, 429),
+        (0.0, True, None, 429),
         (100.0, True, None, 200),
-        (100.0, False, None, 403),
+        (100.0, False, None, 429),
         (100.0, False, "another-model", 200),
         (None, False, None, 200),
-        (0.0, True, "", 403),
+        (0.0, True, "", 429),
         (0.0, True, "old-model-alias", 200),
     ],
 )
@@ -56,7 +56,7 @@ def test_dedicated_gateway_applies_real_budget_before_dispatch(
             "another-model",
             "old-model-alias",
         }:
-            expected_status = 403
+            expected_status = 429
     else:
         # Founder ruling 2026-09-18: a model with no known price is never
         # blocked by a budget it cannot be measured against. The request runs

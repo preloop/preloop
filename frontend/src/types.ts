@@ -25,7 +25,12 @@ export interface FlowCustomCommands {
 }
 
 /**
- * Failure-side keys the server still parses and ignores.
+ * Failure-side keys.
+ *
+ * `alert_after_consecutive_failures` is consumed by the backend: it emails and
+ * pushes the account's owners after that many failed runs in a row (default 3
+ * when unset). This form has no control for it, but it must be carried forward
+ * on save so editing an unrelated field does not silently reset the threshold.
  *
  * `comment_on_trigger_issue` used to post the failure comment and was removed;
  * `attention_item` never did anything (failed executions always become
@@ -33,6 +38,7 @@ export interface FlowCustomCommands {
  * removal still deserializes. The console never renders or submits them.
  */
 export interface FlowFailureNotifications {
+  alert_after_consecutive_failures?: number;
   comment_on_trigger_issue?: boolean;
   attention_item?: boolean;
 }

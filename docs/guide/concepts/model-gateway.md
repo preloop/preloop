@@ -106,7 +106,7 @@ x-should-retry: false
 {"type":"error","error":{"type":"billing_error","message":"Preloop budget exceeded for dev@example.com: ..."}}
 ```
 
-`retry-after` is whole seconds until the budget period resets. Rate limits return `429` with `"type": "rate_limit_error"`. The account kill switch, `allowed_models` denials, model authorization denials (`model_not_authorized`) and content policy denials (`content_policy_denied`, including `require_approval` holds that were not approved) return `429` with `"type": "permission_error"` and `x-should-retry: false` on this path too, so failover cannot route around them. Requests without a trusted upstream identity keep the `403`. `POST /anthropic/v1/messages/count_tokens` is not budgeted, but it honours the kill switch: a halted account forwards nothing upstream. A developer whose IdP sends no email gets the same `429`, but the apps gateway treats it as a capacity error and fails over; that cannot be fixed on Preloop's side.
+`retry-after` is whole seconds until the budget period resets. Rate limits return `429` with `"type": "rate_limit_error"`. The account kill switch, `allowed_models` denials, model authorization denials (`model_not_authorized`) and content policy denials (`content_policy_denied`, including `require_approval` holds that were not approved) return `429` with `"type": "permission_error"` and `x-should-retry: false` on this path too, so failover cannot route around them. Requests without a trusted upstream identity get `429` for budget denials too, and keep `403` for policy denials (see [Status codes](#status-codes)). `POST /anthropic/v1/messages/count_tokens` is not budgeted, but it honours the kill switch: a halted account forwards nothing upstream. A developer whose IdP sends no email gets the same `429`, but the apps gateway treats it as a capacity error and fails over; that cannot be fixed on Preloop's side.
 
 **Passthrough.** On the byte-faithful [subscription OAuth path](#subscription-oauth-passthrough), `anthropic-version`, `anthropic-beta` (any value) and every other `anthropic-*` request header are forwarded verbatim, as are unknown body fields and the `system` array. Models with a provider API key still go through the gateway's translation layer. Streams stay `text/event-stream`. Upstream error bodies and the `anthropic-ratelimit-unified-*` and `x-should-retry` response headers are relayed to the client.
 
@@ -139,6 +139,33 @@ OSS includes account, flow, API-key and managed-agent budgets with soft and hard
 
 !!! cloud "Cloud and Enterprise"
     Per-user and per-team budgets, soft and hard limit notifications, and negotiated price overrides come from the RBAC and billing plugins. See [Enterprise Billing & FinOps](../integrations/enterprise-billing.md).
+
+---
+
+## Status codes
+
+Every gateway router (`/openai/v1`, `/anthropic/v1`, `/gemini/v1beta`) uses one status per condition, with the body in the router's own provider format.
+
+| Condition | Status | Anthropic `error.type` | OpenAI `error.type` / `error.code` | Gemini `error.status` | Headers |
+|---|---|---|---|---|---|
+| Budget hard limit (account, flow, user, team, API key, gateway subject, per-model, per-execution ceiling, trial or free hosted-model allowance, pricing required for enforcement) | `429` | `billing_error` | `insufficient_quota` / `insufficient_quota` | `RESOURCE_EXHAUSTED` | `retry-after: <seconds>`, `x-should-retry: false` |
+| Rate limit (Preloop or upstream) | `429` | `rate_limit_error` | `rate_limit_error` / upstream value | `RESOURCE_EXHAUSTED` | `retry-after` when known; never `x-should-retry: false` |
+| Policy denial (kill switch, model allowlist, model authorization, content policy) | `403` | `permission_error` | `permission_error` | `PERMISSION_DENIED` | none |
+| Hosted credit exhausted (Cloud and Enterprise hosted billing) | `402` | unchanged | unchanged | unchanged | unchanged |
+
+Details for a budget denial:
+
+- `retry-after` is an integer number of seconds until the budget window resets, or `3600` when the reset is unknown.
+- `x-should-retry: false` tells the Anthropic and OpenAI SDKs not to retry. Claude Code also stops retrying when `retry-after` is above 60 seconds.
+- The OpenAI body keeps the Preloop machine code in `error.preloop_code` (`budget_limit_exceeded` or `execution_budget_exceeded`).
+- Anthropic and Gemini messages keep the `Model gateway budget exceeded: ...` prefix (the per-execution ceiling says `Execution budget exceeded: ...`).
+- The Gemini body adds `google.rpc.ErrorInfo` (`domain: preloop.ai`) and `google.rpc.RetryInfo` details. Gemini CLI treats a `retryDelay` above five minutes as a terminal quota error; a shorter one makes it wait for the window to reset before it retries.
+- Usage and audit rows record status `429`, audit `error_type` `budget_limit_exceeded` and `error_class` `budget_exceeded`. Budget denials do not count toward the rate limit report.
+
+Requests from a trusted upstream (the Claude apps gateway) that carry a developer identity also get `429` for policy denials, because the apps gateway fails over to its next upstream on `403`.
+
+!!! warning "Migrating from `403` budget denials"
+    Before this change a budget hard limit returned `403` (`permission_error`), the same status as a policy denial. Integrations that match `403` to detect an exhausted budget must match `429` with `billing_error` (Anthropic), `insufficient_quota` (OpenAI) or `RESOURCE_EXHAUSTED` (Gemini) instead. To tell a Preloop budget denial from an upstream rate limit, check `x-should-retry: false`, `error.preloop_code` on the OpenAI router, or the `Model gateway budget exceeded` message prefix.
 
 ---
 
