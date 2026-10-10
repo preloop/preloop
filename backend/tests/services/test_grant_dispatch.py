@@ -567,19 +567,16 @@ async def test_restricted_listing_cannot_reuse_cached_resource_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from fastmcp.tools import Tool
-    from preloop.models.crud import crud_account
+    from preloop.models.crud import crud_account, crud_restricted_runtime
 
-    runtime, authorize, _ = restricted_runtime
+    runtime, _, _ = restricted_runtime
     mcp, user, *_ = runtime
     user.mcp_tools_cache = [Tool(name="formerly_permitted", parameters={})]
 
-    def check_current_resource(*args: Any, **kwargs: Any) -> None:
-        from preloop.models.crud import crud_restricted_runtime
-
-        if kwargs["server_id"] is not None:
-            raise crud_restricted_runtime.RestrictedRuntimeDeniedError("narrowed")
-
-    authorize.side_effect = check_current_resource
+    batch = MagicMock(
+        side_effect=crud_restricted_runtime.RestrictedRuntimeDeniedError("narrowed")
+    )
+    monkeypatch.setattr(crud_restricted_runtime, "authorized_resources", batch)
     monkeypatch.setattr(
         "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
         lambda *a: [],
@@ -587,9 +584,8 @@ async def test_restricted_listing_cannot_reuse_cached_resource_authority(
     monkeypatch.setattr(
         crud_account, "get", lambda *a, **k: SimpleNamespace(meta_data={})
     )
-    assert await gateway.DynamicFastMCP.list_tools(mcp) == []
-    assert authorize.call_count == 2
-    assert all(call.kwargs["scope"] == "mcp:read" for call in authorize.call_args_list)
+    assert await gateway.DynamicFastMCP.list_tools(mcp, run_middleware=False) == []
+    batch.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -606,3 +602,63 @@ async def test_legacy_resource_protocol_still_executes_handlers(
     assert len(await mcp.list_resources()) == 1
     await mcp.read_resource("resource://legacy")
     handler.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_restricted_listing_batches_resources_and_denies_stale_cache(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from uuid import UUID, uuid4
+    from fastmcp.tools import Tool
+    from preloop.models.crud import crud_account, crud_restricted_runtime
+
+    mcp, user, *_ = runtime
+    monkeypatch.delattr(mcp, "list_tools")
+    user.credential_type = "restricted_runtime"
+    user.api_key_id = str(uuid4())
+    user.mcp_tools_cache = [Tool(name="formerly_permitted", parameters={})]
+    approved = server()
+    approved.id = str(uuid4())
+    replacement = server()
+    replacement.id = str(uuid4())
+    replacement.tool_prefix = "replacement"
+    names = [f"read_{index}" for index in range(20)]
+    proxied = [
+        (owner, SimpleNamespace(name=name, description="Fixture", input_schema={}))
+        for owner in (approved, replacement)
+        for name in names
+    ]
+    batch = MagicMock(
+        side_effect=[
+            [
+                crud_restricted_runtime.ResourceScope(
+                    server_id=UUID(approved.id), tools=names
+                )
+            ],
+            crud_restricted_runtime.RestrictedRuntimeDeniedError("narrowed"),
+        ]
+    )
+    monkeypatch.setattr(
+        crud_restricted_runtime, "authorized_resources", batch, raising=False
+    )
+    monkeypatch.setattr(crud_restricted_runtime, "authorize", MagicMock())
+    discovery = MagicMock(return_value=proxied)
+    monkeypatch.setattr(
+        "preloop.services.mcp_tool_discovery._get_proxied_tools_sync", discovery
+    )
+    monkeypatch.setattr(
+        crud_account, "get", lambda *a, **k: SimpleNamespace(meta_data={})
+    )
+    opened = MagicMock(side_effect=lambda: iter([MagicMock()]))
+    monkeypatch.setattr(gateway, "get_db", opened)
+    snapshots = AsyncMock(side_effect=AssertionError("per-tool DB lookup"))
+    monkeypatch.setattr(gateway, "_prepare_grant_dispatch", snapshots)
+    listed = await gateway.DynamicFastMCP.list_tools(mcp)
+    assert {tool.name for tool in listed} == {f"first_{name}" for name in names}
+    assert opened.call_count == 1
+    batch.assert_called_once()
+    snapshots.assert_not_awaited()
+    assert await gateway.DynamicFastMCP.list_tools(mcp) == []
+    assert opened.call_count == 2
+    assert batch.call_count == 2
+    discovery.assert_called_once()

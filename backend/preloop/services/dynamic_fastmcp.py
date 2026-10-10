@@ -1290,6 +1290,10 @@ class DynamicFastMCP(FastMCP):
         Returns:
             List of tools available to the current user
         """
+        if run_middleware and self._restricted_protocol():
+            # FastMCP re-enters this override with run_middleware=False. Start
+            # the batch there so one request checks one authority snapshot.
+            return list(await super().list_tools(run_middleware=True))
         logger.info("!!! list_tools called - ENTRY POINT !!!")
         # Get current user context
         user_context = self._get_current_user_context()
@@ -1297,9 +1301,6 @@ class DynamicFastMCP(FastMCP):
 
         if not user_context:
             logger.warning("No user context available, returning empty tool list")
-            return []
-
-        if await self._restricted_runtime_denial(user_context, invocation=False):
             return []
 
         logger.info(
@@ -1315,6 +1316,8 @@ class DynamicFastMCP(FastMCP):
         ]
         # Filter out internal proxied tool names (they start with "account_")
         builtin_tools = [t for t in default_tools if not t.name.startswith("account_")]
+        if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
+            builtin_tools = []
 
         builtin_meta = {t["name"]: t for t in BUILTIN_TOOLS}
 
@@ -1377,7 +1380,34 @@ class DynamicFastMCP(FastMCP):
                     )
                     from preloop.models.crud import crud_account
 
+                    allowed_resources = None
+                    if (
+                        getattr(user_context, "credential_type", "legacy")
+                        == "restricted_runtime"
+                    ):
+                        from preloop.models.crud import crud_restricted_runtime
+
+                        api_key_id = user_context.api_key_id
+                        if not api_key_id:
+                            raise PermissionError("Restricted credential unavailable")
+                        grants = crud_restricted_runtime.authorized_resources(
+                            db,
+                            account_id=uuid.UUID(user_context.account_id),
+                            api_key_id=uuid.UUID(api_key_id),
+                        )
+                        allowed_resources = {
+                            str(grant.server_id): set(grant.tools) for grant in grants
+                        }
                     proxied = _get_proxied_tools_sync(user_context.account_id, db)
+                    if allowed_resources is not None:
+                        # Discovery retains the current deterministic owner of
+                        # duplicate exposed names. Filtering that owner cannot
+                        # fall through to a shadowed, separately granted server.
+                        proxied = [
+                            (owner, tool)
+                            for owner, tool in proxied
+                            if tool.name in allowed_resources.get(str(owner.id), set())
+                        ]
                     configs = crud_tool_configuration.get_multi_by_account(
                         db, account_id=str(user_context.account_id), limit=1000
                     )
@@ -1667,22 +1697,6 @@ class DynamicFastMCP(FastMCP):
         for tool in available_tools:
             logger.info(f"  - {tool.name}")
 
-        if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
-            restricted_tools = []
-            for tool in available_tools:
-                if tool.name not in self._proxied_tool_servers:
-                    continue
-                try:
-                    snapshot, _ = await _prepare_grant_dispatch(
-                        user_context.account_id, tool.name, introspect=False
-                    )
-                except Exception:
-                    continue
-                if snapshot is not None and not await self._restricted_runtime_denial(
-                    user_context, snapshot, invocation=False
-                ):
-                    restricted_tools.append(tool)
-            available_tools = restricted_tools
         user_context.mcp_tools_cache = available_tools
         return available_tools
 

@@ -96,7 +96,9 @@ class IssuedRuntimeCredential:
 
 def enabled() -> bool:
     """Keep generic restricted runtime issuance and authorization default off."""
-    return os.getenv("PRELOOP_RESTRICTED_RUNTIME_CREDENTIALS", "false") == "true"
+    return (
+        os.getenv("PRELOOP_RESTRICTED_RUNTIME_CREDENTIALS", "false").lower() == "true"
+    )
 
 
 def _session_key(external_session_id: str) -> str:
@@ -431,7 +433,7 @@ def revoke(
             db.flush()
 
 
-def authorize(
+def _authorize(
     db: Session,
     *,
     account_id: UUID,
@@ -440,7 +442,7 @@ def authorize(
     server_id: UUID | None = None,
     upstream_tool: str | None = None,
     now: datetime | None = None,
-) -> models.User:
+) -> tuple[models.User, list[ResourceScope]]:
     """Read fresh key, policy, principal and session state at each supported boundary."""
     from preloop.models.crud import crud_runtime_session
 
@@ -535,4 +537,42 @@ def authorize(
         )
     ):
         raise RestrictedRuntimeDeniedError("runtime_resource_not_granted")
+    return user, resources
+
+
+def authorize(
+    db: Session,
+    *,
+    account_id: UUID,
+    api_key_id: UUID,
+    scope: Literal["mcp:read", "mcp:write"] = "mcp:read",
+    server_id: UUID | None = None,
+    upstream_tool: str | None = None,
+    now: datetime | None = None,
+) -> models.User:
+    """Authorize one supported boundary with fresh authority and exact resources."""
+    user, _ = _authorize(
+        db,
+        account_id=account_id,
+        api_key_id=api_key_id,
+        scope=scope,
+        server_id=server_id,
+        upstream_tool=upstream_tool,
+        now=now,
+    )
     return user
+
+
+def authorized_resources(
+    db: Session, *, account_id: UUID, api_key_id: UUID, now: datetime | None = None
+) -> list[ResourceScope]:
+    """Project the current listing grants under one policy lock and state check.
+
+    Callers must filter freshly resolved tool owners against these immutable
+    server IDs and original tool names in the same transaction. The projection
+    must never be cached or substituted for a later invocation authorization.
+    """
+    _, resources = _authorize(
+        db, account_id=account_id, api_key_id=api_key_id, scope="mcp:read", now=now
+    )
+    return resources

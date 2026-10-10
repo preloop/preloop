@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, Mock
 from uuid import uuid4
 
@@ -389,6 +389,47 @@ def test_generic_gate_fails_closed_when_disabled(state: Any, monkeypatch: Any) -
         authorize(state)
     with pytest.raises(authority.RestrictedRuntimeDeniedError):
         issue(state, external_session_id="other-session")
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, False),
+        ("false", False),
+        ("FALSE", False),
+        ("1", False),
+        ("true", True),
+        ("True", True),
+        ("TRUE", True),
+    ],
+)
+def test_feature_flag_matches_boolean_environment_convention(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: bool
+) -> None:
+    if value is None:
+        monkeypatch.delenv("PRELOOP_RESTRICTED_RUNTIME_CREDENTIALS", raising=False)
+    else:
+        monkeypatch.setenv("PRELOOP_RESTRICTED_RUNTIME_CREDENTIALS", value)
+    assert authority.enabled() is expected
+
+
+def test_listing_resource_projection_rechecks_authority_once(state: Any) -> None:
+    issue(state)
+    locked_reference = cast(Mock, crud.crud_secret_reference.get_for_update)
+    locked_reference.reset_mock()
+    resources = authority.authorized_resources(
+        state.db, account_id=state.account_id, api_key_id=state.stored[-1].id, now=NOW
+    )
+    assert resources == state.policy.resource_scope
+    locked_reference.assert_called_once()
+    state.server.status = "disabled"
+    with pytest.raises(authority.RestrictedRuntimeDeniedError):
+        authority.authorized_resources(
+            state.db,
+            account_id=state.account_id,
+            api_key_id=state.stored[-1].id,
+            now=NOW,
+        )
 
 
 def test_machine_markers_never_fall_back_to_owner(state: Any, monkeypatch: Any) -> None:
