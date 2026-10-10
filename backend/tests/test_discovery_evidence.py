@@ -251,7 +251,7 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
         "script_location", str(root / "backend/preloop/models/alembic")
     )
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20261010_ticket_readiness"]
+    assert script.get_heads() == ["20261010_gateway_idp"]
     assert module.revision in {
         revision.revision for revision in script.walk_revisions()
     }
