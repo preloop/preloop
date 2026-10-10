@@ -125,6 +125,29 @@ CSV_COLUMNS: tuple[str, ...] = (
     "attributed_cost_usd",
 )
 
+READINESS_CSV_COLUMNS: tuple[str, ...] = (
+    "ticket_created_at",
+    "ticket_creation_tracker_id",
+    "ticket_creation_issue_key",
+    "ticket_creation_source_field",
+    "ticket_creation_retrieved_at",
+    "first_ready_observed_at",
+    "ticket_to_observed_ready_hours",
+    "readiness_scope",
+    "readiness_policy_version",
+    "first_ready_source_sha",
+    "first_ready_target_sha",
+    "first_ready_observation_id",
+    "latest_readiness_state",
+    "latest_readiness_coverage",
+    "latest_readiness_observed_at",
+    "forge_coverage",
+    "readiness_unknown_reasons",
+    "readiness_observation_started_at",
+    "readiness_observation_completed_at",
+)
+CSV_COLUMNS += READINESS_CSV_COLUMNS
+
 UNASSIGNED_ISSUE_KEY = "(unassigned)"
 
 #: ``IssueCostPullRequest.opened_at_source`` values. A forge time replaces a
@@ -1192,6 +1215,9 @@ def record_publication(
             db, account_id=account_id, pull=pull, rollup_id=rollup.id
         )
     _recompute(db, touched)
+    from preloop.services.readiness.scheduler import schedule_pull_request
+
+    schedule_pull_request(db, pull)
     return pull
 
 
@@ -1248,9 +1274,13 @@ def record_pull_request_event(
     if not approved and not merged:
         # Any other pull request event only corrects the "opened" time of a
         # pull request already on record; it never creates one.
-        return _stamp_forge_opened(
+        pull = _stamp_forge_opened(
             db, account_id=account_id, pr_key=subject.url, created=created
         )
+        from preloop.services.readiness.scheduler import schedule_pull_request
+
+        schedule_pull_request(db, pull)
+        return pull
     pull = crud_issue_cost.get_or_create_pull_request(
         db, account_id=account_id, pr_key=subject.url
     )
@@ -1299,6 +1329,9 @@ def record_pull_request_event(
                         db, account_id=account_id, pull=pull, rollup_id=rollup.id
                     )
     _recompute(db, touched)
+    from preloop.services.readiness.scheduler import schedule_pull_request
+
+    schedule_pull_request(db, pull)
     return pull
 
 
@@ -1417,8 +1450,34 @@ def record_publication_safely(
 def record_pull_request_event_safely(db: Session, event_data: dict[str, Any]) -> None:
     """Webhook hook for approval and merge events; commits its own write."""
     event_type = _str(_dict(event_data).get("type")) or ""
-    if event_type not in APPROVAL_EVENT_TYPES | MERGE_EVENT_TYPES | {REVIEW_EVENT_TYPE}:
+    from preloop.config import settings
+
+    if (
+        not settings.ticket_readiness_enabled
+        and event_type
+        not in APPROVAL_EVENT_TYPES | MERGE_EVENT_TYPES | {REVIEW_EVENT_TYPE}
+    ):
         return
+    if settings.ticket_readiness_enabled:
+        from preloop.models.crud import readiness
+
+        account_id = _uuid(event_data.get("account_id"))
+        tracker_id = _uuid(event_data.get("tracker_id"))
+        repository = _str(
+            _dict(_dict(event_data.get("payload")).get("repository")).get("full_name")
+        )
+        if account_id and tracker_id and repository:
+            _savepoint(
+                db,
+                "readiness_webhook",
+                lambda: readiness.schedule_repository(
+                    db,
+                    account_id=account_id,
+                    tracker_id=tracker_id,
+                    repository=repository,
+                    now=datetime.now(UTC),
+                ),
+            )
     _savepoint(db, "webhook", lambda: record_pull_request_event(db, event_data))
     try:
         db.commit()
@@ -1869,6 +1928,16 @@ def build_report(
         flow_ids=list(per_flow),
     )
 
+    from preloop.config import settings
+    from preloop.models.crud import readiness
+    from preloop.services.readiness.report import readiness_fields
+
+    evidence_by_issue = (
+        readiness.report_evidence_many(db, account_id=account_id, rollups=rollups)
+        if settings.ticket_readiness_enabled
+        else {}
+    )
+    readiness_reported_at = datetime.now(UTC)
     rows: list[IssueCostRow] = []
     per_project: dict[Optional[uuid.UUID], _Totals] = {}
     for rollup in rollups:
@@ -1924,6 +1993,12 @@ def build_report(
                 estimate_hours_source=rollup.estimate_hours_source,
                 estimate_points=_optional_float(rollup.estimate_points),
                 estimate_points_source=rollup.estimate_points_source,
+                **readiness_fields(
+                    *evidence_by_issue.get(
+                        rollup.id, (None, [], "capability_disabled", None)
+                    ),
+                    now=readiness_reported_at,
+                ),
                 execution_ids=execution_ids.get(rollup.id, [])
                 if include_execution_ids
                 else None,
@@ -2136,6 +2211,7 @@ def report_to_csv(report: IssueCostReport) -> str:
                     row.known_cost_run_count,
                     row.unknown_cost_run_count,
                     row.attributed_cost_usd,
+                    *_readiness_csv_values(row),
                 )
             ]
         )
@@ -2160,8 +2236,18 @@ def report_to_csv(report: IssueCostReport) -> str:
             bucket.unknown_cost_run_count,
             bucket.attributed_cost_usd,
         )
-        blanks = ("",) * (len(CSV_COLUMNS) - len(leading) - len(coverage))
-        writer.writerow([_csv_cell(value) for value in leading + blanks + coverage])
+        blanks = ("",) * (
+            len(CSV_COLUMNS) - len(READINESS_CSV_COLUMNS) - len(leading) - len(coverage)
+        )
+        writer.writerow(
+            [
+                _csv_cell(value)
+                for value in leading
+                + blanks
+                + coverage
+                + ("",) * len(READINESS_CSV_COLUMNS)
+            ]
+        )
     return buffer.getvalue()
 
 
@@ -2180,3 +2266,28 @@ def report_to_json(report: IssueCostReport) -> str:
         item["execution_id"] for item in unassigned.get("executions") or []
     ]
     return json.dumps(document, indent=2, sort_keys=False)
+
+
+def _readiness_csv_values(row: IssueCostRow) -> tuple[Any, ...]:
+    creation = row.ticket_created_at_provenance
+    return (
+        row.ticket_created_at,
+        creation.tracker_id if creation else None,
+        creation.issue_key if creation else None,
+        creation.source_field if creation else None,
+        creation.retrieved_at if creation else None,
+        row.first_ready_observed_at,
+        row.ticket_to_observed_ready_hours,
+        row.readiness_scope,
+        row.readiness_policy_version,
+        row.first_ready_source_sha,
+        row.first_ready_target_sha,
+        row.first_ready_observation_id,
+        row.latest_readiness_state,
+        row.latest_readiness_coverage,
+        row.latest_readiness_observed_at,
+        row.forge_coverage,
+        ";".join(row.readiness_unknown_reasons),
+        row.readiness_observation_started_at,
+        row.readiness_observation_completed_at,
+    )

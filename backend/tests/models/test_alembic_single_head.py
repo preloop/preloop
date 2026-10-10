@@ -326,6 +326,9 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert sharing.down_revision == "20261009_discovery_observation"
     callback = script.get_revision("20261010_callback_receipt")
     assert callback.down_revision == "20261009_resource_sharing_intent"
+    readiness = script.get_revision("20261010_ticket_readiness")
+    assert readiness is not None
+    assert readiness.down_revision == "20261010_callback_receipt"
     otlp_ingest = script.get_revision("20261010_otlp_telemetry_ingest")
-    assert otlp_ingest.down_revision == "20261010_callback_receipt"
+    assert otlp_ingest.down_revision == "20261010_ticket_readiness"
     assert script.get_heads() == ["20261010_otlp_telemetry_ingest"]

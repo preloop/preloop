@@ -4,6 +4,10 @@ Editions: OSS. Contributor documentation for this repository.
 
 This chapter records technical choices: FastAPI for the REST API, Python, PostgreSQL, and how the stack is deployed (Compose, Helm, service roles).
 
+Decisions that need a recorded status (Proposed, Accepted, Superseded) live as numbered records under `decisions/`:
+
+- [ADR 0001: API versioning before 1.0](decisions/0001-api-versioning.md) (Proposed)
+
 ## REST API Implementation
 Preloop implements a RESTful HTTP API using FastAPI, which provides:
 - High performance with Starlette and Pydantic

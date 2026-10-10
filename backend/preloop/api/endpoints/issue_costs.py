@@ -25,6 +25,7 @@ from preloop.schemas.issue_cost import (
     IssueCostRebuildResponse,
     IssueCostReport,
 )
+from preloop.schemas.readiness import ReadinessObservation
 from preloop.services import issue_cost_rollup
 from preloop.utils.permissions import require_permission
 
@@ -193,3 +194,24 @@ def rebuild_issue_costs(
         failed=failed,
         limit_reached=examined >= issue_cost_rollup.MAX_REBUILD_EXECUTIONS,
     )
+
+
+@router.get(
+    "/readiness-observations/{observation_id}", response_model=ReadinessObservation
+)
+@require_permission("view_cost")
+def get_readiness_observation(
+    observation_id: UUID,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_active_user),
+) -> ReadinessObservation:
+    """Retained compact sampled evidence, including historical first-ready gates."""
+    from preloop.models.crud import readiness
+
+    account = get_account_or_404(db, current_user)
+    observation = readiness.get_observation(
+        db, account_id=account.id, observation_id=observation_id
+    )
+    if observation is None:
+        raise HTTPException(status_code=404, detail="Readiness observation not found")
+    return observation

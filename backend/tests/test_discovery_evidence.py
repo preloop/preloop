@@ -254,6 +254,9 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
     script = ScriptDirectory.from_config(config)
     assert len(script.get_heads()) == 1
     assert script.get_revision("20261009_discovery_observation") is not None
+    assert module.revision in {
+        revision.revision for revision in script.walk_revisions()
+    }
 
 
 def test_changed_replay_plugin_error_is_a_409() -> None:

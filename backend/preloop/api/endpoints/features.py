@@ -101,6 +101,9 @@ def get_features(db: Session = Depends(get_db_session)) -> Dict[str, Any]:
 
     from preloop.utils.bitbucket_dc import bitbucket_dc_enabled
 
+    from preloop.config import settings
+
+    result["features"]["ticket_readiness"] = settings.ticket_readiness_enabled
     result["features"]["bitbucket_dc"] = bitbucket_dc_enabled()
 
     # Account capabilities (multiple accounts per person, parent and

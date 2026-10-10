@@ -8,6 +8,7 @@ import {
   AuthedElement,
   exportIssueCosts,
   getFlowSummaries,
+  getFeatures,
   getIssueCostExecutions,
   getIssueCosts,
   getUnassignedIssueCostExecutions,
@@ -24,6 +25,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import { resolveTimeRange } from '../../utils/time-range';
 import { downloadBlob } from '../../utils/records-format';
 import '../../components/view-header.ts';
+import '../../components/readiness-policy-settings.ts';
 import '../../components/time-range-select.ts';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -161,6 +163,7 @@ function safeHref(url: string | null): string | null {
  */
 @customElement('issue-cost-view')
 export class IssueCostView extends AuthedElement {
+  @state() private readinessEnabled = false;
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @state() report: IssueCostReport | null = null;
   @state() loading = false;
@@ -238,6 +241,11 @@ export class IssueCostView extends AuthedElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    void getFeatures()
+      .then((result) => {
+        this.readinessEnabled = result.features.ticket_readiness === true;
+      })
+      .catch(() => {});
     void this.loadFilters();
     void this.load();
   }
@@ -419,7 +427,7 @@ export class IssueCostView extends AuthedElement {
     const state = this.expanded[row.id];
     if (!state) return nothing;
     return html`<tr class="detail">
-      <td colspan="11">
+      <td colspan=${this.readinessEnabled ? 12 : 11}>
         ${this.renderExecutionTable(state, `Executions of ${row.issue_key}`)}
       </td>
     </tr>`;
@@ -445,6 +453,7 @@ export class IssueCostView extends AuthedElement {
             </th>
             <th class="num" title=${INTERVAL_TITLES.toMerge}>To merge</th>
             <th class="num" title="The tracker's own estimate">Estimate</th>
+            ${this.readinessEnabled ? html`<th>Ticket to observed ready under configured policy</th>` : nothing}
             <th>PR</th>
           </tr>
         </thead>
@@ -505,6 +514,57 @@ export class IssueCostView extends AuthedElement {
                   >
                     ${formatIssueEstimate(row)}
                   </td>
+                  ${
+                    this.readinessEnabled
+                      ? html`<td
+                          title="Sampled gate evidence over an interval; forge restrictions remain unknown."
+                        >
+                          ${row.ticket_to_observed_ready_hours === null || row.ticket_to_observed_ready_hours === undefined ? 'Unknown' : formatIssueHours(row.ticket_to_observed_ready_hours)}
+                          <div>
+                            Scope: ${row.readiness_scope ?? 'unknown'}; policy:
+                            ${row.readiness_policy_version ?? 'unconfigured'}
+                          </div>
+                          <div>
+                            Current: ${row.latest_readiness_state ?? 'unknown'};
+                            coverage:
+                            ${row.latest_readiness_coverage ?? 'unsupported'}
+                          </div>
+                          <div>
+                            ${(row.readiness_unknown_reasons ?? []).join(', ')}
+                          </div>
+                          <div>
+                            Sampled interval:
+                            ${row.readiness_observation_started_at ?? 'unknown'}
+                            –
+                            ${row.readiness_observation_completed_at ?? 'unknown'}
+                          </div>
+                          <details>
+                            <summary>Sampled gate evidence</summary>
+                            <p>
+                              Gate values may change during this interval. These
+                              reads do not form an atomic snapshot or guarantee
+                              a merge.
+                            </p>
+                            ${(row.readiness_observations ?? []).map(
+                              (observation) =>
+                                html`<div>
+                                  <p>
+                                    PR
+                                    ${observation.repository}#${observation.pr_id};
+                                    source
+                                    ${observation.source_sha ?? 'unknown'};
+                                    target
+                                    ${observation.target_sha ?? 'unknown'}
+                                  </p>
+                                  <ul>
+                                    ${observation.gates.map((gate) => html`<li>${gate.name}: ${gate.state}; ${gate.reason ?? ''}; source ${gate.source}; retrieved ${gate.retrieved_at}</li>`)}
+                                  </ul>
+                                </div>`
+                            )}
+                          </details>
+                        </td>`
+                      : nothing
+                  }
                   <td>
                     ${this.renderLink(row.pr_url, row.pr_url ? 'PR' : '')}
                   </td>
@@ -590,6 +650,7 @@ export class IssueCostView extends AuthedElement {
         headerText="Cost per issue"
         description="Estimated agent cost and cycle time for each tracker issue."
       ></view-header>
+      ${this.readinessEnabled && this.projectId ? html`<readiness-policy-settings .projectId=${this.projectId} @readiness-policy-saved=${() => this.load()}></readiness-policy-settings>` : nothing}
       <div class="toolbar">
         <time-range-select
           ariaLabel="Issue cost period"

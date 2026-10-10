@@ -56,6 +56,7 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/runtime-sessions': ['view_runtime_sessions'],
   '/console/artifacts': ['view_runtime_sessions'],
   '/console/cost': ['view_cost'],
+  '/console/api-usage': ['view_cost'],
   '/console/approvals': ['view_approvals'],
   // One request, opened from a notification, Slack or email. A link that
   // carries a decision token is exempt (see _deniedPermissionForPath).
@@ -78,12 +79,10 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
 /**
  * Pages with no nav entry of their own, and the nav item that owns them.
  * `/console/approval/:id` is a single approval opened from a notification
- * or email. `/console/api-usage` is the older cost URL. Both highlight the
- * item that owns them.
+ * or email; it highlights Approvals.
  */
 const NAV_ALIASES: Record<string, string[]> = {
   '/console/approvals': ['/console/approval'],
-  '/console/cost': ['/console/api-usage'],
 };
 
 const SIDEBAR_BREAKPOINT = 768;
@@ -413,6 +412,24 @@ export class ConsoleShell extends LitElement {
       #console-nav {
         --nav-row-inset: 1.25rem;
       }
+
+      .nav-subitem {
+        padding-left: var(--sl-spacing-medium);
+      }
+
+      .nav-text {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      .nav-subtitle {
+        margin-left: 0.5rem;
+        font-size: var(--console-text-caption, 0.75rem);
+        color: var(--sl-color-neutral-600);
+        white-space: normal;
+      }
+
       .nav-list {
         list-style: none;
         margin: 0;
@@ -1215,6 +1232,20 @@ export class ConsoleShell extends LitElement {
                         <span class="nav-row">
                           <sl-icon name="cash-coin" slot="prefix"></sl-icon>
                           <span class="sidebar-label">Cost</span>
+                        </span>
+                      `
+                    )}
+                    ${this._renderNavLink(
+                      '/console/api-usage',
+                      html`
+                        <span class="nav-row nav-subitem">
+                          <sl-icon name="activity" slot="prefix"></sl-icon>
+                          <span class="nav-text">
+                            <span class="sidebar-label">API usage</span>
+                            <span class="nav-subtitle"
+                              >Gateway traffic and rate limits</span
+                            >
+                          </span>
                         </span>
                       `
                     )}
