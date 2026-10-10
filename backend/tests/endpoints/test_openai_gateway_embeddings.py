@@ -429,7 +429,7 @@ def _denied_budget_result() -> BudgetCheckResult:
 def test_embeddings_budget_denial_records_embeddings_kind(
     app, client, db_session, test_user
 ):
-    """A 403 budget denial on embeddings is stamped embeddings, not chat."""
+    """A 429 budget denial on embeddings is stamped embeddings, not chat."""
     _create_embedding_model(db_session, test_user.account_id)
     _runtime_key_auth(app, db_session, test_user)
 
@@ -450,13 +450,15 @@ def test_embeddings_budget_denial_records_embeddings_kind(
             },
         )
 
-    assert response.status_code == 403
+    assert response.status_code == 429
     body = response.json()
     assert "account monthly limit reached" in body["error"]["message"]
+    assert body["error"]["type"] == "insufficient_quota"
+    assert response.headers["x-should-retry"] == "false"
     mock_embedding.assert_not_called()
     rows = _usage_rows(db_session, test_user.account_id)
     assert len(rows) == 1
-    assert rows[0].status_code == 403
+    assert rows[0].status_code == 429
     assert rows[0].meta_data["endpoint_kind"] == "embeddings"
 
 

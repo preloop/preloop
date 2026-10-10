@@ -197,6 +197,10 @@ def apply_host_publication_completion(
             "publication_missing: the runner did not report a managed push",
             result,
         )
+    if receipt["status"] == "no_changes" and pending_job.get("host_exec_resume"):
+        # Feedback can be answered without a code change; the pull request
+        # already exists, so a continuation with no commit is not a failure.
+        return status, error, result
     if receipt["status"] == "no_changes":
         return (
             "FAILED",
@@ -216,6 +220,7 @@ async def open_and_bind_host_pull_request(
     base_branch: str,
     title: str,
     description: str,
+    allow_create: bool = True,
 ) -> Dict[str, str]:
     """Open (or find) the pull request for ``branch`` and bind it.
 
@@ -231,6 +236,8 @@ async def open_and_bind_host_pull_request(
         base_branch: Branch to merge into.
         title: Pull request title.
         description: Pull request body.
+        allow_create: False when only an existing pull request may be bound
+            (a continuation that pushed nothing).
 
     Returns:
         ``{"url", "branch", "provider", "source"}``.
@@ -252,6 +259,8 @@ async def open_and_bind_host_pull_request(
 
     found = await lookup()
     source = "branch_lookup"
+    if found is None and not allow_create:
+        raise ValueError("no open pull request exists for the branch")
     if found is None:
         try:
             found = await client.create_pull_request(

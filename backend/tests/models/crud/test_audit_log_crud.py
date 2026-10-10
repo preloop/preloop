@@ -170,6 +170,31 @@ class TestAuditLogCRUD:
         )
         assert len(logs) == 1
 
+    def test_get_by_account_filters_by_resource_id(
+        self, db_session: Session, test_account, test_user_for_audit
+    ):
+        """A resource id narrows the account's rows to one resource."""
+        for resource_id in ("flow-1", "flow-2", "flow-2"):
+            crud_audit_log.log_action(
+                db_session,
+                account_id=test_account.id,
+                user_id=test_user_for_audit.id,
+                action="flow_failure_streak_alert",
+                resource_type="flow",
+                resource_id=resource_id,
+                status="success",
+            )
+
+        logs = crud_audit_log.get_by_account(
+            db_session,
+            account_id=test_account.id,
+            action="flow_failure_streak_alert",
+            resource_type="flow",
+            resource_id="flow-2",
+        )
+        assert len(logs) == 2
+        assert all(log.resource_id == "flow-2" for log in logs)
+
     def test_get_by_account_with_date_filters(
         self, db_session: Session, test_account, test_user_for_audit
     ):

@@ -157,12 +157,12 @@ native binary.
 | Cursor | Yes | Manual BYOK: set the OpenAI base-URL override in Cursor's Settings → Models yourself; covers the AI panel incl. Agent mode | n/a |
 | Claude Desktop | Yes | Yes, via managed config: `--model-route direct` or `apps-gateway` prints it for your MDM ([Claude Desktop](clients/claude-desktop.md)) | n/a |
 | Windsurf | Yes | No | n/a |
-| VS Code / Copilot | Yes | No | n/a |
+| VS Code / Copilot | Yes | Manual BYOK: Chat: Manage Language Models -> Add Models -> Custom Endpoint, then `chatLanguageModels.json`. Full URLs end in `/openai/v1/chat/completions`, `/openai/v1/responses`, or `/anthropic/v1/messages`. Set `toolCalling: true`. Business and Enterprise need the admin BYOK policy. See [VS Code Copilot](clients/vscode-copilot.md) | n/a |
 | Copilot CLI | Yes (`~/.copilot/mcp-config.json`) | No on onboard. `preloop copilot` launches the CLI with gateway env vars | n/a |
 | Antigravity | Yes | No (locked to Google-hosted models) | n/a |
 | Devin | Yes | No (inference runs in Cognition's cloud) | n/a |
 
-"MCP firewall: Yes" means tool calls are governed; agents without gateway routing keep using their own model credentials, so cost analytics and model budgets do not apply to them.
+"MCP firewall: Yes" means tool calls are governed. Automatic gateway rows meter every model call the adapter rewrites. Manual BYOK rows meter the calls the client sends to the gateway URLs above. GitHub-hosted Copilot models and Cursor bundled models stay on their own providers, so cost analytics and model budgets do not apply to that traffic.
 
 Claude Code discovery: the CLI treats `~/.claude.json` or a `claude` binary on `PATH` as install markers (fresh installs have no `~/.claude/settings.json` yet) and bootstraps the canonical `~/.claude/settings.json` during onboarding.
 

@@ -230,6 +230,32 @@ existing artifact was reused and no new storage quota was used. A
 trusted external publisher must make this checkpoint barrier part of its
 handoff as well.
 
+A checkout that has nothing to recover does not store a workspace payload.
+Before the archive is built, each repository under `/workspace` is compared
+with the commit that was cloned. When `git status --porcelain` is empty after
+the usual exclusion rules (no staged, unstaged, or untracked file the snapshot
+would have kept) and `HEAD` is still that commit, the client stores a
+metadata-only checkpoint: the manifest `repositories` block (`branch`,
+`base_sha`, `head_sha`) plus `file_state_sha256`, and no file payload. It logs
+`PRELOOP_CHECKPOINT skipped clean_checkout`. That row counts as zero bytes
+toward the account quota, so a full quota does not block publication of a
+clean review. Restore logs the checkpoint age as usual and clones the commit
+again, because the code host already has it. A dirty tree, an untracked file
+the snapshot would keep, a `HEAD` that is not the cloned commit, a stash, or a
+commit on a local branch that is not on a remote still stores a full snapshot.
+A metadata-only restore reclones, so those refs would otherwise be lost.
+
+`agent_config.workspace_snapshots` selects the policy: `when_dirty` (the
+default), `always` (a full snapshot on every capture), or `never` (do not
+upload a workspace checkpoint; the run logs
+`PRELOOP_CHECKPOINT skipped workspace_snapshots_never`). Preset 002 and the
+other review and implementation presets set nothing and inherit `when_dirty`.
+
+`WORKSPACE_SNAPSHOT_TTL_HOURS` defaults to 24 in open source. Hosted Preloop
+sets it to 168. With `when_dirty`, clean review runs store no workspace
+payload, so that window applies to implementation snapshots and to the
+metadata row of a clean run.
+
 When an upload, restore or evidence transfer is refused over HTTP, the marker
 names the status, a short reason code and the operation, for example
 `PRELOOP_CHECKPOINT failed HTTPError status=409 detail=artifact_execution_closed op=capture`.

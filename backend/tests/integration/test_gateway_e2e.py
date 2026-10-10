@@ -572,7 +572,7 @@ def _seed_trialing_subscription(db_session: Any, account_id: Any) -> None:
 def test_trial_hosted_budget_blocks_before_upstream_dispatch(
     client, db_session, test_user, fake_upstream
 ):
-    """A trial hosted-model hard cap denies with 403 and never dispatches upstream."""
+    """A trial hosted-model hard cap denies with 429 and never dispatches upstream."""
     _seed_trialing_subscription(db_session, test_user.account_id)
     _seed_gateway_model(
         db_session,
@@ -599,16 +599,17 @@ def test_trial_hosted_budget_blocks_before_upstream_dispatch(
         },
     )
 
-    assert response.status_code == 403, response.text
+    assert response.status_code == 429, response.text
     body = response.json()
-    assert body["error"]["type"] == "permission_error"
+    assert body["error"]["type"] == "insufficient_quota"
+    assert body["error"]["preloop_code"] == "budget_limit_exceeded"
     assert "budget exceeded" in body["error"]["message"].lower()
     # Block happened BEFORE any upstream dispatch.
     assert fake_upstream.request_count == 0
     # A denial fact is still persisted to the ledger.
     usage = _latest_usage(db_session, "/openai/v1/chat/completions")
     assert usage is not None
-    assert usage.status_code == 403
+    assert usage.status_code == 429
     assert usage.model_alias == "openai/hosted-e2e"
 
 

@@ -118,6 +118,62 @@ def _pinned_version(lock_path: Path, package: str) -> str | None:
     return None
 
 
+def _path_filters() -> str:
+    """Return the paths-filter document from the changes job."""
+    changes = load_ci_jobs()["changes"]
+    for step in changes["steps"]:
+        if step.get("id") == "filter":
+            filters = step["with"]["filters"]
+            assert isinstance(filters, str)
+            return filters
+    raise AssertionError("changes job has no paths filter")
+
+
+def _filter_patterns(filters: str, name: str) -> list[str]:
+    """Return the include and exclude globs for one named filter."""
+    patterns: list[str] = []
+    collecting = False
+    for line in filters.splitlines():
+        if line.startswith(f"{name}:"):
+            collecting = True
+            continue
+        if collecting and line and not line[:1].isspace() and line.endswith(":"):
+            break
+        if not collecting:
+            continue
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            patterns.append(stripped[2:].strip("'\""))
+    return patterns
+
+
+def test_docs_lock_does_not_select_backend_shards() -> None:
+    """The mkdocs lock must not schedule the backend shards.
+
+    ``requirements/docs.txt`` is the docs build lock. Backend shards install
+    ``.github/requirements/app-dev.txt``. Requirements Resolve still sees the
+    docs lock, because that job is the one that checks hash-pinned locks.
+    """
+    filters = _path_filters()
+    backend = _filter_patterns(filters, "backend")
+    requirements = _filter_patterns(filters, "requirements")
+    assert "!requirements/docs.in" in backend
+    assert "!requirements/docs.txt" in backend
+    assert "requirements/**" in requirements
+    assert "!requirements/docs.in" not in requirements
+    assert "!requirements/docs.txt" not in requirements
+    # `some` treats `!path` as a match for every other file, so a negation
+    # only excludes when the step uses some-with-excludes.
+    filter_step = next(
+        step
+        for step in load_ci_jobs()["changes"]["steps"]
+        if step.get("id") == "filter"
+    )
+    has_negation = any(pattern.startswith("!") for pattern in backend)
+    if has_negation:
+        assert filter_step["with"].get("predicate-quantifier") == "some-with-excludes"
+
+
 def test_build_and_push_waits_for_combined_backend_coverage() -> None:
     """Image publish must not proceed on a shard pass with incomplete coverage."""
     needs = load_ci_jobs()["build-and-push"]["needs"]

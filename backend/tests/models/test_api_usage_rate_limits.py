@@ -15,6 +15,7 @@ def _log_row(
     retry_after_ms=None,
     rate_limit_meta=None,
     purpose=None,
+    error_class=None,
 ):
     meta = {"rate_limit": rate_limit_meta}
     if purpose:
@@ -31,7 +32,30 @@ def _log_row(
         provider_name=provider_name,
         rate_limit_retry_after_ms=retry_after_ms,
         meta_data=meta,
+        error_class=error_class,
     )
+
+
+def test_rate_limit_summary_excludes_budget_denials(db_session, test_user):
+    """The gateway's budget 429 (#1447) is not a rate limit."""
+    _log_row(
+        db_session,
+        test_user,
+        status_code=429,
+        retry_after_ms=3_600_000,
+        error_class="budget_exceeded",
+    )
+    _log_row(db_session, test_user, status_code=429, retry_after_ms=2_000)
+
+    now = datetime.now(UTC)
+    summary = crud_api_usage.get_rate_limit_summary(
+        db_session,
+        account_id=str(test_user.account_id),
+        start_date=now - timedelta(hours=1),
+        end_date=now + timedelta(hours=1),
+    )
+    assert summary["totals"]["rate_limited_requests"] == 1
+    assert summary["totals"]["blocked_ms"] == 2_000
 
 
 def test_rate_limit_summary_aggregates_429_rows(db_session, test_user):

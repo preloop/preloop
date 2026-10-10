@@ -29,7 +29,15 @@ HOST_EXEC_MODEL_KEYS: Mapping[str, str] = {
 HOST_EXEC_COMPLETION_PROTOCOL = "host_exec"
 HOST_EXEC_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HOST_EXEC_CAPABILITIES = frozenset(
-    {"host_exec", "cursor_cli", "copilot_cli", "stdout", "cancel", "host_publication"}
+    {
+        "host_exec",
+        "cursor_cli",
+        "copilot_cli",
+        "stdout",
+        "cancel",
+        "host_publication",
+        "host_continuation",
+    }
 )
 HOST_EXEC_MAX_RESULT_BYTES = 256 * 1024
 _HOST_EXEC_TERMINAL = frozenset(
@@ -185,6 +193,7 @@ def runner_has_host_exec_profile(
     model_identifier: Optional[str] = None,
     agent_type: Any = HOST_EXEC_AGENT_TYPE,
     require_publication: bool = False,
+    require_continuation: bool = False,
 ) -> bool:
     """True when the runner advertised this profile for the leased harness.
 
@@ -196,6 +205,8 @@ def runner_has_host_exec_profile(
             matching harness capability (``cursor_cli`` or ``copilot_cli``).
         require_publication: The lease publishes; the profile must also
             advertise ``host_publication``. Older runners never do.
+        require_continuation: The lease resumes a Copilot session; the
+            profile must advertise ``host_continuation``.
 
     Returns:
         True when the runner can run this lease.
@@ -219,6 +230,8 @@ def runner_has_host_exec_profile(
             if not isinstance(caps, list) or not {"host_exec", harness}.issubset(caps):
                 return False
             if require_publication and "host_publication" not in caps:
+                return False
+            if require_continuation and "host_continuation" not in caps:
                 return False
             models = item.get("models") or []
             return not model_identifier or (
@@ -443,6 +456,9 @@ def finalize_runner_completion(
             apply_host_publication_completion,
         )
 
+        from preloop.services.host_exec_continuation import check_resumed_session
+
+        status, error = check_resumed_session(status, error, result, pending)
         status, error, result = apply_host_publication_completion(
             status, error, result, message, pending
         )
@@ -508,6 +524,13 @@ def apply_runner_completion_to_execution(
         account_id=account_id,
         execution=execution,
         evidence_upload=upload,
+    )
+    from preloop.services.host_exec_continuation import (
+        record_host_continuation_session,
+    )
+
+    record_host_continuation_session(
+        db, execution, status=status, result=cleaned, pending_job=pending_job
     )
     from preloop.services.host_exec_usage import record_host_exec_completion_usage
 

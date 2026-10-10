@@ -446,12 +446,17 @@ class ModelGatewayEventEmitter:
     def _derive_outcome(status_code: int, error_detail: Optional[str]) -> str:
         # Allowlist denials reuse budget_denied: it is the only denial outcome
         # the transcript, replay, and audit surfaces know how to render.
-        if (
-            status_code == 403
-            and error_detail
-            and (
-                "budget exceeded" in error_detail.lower()
-                or is_model_not_allowed_detail(error_detail)
+        # Budget denials are 429 since #1447 (403 before); allowlist denials
+        # are policy and stay 403. Mirrors OpenAIGatewayService._audit_outcome.
+        detail = (error_detail or "").lower()
+        if status_code in (403, 429) and (
+            "budget exceeded" in detail
+            or "budget enforcement requires pricing information" in detail
+            or "limit for hosted model" in detail
+            or (
+                status_code == 403
+                and bool(error_detail)
+                and is_model_not_allowed_detail(error_detail)
             )
         ):
             return "budget_denied"

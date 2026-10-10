@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "captures": [],
+  "missing": [
+    {"id": "vendor-hook-settings", "reason": "Awaiting designated Enterprise sandbox or agreed pilot", "instructions": "https://platform.claude.com/docs/en/manage-claude/inference-hooks-configuration"},
+    {"id": "vendor-self-hosted-session", "reason": "No designated beta tenant or authorized runner launch", "instructions": "https://code.claude.com/docs/en/self-hosted-environments-configuration"},
+    {"id": "vendor-mdm-effective-source", "reason": "No authorized MDM tenant and synthetic test device", "instructions": "https://code.claude.com/docs/en/managed-settings"},
+    {"id": "preloop-hook-setup-policy-denial-health", "reason": "Local Vite listen denied EPERM127.0.0.1:18374; ordinary Playwright Chromium aborts with MachPortRendezvous Permission denied1100", "attempted_at": "2026-10-09T23:32:43Z", "source_sha": "a833aa7832a8f6b215d3dc20bbd3f66b86965ed2", "browser": "Playwright Chromium headless shell cache revision1243; browser version unavailable because launch failed", "follow_up": "Run local synthetic component capture on an authorized browser-capable test host after console child1449 is reviewed"}
+  ]
+}
