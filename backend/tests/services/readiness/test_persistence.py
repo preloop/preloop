@@ -416,3 +416,95 @@ def test_explicit_flow_binding_overrides_project_default(
     assert context is not None
     assert context[3].id == host.id
     assert context[4] == "example/repo"
+
+
+@pytest.mark.asyncio
+async def test_observation_service_uses_stored_url_and_scoped_readers(
+    db_session: Any, test_user: Any, monkeypatch: Any
+) -> Any:
+    from unittest.mock import AsyncMock
+    from tests.services.readiness.test_bitbucket import tracker
+    from preloop.services.readiness import scheduler
+    from preloop.sync.trackers.jira import JiraTracker
+
+    account = test_user.account_id
+    project, rollup, pr, jira, host, selected = seed(db_session, account)
+    # The standard tracker stores URL in its own column, not connection_details.
+    assert not (jira.connection_details or {}).get("url")
+    client, _ = tracker()
+    creation = TicketCreationEvidence(
+        created_at=T0,
+        tracker_id=jira.id,
+        issue_key=rollup.issue_key,
+        retrieved_at=datetime.now(UTC),
+    )
+    monkeypatch.setattr(
+        JiraTracker, "get_ticket_creation_evidence", AsyncMock(return_value=creation)
+    )
+    monkeypatch.setattr(
+        scheduler, "create_tracker_client", AsyncMock(return_value=client)
+    )
+
+    async def conflict_probe(
+        self: Any, repository: str, source_sha: str, target_sha: str
+    ) -> GateEvidence:
+        return GateEvidence(
+            name="conflict",
+            state="pass",
+            source="fixture",
+            retrieved_at=datetime.now(UTC),
+            source_sha=source_sha,
+            target_sha=target_sha,
+            strategy="ort",
+        )
+
+    monkeypatch.setattr(scheduler.IsolatedConflictProbe, "assess", conflict_probe)
+    # Keep actual context, evaluation and CRUD writes in this rollback fixture.
+    monkeypatch.setattr(
+        scheduler, "_transaction", lambda operation: operation(db_session)
+    )
+
+    async def inline(function: Any, *args: Any, **kwargs: Any) -> Any:
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(scheduler.asyncio, "to_thread", inline)
+    with pytest.raises(readiness.LeaseLostError, match="lease_lost"):
+        await scheduler.observe_job(account, pr.id, lease_context=(uuid4(), uuid4()))
+    assert await scheduler.observe_job(account, pr.id) is False
+    ticket, series, reason = readiness.report_evidence(
+        db_session, account_id=account, rollup_id=rollup.id
+    )
+    assert ticket.created_at == T0
+    assert reason is None
+    assert series[0][0].state == "ready"
+    assert series[0][1].policy_version == selected.version
+
+
+def test_expired_observer_cannot_persist_after_lease_replacement(
+    db_session: Any, test_user: Any
+) -> Any:
+    account = test_user.account_id
+    project, rollup, pr, jira, host, selected = seed(db_session, account)
+    readiness.schedule(db_session, account_id=account, pr_id=pr.id, now=T0)
+    job = readiness.claim(db_session, now=T0)
+    stale_token = job.lease_token
+    readiness.schedule(
+        db_session, account_id=account, pr_id=pr.id, now=T0 + timedelta(minutes=4)
+    )
+    replacement = readiness.claim(db_session, now=T0 + timedelta(minutes=4))
+    assert replacement.lease_token != stale_token
+    ready = observation(account, host.id, selected)
+    with pytest.raises(readiness.LeaseLostError, match="lease_lost"):
+        readiness.persist_observation(
+            db_session,
+            account_id=account,
+            pr_record_id=pr.id,
+            observation=ready,
+            lease_context=(job.id, stale_token),
+        )
+    assert (
+        readiness.get_observation(
+            db_session, account_id=account, observation_id=ready.observation_id
+        )
+        is None
+    )

@@ -48,11 +48,13 @@ def _claim() -> tuple[UUID, UUID, UUID, UUID] | None:
     return _transaction(take)
 
 
-async def observe_job(account_id: UUID, pr_id: UUID) -> bool:
+async def observe_job(
+    account_id: UUID, pr_id: UUID, *, lease_context: tuple[UUID, UUID] | None = None
+) -> bool:
     """Resolve binding, capture policy before reads, then CAS during persistence."""
 
-    def context(db: Any) -> Any:
-        result = readiness.observation_context(
+    def context(db: Any) -> readiness.ObservationCredentialSnapshot | None:
+        result = readiness.observation_snapshot(
             db, account_id=account_id, pr_record_id=pr_id
         )
         if result:
@@ -62,20 +64,20 @@ async def observe_job(account_id: UUID, pr_id: UUID) -> bool:
     bound = await asyncio.to_thread(_transaction, context)
     if bound is None:
         return True
-    pr, rollup, jira_row, host_row, repository, forge_pr_id, policy = bound
+    pr, rollup, jira_row, host_row, repository, forge_pr_id, policy = bound.context
     if policy is None:
         return True
     source = tracker_credential_source(host_row, repository=repository.split("/", 1)[1])
     jira = JiraTracker(
         str(jira_row.id),
-        jira_row.api_key,
-        jira_row.connection_details or {},
+        bound.jira_key,
+        {"url": jira_row.url, **(jira_row.connection_details or {})},
         initialize_client=False,
     )
     client = await create_tracker_client(
         host_row.tracker_type,
         str(host_row.id),
-        host_row.api_key,
+        bound.host_key,
         {
             **(host_row.connection_details or {}),
             "auth_type": host_row.auth_type,
@@ -101,7 +103,11 @@ async def observe_job(account_id: UUID, pr_id: UUID) -> bool:
             db, account_id=account_id, rollup_id=rollup.id, evidence=creation
         )
         readiness.persist_observation(
-            db, account_id=account_id, pr_record_id=pr.id, observation=observation
+            db,
+            account_id=account_id,
+            pr_record_id=pr.id,
+            observation=observation,
+            lease_context=lease_context,
         )
 
     await asyncio.to_thread(_transaction, persist)
@@ -148,7 +154,10 @@ class ReadinessSweeper:
                 closed = False
                 retry = False
                 try:
-                    closed = await asyncio.wait_for(observe_job(account_id, pr_id), 160)
+                    closed = await asyncio.wait_for(
+                        observe_job(account_id, pr_id, lease_context=(job_id, token)),
+                        160,
+                    )
                 except readiness.PolicyChangedError:
                     retry = True
                 except Exception:

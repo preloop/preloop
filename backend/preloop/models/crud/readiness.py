@@ -1,6 +1,7 @@
 """Transactional policy checks and account-scoped sampled evidence."""
 
 from datetime import datetime
+from dataclasses import dataclass, field
 from uuid import UUID
 
 from sqlalchemy import select
@@ -12,6 +13,10 @@ from preloop.schemas.readiness import (
     ReadinessPolicy,
     TicketCreationEvidence,
 )
+
+
+class LeaseLostError(ValueError):
+    """A stale observer no longer owns its PR's durable lease."""
 
 
 class PolicyChangedError(ValueError):
@@ -109,6 +114,7 @@ def persist_observation(
     account_id: UUID,
     pr_record_id: UUID,
     observation: ReadinessObservation,
+    lease_context: tuple[UUID, UUID] | None = None,
 ) -> models.ReadinessObservationRecord:
     """CAS against captured active policy; replay cannot rewrite the first fact."""
     if observation.account_id != account_id:
@@ -136,6 +142,23 @@ def persist_observation(
     )
     if (policy.version if policy else None) != observation.policy_version:
         raise PolicyChangedError("policy_changed")
+    if lease_context is not None:
+        from datetime import UTC
+
+        job_id, token = lease_context
+        lease = db.scalar(
+            select(models.ReadinessJob)
+            .where(
+                models.ReadinessJob.id == job_id,
+                models.ReadinessJob.account_id == account_id,
+                models.ReadinessJob.pr_id == pr_record_id,
+                models.ReadinessJob.lease_token == token,
+                models.ReadinessJob.lease_until > datetime.now(UTC),
+            )
+            .with_for_update()
+        )
+        if lease is None:
+            raise LeaseLostError("lease_lost")
     if policy is not None and observation.coverage == "complete":
         required = {"open", "non_draft", "approvals", "conflict"}
         required.update(f"build:{key}" for key in policy.required_build_keys)
@@ -745,3 +768,34 @@ def get_observation(
         )
     )
     return ReadinessObservation.model_validate(row.evidence) if row else None
+
+
+@dataclass(frozen=True)
+class ObservationCredentialSnapshot:
+    """Detached binding with secrets resolved only inside the CRUD read boundary."""
+
+    context: tuple[
+        models.IssueCostPullRequest,
+        models.IssueCostRollup,
+        models.Tracker,
+        models.Tracker,
+        str,
+        int,
+        ReadinessPolicy | None,
+    ]
+    jira_key: str = field(repr=False)
+    host_key: str = field(repr=False)
+
+
+def observation_snapshot(
+    db: Session, *, account_id: UUID, pr_record_id: UUID
+) -> ObservationCredentialSnapshot | None:
+    """Resolve secret-backed tracker credentials before releasing the DB session."""
+    context = observation_context(db, account_id=account_id, pr_record_id=pr_record_id)
+    if context is None:
+        return None
+    return ObservationCredentialSnapshot(
+        context=context,
+        jira_key=context[2].resolved_api_key,
+        host_key=context[3].resolved_api_key,
+    )
