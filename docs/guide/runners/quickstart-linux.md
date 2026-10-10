@@ -454,8 +454,10 @@ user in that directory, so repository instructions and tool configuration
 reach it. Enable `allow_checkout` only on a profile whose runner user and
 tool rules suit the repositories the flow clones, and use a dedicated OS
 user or VM when stronger isolation is needed. Host runs do not push
-branches or open pull requests; use the Docker harness for flows that
-publish.
+branches or open pull requests unless a Copilot profile also sets
+`"allow_publish": true`; see
+[Copilot CLI publication](../copilot-cli.md#review-and-implementation-flows).
+Otherwise use the Docker harness for flows that publish.
 
 ### Copilot CLI profiles
 

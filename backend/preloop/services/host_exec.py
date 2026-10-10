@@ -29,7 +29,7 @@ HOST_EXEC_MODEL_KEYS: Mapping[str, str] = {
 HOST_EXEC_COMPLETION_PROTOCOL = "host_exec"
 HOST_EXEC_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HOST_EXEC_CAPABILITIES = frozenset(
-    {"host_exec", "cursor_cli", "copilot_cli", "stdout", "cancel"}
+    {"host_exec", "cursor_cli", "copilot_cli", "stdout", "cancel", "host_publication"}
 )
 HOST_EXEC_MAX_RESULT_BYTES = 256 * 1024
 _HOST_EXEC_TERMINAL = frozenset(
@@ -184,6 +184,7 @@ def runner_has_host_exec_profile(
     name: str,
     model_identifier: Optional[str] = None,
     agent_type: Any = HOST_EXEC_AGENT_TYPE,
+    require_publication: bool = False,
 ) -> bool:
     """True when the runner advertised this profile for the leased harness.
 
@@ -193,6 +194,8 @@ def runner_has_host_exec_profile(
         model_identifier: Model alias the profile must advertise, if set.
         agent_type: Host-exec agent type. The profile must advertise the
             matching harness capability (``cursor_cli`` or ``copilot_cli``).
+        require_publication: The lease publishes; the profile must also
+            advertise ``host_publication``. Older runners never do.
 
     Returns:
         True when the runner can run this lease.
@@ -214,6 +217,8 @@ def runner_has_host_exec_profile(
         if isinstance(item_name, str) and item_name.strip().lower() == want:
             caps = item.get("capabilities") or []
             if not isinstance(caps, list) or not {"host_exec", harness}.issubset(caps):
+                return False
+            if require_publication and "host_publication" not in caps:
                 return False
             models = item.get("models") or []
             return not model_identifier or (
@@ -251,7 +256,7 @@ def host_exec_flow_error(
     return None
 
 
-_PULL_REQUEST_UNAVAILABLE = (
+PULL_REQUEST_UNAVAILABLE = (
     "host execution cannot publish pull requests; isolated "
     "publication is unavailable on this path"
 )
@@ -267,6 +272,7 @@ def host_exec_unavailable_reason(
     session_id: Any = None,
     custom_commands: Any = None,
     publication_mode: Any = None,
+    agent_type: Any = None,
 ) -> Optional[str]:
     """Fail closed for publication, setup commands and native resume.
 
@@ -276,6 +282,9 @@ def host_exec_unavailable_reason(
     Args:
         git_clone_config: Flow checkout config. ``create_pull_request`` and
             ``publication_mode`` are read from a mapping or model.
+            ``create_pull_request`` is accepted only for the managed legacy
+            Copilot shape (see ``host_exec_publication``); the runner
+            capability is checked separately before a lease starts.
         resume_from: Prior execution id for native CLI resume.
         session_id: Server-supplied session id, which host execution rejects.
         custom_commands: Remote command block. Enabled commands are rejected.
@@ -297,12 +306,16 @@ def host_exec_unavailable_reason(
         clone = clone.model_dump()
     elif hasattr(clone, "create_pull_request") and not isinstance(clone, Mapping):
         if getattr(clone, "create_pull_request", False):
-            return _PULL_REQUEST_UNAVAILABLE
+            reason = _publication_reason(agent_type, clone, configured_mode)
+            if reason:
+                return reason
         if configured_mode is None:
             configured_mode = getattr(clone, "publication_mode", None)
         clone = None
     if isinstance(clone, Mapping) and clone.get("create_pull_request"):
-        return _PULL_REQUEST_UNAVAILABLE
+        reason = _publication_reason(agent_type, clone, configured_mode)
+        if reason:
+            return reason
     if isinstance(clone, Mapping) and configured_mode is None:
         configured_mode = clone.get("publication_mode")
     if configured_mode == "isolated" or (
@@ -321,6 +334,20 @@ def host_exec_unavailable_reason(
     if isinstance(commands, Mapping) and commands.get("enabled"):
         return "host execution does not support remote custom commands in this version"
     return None
+
+
+def _publication_reason(
+    agent_type: Any, clone: Any, configured_mode: Any
+) -> Optional[str]:
+    """Why this host flow cannot publish, or None for the managed shape."""
+    from preloop.services.host_exec_publication import (
+        host_publication_config_error,
+    )
+
+    reason = host_publication_config_error(agent_type, clone)
+    if reason is None and configured_mode == "isolated":
+        return ISOLATED_PUBLICATION_UNAVAILABLE
+    return reason
 
 
 def _completion_result(message: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -412,6 +439,13 @@ def finalize_runner_completion(
                 f"{_HOST_EXEC_LABELS[agent_type]} harness",
                 result,
             )
+        from preloop.services.host_exec_publication import (
+            apply_host_publication_completion,
+        )
+
+        status, error, result = apply_host_publication_completion(
+            status, error, result, message, pending
+        )
         return status, error, _mark_not_gateway_metered(result)
     # Protocol selection comes only from persisted lease metadata. A message
     # cannot opt into a weaker/legacy validator by naming another protocol.

@@ -83,6 +83,11 @@ from preloop.services.host_exec import (
     host_exec_flow_error,
     host_exec_profile_name,
     host_exec_unavailable_reason,
+    PULL_REQUEST_UNAVAILABLE,
+)
+from preloop.services.host_exec_publication import (
+    account_has_publishing_runner,
+    host_publication_requested,
 )
 from preloop.services.host_exec_usage import summarize_host_exec_usage
 from preloop.services.issue_triage_controller import TriageControllerError
@@ -152,8 +157,15 @@ def _reject_host_exec_flow(
     runner_pool: Any,
     git_clone_config: Any,
     custom_commands: Any = None,
+    db: Optional[Session] = None,
+    account_id: Any = None,
 ) -> None:
-    """Reject hosted Cursor / publication / invalid host-exec combinations."""
+    """Reject hosted Cursor / publication / invalid host-exec combinations.
+
+    A publishing Copilot flow additionally needs a registered runner whose
+    profile advertises ``host_publication``; without one the original
+    publication refusal is returned before any job can start.
+    """
     error = host_exec_flow_error(
         agent_type=agent_type,
         agent_config=agent_config,
@@ -161,12 +173,22 @@ def _reject_host_exec_flow(
     )
     if error:
         raise HTTPException(status_code=400, detail=error)
-    if host_exec_profile_name(agent_config):
+    profile = host_exec_profile_name(agent_config)
+    if profile:
         blocked = host_exec_unavailable_reason(
-            git_clone_config=git_clone_config, custom_commands=custom_commands
+            git_clone_config=git_clone_config,
+            custom_commands=custom_commands,
+            agent_type=agent_type,
         )
         if blocked:
             raise HTTPException(status_code=400, detail=blocked)
+        if host_publication_requested(git_clone_config) and (
+            db is None
+            or not account_has_publishing_runner(
+                db, account_id=account_id, runner_pool=runner_pool, profile=profile
+            )
+        ):
+            raise HTTPException(status_code=400, detail=PULL_REQUEST_UNAVAILABLE)
 
 
 def _reject_unsupported_persistent_preset(agent_config: Any, preset: Any) -> None:
@@ -250,6 +272,8 @@ def create_flow(
         runner_pool=flow_in.runner_pool,
         git_clone_config=flow_in.git_clone_config,
         custom_commands=flow_in.custom_commands,
+        db=db,
+        account_id=current_user.account_id,
     )
 
     # If creating from a preset, validate and compute source hashes for template tracking
@@ -2797,6 +2821,8 @@ def update_flow(
             if flow_in.custom_commands is not None
             else flow.custom_commands
         ),
+        db=db,
+        account_id=current_user.account_id,
     )
 
     old_enabled = flow.is_enabled

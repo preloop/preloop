@@ -480,6 +480,7 @@ def lease_job(
             required_profile,
             payload.get("model_identifier"),
             payload.get("agent_type") or HOST_EXEC_AGENT_TYPE,
+            require_publication=bool(payload.get("host_exec_publication")),
         ):
             continue
         runner = crud_flow_runner.claim_free_slot(db, runner_id=candidate.id)

@@ -147,9 +147,25 @@ A host profile can run a PR Reviewer or an implementation flow end to end:
   remote URL, the git config or `pending_job`, and it is only sent over
   https (plain http is accepted only for a loopback tracker). Clone
   `setup_commands` are
-  refused, and so is `create_pull_request`: a host run can review and
-  comment, but it does not push branches or open pull requests, so it is
-  not the full ticket-to-PR factory.
+  refused.
+- **Publication (one Bitbucket Cloud repository, opt-in).** A flow whose
+  `git_clone_config` sets `create_pull_request` runs on a Copilot profile
+  only when that profile sets both `"allow_checkout": true` and
+  `"allow_publish": true`. The runner then advertises `host_publication`
+  for the profile. After Copilot exits successfully the runner stages and
+  commits any changes (repository hooks are disabled), and pushes the
+  commit to the managed branch `preloop/issue-<KEY>-<execution>` with the
+  same URL-scoped header credential it cloned with. It never force-pushes
+  and pushes to the planned URL, not the `origin` remote. The control
+  plane then opens the pull request through the bound Bitbucket tracker
+  and binds it to the execution; the agent never supplies a pull request
+  URL. Saving such a flow, or starting it, fails with the original
+  "cannot publish pull requests" error when no runner in the pool
+  advertises `host_publication` (an older CLI or a profile without
+  `allow_publish`), and those runners never take the lease. Isolated
+  publication, more than one repository and Cursor profiles stay refused.
+  Feedback continuation (resuming the Copilot session from a review
+  comment) is not part of this release step.
 - **MCP tools.** When the flow allows MCP tools or servers, the runner adds
   a `preloop-flow` MCP server to this run only
   (`--additional-mcp-config`, written to a `0600` file in the run
@@ -216,16 +232,19 @@ Named errors:
 | `copilot_approval_hook_missing` | `allow_all_tools` is set but the approval hook is not installed. |
 | `host_checkout_not_allowed` | The flow clones repositories but the profile does not set `allow_checkout`. |
 | `host_checkout_failed` | `git` could not clone or check out the planned commit. The error carries git's last line; the credential is never logged. |
+| `host_publication_not_allowed` | The flow opens a pull request but the profile does not set `allow_publish` (and `allow_checkout`), or is not a Copilot profile. |
+| `publication_failed: push_conflict` | The managed branch already exists on the remote with other commits. Nothing was force-pushed; the commit stays in the run directory. |
+| `publication_failed: credential_rejected` | The repository refused the tracker credential for the push. Reconnect the code-host tracker with write access and run again. |
+| `publication_failed: repository_config_unsafe` | The checkout's `.git/config` rewrites remote URLs (`url.*`), so the runner refused to push. |
+| `publication_missing` | A publishing run ended without a pushed branch, for example because Copilot made no changes. |
 | `git_not_installed` | The flow clones repositories and `git` is not on the runner's `PATH`. |
 | `copilot_hooks_unavailable` | Preloop could not install or read its own hooks file under `~/.copilot/hooks` (or `$COPILOT_HOME/hooks`). The run fails before Copilot starts. |
 
-Like Cursor host profiles, this path does not open pull requests, run
-custom commands or clone setup commands, or resume sessions. Those
-requests are refused before the run with a message naming the missing
-capability; they are not silently dropped and they are not on this path
-today. Checkout and review are the whole scope: a host run reads the
-diff, comments, and stops there, so it is not the full ticket-to-PR
-factory. Use the Docker harness for flows that publish. See
+This path does not run custom commands or clone setup commands, and
+does not resume sessions. Pull requests are opened only through the
+opt-in managed publication above (one Bitbucket Cloud repository, legacy
+mode). Other requests are refused before the run with a message naming
+the missing capability; they are not silently dropped. See
 [host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
 for the shared rules, and
 [#1069](https://github.com/preloop/preloop/issues/1069) for the open work

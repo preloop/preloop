@@ -10,8 +10,12 @@ delivery time the control plane adds, in memory only:
 * ``host_exec_checkout``: the flow's ``git_clone_config`` resolved to clone
   URLs, refs, relative checkout paths and per-repository credentials. The
   runner clones only when its local profile opts in with ``allow_checkout``.
+* ``host_exec_publication``: for a managed legacy publishing lease (#1069),
+  the checkout path, managed branch and commit message. The push reuses the
+  checkout credential of that single repository, which the runner sends as a
+  URL-scoped header; no second credential is minted or stored.
 
-Neither value is written to ``pending_job``.
+None of these values is written to ``pending_job``.
 """
 
 from __future__ import annotations
@@ -165,6 +169,67 @@ def build_host_exec_checkout(context: Dict[str, Any]) -> Optional[Dict[str, Any]
     }
 
 
+def host_exec_target_branch(context: Dict[str, Any]) -> str:
+    """The managed branch a publishing run pushes.
+
+    Same resolver as container runs (``_resolve_git_branch_plan``), so a
+    Jira issue yields ``preloop/issue-<KEY>-<exec8>`` on both paths.
+    """
+    from preloop.agents.codex import CodexAgent
+
+    agent = CodexAgent(config={})
+    git_config = context.get("git_clone_config") or {}
+    return str(agent._resolve_git_branch_plan(dict(context), git_config)[1] or "")
+
+
+def build_host_exec_publication(
+    checkout: Optional[Dict[str, Any]],
+    *,
+    target_branch: str,
+    flow_name: str,
+    execution_id: str,
+) -> Dict[str, Any]:
+    """The runner publication plan for a single-repository checkout.
+
+    Args:
+        checkout: Plan from ``build_host_exec_checkout``.
+        target_branch: Branch from ``host_exec_target_branch``.
+        flow_name: Flow name for the commit message.
+        execution_id: Execution id for the commit message.
+
+    Returns:
+        ``{"path", "branch", "commit_message"}``.
+
+    Raises:
+        HostExecDeliveryError: No single credentialed repository, or the
+            planned branch is outside the managed namespace.
+    """
+    from preloop.services.host_exec_publication import (
+        MULTI_REPOSITORY_PUBLICATION_UNAVAILABLE,
+    )
+
+    repositories = (checkout or {}).get("repositories") or []
+    if len(repositories) != 1:
+        raise HostExecDeliveryError(MULTI_REPOSITORY_PUBLICATION_UNAVAILABLE)
+    repo = repositories[0]
+    if not repo.get("token"):
+        raise HostExecDeliveryError(
+            "Host publication needs a repository credential; connect the "
+            "bound code-host tracker"
+        )
+    branch = target_branch
+    if not branch.startswith("preloop/") or branch == repo.get("branch"):
+        raise HostExecDeliveryError(
+            "Host publication pushes only managed preloop/ branches; clear "
+            "the flow's target_branch"
+        )
+    return {
+        "path": repo["path"],
+        "branch": branch,
+        "commit_message": f"Preloop: {flow_name} ({execution_id[:8]})"[:200],
+    }
+
+
 async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, Any]:
     """Add transient MCP and checkout inputs to a host-exec lease copy.
 
@@ -196,12 +261,23 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
     flow = crud_flow.get(db, id=execution.flow_id)
     if flow is None:
         raise HostExecDeliveryError("Host execution flow no longer exists")
+    from preloop.services.host_exec_publication import (
+        HOST_PUBLICATION_LEASE_KEY,
+        host_publication_requested,
+    )
+
     blocked = host_exec_unavailable_reason(
         git_clone_config=flow.git_clone_config,
         custom_commands=flow.custom_commands,
+        agent_type=job.get("agent_type"),
     )
     if blocked:
         raise HostExecDeliveryError(blocked)
+    publishes = bool(job.get(HOST_PUBLICATION_LEASE_KEY))
+    if publishes != host_publication_requested(flow.git_clone_config):
+        raise HostExecDeliveryError(
+            "The flow's pull request setting changed after this run was queued"
+        )
 
     hydrated = dict(job)
     if flow_uses_mcp(flow):
@@ -237,6 +313,17 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
                 f"Repository binding cannot be applied: {exc}"
             ) from exc
         checkout = build_host_exec_checkout(context) if context else None
+        if publishes:
+            hydrated[HOST_PUBLICATION_LEASE_KEY] = build_host_exec_publication(
+                checkout,
+                target_branch=host_exec_target_branch(context or {}),
+                flow_name=str(getattr(flow, "name", None) or "flow"),
+                execution_id=str(execution.id),
+            )
         if checkout:
             hydrated["host_exec_checkout"] = checkout
+    elif publishes:
+        raise HostExecDeliveryError(
+            "Host publication requires the flow to clone its repository"
+        )
     return hydrated
