@@ -2034,6 +2034,8 @@ class OpenAIGatewayService:
                 response_dict.get("usage"),
                 prompt_key="prompt_tokens",
                 completion_key="completion_tokens",
+                # Codex OAuth returns Responses-shaped ``output_tokens``.
+                output_names=("completion_tokens", "output_tokens"),
             )
             assistant_message = {
                 "role": "assistant",
@@ -6407,12 +6409,56 @@ class OpenAIGatewayService:
             "status": "completed",
             "output": output_items,
             "output_text": assistant_text,
-            "usage": {
-                "input_tokens": usage["prompt_tokens"],
-                "output_tokens": usage["completion_tokens"],
-                "total_tokens": usage["total_tokens"],
-            },
+            "usage": self._responses_api_usage(response_dict.get("usage"), usage),
         }
+
+    @staticmethod
+    def _responses_api_usage(
+        raw_usage: Any, normalized: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Build the client-facing Responses ``usage`` without losing detail.
+
+        A Responses-shaped upstream usage (Codex OAuth) is passed through
+        verbatim, including ``input_tokens_details.cached_tokens``,
+        ``output_tokens_details`` and any provider extras; Preloop's
+        normalized totals only fill keys the upstream did not send. A Chat
+        Completions-shaped usage (providers bridged through chat) is renamed
+        to the Responses shape, ``*_tokens_details`` included.
+
+        Args:
+            raw_usage: The upstream usage object, any shape or None.
+            normalized: Output of :meth:`_normalize_usage` for the same usage.
+
+        Returns:
+            A new Responses API usage dict; ``raw_usage`` is not mutated.
+        """
+        totals = {
+            "input_tokens": normalized["prompt_tokens"],
+            "output_tokens": normalized["completion_tokens"],
+            "total_tokens": normalized["total_tokens"],
+        }
+        if not isinstance(raw_usage, dict):
+            return totals
+        if "input_tokens" in raw_usage or "output_tokens" in raw_usage:
+            merged = deepcopy(raw_usage)
+            for key, value in totals.items():
+                if merged.get(key) is None:
+                    merged[key] = value
+            return merged
+        renamed = {
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "prompt_tokens_details": "input_tokens_details",
+            "completion_tokens_details": "output_tokens_details",
+        }
+        bridged: Dict[str, Any] = dict(totals)
+        for key, value in raw_usage.items():
+            if key not in renamed:
+                bridged.setdefault(key, deepcopy(value))
+            elif renamed[key] and isinstance(value, dict):
+                bridged[renamed[key]] = deepcopy(value)
+        return bridged
 
     # ------------------------------------------------------------------
     # Anthropic subscription-OAuth passthrough.
@@ -9671,8 +9717,16 @@ class OpenAIGatewayService:
         # ``prompt_tokens_details.cached_tokens``; Anthropic reports
         # ``cache_read_input_tokens`` / ``cache_creation_input_tokens`` at the
         # top level. ``estimate_ai_model_usage_cost`` already reads these.
-        for details_key in ("prompt_tokens_details", "completion_tokens_details"):
+        # Responses-shaped usage (Codex OAuth) names the same breakdown
+        # ``input_tokens_details`` / ``output_tokens_details``; read it when
+        # the Chat Completions name is absent so chat clients keep it too.
+        for details_key, responses_key in (
+            ("prompt_tokens_details", "input_tokens_details"),
+            ("completion_tokens_details", "output_tokens_details"),
+        ):
             details = usage.get(details_key)
+            if not isinstance(details, dict):
+                details = usage.get(responses_key)
             if isinstance(details, dict):
                 kept = {k: v for k, v in details.items() if v is not None}
                 if kept:

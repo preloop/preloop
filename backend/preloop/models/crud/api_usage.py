@@ -186,6 +186,37 @@ EMPTY_CACHE_SPLIT: Dict[str, int] = {
 }
 
 
+def cache_split_for_usage_row(usage: Any) -> Dict[str, Any]:
+    """Return the cache half of one usage row's token figure.
+
+    A NULL cache column means the provider reported no cache split, which is
+    "unknown", not zero cached tokens: such a row reports
+    ``cache_detail_source="absent"`` and contributes no uncached remainder, so
+    its hit ratio is ``None`` rather than 0%.
+
+    Args:
+        usage: An ``ApiUsage`` row (or any object with the same attributes).
+
+    Returns:
+        ``cache_read_tokens``, ``cache_write_tokens``,
+        ``uncached_input_tokens`` and ``cache_detail_source``.
+    """
+    read = getattr(usage, "cache_read_tokens", None)
+    write = getattr(usage, "cache_creation_tokens", None)
+    if read is None and write is None:
+        return {**EMPTY_CACHE_SPLIT, "cache_detail_source": "absent"}
+    return {
+        "cache_read_tokens": int(read or 0),
+        "cache_write_tokens": int(write or 0),
+        "uncached_input_tokens": uncached_input_tokens(
+            prompt_tokens=getattr(usage, "prompt_tokens", 0),
+            cache_read_tokens=read,
+            cache_write_tokens=write,
+        ),
+        "cache_detail_source": "upstream",
+    }
+
+
 # Cap for :meth:`CRUDApiUsage.get_by_ids` so a pathological caller cannot
 # build an unbounded ``IN`` clause. Matches the gateway-activity payload
 # load cap used by context analysis.

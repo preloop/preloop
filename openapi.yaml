@@ -29136,6 +29136,14 @@ components:
           default: 0.0
         token_usage:
           $ref: '#/components/schemas/GatewayTokenUsage'
+        cache_detail_source:
+          anyOf:
+          - type: string
+            enum:
+            - upstream
+            - absent
+          - type: 'null'
+          title: Cache Detail Source
         excerpt:
           type: string
           title: Excerpt

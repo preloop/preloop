@@ -15,6 +15,7 @@ from ..models.flow import Flow
 from ..models.flow_execution import FlowExecution
 from ..models.gateway_usage_search_document import GatewayUsageSearchDocument
 from ..models.runtime_session import RuntimeSession
+from .api_usage import cache_split_for_usage_row
 from .base import CRUDBase
 
 
@@ -287,6 +288,7 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
                     "prompt_tokens": int(usage.prompt_tokens or 0),
                     "completion_tokens": int(usage.completion_tokens or 0),
                     "total_tokens": int(usage.total_tokens or 0),
+                    **cache_split_for_usage_row(usage),
                     "excerpt": self._build_excerpt(
                         text_preview, query=normalized_query
                     ),
