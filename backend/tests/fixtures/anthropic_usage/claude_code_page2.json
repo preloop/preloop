@@ -1,0 +1,53 @@
+{
+  "data": [
+    {
+      "date": "2026-10-08T00:00:00Z",
+      "actor": {"type": "api_actor", "api_key_name": "preloop-gateway"},
+      "organization_id": "dc9f6c26-b22c-4831-8d01-0446bada88f1",
+      "customer_type": "api",
+      "terminal_type": "tmux",
+      "core_metrics": {
+        "num_sessions": 3,
+        "lines_of_code": {"added": 10, "removed": 4},
+        "commits_by_claude_code": 1,
+        "pull_requests_by_claude_code": 0
+      },
+      "tool_actions": {
+        "edit_tool": {"accepted": 4, "rejected": 1},
+        "multi_edit_tool": {"accepted": 0, "rejected": 0},
+        "write_tool": {"accepted": 1, "rejected": 0},
+        "notebook_edit_tool": {"accepted": 0, "rejected": 0}
+      },
+      "model_breakdown": [
+        {
+          "model": "claude-opus-model",
+          "tokens": {"input": 50000, "output": 10000, "cache_read": 0, "cache_creation": 0},
+          "estimated_cost": {"currency": "USD", "amount": 500}
+        }
+      ]
+    },
+    {
+      "date": "2026-10-08T00:00:00Z",
+      "actor": {"type": "api_actor", "api_key_name": "ci-bot"},
+      "organization_id": "dc9f6c26-b22c-4831-8d01-0446bada88f1",
+      "customer_type": "api",
+      "terminal_type": "non-interactive",
+      "core_metrics": {
+        "num_sessions": 1,
+        "lines_of_code": {"added": 0, "removed": 0},
+        "commits_by_claude_code": 0,
+        "pull_requests_by_claude_code": 0
+      },
+      "tool_actions": {},
+      "model_breakdown": [
+        {
+          "model": "claude-haiku-model",
+          "tokens": {"input": 1000, "output": 100, "cache_read": 0, "cache_creation": 0},
+          "estimated_cost": {"currency": "USD", "amount": 3}
+        }
+      ]
+    }
+  ],
+  "has_more": false,
+  "next_page": null
+}

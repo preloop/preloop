@@ -13148,6 +13148,251 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/anthropic-usage:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Get Anthropic Usage
+      description: Imported Claude Code usage outside the gateway, by actor and model.
+      operationId: get_anthropic_usage_api_v1_anthropic_usage_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Start Date
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: End Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicUsageSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/anthropic-usage/connection:
+    put:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Upsert Anthropic Connection
+      description: Create or update the connection; the Admin key is write-only.
+      operationId: upsert_anthropic_connection_api_v1_anthropic_usage_connection_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnthropicConnectionUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicConnectionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    delete:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Delete Anthropic Connection
+      description: Remove the connection and its key; imported history is kept.
+      operationId: delete_anthropic_connection_api_v1_anthropic_usage_connection_delete
+      responses:
+        '204':
+          description: Successful Response
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/anthropic-usage/connection/test:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Test Anthropic Connection
+      description: Check the stored key with the cheapest read (one API key listed).
+      operationId: test_anthropic_connection_api_v1_anthropic_usage_connection_test_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicConnectionTestResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/anthropic-usage/sync:
+    post:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Sync Anthropic Usage
+      description: Queue an import for this account now (idempotent for the same days).
+      operationId: sync_anthropic_usage_api_v1_anthropic_usage_sync_post
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicSyncResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/anthropic-usage/mappings:
+    get:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: List Anthropic User Mappings
+      description: Explicit actor to user mappings of this account.
+      operationId: list_anthropic_user_mappings_api_v1_anthropic_usage_mappings_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicUserMappingListResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Upsert Anthropic User Mapping
+      description: Map an actor to an active user of this account; repeats update
+        one row.
+      operationId: upsert_anthropic_user_mapping_api_v1_anthropic_usage_mappings_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnthropicUserMappingUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnthropicUserMappingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/anthropic-usage/mappings/{actor}:
+    delete:
+      tags:
+      - Cost Analytics
+      - Cost Analytics
+      summary: Delete Anthropic User Mapping
+      description: Remove one actor's mapping.
+      operationId: delete_anthropic_user_mapping_api_v1_anthropic_usage_mappings__actor__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: actor
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Actor
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/copilot:
     get:
       tags:
@@ -21021,6 +21266,336 @@ components:
       - created
       title: AgentSessionStartResponse
       description: The runtime session the hook's harness session maps to.
+    AnthropicActorUsage:
+      properties:
+        actor:
+          type: string
+          title: Actor
+        actor_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor Type
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        tokens:
+          type: integer
+          title: Tokens
+          default: 0
+        num_sessions:
+          type: integer
+          title: Num Sessions
+          default: 0
+        lines_added:
+          type: integer
+          title: Lines Added
+          default: 0
+        lines_removed:
+          type: integer
+          title: Lines Removed
+          default: 0
+        commits:
+          type: integer
+          title: Commits
+          default: 0
+        pull_requests:
+          type: integer
+          title: Pull Requests
+          default: 0
+        days:
+          type: integer
+          title: Days
+          default: 0
+        user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+        mapping_source:
+          anyOf:
+          - type: string
+            enum:
+            - mapping
+            - member_email
+          - type: 'null'
+          title: Mapping Source
+        gateway_subject_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Gateway Subject Id
+      type: object
+      required:
+      - actor
+      title: AnthropicActorUsage
+      description: One actor's imported Claude Code usage over the window.
+    AnthropicConnectionResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        has_key:
+          type: boolean
+          title: Has Key
+          default: true
+        key_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Key Hint
+        gateway_key_names:
+          items:
+            type: string
+          type: array
+          title: Gateway Key Names
+        is_active:
+          type: boolean
+          title: Is Active
+          default: true
+        last_synced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Synced At
+        last_synced_day:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Synced Day
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        last_warning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Warning
+      type: object
+      required:
+      - id
+      title: AnthropicConnectionResponse
+      description: Connection state without any key material.
+    AnthropicConnectionTestResponse:
+      properties:
+        ok:
+          type: boolean
+          title: Ok
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+      type: object
+      required:
+      - ok
+      title: AnthropicConnectionTestResponse
+      description: Outcome of the cheap read used to test the stored key.
+    AnthropicConnectionUpsert:
+      properties:
+        admin_key:
+          anyOf:
+          - type: string
+            maxLength: 512
+            minLength: 8
+          - type: 'null'
+          title: Admin Key
+          description: Anthropic Admin API key dedicated to Preloop. Required when
+            creating the connection. Never returned.
+        gateway_key_names:
+          anyOf:
+          - items:
+              type: string
+            type: array
+            maxItems: 200
+          - type: 'null'
+          title: Gateway Key Names
+          description: Anthropic API key names Preloop uses as upstream credentials,
+            in addition to the ones matched automatically. Usage under these names
+            is already metered by the gateway and is not counted again.
+        is_active:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Active
+          description: Pause (false) or resume (true) scheduled imports.
+      type: object
+      title: AnthropicConnectionUpsert
+      description: 'Create or update the account''s Anthropic import connection.
+
+
+        Omit ``admin_key`` to keep the stored key.'
+    AnthropicExcludedUsage:
+      properties:
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        tokens:
+          type: integer
+          title: Tokens
+          default: 0
+        actors:
+          items:
+            type: string
+          type: array
+          title: Actors
+      type: object
+      title: AnthropicExcludedUsage
+      description: Imported usage already metered by the gateway, never added to totals.
+    AnthropicModelUsage:
+      properties:
+        model:
+          type: string
+          title: Model
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        tokens:
+          type: integer
+          title: Tokens
+          default: 0
+      type: object
+      required:
+      - model
+      title: AnthropicModelUsage
+      description: Imported estimated cost and tokens for one model.
+    AnthropicSyncResponse:
+      properties:
+        status:
+          type: string
+          const: queued
+          title: Status
+          default: queued
+      type: object
+      title: AnthropicSyncResponse
+      description: Acknowledgement that a sync was queued.
+    AnthropicUsageSummaryResponse:
+      properties:
+        metered_by_gateway:
+          type: boolean
+          const: false
+          title: Metered By Gateway
+          default: false
+        marker:
+          type: string
+          title: Marker
+        period_start:
+          type: string
+          format: date-time
+          title: Period Start
+        period_end:
+          type: string
+          format: date-time
+          title: Period End
+        connection:
+          anyOf:
+          - $ref: '#/components/schemas/AnthropicConnectionResponse'
+          - type: 'null'
+        total_estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Total Estimated Cost
+          description: Estimated cost of usage outside the gateway; null without data.
+        total_tokens:
+          type: integer
+          title: Total Tokens
+          default: 0
+        currency:
+          type: string
+          title: Currency
+          default: USD
+        excluded_metered_by_gateway:
+          $ref: '#/components/schemas/AnthropicExcludedUsage'
+        by_actor:
+          items:
+            $ref: '#/components/schemas/AnthropicActorUsage'
+          type: array
+          title: By Actor
+        by_model:
+          items:
+            $ref: '#/components/schemas/AnthropicModelUsage'
+          type: array
+          title: By Model
+        not_attributable:
+          items:
+            type: string
+          type: array
+          title: Not Attributable
+      type: object
+      required:
+      - marker
+      - period_start
+      - period_end
+      - excluded_metered_by_gateway
+      title: AnthropicUsageSummaryResponse
+      description: The Anthropic section of the Cost page.
+    AnthropicUserMappingListResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/AnthropicUserMappingResponse'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+          default: 0
+      type: object
+      title: AnthropicUserMappingListResponse
+      description: Every actor mapping of the account.
+    AnthropicUserMappingResponse:
+      properties:
+        actor:
+          type: string
+          title: Actor
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - actor
+      - user_id
+      - created_at
+      - updated_at
+      title: AnthropicUserMappingResponse
+      description: One stored mapping.
+    AnthropicUserMappingUpsert:
+      properties:
+        actor:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Actor
+        user_id:
+          type: string
+          format: uuid
+          title: User Id
+      type: object
+      required:
+      - actor
+      - user_id
+      title: AnthropicUserMappingUpsert
+      description: Map one imported actor (email, or ``key:<name>``) to one user.
     ApiKeyCreate:
       properties:
         name:
@@ -29758,6 +30333,14 @@ components:
           default: 0.0
         token_usage:
           $ref: '#/components/schemas/GatewayTokenUsage'
+        cache_detail_source:
+          anyOf:
+          - type: string
+            enum:
+            - upstream
+            - absent
+          - type: 'null'
+          title: Cache Detail Source
         excerpt:
           type: string
           title: Excerpt

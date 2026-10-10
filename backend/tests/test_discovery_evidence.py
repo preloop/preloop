@@ -259,8 +259,12 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
         == "20261010_ticket_readiness"
     )
     assert (
-        script.get_revision("20261010_otlp_telemetry_ingest").down_revision
+        script.get_revision("20261010_anthropic_import").down_revision
         == "20261010_gateway_idp"
+    )
+    assert (
+        script.get_revision("20261010_otlp_telemetry_ingest").down_revision
+        == "20261010_anthropic_import"
     )
     assert module.revision in {
         revision.revision for revision in script.walk_revisions()

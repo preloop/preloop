@@ -776,7 +776,7 @@ describe('CostView', () => {
       ?.querySelector('view-header')
       ?.getAttribute('description');
     expect(description).to.equal(
-      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend.'
+      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot and Claude Code usage.'
     );
 
     const tabs = Array.from(
@@ -931,10 +931,10 @@ describe('CostView', () => {
     }
 
     // Imports reveals the Copilot setup even without a connection.
-    expect(navTabs(element)).to.not.include('Copilot');
+    expect(navTabs(element)).to.not.include('Copilot and Claude Code');
     element['openSpendSetting']('imports');
     await element.updateComplete;
-    expect(navTabs(element)).to.include('Copilot');
+    expect(navTabs(element)).to.include('Copilot and Claude Code');
     expect((element as unknown as { activeTab: string }).activeTab).to.equal(
       'copilot'
     );
@@ -982,7 +982,7 @@ describe('CostView', () => {
       return new Response('[]', { status: 200 });
     });
     const element = await loadedView();
-    await waitUntil(() => navTabs(element).includes('Copilot'));
+    await waitUntil(() => navTabs(element).includes('Copilot and Claude Code'));
     const copilotCalls = () =>
       fetchStub
         .getCalls()
@@ -993,7 +993,7 @@ describe('CostView', () => {
     await element['load']();
     await element.updateComplete;
     expect(copilotCalls()).to.equal(before);
-    expect(navTabs(element)).to.include('Copilot');
+    expect(navTabs(element)).to.include('Copilot and Claude Code');
   });
 
   it('shows the Copilot tab for a Copilot provider billing connection', async () => {
@@ -1011,7 +1011,7 @@ describe('CostView', () => {
       return new Response('[]', { status: 200 });
     });
     const element = await loadedView();
-    await waitUntil(() => navTabs(element).includes('Copilot'));
+    await waitUntil(() => navTabs(element).includes('Copilot and Claude Code'));
   });
 
   it('renders imported Copilot spend in its own tab for the page window', async () => {
@@ -1393,7 +1393,7 @@ describe('CostView', () => {
 
     const description = header?.shadowRoot?.querySelector('.description');
     expect(description?.textContent).to.contain(
-      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend.'
+      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot and Claude Code usage.'
     );
   });
 

@@ -1,7 +1,7 @@
 """OTLP telemetry ingest: telemetry_estimate cost source, dedup and series state.
 
 Revision ID: 20261010_otlp_telemetry_ingest
-Revises: 20261010_gateway_idp
+Revises: 20261010_anthropic_import
 Create Date: 2026-10-10
 
 Issue #1412. Claude clients export OTLP telemetry to Preloop. Usage rows
@@ -20,7 +20,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "20261010_otlp_telemetry_ingest"
-down_revision: Union[str, None] = "20261010_gateway_idp"
+down_revision: Union[str, None] = "20261010_anthropic_import"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 # Alembic reads these module globals by name; keep a local reference so static

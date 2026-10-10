@@ -161,6 +161,27 @@ async def run_scheduler_async(
         )
         logger.info("Scheduled daily GitHub Copilot usage import.")
 
+    # Daily Claude Code Analytics import (#1413). Imports up to yesterday UTC
+    # (the report lags about an hour) and no-ops without a connection.
+    if getattr(settings, "anthropic_usage_sync_enabled", True):
+
+        async def _publish_anthropic_usage_import() -> None:
+            try:
+                await event_bus_service.publish_task("ingest_anthropic_usage")
+            except Exception:
+                logger.exception("Failed to publish Anthropic usage import task")
+
+        scheduler.add_job(
+            _publish_anthropic_usage_import,
+            trigger=IntervalTrigger(hours=24),
+            id="anthropic_usage_import_job",
+            name="Import Anthropic Claude Code Usage",
+            replace_existing=True,
+            misfire_grace_time=3600,
+            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=12),
+        )
+        logger.info("Scheduled daily Anthropic usage import.")
+
     # Scheduled model-catalog sync (the automatic 'preloop models sync').
     # Default OFF: self-hosted catalogs must never change on upgrade without
     # an explicit opt-in (MODEL_CATALOG_SYNC_SCHEDULED_ENABLED=true). The

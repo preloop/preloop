@@ -91,6 +91,7 @@ plugins:
         concepts/runtime-sessions.md: guide/concepts/runtime-sessions.md
         concepts/safety-layer.md: guide/concepts/safety-layer.md
         concepts/subject-scoped-governance.md: guide/concepts/subject-scoped-governance.md
+        cost/importing-anthropic-usage.md: guide/cost/importing-anthropic-usage.md
         cost/importing-cursor-usage.md: guide/cost/importing-cursor-usage.md
         cost/session-optimization.md: guide/cost/session-optimization.md
         flows/creating-flows.md: guide/flows/creating-flows.md
@@ -202,6 +203,7 @@ nav:
       - Importing Cursor usage: guide/cost/importing-cursor-usage.md
       - Cursor usage hooks: guide/cursor-usage-hooks.md
       - Copilot usage import: guide/copilot-usage-import.md
+      - Importing Anthropic usage: guide/cost/importing-anthropic-usage.md
       - Usage hooks: guide/usage-hooks.md
       - Model price refresh: guide/model-price-refresh.md
       - Model context limits: guide/model-context-limits.md

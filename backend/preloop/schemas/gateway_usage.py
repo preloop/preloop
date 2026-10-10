@@ -323,6 +323,10 @@ class GatewayUsageSearchResultItem(BaseModel):
     api_key_name: Optional[str] = None
     estimated_cost: float = 0.0
     token_usage: GatewayTokenUsage
+    #: ``upstream`` when the provider reported a cache split for this request,
+    #: ``absent`` when it did not. With ``absent`` the zero cache counts mean
+    #: "unknown" (``token_usage.cache_hit_ratio`` is null), not "no cache hit".
+    cache_detail_source: Optional[Literal["upstream", "absent"]] = None
     excerpt: str
     meta_data: dict = Field(default_factory=dict)
 
