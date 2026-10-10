@@ -71,14 +71,30 @@ class BudgetDenialError(ModelGatewayAPIError):
         if self.provider == "openai":
             payload["error"]["code"] = "insufficient_quota"
             payload["error"]["preloop_code"] = self.preloop_code
+        elif self.provider == "gemini":
+            # google.rpc details: Gemini CLI reads ``RetryInfo.retryDelay`` and
+            # treats a delay above five minutes as a terminal quota error
+            # instead of retrying a 429 up to ten times.
+            payload["error"]["details"] = [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": self.preloop_code.upper(),
+                    "domain": "preloop.ai",
+                },
+                {
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": f"{self._retry_after()}s",
+                },
+            ]
         return payload
+
+    def _retry_after(self) -> int:
+        return int(self.retry_after_seconds or DEFAULT_BUDGET_RETRY_AFTER_SECONDS)
 
     def response_headers(self) -> dict[str, str]:
         """``retry-after`` (integer seconds) and ``x-should-retry: false``."""
         headers: dict[str, str] = {
-            "retry-after": str(
-                int(self.retry_after_seconds or DEFAULT_BUDGET_RETRY_AFTER_SECONDS)
-            ),
+            "retry-after": str(self._retry_after()),
         }
         headers.update(getattr(self, "extra_response_headers", None) or {})
         headers["x-should-retry"] = "false"

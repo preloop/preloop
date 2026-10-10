@@ -169,6 +169,11 @@ def test_budget_denial_is_429_on_every_router(
     if router == "openai":
         assert body["error"]["code"] == "insufficient_quota"
         assert body["error"]["preloop_code"] == "budget_limit_exceeded"
+    if router == "gemini":
+        # Gemini CLI turns a RetryInfo delay above 300 s into a terminal error.
+        retry_info = body["error"]["details"][1]
+        assert retry_info["@type"] == "type.googleapis.com/google.rpc.RetryInfo"
+        assert retry_info["retryDelay"] == f"{response.headers['retry-after']}s"
     retry_after = int(response.headers["retry-after"])
     assert 1 <= retry_after <= 600
     assert response.headers["x-should-retry"] == "false"

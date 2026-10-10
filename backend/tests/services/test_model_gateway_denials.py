@@ -46,7 +46,22 @@ def test_openai_shape_keeps_machine_code():
 def test_gemini_shape():
     exc = budget_denial_error("gemini", "budget_limit_exceeded", MESSAGE, None)
     assert exc.to_payload() == {
-        "error": {"code": 429, "message": MESSAGE, "status": "RESOURCE_EXHAUSTED"}
+        "error": {
+            "code": 429,
+            "message": MESSAGE,
+            "status": "RESOURCE_EXHAUSTED",
+            "details": [
+                {
+                    "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                    "reason": "BUDGET_LIMIT_EXCEEDED",
+                    "domain": "preloop.ai",
+                },
+                {
+                    "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                    "retryDelay": "3600s",
+                },
+            ],
+        }
     }
 
 
