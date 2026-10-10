@@ -93,11 +93,16 @@ Significant progress has been made in increasing unit test coverage for the back
 ### CI/CD Integration
 
 GitHub Actions (`.github/workflows/ci.yml`) shards backend unit tests
-(`pytest -m "not integration"`) across eight jobs with
-[pytest-split](https://pypi.org/project/pytest-split/). Each shard has
-its own Postgres service. Coverage data is combined in a follow-up
-**Backend Coverage** job before the 60% floor is applied; a single shard
-only exercises part of the tree, so `--cov-fail-under` cannot run there.
+(`pytest -m "not integration"`) across eighteen jobs with
+[pytest-split](https://pypi.org/project/pytest-split/). Shard boundaries
+come from `.github/pytest-split-durations.json`, so each job stays under
+seven minutes. A shard reuses a Postgres already listening on
+`127.0.0.1:5432` and creates one database for the job; otherwise it
+starts `pgvector/pgvector:pg16`. Self-hosted setup is
+[`.github/self-hosted-runners.md`](.github/self-hosted-runners.md).
+Coverage data is combined in a follow-up **Backend Coverage** job before
+the 60% floor is applied; a single shard only exercises part of the tree,
+so `--cov-fail-under` cannot run there.
 Pull requests skip backend, frontend, CLI, plugin, and Helm jobs when
 those trees did not change; `main` always runs every suite. The
 required check is the **CI** aggregator (a skipped suite is success; a

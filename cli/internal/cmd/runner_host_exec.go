@@ -74,6 +74,11 @@ type hostExecProfile struct {
 	// repositories into the execution directory. Repository content is
 	// untrusted input to the CLI, so a profile never clones by default.
 	AllowCheckout bool `json:"allow_checkout,omitempty"`
+	// AllowPublish is the operator's opt-in to managed legacy publication
+	// (Copilot only): after a successful run the runner commits and pushes
+	// the checkout to a preloop/ branch and the control plane opens the pull
+	// request. Requires allow_checkout. Off by default.
+	AllowPublish bool `json:"allow_publish,omitempty"`
 }
 
 type hostExecProfilesFile struct {
@@ -238,8 +243,12 @@ func hostExecAdvertisements() []hostExecAdvertisement {
 	out := make([]hostExecAdvertisement, 0, len(profiles))
 	for _, profile := range profiles {
 		caps := []string{"host_exec", "stdout", "cancel"}
-		if harness := hostExecProfileHarness(profile); harness != "" {
+		harness := hostExecProfileHarness(profile)
+		if harness != "" {
 			caps = append(caps, harness)
+		}
+		if hostExecProfileMayPublish(profile, harness) {
+			caps = append(caps, hostExecCapabilityPublication)
 		}
 		models := make([]string, 0, len(profile.ModelMap))
 		for requested := range profile.ModelMap {
@@ -581,11 +590,12 @@ func buildHostExecArgs(profile hostExecProfile, job map[string]any, workspace st
 // hostExecRun is a prepared host job: the CLI command plus the work that
 // must happen before it starts (checkout) and after it ends (cleanup).
 type hostExecRun struct {
-	cmd       *exec.Cmd
-	timeout   time.Duration
-	workspace string
-	checkout  *hostExecCheckout
-	cleanup   func()
+	cmd         *exec.Cmd
+	timeout     time.Duration
+	workspace   string
+	checkout    *hostExecCheckout
+	publication *hostExecPublication
+	cleanup     func()
 }
 
 func newHostExecJobCmd(job map[string]any) (*exec.Cmd, string, time.Duration, error) {
@@ -641,6 +651,16 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 		return nil, fmt.Errorf(
 			"%s: the flow clones repositories but host profile %q does not set allow_checkout; set \"allow_checkout\": true in %s to let this profile clone flow repositories",
 			hostExecCheckoutNotAllows, profile.Name, hostExecProfilesFileName,
+		)
+	}
+	publication, err := jobHostExecPublication(job, checkout)
+	if err != nil {
+		return nil, err
+	}
+	if publication != nil && !hostExecProfileMayPublish(profile, wantHarness) {
+		return nil, fmt.Errorf(
+			"%s: the flow opens a pull request but host profile %q does not set allow_publish; set \"allow_publish\": true and \"allow_checkout\": true on a Copilot profile in %s",
+			hostExecPublishNotAllowed, profile.Name, hostExecProfilesFileName,
 		)
 	}
 	executionID, _ := job["execution_id"].(string)
@@ -707,11 +727,12 @@ func newHostExecJob(job map[string]any) (*hostExecRun, error) {
 	cmd.SysProcAttr = hostExecSysProcAttr()
 	cmd.WaitDelay = 250 * time.Millisecond
 	return &hostExecRun{
-		cmd:       cmd,
-		timeout:   hostExecTimeout(profile, job),
-		workspace: workspace,
-		checkout:  checkout,
-		cleanup:   cleanup,
+		cmd:         cmd,
+		timeout:     hostExecTimeout(profile, job),
+		workspace:   workspace,
+		checkout:    checkout,
+		publication: publication,
+		cleanup:     cleanup,
 	}, nil
 }
 
@@ -854,6 +875,9 @@ func beginHostExecJob(
 				return
 			}
 			err := runHostExecCheckout(ctx, run.workspace, run.checkout, buffer.note)
+			if err == nil && run.publication != nil {
+				err = recordHostPublicationBase(ctx, run.workspace, run.publication)
+			}
 			cancel()
 			switch {
 			case halted.Load():
@@ -880,6 +904,9 @@ func beginHostExecJob(
 			if requested := jobModelIdentifier(job); requested != "" {
 				outcome.result["requested_model"] = requested
 			}
+		}
+		if run.publication != nil && outcome.status == "SUCCEEDED" {
+			outcome = publishHostExecOutcome(outcome, run, gate, halted, timeout, buffer)
 		}
 		done <- outcome
 	}()

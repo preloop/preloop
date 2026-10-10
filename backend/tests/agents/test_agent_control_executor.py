@@ -765,3 +765,22 @@ async def test_employee_gateway_is_scoped_and_history_is_redacted(
     with pytest.raises(AgentStartError, match="another agent"):
         await executor.start(context)
     dispatch.assert_not_awaited()
+
+
+def test_missing_target_does_not_repeat_owned_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owned = MagicMock(return_value=None)
+    shared = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        "preloop.agents.agent_control.crud_managed_agent.get_for_account", owned
+    )
+    monkeypatch.setattr(
+        "preloop.models.crud.resource_share.crud_resource_share.visible_resource",
+        shared,
+    )
+    executor = _executor()
+    with pytest.raises(AgentStartError, match="not found"):
+        executor._resolve_target({"account_id": executor.account_id})
+    owned.assert_called_once()
+    shared.assert_called_once()

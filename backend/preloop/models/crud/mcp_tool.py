@@ -68,6 +68,29 @@ class CRUDMCPTool(CRUDBase[models.MCPTool]):
             .all()
         )
 
+    def get_by_visible_servers_for_account(
+        self, db: Session, *, account_id: str, server_ids: Sequence[UUID]
+    ) -> List[models.MCPTool]:
+        """Read tools from selected own or H3-shared servers, without auth config."""
+        from sqlalchemy import or_
+        from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, extra_visible_ids
+
+        if not server_ids:
+            return []
+        shared_ids = extra_visible_ids(db, account_id, VISIBLE_MCP_SERVER)
+        return (
+            db.query(self.model)
+            .join(models.MCPServer, self.model.mcp_server_id == models.MCPServer.id)
+            .filter(
+                or_(
+                    models.MCPServer.account_id == UUID(account_id),
+                    models.MCPServer.id.in_(shared_ids),
+                ),
+                self.model.mcp_server_id.in_(server_ids),
+            )
+            .all()
+        )
+
     def get_by_server_and_name(
         self,
         db: Session,
