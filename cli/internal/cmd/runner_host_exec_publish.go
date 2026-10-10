@@ -192,7 +192,7 @@ func publishHostExecWork(ctx context.Context, workspace string, plan *hostExecPu
 // credential.helper, url.*.insteadOf, ...) applies.
 func hostPublishIsolatedEnv(repo hostExecCheckoutRepo, protocols string) []string {
 	env := hostExecGitEnv(os.Environ(), repo)
-	out := make([]string, 0, len(env)+4)
+	var out []string
 	for _, entry := range env {
 		key := strings.ToUpper(strings.SplitN(entry, "=", 2)[0])
 		if key == "GIT_ALLOW_PROTOCOL" || key == "HOME" || key == "XDG_CONFIG_HOME" {
