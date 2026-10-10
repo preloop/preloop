@@ -250,9 +250,11 @@ def test_observation_migration_renders_postgres_and_has_one_head() -> None:
     config.set_main_option(
         "script_location", str(root / "backend/preloop/models/alembic")
     )
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "20261010_anthropic_import"
-    ]
+    script = ScriptDirectory.from_config(config)
+    assert script.get_heads() == ["20261010_anthropic_import"]
+    assert module.revision in {
+        revision.revision for revision in script.walk_revisions()
+    }
 
 
 def test_changed_replay_plugin_error_is_a_409() -> None:

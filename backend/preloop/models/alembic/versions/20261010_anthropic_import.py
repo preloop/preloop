@@ -1,7 +1,7 @@
 """Add the Anthropic usage import connection and actor mappings (#1413).
 
 Revision ID: 20261010_anthropic_import
-Revises: 20261010_callback_receipt
+Revises: 20261010_ticket_readiness
 Create Date: 2026-10-10
 
 Imported rows reuse ``provider_billing_snapshot`` (``usage_source``,
@@ -16,7 +16,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "20261010_anthropic_import"
-down_revision: Union[str, None] = "20261010_callback_receipt"
+down_revision: Union[str, None] = "20261010_ticket_readiness"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

@@ -1522,6 +1522,28 @@ export interface IssueCostCoverage {
 }
 
 /** One tracker issue with summed cost and cycle-time milestones. */
+export interface ReadinessGateEvidence {
+  name: string;
+  state: 'pass' | 'fail' | 'unknown';
+  source: string;
+  reason: string | null;
+  retrieved_at: string;
+}
+export interface ReadinessObservation {
+  observation_id: string;
+  repository: string;
+  pr_id: number;
+  source_sha: string | null;
+  target_sha: string | null;
+  policy_version: string | null;
+  scope: string;
+  started_at: string;
+  completed_at: string;
+  state: string;
+  coverage: string;
+  gates: ReadinessGateEvidence[];
+}
+
 export interface IssueCostRow extends IssueCostCoverage {
   id: string;
   tracker_id: string;
@@ -1551,6 +1573,20 @@ export interface IssueCostRow extends IssueCostCoverage {
   estimate_hours_source: string | null;
   estimate_points: number | null;
   estimate_points_source: string | null;
+  ticket_created_at?: string | null;
+  first_ready_observed_at?: string | null;
+  ticket_to_observed_ready_hours?: number | null;
+  readiness_scope?: string | null;
+  readiness_policy_version?: string | null;
+  latest_readiness_state?: string;
+  latest_readiness_coverage?: string;
+  latest_readiness_observed_at?: string | null;
+  forge_coverage?: string;
+  readiness_unknown_reasons?: string[];
+  readiness_observation_started_at?: string | null;
+  readiness_observation_completed_at?: string | null;
+  readiness_observations?: ReadinessObservation[];
+  first_ready_observation_id?: string | null;
 }
 
 export interface IssueCostSummary extends IssueCostCoverage {

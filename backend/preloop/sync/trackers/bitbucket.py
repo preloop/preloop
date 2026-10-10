@@ -96,6 +96,7 @@ class BitbucketTracker(BaseTracker):
     """Bitbucket Cloud client for repositories, pull requests and webhooks."""
 
     tracker_type = "bitbucket"
+    readiness_supported_scopes: frozenset[str] = frozenset({"configured_policy"})
     # A Bitbucket tracker is a code host: an issue-only trigger (Jira) may
     # bind its repository for clone and publication.
     hosts_repositories: bool = True
@@ -574,6 +575,39 @@ class BitbucketTracker(BaseTracker):
     ) -> Dict[str, Any]:
         """Return the raw pull request object."""
         return await self._get_json(self._pr(pr_id, repo_full_name))
+
+    async def _readiness_pages(self, path: str) -> List[Dict[str, Any]]:
+        """Read every evidence page; truncation cannot count as complete."""
+        values: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        next_url: Optional[str] = path
+        while next_url:
+            if next_url in seen or len(seen) >= MAX_PAGES:
+                raise TrackerResponseError("Readiness evidence pagination incomplete")
+            seen.add(next_url)
+            data = await self._get_json(next_url)
+            page = data.get("values")
+            if not isinstance(page, list) or any(not isinstance(v, dict) for v in page):
+                raise TrackerResponseError("Malformed readiness evidence page")
+            values.extend(page)
+            next_url = data.get("next")
+            if next_url is not None and not isinstance(next_url, str):
+                raise TrackerResponseError("Malformed readiness next link")
+        return values
+
+    async def get_readiness_statuses(
+        self, sha: str, repo_full_name: str
+    ) -> List[Dict[str, Any]]:
+        """Commit statuses for the exact observed source commit."""
+        return await self._readiness_pages(
+            f"{self._repo(repo_full_name)}/commit/{quote(sha, safe='')}/statuses"
+        )
+
+    async def get_readiness_tasks(
+        self, pr_id: int, repo_full_name: str
+    ) -> List[Dict[str, Any]]:
+        """All PR tasks, not just the first provider page."""
+        return await self._readiness_pages(f"{self._pr(pr_id, repo_full_name)}/tasks")
 
     async def list_pull_requests(
         self,

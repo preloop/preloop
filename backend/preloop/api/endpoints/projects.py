@@ -12,6 +12,7 @@ from preloop.api.auth import get_current_active_user
 from preloop.api.common import get_accessible_projects
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
+from preloop.schemas.readiness import ReadinessPolicy, ReadinessPolicyInput
 from preloop.schemas.project import (
     ProjectCreate,
     ProjectResponse,
@@ -914,3 +915,97 @@ def transfer_project(
     )
     receipt.status = "transferred" if moving else "updated"
     return receipt
+
+
+@router.get("/projects/{project_id}/readiness-policy")
+@require_permission("view_projects")
+def get_readiness_policy(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> ReadinessPolicy | None:
+    """Read this project's immutable configured-policy revision."""
+    from preloop.config import settings
+    from preloop.models.crud import readiness
+
+    if not settings.ticket_readiness_enabled:
+        raise HTTPException(status_code=404, detail="Readiness observations disabled")
+    if not readiness.project_exists(
+        db, account_id=current_user.account_id, project_id=project_id
+    ):
+        raise HTTPException(status_code=404, detail="Project not found")
+    return readiness.active_policy(
+        db, account_id=current_user.account_id, project_id=project_id
+    )
+
+
+@router.put("/projects/{project_id}/readiness-policy")
+@require_permission("edit_projects")
+def put_readiness_policy(
+    project_id: uuid.UUID,
+    policy: "ReadinessPolicyInput",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> ReadinessPolicy:
+    """Authorize and audit a new policy series; old observations stay unchanged."""
+    from preloop.config import settings
+    from preloop.models.crud import readiness
+
+    if not settings.ticket_readiness_enabled:
+        raise HTTPException(status_code=404, detail="Readiness observations disabled")
+    selected = ReadinessPolicy(version=uuid.uuid4(), **policy.model_dump())
+    try:
+        readiness.activate_policy(
+            db,
+            account_id=current_user.account_id,
+            project_id=project_id,
+            policy=selected,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    crud_audit_log.log_action(
+        db,
+        account_id=current_user.account_id,
+        user_id=current_user.id,
+        action="readiness_policy_changed",
+        resource_type="project",
+        resource_id=str(project_id),
+        status="success",
+        details=selected.model_dump(mode="json"),
+        commit=False,
+    )
+    db.commit()
+    return selected
+
+
+@router.delete("/projects/{project_id}/readiness-policy")
+@require_permission("edit_projects")
+def disable_readiness_policy(
+    project_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, bool]:
+    """Unconfigure current observation while retaining audit policy series."""
+    from preloop.config import settings
+    from preloop.models.crud import readiness
+
+    if not settings.ticket_readiness_enabled:
+        raise HTTPException(status_code=404, detail="Readiness observations disabled")
+    try:
+        readiness.activate_policy(
+            db, account_id=current_user.account_id, project_id=project_id, policy=None
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
+    crud_audit_log.log_action(
+        db,
+        account_id=current_user.account_id,
+        user_id=current_user.id,
+        action="readiness_policy_disabled",
+        resource_type="project",
+        resource_id=str(project_id),
+        status="success",
+        commit=False,
+    )
+    db.commit()
+    return {"disabled": True}
