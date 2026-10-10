@@ -234,19 +234,21 @@ def reuse_identical_evidence(
     thread_id: str,
     execution_id: UUID,
     sha256: str,
+    members_digest: str | None = None,
     expires_at: datetime,
     require_execution_open: bool = True,
 ) -> models.FlowArtifact | None:
     """Return the newest identical evidence pack, its expiry extended.
 
-    A hosted run can upload the same archive twice for one exit. When the
+    A hosted run can upload the same evidence twice for one exit. When the
     newest available evidence artifact of this execution and thread has the
-    same archive ``sha256``, nothing new is stored and the existing row's
-    expiry moves to ``expires_at`` (never earlier). The manifest and payload
-    stay unchanged; ``updated_at`` advances through its ``onupdate`` default.
-    The scope stays inside one execution because evidence is looked up by
-    execution. Returns None, with the locks still held, when a new row must
-    be stored.
+    same archive ``sha256``, or the same pack ``members_digest`` (the files
+    match even though a repack changed the gzip timestamp), nothing new is
+    stored and the existing row's expiry moves to ``expires_at`` (never
+    earlier). The manifest and payload stay unchanged; ``updated_at``
+    advances through its ``onupdate`` default. The scope stays inside one
+    execution because evidence is looked up by execution. Returns None, with
+    the locks still held, when a new row must be stored.
     """
     if not sha256:
         return None
@@ -280,11 +282,17 @@ def reuse_identical_evidence(
     newest, has_payload = found if found is not None else (None, False)
     manifest = newest.manifest if newest is not None else None
     stored_sha = manifest.get("sha256") if isinstance(manifest, dict) else None
+    stored_meta = manifest.get("metadata") if isinstance(manifest, dict) else None
+    stored_members = (
+        stored_meta.get("members_digest") if isinstance(stored_meta, dict) else None
+    )
+    same_bytes = stored_sha == sha256
+    same_content = bool(members_digest) and stored_members == members_digest
     if (
         newest is None
         or newest.availability != "available"
         or not has_payload
-        or stored_sha != sha256
+        or not (same_bytes or same_content)
     ):
         # Keep the locks: the caller's store() runs in this same transaction,
         # so no concurrent upload can slip in between the check and insert.

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import tarfile
+import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -195,6 +197,54 @@ def test_deduplicated_evidence_never_raises_quota(
     assert ref.deduplicated is True
     with pytest.raises(ValueError, match="artifact_quota_exceeded"):
         put_artifact(db_session, **scope, kind="evidence", archive=archive(b"other"))
+
+
+def test_repacked_evidence_reuses_the_first_row(
+    db_session, scope, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two packs of the same files are not the same bytes.
+
+    ``pack_evidence`` stamps the gzip header and ``generated_at`` from the
+    clock, so a second pack a few seconds later has a different sha256.
+    The content identity (``members_digest``) still matches.
+    """
+    from preloop.agents.checkpoint_client import pack_evidence
+
+    workspace = tmp_path / "workspace"
+    (workspace / "evidence").mkdir(parents=True)
+    (workspace / "evidence" / "findings.json").write_text('{"id":"X"}')
+    real_gmtime = time.gmtime
+    clock = {"now": 1_700_000_000.0}
+
+    def frozen_time() -> float:
+        return clock["now"]
+
+    def frozen_gmtime(secs: float | None = None) -> time.struct_time:
+        return real_gmtime(clock["now"] if secs is None else secs)
+
+    monkeypatch.setattr(time, "time", frozen_time)
+    monkeypatch.setattr(time, "gmtime", frozen_gmtime)
+    limits = {"max_bytes": 1024 * 1024, "max_expanded_bytes": 1024 * 1024}
+    first_body = pack_evidence(workspace, **limits)
+    clock["now"] += 5
+    second_body = pack_evidence(workspace, **limits)
+    assert first_body != second_body
+
+    first = put_artifact(db_session, **scope, kind="evidence", archive=first_body)
+    second = put_artifact(db_session, **scope, kind="evidence", archive=second_body)
+    assert first.deduplicated is False
+    assert second.deduplicated is True
+    assert second.artifact_id == first.artifact_id
+    assert len(rows(db_session, scope["account_id"])) == 1
+    assert signatures(db_session, scope["account_id"]) == 1
+
+    (workspace / "evidence" / "findings.json").write_text('{"id":"Y"}')
+    clock["now"] += 5
+    changed = pack_evidence(workspace, **limits)
+    third = put_artifact(db_session, **scope, kind="evidence", archive=changed)
+    assert third.deduplicated is False
+    assert third.artifact_id != first.artifact_id
+    assert len(rows(db_session, scope["account_id"])) == 2
 
 
 def test_closed_execution_evidence_put_is_still_refused(db_session, scope) -> None:
