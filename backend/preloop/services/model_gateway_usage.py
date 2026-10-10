@@ -723,6 +723,7 @@ class ModelGatewayUsageService:
             api_key_name=item["api_key_name"],
             estimated_cost=item["estimated_cost"],
             token_usage=GatewayTokenUsage.from_row(item),
+            cache_detail_source=item.get("cache_detail_source"),
             excerpt=item["excerpt"],
             meta_data=item["meta_data"],
         )
