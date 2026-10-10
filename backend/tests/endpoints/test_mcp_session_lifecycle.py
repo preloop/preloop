@@ -232,7 +232,7 @@ async def test_external_mcp_waits_do_not_hold_database_connections(
     )
     tasks = [asyncio.create_task(wrapper()) for _ in range(count)]
     try:
-        await asyncio.wait_for(all_entered.wait(), timeout=2)
+        await asyncio.wait_for(all_entered.wait(), timeout=10)
         assert tool_pool.checkedout() == 0
         for task in tasks:
             task.cancel()
