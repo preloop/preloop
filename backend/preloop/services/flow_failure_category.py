@@ -281,7 +281,8 @@ _EXECUTION_BUDGET_RE = re.compile(
     # says ``insufficient_quota``, so it must win over the provider billing
     # and rate limit rules: it is Preloop's cap, not the upstream's.
     r"|model gateway budget exceeded|preloop budget exceeded"
-    r"|budget_limit_exceeded|execution_budget_exceeded",
+    r"|budget_limit_exceeded|execution_budget_exceeded"
+    r"|limit for hosted models? reached",
     re.IGNORECASE,
 )
 # "zai does not support parameters: ['parallel_tool_calls']",

@@ -436,6 +436,11 @@ GATEWAY_BUDGET_429_MESSAGES = [
     "preloop_code execution_budget_exceeded",
     '[API Error: {"error":{"code":429,"message":"Model gateway budget exceeded",'
     '"status":"RESOURCE_EXHAUSTED"}}]',
+    "429 {'error': {'message': 'Preloop trial limit for hosted model reached. "
+    "Please configure your own OpenAI/Anthropic API key.', 'type': "
+    "'insufficient_quota', 'code': 'insufficient_quota'}}",
+    'API Error: 429 {"type":"error","error":{"type":"billing_error","message":'
+    '"Preloop free-tier limit for hosted models reached."}}',
 ]
 
 
