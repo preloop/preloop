@@ -326,12 +326,19 @@ def workspace_owner_runner_id(
     from preloop.models.crud import crud_flow_execution
 
     resume_from = payload.get("resume_from")
+    host_resume = payload.get("host_exec_resume")
+    if isinstance(host_resume, dict):
+        # A Copilot continuation resumes a session that exists only on the
+        # originating runner (#1069): always pinned.
+        resume_from = host_resume.get("execution_id")
     if not isinstance(resume_from, str) or not resume_from.strip():
         return None
     config = unwrap_agent_config(payload.get("agent_config"))
     runner_config = config.get("runner") if isinstance(config, dict) else None
-    if not isinstance(runner_config, dict) or not _truthy(
-        runner_config.get("persist_workspace")
+    host_bound = isinstance(host_resume, dict) or bool(host_exec_profile_name(config))
+    if not host_bound and (
+        not isinstance(runner_config, dict)
+        or not _truthy(runner_config.get("persist_workspace"))
     ):
         return None
     try:
@@ -481,6 +488,7 @@ def lease_job(
             payload.get("model_identifier"),
             payload.get("agent_type") or HOST_EXEC_AGENT_TYPE,
             require_publication=bool(payload.get("host_exec_publication")),
+            require_continuation=bool(payload.get("host_exec_resume")),
         ):
             continue
         runner = crud_flow_runner.claim_free_slot(db, runner_id=candidate.id)

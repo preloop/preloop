@@ -336,9 +336,12 @@ func TestHostPublicationCapabilityRequiresCopilotOptIn(t *testing.T) {
 			if c == hostExecCapabilityPublication {
 				got[ad.Name] = true
 			}
+			if c == hostExecCapabilityContinuation {
+				got[ad.Name+"/continuation"] = true
+			}
 		}
 	}
-	if !got["copilot-publish"] || got["copilot-review"] || got["copilot-nocheckout"] {
+	if !got["copilot-publish"] || !got["copilot-publish/continuation"] || got["copilot-review"] || got["copilot-review/continuation"] || got["copilot-nocheckout"] {
 		t.Fatalf("host_publication advertised for %v", got)
 	}
 	if !hostExecProfileMayPublish(hostExecProfile{AllowCheckout: true, AllowPublish: true}, hostExecHarnessCopilot) ||

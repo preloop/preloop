@@ -3204,10 +3204,6 @@ class FlowExecutionOrchestrator:
                 from preloop.services.host_exec import PULL_REQUEST_UNAVAILABLE
 
                 raise ValueError(PULL_REQUEST_UNAVAILABLE)
-            if workspace_files or (self.trigger_event_data or {}).get("_resume"):
-                raise ValueError(
-                    "Host profiles do not support remote workspace seeds or native resume"
-                )
             host_agent_type = (
                 effective_agent_type.strip().lower()
                 if isinstance(effective_agent_type, str)
@@ -3216,7 +3212,36 @@ class FlowExecutionOrchestrator:
             host_model = host_exec_model_identifier(
                 host_agent_type, self.flow.agent_config
             )
-            return {
+            # The lease (and so the recorded session) carries the alias or,
+            # without one, the catalog model; continuation compares the same.
+            lease_model = host_model or (
+                self.ai_model.model_identifier if self.ai_model else None
+            )
+            resume = (self.trigger_event_data or {}).get("_resume")
+            host_resume = None
+            if (
+                resume
+                and not workspace_files
+                and host_publication_requested(clone_config)
+            ):
+                # Feedback continuation (#1069): resume the originating
+                # Copilot session on its runner, or fail resume_unavailable.
+                from preloop.services.host_exec_continuation import (
+                    resolve_host_continuation,
+                )
+
+                host_resume = resolve_host_continuation(
+                    self.db,
+                    flow=self.flow,
+                    resume=resume,
+                    profile=profile or "",
+                    model_identifier=lease_model,
+                )
+            elif workspace_files or resume:
+                raise ValueError(
+                    "Host profiles do not support remote workspace seeds or native resume"
+                )
+            host_context = {
                 "flow_id": str(self.flow_id),
                 "flow_name": self.flow.name,
                 "execution_id": str(self.execution_log.id),
@@ -3228,9 +3253,14 @@ class FlowExecutionOrchestrator:
                 # catalog model remains the fallback for a saved flow. Neither
                 # value is the model the CLI reports, and an empty value leaves
                 # --model unset (the CLI's own default).
-                "model_identifier": host_model
-                or (self.ai_model.model_identifier if self.ai_model else None),
+                "model_identifier": lease_model,
             }
+            if host_resume is not None:
+                host_context["host_exec_resume"] = {
+                    "session_id": host_resume["session_id"],
+                    "execution_id": host_resume["execution_id"],
+                }
+            return host_context
 
         # A Jira-triggered flow has no repository of its own: the binding
         # names the code-host repository. Raises RepositoryBindingError (a
@@ -5347,7 +5377,14 @@ class FlowExecutionOrchestrator:
             if isinstance(result, dict)
             else None
         )
-        if not isinstance(receipt, dict) or receipt.get("status") != "pushed":
+        if not isinstance(receipt, dict):
+            return None
+        is_continuation = bool((self.trigger_event_data or {}).get("_resume"))
+        # A continuation that made no new commit still binds the existing pull
+        # request, so the thread's next continuation sees a confirmed PR.
+        if receipt.get("status") != "pushed" and not (
+            is_continuation and receipt.get("status") == "no_changes"
+        ):
             return None
         branch = str(receipt.get("branch") or "")
         failed = (
@@ -5384,6 +5421,7 @@ class FlowExecutionOrchestrator:
                 self.db,
                 execution_id=self.execution_log.id,
                 client=clients[0],
+                allow_create=receipt.get("status") == "pushed",
                 branch=branch,
                 base_branch=str(checkout["repositories"][0].get("branch") or "main"),
                 title=title,
