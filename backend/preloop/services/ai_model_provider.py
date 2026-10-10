@@ -12,6 +12,7 @@ carry endpoint URLs and key material (2026-08-04 key-leak incident).
 import asyncio
 import ipaddress
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
@@ -272,27 +273,137 @@ def _discovery_http_client(*, required: bool = False) -> Optional[Any]:
 
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "localhost.localdomain"})
+_NUMERIC_HOST = re.compile(r"^[0-9.xa-fA-F]+$")
 
 
-def validate_gateway_api_endpoint(api_endpoint: Optional[str]) -> Optional[str]:
-    """Reject an endpoint the gateway would dial on itself.
+def _unwrap_mapped(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Return the IPv4 address embedded in an IPv4-mapped IPv6 literal."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
 
-    ``localhost`` and any loopback address are the process's own network
-    namespace. On Preloop Cloud, Helm, and Compose that is the gateway
-    container, not the computer running LM Studio. Link-local addresses are
-    the same class. A LAN address stays allowed so a self-hosted install can
-    reach a model server on the host network.
+
+def _parse_ip_literal(
+    host: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse a host that is an IP, including non-canonical IPv4 spellings.
+
+    ``ipaddress`` rejects ``127.1``, decimal ``2130706433`` and hex
+    ``0x7f000001``, but the OS resolver still maps those to loopback.
+    """
+    try:
+        return _unwrap_mapped(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if _NUMERIC_HOST.fullmatch(host) is None:
+        return None
+    import socket
+
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    return ipaddress.ip_address(packed)
+
+
+def _allowed_endpoint_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """CIDRs an operator has opted in for loopback or private model servers."""
+    from preloop.config import settings
+
+    raw = str(getattr(settings, "model_endpoint_allowed_cidrs", "") or "")
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid MODEL_ENDPOINT_ALLOWED_CIDRS entry %r", token
+            )
+    return networks
+
+
+def _resolve_endpoint_host(
+    host: str,
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Resolve every address a hostname dials, unwrapping IPv4-mapped answers."""
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ProviderValidationError(
+            "api_endpoint host could not be resolved"
+        ) from exc
+    found: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for info in infos:
+        raw_ip = str(info[4][0]).split("%", 1)[0]
+        try:
+            ip = _unwrap_mapped(ipaddress.ip_address(raw_ip))
+        except ValueError:
+            continue
+        if ip not in seen:
+            seen.add(ip)
+            found.append(ip)
+    if not found:
+        raise ProviderValidationError("api_endpoint host could not be resolved")
+    return found
+
+
+def _endpoint_address_error(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> Optional[str]:
+    """Why this address cannot be a model endpoint, or None when it can.
+
+    Link-local and unspecified addresses stay refused even when listed in
+    ``MODEL_ENDPOINT_ALLOWED_CIDRS``. Loopback and private addresses are
+    refused unless the operator listed a CIDR that contains them.
+    """
+    if ip.is_unspecified or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+        return "api_endpoint must not use a link-local or unspecified address"
+    if ip.is_loopback or ip.is_private:
+        if any(ip in network for network in networks):
+            return None
+        if ip.is_loopback:
+            return (
+                "api_endpoint must not use localhost. That address is the "
+                "Preloop process, not the machine running your model server."
+            )
+        return (
+            "api_endpoint must not use a private address. Add its CIDR to "
+            "MODEL_ENDPOINT_ALLOWED_CIDRS on this instance to allow it."
+        )
+    return None
+
+
+def validate_gateway_api_endpoint(
+    api_endpoint: Optional[str],
+    *,
+    resolve: Optional[Any] = None,
+) -> Optional[str]:
+    """Reject an endpoint the gateway must not dial.
+
+    Empty means the provider default and is left alone. A hostname is
+    resolved, and every answer is checked, so a name that points at a
+    private or loopback address is refused the same way as the address
+    itself. The check runs again immediately before the upstream call.
 
     Args:
-        api_endpoint: Stored or submitted base URL. Empty means the provider
-            default and is left alone.
+        api_endpoint: Stored or submitted base URL.
+        resolve: Hostname resolver, used by tests. Defaults to DNS.
 
     Returns:
         The stripped URL when it is safe to dial.
 
     Raises:
-        ProviderValidationError: The URL is not http(s), or it targets
-            loopback or link-local space.
+        ProviderValidationError: The URL is not http(s), or it targets a
+            refused address.
     """
     raw = (api_endpoint or "").strip()
     if not raw:
@@ -303,20 +414,21 @@ def validate_gateway_api_endpoint(api_endpoint: Optional[str]) -> Optional[str]:
     host = (parts.hostname or "").strip().rstrip(".").lower()
     if not host:
         raise ProviderValidationError("api_endpoint must include a host")
+    networks = _allowed_endpoint_networks()
     if host in _LOOPBACK_HOSTS or host.endswith(".localhost"):
-        raise ProviderValidationError(
-            "api_endpoint must not use localhost. That address is the "
-            "Preloop process, not the machine running your model server."
-        )
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return raw
-    if ip.is_loopback or ip.is_link_local or ip.is_unspecified:
-        raise ProviderValidationError(
-            "api_endpoint must not use a loopback or link-local address. "
-            "That address is the Preloop process, not your model server."
-        )
+        addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [
+            ipaddress.ip_address("127.0.0.1")
+        ]
+    else:
+        literal = _parse_ip_literal(host)
+        if literal is not None:
+            addresses = [literal]
+        else:
+            addresses = (resolve or _resolve_endpoint_host)(host)
+    for ip in addresses:
+        reason = _endpoint_address_error(_unwrap_mapped(ip), networks)
+        if reason is not None:
+            raise ProviderValidationError(reason)
     return raw
 
 

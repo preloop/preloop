@@ -1697,9 +1697,15 @@ class TestGatewayEndpointValidation:
             "http://localhost:1234/v1",
             "http://LOCALHOST:1234/v1",
             "http://127.0.0.1:1234/v1",
+            "http://127.1:1234/v1",
+            "http://2130706433:1234/v1",
+            "http://0x7f000001:1234/v1",
             "http://[::1]:1234/v1",
+            "http://[::ffff:127.0.0.1]:1234/v1",
+            "http://[::ffff:169.254.169.254]/latest/meta-data",
             "http://169.254.169.254/latest/meta-data",
             "http://0.0.0.0:1234/v1",
+            "http://192.168.1.10:1234/v1",
             "file:///etc/passwd",
         ],
     )
@@ -1707,24 +1713,62 @@ class TestGatewayEndpointValidation:
         from preloop.services.ai_model_provider import validate_gateway_api_endpoint
 
         with pytest.raises(ValueError):
-            validate_gateway_api_endpoint(endpoint)
+            validate_gateway_api_endpoint(endpoint, resolve=lambda _host: [])
 
-    @pytest.mark.parametrize(
-        "endpoint",
-        [
-            "https://openrouter.ai/api/v1",
-            "http://host.docker.internal:1234/v1",
-            "http://192.168.1.10:1234/v1",
-            None,
-            "",
-        ],
-    )
-    def test_allows_reachable_and_empty_endpoints(self, endpoint: str | None) -> None:
+    def test_rejects_hostname_that_resolves_to_a_private_address(self) -> None:
+        import ipaddress
+
         from preloop.services.ai_model_provider import validate_gateway_api_endpoint
 
-        assert validate_gateway_api_endpoint(endpoint) == (
-            endpoint.strip() if isinstance(endpoint, str) and endpoint.strip() else None
+        def resolve(_host: str) -> list[ipaddress.IPv4Address]:
+            return [ipaddress.ip_address("10.1.2.3")]
+
+        with pytest.raises(ValueError, match="private address"):
+            validate_gateway_api_endpoint("https://gpu.example.com/v1", resolve=resolve)
+
+    @pytest.mark.parametrize("endpoint", [None, ""])
+    def test_empty_endpoint_uses_the_provider_default(
+        self, endpoint: str | None
+    ) -> None:
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        assert validate_gateway_api_endpoint(endpoint) is None
+
+    def test_allows_a_public_address_and_a_public_hostname(self) -> None:
+        import ipaddress
+
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        public = "https://93.184.216.34/v1"
+        assert validate_gateway_api_endpoint(public) == public
+
+        def resolve(_host: str) -> list[ipaddress.IPv4Address]:
+            return [ipaddress.ip_address("93.184.216.34")]
+
+        name = "https://openrouter.ai/api/v1"
+        assert validate_gateway_api_endpoint(name, resolve=resolve) == name
+
+    def test_operator_cidr_allows_loopback_and_a_lan(self, monkeypatch) -> None:
+        from preloop.config import settings
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        monkeypatch.setattr(
+            settings,
+            "model_endpoint_allowed_cidrs",
+            "127.0.0.0/8,192.168.1.0/24",
         )
+        loopback = "http://127.0.0.1:1234/v1"
+        lan = "http://192.168.1.10:1234/v1"
+        assert validate_gateway_api_endpoint(loopback) == loopback
+        assert validate_gateway_api_endpoint(lan) == lan
+
+    def test_operator_cidr_cannot_allow_link_local(self, monkeypatch) -> None:
+        from preloop.config import settings
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        monkeypatch.setattr(settings, "model_endpoint_allowed_cidrs", "169.254.0.0/16")
+        with pytest.raises(ValueError, match="link-local"):
+            validate_gateway_api_endpoint("http://169.254.169.254/latest/meta-data")
 
     def test_crud_rejects_localhost_on_create(self) -> None:
         from preloop.models.crud.ai_model import CRUDAIModel
@@ -1736,6 +1780,14 @@ class TestGatewayEndpointValidation:
                     "api_endpoint": "http://localhost:1234/v1",
                 }
             )
+
+    def test_crud_partial_update_can_rename_a_legacy_localhost_row(self) -> None:
+        from types import SimpleNamespace
+
+        from preloop.models.crud.ai_model import CRUDAIModel
+
+        existing = SimpleNamespace(api_endpoint="http://localhost:1234/v1")
+        CRUDAIModel._validate_local_api_endpoint({"name": "renamed"}, existing)
 
 
 class TestDiscoveryEndpointValidation:

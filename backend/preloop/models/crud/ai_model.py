@@ -95,18 +95,15 @@ class CRUDAIModel(CRUDBase[AIModel]):
         obj_data: Dict[str, Any],
         existing: Optional[AIModel] = None,
     ) -> None:
-        """Reject localhost and link-local endpoints before they are stored.
+        """Reject a new loopback or private endpoint before it is stored.
 
-        The model picker already refuses these. Create and update did not,
-        so a Cloud account could save ``http://localhost:1234/v1`` and the
-        gateway would dial its own container.
+        A partial update that does not change ``api_endpoint`` is left
+        alone, so a legacy localhost row can still be renamed. The live
+        call refuses that stored endpoint until it is replaced.
         """
-        if "api_endpoint" in obj_data:
-            endpoint = obj_data.get("api_endpoint")
-        elif existing is not None:
-            endpoint = existing.api_endpoint
-        else:
+        if "api_endpoint" not in obj_data:
             return
+        endpoint = obj_data.get("api_endpoint")
         if not isinstance(endpoint, str) or not endpoint.strip():
             return
         from preloop.services.ai_model_provider import validate_gateway_api_endpoint

@@ -117,6 +117,21 @@ def resolve_model_call_credentials(
     # Routing is independent of credentials. Set it outside the try so a secret
     # backend failure cannot silently send the request to the wrong endpoint.
     if api_base := model_api_base(model):
+        from preloop.services.ai_model_provider import (
+            ProviderValidationError,
+            validate_gateway_api_endpoint,
+        )
+        from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+        try:
+            validate_gateway_api_endpoint(api_base)
+        except ProviderValidationError as exc:
+            raise ModelGatewayAPIError(
+                provider="openai",
+                status_code=400,
+                message=str(exc),
+                error_type="invalid_request_error",
+            ) from exc
         kwargs["api_base"] = api_base
 
     try:
