@@ -31,6 +31,13 @@ def register_private_callback_prefix(prefix: str) -> None:
     """Exclude an installed signed callback route from errors and traces."""
     if not prefix.startswith("/") or not prefix.endswith("/"):
         raise ValueError("Callback prefix must be an absolute directory path")
+    segments = prefix.strip("/").split("/")
+    if (
+        len(segments) < 3
+        or any(segment in {"", ".", ".."} for segment in segments)
+        or urlsplit(prefix).path != prefix
+    ):
+        raise ValueError("Callback prefix must identify a specific route namespace")
     _PRIVATE_CALLBACK_PREFIXES.add(prefix)
 
 

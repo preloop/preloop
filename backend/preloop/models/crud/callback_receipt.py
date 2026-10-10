@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -14,6 +15,12 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from .base import CRUDBase
+
+_CALLBACK_BINDING_LOCK_KEY = int.from_bytes(
+    hashlib.sha256(b"preloop:callback-binding:v1").digest()[:8],
+    byteorder="big",
+    signed=True,
+)
 
 
 class CallbackReplayConflictError(ValueError):
@@ -178,15 +185,16 @@ class CRUDCallbackKeyBinding(CRUDBase[models.CallbackKeyBinding]):
     ) -> None:
         """Bind an unused key, rejecting reuse and server-key epoch drift.
 
-        Caller finishes the transaction through encrypted-secret CRUD. On any
-        failure this method rolls back the transaction, including new config.
+        Caller finishes the transaction through encrypted-secret CRUD. ``now``
+        records the registration time in UTC (naive values are already UTC).
+        On any failure this rolls back the transaction, including new config.
         """
         if len(signing_key_digest) != 64 or len(digest_epoch) != 32:
             raise ValueError("Invalid binding fingerprint")
         try:
             db.execute(select(func.set_config("statement_timeout", "5000ms", True)))
             # Serialize registration across epochs as well as tenant accounts.
-            db.execute(select(func.pg_advisory_xact_lock(86379511)))
+            db.execute(select(func.pg_advisory_xact_lock(_CALLBACK_BINDING_LOCK_KEY)))
             owner = (
                 db.query(models.SecretReference.id)
                 .filter(
@@ -222,6 +230,9 @@ class CRUDCallbackKeyBinding(CRUDBase[models.CallbackKeyBinding]):
                     signing_key_digest=signing_key_digest,
                     digest_epoch=digest_epoch,
                     expires_at=None,
+                    created_at=now.astimezone(timezone.utc).replace(tzinfo=None)
+                    if now.tzinfo is not None
+                    else now,
                 )
             )
             db.flush()

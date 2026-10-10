@@ -1,12 +1,13 @@
 """Receipt transaction, replay and bounded lock regression tests."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -214,20 +215,28 @@ def test_previous_key_overlap_is_strictly_bounded() -> None:
 
 
 def test_binding_serializes_epoch_and_cross_tenant_registration() -> None:
-    from preloop.models.crud.callback_receipt import crud_callback_key_binding
+    from preloop.models.crud.callback_receipt import (
+        _CALLBACK_BINDING_LOCK_KEY,
+        crud_callback_key_binding,
+    )
 
     db = MagicMock(spec=Session)
     db.query.return_value.filter.return_value.first.side_effect = [(uuid4(),), None]
     db.query.return_value.filter.return_value.with_for_update.return_value.first.return_value = None
+    now = datetime(2026, 10, 10, 2, tzinfo=timezone(timedelta(hours=2)))
     crud_callback_key_binding.bind(
         db,
         account_id=uuid4(),
         integration_id=uuid4(),
         signing_key_digest="a" * 64,
         digest_epoch="b" * 32,
-        now=datetime.now(timezone.utc),
+        now=now,
     )
     assert "pg_advisory_xact_lock" in str(db.execute.call_args_list[1].args[0])
+    params = db.execute.call_args_list[1].args[0].compile().params
+    assert _CALLBACK_BINDING_LOCK_KEY in params.values()
+    assert abs(_CALLBACK_BINDING_LOCK_KEY) > 2**32
+    assert db.add.call_args.args[0].created_at == datetime(2026, 10, 10)
     db.add.assert_called_once()
     db.flush.assert_called_once()
     db.commit.assert_not_called()
@@ -255,3 +264,71 @@ def test_private_callback_namespace_includes_exact_admin_base_path() -> None:
         }
     }
     assert sentry_before_send_transaction(unrelated, {}) is unrelated
+
+
+@pytest.mark.parametrize("total,unsupported", [(3, 1), (0, 0)])
+def test_health_aggregates_are_tenant_scoped_and_content_free(
+    total: int, unsupported: int
+) -> None:
+    db = MagicMock(spec=Session)
+    latest = datetime(2026, 10, 10) if total else None
+    db.query.return_value.filter.return_value.one.return_value = (total, latest)
+    db.query.return_value.filter.return_value.scalar.return_value = unsupported
+    account_id, integration_id = uuid4(), uuid4()
+    result = crud_callback_receipt.health(
+        db, account_id=account_id, integration_id=integration_id
+    )
+    assert result == {
+        "callback_count": total,
+        "unsupported_event_count": unsupported,
+        "last_callback_at": latest,
+    }
+    filters = db.query.return_value.filter.call_args_list
+    aggregate = select(*db.query.call_args_list[0].args).where(*filters[0].args)
+    unsupported_query = select(*db.query.call_args_list[1].args).where(*filters[1].args)
+    compiled = unsupported_query.compile(dialect=postgresql.dialect())
+    assert "count(callback_receipt.id)" in str(aggregate)
+    assert "max(callback_receipt.created_at)" in str(aggregate)
+    assert "callback_receipt.evidence ->>" in str(compiled)
+    assert {account_id, integration_id, "reason", "unsupported_event"} <= set(
+        compiled.params.values()
+    )
+    db.commit.assert_not_called()
+
+
+def test_retire_changes_only_scoped_overlap_without_commit() -> None:
+    from preloop.models.crud.callback_receipt import crud_callback_key_binding
+
+    db = MagicMock(spec=Session)
+    row = SimpleNamespace(expires_at=None)
+    db.query.return_value.filter.return_value.with_for_update.return_value.one.return_value = row
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=120)
+    account_id, integration_id = uuid4(), uuid4()
+    crud_callback_key_binding.retire(
+        db,
+        account_id=account_id,
+        integration_id=integration_id,
+        signing_key_digest="a" * 64,
+        expires_at=expiry,
+    )
+    assert row.expires_at == expiry
+    filters = db.query.return_value.filter.call_args.args
+    compiled = (
+        select(models.CallbackKeyBinding)
+        .where(*filters)
+        .compile(dialect=postgresql.dialect())
+    )
+    assert {account_id, integration_id, "a" * 64} <= set(compiled.params.values())
+    db.query.return_value.filter.return_value.with_for_update.assert_called_once_with()
+    db.flush.assert_called_once()
+    db.commit.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "prefix", ["/", "/api/", "/api/v1/", "//api/v1/private/", "/api/v1/../"]
+)
+def test_private_callback_prefix_cannot_disable_global_telemetry(prefix: str) -> None:
+    from preloop.utils.sentry_filters import register_private_callback_prefix
+
+    with pytest.raises(ValueError):
+        register_private_callback_prefix(prefix)
