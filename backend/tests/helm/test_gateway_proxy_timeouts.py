@@ -284,3 +284,18 @@ def test_helm_render_keeps_the_gateway_timeouts(location: str) -> None:
         MIN_STREAMING_TIMEOUT_SECONDS
     )
     assert re.search(r"^\s*proxy_buffering\s+off\s*;", body, re.MULTILINE)
+
+
+def test_gateway_session_affinity_is_opt_in():
+    """#1454: hashing on session-id is off by default, scoped to the gateway."""
+    hash_key = "nginx.ingress.kubernetes.io/upstream-hash-by"
+    assert hash_key not in (
+        _render_gateway_ingress()["metadata"].get("annotations") or {}
+    )
+    enabled = ["gateway.sessionAffinity.enabled=true"]
+    gateway = _render_gateway_ingress(enabled)
+    assert gateway["metadata"]["annotations"][hash_key] == (
+        "$http_session_id$remote_addr"
+    )
+    console = _render_console_ingress(enabled)
+    assert hash_key not in (console["metadata"].get("annotations") or {})

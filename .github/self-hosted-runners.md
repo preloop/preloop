@@ -105,3 +105,18 @@ changing the port.
 
 The unit coverage for the reuse decision is
 `backend/tests/test_ci_postgres.py`. It does not need a database.
+
+## Workspace ownership
+
+Backend shards run on the host as the runner user. Anything root-owned
+under `runnerN/_work` (left by the old job container, or by a manual root
+command) makes `actions/checkout` fail with EACCES. The backend job
+reclaims ownership before checkout using `sudo -n` when the runner user has
+passwordless sudo, otherwise `docker run` with the cached
+`pgvector/pgvector:pg16` image (the runner user must be in the `docker`
+group). If neither works, the step fails with
+`still not owned by runner user`. Recover on the VM:
+
+    sudo find /home/github/runner*/_work ! -user github -print -quit
+    sudo chown -R github:github /home/github/runner*/_work
+    sudo find /home/github/runner*/_work ! -user github | wc -l   # expect 0

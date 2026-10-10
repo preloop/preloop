@@ -4065,6 +4065,7 @@ websockets==17.1 \
     --hash=sha256:fd8f47dbf2e8adb15c847215f83436de3fdb120b51fdae0fbbdf69fd97a3ad80 \
     --hash=sha256:ff3e2ba7a9f0a110b0555452e9b5a03a34e11662544e01beea15f144b48ba7b7
     # via
+    #   preloop (pyproject.toml)
     #   fastmcp-slim
     #   uvicorn
 win32-setctime==1.2.0 ; sys_platform == 'win32' \
