@@ -713,6 +713,7 @@ describe('ConsoleShell', () => {
       'Policies',
       'Trackers',
       'Cost',
+      'API usage',
       'Audit',
       'Settings',
       'Emergency',
@@ -1366,14 +1367,24 @@ describe('ConsoleShell', () => {
       expect(auditSection(el)?.hasAttribute('open')).to.be.true;
     });
 
-    it('highlights Cost on the API usage page', async () => {
+    it('gives API usage its own entry under Cost', async () => {
       window.history.replaceState({}, '', '/console/api-usage');
       const el = await loaded();
-      expect(
-        el.shadowRoot!.querySelector(
-          'a.sidebar-link.active[href="/console/cost"]'
-        )
-      ).to.exist;
+      const link = el.shadowRoot!.querySelector(
+        'a.sidebar-link[href="/console/api-usage"]'
+      );
+      expect(link).to.exist;
+      expect(link!.classList.contains('active')).to.be.true;
+      expect(link!.getAttribute('aria-current')).to.equal('page');
+      expect(link!.textContent).to.contain('Gateway traffic and rate limits');
+      // It sits right after Cost, and Cost no longer claims the page.
+      const cost = el.shadowRoot!.querySelector(
+        'a.sidebar-link[href="/console/cost"]'
+      )!;
+      expect(cost.classList.contains('active')).to.be.false;
+      expect(cost.closest('li')!.nextElementSibling).to.equal(
+        link!.closest('li')
+      );
     });
 
     it('does not mistake Approvals for the single-approval alias the other way', async () => {

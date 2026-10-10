@@ -100,21 +100,24 @@ describe('Cost progressive loading', () => {
   it('loads the default tab, shares session data, and defers tools until selected', async () => {
     const element = await fixture<CostView>(html`<cost-view></cost-view>`);
     await waitUntil(() => element['loadedTabs'].has('agents'));
+    // The daily spend strip sits above the tabs, so `days` loads with the
+    // page in its own request; every other breakdown waits for its tab.
+    const tabBreakdowns = () =>
+      urls
+        .flatMap((u) => u.searchParams.getAll('breakdown'))
+        .filter((name) => name !== 'days');
     expect(
-      urls.flatMap((u) => u.searchParams.getAll('breakdown'))
-    ).to.deep.equal(['sessions', 'flows']);
+      urls.filter((u) => u.searchParams.getAll('breakdown').includes('days'))
+    ).to.have.length(1);
+    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows']);
     await element['handleTabShow'](
       new CustomEvent('sl-tab-show', { detail: { name: 'users' } })
     );
-    expect(
-      urls.flatMap((u) => u.searchParams.getAll('breakdown'))
-    ).to.deep.equal(['sessions', 'flows']);
+    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows']);
     await element['handleTabShow'](
       new CustomEvent('sl-tab-show', { detail: { name: 'tools' } })
     );
-    expect(
-      urls.flatMap((u) => u.searchParams.getAll('breakdown'))
-    ).to.deep.equal(['sessions', 'flows', 'tools']);
+    expect(tabBreakdowns()).to.deep.equal(['sessions', 'flows', 'tools']);
   });
 
   it('keeps totals visible after a breakdown failure and retries only that section', async () => {
@@ -208,7 +211,7 @@ describe('Cost progressive loading', () => {
     const fallback = handler;
     let resolveBreakdown!: (response: Response) => void;
     handler = (url) =>
-      url.searchParams.has('breakdown')
+      url.searchParams.getAll('breakdown').includes('sessions')
         ? new Promise((resolve) => {
             resolveBreakdown = resolve;
           })
@@ -218,9 +221,11 @@ describe('Cost progressive loading', () => {
     const selected = element['handleTabShow'](
       new CustomEvent('sl-tab-show', { detail: { name: 'sessions' } })
     );
-    expect(urls.filter((u) => u.searchParams.has('breakdown'))).to.have.length(
-      1
-    );
+    expect(
+      urls.filter((u) =>
+        u.searchParams.getAll('breakdown').includes('sessions')
+      )
+    ).to.have.length(1);
     resolveBreakdown(reply(payload));
     await selected;
     expect(element['loadedTabs'].has('sessions')).to.equal(true);
