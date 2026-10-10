@@ -205,8 +205,9 @@ RECLAIM_STEP = "Reclaim self-hosted workspace ownership"
 
 
 def test_workspace_reclaim_runs_before_checkout_on_self_hosted_only() -> None:
-    """Root-owned residue in _work must be fixed before checkout, without
-    requiring sudo: the only sudo use is probed with ``sudo -n true``."""
+    """Root-owned residue in _work must be fixed before checkout, and sudo
+    is only ever non-interactive (``sudo -n``), behind a ``sudo -n true``
+    probe, so a VM without passwordless sudo falls back to docker."""
     steps = load_ci_jobs()["test-backend"]["steps"]
     assert steps[0].get("name") == RECLAIM_STEP
     assert "actions/checkout@" in steps[1].get("uses", "")
@@ -217,6 +218,11 @@ def test_workspace_reclaim_runs_before_checkout_on_self_hosted_only() -> None:
     assert "if sudo -n true" in script
     assert "sudo " not in script.replace("sudo -n", "")
     assert "pgvector/pgvector:pg16" in script
+    # Both ownership probes tolerate find errors, so an unreadable path
+    # cannot hide a foreign-owned one from the re-check.
+    probes = [line for line in script.splitlines() if "find " in line]
+    assert len(probes) == 2
+    assert all("|| true" in line for line in probes)
 
 
 def test_root_only_steps_are_gated_to_the_github_image() -> None:
