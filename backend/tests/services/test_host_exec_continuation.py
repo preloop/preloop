@@ -624,3 +624,32 @@ async def test_no_change_continuation_binds_existing_pr_and_never_creates(monkey
         monkeypatch, receipt, forge, {"source": "jira"}
     )
     assert await orch._open_host_published_pr("SUCCEEDED") is None
+
+
+def test_delayed_lease_carries_the_alias_it_validated(monkeypatch):
+    """The model the delayed lease carries is the one admission compared."""
+    flow = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        agent_config={
+            "host_exec_profile": "copilot-seat",
+            "copilot_model": "team-default",
+        },
+        ai_model=SimpleNamespace(model_identifier="gpt-5.1"),
+        git_clone_config=ONE_REPO,
+    )
+    _, prior, _, resume = _rows(monkeypatch, flow=flow)
+    executor = RemoteRunnerExecutor(
+        "copilot",
+        {},
+        db=MagicMock(),
+        pool="local",
+        account_id=uuid4(),
+        flow=flow,
+        execution=SimpleNamespace(trigger_event_details={"_resume": resume}),
+    )
+    payload = executor._lease_payload(
+        execution_id=uuid4(), flow_id=flow.id, prompt="address feedback", flow=flow
+    )
+    assert payload["model_identifier"] == "team-default"
+    assert payload["host_exec_resume"]["execution_id"] == str(prior.id)

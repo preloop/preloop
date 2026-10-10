@@ -25,6 +25,7 @@ from preloop.services.host_exec import (
     HOST_EXEC_AGENT_TYPE,
     ISOLATED_PUBLICATION_UNAVAILABLE,
     host_exec_profile_name,
+    host_exec_model_identifier,
     host_exec_unavailable_reason,
     is_host_exec_agent_type,
 )
@@ -476,6 +477,14 @@ class RemoteRunnerExecutor(AgentExecutor):
                 "timeout_seconds",
             }
             payload = {key: value for key, value in payload.items() if key in allowed}
+            if not context.get("model_identifier"):
+                # A lease built without orchestrator context (delayed
+                # lease) uses the same precedence as the host context:
+                # the copilot_model / cursor_model alias, then the catalog
+                # model. Continuation admission compares this value.
+                alias = host_exec_model_identifier(kind, agent_config)
+                if alias:
+                    payload["model_identifier"] = alias
             payload["agent_config"] = {"host_exec_profile": profile}
             payload["completion_protocol"] = "host_exec"
             if host_publication_requested(git_clone_config):
