@@ -144,6 +144,7 @@ class UserContext:
         managed_agent_id: Optional[str] = None,
         mcp_tools_cache: Optional[List[Any]] = None,
         flow_id: Optional[str] = None,
+        credential_type: str = "legacy",
     ):
         self.user_id = user_id
         self.account_id = account_id
@@ -166,6 +167,7 @@ class UserContext:
         # Set only for a flow execution's credential; selects the per-flow
         # governance override (subject type ``flows``).
         self.flow_id = flow_id
+        self.credential_type = credential_type
 
 
 class DynamicMCPServer:

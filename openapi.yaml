@@ -2072,7 +2072,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ManagedAgentDetailResponse'
+                anyOf:
+                - $ref: '#/components/schemas/SharedResourceRead'
+                - $ref: '#/components/schemas/ManagedAgentDetailResponse'
+                title: Response Get Account Managed Agent Api V1 Agents  Agent Id  Get
         '422':
           description: Validation Error
           content:
@@ -2149,6 +2152,47 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/agents/{agent_id}/shared-sessions:
+    get:
+      tags:
+      - Account
+      summary: List Owned Agent Shared Sessions
+      description: Show the parent the sessions its shared agent ran for consumers.
+      operationId: list_owned_agent_shared_sessions_api_v1_agents__agent_id__shared_sessions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: agent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Agent Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response List Owned Agent Shared Sessions Api V1 Agents  Agent
+                  Id  Shared Sessions Get
         '422':
           description: Validation Error
           content:
@@ -4285,7 +4329,9 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/MCPServerResponse'
+                  anyOf:
+                  - $ref: '#/components/schemas/SharedResourceRead'
+                  - $ref: '#/components/schemas/MCPServerResponse'
                 type: array
                 title: Response List Mcp Servers Api V1 Mcp Servers Get
         '401':
@@ -4360,7 +4406,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MCPServerResponse'
+                anyOf:
+                - $ref: '#/components/schemas/SharedResourceRead'
+                - $ref: '#/components/schemas/MCPServerResponse'
+                title: Response Get Mcp Server Api V1 Mcp Servers  Server Id  Get
         '422':
           description: Validation Error
           content:
@@ -10802,7 +10851,9 @@ paths:
             application/json:
               schema:
                 items:
-                  $ref: '#/components/schemas/AIModelRead'
+                  anyOf:
+                  - $ref: '#/components/schemas/SharedResourceRead'
+                  - $ref: '#/components/schemas/AIModelRead'
                 type: array
                 title: Response List Ai Models Api V1 Ai Models Get
         '401':
@@ -10942,7 +10993,10 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AIModelRead'
+                anyOf:
+                - $ref: '#/components/schemas/SharedResourceRead'
+                - $ref: '#/components/schemas/AIModelRead'
+                title: Response Get Ai Model Api V1 Ai Models  Model Id  Get
         '422':
           description: Validation Error
           content:
@@ -19756,7 +19810,9 @@ components:
           default: 0
         items:
           items:
-            $ref: '#/components/schemas/ManagedAgentSummary'
+            anyOf:
+            - $ref: '#/components/schemas/SharedResourceRead'
+            - $ref: '#/components/schemas/ManagedAgentSummary'
           type: array
           title: Items
       type: object
@@ -38453,6 +38509,85 @@ components:
         ``chunk_index`` names the piece of it, so a console or a CLI can open the
 
         session at that turn rather than at the top.'
+    SharedResourceRead:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        resource_type:
+          type: string
+          enum:
+          - ai_model
+          - mcp_server
+          - managed_agent
+          title: Resource Type
+        name:
+          type: string
+          title: Name
+        provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider
+        identifier:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Identifier
+        display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Display Name
+        agent_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Kind
+        control_enabled:
+          type: boolean
+          title: Control Enabled
+          default: false
+        control_online:
+          type: boolean
+          title: Control Online
+          default: false
+        lifecycle_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle State
+        owner_name:
+          type: string
+          title: Owner Name
+        is_shared:
+          type: boolean
+          const: true
+          title: Is Shared
+          default: true
+        read_only:
+          type: boolean
+          const: true
+          title: Read Only
+          default: true
+        price:
+          anyOf:
+          - additionalProperties:
+              type: number
+            type: object
+          - type: 'null'
+          title: Price
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - resource_type
+      - name
+      - owner_name
+      title: SharedResourceRead
+      description: The complete public recipient surface; secret fields cannot be
+        serialized.
     SigningKeyListRead:
       properties:
         active_key_id:

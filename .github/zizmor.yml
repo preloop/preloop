@@ -50,15 +50,6 @@ rules:
     ignore:
       - release.yml
 
-  # The backend test container is python:<version>-bookworm, assembled in
-  # the pick-runner job from repo-controlled literals (the version comes
-  # from this workflow's env, not from an input). It is a tag, not a
-  # digest; pinning by digest is tracked as a follow-up because the tag
-  # tracks the Python patch series on purpose.
-  unpinned-images:
-    ignore:
-      - ci.yml
-
   # Fork pull requests do not receive repository secrets on pull_request, so
   # a collaborator's fork cannot run the prod reviewer without
   # pull_request_target. The job checks out the default branch only, with

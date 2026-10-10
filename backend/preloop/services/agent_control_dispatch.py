@@ -72,6 +72,7 @@ class DispatchResult:
     command_status: str
     expires_at: datetime
     command_ttl_seconds: int
+    history_session_id: Optional[Union[UUID, str]] = None
 
 
 def agent_has_control_config(db: Session, *, account_id: str, agent: Any) -> bool:
@@ -182,6 +183,7 @@ def create_command_history_session(
     agent: Any,
     start_new_session: bool,
     target_session_id: Optional[Union[UUID, str]] = None,
+    consuming_account_id: Optional[Union[UUID, str]] = None,
 ) -> Any:
     """Return the runtime session that should record this command's history.
 
@@ -198,10 +200,16 @@ def create_command_history_session(
     Returns:
         Runtime session row, or None when there is no session to record on.
     """
+    account_id = consuming_account_id or agent.account_id
+    shared = str(account_id) != str(agent.account_id)
+    if shared and not start_new_session and target_session_id is None:
+        raise AgentControlDispatchError(
+            "Shared agents require a new or consumer-owned session"
+        )
     if target_session_id is not None:
         return crud_runtime_session.get_account_session(
             db,
-            account_id=str(agent.account_id),
+            account_id=str(account_id),
             runtime_session_id=str(target_session_id),
         )
     if not start_new_session:
@@ -209,7 +217,7 @@ def create_command_history_session(
             return None
         return crud_runtime_session.get_account_session(
             db,
-            account_id=str(agent.account_id),
+            account_id=str(account_id),
             runtime_session_id=str(agent.runtime_session_id),
         )
 
@@ -217,7 +225,7 @@ def create_command_history_session(
     command_session_id = f"{agent.session_source_id}-{uuid.uuid4()}"
     return crud_runtime_session.upsert_by_source(
         db,
-        account_id=agent.account_id,
+        account_id=account_id,
         session_source_type=agent.session_source_type,
         session_source_id=command_session_id,
         session_reference="Agent Control new session",
@@ -238,6 +246,8 @@ async def persist_and_deliver_command(
     created_by_user_id: Any = None,
     expires_at: Optional[datetime] = None,
     require_delivery: bool = True,
+    consuming_account_id: Optional[Union[UUID, str]] = None,
+    history_session_id: Optional[Union[UUID, str]] = None,
 ) -> DispatchResult:
     """Persist one command then deliver it locally or via NATS.
 
@@ -270,7 +280,8 @@ async def persist_and_deliver_command(
         db,
         account_id=agent.account_id,
         managed_agent_id=agent.id,
-        runtime_session_id=agent.runtime_session_id,
+        runtime_session_id=history_session_id or agent.runtime_session_id,
+        consuming_account_id=consuming_account_id,
         command_id=envelope.message_id,
         envelope=envelope.model_dump(mode="json"),
         source=source,
@@ -323,6 +334,7 @@ async def persist_and_deliver_command(
         command_status=command_status,
         expires_at=command_expires_at,
         command_ttl_seconds=command_ttl_seconds,
+        history_session_id=history_session_id,
     )
 
 
@@ -344,6 +356,8 @@ async def dispatch_operator_message(
     created_by_user_id: Any = None,
     require_delivery: bool = True,
     expires_at: Optional[datetime] = None,
+    consuming_account_id: Optional[Union[UUID, str]] = None,
+    history_session_id: Optional[Union[UUID, str]] = None,
 ) -> DispatchResult:
     """Build, persist, and deliver one ``send_message`` command.
 
@@ -372,7 +386,74 @@ async def dispatch_operator_message(
         AgentControlDispatchError: When the agent is offline or delivery
             is required and no channel was available.
     """
+    if consuming_account_id is not None and str(consuming_account_id) != str(
+        managed_agent.account_id
+    ):
+        from preloop.models.crud.resource_share import crud_resource_share
+
+        visible = crud_resource_share.visible_resource(
+            db,
+            account_id=consuming_account_id,
+            resource_type="managed_agent",
+            resource_id=managed_agent.id,
+        )
+        if visible is None:
+            raise AgentControlDispatchError("Managed agent not found", status_code=404)
+        if not start_new_session and target_session_id is None:
+            raise AgentControlDispatchError(
+                "Shared agents require a consumer-owned session"
+            )
+        if history_session_id is None:
+            history = create_command_history_session(
+                db,
+                agent=managed_agent,
+                start_new_session=start_new_session,
+                target_session_id=target_session_id,
+                consuming_account_id=consuming_account_id,
+            )
+            if history is None:
+                raise AgentControlDispatchError(
+                    "Consumer runtime session not found", status_code=404
+                )
+            history_session_id = history.id
     resolved_metadata = dict(metadata or {})
+    if history_session_id is not None:
+        resolved_metadata["runtime_session_id"] = str(history_session_id)
+        if consuming_account_id is not None and str(consuming_account_id) != str(
+            managed_agent.account_id
+        ):
+            from preloop.models.crud import crud_api_key
+            from preloop.models.crud.resource_share import crud_resource_share
+
+            gateway = dict(resolved_metadata.get("gateway") or {})
+            token = gateway.get("api_key")
+            if not token:
+                if created_by_user_id is None:
+                    raise AgentControlDispatchError(
+                        "Shared targets require a consumer runtime credential"
+                    )
+                _, token = crud_api_key.create_runtime_key(
+                    db,
+                    name="Shared agent session",
+                    account_id=consuming_account_id,
+                    user_id=created_by_user_id,
+                    scopes=["mcp:read", "mcp:write"],
+                    expires_at=datetime.now(UTC) + timedelta(hours=24),
+                    commit=False,
+                )
+            crud_resource_share.bind_runtime_key(
+                db,
+                account_id=consuming_account_id,
+                agent=managed_agent,
+                token=token,
+                runtime_session_id=history_session_id,
+            )
+            gateway.update(
+                api_key=token,
+                api_url=settings.preloop_url,
+                base_url=f"{settings.preloop_url.rstrip('/')}/api/v1/gateway",
+            )
+            resolved_metadata["gateway"] = gateway
     if session_mode is None:
         if start_new_session:
             session_mode = "new"
@@ -406,6 +487,8 @@ async def dispatch_operator_message(
         created_by_user_id=created_by_user_id,
         expires_at=expires_at,
         require_delivery=require_delivery,
+        consuming_account_id=consuming_account_id,
+        history_session_id=history_session_id,
     )
 
 

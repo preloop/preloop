@@ -68,6 +68,9 @@ class AgentControlCommand(Base):
     # Nullable since operator notes joined this table: a note can target a
     # runtime session that has no managed agent behind it (a flow execution
     # running on an account credential). Every ``command`` row still sets it.
+    consuming_account_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("account.id", ondelete="CASCADE"), nullable=True
+    )
     managed_agent_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("managed_agent.id", ondelete="CASCADE"),
@@ -147,7 +150,7 @@ class AgentControlCommand(Base):
         nullable=True,
     )
 
-    account = relationship("Account")
+    account = relationship("Account", foreign_keys=[account_id])
     managed_agent = relationship("ManagedAgent", foreign_keys=[managed_agent_id])
     created_by_managed_agent = relationship(
         "ManagedAgent", foreign_keys=[created_by_managed_agent_id]

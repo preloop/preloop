@@ -26,7 +26,11 @@ from preloop.cra.evidence_pack import (
     read_pack_manifest,
     verify_pack_manifest,
 )
-from preloop.services.checkpoint_runtime import evidence_transport_env
+from preloop.services.checkpoint_runtime import (
+    checkpoint_shell,
+    evidence_shell,
+    evidence_transport_env,
+)
 from preloop.services.flow_artifacts import (
     EvidenceUnavailableError,
     evidence_receipt,
@@ -332,6 +336,114 @@ def test_kubernetes_direct_upload_omits_evidence_bytes(tmp_path: Path) -> None:
     assert "scoped-token" not in proc.stdout
     assert "PRELOOP_ARTIFACT_BEGIN evidence uploaded" in proc.stdout
     assert "PRELOOP_ARTIFACT_BEGIN result uploaded" in proc.stdout
+
+
+def _evidence_client_stub(client: Path, calls: Path) -> None:
+    """Record each checkpoint-client argv and succeed an evidence PUT."""
+    client.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        f"Path({str(calls)!r}).open('a').write(sys.argv[1] + '\\n')\n"
+        "if sys.argv[1] == 'evidence':\n"
+        "    print('PRELOOP_EVIDENCE committed "
+        "00000000-0000-0000-0000-000000000001')\n"
+        "raise SystemExit(0)\n"
+    )
+
+
+def _run_wrapper_over_inner(
+    tmp_path: Path, inner: str
+) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    """Run the Kubernetes artifact wrapper over an inner agent script."""
+    import shutil
+
+    if shutil.which("bash") is None:
+        pytest.skip("bash not available")
+    calls = tmp_path / "calls"
+    client = tmp_path / "client.py"
+    _evidence_client_stub(client, calls)
+    workspace = tmp_path / "workspace"
+    (workspace / "evidence").mkdir(parents=True)
+    (workspace / "result.json").write_text('{"verdict":"fail"}')
+    script = (
+        K8S_ARTIFACT_WRAPPER_SCRIPT.replace("/workspace", str(workspace))
+        .replace("/tmp/preloop-checkpoint-client.py", str(client))
+        .replace("/tmp/preloop-evidence.tar.gz", str(tmp_path / "ev.tar.gz"))
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
+            "PRELOOP_INNER_SCRIPT": inner.replace(
+                "/tmp/preloop-checkpoint-client.py", str(client)
+            ),
+            "PRELOOP_EVIDENCE_PUT_TOKEN": "scoped-token",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    recorded = calls.read_text().split() if calls.exists() else []
+    return proc, recorded
+
+
+def test_wrapper_emits_evidence_once_on_normal_exit(tmp_path: Path) -> None:
+    """The child EXIT trap and the wrapper epilogue must not both PUT."""
+    inner = checkpoint_shell({"checkpoint_env": {"present": "1"}}) + "\ntrue\n"
+    proc, recorded = _run_wrapper_over_inner(tmp_path, inner)
+    evidence = [line for line in recorded if line == "evidence"]
+    assert proc.returncode == 0, proc.stderr
+    assert evidence == ["evidence"]
+    assert proc.stdout.count("PRELOOP_ARTIFACT_BEGIN evidence uploaded") == 1
+
+
+def test_wrapper_emits_evidence_once_on_trapped_exit(tmp_path: Path) -> None:
+    """`exit` in the child fires its EXIT trap; the wrapper still emits once."""
+    inner = checkpoint_shell({"checkpoint_env": {"present": "1"}}) + "\nexit 7\n"
+    proc, recorded = _run_wrapper_over_inner(tmp_path, inner)
+    evidence = [line for line in recorded if line == "evidence"]
+    assert proc.returncode == 7, proc.stderr
+    assert evidence == ["evidence"]
+    assert proc.stdout.count("PRELOOP_ARTIFACT_BEGIN evidence uploaded") == 1
+
+
+def test_wrapper_and_evidence_shell_emit_once(tmp_path: Path) -> None:
+    """Runs without a checkpoint loop still have an evidence EXIT trap."""
+    inner = (
+        evidence_shell({"evidence_env": {"PRELOOP_EVIDENCE_PUT_TOKEN": "scoped-token"}})
+        + "\ntrue\n"
+    )
+    proc, recorded = _run_wrapper_over_inner(tmp_path, inner)
+    evidence = [line for line in recorded if line == "evidence"]
+    assert proc.returncode == 0, proc.stderr
+    assert evidence == ["evidence"]
+    assert proc.stdout.count("PRELOOP_ARTIFACT_BEGIN evidence uploaded") == 1
+
+
+def test_docker_trap_uploads_evidence_once_without_wrapper(tmp_path: Path) -> None:
+    """Hosted Docker has no artifact wrapper, so the EXIT trap is the only PUT."""
+    import shutil
+
+    if shutil.which("bash") is None:
+        pytest.skip("bash not available")
+    calls = tmp_path / "calls"
+    client = tmp_path / "client.py"
+    _evidence_client_stub(client, calls)
+    script = evidence_shell(
+        {"evidence_env": {"PRELOOP_EVIDENCE_PUT_TOKEN": "scoped-token"}}
+    ).replace("/tmp/preloop-checkpoint-client.py", str(client))
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin:/usr/local/bin",
+            "PRELOOP_EVIDENCE_PUT_TOKEN": "scoped-token",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert calls.read_text().split() == ["evidence"]
 
 
 @pytest.mark.asyncio

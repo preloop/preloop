@@ -169,7 +169,7 @@ Claude Code discovery: the CLI treats `~/.claude.json` or a `claude` binary on `
 ## Policies
 
 ```bash
-preloop policy list [-f table|json|yaml]
+preloop policy list [--limit N] [--output table|json|yaml]   # policy versions, newest first
 preloop policy validate <file>
 preloop policy apply <file> [--dry-run] [-r]   # -r: recurse into a directory
 preloop policy diff <file>

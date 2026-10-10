@@ -469,10 +469,13 @@ def test_h3_managed_agent_list_includes_shared_agents_without_their_owner(
     by_id = {item["id"]: item for item in after["items"]}
     assert set(by_id) == {str(agents["own"].id), str(agents["shared"].id)}
     shared_item = by_id[str(agents["shared"].id)]
-    assert shared_item["owner_user_id"] is None
-    assert shared_item["owner_email"] is None
-    assert shared_item["owner_username"] is None
+    assert shared_item.get("owner_user_id") is None
+    assert shared_item.get("owner_email") is None
+    assert shared_item.get("owner_username") is None
     assert other_owner.email not in repr(after)
+    assert shared_item["is_shared"] is True
+    assert "session_source_id" not in shared_item
+    assert "tags" not in shared_item
 
 
 # ---------------------------------------------------------------------------
