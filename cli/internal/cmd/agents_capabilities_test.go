@@ -114,8 +114,21 @@ func TestVSCodeCopilotDiscoverHelpDocumentsManualBYOK(t *testing.T) {
 			t.Fatalf("discover help missing %q: %s", fragment, help)
 		}
 	}
-	if strings.Contains(note, "Model gateway: No") || strings.Contains(help, "Model gateway: No") {
-		t.Fatalf("help still says the gateway is No:\nnote=%s\nhelp=%s", note, help)
+	agent := AgentConfig{Name: "VSCode / Copilot"}
+	if capabilitiesForAgent(agent).ModelRoute != controlUnsupported {
+		t.Fatal("VS Code model routing stays manual; automatic gateway rewrite is unsupported")
+	}
+	if !strings.HasPrefix(note, mcpOnlySupportLabel) {
+		t.Fatalf("VS Code note must keep the adapter support label: %s", note)
+	}
+	if !strings.Contains(note, "Onboarding writes the MCP firewall entry only") {
+		t.Fatalf("VS Code note must say onboarding writes only the MCP entry: %s", note)
+	}
+	if strings.Contains(note, "does not configure") {
+		t.Fatalf("VS Code note must document Manual BYOK, not an unconfigured adapter: %s", note)
+	}
+	if !strings.Contains(help, "chatLanguageModels.json alone") {
+		t.Fatalf("discover help must say onboard leaves chatLanguageModels.json alone: %s", help)
 	}
 }
 
