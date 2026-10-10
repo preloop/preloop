@@ -133,6 +133,11 @@ def test_pick_runner_falls_back_to_the_public_runner() -> None:
     assert pick["steps"][0]["env"].get("GITHUB_REF") == "${{ github.ref }}"
     assert '[ "${GITHUB_REF:-}" != "refs/heads/main" ]' in script
     assert "SELF_HOSTED_TESTS=false" in script
+    assert "SELF_HOSTED_REASON=" in script
+    assert (
+        '"${SELF_HOSTED_REASON:-repository variable CI_SELF_HOSTED_TESTS is false}"'
+        in script
+    )
     # An absent secret is the state on forks and Dependabot PRs.
     assert '-z "${GH_TOKEN:-}"' in script
     # A failed API call must not abort the step.
