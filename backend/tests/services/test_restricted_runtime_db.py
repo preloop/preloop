@@ -382,6 +382,53 @@ def test_current_authority_ignores_stale_identity_map(
             )
 
 
+@pytest.mark.parametrize("target", ["key", "policy_authorize", "policy_exchange"])
+def test_pending_deactivation_is_preserved_before_authority_refresh(
+    restricted_database: Engine, approved_policy: SimpleNamespace, target: str
+) -> None:
+    """Authority refresh cannot discard a caller's unflushed key/policy disable."""
+    with Session(restricted_database) as db:
+        grant = _issue(db, approved_policy)
+        db.commit()
+    with Session(restricted_database, autoflush=False) as db:
+        if target == "key":
+            key_row = db.get(models.ApiKey, grant.api_key_id)
+            assert key_row is not None
+            key_row.is_active = False
+            denial = "restricted_runtime_credential_denied"
+        else:
+            policy_row = db.get(models.SecretReference, approved_policy.policy_id)
+            assert policy_row is not None
+            metadata = policy_row.meta_data or {}
+            policy_row.meta_data = {
+                **metadata,
+                authority.POLICY_KEY: {
+                    **metadata[authority.POLICY_KEY],
+                    "enabled": False,
+                },
+            }
+            denial = "runtime_policy_disabled"
+        with pytest.raises(authority.RestrictedRuntimeDeniedError, match=denial):
+            if target == "policy_exchange":
+                _issue(db, approved_policy)
+            else:
+                authority.authorize(
+                    db,
+                    account_id=approved_policy.account_id,
+                    api_key_id=grant.api_key_id,
+                    now=NOW,
+                )
+        db.commit()
+    with Session(restricted_database) as reader:
+        if target == "key":
+            key = reader.get(models.ApiKey, grant.api_key_id)
+            assert key is not None and key.is_active is False
+        else:
+            reference = reader.get(models.SecretReference, approved_policy.policy_id)
+            assert reference is not None and reference.meta_data is not None
+            assert reference.meta_data[authority.POLICY_KEY]["enabled"] is False
+
+
 def test_authorization_refuses_in_progress_policy_writer_without_waiting(
     restricted_database: Engine, approved_policy: SimpleNamespace
 ) -> None:

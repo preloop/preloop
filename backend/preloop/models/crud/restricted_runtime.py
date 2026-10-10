@@ -132,6 +132,8 @@ def _reference(
 ) -> models.SecretReference:
     from preloop.models.crud import crud_secret_reference
 
+    # populate_existing must not discard the caller's pending policy disable.
+    db.flush()
     try:
         if nowait:
             # A refused NOWAIT must roll back its savepoint, preserving the
@@ -443,6 +445,8 @@ def authorize(
     from preloop.models.crud import crud_runtime_session
 
     instant = _time(now or datetime.now(UTC))
+    # Preserve an in-transaction key deactivation before refreshing authority.
+    db.flush()
     key = (
         db.query(models.ApiKey)
         .filter(
