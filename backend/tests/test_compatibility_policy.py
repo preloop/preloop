@@ -66,11 +66,12 @@ def test_policy_states_what_is_not_public() -> None:
         assert needle in text, needle
 
 
-def test_api_versioning_is_pending_and_links_the_issue() -> None:
-    """Versioning stays pending until issue 977 records a decision."""
+def test_api_versioning_is_proposed_and_links_the_issue() -> None:
+    """Versioning is proposed in ADR 0001 until issue 977 records acceptance."""
     text = _read(POLICY)
-    assert "pending" in text.lower()
+    assert "status: proposed" in text.lower()
     assert "https://github.com/preloop/preloop/issues/977" in text
+    assert "0001-api-versioning" in text
 
 
 def test_readme_and_releasing_link_the_policy() -> None:
