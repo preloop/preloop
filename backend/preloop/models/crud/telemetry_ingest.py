@@ -274,7 +274,9 @@ class CRUDTelemetryIngest:
         meta = gateway_row.meta_data if isinstance(gateway_row.meta_data, dict) else {}
         client_request_id = meta.get("client_request_id")
         request_id = gateway_row.upstream_request_id
-        if not gateway_row.account_id:
+        if not gateway_row.account_id or not _may_have_telemetry(meta):
+            # Only Claude clients export this telemetry; every other gateway
+            # request skips the lookup and costs no extra query.
             return 0
         rows = self.find_otlp_rows(
             db,
@@ -586,6 +588,15 @@ class CRUDTelemetryIngest:
 
 
 _DATE_SUFFIX = re.compile(r"-\d{8}$")
+
+
+def _may_have_telemetry(meta: dict[str, Any]) -> bool:
+    """Whether a gateway row can have an OTLP counterpart (a Claude client)."""
+    return bool(
+        meta.get("client_request_id")
+        or meta.get("client") in CLAUDE_CLIENTS
+        or meta.get("gateway_source") == APPS_GATEWAY_SOURCE
+    )
 
 
 def _same_model(left: Optional[str], right: Optional[str]) -> bool:

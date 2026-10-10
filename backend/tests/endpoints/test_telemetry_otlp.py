@@ -675,7 +675,12 @@ def test_late_gateway_row_matched_by_upstream_request_id(
     )
     ingestor.ingest_logs(extraction.logs)
     db_session.commit()
-    _gateway_row(db_session, test_user, upstream_request_id="req_up")
+    _gateway_row(
+        db_session,
+        test_user,
+        upstream_request_id="req_up",
+        meta_data={"client": "claude_code"},
+    )
     assert _otlp_rows(db_session, test_user.account_id) == []
 
 
@@ -1390,3 +1395,25 @@ def test_metric_batch_queries_do_not_scale_with_points(
     rows = _otlp_rows(db_session, test_user.account_id)
     assert len(rows) == 1
     assert rows[0].estimated_cost == pytest.approx(3.0)
+
+
+def test_non_claude_gateway_rows_skip_the_supersede_lookup(
+    db_session, test_user, monkeypatch
+):
+    """OTLP rows only come from Claude clients; other traffic pays no query."""
+    from preloop.models.crud import telemetry_ingest
+
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        telemetry_ingest.CRUDTelemetryIngest,
+        "find_otlp_rows",
+        lambda self, db, **kw: calls.append(kw) or [],
+    )
+    _gateway_row(db_session, test_user, meta_data={"client": "unknown"})
+    assert calls == []
+    _gateway_row(db_session, test_user, meta_data={"client": "claude_code"})
+    _gateway_row(
+        db_session, test_user, meta_data={"gateway_source": "claude_apps_gateway"}
+    )
+    _gateway_row(db_session, test_user, meta_data={"client_request_id": "cr-any"})
+    assert len(calls) == 3
