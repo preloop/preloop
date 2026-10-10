@@ -16,7 +16,7 @@ repos:
     -   id: check-yaml
         exclude: ^(helm/|scripts/examples/helm|mkdocs\.yml$|docs/scripts/screenshot-stack/compose\.(screenshots|ee)\.yml$)
     -   id: check-added-large-files
-        exclude: ^(frontend/public/assets/screenshots/quickstart/dark/agents-onboarding\.webp|docs/assets/animations/quickstart/dark/agents-onboarding\.webp|backend/preloop/static/vendor/)
+        exclude: ^(frontend/public/assets/screenshots/quickstart/dark/agents-onboarding\.webp|docs/assets/animations/quickstart/dark/agents-onboarding\.webp|backend/preloop/static/vendor/|\.github/pytest-split-durations\.json$)
     -   id: debug-statements
     -   id: check-toml
 
