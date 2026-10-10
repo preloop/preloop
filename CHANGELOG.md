@@ -31,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Consecutive-failure flow alerts.** A flow emails and pushes its account's
+  owners after N failed runs in a row (per-flow
+  `notifications.on_failure.alert_after_consecutive_failures`, default 3). The
+  streak is the leading run of failures; a success resets it, an operator stop
+  is neutral, and an exit-0 run with no output counts as a failure. The alert
+  fires once per streak, deduped across replicas, and is best-effort so it
+  never changes an execution's terminal status. The console has no control for
+  the threshold but preserves a stored value on save (#1421).
 - **Transcript evaluation preset.** A scheduled flow (hourly, disabled by
   default) reads the transcripts deposited since its last run with
   `search_artifacts` / `get_artifact`, batches suggestions into one

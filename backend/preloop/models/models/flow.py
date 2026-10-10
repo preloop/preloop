@@ -162,14 +162,17 @@ class Flow(Base):
     # Failed executions always surface as console attention items.
     # Shape:
     # {
+    #     "on_failure": {
+    #         "alert_after_consecutive_failures": int,  # unset -> default 3
+    #     },
     #     "on_success": {
     #         "comment_on_trigger_issue": bool,
     #     },
     # }
-    # An "on_failure" block may still be stored on rows written before the
-    # failure comment was removed (2026-09). Every key in it is ignored: the
-    # column is JSONB, so there is nothing to migrate, and the console drops
-    # the block the next time the flow is saved.
+    # The on_failure consecutive-failure alert is a safety net that runs for
+    # every flow whether or not the notifications blob is set; the other
+    # on_failure keys (comment_on_trigger_issue, attention_item) are ignored.
+    # The column is JSONB, so there is nothing to migrate.
     notifications = Column(JSONB, nullable=True, default=None)
 
     ai_model = relationship("AIModel", back_populates="flows")

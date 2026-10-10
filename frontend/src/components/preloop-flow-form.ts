@@ -1422,24 +1422,32 @@ export class PreloopFlowForm extends LitElement {
   /**
    * Notifications as submitted.
    *
-   * `on_failure` is never sent: the failure comment option was removed and the
-   * server ignores the key, so a save drops it from the stored blob instead of
-   * carrying a setting no form can show. `on_success` is submitted exactly as
-   * stored, including while its section is hidden: the form never turns a
-   * hidden option on, and it must not turn one off either, because a flow can
-   * also open its pull request through the MCP `create_pull_request` tool,
-   * which records the same `pr_url` the comment is built from. Hiding a
-   * control is a visibility decision; silently rewriting saved behaviour on
-   * the next unrelated save is not.
+   * `on_failure.alert_after_consecutive_failures` is consumed by the backend
+   * but has no control on this form, so a stored value is carried forward
+   * verbatim: an unrelated save must not silently reset the threshold to the
+   * default. The other, ignored `on_failure` keys are still dropped. `on_success`
+   * is submitted exactly as stored, including while its section is hidden: the
+   * form never turns a hidden option on, and it must not turn one off either,
+   * because a flow can also open its pull request through the MCP
+   * `create_pull_request` tool, which records the same `pr_url` the comment is
+   * built from. Hiding a control is a visibility decision; silently rewriting
+   * saved behaviour on the next unrelated save is not.
    */
   private composedNotifications(): Record<string, unknown> {
     const saved = this.flow.notifications || defaultFlowNotifications();
-    return {
+    const notifications: Record<string, unknown> = {
       on_success: {
         comment_on_trigger_issue:
           saved.on_success?.comment_on_trigger_issue === true,
       },
     };
+    const threshold = saved.on_failure?.alert_after_consecutive_failures;
+    if (typeof threshold === 'number' && Number.isFinite(threshold)) {
+      notifications.on_failure = {
+        alert_after_consecutive_failures: threshold,
+      };
+    }
+    return notifications;
   }
 
   /**

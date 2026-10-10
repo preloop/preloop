@@ -889,13 +889,29 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         skip: int = 0,
         limit: int = 100,
         account_id: Optional[str] = None,
+        order_by_completion: bool = False,
     ) -> List[FlowExecution]:
-        """Get flow executions for a specific flow (synchronous)."""
-        query = (
-            db.query(FlowExecution)
-            .filter(FlowExecution.flow_id == flow_id)
-            .order_by(FlowExecution.start_time.desc())
-        )
+        """Get flow executions for a specific flow (synchronous).
+
+        Args:
+            db: Database session.
+            flow_id: Flow whose executions to return.
+            skip: Number of rows to skip.
+            limit: Maximum number of rows to return.
+            account_id: When set, keep only executions whose flow belongs
+                to this account.
+            order_by_completion: When true, order by completion time
+                (``end_time``, falling back to ``start_time``) newest first.
+                The default stays start time, which other callers use.
+        """
+        query = db.query(FlowExecution).filter(FlowExecution.flow_id == flow_id)
+        if order_by_completion:
+            completed_at = func.coalesce(
+                FlowExecution.end_time, FlowExecution.start_time
+            )
+            query = query.order_by(completed_at.desc(), FlowExecution.start_time.desc())
+        else:
+            query = query.order_by(FlowExecution.start_time.desc())
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.offset(skip).limit(limit).all()
