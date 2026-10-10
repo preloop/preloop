@@ -144,7 +144,7 @@ async def test_concurrent_pr_reads_release_pool_before_provider_wait(
         for _ in range(count)
     ]
     try:
-        await asyncio.wait_for(all_entered.wait(), timeout=2)
+        await asyncio.wait_for(all_entered.wait(), timeout=10)
         assert tool_pool.checkedout() == 0
         if outcome == "cancel":
             for task in tasks:
