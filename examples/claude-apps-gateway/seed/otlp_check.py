@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import timedelta
@@ -157,10 +158,15 @@ def _otlp_rows(client_request_id: str) -> list[ApiUsage]:
 
 
 def _same_model(left: Optional[str], right: Optional[str]) -> bool:
+    """Same rule as the ingest: equal, or equal once one date suffix is dropped."""
     if not left or not right:
         return False
     left, right = left.lower(), right.lower()
-    return left == right or left.startswith(right + "-") or right.startswith(left + "-")
+    if left == right:
+        return True
+    left_base = re.sub(r"-\d{8}$", "", left)
+    right_base = re.sub(r"-\d{8}$", "", right)
+    return left_base == right_base and (left == left_base or right == right_base)
 
 
 def relayed() -> int:

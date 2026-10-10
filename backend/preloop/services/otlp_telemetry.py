@@ -691,6 +691,13 @@ class TelemetryIngestor:
         self.stats = IngestStats()
         self._subjects: Dict[Tuple[str, Optional[str]], Any] = {}
         self._sessions: Dict[str, Optional[Any]] = {}
+        # Per-batch caches (one query per distinct key, not per record).
+        self._session_covered: Dict[str, bool] = {}
+        self._person_covered: Dict[Tuple[Any, ...], bool] = {}
+        self._aggregates: Dict[str, Any] = {}
+        self._series: Dict[str, Tuple[float, datetime, Optional[datetime]]] = {}
+        self._dirty_series: set[str] = set()
+        self._logged_sessions: set[str] = set()
 
     # -- shared helpers --
 
@@ -701,15 +708,35 @@ class TelemetryIngestor:
         email = _as_str(attrs.get("user.email"))
         key = (sub, email)
         if key not in self._subjects:
-            self._subjects[key] = crud_gateway_subject.resolve(
-                self.db,
+            self._subjects[key] = self._resolve_subject(sub, email)
+        return self._subjects[key]
+
+    def _resolve_subject(self, sub: str, email: Optional[str]) -> Any:
+        """Resolve on a short-lived session, as the gateway path does.
+
+        ``CRUDGatewaySubject.resolve`` commits. On the ingest session that
+        would end the batch transaction and release the per-session advisory
+        locks mid-batch, so it runs on its own session and only a detached
+        reference comes back.
+        """
+        from preloop.services.gateway_upstream_identity import GatewaySubjectRef
+
+        with Session(bind=self.db.get_bind(), expire_on_commit=False) as session:
+            subject = crud_gateway_subject.resolve(
+                session,
                 account_id=self.ctx.account_id,
                 api_key_id=self.ctx.api_key_id,
                 external_subject=sub,
                 email=email,
                 now=self.ctx.now.replace(tzinfo=timezone.utc),
             )
-        return self._subjects[key]
+            return GatewaySubjectRef(
+                id=subject.id,
+                external_subject=subject.external_subject,
+                email=subject.email,
+                linked_user_id=subject.linked_user_id,
+                api_key_id=subject.api_key_id,
+            )
 
     def _runtime_session(self, session_id: Optional[str]) -> Optional[Any]:
         if not session_id:
@@ -726,6 +753,14 @@ class TelemetryIngestor:
             account_id=self.ctx.account_id,
             dedup_key=dedup_key,
             kind=kind,
+            now=self.ctx.now,
+        )
+
+    def _claim_batch(self, keys: List[str], kind: str) -> set[str]:
+        return crud_telemetry_ingest.claim_many(
+            self.db,
+            account_id=self.ctx.account_id,
+            keys=[(key, kind) for key in keys],
             now=self.ctx.now,
         )
 
@@ -761,12 +796,15 @@ class TelemetryIngestor:
     def ingest_logs(self, events: List[LogEvent]) -> IngestStats:
         """Apply allowlisted log events. Caller commits."""
         self._lock_sessions(event.session_id for event in events)
+        fresh = self._claim_batch([event.dedup_key for event in events], "log")
         for event in events:
-            if not self._claim(event.dedup_key, "log"):
+            if event.dedup_key not in fresh:
                 self.stats.duplicates += 1
                 continue
+            fresh.discard(event.dedup_key)
             session_id = event.session_id
-            if session_id:
+            if session_id and session_id not in self._logged_sessions:
+                self._logged_sessions.add(session_id)
                 self._claim(self._session_logs_key(session_id), "session_logs")
                 crud_telemetry_ingest.delete_session_aggregates(
                     self.db, account_id=self.ctx.account_id, session_id=session_id
@@ -859,10 +897,12 @@ class TelemetryIngestor:
     def ingest_metrics(self, points: List[MetricPoint]) -> IngestStats:
         """Apply allowlisted metric points. Caller commits."""
         self._lock_sessions(point.session_id for point in points)
+        fresh = self._claim_batch([point.dedup_key for point in points], "metric")
         for point in points:
-            if not self._claim(point.dedup_key, "metric"):
+            if point.dedup_key not in fresh:
                 self.stats.duplicates += 1
                 continue
+            fresh.discard(point.dedup_key)
             delta = self._delta(point)
             if point.name == METRIC_SESSIONS or delta <= 0:
                 continue
@@ -872,40 +912,63 @@ class TelemetryIngestor:
                 self.stats.suppressed += 1
                 continue
             self._aggregate(point, delta)
+        self._write_series()
+        self.db.flush()
         return self.stats
 
     def _delta(self, point: MetricPoint) -> float:
         if not point.cumulative:
             return point.value
-        series = crud_telemetry_ingest.get_series(
-            self.db,
-            account_id=self.ctx.account_id,
-            series_key=point.series_key,
-            now=self.ctx.now,
-        )
-        if series is None or point.value < series.last_value:
+        state = self._series.get(point.series_key)
+        if state is None and point.series_key not in self._dirty_series:
+            series = crud_telemetry_ingest.get_series(
+                self.db,
+                account_id=self.ctx.account_id,
+                series_key=point.series_key,
+                now=self.ctx.now,
+            )
+            if series is not None:
+                state = (series.last_value, series.last_time, series.start_time)
+        if state is not None and point.timestamp <= state[1]:
+            # Not newer than the stored point: already counted. Checked before
+            # the reset test so a late, lower retry is never counted again.
+            return 0.0
+        if state is None or point.value < state[0]:
             # First sight of the series, or the counter reset.
             delta = point.value
-        elif point.timestamp <= series.last_time:
-            # An older point than the stored one: already counted.
-            return 0.0
         else:
-            delta = point.value - series.last_value
-        crud_telemetry_ingest.put_series(
-            self.db,
-            account_id=self.ctx.account_id,
-            series_key=point.series_key,
-            value=point.value,
-            point_time=point.timestamp,
-            start_time=point.start_time,
-            now=self.ctx.now,
+            delta = point.value - state[0]
+        self._series[point.series_key] = (
+            point.value,
+            point.timestamp,
+            point.start_time,
         )
+        self._dirty_series.add(point.series_key)
         return delta
+
+    def _write_series(self) -> None:
+        for series_key in sorted(self._dirty_series):
+            value, point_time, start_time = self._series[series_key]
+            crud_telemetry_ingest.put_series(
+                self.db,
+                account_id=self.ctx.account_id,
+                series_key=series_key,
+                value=value,
+                point_time=point_time,
+                start_time=start_time,
+                now=self.ctx.now,
+            )
+        self._dirty_series.clear()
 
     def _session_is_covered(self, session_id: Optional[str]) -> bool:
         """Logs or gateway rows exist for the session: metrics add nothing."""
         if not session_id:
             return False
+        if session_id not in self._session_covered:
+            self._session_covered[session_id] = self._session_covered_query(session_id)
+        return self._session_covered[session_id]
+
+    def _session_covered_query(self, session_id: str) -> bool:
         if crud_telemetry_ingest.is_claimed(
             self.db,
             account_id=self.ctx.account_id,
@@ -924,13 +987,18 @@ class TelemetryIngestor:
     def _person_is_covered(self, point: MetricPoint) -> bool:
         """The person has gateway rows in this hour: metrics add nothing."""
         hour = point.timestamp.replace(minute=0, second=0, microsecond=0)
-        return crud_telemetry_ingest.identity_has_gateway_rows(
-            self.db,
-            account_id=self.ctx.account_id,
-            email=_as_str(point.attrs.get("user.email")),
-            external_subject=_external_subject(point.attrs),
-            hour_start=hour,
-        )
+        email = _as_str(point.attrs.get("user.email"))
+        sub = _external_subject(point.attrs)
+        key = (email, sub, hour)
+        if key not in self._person_covered:
+            self._person_covered[key] = crud_telemetry_ingest.identity_has_gateway_rows(
+                self.db,
+                account_id=self.ctx.account_id,
+                email=email,
+                external_subject=sub,
+                hour_start=hour,
+            )
+        return self._person_covered[key]
 
     def _aggregate(self, point: MetricPoint, delta: float) -> None:
         attrs = point.attrs
@@ -940,9 +1008,11 @@ class TelemetryIngestor:
         fingerprint = _digest(
             str(self.ctx.account_id), "otlp_metric_aggregate", session_id, model, hour
         )
-        row = crud_telemetry_ingest.get_imported_by_fingerprint(
-            self.db, account_id=self.ctx.account_id, fingerprint=fingerprint
-        )
+        row = self._aggregates.get(fingerprint)
+        if row is None:
+            row = crud_telemetry_ingest.get_imported_by_fingerprint(
+                self.db, account_id=self.ctx.account_id, fingerprint=fingerprint
+            )
         if row is None:
             subject = self._subject(attrs)
             runtime_session = self._runtime_session(session_id)
@@ -991,6 +1061,7 @@ class TelemetryIngestor:
                 )
             if row is None:
                 return
+        self._aggregates[fingerprint] = row
         if point.name == METRIC_COST:
             row.estimated_cost = (row.estimated_cost or 0.0) + delta
         else:
@@ -999,7 +1070,6 @@ class TelemetryIngestor:
                 return
             setattr(row, column, (getattr(row, column) or 0) + int(round(delta)))
             row.total_tokens = (row.prompt_tokens or 0) + (row.completion_tokens or 0)
-        self.db.flush()
         self.stats.aggregated += 1
 
 

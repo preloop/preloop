@@ -9,6 +9,8 @@ request when a gateway row lands after the telemetry did.
 from __future__ import annotations
 
 import logging
+import re
+import uuid
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Optional
 
@@ -63,6 +65,39 @@ class CRUDTelemetryIngest:
             .returning(TelemetryIngestDedup.id)
         )
         return db.execute(statement).first() is not None
+
+    @staticmethod
+    def claim_many(
+        db: Session, *, account_id: Any, keys: list[tuple[str, str]], now: datetime
+    ) -> set[str]:
+        """Claim many ``(dedup_key, kind)`` pairs; return the newly claimed keys.
+
+        One multi-row ``INSERT ... ON CONFLICT DO NOTHING`` per 1,000 keys, so
+        a 10,000-record batch costs ten statements, not ten thousand.
+        """
+        unique = list(dict.fromkeys(keys))
+        claimed: set[str] = set()
+        for start in range(0, len(unique), 1000):
+            chunk = unique[start : start + 1000]
+            statement = (
+                pg_insert(TelemetryIngestDedup)
+                .values(
+                    [
+                        {
+                            "id": uuid.uuid4(),
+                            "account_id": account_id,
+                            "dedup_key": key,
+                            "kind": kind,
+                            "seen_at": now,
+                        }
+                        for key, kind in chunk
+                    ]
+                )
+                .on_conflict_do_nothing(index_elements=["account_id", "dedup_key"])
+                .returning(TelemetryIngestDedup.dedup_key)
+            )
+            claimed.update(db.execute(statement).scalars())
+        return claimed
 
     @staticmethod
     def is_claimed(db: Session, *, account_id: Any, dedup_key: str) -> bool:
@@ -550,12 +585,26 @@ class CRUDTelemetryIngest:
         return count
 
 
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
+
+
 def _same_model(left: Optional[str], right: Optional[str]) -> bool:
-    """Same model, allowing a dated id on one side (``x`` vs ``x-20250929``)."""
+    """Same model, allowing only a date suffix (``x`` vs ``x-20250929``).
+
+    Any other hyphenated extension is a different model (``claude-opus-4``
+    vs ``claude-opus-4-1``, ``gpt-4o`` vs ``gpt-4o-mini``). Two different
+    dates are different snapshots.
+    """
     if not left or not right:
         return False
     left, right = left.lower(), right.lower()
-    return left == right or left.startswith(right + "-") or right.startswith(left + "-")
+    if left == right:
+        return True
+    left_base, right_base = _DATE_SUFFIX.sub("", left), _DATE_SUFFIX.sub("", right)
+    if left_base != right_base:
+        return False
+    # Equal bases: same model when at most one side carries a date.
+    return left == left_base or right == right_base
 
 
 def _escape_like(value: str) -> str:

@@ -1264,3 +1264,129 @@ def test_error_bodies_are_fixed_messages(client, ingest_key):
         LOGS, content=b"\xff\xff\xff", headers={"Content-Type": PB, "x-api-key": token}
     )
     assert response.json()["message"] == otlp.OtlpDecodeError.public_message
+
+
+# --- review findings on PR #1465 ---------------------------------------------------
+
+
+def _ingestor(db_session, test_user, key):
+    return otlp.TelemetryIngestor(
+        db_session,
+        otlp.IngestContext(
+            account_id=test_user.account_id, api_key_id=key.id, now=otlp.utc_now()
+        ),
+    )
+
+
+def test_subject_resolves_outside_the_ingest_transaction(
+    db_session, test_user, ingest_key, monkeypatch
+):
+    """resolve() commits; on the ingest session it would drop the session locks."""
+    from preloop.models.crud import crud_gateway_subject
+
+    key, _ = ingest_key
+    sessions: list[Any] = []
+    original = crud_gateway_subject.resolve
+
+    def spy(db, **kwargs):
+        sessions.append(db)
+        return original(db, **kwargs)
+
+    monkeypatch.setattr(crud_gateway_subject, "resolve", spy)
+    ingestor = _ingestor(db_session, test_user, key)
+    events = otlp.extract_logs(
+        _logs_request(
+            _api_request("req_lock"),
+            resource={"enduser.sub": "sub-lock", "user.email": test_user.email},
+        ),
+        account_id=test_user.account_id,
+        now=otlp.utc_now(),
+    ).logs
+    ingestor.ingest_logs(events)
+    assert sessions and all(session is not db_session for session in sessions)
+    row = _otlp_rows(db_session, test_user.account_id)[0]
+    assert row.user_id == test_user.id
+    assert row.meta_data["gateway_subject_email"] == test_user.email
+
+
+def test_out_of_order_older_cumulative_point_is_not_counted(
+    client, db_session, test_user, ingest_key
+):
+    _, token = ingest_key
+    start = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+
+    def point(minutes: int, total: float) -> Any:
+        return _metrics_request(
+            _sum_metric(
+                otlp.METRIC_COST,
+                [(total, {"session.id": "s-ooo", "model": "claude-sonnet-5"})],
+                cumulative=True,
+                when=start + timedelta(minutes=minutes),
+                start=start,
+            )
+        )
+
+    _post(client, METRICS, token, point(5, 1.0))
+    _post(client, METRICS, token, point(3, 0.8))  # older and lower: a late retry
+    _post(client, METRICS, token, point(6, 1.5))
+    rows = _otlp_rows(db_session, test_user.account_id)
+    assert len(rows) == 1
+    assert rows[0].estimated_cost == pytest.approx(1.5)
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "same"),
+    [
+        ("claude-sonnet-4-5", "claude-sonnet-4-5-20250929", True),
+        ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20250929", True),
+        ("claude-sonnet-4", "claude-sonnet-4-5", False),
+        ("claude-opus-4", "claude-opus-4-1", False),
+        ("gpt-4o", "gpt-4o-mini", False),
+        ("claude-sonnet-4-5-20250929", "claude-sonnet-4-5-20251001", False),
+    ],
+)
+def test_same_model_only_allows_a_date_suffix(left, right, same):
+    from preloop.models.crud.telemetry_ingest import _same_model
+
+    assert _same_model(left, right) is same
+    assert _same_model(right, left) is same
+
+
+def test_metric_batch_queries_do_not_scale_with_points(
+    db_session, test_user, ingest_key
+):
+    """A large batch of one session, model and hour costs a bounded query count."""
+    from sqlalchemy import event
+
+    key, _ = ingest_key
+    base = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+    request = _metrics_request(
+        *[
+            _sum_metric(
+                otlp.METRIC_COST,
+                [(0.01, {"session.id": "s-bulk", "model": "claude-sonnet-5"})],
+                when=base + timedelta(seconds=i),
+            )
+            for i in range(300)
+        ],
+        resource={"service.name": "claude-code", "user.email": "bulk@example.com"},
+    )
+    points = otlp.extract_metrics(
+        request, account_id=test_user.account_id, now=otlp.utc_now()
+    ).metrics
+    assert len(points) == 300
+    statements: list[str] = []
+
+    def count(conn, cursor, statement, *args):
+        statements.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "before_cursor_execute", count)
+    try:
+        _ingestor(db_session, test_user, key).ingest_metrics(points)
+    finally:
+        event.remove(engine, "before_cursor_execute", count)
+    assert len(statements) < 40, len(statements)
+    rows = _otlp_rows(db_session, test_user.account_id)
+    assert len(rows) == 1
+    assert rows[0].estimated_cost == pytest.approx(3.0)
