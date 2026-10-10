@@ -39,6 +39,10 @@ from preloop.models.crud import (
 
 logger = logging.getLogger(__name__)
 
+# APNs already sliced the alert body to this length. FCM and the push proxy
+# share the same 4 KB message ceiling, so every transport uses this cap.
+PUSH_BODY_LIMIT = 180
+
 #: Event type recorded on the outbox row. Not part of the signed v1 event
 #: catalogue: the body is the legacy approval-workflow shape.
 EVENT_POLICY_NOTICE = "policy.notice"
@@ -254,7 +258,9 @@ def send_push_to_owners(
         db: Database session.
         owners: Recipients whose device tokens to look up.
         title: Notification title.
-        body: Notification body (truncated the way the notice payload is).
+        body: Notification body. Truncated to ``PUSH_BODY_LIMIT`` for every
+            transport (APNs, FCM and the push proxy). Email stays full length
+            because it does not go through this helper.
         data: Custom payload data.
         thread_id: Optional APNs thread id that groups related pushes.
 
@@ -285,12 +291,13 @@ def send_push_to_owners(
     if not targets:
         return 0
 
+    body = body[:PUSH_BODY_LIMIT]
     apns = get_apns_service()
     fcm_available = is_fcm_configured()
     use_proxy = apns is None and is_push_proxy_configured()
     payload = {
         "aps": {
-            "alert": {"title": title, "body": body[:180]},
+            "alert": {"title": title, "body": body},
             "sound": "default",
             **({"thread-id": thread_id} if thread_id else {}),
         },

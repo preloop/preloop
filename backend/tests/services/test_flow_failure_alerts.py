@@ -722,7 +722,7 @@ class TestGenericPushHelper:
                 MagicMock(),
                 [owner],
                 title="Flow failed",
-                body="three in a row",
+                body="x" * 400,
                 data={"type": "flow_failure_alert"},
                 thread_id="flow-failures",
             )
@@ -730,4 +730,55 @@ class TestGenericPushHelper:
         assert count == 1
         assert sent[0]["token"] == "tok-android-1"
         assert sent[0]["title"] == "Flow failed"
+        assert sent[0]["body"] == "x" * delivery.PUSH_BODY_LIMIT
         assert sent[0]["data"] == {"type": "flow_failure_alert"}
+
+    def test_proxy_body_is_capped_like_apns(self) -> None:
+        """The push proxy must not receive the raw body APNs already slices."""
+        from preloop.services import policy_notice_delivery as delivery
+
+        owner: Any = SimpleNamespace(id=uuid4())
+        prefs = SimpleNamespace(
+            enable_mobile_push=True,
+            notify_when_needed=True,
+            get_device_tokens=lambda platform=None: (
+                ["tok-ios-1"] if platform == "ios" else []
+            ),
+        )
+        sent: List[dict] = []
+
+        async def fake_proxy(**kwargs: Any) -> dict:
+            sent.append(kwargs)
+            return {"success": True}
+
+        with (
+            patch.object(
+                delivery.notification_preferences, "get_by_user", return_value=prefs
+            ),
+            patch(
+                "preloop.services.push_notifications.get_apns_service",
+                return_value=None,
+            ),
+            patch(
+                "preloop.services.push_notifications.is_fcm_configured",
+                return_value=False,
+            ),
+            patch(
+                "preloop.services.push_proxy.is_push_proxy_configured",
+                return_value=True,
+            ),
+            patch(
+                "preloop.services.push_proxy.send_push_via_proxy",
+                side_effect=fake_proxy,
+            ),
+        ):
+            count = delivery.send_push_to_owners(
+                MagicMock(),
+                [owner],
+                title="Flow failed",
+                body="y" * 400,
+                data={"type": "flow_failure_alert"},
+            )
+
+        assert count == 1
+        assert sent[0]["body"] == "y" * delivery.PUSH_BODY_LIMIT
