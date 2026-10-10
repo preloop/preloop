@@ -94,6 +94,31 @@ func TestControlDisclosureText(t *testing.T) {
 	}
 }
 
+func TestVSCodeCopilotDiscoverHelpDocumentsManualBYOK(t *testing.T) {
+	note := mcpOnlyAgentModelNote(AgentConfig{Name: "VSCode / Copilot"})
+	help := agentsDiscoverCmd.Long
+	for _, fragment := range []string{
+		"Manual BYOK",
+		"Chat: Manage Language Models",
+		"Custom Endpoint",
+		"chatLanguageModels.json",
+		"toolCalling",
+		"/openai/v1/chat/completions",
+		"/openai/v1/responses",
+		"/anthropic/v1/messages",
+	} {
+		if !strings.Contains(note, fragment) {
+			t.Fatalf("VS Code onboard note missing %q: %s", fragment, note)
+		}
+		if !strings.Contains(help, fragment) {
+			t.Fatalf("discover help missing %q: %s", fragment, help)
+		}
+	}
+	if strings.Contains(note, "Model gateway: No") || strings.Contains(help, "Model gateway: No") {
+		t.Fatalf("help still says the gateway is No:\nnote=%s\nhelp=%s", note, help)
+	}
+}
+
 func TestControlDisclosureHelpMatchesDispatch(t *testing.T) {
 	for _, spec := range agentSpecs {
 		if !strings.Contains(agentDiscoverySearchLabel(), spec.Name) {
