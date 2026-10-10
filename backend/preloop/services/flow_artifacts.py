@@ -775,11 +775,28 @@ def put_artifact(
         )
         if existing is not None:
             return artifact_reference(existing, deduplicated=True)
+    archive_sha256 = hashlib.sha256(archive).hexdigest()
+    if kind == "evidence":
+        # A second identical pack for this execution (the wrapper and the
+        # inner EXIT trap, or a retry) keeps the first row. Checked before
+        # encryption so a duplicate never meets the quota or the signer.
+        existing = crud.reuse_identical_evidence(
+            db,
+            account_id=account_id,
+            flow_id=flow_id,
+            thread_id=thread_id,
+            execution_id=execution_id,
+            sha256=archive_sha256,
+            expires_at=expires_at,
+            require_execution_open=require_execution_open,
+        )
+        if existing is not None:
+            return artifact_reference(existing, deduplicated=True)
     manifest = ArtifactManifest(
         kind=kind,
         execution_id=execution_id,
         thread_id=thread_id,
-        sha256=hashlib.sha256(archive).hexdigest(),
+        sha256=archive_sha256,
         size_bytes=len(archive),
         expanded_bytes=expanded,
         created_at=now,
