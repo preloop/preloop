@@ -1,5 +1,6 @@
 # Preloop Open Source - Release Pipeline
-# Publishes Docker images on version tags: ghcr.io, and Docker Hub when
+# Publishes Docker images for a version tag, whether that run is the tag
+# push or a published release: ghcr.io, and Docker Hub when
 # PUSH_TO_DOCKERHUB=true. `latest` moves on a stable tag (no pre-release
 # suffix). A push to main does not publish images; it still generates an SBOM.
 #
@@ -47,9 +48,10 @@ jobs:
   build-backend:
     name: Build Backend
     runs-on: ubuntu-latest
-    # Version tags only. `release: published` is this workflow creating the
-    # GitHub release from the same tag, so building there would push twice.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # A version tag, from pushing the tag or publishing the release. A push
+    # to main does not match. create-release uses GITHUB_TOKEN, which does
+    # not start another run, so the tag-push path does not build twice.
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
@@ -114,7 +116,7 @@ jobs:
   build-frontend:
     name: Build Frontend
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: read
       packages: write
