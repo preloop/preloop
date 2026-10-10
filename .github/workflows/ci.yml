@@ -187,10 +187,13 @@ jobs:
   #                                GITHUB_TOKEN cannot be granted. Absent or
   #                                empty (forks, Dependabot, not created yet)
   #                                means all hosted.
-  #   variable CI_SELF_HOSTED_TESTS  set to "false" to force every shard
-  #                                onto ubuntu-latest without a commit.
-  #                                Unset or anything else means the routing
-  #                                above is live.
+  #   variable CI_SELF_HOSTED_TESTS  on pushes to main, set to "false" to
+  #                                force every shard onto ubuntu-latest
+  #                                without a commit. Unset or anything else
+  #                                means the routing above is live. Pull
+  #                                requests and non-main refs always force
+  #                                hosted while idle self-hosted runners
+  #                                cancel overflow shards ("not acquired").
   #
   # Python: setup-python has no Debian 12 builds. Jobs use
   # .github/actions/setup-ci-python, which venvs a matching system
@@ -213,8 +216,16 @@ jobs:
           GH_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
           SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           REPO: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
         run: |
           set -uo pipefail
+
+          # PRs / non-main refs: force hosted while the self-hosted pool
+          # cancels overflow shards before acquisition. main keeps the
+          # CI_SELF_HOSTED_TESTS repository-variable knob above.
+          if [ "${GITHUB_REF:-}" != "refs/heads/main" ]; then
+            SELF_HOSTED_TESTS=false
+          fi
 
           # Eighteen shards. Measured on the green main run 37987118309:
           # with no durations, group 2 of 8 spent 25.2m in pytest. Balanced
