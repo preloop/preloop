@@ -17,7 +17,7 @@ from preloop.models.models.base import Base
 # Modules loaded for metadata registration:
 #   issue, organization, project, tracker, account, agent_control_command,
 #   api_key, api_usage, client_version_log, comment, ai_model, issue_duplicate,
-#   model_price_override, provider_billing, copilot_import
+#   model_price_override, provider_billing, copilot_import, anthropic_import
 import importlib
 
 _MODEL_MODULES = (
@@ -36,6 +36,7 @@ _MODEL_MODULES = (
     "model_price_override",
     "provider_billing",
     "copilot_import",
+    "anthropic_import",
 )
 for _model_module in _MODEL_MODULES:
     importlib.import_module(f"preloop.models.models.{_model_module}")

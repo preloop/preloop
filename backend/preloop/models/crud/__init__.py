@@ -83,6 +83,14 @@ from .ci_subscription import CRUDCiSubscription, crud_ci_subscription
 from .cli_client import CRUDCliClient, crud_cli_client
 from .cli_session import CRUDCliSession, crud_cli_session
 from .comment import CRUDComment, crud_comment
+from .anthropic_import import (
+    CRUDAnthropicImportConnection,
+    CRUDAnthropicUsage,
+    CRUDAnthropicUserMapping,
+    crud_anthropic_import_connection,
+    crud_anthropic_usage,
+    crud_anthropic_user_mapping,
+)
 from .copilot_import import (
     CRUDCopilotImportConnection,
     CRUDCopilotUsage,
@@ -381,6 +389,12 @@ __all__ = [
     "crud_provider_billing_connection",
     "crud_provider_billing_snapshot",
     "CRUDCopilotImportConnection",
+    "CRUDAnthropicImportConnection",
+    "CRUDAnthropicUsage",
+    "CRUDAnthropicUserMapping",
+    "crud_anthropic_import_connection",
+    "crud_anthropic_usage",
+    "crud_anthropic_user_mapping",
     "CRUDCopilotUsage",
     "CRUDCopilotUserMapping",
     "crud_copilot_import_connection",

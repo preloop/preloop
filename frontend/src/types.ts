@@ -2721,3 +2721,57 @@ export interface RepriceJobStatus {
   started_at: string | null;
   finished_at: string | null;
 }
+
+/** Anthropic usage import connection (#1413). The Admin key is never returned. */
+export interface AnthropicConnection {
+  id: string;
+  has_key: boolean;
+  key_hint: string | null;
+  gateway_key_names: string[];
+  is_active: boolean;
+  last_synced_at: string | null;
+  last_synced_day: string | null;
+  last_error: string | null;
+  last_warning: string | null;
+}
+
+export interface AnthropicConnectionUpsert {
+  admin_key?: string;
+  gateway_key_names?: string[];
+  is_active?: boolean;
+}
+
+export interface AnthropicActorUsage {
+  actor: string;
+  actor_type: string | null;
+  estimated_cost: number;
+  tokens: number;
+  num_sessions: number;
+  lines_added: number;
+  lines_removed: number;
+  commits: number;
+  pull_requests: number;
+  days: number;
+  user_id: string | null;
+  mapping_source: 'mapping' | 'member_email' | null;
+  gateway_subject_id: string | null;
+}
+
+export interface AnthropicUsageSummary {
+  metered_by_gateway: false;
+  marker: string;
+  period_start: string;
+  period_end: string;
+  connection: AnthropicConnection | null;
+  total_estimated_cost: number | null;
+  total_tokens: number;
+  currency: string;
+  excluded_metered_by_gateway: {
+    estimated_cost: number;
+    tokens: number;
+    actors: string[];
+  };
+  by_actor: AnthropicActorUsage[];
+  by_model: { model: string; estimated_cost: number; tokens: number }[];
+  not_attributable: string[];
+}

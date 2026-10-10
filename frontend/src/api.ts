@@ -86,6 +86,9 @@ import type {
   CopilotConnection,
   CopilotConnectionUpsert,
   CopilotUsageSummary,
+  AnthropicConnection,
+  AnthropicConnectionUpsert,
+  AnthropicUsageSummary,
   ProviderBillingConnection,
   RepriceResponse,
   RepriceJobStatus,
@@ -1937,6 +1940,64 @@ export async function getCostReconciliation(params: {
     throw new Error('Failed to fetch cost reconciliation');
   }
   return response.json();
+}
+
+export async function getAnthropicUsage(params: {
+  startDate?: string;
+  endDate?: string;
+}): Promise<AnthropicUsageSummary> {
+  const query = new URLSearchParams();
+  if (params.startDate) query.set('start_date', params.startDate);
+  if (params.endDate) query.set('end_date', params.endDate);
+  const suffix = query.toString();
+  const response = await fetchWithAuth(
+    `/api/v1/anthropic-usage${suffix ? `?${suffix}` : ''}`
+  );
+  if (response.status === 403) {
+    throw await permissionErrorFromResponse(response);
+  }
+  if (!response.ok) {
+    throw new Error('Failed to fetch Anthropic usage');
+  }
+  return response.json();
+}
+
+export async function saveAnthropicConnection(
+  payload: AnthropicConnectionUpsert
+): Promise<AnthropicConnection> {
+  const response = await fetchWithAuth('/api/v1/anthropic-usage/connection', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to save the Anthropic connection')
+    );
+  }
+  return response.json();
+}
+
+export async function deleteAnthropicConnection(): Promise<void> {
+  const response = await fetchWithAuth('/api/v1/anthropic-usage/connection', {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    throw new Error('Failed to remove the Anthropic connection');
+  }
+}
+
+export async function syncAnthropicUsage(): Promise<void> {
+  const response = await fetchWithAuth('/api/v1/anthropic-usage/sync', {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to queue the Anthropic import')
+    );
+  }
 }
 
 export async function getCopilotUsage(params: {

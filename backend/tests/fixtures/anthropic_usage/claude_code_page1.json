@@ -1,0 +1,39 @@
+{
+  "data": [
+    {
+      "date": "2026-10-08T00:00:00Z",
+      "actor": {"type": "user_actor", "email_address": "Dev@Corp.example"},
+      "organization_id": "dc9f6c26-b22c-4831-8d01-0446bada88f1",
+      "customer_type": "subscription",
+      "subscription_type": "team",
+      "terminal_type": "vscode",
+      "core_metrics": {
+        "num_sessions": 5,
+        "lines_of_code": {"added": 1543, "removed": 892},
+        "commits_by_claude_code": 12,
+        "pull_requests_by_claude_code": 2
+      },
+      "tool_actions": {
+        "edit_tool": {"accepted": 45, "rejected": 5},
+        "multi_edit_tool": {"accepted": 12, "rejected": 2},
+        "write_tool": {"accepted": 8, "rejected": 1},
+        "notebook_edit_tool": {"accepted": 3, "rejected": 0}
+      },
+      "model_breakdown": [
+        {
+          "model": "claude-opus-model",
+          "tokens": {"input": 100000, "output": 35000, "cache_read": 10000, "cache_creation": 5000},
+          "estimated_cost": {"currency": "USD", "amount": 113}
+        },
+        {
+          "model": "claude-haiku-model",
+          "tokens": {"input": 2000, "output": 500, "cache_read": 0, "cache_creation": 0},
+          "estimated_cost": {"currency": "USD", "amount": 7}
+        }
+      ],
+      "prompt": "must never be stored"
+    }
+  ],
+  "has_more": true,
+  "next_page": "page_MjAyNi0xMC0wOFQwMDowMDowMFo="
+}

@@ -1,0 +1,25 @@
+{
+  "data": [
+    {
+      "id": "apikey_01Rj2N8SVvo6BePZj99NhmiT",
+      "type": "api_key",
+      "name": "preloop-gateway",
+      "partial_key_hint": "sk-ant-api03-R2D...igAA",
+      "status": "active",
+      "workspace_id": "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ",
+      "created_at": "2026-09-01T00:00:00Z"
+    },
+    {
+      "id": "apikey_01Rj2N8SVvo6BePZj99NhmiU",
+      "type": "api_key",
+      "name": "ci-bot",
+      "partial_key_hint": "sk-ant-api03-XyZ...Qq11",
+      "status": "active",
+      "workspace_id": null,
+      "created_at": "2026-09-02T00:00:00Z"
+    }
+  ],
+  "has_more": false,
+  "first_id": "apikey_01Rj2N8SVvo6BePZj99NhmiT",
+  "last_id": "apikey_01Rj2N8SVvo6BePZj99NhmiU"
+}

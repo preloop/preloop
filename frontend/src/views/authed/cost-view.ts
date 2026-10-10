@@ -66,6 +66,7 @@ import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
 import '../../components/tool-cost-flags-panel.ts';
 import '../../components/copilot-usage-panel.ts';
+import '../../components/anthropic-usage-panel.ts';
 import '../../components/token-figures.ts';
 import { sumTokenUsage } from '../../components/token-figures';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -2736,7 +2737,7 @@ export class CostView extends AuthedElement {
                   slot="nav"
                   panel="copilot"
                   ?active=${this.activeTab === 'copilot'}
-                  >Copilot</sl-tab
+                  >Copilot and Claude Code</sl-tab
                 >`
               : nothing
           }
@@ -3062,6 +3063,10 @@ export class CostView extends AuthedElement {
         .startDate=${this.currentPeriod?.startDate}
         .endDate=${this.currentPeriod?.endDate}
       ></copilot-usage-panel>
+      <anthropic-usage-panel
+        .startDate=${this.currentPeriod?.startDate}
+        .endDate=${this.currentPeriod?.endDate}
+      ></anthropic-usage-panel>
     </div>`;
   }
 
@@ -4322,7 +4327,7 @@ export class CostView extends AuthedElement {
       <div class="page">
         <view-header
           headerText="Cost"
-          description="Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend."
+          description="Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot and Claude Code usage."
         ></view-header>
         <hosted-allowance></hosted-allowance>
 
