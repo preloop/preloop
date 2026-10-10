@@ -162,6 +162,16 @@ def test_docs_lock_does_not_select_backend_shards() -> None:
     assert "requirements/**" in requirements
     assert "!requirements/docs.in" not in requirements
     assert "!requirements/docs.txt" not in requirements
+    # `some` treats `!path` as a match for every other file, so a negation
+    # only excludes when the step uses some-with-excludes.
+    filter_step = next(
+        step
+        for step in load_ci_jobs()["changes"]["steps"]
+        if step.get("id") == "filter"
+    )
+    has_negation = any(pattern.startswith("!") for pattern in backend)
+    if has_negation:
+        assert filter_step["with"].get("predicate-quantifier") == "some-with-excludes"
 
 
 def test_build_and_push_waits_for_combined_backend_coverage() -> None:
