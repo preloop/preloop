@@ -211,10 +211,7 @@ jobs:
         env:
           # Empty on forks and Dependabot: secrets are not exposed there.
           GH_TOKEN: ${{ secrets.CI_RUNNER_READ_TOKEN }}
-          # Force hosted: idle self-hosted runners keep reporting online
-          # but cancel overflow shards ("not acquired"). Revisit when the
-          # pool is healthy; main can keep vars.CI_SELF_HOSTED_TESTS.
-          SELF_HOSTED_TESTS: "false"
+          SELF_HOSTED_TESTS: ${{ vars.CI_SELF_HOSTED_TESTS }}
           REPO: ${{ github.repository }}
         run: |
           set -uo pipefail
