@@ -224,6 +224,25 @@ describe('PreloopFlowForm host execution submit', () => {
     expect(refused?.textContent).to.include('Cursor runner will refuse');
   });
 
+  it('explains the Copilot publication opt-in', async () => {
+    const element = await mount({
+      name: 'Implement locally',
+      prompt_template: 'implement',
+      agent_type: 'copilot',
+      runner_pool: 'office-mac',
+      agent_config: { host_exec_profile: 'copilot-publish' },
+      git_clone_config: { enabled: true, create_pull_request: true },
+    });
+    const notice = element.shadowRoot?.querySelector(
+      '[data-host-exec-clone-notice]'
+    );
+    expect(notice?.getAttribute('data-host-exec-clone-notice')).to.equal(
+      'publish'
+    );
+    expect(notice?.textContent).to.include('allow_publish');
+    expect(notice?.textContent).to.not.include('refuse the run');
+  });
+
   it('saves a Copilot host profile with copilot_model only', async () => {
     const element = await mount({
       name: 'Review locally',

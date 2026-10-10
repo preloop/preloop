@@ -44,6 +44,7 @@ classifiers = [
 dependencies = [
     "anthropic>=0.72.0",
     "uvicorn[standard]>=0.36.0",
+    "websockets>=13.0",  # Sync client for the Codex upstream Responses WebSocket (#1454)
     "fastapi>=0.129.2",
     "sqlalchemy>=2.0.0",
     "greenlet>=3.0.0",  # Required for SQLAlchemy async operations

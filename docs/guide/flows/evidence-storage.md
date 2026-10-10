@@ -168,6 +168,12 @@ counts against the quota. Snapshots are never shared across executions,
 threads or accounts, because recovery looks a snapshot up by execution.
 The archive still crosses the wire: the runner cannot prove to the API that
 an earlier upload committed, so the API decides.
+A second evidence upload reuses the newest available evidence row for the
+same account, flow, thread and execution when the archive sha256 matches, or
+when the pack manifest's `members_digest` matches (a repack of the same files
+whose gzip timestamp differs): expiry moves forward and never earlier, the
+receipt sets `deduplicated: true`, and no second ciphertext or signature is
+stored.
 
 ### When a capture is refused for quota
 

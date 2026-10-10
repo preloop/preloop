@@ -96,6 +96,7 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         context_data: Optional[Dict[str, Any]] = None,
         key_value: Optional[str] = None,
         commit: bool = True,
+        restricted_runtime: bool = False,
     ) -> tuple[ApiKey, str]:
         """Create a runtime-scoped API key stored without plaintext value."""
         token_value = key_value or f"flow_{secrets.token_urlsafe(32)}"
@@ -118,6 +119,8 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             scopes=scopes or [],
             is_active=True,
             context_data=context_data,
+            credential_type="restricted_runtime" if restricted_runtime else "legacy",
+            credential_version=1 if restricted_runtime else None,
         )
 
         db.add(db_obj)
@@ -135,6 +138,7 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         key: str,
         account_id: Optional[str] = None,
         include_restricted: bool = False,
+        include_restricted_runtime: bool = False,
     ) -> Optional[ApiKey]:
         """Get API key by key string."""
         key_hash = self.build_key_hash(key)
@@ -153,6 +157,10 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             key_obj
             and key_obj.requires_machine_authorization is True
             and not include_restricted
+            and not (
+                include_restricted_runtime
+                and key_obj.credential_type == "restricted_runtime"
+            )
         ):
             return None
         return key_obj
@@ -469,6 +477,7 @@ class CRUDApiKey(CRUDBase[ApiKey]):
             .filter(
                 ApiKey.account_id == account_id,
                 ApiKey.is_active.is_(False),
+                ApiKey.credential_type == "legacy",
                 ApiKey.context_data.op("->>")("managed_agent_id")
                 == str(managed_agent_id),
                 or_(

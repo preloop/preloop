@@ -288,6 +288,16 @@ gateway:
   # is not a valid value unless you run a combined process there.
   # See docs/operations/model-gateway-url.md.
   inClusterUrl: ""
+  # Pin a Codex session to one gateway pod (#1454). With
+  # CODEX_UPSTREAM_WEBSOCKET on, each pod keeps a warm upstream socket per
+  # (account, session-id); a call that lands on another pod still works but
+  # resends the full thread on a new socket. When enabled, the gateway Ingress
+  # hashes on the Codex `session-id` header, falling back to the client
+  # address for traffic without one so it still spreads across pods.
+  # nginx-ingress only; it applies to every gateway prefix on that Ingress.
+  sessionAffinity:
+    enabled: false
+    hashBy: "$http_session_id$remote_addr"
   # Proxy settings applied to the model-gateway routes (/openai, /anthropic,
   # /gemini) at every proxy in front of the gateway. Helm ingress sends those
   # prefixes to the gateway Service (skipping console nginx). Console nginx
