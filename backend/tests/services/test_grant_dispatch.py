@@ -407,3 +407,202 @@ async def test_sensitive_server_scope_uses_snapshot_owner_over_stale_listing(
     assert result.is_error and "owner-cards" in result.content[0].text
     policy.assert_not_awaited()
     pool.get_client.assert_not_awaited()
+
+
+@pytest.fixture
+def restricted_runtime(
+    runtime: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Runtime, MagicMock, SimpleNamespace]:
+    """Use the actual restricted dispatch wiring with isolated authority state."""
+    from uuid import uuid4
+    from preloop.models.crud import crud_restricted_runtime
+
+    mcp, user, *_ = runtime
+    user.credential_type = "restricted_runtime"
+    user.api_key_id = str(uuid4())
+    row = server()
+    row.id = str(uuid4())
+    row.auth_config.pop("introspection")
+    monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: row)
+    current = SimpleNamespace(revoked=False)
+
+    def check(*args: Any, **kwargs: Any) -> None:
+        assert str(kwargs["account_id"]) == user.account_id
+        assert str(kwargs["api_key_id"]) == user.api_key_id
+        assert str(kwargs["server_id"]) == row.id
+        assert kwargs["upstream_tool"] == "read"
+        assert kwargs["scope"] == "mcp:write"
+        if current.revoked:
+            raise crud_restricted_runtime.RestrictedRuntimeDeniedError("revoked")
+
+    authorize = MagicMock(side_effect=check)
+    monkeypatch.setattr(crud_restricted_runtime, "authorize", authorize)
+    return runtime, authorize, current
+
+
+@pytest.mark.asyncio
+async def test_restricted_denial_precedes_policy_approval_and_upstream(
+    restricted_runtime: tuple[Runtime, MagicMock, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, authorize, current = restricted_runtime
+    mcp, _, policy, *_ = runtime
+    current.revoked = True
+    approval = AsyncMock()
+    monkeypatch.setattr("preloop.services.approval_helper.require_approval", approval)
+    pool = MagicMock(get_client=AsyncMock())
+    monkeypatch.setattr(gateway, "get_mcp_client_pool", lambda: pool)
+    result = await mcp.call_tool("first_read", {})
+    assert result.is_error and "restricted runtime" in result.content[0].text
+    authorize.assert_called_once()
+    policy.assert_not_awaited()
+    approval.assert_not_awaited()
+    pool.get_client.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wait", ["approval", "connection"])
+async def test_restricted_revocation_after_wait_never_dispatches(
+    restricted_runtime: tuple[Runtime, MagicMock, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+    wait: str,
+) -> None:
+    runtime, authorize, current = restricted_runtime
+    mcp, _, _, _, _, wrapper = runtime
+    client = MagicMock(call_tool=AsyncMock(return_value=[]))
+
+    async def connect(**kwargs: Any) -> Any:
+        if wait == "connection":
+            current.revoked = True
+        return client
+
+    pool = MagicMock(get_client=AsyncMock(side_effect=connect))
+    monkeypatch.setitem(wrapper.__globals__, "get_mcp_client_pool", lambda: pool)
+
+    async def approve(**kwargs: Any) -> tuple[bool, str]:
+        if wait == "approval":
+            current.revoked = True
+        return True, ""
+
+    monkeypatch.setattr("preloop.services.approval_helper.require_approval", approve)
+    result = await mcp.call_tool("first_read", {})
+    assert result.is_error and "restricted runtime" in result.content[0].text
+    assert authorize.call_count >= 3
+    if wait == "approval":
+        pool.get_client.assert_not_awaited()
+    else:
+        pool.get_client.assert_awaited_once()
+    client.call_tool.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restricted_builtin_and_approval_replay_are_unsupported(
+    restricted_runtime: tuple[Runtime, MagicMock, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastmcp.tools import Tool
+
+    runtime, authorize, _ = restricted_runtime
+    mcp, user, policy, *_ = runtime
+    user.allowed_flow_tools = ["search"]
+    monkeypatch.setattr(
+        mcp, "list_tools", AsyncMock(return_value=[Tool(name="search", parameters={})])
+    )
+    result = await mcp.call_tool("search", {})
+    assert result.is_error and "exact MCP resource" in result.content[0].text
+    authorize.assert_not_called()
+    policy.assert_not_awaited()
+    internal = f"account_{user.account_id.replace('-', '_')}_first_read"
+    result = await mcp.call_registered_tool_without_policy(
+        internal, {}, account_id=user.account_id
+    )
+    assert result.is_error and "approval replay unsupported" in result.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_restricted_protocol_denies_resources_and_prompts_before_handlers(
+    restricted_runtime: tuple[Runtime, MagicMock, SimpleNamespace],
+) -> None:
+    runtime, _, _ = restricted_runtime
+    mcp, _, _, _, _, _ = runtime
+    handler = MagicMock(return_value="synthetic-protected-data")
+
+    def protected_resource() -> str:
+        return handler()
+
+    mcp.resource("resource://protected")(protected_resource)
+    assert await mcp.list_resources() == []
+    assert await mcp.list_resource_templates() == []
+    assert await mcp.list_prompts() == []
+    with pytest.raises(PermissionError):
+        await mcp.read_resource("resource://protected")
+    with pytest.raises(PermissionError):
+        await mcp.get_prompt("synthetic-protected-prompt")
+    handler.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_restricted_denial_precedes_upstream_introspection(
+    restricted_runtime: tuple[Runtime, MagicMock, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, _, current = restricted_runtime
+    mcp, user, *_ = runtime
+    current.revoked = True
+    row = server()
+    from uuid import uuid4
+
+    row.id = str(uuid4())
+    monkeypatch.setattr(gateway, "_resolve_proxied_tool_server", lambda *a: row)
+    introspect = AsyncMock(return_value=GrantResult(deepcopy(BINDING)))
+    monkeypatch.setattr(gateway.grant_introspector, "evaluate", introspect)
+    result = await mcp.call_tool("first_read", {})
+    assert result.is_error
+    introspect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restricted_listing_cannot_reuse_cached_resource_authority(
+    restricted_runtime: tuple[Runtime, MagicMock, SimpleNamespace],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastmcp.tools import Tool
+    from preloop.models.crud import crud_account
+
+    runtime, authorize, _ = restricted_runtime
+    mcp, user, *_ = runtime
+    user.mcp_tools_cache = [Tool(name="formerly_permitted", parameters={})]
+
+    def check_current_resource(*args: Any, **kwargs: Any) -> None:
+        from preloop.models.crud import crud_restricted_runtime
+
+        if kwargs["server_id"] is not None:
+            raise crud_restricted_runtime.RestrictedRuntimeDeniedError("narrowed")
+
+    authorize.side_effect = check_current_resource
+    monkeypatch.setattr(
+        "preloop.services.mcp_tool_discovery._get_proxied_tools_sync",
+        lambda *a: [],
+    )
+    monkeypatch.setattr(
+        crud_account, "get", lambda *a, **k: SimpleNamespace(meta_data={})
+    )
+    assert await gateway.DynamicFastMCP.list_tools(mcp) == []
+    assert authorize.call_count == 2
+    assert all(call.kwargs["scope"] == "mcp:read" for call in authorize.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_legacy_resource_protocol_still_executes_handlers(
+    runtime: Runtime,
+) -> None:
+    mcp, *_ = runtime
+    handler = MagicMock(return_value="synthetic-legacy-data")
+
+    def protected_resource() -> str:
+        return handler()
+
+    mcp.resource("resource://legacy")(protected_resource)
+    assert len(await mcp.list_resources()) == 1
+    await mcp.read_resource("resource://legacy")
+    handler.assert_called_once()

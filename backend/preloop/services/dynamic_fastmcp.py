@@ -466,7 +466,7 @@ async def _evaluate_snapshot_grant(
 
 
 async def _prepare_grant_dispatch(
-    account_id: str, tool_name: str
+    account_id: str, tool_name: str, *, introspect: bool = True
 ) -> tuple[Optional[GrantDispatchSnapshot], Optional[GrantResult]]:
     """Resolve through CRUD, release the DB, then introspect the forwarded token."""
 
@@ -497,7 +497,7 @@ async def _prepare_grant_dispatch(
     snapshot = await asyncio.wait_for(asyncio.to_thread(load), timeout=30)
     if snapshot is None:
         return None, None
-    return snapshot, await _evaluate_snapshot_grant(snapshot)
+    return snapshot, await _evaluate_snapshot_grant(snapshot) if introspect else None
 
 
 def _audit_grant_kwargs(
@@ -1228,6 +1228,53 @@ class DynamicFastMCP(FastMCP):
         self._user_context_provider = provider
         logger.info("User context provider registered")
 
+    def _restricted_protocol(self) -> bool:
+        """Unsupported MCP resources/prompts cannot inherit owner authority."""
+        context = self._get_current_user_context()
+        return getattr(context, "credential_type", "legacy") == "restricted_runtime"
+
+    async def list_resources(self, *, run_middleware: bool = True) -> list[Any]:
+        if self._restricted_protocol():
+            return []
+        return list(await super().list_resources(run_middleware=run_middleware))
+
+    async def list_resource_templates(
+        self, *, run_middleware: bool = True
+    ) -> list[Any]:
+        if self._restricted_protocol():
+            return []
+        return list(
+            await super().list_resource_templates(run_middleware=run_middleware)
+        )
+
+    async def list_prompts(self, *, run_middleware: bool = True) -> list[Any]:
+        if self._restricted_protocol():
+            return []
+        return list(await super().list_prompts(run_middleware=run_middleware))
+
+    async def read_resource(
+        self,
+        uri: str,
+        *,
+        version: Any = None,
+        run_middleware: bool = True,
+        task_meta: Any = None,
+    ) -> Any:
+        if self._restricted_protocol():
+            raise PermissionError(
+                "Access denied: restricted runtime resource unsupported"
+            )
+        return await super().read_resource(
+            uri, version=version, run_middleware=run_middleware, task_meta=task_meta
+        )
+
+    async def get_prompt(self, name: str, version: Any = None) -> Any:
+        if self._restricted_protocol():
+            raise PermissionError(
+                "Access denied: restricted runtime prompt unsupported"
+            )
+        return await super().get_prompt(name, version)
+
     async def list_tools(self, *, run_middleware: bool = True) -> list[Tool]:
         """Override FastMCP's list_tools to filter based on user context.
 
@@ -1250,6 +1297,9 @@ class DynamicFastMCP(FastMCP):
 
         if not user_context:
             logger.warning("No user context available, returning empty tool list")
+            return []
+
+        if await self._restricted_runtime_denial(user_context, invocation=False):
             return []
 
         logger.info(
@@ -1301,7 +1351,11 @@ class DynamicFastMCP(FastMCP):
             f"{len(default_tools) - len(builtin_tools)} internal names)"
         )
 
-        if user_context.mcp_tools_cache is not None:
+        if (
+            user_context.mcp_tools_cache is not None
+            and getattr(user_context, "credential_type", "legacy")
+            != "restricted_runtime"
+        ):
             logger.info("Returning cached tools from UserContext")
             return user_context.mcp_tools_cache
 
@@ -1613,6 +1667,22 @@ class DynamicFastMCP(FastMCP):
         for tool in available_tools:
             logger.info(f"  - {tool.name}")
 
+        if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
+            restricted_tools = []
+            for tool in available_tools:
+                if tool.name not in self._proxied_tool_servers:
+                    continue
+                try:
+                    snapshot, _ = await _prepare_grant_dispatch(
+                        user_context.account_id, tool.name, introspect=False
+                    )
+                except Exception:
+                    continue
+                if snapshot is not None and not await self._restricted_runtime_denial(
+                    user_context, snapshot, invocation=False
+                ):
+                    restricted_tools.append(tool)
+            available_tools = restricted_tools
         user_context.mcp_tools_cache = available_tools
         return available_tools
 
@@ -1771,7 +1841,10 @@ async def {internal_name}({params_str}):
     snapshot = _grant_dispatch_var.get(None)
     if snapshot is None or snapshot.account_id != account_id or snapshot.tool_name != tool_name:
         try:
-            snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name)
+            if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
+                snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name, introspect=False)
+            else:
+                snapshot, grant = await _prepare_grant_dispatch(account_id, tool_name)
         except Exception:
             return _wrapper_tool_error("Access denied: introspection_unavailable", status="refused")
         if grant is not None:
@@ -1782,6 +1855,13 @@ async def {internal_name}({params_str}):
             return _wrapper_tool_error(f"Access denied: {{grant.deny_reason}}", status="refused")
     if snapshot is None:
         return _wrapper_tool_error("Access denied: no active MCP server provides this tool", status="refused")
+
+    if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
+        denial = await self._grant_dispatch_denial(snapshot, user_context)
+    else:
+        denial = None
+    if denial:
+        return _wrapper_tool_error(denial, status="refused")
 
     # Check approval with streaming (we have Context!)
     # The workflow_id may have been set by _call_tool() after evaluating access rules.
@@ -2306,9 +2386,17 @@ async def {internal_name}({params_str}):
         # Keep its copied credentials in memory through any synchronous wait.
         if name in self._proxied_tool_servers:
             try:
-                snapshot, grant = await _prepare_grant_dispatch(
-                    user_context.account_id, name
-                )
+                if (
+                    getattr(user_context, "credential_type", "legacy")
+                    == "restricted_runtime"
+                ):
+                    snapshot, grant = await _prepare_grant_dispatch(
+                        user_context.account_id, name, introspect=False
+                    )
+                else:
+                    snapshot, grant = await _prepare_grant_dispatch(
+                        user_context.account_id, name
+                    )
             except Exception:
                 grant_binding = grant_introspector._unavailable()
                 _record_grant_denial(
@@ -2336,6 +2424,18 @@ async def {internal_name}({params_str}):
                         correlation_id=correlation_id,
                     )
                     return await _refuse(f"Access denied: {grant.deny_reason}")
+
+        snapshot = _grant_dispatch_var.get(None)
+        if (
+            getattr(user_context, "credential_type", "legacy") == "restricted_runtime"
+            and snapshot is not None
+        ):
+            denial = await self._grant_dispatch_denial(snapshot, user_context)
+            grant_binding = _grant_binding_var.get(None)
+        else:
+            denial = await self._restricted_runtime_denial(user_context, snapshot)
+        if denial:
+            return await _refuse(denial)
 
         # ── Sensitive data rules on tool arguments (#1122) ───────────────
         # Runs before the access rules so their conditions can read the
@@ -3353,10 +3453,58 @@ async def {internal_name}({params_str}):
         except Exception as exc:  # pragma: no cover - best effort only
             logger.debug("Failed to persist refused tool call '%s': %s", name, exc)
 
+    async def _restricted_runtime_denial(
+        self,
+        user_context: UserContext,
+        snapshot: GrantDispatchSnapshot | None = None,
+        *,
+        invocation: bool = True,
+    ) -> Optional[str]:
+        """Authorize fresh policy/session state; a missing exact resource denies."""
+        if getattr(user_context, "credential_type", "legacy") != "restricted_runtime":
+            return None
+        if invocation and snapshot is None:
+            return "Access denied: restricted runtime requires an exact MCP resource"
+        api_key_id = user_context.api_key_id
+        if not api_key_id:
+            return "Access denied: restricted runtime credential identity unavailable"
+
+        def check() -> None:
+            from preloop.models.crud import crud_restricted_runtime
+
+            db = next(get_db())
+            try:
+                if (
+                    snapshot is not None
+                    and snapshot.account_id != user_context.account_id
+                ):
+                    raise ValueError("resource account mismatch")
+                crud_restricted_runtime.authorize(
+                    db,
+                    account_id=uuid.UUID(user_context.account_id),
+                    api_key_id=uuid.UUID(api_key_id),
+                    scope="mcp:write" if invocation else "mcp:read",
+                    server_id=uuid.UUID(snapshot.client_config["server_id"])
+                    if snapshot
+                    else None,
+                    upstream_tool=snapshot.upstream_name if snapshot else None,
+                )
+            finally:
+                db.close()
+
+        try:
+            await asyncio.wait_for(asyncio.to_thread(check), timeout=5)
+        except Exception:
+            return "Access denied: restricted runtime authority unavailable or revoked"
+        return None
+
     async def _grant_dispatch_denial(
         self, snapshot: GrantDispatchSnapshot, user_context: UserContext
     ) -> Optional[str]:
         """Recheck after human/connection waits, without resolving another owner."""
+        denial = await self._restricted_runtime_denial(user_context, snapshot)
+        if denial:
+            return denial
         try:
             grant = await _evaluate_snapshot_grant(snapshot)
         except Exception:
@@ -3372,6 +3520,8 @@ async def {internal_name}({params_str}):
         if binding is not None:
             binding.clear()
             binding.update(fresh_binding)
+        else:
+            _grant_binding_var.set(fresh_binding)
         if grant.deny_reason:
             _record_grant_denial(
                 snapshot.account_id,
@@ -3415,6 +3565,11 @@ async def {internal_name}({params_str}):
         been approved and claimed for idempotent re-execution. A halt denial
         is recorded as refused when the polling request still has a session.
         """
+        user_context = self._get_current_user_context()
+        if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
+            return _tool_error_result(
+                "Access denied: restricted runtime approval replay unsupported"
+            )
         _grant_dispatch_var.set(None)
         _grant_binding_var.set(None)
         # The durable approval owns this dispatch, even without HTTP context.
@@ -3571,6 +3726,9 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
                 str(managed_agent_id) if managed_agent_id is not None else None
             ),
             flow_id=flow_id,
+            credential_type=getattr(api_key, "credential_type", "legacy")
+            if api_key
+            else "legacy",
         )
 
         logger.info(

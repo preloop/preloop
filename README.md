@@ -250,3 +250,31 @@ conversations and DeepSeek or another authorized model through Preloop.
 Chat assistant connections for Slack, Mattermost, and Discord are described in
 [Chat connections](docs/chat-connections.md), including identity linking, scoped
 questions, approval votes, operator notes, and the separate durable worker.
+
+### Restricted external runtime credentials (experimental)
+
+Trusted provider adapters can exchange verified external session identity through
+`preloop.models.crud.crud_restricted_runtime`. Set
+`PRELOOP_RESTRICTED_RUNTIME_CREDENTIALS=true` explicitly to enable issuance and
+current-state authentication. The adapter must independently verify its provider
+identity and resolve an account-owned policy reference; this core primitive
+accepts no external bearer token. Operator policy uses the existing
+SecretReference, managed agent, validated enrollment and active policy snapshot.
+
+Credentials expire within ten minutes and permit only approved external MCP
+server UUIDs and upstream tools. Ordinary REST, WebSocket, native control,
+builtin MCP tools and model gateway access remain denied. Tool calls require
+both MCP read and write scopes; read-only grants can list approved tools. Current
+policy generation, lifecycle, enrollment, key/session state and exact resource
+are rechecked before dispatch and after approval/connection waits. Async approval
+replay is unsupported for this credential mode.
+
+A session receives its secret once. Retries, expiry, revocation, upstream-token
+refresh and policy re-enabling never mint a replacement for that same session.
+The adapter must commit the complete exchange transaction before delivering the
+secret. A failed delivery therefore requires a new authorized upstream session.
+Revocation uses the same policy row lock and preserves its tombstone. The policy
+reference retains at most 1,024 session records; reaching that ceiling denies
+new sessions without pruning revocation history. Rotation and archival workflows
+are future work. This experimental server/resource boundary does not attest the
+runner's executable, host or network origin.

@@ -482,3 +482,23 @@ tenant-scoped CRUD live in `preloop.models`; commercial correlation/read policy
 lives in the optional plugin. Candidate deduplication and discovered events
 remain unchanged. Collector assertions preserve provenance and scan gaps, and
 do not establish runtime verification or device attestation.
+
+### Restricted external runtime authority
+
+The default-disabled restricted runtime primitive reuses SecretReference policy
+metadata and hashed ApiKey/runtime-session rows. A trusted provider adapter
+supplies verified account/binding/session/creator identity. Core issuance locks
+the account-owned reference, checks its static resource/scope ceiling, current
+agent, validated enrollment and active policy snapshot, and atomically records a
+single secret delivery with permanent session replay state. Revocation locks the
+same reference and records a tombstone before deactivating the existing key.
+Policy updates preserve that state and increment the generation.
+
+Machine markers prevent fallback to the key owner's ordinary authority. Only
+the DynamicFastMCP transport opts into restricted authentication. Invocation
+resolves an immutable server UUID and original upstream tool; the fresh dispatch
+gate rechecks current core state before policy/approval and after approval and
+connection waits. Unsupported routes, builtin tools and asynchronous approval
+replay deny. Legacy authentication and upstream grant introspection keep their
+existing behavior. Real concurrency regressions use independent transactions and
+private schemas in the isolated CI PostgreSQL database.
