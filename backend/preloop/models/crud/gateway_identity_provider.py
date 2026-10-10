@@ -78,6 +78,16 @@ class CRUDGatewayIdentityProvider(CRUDBase[GatewayIdentityProvider]):
             ).scalars()
         )
 
+    def get_by_api_key(
+        self, db: Session, *, api_key_id: Any
+    ) -> Optional[GatewayIdentityProvider]:
+        """The provider bound to ``api_key_id``, in any account."""
+        return db.execute(
+            select(GatewayIdentityProvider).where(
+                GatewayIdentityProvider.api_key_id == api_key_id
+            )
+        ).scalar_one_or_none()
+
     def audience_taken(
         self,
         db: Session,

@@ -116,14 +116,8 @@ def _check_unique(
             status_code=409,
             detail=f"Audience already registered for this issuer: {', '.join(taken)}",
         )
-    other = [
-        p
-        for p in db.query(models.GatewayIdentityProvider)
-        .filter(models.GatewayIdentityProvider.api_key_id == api_key_id)
-        .all()
-        if p.id != exclude_provider_id
-    ]
-    if other:
+    bound = crud_gateway_identity_provider.get_by_api_key(db, api_key_id=api_key_id)
+    if bound is not None and bound.id != exclude_provider_id:
         raise HTTPException(
             status_code=409,
             detail="This API key is already the binding key of another provider",
