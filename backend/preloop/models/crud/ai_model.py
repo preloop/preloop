@@ -91,6 +91,29 @@ class CRUDAIModel(CRUDBase[AIModel]):
         validate_qwen_endpoint(endpoint)
 
     @staticmethod
+    def _validate_local_api_endpoint(
+        obj_data: Dict[str, Any],
+        existing: Optional[AIModel] = None,
+    ) -> None:
+        """Reject localhost and link-local endpoints before they are stored.
+
+        The model picker already refuses these. Create and update did not,
+        so a Cloud account could save ``http://localhost:1234/v1`` and the
+        gateway would dial its own container.
+        """
+        if "api_endpoint" in obj_data:
+            endpoint = obj_data.get("api_endpoint")
+        elif existing is not None:
+            endpoint = existing.api_endpoint
+        else:
+            return
+        if not isinstance(endpoint, str) or not endpoint.strip():
+            return
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        validate_gateway_api_endpoint(endpoint)
+
+    @staticmethod
     def _normalize_azure_auth_fields(
         obj_data: Dict, *, existing: Optional[AIModel] = None
     ) -> None:
@@ -447,6 +470,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data)
+        self._validate_local_api_endpoint(obj_data)
         self._normalize_azure_auth_fields(obj_data)
         self._enforce_unique_gateway_alias(
             db,
@@ -651,6 +675,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """Update an AIModel. If setting a model as default, ensure others are not."""
         obj_data = self._normalize_model_kind_fields(dict(obj_in))
         self._validate_qwen_api_endpoint(obj_data, existing=db_obj)
+        self._validate_local_api_endpoint(obj_data, existing=db_obj)
         self._normalize_azure_auth_fields(obj_data, existing=db_obj)
 
         # Preserve the gateway alias when provider_name changes so that

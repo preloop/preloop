@@ -3,6 +3,8 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.secret_service import ResolvedModelCredentials
@@ -42,6 +44,20 @@ def _assert_user_agent_is_preloop(headers: dict) -> None:
     assert user_agent, "User-Agent must be set on LiteLLM extra_headers"
     assert "litellm" not in user_agent.lower()
     assert user_agent.lower().startswith("preloop/")
+
+
+def test_build_completion_kwargs_rejects_localhost_endpoint() -> None:
+    """A saved localhost base is the container, so the gateway must not dial it."""
+    from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+    model = SimpleNamespace(
+        provider_name="lmstudio",
+        model_identifier="local-model",
+        api_endpoint="http://localhost:1234/v1",
+    )
+    with pytest.raises(ModelGatewayAPIError) as error:
+        _build_kwargs(model)
+    assert error.value.status_code == 400
 
 
 def test_build_completion_kwargs_sets_drop_params_for_zai():

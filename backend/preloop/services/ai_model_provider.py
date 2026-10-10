@@ -271,6 +271,55 @@ def _discovery_http_client(*, required: bool = False) -> Optional[Any]:
     return httpx.AsyncClient(**client_kwargs)
 
 
+_LOOPBACK_HOSTS = frozenset({"localhost", "localhost.localdomain"})
+
+
+def validate_gateway_api_endpoint(api_endpoint: Optional[str]) -> Optional[str]:
+    """Reject an endpoint the gateway would dial on itself.
+
+    ``localhost`` and any loopback address are the process's own network
+    namespace. On Preloop Cloud, Helm, and Compose that is the gateway
+    container, not the computer running LM Studio. Link-local addresses are
+    the same class. A LAN address stays allowed so a self-hosted install can
+    reach a model server on the host network.
+
+    Args:
+        api_endpoint: Stored or submitted base URL. Empty means the provider
+            default and is left alone.
+
+    Returns:
+        The stripped URL when it is safe to dial.
+
+    Raises:
+        ProviderValidationError: The URL is not http(s), or it targets
+            loopback or link-local space.
+    """
+    raw = (api_endpoint or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme not in {"http", "https"}:
+        raise ProviderValidationError("api_endpoint must be an http(s) URL")
+    host = (parts.hostname or "").strip().rstrip(".").lower()
+    if not host:
+        raise ProviderValidationError("api_endpoint must include a host")
+    if host in _LOOPBACK_HOSTS or host.endswith(".localhost"):
+        raise ProviderValidationError(
+            "api_endpoint must not use localhost. That address is the "
+            "Preloop process, not the machine running your model server."
+        )
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return raw
+    if ip.is_loopback or ip.is_link_local or ip.is_unspecified:
+        raise ProviderValidationError(
+            "api_endpoint must not use a loopback or link-local address. "
+            "That address is the Preloop process, not your model server."
+        )
+    return raw
+
+
 def validate_discovery_endpoint(api_endpoint: str) -> str:
     """Validate a user-supplied model-discovery endpoint, or raise ValueError.
 

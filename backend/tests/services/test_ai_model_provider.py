@@ -1688,6 +1688,56 @@ class TestCatalogProviderSdkMissing:
         assert result.error == "sdk_missing"
 
 
+class TestGatewayEndpointValidation:
+    """Saved chat endpoints must not dial the gateway container."""
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://localhost:1234/v1",
+            "http://LOCALHOST:1234/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:1234/v1",
+            "http://169.254.169.254/latest/meta-data",
+            "http://0.0.0.0:1234/v1",
+            "file:///etc/passwd",
+        ],
+    )
+    def test_rejects_container_local_endpoints(self, endpoint: str) -> None:
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        with pytest.raises(ValueError):
+            validate_gateway_api_endpoint(endpoint)
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "https://openrouter.ai/api/v1",
+            "http://host.docker.internal:1234/v1",
+            "http://192.168.1.10:1234/v1",
+            None,
+            "",
+        ],
+    )
+    def test_allows_reachable_and_empty_endpoints(self, endpoint: str | None) -> None:
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        assert validate_gateway_api_endpoint(endpoint) == (
+            endpoint.strip() if isinstance(endpoint, str) and endpoint.strip() else None
+        )
+
+    def test_crud_rejects_localhost_on_create(self) -> None:
+        from preloop.models.crud.ai_model import CRUDAIModel
+
+        with pytest.raises(ValueError, match="localhost"):
+            CRUDAIModel._validate_local_api_endpoint(
+                {
+                    "provider_name": "lmstudio",
+                    "api_endpoint": "http://localhost:1234/v1",
+                }
+            )
+
+
 class TestDiscoveryEndpointValidation:
     """SSRF guard on the user-supplied discovery endpoint.
 
