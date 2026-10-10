@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -22,7 +23,9 @@ const (
 	policiesUploadPath        = "/api/v1/policies/upload"
 	policiesDiffPath          = "/api/v1/policies/diff"
 	policiesExportPath        = "/api/v1/policies/export"
-	policiesListPath          = "/api/v1/policies"
+	policiesListPath          = "/api/v1/policies/versions"
+	policyListDefaultLimit    = 20
+	policyListMaxLimit        = 1000
 	policiesGeneratePath      = "/api/v1/policies/generate"
 	policiesGenerateAuditPath = "/api/v1/policies/generate-from-audit"
 )
@@ -63,14 +66,26 @@ type DiffChange struct {
 	NewValue  interface{} `json:"new_value,omitempty"`
 }
 
-// PolicyInfo represents a policy in the list response.
-type PolicyInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Version     string `json:"version,omitempty"`
-	Active      bool   `json:"active"`
-	UpdatedAt   string `json:"updated_at"`
+// policyVersion is one row of GET /api/v1/policies/versions
+// (PolicyVersionMetadata). Pointers keep a null author or comment null in
+// json and yaml output.
+type policyVersion struct {
+	ID              string  `json:"id" yaml:"id"`
+	VersionNumber   int     `json:"version_number" yaml:"version_number"`
+	Tag             *string `json:"tag" yaml:"tag"`
+	Description     *string `json:"description" yaml:"description"`
+	IsActive        bool    `json:"is_active" yaml:"is_active"`
+	MCPServersCount int     `json:"mcp_servers_count" yaml:"mcp_servers_count"`
+	PoliciesCount   int     `json:"policies_count" yaml:"policies_count"`
+	ToolsCount      int     `json:"tools_count" yaml:"tools_count"`
+	CreatedAt       string  `json:"created_at" yaml:"created_at"`
+	CreatedByUserID *string `json:"created_by_user_id" yaml:"created_by_user_id"`
+}
+
+// policyVersionListResponse is the list body from /policies/versions.
+type policyVersionListResponse struct {
+	Versions []policyVersion `json:"versions" yaml:"versions"`
+	Total    int             `json:"total" yaml:"total"`
 }
 
 // PolicyImportResult represents the result of applying a policy.
@@ -155,9 +170,23 @@ Examples:
 // policyListCmd represents the policy list command.
 var policyListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List all policies",
-	Long:  `List all policies in your Preloop organization.`,
-	RunE:  runPolicyList,
+	Short: "List policy versions",
+	Long: `List policy versions for your Preloop account, newest first.
+
+Each row is one saved version of the account policy, from
+GET /api/v1/policies/versions. The server returns the newest version
+first. The default limit is 20.
+
+Columns are the version number, id, created time, author (the creating
+user id when the server recorded one), whether that version is active,
+and the version comment.
+
+Examples:
+  preloop policy list
+  preloop policy list --limit 50
+  preloop policy list --output json
+  preloop policy list --output yaml`,
+	RunE: runPolicyList,
 }
 
 // policyGenerateCmd represents the policy generate command.
@@ -203,8 +232,11 @@ func init() {
 	// Flags for export
 	policyExportCmd.Flags().StringP("output", "o", "", "output file (default: stdout)")
 
-	// Flags for list
-	policyListCmd.Flags().StringP("format", "f", "table", "output format (table, json, yaml)")
+	// Flags for list. --format is the name this command already advertised;
+	// --output selects the same table, json, or yaml output.
+	policyListCmd.Flags().StringP("output", "o", "table", "output format: table, json, or yaml")
+	policyListCmd.Flags().StringP("format", "f", "table", "same as --output")
+	policyListCmd.Flags().Int("limit", policyListDefaultLimit, "maximum number of versions to return")
 
 	// Flags for generate
 	policyGenerateCmd.Flags().StringP("output", "o", "", "output file (default: stdout)")
@@ -616,51 +648,128 @@ func runPolicyExport(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// runPolicyList lists all policies.
-func runPolicyList(cmd *cobra.Command, args []string) error {
-	format, _ := cmd.Flags().GetString("format")
+// policyListOutputFormat resolves --output and --format. Both accept
+// table, json, or yaml. When only one is passed, that one wins.
+func policyListOutputFormat(cmd *cobra.Command) (string, error) {
+	output, err := cmd.Flags().GetString("output")
+	if err != nil {
+		return "", err
+	}
+	formatFlag := cmd.Flags().Lookup("format")
+	if formatFlag != nil && formatFlag.Changed {
+		format, err := cmd.Flags().GetString("format")
+		if err != nil {
+			return "", err
+		}
+		outputChanged := cmd.Flags().Changed("output")
+		sameFormat := strings.EqualFold(strings.TrimSpace(output), strings.TrimSpace(format))
+		if outputChanged && !sameFormat {
+			return "", fmt.Errorf(
+				"--output and --format disagree (%q vs %q); pass one",
+				output,
+				format,
+			)
+		}
+		if !outputChanged {
+			output = format
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(output)) {
+	case "table", "json", "yaml":
+		return strings.ToLower(strings.TrimSpace(output)), nil
+	default:
+		return "", fmt.Errorf("--output must be table, json, or yaml, got %q", output)
+	}
+}
+
+// runPolicyList lists policy versions for the account.
+//
+// The server orders by version number descending and applies limit there, so
+// this command keeps that order instead of sorting the page again.
+func runPolicyList(cmd *cobra.Command, _ []string) error {
+	format, err := policyListOutputFormat(cmd)
+	if err != nil {
+		return err
+	}
+	limit, err := cmd.Flags().GetInt("limit")
+	if err != nil {
+		return err
+	}
+	if limit < 1 || limit > policyListMaxLimit {
+		return fmt.Errorf("--limit must be between 1 and %d, got %d", policyListMaxLimit, limit)
+	}
 
 	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
 		return fmt.Errorf("failed to create API client: %w", err)
 	}
-
 	if !client.IsAuthenticated() {
 		return fmt.Errorf("not authenticated - run 'preloop login' first")
 	}
 
-	var policies []PolicyInfo
-	if err := client.Get(policiesListPath, &policies); err != nil {
-		return fmt.Errorf("failed to list policies: %w", err)
+	var response policyVersionListResponse
+	path := policiesListPath + "?limit=" + strconv.Itoa(limit)
+	if err := client.Get(path, &response); err != nil {
+		return fmt.Errorf("failed to list policy versions: %w", err)
 	}
-
-	if len(policies) == 0 {
-		fmt.Println("No policies found")
-		return nil
+	if response.Versions == nil {
+		response.Versions = []policyVersion{}
 	}
+	return writePolicyVersionList(cmd.OutOrStdout(), format, response)
+}
 
-	switch strings.ToLower(format) {
+func writePolicyVersionList(out io.Writer, format string, response policyVersionListResponse) error {
+	switch format {
 	case "json":
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(policies)
-
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(response)
 	case "yaml":
-		enc := yaml.NewEncoder(os.Stdout)
-		return enc.Encode(policies)
-
-	default: // table
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tVERSION\tACTIVE\tUPDATED") //nolint:errcheck
-		for _, p := range policies {
-			active := "no"
-			if p.Active {
-				active = "yes"
-			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.Name, p.Version, active, p.UpdatedAt) //nolint:errcheck
-		}
-		return w.Flush()
+		return yaml.NewEncoder(out).Encode(response)
+	default:
+		return writePolicyVersionTable(out, response.Versions)
 	}
+}
+
+func writePolicyVersionTable(out io.Writer, versions []policyVersion) error {
+	if len(versions) == 0 {
+		_, err := fmt.Fprintln(out, "No policy versions found")
+		return err
+	}
+	writer := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(writer, "VERSION\tID\tCREATED\tAUTHOR\tACTIVE\tSUMMARY") //nolint:errcheck
+	for _, version := range versions {
+		active := "no"
+		if version.IsActive {
+			active = "yes"
+		}
+		fmt.Fprintf( //nolint:errcheck
+			writer,
+			"%d\t%s\t%s\t%s\t%s\t%s\n",
+			version.VersionNumber,
+			policyListCell(version.ID),
+			policyListCell(version.CreatedAt),
+			policyListCell(policyListOptional(version.CreatedByUserID)),
+			active,
+			policyListCell(policyListOptional(version.Description)),
+		)
+	}
+	return writer.Flush()
+}
+
+func policyListOptional(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func policyListCell(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(value)
 }
 
 // GenerateResponse represents the response from policy generation.
