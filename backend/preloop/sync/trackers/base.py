@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 class BaseTracker(ABC):
     """Base class for all tracker implementations."""
 
+    readiness_supported_scopes: frozenset[str] = frozenset()
+
     # Subclasses should override this
     tracker_type: str = "unknown"
 

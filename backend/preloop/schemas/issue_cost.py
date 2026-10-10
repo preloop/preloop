@@ -8,6 +8,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from preloop.schemas.readiness import ReadinessObservation, TicketCreationEvidence
+
 #: Whether every run behind a cost figure had an execution cost (#1057).
 #: Coverage says how much of the bucket is priced; it never says the figure is
 #: what an invoice charged.
@@ -200,6 +202,27 @@ class IssueCostRow(BaseModel):
             "jira:customfield_10016, gitlab:weight or label:points:."
         ),
     )
+    ticket_created_at: datetime | None = None
+    ticket_created_at_provenance: TicketCreationEvidence | None = None
+    first_ready_observed_at: datetime | None = None
+    ticket_to_observed_ready_hours: float | None = Field(
+        None,
+        description="Elapsed UTC hours to first complete sampled ready observation; not an exact forge transition.",
+    )
+    readiness_scope: str | None = None
+    readiness_policy_version: UUID | None = None
+    first_ready_source_sha: str | None = None
+    first_ready_target_sha: str | None = None
+    first_ready_observation_id: UUID | None = None
+    latest_readiness_state: str = "unknown"
+    latest_readiness_coverage: str = "unsupported"
+    latest_readiness_observed_at: datetime | None = None
+    forge_coverage: str = "unknown"
+    readiness_unknown_reasons: list[str] = Field(default_factory=list)
+    readiness_observation_started_at: datetime | None = None
+    readiness_observation_completed_at: datetime | None = None
+    readiness_observations: list[ReadinessObservation] = Field(default_factory=list)
+
     execution_ids: Optional[List[UUID]] = Field(
         None, description="Contributing execution ids (JSON export only)."
     )
