@@ -411,6 +411,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Backend CI is eighteen shards, each aimed under seven minutes.**
+  Durations from a green main run balance `duration_based_chunks`. A shard
+  reuses Postgres on `127.0.0.1:5432` when it is already up and only creates
+  a database; otherwise it starts `pgvector/pgvector:pg16`. Self-hosted
+  setup is `.github/self-hosted-runners.md`.
 - Renamed tracker built-in `search` to `search_issues`. The legacy name `search`
   is retained as a deprecated alias (disabled by default on fresh accounts,
   available when explicitly referenced by a flow allow-list or policy) and will

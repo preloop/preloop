@@ -77,7 +77,7 @@ PRELOOP_URL=https://review.preloop.ai preloop login --headless
 # Check authentication status
 preloop auth status
 
-# List policies
+# List policy versions, newest first
 preloop policy list
 
 # Validate a policy file
@@ -143,7 +143,7 @@ has the same control as **Sign out everywhere**.
 ### Policy Management
 
 ```bash
-preloop policy list                    # List all policies
+preloop policy list                    # List policy versions, newest first
 preloop policy validate <file>         # Validate a policy file
 preloop policy apply <file>            # Apply a policy
 preloop policy apply <file> --dry-run  # Preview changes without applying
