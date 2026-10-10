@@ -112,7 +112,12 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
         db = next(get_db())
         try:
             # Validate the token using our existing auth system (API keys / JWTs)
-            current_user = await get_user_from_token_if_valid(token, db)
+            current_user = await get_user_from_token_if_valid(
+                token,
+                db,
+                allow_restricted_runtime=getattr(conn, "scope", {}).get("type")
+                == "http",
+            )
 
             if current_user:
                 # Try to load the API key if this is an API key token (for flow context)
@@ -120,9 +125,25 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
                 if token and "." not in token:  # API keys don't have dots (JWTs do)
                     from preloop.models.crud import crud_api_key
 
-                    api_key_obj = crud_api_key.get_by_key(db, key=token)
+                    api_key_obj = getattr(
+                        current_user, "_auth_api_key", None
+                    ) or crud_api_key.get_by_key(db, key=token)
 
                 return self._build_auth_result(token, current_user, api_key_obj)
+
+            if "." not in token:
+                from preloop.models.crud import crud_api_key
+
+                # Inspect markers only. A refused machine key cannot fall
+                # through to another credential namespace or owner identity.
+                refused_key = crud_api_key.get_by_key(
+                    db, key=token, include_restricted=True
+                )
+                if (
+                    refused_key is not None
+                    and refused_key.requires_machine_authorization is True
+                ):
+                    return None
 
             # Fallback: check OAuth MCP opaque access tokens
             result = self._check_oauth_token(db, token)

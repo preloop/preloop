@@ -715,6 +715,31 @@ class Settings(BaseSettings):
             "an egress policy forbids it."
         ),
     )
+    codex_upstream_websocket: bool = Field(
+        False,
+        description=(
+            "Send Codex OAuth (ChatGPT subscription) gateway calls to "
+            "chatgpt.com over a warm Responses WebSocket per (account, "
+            "session-id), relaying only new items with previous_response_id "
+            "when the thread just grew (#1454). Clients still talk HTTP and "
+            "every gateway hook still sees the full body. Off = the HTTP path. "
+            "An account can override this either way with the boolean "
+            "'codex_upstream_websocket' key in its meta_data."
+        ),
+    )
+    codex_upstream_websocket_max_sockets: int = Field(
+        256, description="Per-pod cap on warm Codex upstream sockets (LRU)."
+    )
+    codex_upstream_websocket_idle_seconds: float = Field(
+        600.0, description="Close a warm Codex upstream socket after this idle time."
+    )
+    codex_upstream_websocket_http_only_seconds: float = Field(
+        600.0,
+        description=(
+            "After a refused Codex WebSocket handshake, use HTTP for that "
+            "(account, session) for this long."
+        ),
+    )
     model_gateway_codex_family_autoregister_enabled: bool = Field(
         True,
         description=(

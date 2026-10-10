@@ -183,6 +183,27 @@ An opt-in Codex-compatible image with a distro Perl toolchain is built from
 with `CODEX_IMAGE`, private Docker runners with `agent_config.image`, and native
 host profiles use no image.
 
+Native Copilot host profiles can publish through managed legacy publication
+(`backend/preloop/services/host_exec_publication.py`, runner
+`cli/internal/cmd/runner_host_exec_publish.go`). The flow must clone exactly one
+repository with `create_pull_request` in legacy mode, and the runner profile must
+set `allow_checkout` and `allow_publish`, which makes the runner advertise
+`host_publication`. Flow save and run start refuse the flow when no runner in the
+pool advertises it, and lease assignment skips runners that do not. Delivery adds
+a transient `host_exec_publication` plan (checkout path, managed
+`preloop/issue-<KEY>-<exec8>` branch from the shared branch-plan resolver, commit
+message); the push reuses the checkout's URL-scoped header credential and nothing
+is persisted. After the CLI succeeds the runner commits with hooks disabled,
+copies the head into a fresh runner-owned bare repository and pushes from there
+without force, with no repository, global or system git config, to the planned
+URL, and reports a `host_publication` receipt
+on the completion envelope. The completion path keeps only that runner receipt
+(agent JSON cannot author it) and fails a publishing run without a pushed branch.
+The orchestrator verifies the branch against its own plan, looks up an open pull
+request for it before creating one through the bound Bitbucket tracker, and
+binds it with `record_opened_pr`, so a lost create response never yields a second
+pull request.
+
 A flow with an enabled `git_clone_config.backport` block runs in a
 control-plane mode: the orchestrator cherry-picks the merge commit onto each
 target branch in a scratch repository and opens one pull request per target,
@@ -482,3 +503,23 @@ tenant-scoped CRUD live in `preloop.models`; commercial correlation/read policy
 lives in the optional plugin. Candidate deduplication and discovered events
 remain unchanged. Collector assertions preserve provenance and scan gaps, and
 do not establish runtime verification or device attestation.
+
+### Restricted external runtime authority
+
+The default-disabled restricted runtime primitive reuses SecretReference policy
+metadata and hashed ApiKey/runtime-session rows. A trusted provider adapter
+supplies verified account/binding/session/creator identity. Core issuance locks
+the account-owned reference, checks its static resource/scope ceiling, current
+agent, validated enrollment and active policy snapshot, and atomically records a
+single secret delivery with permanent session replay state. Revocation locks the
+same reference and records a tombstone before deactivating the existing key.
+Policy updates preserve that state and increment the generation.
+
+Machine markers prevent fallback to the key owner's ordinary authority. Only
+the DynamicFastMCP transport opts into restricted authentication. Invocation
+resolves an immutable server UUID and original upstream tool; the fresh dispatch
+gate rechecks current core state before policy/approval and after approval and
+connection waits. Unsupported routes, builtin tools and asynchronous approval
+replay deny. Legacy authentication and upstream grant introspection keep their
+existing behavior. Real concurrency regressions use independent transactions and
+private schemas in the isolated CI PostgreSQL database.
