@@ -28,6 +28,11 @@ python docs/scripts/anthropic_conformance.py \
   --output /tmp/anthropic-synthetic-evidence.json
 ```
 
+The existing strict documentation CI build also runs this regression suite and
+a temporary fixture-report smoke check through a MkDocs build hook. Install
+`requirements/docs.txt` to use that documentation toolchain locally. A failing
+guard stops the build; it never promotes fixtures to live acceptance.
+
 The default harness validates twelve **explicit simulated protocol outcomes**,
 verdict shape, batch side-effect assertions and a strict content-free evidence
 contract. It launches no application, sends no network/model requests, reads no

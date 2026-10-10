@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import copy
+import io
+import subprocess
 import json
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from anthropic_evidence_hook import on_pre_build
 
 from anthropic_conformance import (
     FIXTURE_PATH,
@@ -111,6 +115,65 @@ class EvidenceTests(unittest.TestCase):
                     main()
             self.assertEqual(caught.exception.code, 2)
             self.assertFalse(output.exists())
+
+    def test_live_cli_handles_unreadable_or_nonobject_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "evidence.json"
+            output = Path(directory) / "report.json"
+            payloads = (None, b"{", b"\xff", b"[]", b"null", b"42", b'"text"')
+            for payload in payloads:
+                with self.subTest(payload=payload):
+                    if payload is not None:
+                        source.write_bytes(payload)
+                    argv = [
+                        "harness",
+                        "--live",
+                        "--test-tenant-ref",
+                        "test-tenant-001",
+                        "--harmless-fixtures",
+                        "--evidence",
+                        str(source),
+                        "--output",
+                        str(output),
+                    ]
+                    with (
+                        patch("sys.argv", argv),
+                        patch("sys.stderr", new_callable=io.StringIO) as stderr,
+                    ):
+                        with self.assertRaises(SystemExit) as caught:
+                            main()
+                    self.assertEqual(caught.exception.code, 2)
+                    self.assertIn("evidence file", stderr.getvalue())
+                    self.assertNotIn("Traceback", stderr.getvalue())
+                    self.assertFalse(output.exists())
+
+    def test_documentation_build_runs_tests_and_cli_with_telemetry_disabled(
+        self,
+    ) -> None:
+        with patch("anthropic_evidence_hook.subprocess.run") as run:
+            run.return_value = subprocess.CompletedProcess([], 0)
+            on_pre_build(object())
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("unittest", run.call_args_list[0].args[0])
+        self.assertIn(
+            "docs/scripts/anthropic_conformance.py", run.call_args_list[1].args[0]
+        )
+        for call in run.call_args_list:
+            self.assertEqual(call.kwargs["env"]["PRELOOP_DISABLE_TELEMETRY"], "true")
+        self.assertFalse(Path(run.call_args_list[1].args[0][-1]).parent.exists())
+
+    def test_documentation_build_fails_when_either_guard_fails(self) -> None:
+        for codes in ((1,), (0, 1)):
+            with (
+                self.subTest(codes=codes),
+                patch("anthropic_evidence_hook.subprocess.run") as run,
+            ):
+                run.side_effect = [
+                    subprocess.CompletedProcess([], code) for code in codes
+                ]
+                with self.assertRaisesRegex(RuntimeError, "evidence guards failed"):
+                    on_pre_build(object())
+                self.assertEqual(run.call_count, len(codes))
 
 
 if __name__ == "__main__":

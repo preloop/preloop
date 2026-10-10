@@ -5,6 +5,9 @@ repo_url: https://github.com/preloop/preloop
 repo_name: preloop/preloop
 edit_uri: edit/main/docs/
 docs_dir: docs
+# CI and local documentation builds execute the evidence integrity guards.
+hooks:
+  - docs/scripts/anthropic_evidence_hook.py
 # Tooling that lives next to the docs, not pages.
 exclude_docs: |
   scripts/

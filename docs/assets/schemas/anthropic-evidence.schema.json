@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://docs.preloop.ai/schemas/anthropic-evidence-v1.json",
+  "$id": "https://docs.preloop.ai/assets/schemas/anthropic-evidence.schema.json",
   "title": "Content-free Anthropic governance evidence",
   "type": "object",
   "additionalProperties": false,

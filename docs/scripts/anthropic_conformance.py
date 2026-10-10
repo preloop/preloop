@@ -163,7 +163,12 @@ def main() -> int:
         else:
             if not args.evidence:
                 parser.error("live mode requires an operator-supplied evidence file")
-            evidence = json.loads(args.evidence.read_text())
+            try:
+                evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                parser.error(f"could not read evidence file ({type(exc).__name__})")
+            if not isinstance(evidence, dict):
+                parser.error("evidence file must contain a JSON object")
             if evidence.get("kind") != "live_application":
                 parser.error("live mode cannot import a synthetic result")
             if evidence.get("test_tenant_ref") != args.test_tenant_ref:
