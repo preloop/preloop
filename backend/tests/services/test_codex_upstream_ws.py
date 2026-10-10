@@ -685,6 +685,8 @@ def test_retired_entry_is_never_reused():
     _, response = _call(upstream, _payload(SECOND))
     assert response["id"] == "resp_http"
     assert len(socket.sent) == 1
+    # The holder closes it, so a replaced in-flight entry cannot leak.
+    assert socket.closed
 
 
 def test_busy_socket_falls_back_to_http():

@@ -5593,7 +5593,10 @@ class OpenAIGatewayService:
                 self._codex_ws_fallback("socket_busy", "http")
                 return None
             if entry.retired:
-                # Evicted or expired between lookup and lock; never reuse.
+                # Evicted or replaced between lookup and lock; never reuse.
+                # Close here too: put() leaves a replaced in-flight entry to
+                # its lock holder, and that may be this request.
+                entry.close()
                 entry.lock.release()
                 self._codex_ws_fallback("socket_retired", "http")
                 return None
