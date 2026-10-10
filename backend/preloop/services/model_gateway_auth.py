@@ -227,10 +227,15 @@ def _resolve_bearer_context(
             adapter can flush after the run.
     """
     if user:
-        api_key = crud_api_key.get_by_key(db, key=token)
+        api_key = crud_api_key.get_by_key(db, key=token, include_restricted=True)
         # This path never calls enforce_api_key_route_scope. A key whose only
         # scope is report_discovery must not become a gateway principal.
         presented_key = api_key or getattr(user, "_auth_api_key", None)
+        if (
+            presented_key is not None
+            and getattr(presented_key, "requires_machine_authorization", False) is True
+        ):
+            return None
         if is_device_scoped_api_key(presented_key):
             logger.info(
                 "Denied device-scoped API key %s on the model gateway",
@@ -273,8 +278,10 @@ def _resolve_bearer_context(
     # rejected — a revoked durable agent credential (e.g. the managed agent
     # was deleted or suspended) otherwise surfaces only as a generic 401 and
     # is very hard to diagnose in the field.
-    rejected_key = crud_api_key.get_by_key(db, key=token)
+    rejected_key = crud_api_key.get_by_key(db, key=token, include_restricted=True)
     if rejected_key is not None:
+        if getattr(rejected_key, "requires_machine_authorization", False) is True:
+            return None
         if not rejected_key.is_active:
             reason = "key is deactivated (agent deleted/suspended or offboarded)"
         elif rejected_key.is_expired:
