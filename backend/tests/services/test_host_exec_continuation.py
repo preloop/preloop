@@ -115,8 +115,10 @@ def test_session_recorded_only_on_success(monkeypatch):
 # --- Continuation validation -------------------------------------------------
 
 
-def _rows(monkeypatch, *, session=None, result=None, caps=("host_continuation",)):
-    flow = SimpleNamespace(id=uuid4(), account_id=uuid4())
+def _rows(
+    monkeypatch, *, session=None, result=None, caps=("host_continuation",), flow=None
+):
+    flow = flow or SimpleNamespace(id=uuid4(), account_id=uuid4())
     runner = SimpleNamespace(
         id=uuid4(),
         capabilities={
@@ -491,3 +493,134 @@ async def test_continuation_binds_the_existing_pr_without_opening_another(monkey
     assert await orch._open_host_published_pr("SUCCEEDED") is None
     assert bound == [(execution_id, pr_url)]
     forge.create_pull_request.assert_not_called()
+
+
+def test_delayed_lease_revalidates_continuation_from_rows(monkeypatch):
+    """A lease rebuilt without orchestrator context validates from the rows.
+
+    The flow has no copilot_model alias, so the lease and the recorded
+    session carry the catalog model; the comparison uses the same value.
+    """
+    flow = SimpleNamespace(
+        id=uuid4(),
+        account_id=uuid4(),
+        agent_config={"host_exec_profile": "copilot-seat"},
+        ai_model=SimpleNamespace(model_identifier="gpt-5.1"),
+        git_clone_config=ONE_REPO,
+    )
+    session = {
+        "harness": "copilot_cli",
+        "session_id": SESSION,
+        "host_exec_profile": "copilot-seat",
+        "model_identifier": "gpt-5.1",
+    }
+    _, prior, runner, resume = _rows(monkeypatch, session=session, flow=flow)
+    execution = SimpleNamespace(trigger_event_details={"_resume": resume})
+    executor = RemoteRunnerExecutor(
+        "copilot",
+        {},
+        db=MagicMock(),
+        pool="local",
+        account_id=uuid4(),
+        flow=flow,
+        execution=execution,
+    )
+    payload = executor._lease_payload(
+        execution_id=uuid4(), flow_id=flow.id, prompt="address feedback", flow=flow
+    )
+    assert payload["host_exec_resume"] == {
+        "session_id": SESSION,
+        "execution_id": str(prior.id),
+    }
+    assert workspace_owner_runner_id(MagicMock(), payload=payload) == runner.id
+
+    flow.ai_model = SimpleNamespace(model_identifier="other-model")
+    with pytest.raises(HostContinuationError, match="model changed"):
+        executor._lease_payload(
+            execution_id=uuid4(), flow_id=flow.id, prompt="again", flow=flow
+        )
+
+
+def test_continuation_after_a_no_change_continuation_is_admitted(monkeypatch):
+    flow, _, _, resume = _rows(
+        monkeypatch,
+        result={
+            "pr_url": "https://bitbucket.org/acme/app/pull-requests/1",
+            "host_publication": {"status": "no_changes", "branch": BRANCH},
+        },
+    )
+    resolved = resolve_host_continuation(
+        MagicMock(),
+        flow=flow,
+        resume=resume,
+        profile="copilot-seat",
+        model_identifier="team-default",
+    )
+    assert resolved["session_id"] == SESSION
+
+
+def _continuation_orchestrator(monkeypatch, receipt, forge, trigger):
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    execution_id = uuid4()
+    orch = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+    orch.db = MagicMock()
+    orch.execution_log = SimpleNamespace(
+        id=execution_id, result={"host_publication": receipt}
+    )
+    orch.flow = SimpleNamespace(
+        name="Implementer", agent_config={"host_exec_profile": "copilot-seat"}
+    )
+    orch.trigger_event_data = trigger
+    orch.execution_logger = MagicMock()
+    monkeypatch.setattr(
+        orch,
+        "prepare_host_exec_checkout_context",
+        AsyncMock(return_value=_continuation_context(execution_id, trigger)),
+    )
+    monkeypatch.setattr(
+        orch, "_publication_tracker_clients", AsyncMock(return_value=[forge])
+    )
+    return orch, execution_id
+
+
+@pytest.mark.asyncio
+async def test_no_change_continuation_binds_existing_pr_and_never_creates(monkeypatch):
+    bound = []
+    monkeypatch.setattr(
+        "preloop.services.flow_pr_binding.record_opened_pr",
+        lambda db, execution_id, url, **kw: bound.append((execution_id, url)),
+    )
+    pr_url = "https://bitbucket.org/acme/app/pull-requests/1"
+    forge = SimpleNamespace(
+        tracker_type="bitbucket",
+        list_open_pull_requests_by_source_branch=AsyncMock(
+            return_value={"items": [{"url": pr_url, "source_branch": BRANCH}]}
+        ),
+        create_pull_request=AsyncMock(side_effect=AssertionError("second PR")),
+    )
+    trigger = {
+        "source": "jira",
+        "_resume": {"execution_id": str(uuid4()), "source_branch": BRANCH},
+    }
+    receipt = {"status": "no_changes", "branch": BRANCH}
+    orch, execution_id = _continuation_orchestrator(
+        monkeypatch, receipt, forge, trigger
+    )
+    assert await orch._open_host_published_pr("SUCCEEDED") is None
+    assert bound == [(execution_id, pr_url)]
+
+    # The PR was closed meanwhile: no create, an actionable failure.
+    forge.list_open_pull_requests_by_source_branch = AsyncMock(
+        return_value={"items": []}
+    )
+    orch, _ = _continuation_orchestrator(monkeypatch, receipt, forge, trigger)
+    error = await orch._open_host_published_pr("SUCCEEDED")
+    assert error and error.startswith("publication_failed")
+    forge.create_pull_request.assert_not_called()
+
+    # A first run with no changes never reaches binding at all.
+    orch, _ = _continuation_orchestrator(
+        monkeypatch, receipt, forge, {"source": "jira"}
+    )
+    assert await orch._open_host_published_pr("SUCCEEDED") is None

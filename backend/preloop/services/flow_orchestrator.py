@@ -3212,6 +3212,11 @@ class FlowExecutionOrchestrator:
             host_model = host_exec_model_identifier(
                 host_agent_type, self.flow.agent_config
             )
+            # The lease (and so the recorded session) carries the alias or,
+            # without one, the catalog model; continuation compares the same.
+            lease_model = host_model or (
+                self.ai_model.model_identifier if self.ai_model else None
+            )
             resume = (self.trigger_event_data or {}).get("_resume")
             host_resume = None
             if (
@@ -3230,7 +3235,7 @@ class FlowExecutionOrchestrator:
                     flow=self.flow,
                     resume=resume,
                     profile=profile or "",
-                    model_identifier=host_model,
+                    model_identifier=lease_model,
                 )
             elif workspace_files or resume:
                 raise ValueError(
@@ -3248,8 +3253,7 @@ class FlowExecutionOrchestrator:
                 # catalog model remains the fallback for a saved flow. Neither
                 # value is the model the CLI reports, and an empty value leaves
                 # --model unset (the CLI's own default).
-                "model_identifier": host_model
-                or (self.ai_model.model_identifier if self.ai_model else None),
+                "model_identifier": lease_model,
             }
             if host_resume is not None:
                 host_context["host_exec_resume"] = {
@@ -5373,7 +5377,14 @@ class FlowExecutionOrchestrator:
             if isinstance(result, dict)
             else None
         )
-        if not isinstance(receipt, dict) or receipt.get("status") != "pushed":
+        if not isinstance(receipt, dict):
+            return None
+        is_continuation = bool((self.trigger_event_data or {}).get("_resume"))
+        # A continuation that made no new commit still binds the existing pull
+        # request, so the thread's next continuation sees a confirmed PR.
+        if receipt.get("status") != "pushed" and not (
+            is_continuation and receipt.get("status") == "no_changes"
+        ):
             return None
         branch = str(receipt.get("branch") or "")
         failed = (
@@ -5410,6 +5421,7 @@ class FlowExecutionOrchestrator:
                 self.db,
                 execution_id=self.execution_log.id,
                 client=clients[0],
+                allow_create=receipt.get("status") == "pushed",
                 branch=branch,
                 base_branch=str(checkout["repositories"][0].get("branch") or "main"),
                 title=title,

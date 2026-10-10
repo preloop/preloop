@@ -121,7 +121,8 @@ def resolve_host_continuation(
         flow: The flow being continued.
         resume: ``trigger_event_data["_resume"]``.
         profile: The flow's current host profile.
-        model_identifier: The flow's current host model alias.
+        model_identifier: The model the lease would carry: the flow's host
+            alias, or the catalog model when no alias is set.
 
     Returns:
         ``{"session_id", "execution_id", "runner_id", "source_branch"}``.
@@ -161,7 +162,7 @@ def resolve_host_continuation(
     if (
         not result.get("pr_url")
         or not isinstance(receipt, dict)
-        or receipt.get("status") != "pushed"
+        or receipt.get("status") not in {"pushed", "no_changes"}
         or not isinstance(branch, str)
         or receipt.get("branch") != branch
     ):

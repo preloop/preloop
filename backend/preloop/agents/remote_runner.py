@@ -587,14 +587,21 @@ def _host_continuation_from_rows(
     from preloop.services.host_exec_continuation import resolve_host_continuation
 
     trigger = getattr(execution, "trigger_event_details", None) or {}
+    try:
+        ai_model = getattr(flow, "ai_model", None)
+    except Exception:
+        ai_model = None
+    # Same precedence as the orchestrator's host context: alias, then the
+    # catalog model.
+    model = host_exec_model_identifier(
+        kind, getattr(flow, "agent_config", None)
+    ) or getattr(ai_model, "model_identifier", None)
     resolved = resolve_host_continuation(
         db,
         flow=flow,
         resume=trigger.get("_resume") if isinstance(trigger, dict) else None,
         profile=profile,
-        model_identifier=host_exec_model_identifier(
-            kind, getattr(flow, "agent_config", None)
-        ),
+        model_identifier=model,
     )
     return {
         "session_id": resolved["session_id"],
