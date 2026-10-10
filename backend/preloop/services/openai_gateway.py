@@ -30,6 +30,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     Iterator,
     List,
     Literal,
@@ -71,6 +72,7 @@ from preloop.models.db.gateway_session import (
     has_runtime_session_summary_columns,
     release_gateway_session,
 )
+from preloop.services import codex_upstream_ws as codex_ws
 from preloop.services.codex_crosschat import (
     crosschat_chat_message,
     is_unsolicited_crosschat_output,
@@ -877,6 +879,8 @@ _CODEX_ROUTING_HEADER_LIMITS = {
     "x-openai-subagent": 256,
 }
 CODEX_TURN_STATE_HEADER = "x-codex-turn-state"
+#: Account ``meta_data`` key overriding ``CODEX_UPSTREAM_WEBSOCKET`` (#1454).
+CODEX_UPSTREAM_WS_ACCOUNT_SETTING = "codex_upstream_websocket"
 
 
 def _bounded_header_value(value: Any, limit: int) -> Optional[str]:
@@ -1257,6 +1261,7 @@ class OpenAIGatewayService:
         """
         self._last_upstream_retry_count = 0
         self._last_alibaba_cache_mode = None
+        self._codex_transport_meta = None
         self.last_usage_id = None
         # A fresh identity for every request, including one that never reaches
         # usage recording. Re-arming here (rather than minting at first use)
@@ -5421,16 +5426,27 @@ class OpenAIGatewayService:
             if fallback is not None:
                 routing["session-id"] = fallback
         headers.update(routing)
+        from preloop.services.hosted_spend_guard import guard_unmetered_hosted_call
+
+        guard_unmetered_hosted_call(ai_model)
+        self._codex_transport_meta = {"transport": "http"}
+        # Resolved while the DB phase is still open (account override).
+        use_websocket = self._codex_upstream_ws_enabled()
+        self.release_db_for_wait(ai_model)
+        if use_websocket:
+            ws_response = self._create_openai_codex_response_ws(
+                credentials=credentials,
+                upstream_payload=upstream_payload,
+                routing=routing,
+            )
+            if ws_response is not None:
+                return ws_response
         req = urllib_request.Request(
             "https://chatgpt.com/backend-api/codex/responses",
             data=json.dumps(upstream_payload).encode("utf-8"),
             headers=headers,
             method="POST",
         )
-        from preloop.services.hosted_spend_guard import guard_unmetered_hosted_call
-
-        guard_unmetered_hosted_call(ai_model)
-        self.release_db_for_wait(ai_model)
         try:
             with urllib_request.urlopen(req, timeout=600) as response:
                 self._capture_rate_limit_headers(getattr(response, "headers", None))
@@ -5457,6 +5473,214 @@ class OpenAIGatewayService:
                 message="OpenAI Codex upstream returned invalid JSON",
             ) from exc
 
+    def _codex_upstream_ws_enabled(self) -> bool:
+        """Whether this call may use the upstream Responses WebSocket (#1454).
+
+        Global default from ``CODEX_UPSTREAM_WEBSOCKET``; a boolean
+        ``codex_upstream_websocket`` key in the account's ``meta_data``
+        overrides it either way for that account.
+        """
+        enabled = bool(getattr(settings, "codex_upstream_websocket", False))
+        try:
+            from preloop.models.crud import crud_account
+
+            account = crud_account.get(self.db, id=self.auth_context.account_id)
+            meta = getattr(account, "meta_data", None) if account else None
+            override = (
+                meta.get(CODEX_UPSTREAM_WS_ACCOUNT_SETTING)
+                if isinstance(meta, dict)
+                else None
+            )
+            if isinstance(override, bool):
+                enabled = override
+        except Exception:  # noqa: BLE001 - the flag lookup must never fail a call
+            logger.debug("Codex WS account override lookup failed", exc_info=True)
+        return enabled
+
+    def _codex_ws_fallback(self, reason: str, action: str) -> None:
+        """Count and log one transport fallback (reason only; no bodies/tokens)."""
+        codex_ws.count(f"fallback_{reason}")
+        logger.info(
+            "Codex upstream WS fallback: reason=%s action=%s account=%s",
+            reason,
+            action,
+            self.auth_context.account_id,
+        )
+
+    def _iter_codex_ws_events(
+        self, entry: "codex_ws.WsEntry", frame: Dict[str, Any]
+    ) -> Iterator[Dict[str, Any]]:
+        """Relay WS events, capturing turn state and rate limits on the way."""
+        for event in codex_ws.iter_frame_events(entry.socket, frame, timeout=600):
+            if event.get("type") in {"codex.response.metadata", "response.metadata"}:
+                meta_headers = event.get("headers")
+                if isinstance(meta_headers, dict):
+                    self._capture_rate_limit_headers(meta_headers)
+                    lowered = {str(k).lower(): v for k, v in meta_headers.items()}
+                    self._capture_codex_turn_state(lowered)
+            yield event
+
+    def _create_openai_codex_response_ws(
+        self,
+        *,
+        credentials: Any,
+        upstream_payload: Dict[str, Any],
+        routing: Mapping[str, str],
+    ) -> Optional[Dict[str, Any]]:
+        """Send one Codex call over the warm upstream WebSocket.
+
+        Returns the aggregated response, or ``None`` when this call must use
+        the HTTP path instead (no session id, socket busy, handshake refused,
+        transport failure on a fresh socket). Raises ``ModelGatewayAPIError``
+        for upstream errors the HTTP path would also have surfaced.
+        """
+        session_id = routing.get("session-id")
+        if not session_id:
+            self._codex_ws_fallback("no_session_id", "http")
+            return None
+        registry = codex_ws.REGISTRY
+        registry.configure(
+            max_entries=getattr(settings, "codex_upstream_websocket_max_sockets", None),
+            idle_timeout_s=getattr(
+                settings, "codex_upstream_websocket_idle_seconds", None
+            ),
+            http_only_ttl_s=getattr(
+                settings, "codex_upstream_websocket_http_only_seconds", None
+            ),
+        )
+        registry.sweep()
+        key = (str(self.auth_context.account_id), session_id)
+        http_only = registry.http_only_reason(key)
+        if http_only is not None:
+            codex_ws.count("http_only_skip")
+            return None
+        upstream_account = str(credentials.payload.get("account_id"))
+        digest = codex_ws.auth_digest(str(credentials.value), upstream_account)
+        handshake_headers = {
+            "Authorization": f"Bearer {credentials.value}",
+            "chatgpt-account-id": upstream_account,
+            "OpenAI-Beta": codex_ws.CODEX_WS_BETA,
+            "originator": "preloop",
+            "User-Agent": "Preloop/1.0",
+        }
+        handshake_headers.update(
+            {k: v for k, v in routing.items() if k != CODEX_TURN_STATE_HEADER}
+        )
+        # The client's replayed turn state rides in client_metadata on WS.
+        turn_state = routing.get(CODEX_TURN_STATE_HEADER)
+
+        for attempt in (0, 1):
+            entry = registry.get(key)
+            if entry is not None:
+                drop_reason = (
+                    "auth_changed"
+                    if entry.auth_digest != digest
+                    else registry.expiry_reason(entry)
+                )
+                if drop_reason is not None and entry.lock.acquire(blocking=False):
+                    try:
+                        # Retire under the lock so no request can pick it up.
+                        registry.drop(entry)
+                    finally:
+                        entry.lock.release()
+                    self._codex_ws_fallback(drop_reason, "reconnect_full")
+                    entry = None
+            warm = entry is not None
+            if entry is None:
+                try:
+                    socket, handshake_turn_state = codex_ws.default_connect(
+                        dict(handshake_headers), open_timeout=20
+                    )
+                except codex_ws.CodexWsHandshakeError as exc:
+                    codex_ws.count("handshake_failure")
+                    registry.mark_http_only(key, exc.reason)
+                    self._codex_ws_fallback(f"handshake_{exc.reason}", "http")
+                    return None
+                if handshake_turn_state:
+                    self._capture_codex_turn_state(
+                        {CODEX_TURN_STATE_HEADER: handshake_turn_state}
+                    )
+                now = registry.clock()
+                entry = codex_ws.WsEntry(
+                    key=key,
+                    socket=socket,
+                    auth_digest=digest,
+                    opened_at=now,
+                    last_used=now,
+                )
+                registry.put(entry)
+                codex_ws.count("socket_opened")
+            if not entry.lock.acquire(blocking=False):
+                # Another request of this session is in flight on the socket.
+                self._codex_ws_fallback("socket_busy", "http")
+                return None
+            if entry.retired:
+                # Evicted or replaced between lookup and lock; never reuse.
+                # Close here too: put() leaves a replaced in-flight entry to
+                # its lock holder, and that may be this request.
+                entry.close()
+                entry.lock.release()
+                self._codex_ws_fallback("socket_retired", "http")
+                return None
+            try:
+                codex_ws.count("socket_reused" if warm else "socket_new")
+                plan = codex_ws.plan_request(entry, upstream_payload)
+                frame = codex_ws.build_frame(upstream_payload, plan, turn_state)
+                try:
+                    response = self._aggregate_codex_events(
+                        self._iter_codex_ws_events(entry, frame)
+                    )
+                except codex_ws.CodexWsTransportError as exc:
+                    registry.drop(entry)
+                    if warm and attempt == 0:
+                        self._codex_ws_fallback("socket_closed", "reconnect_full")
+                        continue
+                    self._codex_ws_fallback(f"transport_{exc}", "http")
+                    return None
+                except (codex_ws.CodexWsUpstreamError, ModelGatewayAPIError) as exc:
+                    registry.drop(entry)
+                    status = getattr(exc, "status", None) or getattr(
+                        exc, "status_code", 502
+                    )
+                    code = getattr(exc, "code", None)
+                    if plan.mode == "incremental" and attempt == 0 and status != 429:
+                        self._codex_ws_fallback(
+                            code
+                            if code == codex_ws.PREVIOUS_RESPONSE_NOT_FOUND
+                            else "continuation_error",
+                            "reconnect_full",
+                        )
+                        continue
+                    if isinstance(exc, ModelGatewayAPIError):
+                        raise
+                    raise ModelGatewayAPIError(
+                        provider="openai",
+                        status_code=status,
+                        message=exc.message,
+                    ) from exc
+                entry.fingerprint = codex_ws.request_fingerprint(upstream_payload)
+                sent_input = upstream_payload.get("input")
+                # Only a list input can anchor a continuation.
+                entry.last_input = (
+                    list(sent_input) if isinstance(sent_input, list) else None
+                )
+                entry.last_response_id = response.get("id")
+                entry.last_output = list(response.get("output") or [])
+                entry.last_used = registry.clock()
+                codex_ws.count(f"mode_{plan.mode}")
+                if plan.mode == "full":
+                    codex_ws.count(f"full_reason_{plan.reason}")
+                self._codex_transport_meta = {
+                    "transport": "ws",
+                    "ws_mode": plan.mode,
+                }
+                return response
+            finally:
+                if entry.retired:
+                    entry.close()
+                entry.lock.release()
+        return None
+
     def _capture_codex_turn_state(self, headers: Any) -> None:
         """Remember the upstream sticky-routing token for the client."""
         if headers is None or not hasattr(headers, "get"):
@@ -5469,7 +5693,13 @@ class OpenAIGatewayService:
             self.codex_turn_state = value
 
     def _aggregate_codex_sse_stream(self, response: Any) -> Dict[str, Any]:
-        """Aggregate a Codex Responses SSE stream into a final response dict.
+        """Aggregate a Codex Responses SSE stream into a final response dict."""
+        return self._aggregate_codex_events(self._iter_sse_events(response))
+
+    def _aggregate_codex_events(
+        self, events: Iterable[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Aggregate Codex Responses events (SSE or WebSocket) into a response.
 
         Codex (``chatgpt.com/backend-api/codex/responses``) emits typed SSE
         events. We deliberately avoid trusting the terminal
@@ -5510,7 +5740,7 @@ class OpenAIGatewayService:
                 item_order.append(key)
             return key
 
-        for event in self._iter_sse_events(response):
+        for event in events:
             event_type = event.get("type")
 
             if event_type in {"response.created", "response.in_progress"}:
@@ -10307,6 +10537,9 @@ class OpenAIGatewayService:
                     "purpose"
                 ),
                 **(self.gateway_attribution or {}),
+                # Codex upstream transport (#1454): "http" or "ws", and on ws
+                # whether the frame was "incremental" or a "full" resend.
+                **(getattr(self, "_codex_transport_meta", None) or {}),
             },
             gateway_subject_id=(
                 gateway_subject.id if gateway_subject is not None else None
