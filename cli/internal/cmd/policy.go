@@ -655,8 +655,9 @@ func policyListOutputFormat(cmd *cobra.Command) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	formatFlag := cmd.Flags().Lookup("format")
-	if formatFlag != nil && formatFlag.Changed {
+	chosen := output
+	flagName := "--output"
+	if cmd.Flags().Changed("format") {
 		format, err := cmd.Flags().GetString("format")
 		if err != nil {
 			return "", err
@@ -671,14 +672,15 @@ func policyListOutputFormat(cmd *cobra.Command) (string, error) {
 			)
 		}
 		if !outputChanged {
-			output = format
+			chosen = format
+			flagName = "--format"
 		}
 	}
-	switch strings.ToLower(strings.TrimSpace(output)) {
+	switch strings.ToLower(strings.TrimSpace(chosen)) {
 	case "table", "json", "yaml":
-		return strings.ToLower(strings.TrimSpace(output)), nil
+		return strings.ToLower(strings.TrimSpace(chosen)), nil
 	default:
-		return "", fmt.Errorf("--output must be table, json, or yaml, got %q", output)
+		return "", fmt.Errorf("%s must be table, json, or yaml, got %q", flagName, chosen)
 	}
 }
 

@@ -266,6 +266,56 @@ func TestPolicyListRejectsLimitOutOfRange(t *testing.T) {
 	}
 }
 
+func TestPolicyListRejectsLimitAboveMax(t *testing.T) {
+	fake := newPolicyListFake(t)
+
+	_, _, err := runPolicyListCommand(t, "--limit", "1001")
+	if err == nil {
+		t.Fatal("expected --limit 1001 to fail")
+	}
+	if !strings.Contains(err.Error(), "1000") {
+		t.Fatalf("error should name the upper bound: %v", err)
+	}
+	if len(fake.paths) != 0 {
+		t.Fatalf("invalid limit still called the API: %v", fake.paths)
+	}
+}
+
+func TestPolicyListRejectsDisagreeingOutputFlags(t *testing.T) {
+	fake := newPolicyListFake(t)
+
+	_, _, err := runPolicyListCommand(t, "--output", "json", "--format", "yaml")
+	if err == nil {
+		t.Fatal("expected disagreeing --output and --format to fail")
+	}
+	if !strings.Contains(err.Error(), "disagree") {
+		t.Fatalf("error: %v", err)
+	}
+	if len(fake.paths) != 0 {
+		t.Fatalf("disagreement still called the API: %v", fake.paths)
+	}
+}
+
+func TestPolicyListNamesTheFlagThatWasInvalid(t *testing.T) {
+	fake := newPolicyListFake(t)
+
+	_, _, formatErr := runPolicyListCommand(t, "--format", "xml")
+	if formatErr == nil || !strings.Contains(formatErr.Error(), "--format must be table, json, or yaml") {
+		t.Fatalf("--format xml error: %v", formatErr)
+	}
+	if len(fake.paths) != 0 {
+		t.Fatalf("--format xml still called the API: %v", fake.paths)
+	}
+
+	_, _, outputErr := runPolicyListCommand(t, "--output", "xml")
+	if outputErr == nil || !strings.Contains(outputErr.Error(), "--output must be table, json, or yaml") {
+		t.Fatalf("--output xml error: %v", outputErr)
+	}
+	if len(fake.paths) != 0 {
+		t.Fatalf("--output xml still called the API: %v", fake.paths)
+	}
+}
+
 func TestPolicyListHelpDescribesVersions(t *testing.T) {
 	var out bytes.Buffer
 	policyListCmd.SetOut(&out)
