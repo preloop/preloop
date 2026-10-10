@@ -10,7 +10,7 @@ import (
 func idpRouteOptions(oses ...string) claudeDesktopRouteOptions {
 	opts := fixedRouteOptions(claudeDesktopRouteDirect, oses...)
 	opts.Auth = claudeDesktopAuthIdP
-	opts.IdPIssuer = "https://login.corp.example/"
+	opts.IdPIssuer = "https://login.corp.example"
 	opts.IdPClientID = "desktop-client"
 	return opts
 }
@@ -125,9 +125,14 @@ func TestClaudeDesktopIdPValidation(t *testing.T) {
 		"missing issuer":    func(o *claudeDesktopRouteOptions) { o.IdPIssuer = "" },
 		"missing client id": func(o *claudeDesktopRouteOptions) { o.IdPClientID = "" },
 		"http issuer":       func(o *claudeDesktopRouteOptions) { o.IdPIssuer = "http://login.corp.example" },
-		"discovery url":     func(o *claudeDesktopRouteOptions) { o.IdPIssuer = "https://login.corp.example/.well-known/openid-configuration" },
-		"bad auth":          func(o *claudeDesktopRouteOptions) { o.Auth = "password" },
-		"apps gateway":      func(o *claudeDesktopRouteOptions) { o.Route = claudeDesktopRouteAppsGateway },
+		"discovery url": func(o *claudeDesktopRouteOptions) {
+			o.IdPIssuer = "https://login.corp.example/.well-known/openid-configuration"
+		},
+		"query":        func(o *claudeDesktopRouteOptions) { o.IdPIssuer = "https://login.corp.example/?tenant=x" },
+		"fragment":     func(o *claudeDesktopRouteOptions) { o.IdPIssuer = "https://login.corp.example/#x" },
+		"userinfo":     func(o *claudeDesktopRouteOptions) { o.IdPIssuer = "https://user:pw@login.corp.example" },
+		"bad auth":     func(o *claudeDesktopRouteOptions) { o.Auth = "password" },
+		"apps gateway": func(o *claudeDesktopRouteOptions) { o.Route = claudeDesktopRouteAppsGateway },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -161,5 +166,40 @@ func TestClaudeDesktopKeyAuthDefaultUnchanged(t *testing.T) {
 	}
 	if a.String() != b.String() || !strings.Contains(a.String(), "helper-script") {
 		t.Fatal("--auth key must keep the existing output")
+	}
+}
+
+func TestClaudeDesktopIdPKeepsIssuerExactly(t *testing.T) {
+	opts := idpRouteOptions("linux")
+	opts.IdPIssuer = "https://login.corp.example/oauth2/default/"
+	artifacts, notes, err := claudeDesktopIdPArtifacts(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(artifactByName(t, artifacts, "managed-settings.json").Content, `"issuer":"https://login.corp.example/oauth2/default/"`) {
+		t.Fatal("trailing slash must be kept: Preloop matches iss exactly")
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "https://login.corp.example/oauth2/default/ spelled exactly") {
+		t.Fatal("setup note must name the exact issuer")
+	}
+}
+
+func TestClaudeDesktopIdPLegacyDesktopGoldenLinux(t *testing.T) {
+	opts := idpRouteOptions("linux")
+	opts.IdPLegacyDesktop = true
+	artifacts, _, err := claudeDesktopIdPArtifacts(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{
+  "inferenceProvider": "gateway",
+  "inferenceGatewayBaseUrl": "https://preloop.example.com/anthropic",
+  "inferenceCustomHeaders": {"X-Preloop-Client":"claude-desktop"},
+  "inferenceCredentialKind": "interactive",
+  "inferenceGatewayOidc": ` + idpOidcJSON + `
+}
+`
+	if got := artifactByName(t, artifacts, "managed-settings.json").Content; got != want {
+		t.Fatalf("legacy idp golden mismatch:\n%s", got)
 	}
 }

@@ -574,3 +574,33 @@ def test_tls_verify_uses_public_roots_unless_a_ca_bundle_is_set(monkeypatch, tmp
     context = idp._tls_verify()
     assert isinstance(context, ssl.SSLContext)
     assert context.cert_store_stats()["x509_ca"] == 1
+
+
+def test_multi_audience_token_of_one_provider_uses_azp():
+    p = provider(audiences=("aud-a", "aud-b"))
+    token = sign(claims(aud=["aud-a", "aud-b"], azp="aud-b"))
+    identity = _validate(token, providers=[p])
+    assert identity.provider.id == p.id
+    no_azp = sign(claims(aud=["aud-a", "aud-b"]))
+    assert _reason(no_azp, providers=[p]) == "bad_audience"
+
+
+def test_cache_is_not_shared_across_guard_settings():
+    stub = StubIdp()
+    cache = JwksCache(fetcher=stub, clock=FakeClock())
+    _validate(sign(), providers=[provider()], stub=stub, cache=cache)
+    _validate(sign(), providers=[provider(allow_private=True)], stub=stub, cache=cache)
+    hosts = provider(allowed_jwks_hosts=("keys.other.example",))
+    _validate(sign(), providers=[hosts], stub=stub, cache=cache)
+    assert stub.jwks_fetches == 3
+    _validate(sign(), providers=[provider()], stub=stub, cache=cache)
+    assert stub.jwks_fetches == 3
+    cache.forget(ISSUER)
+    _validate(sign(), providers=[provider()], stub=stub, cache=cache)
+    assert stub.jwks_fetches == 4
+
+
+def test_no_store_gets_the_ttl_floor():
+    assert idp.clamp_ttl(idp._max_age("no-store")) == idp.MIN_JWKS_TTL_SECONDS
+    assert idp.clamp_ttl(idp._max_age("no-cache, max-age=0")) == 300
+    assert idp._max_age("public, max-age=1200") == 1200

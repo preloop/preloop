@@ -61,7 +61,7 @@ idp_step() {
   api "/account/gateway-identity-providers" | jq -r '.[]? | .id' | while read -r id; do
     api "/account/gateway-identity-providers/$id" -X DELETE >/dev/null
   done
-  local created provider_id token status row meta before
+  local created provider_id token status row meta before tampered
   created="$(api "/account/gateway-identity-providers" -X POST -H 'content-type: application/json' -d "$(jq -nc \
     --arg key "$IDP_KEY_ID" '{name:"harness dex",issuer:"https://dex-idp:5557/dex",audiences:["claude-desktop"],
       api_key_id:$key,allowed_email_domains:["example.com"],allow_private_network_issuer:true}')")"
@@ -85,8 +85,10 @@ idp_step() {
   meta="$(jq -c '.meta_data // {}' <<<"$row")"
   check "7 usage subject" 0 "usage row on the binding key: auth_method=$(jq -r .auth_method <<<"$meta"), subject=$(jq -r .gateway_subject_email <<<"$meta")" \
     bash -c '[ "$(jq -r .auth_method <<<"$1")" = idp ] && [ "$(jq -r .gateway_subject_email <<<"$1")" = alice@example.com ] && [ "$(jq -r .gateway_source <<<"$1")" = direct ]' _ "$meta"
+  # Change the last signature character (A<->B) so the token always differs.
+  if [ "${token: -1}" = A ]; then tampered="${token%?}B"; else tampered="${token%?}A"; fi
   status="$(curl -s -o "$RUN_DIR/step7-tampered.json" -D "$RUN_DIR/step7-tampered.headers" -w '%{http_code}' "$PRELOOP/anthropic/v1/messages" \
-    -H "authorization: Bearer ${token%?}A" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
+    -H "authorization: Bearer $tampered" -H 'anthropic-version: 2023-06-01' -H 'content-type: application/json' \
     -d '{"model":"claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}')"
   check "7 tampered" 0 "a token with a modified signature answered $status with WWW-Authenticate" \
     bash -c '[ "$1" = 401 ] && grep -qi "^www-authenticate: Bearer error=\"invalid_token\"" "$2"' _ "$status" "$RUN_DIR/step7-tampered.headers"
@@ -111,7 +113,8 @@ TRUSTED_KEY_ID="$(jq -r .trusted_key_id <<<"$SEED")"
 MODELS_STATUS="$(curl -s -o /dev/null -w '%{http_code}' "$PRELOOP/anthropic/v1/models" \
   -H "x-api-key: $DIRECT_KEY" -H 'anthropic-version: 2023-06-01')"
 CONTRACT=0; [ "$MODELS_STATUS" = 200 ] && CONTRACT=1
-GW_VERSION="$(CX 'claude --version' | head -1)"
+GW_VERSION="not started (IDP_ONLY)"
+[ "${IDP_ONLY:-0}" = 1 ] || GW_VERSION="$(CX 'claude --version' | head -1)"
 DEX_IMAGE="$(DC config --images 2>/dev/null | grep dex | head -1)"
 PRELOOP_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 log "## Versions"

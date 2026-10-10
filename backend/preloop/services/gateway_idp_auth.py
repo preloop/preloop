@@ -88,7 +88,6 @@ SUPPORTED_ALGORITHMS = frozenset(
 _B64URL_SEGMENT = r"[A-Za-z0-9_-]+"
 _JWT_SHAPE = re.compile(rf"^{_B64URL_SEGMENT}\.{_B64URL_SEGMENT}\.[A-Za-z0-9_-]*$")
 _MAX_AGE = re.compile(r"(?:^|,)\s*max-age\s*=\s*(\d+)", re.IGNORECASE)
-_NO_STORE = re.compile(r"(?:^|,)\s*(?:no-store|no-cache)\b", re.IGNORECASE)
 
 
 class IdpTokenRejectedError(Exception):
@@ -356,10 +355,11 @@ def _tls_verify() -> Any:
 
 
 def _max_age(cache_control: Optional[str]) -> Optional[int]:
+    # ``no-store`` and ``no-cache`` get the 5 minute floor like any short
+    # TTL: refetching keys on every request would be the DoS the floor
+    # exists to prevent.
     if not cache_control:
         return None
-    if _NO_STORE.search(cache_control):
-        return 0
     match = _MAX_AGE.search(cache_control)
     return int(match.group(1)) if match else None
 
@@ -404,12 +404,19 @@ class JwksCache:
         self._guard = threading.Lock()
         self.fetch_count = 0
 
-    def _entry(self, issuer: str) -> _IssuerKeys:
+    @staticmethod
+    def _key(issuer: str, allow_private: bool, extra_jwks_hosts: Sequence[str]) -> str:
+        # Providers sharing an issuer may differ in guard settings; a key set
+        # fetched under one provider's settings is never served to another.
+        hosts = ",".join(sorted({h.strip().lower() for h in extra_jwks_hosts if h}))
+        return f"{issuer}\n{int(allow_private)}\n{hosts}"
+
+    def _entry(self, key: str) -> _IssuerKeys:
         with self._guard:
-            entry = self._issuers.get(issuer)
+            entry = self._issuers.get(key)
             if entry is None:
                 entry = _IssuerKeys()
-                self._issuers[issuer] = entry
+                self._issuers[key] = entry
             return entry
 
     def clear(self) -> None:
@@ -418,9 +425,10 @@ class JwksCache:
             self._issuers.clear()
 
     def forget(self, issuer: str) -> None:
-        """Drop one issuer's cached keys."""
+        """Drop every cached key set for ``issuer``."""
         with self._guard:
-            self._issuers.pop(issuer, None)
+            for key in [k for k in self._issuers if k.split("\n", 1)[0] == issuer]:
+                self._issuers.pop(key, None)
 
     async def get_key(
         self,
@@ -436,7 +444,7 @@ class JwksCache:
             IssuerUnavailableError: The key set could not be fetched.
             IdpTokenRejectedError: ``unknown_kid`` after the allowed refresh.
         """
-        entry = self._entry(issuer)
+        entry = self._entry(self._key(issuer, allow_private, extra_jwks_hosts))
         async with entry.lock:
             now = self._clock()
             if not entry.keys or now >= entry.expires_at:
@@ -633,18 +641,27 @@ def select_provider(
     """Pick the one provider whose audience the token names.
 
     Raises:
-        IdpTokenRejectedError: ``bad_audience`` when none or more than one match.
+        IdpTokenRejectedError: ``bad_audience`` when no provider or more than
+            one provider matches, or when several audiences of the provider
+            match and ``azp`` names none of them.
     """
     token_audiences = set(_token_audiences(claims))
-    matches = [
-        (provider, audience)
+    matched = {
+        provider.id: (provider, [a for a in provider.audiences if a in token_audiences])
         for provider in providers
-        for audience in provider.audiences
-        if audience in token_audiences
-    ]
-    if len({m[0].id for m in matches}) != 1 or len(matches) != 1:
+        if token_audiences & set(provider.audiences)
+    }
+    if len(matched) != 1:
+        # None, or audiences of two providers (two accounts): never guess.
         raise IdpTokenRejectedError("bad_audience")
-    return matches[0]
+    provider, audiences = next(iter(matched.values()))
+    if len(audiences) == 1:
+        return provider, audiences[0]
+    # Several of this provider's audiences: ``azp`` names the one in use.
+    azp = claims.get("azp")
+    if isinstance(azp, str) and azp in audiences:
+        return provider, azp
+    raise IdpTokenRejectedError("bad_audience")
 
 
 async def validate_idp_token(

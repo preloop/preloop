@@ -64,7 +64,7 @@ Claude Desktop can sign each user in with your organization's OpenID Connect ide
 
 1. **Register a Desktop app at your IdP**: a public client with PKCE and the loopback redirect URI `http://127.0.0.1/callback` (Okta needs the exact port: register `http://127.0.0.1:<port>/callback` and set `redirectPort`). Include the `email` claim, and `email_verified` if you restrict email domains. With Desktop's default `id_token` bearer, the token audience is this app's client ID.
 2. **Create a binding API key** in Preloop (an account admin). Its account, allowed models and `per_subject_budget` apply to every IdP user. A trusted upstream key (`model_gateway:trusted_upstream`) is the way to set a `per_subject_budget`; the upstream secret is not used on this route.
-3. **Register the issuer** under Settings, Gateway identity providers, or with the API (account admins only; create, update and delete are audited):
+3. **Register the issuer** with the API (account admins only; create, update and delete are audited). Spell `issuer` exactly as the `iss` claim your IdP puts in tokens, including any trailing `/`:
 
     ```bash
     curl -X POST https://YOUR_PRELOOP_URL/api/v1/account/gateway-identity-providers \
@@ -82,7 +82,7 @@ Claude Desktop can sign each user in with your organization's OpenID Connect ide
       --issuer https://YOUR_ORG.okta.com --client-id DESKTOP_CLIENT_ID
     ```
 
-    It sets `inferenceProvider: gateway`, `inferenceGatewayBaseUrl: https://YOUR_PRELOOP_URL/anthropic`, `inferenceCredentialKind: external-idp`, and `inferenceIdpOidc` (`issuer`, `clientId`, `scopes`, default `openid profile email offline_access`; change with `--scopes`). It repeats the block as `inferenceGatewayOidc` for Desktop releases that predate `inferenceIdpOidc`. `--auth key` (the default) keeps the credential helper configuration above.
+    It sets `inferenceProvider: gateway`, `inferenceGatewayBaseUrl: https://YOUR_PRELOOP_URL/anthropic`, `inferenceCredentialKind: external-idp`, and `inferenceIdpOidc` (`issuer`, `clientId`, `scopes`, default `openid profile email offline_access`; change with `--scopes`). It also writes the block under its older name `inferenceGatewayOidc`. This needs Claude Desktop 2.7032.0 or later; for older releases add `--legacy-desktop`, which writes `inferenceCredentialKind: interactive` with `inferenceGatewayOidc` only (newer releases read that too). The issuer is written exactly as given. `--auth key` (the default) keeps the credential helper configuration above.
 
 Provider settings:
 
@@ -93,7 +93,7 @@ Provider settings:
 | `api_key_id` | required | The binding key; one provider per key |
 | `allowed_email_domains` | empty (any) | Email domain allowlist; needs a verified email |
 | `email_claim` | `email` | Claim holding the email |
-| `require_email_verified` | `true` | Reject `email_verified: false`; without the claim the email is not used for linking or the domain check |
+| `require_email_verified` | `true` | Reject `email_verified: false`. Without the claim the email is dropped: it links no member, and with `allowed_email_domains` set the token is rejected (`domain_not_allowed`) |
 | `groups_claim`, `allowed_groups` | none | Group allowlist; groups are recorded on the first-seen audit event |
 | `required_claims` | `{}` | Claim to exact value, for example a tenant id |
 | `clock_skew_seconds` | `60` (max 300) | Leeway for `exp`, `nbf`, `iat` |
@@ -114,10 +114,10 @@ A rejected token gets `401` with an Anthropic `authentication_error`, `WWW-Authe
 - **Token replay**: IdP tokens are bearer credentials, accepted only within `exp` plus skew and the lifetime cap. There is no replay cache, so the replay window equals the token lifetime. Revocation is the IdP's; disabling the provider, or deactivating the linked member, stops access on the next request.
 - **Audience confusion**: `aud` must match a configured audience, `azp` is checked on multi-audience tokens, and `(issuer, audience)` is globally unique, so a shared multi-tenant issuer cannot cross accounts. A token naming audiences of two providers is rejected.
 - **Issuer spoofing**: the unverified `iss` only selects a candidate; trust comes from the signature against keys fetched from that issuer's discovery document over https. The discovery document's `issuer` must equal the configured string, and `jwks_uri` must be https on the issuer host, a subdomain of it, or a host the admin listed.
-- **Algorithm attacks**: `alg: none`, HMAC (including HS256 with the public key as the secret) and algorithms outside the allowlist are rejected; symmetric keys in a JWKS are ignored; `kid` must match a fetched key.
+- **Algorithm attacks**: `alg: none`, HMAC (including HS256 with the public key as the secret) and algorithms outside the allowlist are rejected; symmetric keys in a JWKS are ignored; `kid` must match a fetched key, and a token without `kid` is accepted only when the JWKS holds exactly one usable key.
 - **Email-claim trust**: the email links to a member only when `email_verified` is true (when required) and the domain is allowed. The subject key is `sub`, so an email change does not move budgets to someone else. Linking never grants console or REST access.
 - **JWKS SSRF**: issuer URLs are fetched server side over https only, with private, loopback, link-local, shared and cloud metadata ranges refused by default, no cross-host redirects, a 5 second timeout and a 256 KiB size cap. DNS is checked before each fetch; a name that re-resolves between check and connect is not caught.
-- **Denial of service**: the key set is cached per issuer for 5 to 60 minutes (from `Cache-Control`); an unknown `kid` or a failed fetch triggers at most one refetch per minute per issuer. Bearers over 16 KiB are rejected before parsing, and validation finishes before any database write.
+- **Denial of service**: the key set is cached per issuer for 5 to 60 minutes (from `Cache-Control` `max-age`; `no-store` and `no-cache` get the 5 minute floor); an unknown `kid` or a failed fetch triggers at most one refetch per minute per issuer. Bearers over 16 KiB are rejected before parsing, and validation finishes before any database write.
 - **Fail closed**: once a token's `iss` matched a provider, any error is a `401`; it never falls through to API key authentication.
 
 ## Apps gateway route

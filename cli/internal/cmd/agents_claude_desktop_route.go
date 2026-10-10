@@ -96,13 +96,16 @@ type claudeDesktopRouteOptions struct {
 	KeyName           string
 	// Auth is "key" (default: per-user Preloop key from the credential
 	// helper) or "idp" (the organization's IdP token, #1414).
-	Auth         string
-	IdPIssuer    string
-	IdPClientID  string
-	IdPScopes    string
-	OutDir       string
-	Now          func() time.Time
-	RandomSecret func() (string, error)
+	Auth        string
+	IdPIssuer   string
+	IdPClientID string
+	IdPScopes   string
+	// IdPLegacyDesktop writes interactive + inferenceGatewayOidc for
+	// Desktop releases before 2.7032.0.
+	IdPLegacyDesktop bool
+	OutDir           string
+	Now              func() time.Time
+	RandomSecret     func() (string, error)
 }
 
 // routeWriteFile is the single write seam for model-route artifacts so tests
@@ -136,11 +139,12 @@ func registerClaudeDesktopRouteFlags(cmd *cobra.Command) {
 	cmd.Flags().String("auth", claudeDesktopAuthKey, "with --model-route direct: how Desktop authenticates to Preloop: key (per-user Preloop key from the credential helper) or idp (your organization's identity provider token)")
 	cmd.Flags().String("issuer", "", "with --auth idp: OIDC issuer URL of your identity provider (https, without /.well-known/openid-configuration)")
 	cmd.Flags().String("client-id", "", "with --auth idp: OAuth client ID of the Claude Desktop app registration (also the token audience Preloop checks)")
+	cmd.Flags().Bool("legacy-desktop", false, "with --auth idp: write inferenceCredentialKind interactive with inferenceGatewayOidc, for Claude Desktop releases before 2.7032.0")
 	cmd.Flags().String("scopes", "", "with --auth idp: space-separated OIDC scopes (default: "+claudeDesktopDefaultIdPScopes+")")
 }
 
 // claudeDesktopRouteOnlyFlags only take effect together with --model-route.
-var claudeDesktopRouteOnlyFlags = []string{"out", "os", "helper-path", "helper-path-windows", "gateway-url", "chat-tab", "key-id", "key-name", "auth", "issuer", "client-id", "scopes"}
+var claudeDesktopRouteOnlyFlags = []string{"out", "os", "helper-path", "helper-path-windows", "gateway-url", "chat-tab", "key-id", "key-name", "auth", "issuer", "client-id", "scopes", "legacy-desktop"}
 
 func modelRouteRequested(cmd *cobra.Command) bool {
 	flag := cmd.Flags().Lookup("model-route")
@@ -179,6 +183,7 @@ func runClaudeDesktopModelRouteCmd(cmd *cobra.Command, args []string) error {
 	opts.IdPIssuer, _ = cmd.Flags().GetString("issuer")
 	opts.IdPClientID, _ = cmd.Flags().GetString("client-id")
 	opts.IdPScopes, _ = cmd.Flags().GetString("scopes")
+	opts.IdPLegacyDesktop, _ = cmd.Flags().GetBool("legacy-desktop")
 	oses, err := parseRouteOSList(osFlag)
 	if err != nil {
 		return err
@@ -239,8 +244,8 @@ func runClaudeDesktopModelRoute(w io.Writer, client *api.Client, opts claudeDesk
 	if auth == claudeDesktopAuthIdP && opts.Route != claudeDesktopRouteDirect {
 		return errors.New("--auth idp only applies with --model-route direct")
 	}
-	if auth == claudeDesktopAuthKey && (opts.IdPIssuer != "" || opts.IdPClientID != "" || opts.IdPScopes != "") {
-		return errors.New("--issuer, --client-id and --scopes only apply with --auth idp")
+	if auth == claudeDesktopAuthKey && (opts.IdPIssuer != "" || opts.IdPClientID != "" || opts.IdPScopes != "" || opts.IdPLegacyDesktop) {
+		return errors.New("--issuer, --client-id, --scopes and --legacy-desktop only apply with --auth idp")
 	}
 	switch opts.Route {
 	case claudeDesktopRouteDirect:
@@ -293,9 +298,10 @@ type claudeDesktopOidc struct {
 
 // claudeDesktopIdPSettings points Desktop's gateway provider at Preloop and
 // signs users in with the organization's IdP; the IdP token is the bearer.
-// Both the current (inferenceIdpOidc) and the older (inferenceGatewayOidc)
-// spelling are written so older Desktop releases read the same sign-in. No
-// API key and no credential helper are involved.
+// The block is written as inferenceIdpOidc and, under its older name,
+// inferenceGatewayOidc, which external-idp desktops also read. Releases
+// before 2.7032.0 do not know external-idp: see
+// claudeDesktopIdPLegacySettings. No API key and no credential helper.
 func claudeDesktopIdPSettings(preloopURL string, oidc claudeDesktopOidc, chatTab bool) []desktopSetting {
 	settings := []desktopSetting{
 		{"inferenceProvider", "gateway"},
@@ -311,14 +317,42 @@ func claudeDesktopIdPSettings(preloopURL string, oidc claudeDesktopOidc, chatTab
 	return settings
 }
 
+// claudeDesktopIdPLegacySettings is the same sign-in for Desktop releases
+// before 2.7032.0: inferenceCredentialKind interactive with
+// inferenceGatewayOidc, which newer releases also still read.
+func claudeDesktopIdPLegacySettings(preloopURL string, oidc claudeDesktopOidc, chatTab bool) []desktopSetting {
+	settings := []desktopSetting{
+		{"inferenceProvider", "gateway"},
+		{"inferenceGatewayBaseUrl", strings.TrimRight(preloopURL, "/") + "/anthropic"},
+		{"inferenceCustomHeaders", map[string]string{claudeDesktopClientHeader: claudeDesktopClientValue}},
+		{"inferenceCredentialKind", "interactive"},
+		{"inferenceGatewayOidc", oidc},
+	}
+	if chatTab {
+		settings = append(settings, desktopSetting{"chatTabEnabled", true})
+	}
+	return settings
+}
+
+func legacyNote(legacy bool) string {
+	if legacy {
+		return "--legacy-desktop: inferenceCredentialKind interactive with inferenceGatewayOidc, for Desktop releases before 2.7032.0 (newer releases read it too)."
+	}
+	return "Needs Claude Desktop 2.7032.0 or later (external-idp). For older releases, rerun with --legacy-desktop (interactive with inferenceGatewayOidc)."
+}
+
 func claudeDesktopIdPArtifacts(opts claudeDesktopRouteOptions) ([]routeArtifact, []string, error) {
-	issuer := strings.TrimRight(strings.TrimSpace(opts.IdPIssuer), "/")
+	// Kept byte for byte (no trailing-slash trimming): Preloop matches the
+	// token's iss exactly, and the same string is registered there.
+	issuer := strings.TrimSpace(opts.IdPIssuer)
 	clientID := strings.TrimSpace(opts.IdPClientID)
 	if issuer == "" || clientID == "" {
 		return nil, nil, errors.New("--auth idp needs --issuer <https issuer URL> and --client-id <Desktop app client ID>")
 	}
 	if parsed, err := url.Parse(issuer); err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return nil, nil, fmt.Errorf("--issuer must be an https URL (got %q)", issuer)
+	} else if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || strings.ContainsAny(issuer, "?# \t") {
+		return nil, nil, fmt.Errorf("--issuer must not contain credentials, a query, a fragment or spaces (got %q)", issuer)
 	}
 	if strings.Contains(issuer, "/.well-known/") {
 		return nil, nil, errors.New("--issuer is the base issuer URL, without /.well-known/openid-configuration")
@@ -328,15 +362,19 @@ func claudeDesktopIdPArtifacts(opts claudeDesktopRouteOptions) ([]routeArtifact,
 		scopes = claudeDesktopDefaultIdPScopes
 	}
 	oidc := claudeDesktopOidc{Issuer: issuer, ClientID: clientID, Scopes: scopes}
+	settingsFor := claudeDesktopIdPSettings
+	if opts.IdPLegacyDesktop {
+		settingsFor = claudeDesktopIdPLegacySettings
+	}
 	var artifacts []routeArtifact
 	for _, goos := range opts.OS {
-		artifacts = append(artifacts, desktopManagedArtifacts(goos, claudeDesktopIdPSettings(opts.PreloopURL, oidc, opts.ChatTab))...)
+		artifacts = append(artifacts, desktopManagedArtifacts(goos, settingsFor(opts.PreloopURL, oidc, opts.ChatTab))...)
 	}
 	notes := []string{
 		"Route: direct, signed in with your identity provider. Claude Desktop sends each user's IdP token to " + opts.PreloopURL + "/anthropic as the bearer credential; no Preloop key is distributed.",
-		"Register the issuer in Preloop first (Settings, Gateway identity providers, or POST /api/v1/account/gateway-identity-providers) with issuer " + issuer + ", audience " + clientID + " and a binding API key; until then Preloop rejects these tokens.",
+		"Register the issuer in Preloop first (POST /api/v1/account/gateway-identity-providers, account admins) with issuer " + issuer + " spelled exactly as your IdP's iss claim, audience " + clientID + " and a binding API key; until then Preloop rejects these tokens.",
 		"IdP app registration: a public client with PKCE and the redirect URI http://127.0.0.1/callback (Okta needs the exact port: add redirectPort). Include the email claim and email_verified if you restrict email domains.",
-		"inferenceGatewayOidc repeats the block for Desktop releases that predate inferenceIdpOidc; remove it once every device reads the newer key.",
+		legacyNote(opts.IdPLegacyDesktop),
 		"Deploy the configuration with your MDM (Jamf, Intune, Kandji, or a root-owned file on Linux). This command never writes managed configuration itself.",
 		"Tool governance stays on MCP: run `preloop agents onboard \"Claude Desktop\"` (without --model-route) for the MCP bridge.",
 	}

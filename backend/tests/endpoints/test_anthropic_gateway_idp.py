@@ -559,3 +559,35 @@ def test_test_endpoint_reports_key_ids(client, db_session, test_user, monkeypatc
     body = response.json()
     assert body["ok"] is True
     assert {k["kid"] for k in body["keys"]} == {"rsa-1", "ec-1"}
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "required_claims",
+        "allowed_jwks_hosts",
+        "clock_skew_seconds",
+        "enabled",
+        "allowed_email_domains",
+        "audiences",
+        "issuer",
+    ],
+)
+def test_patch_rejects_null_for_non_nullable_fields(
+    client, db_session, test_user, field
+):
+    _, _, created = _setup(client, db_session, test_user)
+    response = client.patch(f"{API}/{created['id']}", json={field: None})
+    assert response.status_code == 422
+    assert field in response.text
+
+
+def test_patch_may_clear_nullable_group_fields(client, db_session, test_user):
+    _, _, created = _setup(
+        client, db_session, test_user, groups_claim="groups", allowed_groups=["a"]
+    )
+    response = client.patch(
+        f"{API}/{created['id']}", json={"groups_claim": None, "allowed_groups": None}
+    )
+    assert response.status_code == 200
+    assert response.json()["groups_claim"] is None

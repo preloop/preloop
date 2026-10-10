@@ -39,6 +39,9 @@ router = APIRouter(
     tags=["Gateway Identity Providers"],
 )
 
+#: Only these provider fields may be cleared with an explicit ``null``.
+NULLABLE_FIELDS = frozenset({"groups_claim", "allowed_groups"})
+
 AUDIT_CREATED = "gateway_identity_provider_created"
 AUDIT_UPDATED = "gateway_identity_provider_updated"
 AUDIT_DELETED = "gateway_identity_provider_deleted"
@@ -224,12 +227,15 @@ def update_gateway_identity_provider(
     provider = _get_owned(db, current_user.account_id, provider_id)
     changes = payload.model_dump(exclude_unset=True)
     audiences = changes.pop("audiences", None)
-    for required in ("name", "issuer", "api_key_id", "email_claim"):
-        if required in changes and changes[required] is None:
-            raise HTTPException(status_code=422, detail=f"{required} cannot be null")
-    for nullable_list in ("allowed_email_domains", "allowed_algorithms"):
-        if nullable_list in changes and changes[nullable_list] is None:
-            changes.pop(nullable_list)
+    null_fields = sorted(
+        name
+        for name, value in payload.model_dump(exclude_unset=True).items()
+        if value is None and name not in NULLABLE_FIELDS
+    )
+    if null_fields:
+        raise HTTPException(
+            status_code=422, detail=f"Fields cannot be null: {', '.join(null_fields)}"
+        )
     if "api_key_id" in changes:
         _check_binding_key(db, current_user.account_id, changes["api_key_id"])
     before = _summary(provider)
