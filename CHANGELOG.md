@@ -424,6 +424,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reuses Postgres on `127.0.0.1:5432` when it is already up and only creates
   a database; otherwise it starts `pgvector/pgvector:pg16`. Self-hosted
   setup is `.github/self-hosted-runners.md`.
+
+- **Breaking for integrators that match `403`:** model gateway budget
+  denials now return `429` on every router (`/openai/v1`, `/anthropic/v1`,
+  `/gemini/v1beta`), with a provider-shaped body (`billing_error`,
+  `insufficient_quota` with `preloop_code`, or `RESOURCE_EXHAUSTED`), an
+  integer `retry-after` (seconds to the budget window reset, 3600 when
+  unknown) and `x-should-retry: false`. Policy denials (kill switch, model
+  allowlist, model authorization, content policy) stay `403`. The CLI live
+  check, runtime failure categories, stream recovery and the rate limit
+  report classify the budget `429` as budget, not as an upstream rate limit.
+  See "Status codes" in the model gateway guide (#1447).
+
 - Renamed tracker built-in `search` to `search_issues`. The legacy name `search`
   is retained as a deprecated alias (disabled by default on fresh accounts,
   available when explicitly referenced by a flow allow-list or policy) and will

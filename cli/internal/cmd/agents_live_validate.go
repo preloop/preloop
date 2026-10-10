@@ -274,6 +274,7 @@ func runGatewayLiveValidation(
 	} else if isUpstreamTransientValidationError(requestErr) {
 		liveValidationStatus = "upstream_transient"
 	}
+	budgetDenied := !passed && isPreloopBudgetDenialValidationError(requestErr)
 	result := mergeStringMaps(validationResult, map[string]interface{}{
 		"live_validation_attempted":      true,
 		"live_validation_attempts":       probeAttempts,
@@ -293,6 +294,9 @@ func runGatewayLiveValidation(
 		result["live_validation_failure_reason"] = "upstream_billing"
 	case "upstream_transient":
 		result["live_validation_failure_reason"] = "upstream_transient"
+	}
+	if budgetDenied {
+		result["live_validation_failure_reason"] = "preloop_budget_exceeded"
 	}
 	// Intentionally omit api key ids from the result map so they cannot
 	// flow into validation status logging (go/clear-text-logging).
@@ -330,8 +334,30 @@ func runGatewayLiveValidation(
 	}, validationErr
 }
 
+// isPreloopBudgetDenialValidationError reports whether the probe was refused
+// by a Preloop budget hard limit. Since #1447 the gateway answers those with
+// 429 (“insufficient_quota“ / “billing_error“ / “RESOURCE_EXHAUSTED“ and
+// “x-should-retry: false“); older gateways used 403. Either way it is a
+// spend limit the operator set, not an upstream rate limit or an empty
+// provider wallet, and retrying cannot clear it.
+func isPreloopBudgetDenialValidationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "model gateway budget exceeded") ||
+		strings.Contains(message, "execution budget exceeded") ||
+		strings.Contains(message, "budget_limit_exceeded") ||
+		strings.Contains(message, "execution_budget_exceeded") ||
+		strings.Contains(message, "budget enforcement requires pricing information")
+}
+
 func isUpstreamRateLimitedValidationError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// A Preloop budget denial is a 429 too, but it is not a rate limit.
+	if isPreloopBudgetDenialValidationError(err) {
 		return false
 	}
 	// Prefer the typed HTTP status from the API client. Once we have an
@@ -357,6 +383,10 @@ func isUpstreamRateLimitedValidationError(err error) bool {
 // operator's provider account that needs attention, not their onboarding.
 func isUpstreamBillingValidationError(err error) bool {
 	if err == nil {
+		return false
+	}
+	// The gateway's own budget 429 carries ``insufficient_quota`` too.
+	if isPreloopBudgetDenialValidationError(err) {
 		return false
 	}
 	// Trust the typed status when we have one: 402 is unambiguous.

@@ -212,3 +212,13 @@ class TestClassifyRateLimitSubtype:
             "transient",
             "heuristic",
         )
+
+
+def test_budget_429_has_no_rate_limit_subtype():
+    """A Preloop budget 429 (#1447) is not counted as a rate limit."""
+    from preloop.services.rate_limit_telemetry import classify_rate_limit_subtype
+
+    assert classify_rate_limit_subtype(
+        429, "Model gateway budget exceeded: account monthly limit reached"
+    ) == (None, None)
+    assert classify_rate_limit_subtype(429, "slow down")[0] == "transient"

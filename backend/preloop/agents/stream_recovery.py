@@ -108,7 +108,7 @@ try:
         text = stream.read().decode('utf-8', errors='replace').lower()
 except OSError:
     sys.exit(1)
-terminal = r'(?m)^flow_execution_success$|flow_execution_failed:|verification_denied|invalid.api.key|authentication.error|unauthorized|permission.denied|insufficient_quota|quota.exhausted|billing.hard.limit|context.length.exceeded|run terminated by policy|hosted_tariff_unconfigured|has no operator tariff'
+terminal = r'(?m)^flow_execution_success$|flow_execution_failed:|verification_denied|invalid.api.key|authentication.error|unauthorized|permission.denied|insufficient_quota|quota.exhausted|billing.hard.limit|context.length.exceeded|run terminated by policy|hosted_tariff_unconfigured|has no operator tariff|model gateway budget exceeded|execution budget exceeded|preloop budget exceeded|budget_limit_exceeded|execution_budget_exceeded|billing_error'
 transient = r'upstream_disconnect|disconnected (?:mid.stream|before completion)|incomplete chunked read|peer closed connection|connection (?:reset|closed|refused)|econnreset|econnrefused|socket hang up|other side closed|typeerror: terminated|fetch failed|provider_unavailable|midstreamfallbackerror|(?:request|read|socket|operation) timed? out|(?:status(?:_code)?|http)\\W{{0,4}}(?:429|500|502|503|504)\\b'
 sys.exit(0 if not re.search(terminal, text) and re.search(transient, text) else 1)
 PRELOOP_RECOVERY_PY

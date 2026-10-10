@@ -658,3 +658,13 @@ def test_event_preserves_captured_resolved_billing_path() -> None:
     assert event["payload"]["billing_path"] == "your_key"
     assert event["payload"]["billing_model_id"] == "own-model"
     assert event["payload"]["billing_model_name"] == "Own example"
+
+
+def test_derive_outcome_treats_budget_429_as_budget_denied():
+    """The budget denial is a 429 since #1447; policy stays 403 only."""
+    budget = "Model gateway budget exceeded: account monthly limit reached"
+    hosted = "Preloop trial limit for hosted model reached. Configure a key."
+    assert ModelGatewayEventEmitter._derive_outcome(429, budget) == "budget_denied"
+    assert ModelGatewayEventEmitter._derive_outcome(429, hosted) == "budget_denied"
+    assert ModelGatewayEventEmitter._derive_outcome(403, budget) == "budget_denied"
+    assert ModelGatewayEventEmitter._derive_outcome(429, "slow down") == "error"

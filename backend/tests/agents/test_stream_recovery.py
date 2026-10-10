@@ -182,7 +182,15 @@ def test_generated_launch_resumes_parent_and_publishes_once(
 @pytest.mark.parametrize("harness", ["codex", "opencode", "gemini"])
 @pytest.mark.parametrize(
     "scenario",
-    ["auth", "missing_session", "cancelled", "completed", "hosted_tariff"],
+    [
+        "auth",
+        "missing_session",
+        "cancelled",
+        "completed",
+        "hosted_tariff",
+        "budget_429_anthropic",
+        "budget_429_openai",
+    ],
 )
 def test_generated_launch_refuses_unsafe_recovery(
     tmp_path: Path, harness: str, scenario: str
@@ -200,6 +208,21 @@ def test_generated_launch_refuses_unsafe_recovery(
                 "http 503 service unavailable: Hosted model "
                 "google/gemini-3.8-flash has no operator tariff; use your "
                 "own provider key or pick another model."
+            )
+        },
+        # The gateway's budget denial is a 429 since #1447; the status alone
+        # looks transient, the body says the run is out of budget.
+        "budget_429_anthropic": {
+            "message": (
+                'API Error: status 429 {"type":"error","error":{"type":'
+                '"billing_error","message":"Model gateway budget exceeded: '
+                'account monthly limit reached"}}'
+            )
+        },
+        "budget_429_openai": {
+            "message": (
+                "unexpected status 429 Too Many Requests: Execution budget "
+                "exceeded: execution token ceiling reached"
             )
         },
     }[scenario]

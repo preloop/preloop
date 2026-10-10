@@ -290,8 +290,12 @@ func TestAllowedModelsLiveCheckHint(t *testing.T) {
 		t.Fatalf("expected hint from validation result, got %q", got)
 	}
 
+	if got := allowedModelsLiveCheckHint(agent, nil, errors.New("API error (status 429): Model gateway budget exceeded")); got != "" {
+		t.Fatalf("expected no hint for a budget 429, got %q", got)
+	}
+	// Gateways before #1447 sent the budget denial as 403.
 	if got := allowedModelsLiveCheckHint(agent, nil, errors.New("API error (status 403): Model gateway budget exceeded")); got != "" {
-		t.Fatalf("expected no hint for unrelated 403, got %q", got)
+		t.Fatalf("expected no hint for a legacy budget 403, got %q", got)
 	}
 	if got := allowedModelsLiveCheckHint(agent, nil, nil); got != "" {
 		t.Fatalf("expected no hint without failure, got %q", got)

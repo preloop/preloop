@@ -12,10 +12,44 @@ from typing import Any, Dict, Iterator, List, Optional
 from sqlalchemy.orm import Session
 
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
+from preloop.services.model_gateway_denials import (
+    is_budget_denial,
+    reraise_as_budget_denial,
+)
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
 from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.services.openai_gateway import OpenAIGatewayService, gateway_database_scope
+
+
+def _as_gemini_denial(exc: ModelGatewayAPIError) -> ModelGatewayAPIError:
+    """Render a budget, policy or rate limit denial in the Gemini shape.
+
+    The Gemini routes run on the OpenAI Responses path, so its denials carry
+    ``provider="openai"``. Budget denials become ``429 RESOURCE_EXHAUSTED``
+    with ``x-should-retry: false``, policy denials ``403
+    PERMISSION_DENIED`` and rate limits ``429 RESOURCE_EXHAUSTED`` (#1447).
+    Every other error is returned unchanged.
+    """
+    if exc.provider == "gemini":
+        return exc
+    if is_budget_denial(exc):
+        return reraise_as_budget_denial(exc, "gemini")
+    if exc.status_code not in (403, 429):
+        return exc
+    rendered = ModelGatewayAPIError(
+        provider="gemini",
+        status_code=exc.status_code,
+        message=exc.message,
+        code=exc.code,
+        error_class=exc.error_class,
+        retry_after_seconds=exc.retry_after_seconds,
+        terminal=exc.terminal,
+    )
+    extra = getattr(exc, "extra_response_headers", None)
+    if extra:
+        rendered.extra_response_headers = dict(extra)  # type: ignore[attr-defined]
+    return rendered
 
 
 class _GeminiClosingStream:
@@ -99,7 +133,10 @@ class GeminiGatewayService(OpenAIGatewayService):
     ) -> Dict[str, Any]:
         """Handle Gemini generateContent requests."""
         openai_payload = self._translate_generate_content_request(model_name, payload)
-        response_payload = super().create_response(openai_payload)
+        try:
+            response_payload = super().create_response(openai_payload)
+        except ModelGatewayAPIError as exc:
+            raise _as_gemini_denial(exc) from exc
         return self._translate_generate_content_response(
             model_name, response_payload=response_payload
         )
@@ -111,7 +148,10 @@ class GeminiGatewayService(OpenAIGatewayService):
         """Handle Gemini streamGenerateContent requests."""
         openai_payload = self._translate_generate_content_request(model_name, payload)
         openai_payload["stream"] = True
-        upstream_events = super().stream_response(openai_payload)
+        try:
+            upstream_events = super().stream_response(openai_payload)
+        except ModelGatewayAPIError as exc:
+            raise _as_gemini_denial(exc) from exc
 
         def event_stream() -> Iterator[str]:
             final_usage: Optional[Dict[str, Any]] = None
