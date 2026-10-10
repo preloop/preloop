@@ -1,10 +1,14 @@
-# Development stack. The credential defaults below (postgres password,
-# SECRET_KEY) are development-only placeholders: `docker compose up` works
-# out of the box, the backend logs a CRITICAL banner while the SECRET_KEY
-# placeholder is in use, and it refuses to start with one when
-# ENVIRONMENT=production. Override them through the environment or a `.env`
-# file next to this file (start from `.env.example`). Production installs
-# use docker-compose.release.yaml, which requires SECRET_KEY instead of
+# Development stack. `docker compose up` builds preloop:dev from this
+# checkout. It does not pull ghcr.io/preloop/preloop:latest; that tag is the
+# latest stable release.
+#
+# The credential defaults below (postgres password, SECRET_KEY) are
+# development-only placeholders: `docker compose up` works out of the box,
+# the backend logs a CRITICAL banner while the SECRET_KEY placeholder is in
+# use, and it refuses to start with one when ENVIRONMENT=production.
+# Override them through the environment or a `.env` file next to this file
+# (start from `.env.example`). Production installs use
+# docker-compose.release.yaml, which requires SECRET_KEY instead of
 # defaulting it.
 services:
   postgres:
@@ -43,7 +47,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/preloop/preloop:latest
+    image: preloop:dev
+    pull_policy: build
     restart: "no"
     depends_on:
       postgres:
@@ -60,7 +65,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/preloop/preloop:latest
+    image: preloop:dev
+    pull_policy: build
     restart: unless-stopped
     depends_on:
       migrate:
@@ -91,7 +97,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/preloop/preloop:latest
+    image: preloop:dev
+    pull_policy: build
     restart: unless-stopped
     depends_on:
       migrate:
@@ -122,7 +129,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/preloop/preloop:latest
+    image: preloop:dev
+    pull_policy: build
     restart: unless-stopped
     depends_on:
       migrate:
@@ -150,7 +158,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ghcr.io/preloop/preloop:latest
+    image: preloop:dev
+    pull_policy: build
     restart: unless-stopped
     depends_on:
       migrate:

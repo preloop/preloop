@@ -1,8 +1,6 @@
 # Preloop Open Source - CI Pipeline
-# Runs unit tests on pull requests and pushes to main
-# Builds and pushes Docker images on main and version tags (not on PRs —
-# release.yml already publishes images, and a multi-arch QEMU build is the
-# long tail after tests go green).
+# Runs unit tests on pull requests and pushes to main.
+# Image publish is release.yml, on version tags only.
 #
 # PR jobs are path-filtered so a docs-only or frontend-only change does not
 # pay for the backend shards. Filters are job-level, not workflow-level:
@@ -28,16 +26,12 @@ concurrency:
   # One run per PR, or per branch on push. A newer commit cancels the older
   # run on PRs and on main; tags, schedules and manual runs are never
   # cancelled (each tag is its own ref, so tags never collide anyway).
-  # Cancelling a main image push can leave :edge briefly inconsistent; the
-  # superseding build republishes it.
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
 
 env:
   PYTHON_VERSION: "3.11"
   NODE_VERSION: "22"
-  REGISTRY_GHCR: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 permissions:
   contents: read
@@ -312,11 +306,11 @@ jobs:
   # you? Nothing is installed and nothing is built.
   #
   # This exists because requirements/runtime.txt is installed by no job that
-  # runs on a pull request. "Build & Push Docker Images" is the only consumer
-  # in CI and it is `if: github.event_name != 'pull_request'` (a multi-arch
-  # QEMU build, too slow to gate a PR on). The backend shards install
-  # .github/requirements/app-dev.txt, a different lock. So dependabot PR #537
-  # merged with an all-green CI and a runtime.txt that pip cannot resolve
+  # runs on a pull request. The release image build is the consumer, and it
+  # runs only on version tags (a multi-arch QEMU build, too slow to gate a
+  # PR on). The backend shards install .github/requirements/app-dev.txt, a
+  # different lock. So dependabot PR #537 merged with an all-green CI and a
+  # runtime.txt that pip cannot resolve
   # (pydantic 2.13.5 next to pydantic-core 2.48.0; pydantic pins
   # pydantic-core==2.46.5), and main's Docker and Release builds went red.
   #
@@ -866,12 +860,12 @@ jobs:
   # nothing had ever exercised them. This job is the first Windows runner in the
   # repo. It is still INFORMATIONAL ONLY:
   #   - continue-on-error: true, so a failure never turns the check red, and
-  #   - it is absent from build-and-push's `needs:`, so it cannot gate a release.
+  #   - it is absent from the CI aggregator, so it cannot block a merge.
   #
   # The three original failure causes have been addressed, so this job is
   # EXPECTED TO PASS. It has not yet been observed green on a real Windows
   # runner, which is the only reason continue-on-error is still set — flip it
-  # (and add this job to build-and-push's `needs:`) once a few runs confirm it.
+  # (and add this job to the CI aggregator's `needs:`) once a few runs confirm it.
   # A failure here is now a signal, not background noise: triage it.
   #
   #   1. FIXED. Tests redirected the home dir with t.Setenv("HOME", ...), but
@@ -1063,101 +1057,6 @@ jobs:
       # about, so they belong in the log rather than behind a rerun.
       - name: Run govulncheck
         run: govulncheck -show verbose ./...
-
-  # ==========================================================================
-  # Build and Push Docker Images
-  # ==========================================================================
-
-  build-and-push:
-    name: Build & Push Docker Images
-    runs-on: ubuntu-latest
-    # PRs do not build images: this job is a multi-arch QEMU build that does
-    # not push, and release.yml already publishes from main/tags.
-    if: github.event_name != 'pull_request'
-    needs: [lint, test-backend-coverage, test-frontend, test-runtime-plugins]
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ${{ env.REGISTRY_GHCR }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request' && vars.PUSH_TO_DOCKERHUB == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Extract metadata for backend image
-        id: meta-backend
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: |
-            ${{ env.REGISTRY_GHCR }}/preloop/preloop
-            ${{ vars.PUSH_TO_DOCKERHUB == 'true' && format('{0}/preloop', vars.DOCKERHUB_ORG) || '' }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push backend image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta-backend.outputs.tags }}
-          labels: ${{ steps.meta-backend.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Extract metadata for frontend image
-        id: meta-frontend
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: |
-            ${{ env.REGISTRY_GHCR }}/preloop/console
-            ${{ vars.PUSH_TO_DOCKERHUB == 'true' && format('{0}/console', vars.DOCKERHUB_ORG) || '' }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: Build and push frontend image
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: ./frontend
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta-frontend.outputs.tags }}
-          labels: ${{ steps.meta-frontend.outputs.labels }}
-          build-args: |
-            BRAND=preloop
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   # Required check. Per-suite jobs may skip when their tree did not change;
   # a failed suite must still fail this job (skipped-because-needs-failed

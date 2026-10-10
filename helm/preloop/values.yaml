@@ -7,7 +7,7 @@ replicaCount: 1
 image:
   repository: ghcr.io/preloop/preloop
   pullPolicy: Always
-  tag: "latest"  # Overrides the image tag
+  tag: "latest"  # Latest stable release. A version tag moves this; main does not.
 
 # Schema migrations. The pre-upgrade hook runs `alembic upgrade head` while
 # the previous API pods and sync workers are still serving, so the migration
@@ -118,7 +118,7 @@ flowExecution:
 
 console:
   repository: ghcr.io/preloop/console
-  tag: "latest"
+  tag: "latest"  # Latest stable release. A version tag moves this; main does not.
   pullPolicy: Always
   # Preloop Console frontend resources (nginx - lightweight)
   resources:
