@@ -81,6 +81,9 @@ import {
 const AUTO_EXPAND_MAX_ROWS = 3;
 
 /** Long enough to notice after a jump, short enough not to look like state. */
+/** The Attention link Cost's Spend settings menu uses for outlier alerts. */
+const SPEND_OUTLIERS_HASH = '#spend-outliers';
+
 const HIGHLIGHT_MS = 2400;
 
 const DISMISS_REASON_LABELS: Record<string, string> = {
@@ -825,7 +828,21 @@ export class AttentionView extends AuthedElement {
    */
   private applyHashTarget(): void {
     const hash = window.location.hash;
-    if (!hash.startsWith('#item-') || hash === this.handledHash) {
+    if (!hash || hash === this.handledHash) {
+      return;
+    }
+    if (hash === SPEND_OUTLIERS_HASH) {
+      // Cost's Spend settings menu links here for outlier alerts: open the
+      // alert settings for someone who may change them, and bring any open
+      // outlier cards into view.
+      this.handledHash = hash;
+      if (this.canEditSpendSettings) this.showSpendSettings = true;
+      this.renderRoot
+        .querySelector(`#${this.sectionId('spend')}`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+    if (!hash.startsWith('#item-')) {
       return;
     }
     const itemId = decodeURIComponent(hash.slice('#item-'.length));

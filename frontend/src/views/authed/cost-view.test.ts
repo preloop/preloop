@@ -782,16 +782,209 @@ describe('CostView', () => {
     const tabs = Array.from(
       element.shadowRoot?.querySelectorAll('sl-tab[slot="nav"]') || []
     ).map((tab) => tab.textContent?.trim());
+    // Copilot appears only once a connection exists (none is mocked here).
     expect(tabs).to.deep.equal([
       'Agents',
+      'Models',
       'Tools',
       'Sessions',
       'Users',
-      'Copilot',
     ]);
     for (const promised of ['model', 'flow', 'API key']) {
       expect(description).to.not.contain(promised);
     }
+  });
+
+  const loadedView = async () => {
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+    return element;
+  };
+  const navTabs = (element: CostView) =>
+    Array.from(
+      element.shadowRoot?.querySelectorAll('sl-tab[slot="nav"]') || []
+    ).map((tab) => tab.textContent?.trim());
+
+  it('lists spend by model in a sortable Models tab', async () => {
+    summaryPayload = {
+      ...summaryPayload,
+      usage_by_model: [
+        ...(summaryPayload.usage_by_model as unknown[]),
+        {
+          ai_model_id: 'model-2',
+          model_alias: 'claude-test',
+          provider_name: 'anthropic',
+          request_count: 9,
+          token_usage: {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+          },
+          estimated_cost: 1.25,
+        },
+      ],
+    };
+    const element = await loadedView();
+    await element['handleTabShow'](
+      new CustomEvent('sl-tab-show', { detail: { name: 'models' } })
+    );
+    await element.updateComplete;
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('breakdown=models'))
+    ).to.equal(true);
+    const table = element.shadowRoot!.querySelector(
+      'table[aria-label="Spend by model"]'
+    );
+    expect(table).to.exist;
+    const names = () =>
+      Array.from(table!.querySelectorAll('tbody tr')).map((row) =>
+        row.querySelector('.model-name')?.textContent?.trim()
+      );
+    // Highest cost first, like the API usage breakdown.
+    expect(names()).to.deep.equal(['gpt-test', 'claude-test']);
+    const firstRow = table!.querySelector('tbody tr')!;
+    expect(firstRow.textContent).to.contain('openai');
+    expect(firstRow.textContent).to.contain('$8.50');
+
+    const requestsHeader = Array.from(table!.querySelectorAll('th')).find(
+      (th) => th.textContent?.trim().startsWith('Requests')
+    ) as HTMLElement;
+    requestsHeader.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter' })
+    );
+    await element.updateComplete;
+    expect(names()).to.deep.equal(['claude-test', 'gpt-test']);
+  });
+
+  it('shows a daily spend strip above the tabs', async () => {
+    summaryPayload = {
+      ...summaryPayload,
+      requests_by_day: [
+        {
+          date: '2026-03-01',
+          request_count: 4,
+          estimated_cost: 2.5,
+          total_tokens: 100,
+        },
+        {
+          date: '2026-03-02',
+          request_count: 8,
+          estimated_cost: 6,
+          total_tokens: 200,
+        },
+      ],
+    };
+    const element = await loadedView();
+    await waitUntil(
+      () => element.shadowRoot!.querySelector('[data-testid="daily-spend"]'),
+      'the daily strip renders once the days breakdown lands'
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('breakdown=days'))
+    ).to.equal(true);
+    const strip = element.shadowRoot!.querySelector(
+      '[data-testid="daily-spend"]'
+    )!;
+    const bars = strip.querySelectorAll('.daily-bar');
+    expect(bars).to.have.length(2);
+    expect(bars[1].getAttribute('aria-label')).to.contain('$6.00');
+    expect(bars[1].getAttribute('aria-label')).to.contain('8 requests');
+    expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
+      '$8.50 across 12 requests'
+    );
+    // The strip sits above the tab group.
+    const card = element.shadowRoot!.querySelector('.analytics-card')!;
+    expect(
+      strip.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).to.not.equal(0);
+  });
+
+  it('offers one Spend settings control with every destination', async () => {
+    const element = await loadedView();
+    const dropdown = element.shadowRoot!.querySelector(
+      'sl-dropdown.spend-settings'
+    );
+    expect(dropdown).to.exist;
+    const trigger = dropdown!.querySelector('sl-button[slot="trigger"]');
+    expect(trigger?.textContent).to.contain('Spend settings');
+    const items = Array.from(dropdown!.querySelectorAll('sl-menu-item'));
+    expect(items.map((item) => item.textContent?.trim())).to.deep.equal([
+      'Budget limits',
+      'Price overrides',
+      'Imports',
+      'Outlier alerts',
+    ]);
+    // Outlier alerts stay on Attention: the item links there.
+    const outlier = dropdown!.querySelector('sl-menu-item[value="outliers"]')!;
+    expect(outlier.getAttribute('data-href')).to.equal(
+      '/console/attention#spend-outliers'
+    );
+    for (const item of items) {
+      expect(item.getAttribute('value')).to.be.a('string');
+    }
+
+    // Imports reveals the Copilot setup even without a connection.
+    expect(navTabs(element)).to.not.include('Copilot');
+    element['openSpendSetting']('imports');
+    await element.updateComplete;
+    expect(navTabs(element)).to.include('Copilot');
+    expect((element as unknown as { activeTab: string }).activeTab).to.equal(
+      'copilot'
+    );
+  });
+
+  it('shows the Copilot tab once a Copilot connection exists', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/v1/cost/copilot')) {
+        return new Response(
+          JSON.stringify({ connection: { id: 'c-1', organization: 'acme' } }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/cost/summary')) {
+        return new Response(JSON.stringify(summaryPayload), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+    const element = await loadedView();
+    await waitUntil(() => navTabs(element).includes('Copilot'));
+    const copilotCalls = () =>
+      fetchStub
+        .getCalls()
+        .filter((call) => String(call.args[0]).includes('/api/v1/cost/copilot'))
+        .length;
+    const before = copilotCalls();
+    // A range change reloads the summary but not the connection check.
+    await element['load']();
+    await element.updateComplete;
+    expect(copilotCalls()).to.equal(before);
+    expect(navTabs(element)).to.include('Copilot');
+  });
+
+  it('shows the Copilot tab for a Copilot provider billing connection', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/v1/billing/provider-billing/connections')) {
+        return new Response(
+          JSON.stringify([{ id: 'p-1', provider: 'github_copilot' }]),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/api/v1/cost/summary')) {
+        return new Response(JSON.stringify(summaryPayload), { status: 200 });
+      }
+      return new Response('[]', { status: 200 });
+    });
+    const element = await loadedView();
+    await waitUntil(() => navTabs(element).includes('Copilot'));
   });
 
   it('renders imported Copilot spend in its own tab for the page window', async () => {
