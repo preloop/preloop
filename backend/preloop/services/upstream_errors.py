@@ -474,6 +474,8 @@ _NON_RETRYABLE_ERROR_CLASSES = frozenset(
         ERROR_CLASS_STREAM_ABANDONED,
         ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
         ERROR_CLASS_GATEWAY_TRANSLATION,
+        # A budget refill is an operator action; retrying cannot clear it.
+        ERROR_CLASS_BUDGET_EXCEEDED,
     }
 )
 

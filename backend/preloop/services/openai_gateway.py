@@ -156,6 +156,7 @@ from preloop.services.model_gateway_stream_observer import ObservedGatewayStream
 from preloop.services.upstream_errors import (
     ERROR_CLASS_CLIENT_CANCELLED,
     ERROR_CLASS_GATEWAY_TRANSLATION,
+    ERROR_CLASS_BUDGET_EXCEEDED,
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_STREAM_ABANDONED,
@@ -11209,6 +11210,8 @@ class OpenAIGatewayService:
             return ERROR_CLASS_GATEWAY_TRANSLATION
         if status_code == 403 and is_model_not_allowed_detail(error_detail):
             return MODEL_NOT_ALLOWED_ERROR_CODE
+        if status_code in (403, 429) and error_class == ERROR_CLASS_BUDGET_EXCEEDED:
+            return "budget_limit_exceeded"
         if (
             status_code in (403, 429)
             and error_detail
@@ -11216,6 +11219,7 @@ class OpenAIGatewayService:
                 "budget exceeded" in error_detail.lower()
                 or "budget enforcement requires pricing information"
                 in error_detail.lower()
+                or "limit for hosted model" in error_detail.lower()
             )
         ):
             return "budget_limit_exceeded"

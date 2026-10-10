@@ -195,6 +195,17 @@ def test_budget_429_keeps_budget_audit_vocabulary():
         OpenAIGatewayService._audit_error_type(429, BUDGET_MESSAGE)
         == "budget_limit_exceeded"
     )
+    hosted = "Preloop trial limit for hosted model reached. Configure a key."
+    assert (
+        OpenAIGatewayService._audit_error_type(429, hosted) == "budget_limit_exceeded"
+    )
+    assert (
+        OpenAIGatewayService._audit_error_type(429, "x", "budget_exceeded")
+        == "budget_limit_exceeded"
+    )
+    assert OpenAIGatewayService._audit_error_type(429, "slow down") != (
+        "budget_limit_exceeded"
+    )
     assert OpenAIGatewayService._audit_outcome(429, BUDGET_MESSAGE) == "budget_denied"
     # A plain rate limit is not a budget denial.
     assert OpenAIGatewayService._audit_outcome(429, "slow down") == "failed"
@@ -271,7 +282,7 @@ def test_rate_limit_is_429_without_should_retry_false(
     assert response.headers.get("x-should-retry") != "false"
 
 
-@pytest.mark.parametrize("router", ["openai", "anthropic"])
+@pytest.mark.parametrize("router", ["openai", "anthropic", "gemini"])
 def test_streaming_budget_denial_is_json_429_before_stream_opens(
     app, client, db_session, test_user, router
 ):

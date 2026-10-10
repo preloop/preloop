@@ -127,3 +127,12 @@ def test_reraise_leaves_policy_denials():
         provider="openai", status_code=403, message="no", code="model_not_allowed"
     )
     assert reraise_as_budget_denial(policy, "openai") is policy
+
+
+@pytest.mark.parametrize("provider", ["qwen", "openrouter", "azure", "", None])
+def test_unknown_provider_falls_back_to_openai_shape(provider):
+    """Review finding on #1458: no KeyError (500) for non-core providers."""
+    exc = budget_denial_error(provider, None, MESSAGE, 30)  # type: ignore[arg-type]
+    assert exc.provider == "openai"
+    assert exc.status_code == 429
+    assert exc.to_payload()["error"]["code"] == "insufficient_quota"

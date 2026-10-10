@@ -111,7 +111,7 @@ def budget_denial_error(
 
     Args:
         provider: Gateway router format to render (``openai``, ``anthropic``
-            or ``gemini``).
+            or ``gemini``). Any other value renders the OpenAI shape.
         reason: Preloop machine code, ``budget_limit_exceeded`` (default when
             ``None``) or ``execution_budget_exceeded``.
         message: Human readable denial. Callers keep the historical
@@ -122,6 +122,10 @@ def budget_denial_error(
     Returns:
         The provider-shaped error; raise it from the service layer.
     """
+    if provider not in _BUDGET_ERROR_TYPES:
+        # Gateway models registered as qwen, openrouter, azure and so on are
+        # served on the OpenAI router: render its shape rather than fail.
+        provider = "openai"
     retry_after = (
         max(1, int(reset_seconds))
         if reset_seconds is not None and reset_seconds > 0

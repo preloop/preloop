@@ -24,10 +24,10 @@ from preloop.services.model_gateway_errors import ModelGatewayAPIError
 PAYLOAD = {"model": "synthetic-priced", "messages": [{"role": "user", "content": "x"}]}
 
 
-def _model() -> models.AIModel:
+def _model(provider_name: str = "openai") -> models.AIModel:
     return models.AIModel(
         id=uuid.uuid4(),
-        provider_name="openai",
+        provider_name=provider_name,
         model_identifier="synthetic-priced",
         meta_data={
             "gateway": {"enabled": True},
@@ -223,3 +223,19 @@ def test_a_known_key_owner_spares_the_api_key_lookup(
         event.remove(engine, "before_cursor_execute", capture)
     assert statements == []
     assert _user_spend(db_session, test_user.account_id, test_user.id) == 2.0
+
+
+def test_hard_limit_on_a_non_core_provider_is_a_429_not_a_500(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Review finding on #1458: ``provider_name="qwen"`` must not KeyError."""
+    key = _key(db_session, test_user)
+    _user_policy(db_session, test_user, hard=2.5)
+    _usage(db_session, key)
+    auth = ModelGatewayAuthContext(token="t", user=test_user, api_key=key)
+    with pytest.raises(ModelGatewayAPIError) as exc_info:
+        ModelGatewayBudgetEnforcer().enforce_or_raise(
+            db_session, auth, _model("qwen"), PAYLOAD
+        )
+    assert exc_info.value.status_code == 429
+    assert exc_info.value.provider == "openai"

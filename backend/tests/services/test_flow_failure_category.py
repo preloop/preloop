@@ -445,3 +445,22 @@ def test_gateway_budget_429_is_budget_not_rate_limit(message):
         derive_failure_category(status="FAILED", error_message=message)
         == "budget_exceeded"
     )
+
+
+def test_budget_error_class_wins_over_generated_rate_limit_sentence():
+    """Review finding on #1458: the analysis path, not only the raw text."""
+    from preloop.services.upstream_errors import is_terminal_error_class
+
+    assert is_terminal_error_class("budget_exceeded")
+    assert (
+        derive_failure_category(
+            status="FAILED",
+            error_message="Upstream model provider rate limited us (HTTP 429).",
+            failure_analysis={
+                "error_class": "budget_exceeded",
+                "transient": True,
+                "upstream_status": 429,
+            },
+        )
+        == "budget_exceeded"
+    )

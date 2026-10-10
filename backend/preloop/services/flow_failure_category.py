@@ -103,6 +103,7 @@ from typing import Any, Mapping, Optional
 
 from preloop.services.stream_stall import STALL_MESSAGE_MARKER
 from preloop.services.upstream_errors import (
+    ERROR_CLASS_BUDGET_EXCEEDED,
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED,
     ERROR_CLASS_NETWORK,
     ERROR_CLASS_STREAM_ABANDONED,
@@ -186,6 +187,8 @@ _ERROR_CLASS_CATEGORIES = {
     # The deployment never gave this hosted model a tariff. Nothing upstream
     # failed, and no retry can change it: it is a configuration fault.
     ERROR_CLASS_HOSTED_TARIFF_UNCONFIGURED: FAILURE_CATEGORY_MODEL_CONFIG,
+    # The gateway's own budget 429 (#1447): Preloop's cap, not a rate limit.
+    ERROR_CLASS_BUDGET_EXCEEDED: FAILURE_CATEGORY_BUDGET_EXCEEDED,
 }
 
 # --- Message patterns, most specific first -------------------------------
