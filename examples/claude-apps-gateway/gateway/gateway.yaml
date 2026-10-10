@@ -51,6 +51,21 @@ rate_limits:
 
 auto_include_builtin_models: true
 
+# Relay client telemetry to Preloop's OTLP receiver (#1412). The URL is the
+# exporter base; the per-signal paths /v1/metrics and /v1/logs follow it.
+# localhost:4318 is the telemetry-relay service on this container's loopback
+# (forward_to accepts plain http only for loopback, with
+# CLAUDE_GATEWAY_ALLOW_LOOPBACK=1). Against a real deployment use
+# https://<preloop>/api/v1/telemetry/otlp directly.
+telemetry:
+  forward_to:
+    - url: http://localhost:4318/api/v1/telemetry/otlp
+      headers:
+        Authorization: Bearer ${PRELOOP_TELEMETRY_KEY}
+      metrics: true
+      logs: true
+      traces: false
+
 managed:
   policies:
     - match: {}

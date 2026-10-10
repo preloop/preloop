@@ -104,6 +104,14 @@ def _extra_anthropic_headers(request: Request) -> Dict[str, str]:
     }
 
 
+def _client_request_id(request: Request) -> Optional[str]:
+    """The client's ``x-client-request-id`` when bounded and printable."""
+    value = request.headers.get("x-client-request-id")
+    if value and len(value) <= 255 and all(32 <= ord(c) <= 126 for c in value):
+        return value
+    return None
+
+
 def _attribution(
     request: Request, auth_context: ModelGatewayAuthContext
 ) -> Dict[str, Any]:
@@ -118,6 +126,9 @@ def _attribution(
         "client": detect_client(request.headers) or CLIENT_UNKNOWN,
         "gateway_subject_id": str(subject.id) if subject is not None else None,
         "gateway_subject_email": subject.email if subject is not None else None,
+        # Claude clients report this id on their OTLP api_request events; it
+        # is how telemetry finds this row (#1412).
+        "client_request_id": _client_request_id(request),
     }
     if auth_context.auth_method is not None:
         attribution["auth_method"] = auth_context.auth_method

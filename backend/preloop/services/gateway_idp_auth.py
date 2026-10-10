@@ -948,7 +948,7 @@ def _binding_key_context(db: Any, provider: ProviderConfig) -> Optional[Any]:
 
 def binding_key_context(session: Any, provider: ProviderConfig) -> Optional[Any]:
     """Auth context for the provider's binding key, or ``None`` if unusable."""
-    from preloop.api.auth.key_scopes import is_device_scoped_api_key
+    from preloop.api.auth.key_scopes import is_single_purpose_api_key
     from preloop.models.crud import crud_api_key, crud_user
     from preloop.services.model_gateway_auth import (
         NO_BEARER_TOKEN,
@@ -961,7 +961,7 @@ def binding_key_context(session: Any, provider: ProviderConfig) -> Optional[Any]
         or str(api_key.account_id) != str(provider.account_id)
         or not api_key.is_active
         or api_key.is_expired
-        or is_device_scoped_api_key(api_key)
+        or is_single_purpose_api_key(api_key)
     ):
         return None
     user = crud_user.get(session, id=str(api_key.user_id))

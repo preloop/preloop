@@ -15,6 +15,13 @@ report routes and nothing else, so an MDM job holding it cannot read or
 change the account. The MCP bearer backend and the model gateway do not
 use this REST dependency, so they refuse a device-scoped key themselves.
 
+A telemetry ingest key (scopes exactly ``telemetry:ingest``, issue #1412) is
+the same idea for the OTLP/HTTP receiver: it is the credential a Claude apps
+gateway's ``telemetry.forward_to`` destination carries, so it may post OTLP
+exports under ``/api/v1/telemetry/otlp/`` and reach nothing else. The MCP
+backend and the model gateway refuse it through
+:func:`is_single_purpose_api_key`.
+
 Keys without scopes (personal API keys) and keys with any other scope keep
 their previous behaviour.
 """
@@ -51,6 +58,43 @@ DEVICE_KEY_ALLOWED_PATHS: frozenset[str] = frozenset(
         "/api/v1/agents/discovery-reports",
     }
 )
+
+
+#: Scope for OTLP/HTTP telemetry ingest (issue #1412). Admin-only to grant.
+TELEMETRY_INGEST_SCOPE = "telemetry:ingest"
+
+#: REST path prefix a telemetry ingest key may call.
+TELEMETRY_KEY_ALLOWED_PATH_PREFIX = "/api/v1/telemetry/otlp/"
+
+
+def is_telemetry_ingest_api_key(api_key: Any) -> bool:
+    """Return True when the key's scopes are exactly the telemetry scope.
+
+    Args:
+        api_key: API key record (or any object with a ``scopes`` attribute).
+
+    Returns:
+        True for a non-empty scope list made only of ``telemetry:ingest``.
+    """
+    scopes = getattr(api_key, "scopes", None)
+    if not isinstance(scopes, (list, tuple)) or not scopes:
+        return False
+    return all(scope == TELEMETRY_INGEST_SCOPE for scope in scopes)
+
+
+def is_single_purpose_api_key(api_key: Any) -> bool:
+    """Return True for keys limited to one narrow REST surface.
+
+    Device-scoped (``report_discovery``) and telemetry ingest keys. Surfaces
+    that do not use the REST dependency (MCP, model gateway) refuse them.
+
+    Args:
+        api_key: API key record, or None.
+
+    Returns:
+        True when the key must be refused outside its own routes.
+    """
+    return is_device_scoped_api_key(api_key) or is_telemetry_ingest_api_key(api_key)
 
 
 def is_device_scoped_api_key(api_key: Any) -> bool:
@@ -140,6 +184,9 @@ def enforce_api_key_route_scope(api_key: Any, request: Optional[Request]) -> Non
     if is_device_scoped_api_key(api_key):
         _enforce_device_key_route(api_key, request)
         return
+    if is_telemetry_ingest_api_key(api_key):
+        _enforce_telemetry_key_route(api_key, request)
+        return
     if not is_mcp_only_api_key(api_key):
         # Checked before touching the request, so other keys pay nothing.
         return
@@ -192,6 +239,32 @@ def _enforce_device_key_route(api_key: Any, request: Optional[Request]) -> None:
     )
 
 
+def _enforce_telemetry_key_route(api_key: Any, request: Optional[Request]) -> None:
+    """Deny a telemetry ingest key anywhere but the OTLP receiver.
+
+    Raises:
+        HTTPException: 403 with ``detail.code`` ``api_key_scope_denied``.
+    """
+    path = request.url.path if request is not None else None
+    if path is not None and path.startswith(TELEMETRY_KEY_ALLOWED_PATH_PREFIX):
+        return
+    logger.info(
+        "Denied telemetry ingest API key %s on %s",
+        getattr(api_key, "id", None),
+        path or "a call without request",
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": API_KEY_SCOPE_DENIED,
+            "message": (
+                "This API key is limited to telemetry ingest and cannot call "
+                "this endpoint."
+            ),
+        },
+    )
+
+
 def api_key_allowed_on_channel(api_key: Any, channel: str) -> bool:
     """Return whether a key may open a console channel that is not REST.
 
@@ -206,6 +279,6 @@ def api_key_allowed_on_channel(api_key: Any, channel: str) -> bool:
     Returns:
         False when the key must be refused.
     """
-    if is_device_scoped_api_key(api_key):
+    if is_single_purpose_api_key(api_key):
         return False
     return not _mode_denies(api_key, channel)

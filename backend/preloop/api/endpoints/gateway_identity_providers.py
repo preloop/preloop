@@ -83,7 +83,7 @@ def _get_owned(
 
 def _check_binding_key(db: Session, account_id: Any, api_key_id: UUID) -> None:
     """The binding key must be a live gateway-capable key of this account."""
-    from preloop.api.auth.key_scopes import is_device_scoped_api_key
+    from preloop.api.auth.key_scopes import is_single_purpose_api_key
 
     key = crud_api_key.get(db, id=api_key_id)
     if (
@@ -91,7 +91,7 @@ def _check_binding_key(db: Session, account_id: Any, api_key_id: UUID) -> None:
         or str(key.account_id) != str(account_id)
         or not key.is_active
         or key.is_expired
-        or is_device_scoped_api_key(key)
+        or is_single_purpose_api_key(key)
     ):
         raise HTTPException(
             status_code=422,

@@ -1473,6 +1473,28 @@ def _trusted_upstream_key_context(
     return context or None
 
 
+def _require_admin_for_telemetry_scope(
+    key_data: ApiKeyCreate, current_user: UserModel, db: Session
+) -> None:
+    """Only account admins may grant ``telemetry:ingest`` (issue #1412).
+
+    An ingest key writes usage rows for the whole account, so it is an admin
+    credential even though it can reach nothing but the OTLP receiver.
+
+    Raises:
+        HTTPException: 403 for a non-admin asking for the scope.
+    """
+    from preloop.api.auth.key_scopes import TELEMETRY_INGEST_SCOPE
+
+    if TELEMETRY_INGEST_SCOPE not in (key_data.scopes or []):
+        return
+    if not _is_account_admin(db, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Only account admins can grant the {TELEMETRY_INGEST_SCOPE} scope",
+        )
+
+
 @router.post(
     "/api-keys", response_model=ApiKeyResponse, status_code=status.HTTP_201_CREATED
 )
@@ -1491,6 +1513,7 @@ def create_api_key(
         The created API key details.
     """
     context_data = _trusted_upstream_key_context(key_data, current_user, db)
+    _require_admin_for_telemetry_scope(key_data, current_user, db)
 
     # Generate a secure random key
     alphabet = string.ascii_letters + string.digits

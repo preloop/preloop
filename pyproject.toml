@@ -100,6 +100,10 @@ dependencies = [
     "opentelemetry-api>=1.27.0",
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-exporter-otlp>=1.27.0",
+    # OTLP/HTTP receiver for Claude client telemetry (#1412) decodes with the
+    # proto classes directly; already pulled in by the exporter, pinned here
+    # so a future exporter change cannot drop it.
+    "opentelemetry-proto>=1.27.0",
 ]
 
 [project.urls]

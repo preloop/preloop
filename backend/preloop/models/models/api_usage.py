@@ -107,7 +107,9 @@ class ApiUsage(Base):
     # ISO-4217 code of estimated_cost; NULL on legacy rows means USD.
     currency: Mapped[Optional[str]] = mapped_column(String(3), nullable=True)
     # override | model_config | provider | catalog | subscription | unpriced
-    # | reconciled | imported. 'provider' = the upstream reported the
+    # | reconciled | imported | telemetry_estimate. 'telemetry_estimate' = the
+    # cost a Claude client reported in its own OTLP telemetry (cost_usd on an
+    # api_request event or the cost.usage metric), issue #1412. 'provider' = the upstream reported the
     # request's actual cost in its usage payload (e.g. OpenRouter usage
     # accounting); authoritative over catalog estimates. 'reconciled' = the
     # cost was backfilled from the provider's daily activity ledger,
@@ -178,7 +180,7 @@ class ApiUsage(Base):
         CheckConstraint(
             "cost_source IS NULL OR cost_source IN "
             "('override', 'model_config', 'provider', 'catalog', 'subscription', "
-            "'unpriced', 'reconciled', 'imported')",
+            "'unpriced', 'reconciled', 'imported', 'telemetry_estimate')",
             name="ck_api_usage_cost_source",
         ),
         CheckConstraint(
@@ -233,6 +235,43 @@ class ApiUsage(Base):
             text("(meta_data->>'import_fingerprint')"),
             unique=True,
             postgresql_where=text("action_type = 'imported_usage'"),
+        ),
+        # OTLP telemetry ingest (#1412). Gateway rows are matched to client
+        # telemetry by the client's x-client-request-id (recorded in
+        # meta_data) or by upstream_request_id; OTLP-created rows are found
+        # by the same ids when a late gateway row supersedes them.
+        Index(
+            "ix_api_usage_account_upstream_request_id",
+            "account_id",
+            "upstream_request_id",
+            postgresql_where=text("upstream_request_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_api_usage_gateway_client_request_id",
+            "account_id",
+            text("(meta_data->>'client_request_id')"),
+            postgresql_where=text(
+                "action_type = 'model_gateway' "
+                "AND meta_data->>'client_request_id' IS NOT NULL"
+            ),
+        ),
+        Index(
+            "ix_api_usage_otlp_client_request_id",
+            "account_id",
+            text("(meta_data->>'otlp_client_request_id')"),
+            postgresql_where=text(
+                "action_type = 'imported_usage' "
+                "AND meta_data->>'otlp_client_request_id' IS NOT NULL"
+            ),
+        ),
+        Index(
+            "ix_api_usage_otlp_request_id",
+            "account_id",
+            text("(meta_data->>'otlp_request_id')"),
+            postgresql_where=text(
+                "action_type = 'imported_usage' "
+                "AND meta_data->>'otlp_request_id' IS NOT NULL"
+            ),
         ),
         # Worker->parent conversation rollup for imported usage: partial
         # indexes scoped to imported rows keep the gateway hot path

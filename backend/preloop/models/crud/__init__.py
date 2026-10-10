@@ -52,6 +52,7 @@ from .agent_control_command import CRUDAgentControlCommand
 from .ai_model import CRUDAIModel
 from .api_key import CRUDApiKey
 from .gateway_subject import CRUDGatewaySubject
+from .telemetry_ingest import CRUDTelemetryIngest
 from .gateway_identity_provider import CRUDGatewayIdentityProvider
 from .api_usage import CRUDApiUsage
 from .approval_bypass import (
@@ -222,6 +223,7 @@ crud_embedding_model = CRUDEmbeddingModel(EmbeddingModel)
 crud_issue_embedding = CRUDIssueEmbedding(IssueEmbedding)
 crud_api_key = CRUDApiKey(ApiKey)
 crud_gateway_subject = CRUDGatewaySubject(GatewaySubject)
+crud_telemetry_ingest = CRUDTelemetryIngest()
 crud_gateway_identity_provider = CRUDGatewayIdentityProvider(GatewayIdentityProvider)
 crud_api_usage = CRUDApiUsage(ApiUsage)
 crud_audit_log = CRUDAuditLog(AuditLog)
@@ -355,6 +357,7 @@ __all__ = [
     "crud_issue_embedding",
     "crud_api_key",
     "crud_gateway_subject",
+    "crud_telemetry_ingest",
     "crud_gateway_identity_provider",
     "crud_api_usage",
     "crud_audit_log",

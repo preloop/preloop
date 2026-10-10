@@ -454,6 +454,13 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         db.add(db_obj)
         db.flush()  # assign an ID
 
+        # One usage row per request (#1412): client telemetry may have
+        # landed first and created an OTLP row for this request. Drop it in
+        # this transaction, keeping its telemetry enrichment on this row.
+        from .telemetry_ingest import CRUDTelemetryIngest
+
+        CRUDTelemetryIngest().supersede_for_gateway_row(db, db_obj)
+
         # Atomically record spend if estimated_cost is present and > 0.
         # Replay-validation runs are excluded: their spend is bounded by the
         # replay path's own hard cap, and letting them consume budget-bucket

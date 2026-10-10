@@ -161,6 +161,10 @@ services:
       GATEWAY_POSTGRES_URL: postgres://gateway:gateway@gateway-db:5432/gateway
       PRELOOP_UPSTREAM_KEY: ${PRELOOP_UPSTREAM_KEY}
       PRELOOP_UPSTREAM_SECRET: ${PRELOOP_UPSTREAM_SECRET}
+      PRELOOP_TELEMETRY_KEY: ${PRELOOP_TELEMETRY_KEY}
+      # telemetry.forward_to points at the loopback relay below; plain http
+      # is only allowed for loopback, and only with this set.
+      CLAUDE_GATEWAY_ALLOW_LOOPBACK: "1"
       HOME: /var/lib/claude-gateway
     volumes:
       - ./gateway:/etc/claude-gateway:ro
@@ -172,6 +176,24 @@ services:
       retries: 40
     ports:
       - "127.0.0.1:8080:8080"
+
+  # OTLP relay on the gateway's loopback (localhost:4318), forwarding to
+  # Preloop's /api/v1/telemetry/otlp receiver (#1412). A forward_to URL must
+  # be https or loopback, so the relay shares the gateway's network
+  # namespace. It records what the gateway relayed for verify.sh step 8.
+  telemetry-relay:
+    image: python:3.12-alpine
+    depends_on:
+      claude-gateway:
+        condition: service_started
+    network_mode: "service:claude-gateway"
+    environment:
+      HARNESS_ROLE: recorder
+      HARNESS_PORT: "4318"
+      HARNESS_TARGET: http://preloop:8000
+    volumes:
+      - ./stub:/stub:ro
+    command: ["python", "/stub/harness_server.py"]
 
   # Claude Code client. Shares the gateway's network namespace so the
   # gateway is a loopback origin (http://localhost:8080), which is the only
