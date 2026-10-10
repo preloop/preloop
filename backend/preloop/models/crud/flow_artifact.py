@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session, defer
 
 from preloop.models import models
@@ -209,11 +209,18 @@ def reuse_identical_workspace(
         .first()
     )
     newest, has_payload = found if found is not None else (None, False)
+    stored_metadata = (
+        (newest.manifest or {}).get("metadata") if newest is not None else None
+    )
+    stored_metadata_only = (
+        isinstance(stored_metadata, dict)
+        and stored_metadata.get("metadata_only") is True
+    )
     if (
         newest is None
         or newest.availability != "available"
-        or not has_payload
         or workspace_state((newest.manifest or {}).get("metadata")) != state
+        or (not has_payload and not stored_metadata_only)
     ):
         # Keep the locks: the caller's store() runs in this same transaction,
         # so no concurrent capture can slip in between the check and insert.
@@ -253,8 +260,11 @@ def store(
         .filter(models.FlowArtifact.account_id == values["account_id"])
         .scalar()
     )
-    incoming = len(values["ciphertext"])
-    if size + incoming > quota_bytes:
+    ciphertext = values.get("ciphertext")
+    incoming = len(ciphertext) if isinstance(ciphertext, (bytes, bytearray)) else 0
+    # A metadata-only checkpoint has no ciphertext. Zero incoming bytes cannot
+    # push the account further over the quota, so a full quota still accepts it.
+    if incoming > 0 and size + incoming > quota_bytes:
         raise ArtifactQuotaExceeded(
             retained_bytes=size, quota_bytes=quota_bytes, incoming_bytes=incoming
         )
@@ -319,7 +329,14 @@ def lease(
         .with_for_update()
         .one()
     )
-    if row.ciphertext is None:
+    manifest: dict[str, Any] = row.manifest if isinstance(row.manifest, dict) else {}
+    meta = manifest.get("metadata") if isinstance(manifest, dict) else None
+    metadata_only = (
+        isinstance(meta, dict)
+        and meta.get("metadata_only") is True
+        and row.availability == "available"
+    )
+    if row.ciphertext is None and not metadata_only:
         raise ValueError("artifact_expired")
     row.lease_until = until
     db.commit()
@@ -344,7 +361,13 @@ def cleanup(db: Session, *, now: datetime) -> int:
                 models.FlowArtifact.lease_until.is_(None),
                 models.FlowArtifact.lease_until <= now,
             ),
-            models.FlowArtifact.ciphertext.isnot(None),
+            or_(
+                models.FlowArtifact.ciphertext.isnot(None),
+                and_(
+                    models.FlowArtifact.ciphertext.is_(None),
+                    models.FlowArtifact.availability == "available",
+                ),
+            ),
         )
         .update(
             {

@@ -151,7 +151,7 @@ counts, expiry) atomically with the ciphertext.
 | `FLOW_ARTIFACT_EXPANDED_MAX_BYTES` | 2 GiB | Extraction bomb limit (shared) |
 | `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` | 4 GiB | Retained encrypted payload per account |
 | `FLOW_EVIDENCE_RETENTION_HOURS` | 720 (30 days) | Evidence expiry; `0` expires on the next janitor pass |
-| `WORKSPACE_SNAPSHOT_TTL_HOURS` | 24 | Workspace checkpoints only |
+| `WORKSPACE_SNAPSHOT_TTL_HOURS` | 24 (hosted: 168) | Workspace checkpoints only |
 | `FLOW_NATIVE_SESSION_RETENTION_HOURS` | 168 | Native session artifacts only |
 
 Evidence retention is independent of workspace checkpoint TTL. Cleanup
@@ -168,6 +168,15 @@ counts against the quota. Snapshots are never shared across executions,
 threads or accounts, because recovery looks a snapshot up by execution.
 The archive still crosses the wire: the runner cannot prove to the API that
 an earlier upload committed, so the API decides.
+
+A clean checkout whose `HEAD` is still the cloned commit skips the payload.
+The stored row keeps the checkpoint metadata and counts zero ciphertext bytes
+toward `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES`. The marker is
+`PRELOOP_CHECKPOINT skipped clean_checkout`. Open source defaults
+`WORKSPACE_SNAPSHOT_TTL_HOURS` to 24; hosted Preloop sets 168. With the
+default `when_dirty` policy, clean reviews no longer fill that window with
+workspace payloads. See
+[Environments and recovery](environments-and-recovery.md).
 
 ### When a capture is refused for quota
 

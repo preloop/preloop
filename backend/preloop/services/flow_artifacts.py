@@ -110,6 +110,53 @@ def validate_archive(archive: bytes, *, max_bytes: int, max_expanded_bytes: int)
     return total
 
 
+def _checkpoint_metadata(archive: bytes) -> dict[str, Any]:
+    """The workspace checkpoint document, or {} when the member is absent."""
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        try:
+            member = tar.getmember("workspace/.preloop-checkpoint.json")
+        except KeyError:
+            return {}
+        if member.size > 65536:
+            raise ValueError("artifact_metadata_oversized")
+        source = tar.extractfile(member)
+        parsed = json.loads(source.read()) if source else {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def metadata_only_workspace(archive: bytes, metadata: Mapping[str, Any]) -> bool:
+    """True when the archive is the checkpoint document and nothing else.
+
+    A ``metadata_only`` flag with extra members is a payload. Treating it as
+    metadata would let a caller store source without paying the quota.
+    """
+    if metadata.get("metadata_only") is not True:
+        return False
+    try:
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+            files = [member.name for member in tar.getmembers() if member.isfile()]
+    except (tarfile.TarError, OSError):
+        return False
+    return files == ["workspace/.preloop-checkpoint.json"]
+
+
+def _rebuild_metadata_archive(metadata: Mapping[str, Any]) -> bytes:
+    """A tar restore can read, built from the manifest (no stored payload)."""
+    raw = json.dumps(dict(metadata)).encode()
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        info = tarfile.TarInfo("workspace/.preloop-checkpoint.json")
+        info.size = len(raw)
+        archive.addfile(info, io.BytesIO(raw))
+    body = buffer.getvalue()
+    validate_archive(
+        body,
+        max_bytes=int(settings.workspace_snapshot_max_bytes),
+        max_expanded_bytes=settings.flow_artifact_expanded_max_bytes,
+    )
+    return body
+
+
 def manifest_digest(manifest: dict[str, Any]) -> str:
     """Stable identity for an immutable manifest."""
     return hashlib.sha256(
@@ -731,29 +778,26 @@ def put_artifact(
     )
     metadata: dict[str, Any] = {}
     native_expiry = None
-    if kind in {"workspace", "native_session"}:
+    if kind == "workspace":
+        metadata = _checkpoint_metadata(archive)
+    elif kind == "native_session":
         with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
             try:
-                member = tar.getmember(
-                    "workspace/.preloop-checkpoint.json"
-                    if kind == "workspace"
-                    else "manifest.json"
-                )
+                member = tar.getmember("manifest.json")
                 if member.size > 65536:
                     raise ValueError("artifact_metadata_oversized")
                 source = tar.extractfile(member)
                 metadata = json.loads(source.read()) if source else {}
-                if kind == "native_session":
-                    if metadata.get("thread_id") != thread_id:
-                        raise ValueError("artifact_thread_mismatch")
-                    native_expiry = datetime.fromisoformat(
-                        metadata["expires_at"].replace("Z", "+00:00")
-                    )
-                    if native_expiry.tzinfo is None:
-                        raise ValueError("artifact_invalid_expiry")
+                if metadata.get("thread_id") != thread_id:
+                    raise ValueError("artifact_thread_mismatch")
+                native_expiry = datetime.fromisoformat(
+                    metadata["expires_at"].replace("Z", "+00:00")
+                )
+                if native_expiry.tzinfo is None:
+                    raise ValueError("artifact_invalid_expiry")
             except KeyError:
-                if kind == "native_session":
-                    raise ValueError("artifact_native_manifest_missing") from None
+                raise ValueError("artifact_native_manifest_missing") from None
+    metadata_only = kind == "workspace" and metadata_only_workspace(archive, metadata)
     now = datetime.now(UTC)
     ttl = artifact_retention_hours(kind)
     expires_at = now + timedelta(hours=max(0, ttl))
@@ -775,13 +819,27 @@ def put_artifact(
         )
         if existing is not None:
             return artifact_reference(existing, deduplicated=True)
+    if metadata_only:
+        # No workspace bytes are retained. The manifest holds the repository
+        # identity; restore rebuilds a metadata tar from it.
+        digest = hashlib.sha256(
+            json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        size_bytes = 0
+        expanded_bytes = 0
+        ciphertext = None
+    else:
+        digest = hashlib.sha256(archive).hexdigest()
+        size_bytes = len(archive)
+        expanded_bytes = expanded
+        ciphertext = _get_fernet().encrypt(archive)
     manifest = ArtifactManifest(
         kind=kind,
         execution_id=execution_id,
         thread_id=thread_id,
-        sha256=hashlib.sha256(archive).hexdigest(),
-        size_bytes=len(archive),
-        expanded_bytes=expanded,
+        sha256=digest,
+        size_bytes=size_bytes,
+        expanded_bytes=expanded_bytes,
         created_at=now,
         expires_at=expires_at,
         metadata=metadata,
@@ -796,7 +854,7 @@ def put_artifact(
             "kind": kind,
             "manifest": manifest,
             "manifest_sha256": manifest_digest(manifest),
-            "ciphertext": _get_fernet().encrypt(archive),
+            "ciphertext": ciphertext,
             "availability": "available",
             "expires_at": datetime.fromisoformat(
                 manifest["expires_at"].replace("Z", "+00:00")
@@ -901,7 +959,20 @@ def get_artifact(
     held = bool(getattr(artifact, "legal_hold", False)) and (
         artifact.ciphertext is not None
     )
-    if artifact.ciphertext is None or (artifact.expires_at <= now and not held):
+    stored_metadata = (
+        artifact.manifest.get("metadata")
+        if isinstance(artifact.manifest, dict)
+        else None
+    )
+    metadata_only = (
+        artifact.ciphertext is None
+        and isinstance(stored_metadata, dict)
+        and stored_metadata.get("metadata_only") is True
+        and artifact.availability == "available"
+    )
+    if artifact.ciphertext is None and not metadata_only:
+        raise ValueError("artifact_expired")
+    if artifact.expires_at <= now and not held:
         raise ValueError("artifact_expired")
     if (
         artifact.manifest_sha256 != reference.manifest_sha256
@@ -909,6 +980,12 @@ def get_artifact(
     ):
         raise ValueError("artifact_manifest_mismatch")
     artifact = crud.lease(db, artifact=artifact, until=now + timedelta(minutes=10))
+    if metadata_only:
+        return _rebuild_metadata_archive(
+            artifact.manifest.get("metadata")
+            if isinstance(artifact.manifest, dict)
+            else {}
+        )
     try:
         archive = _get_fernet().decrypt(bytes(artifact.ciphertext))
     except InvalidToken as exc:
