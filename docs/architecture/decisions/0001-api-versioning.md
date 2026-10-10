@@ -69,9 +69,7 @@ Recommendation: **A**.
 
 Loser: **B**. It moves the versioning burden from the one party that can
 see the whole surface at cut time (the server) to every client on every
-request, and the inventory shows no client is set up to send it [A3]. The
-two nginx exact-match rules on `/api/v1/...` paths [A4] would also have to
-learn about the header.
+request, and the inventory shows no client is set up to send it [A3].
 
 Window: `/api/v1` keeps being served for at least six months after the
 first release that ships `/api/v2`, and never fewer than the two minor
@@ -170,9 +168,14 @@ It is marked proposed until this record is Accepted.
 
 Two points the issue did not raise, surfaced by the inventory:
 
-- The probe endpoints `/api/v1/ping`, `/api/v1/health` and
-  `/api/v1/version` are hidden from `openapi.yaml` but used by Helm probes
-  and the CLI [A2]; the policy names them explicitly so they are covered.
+- Five endpoints are hidden from `openapi.yaml` but used by clients that
+  are not the console: `/api/v1/ping` and `/api/v1/health` (Helm probes),
+  `/api/v1/version` (CLI, mobile apps), `/api/v1/features` (CLI) and
+  `/api/v1/openapi.json` (the schema itself) [A2]. The policy names them
+  so they are covered, and states that the remaining hidden endpoints
+  (`/api/v1/version/status`, `/api/v1/configuration-capabilities`,
+  `/api/v1/spec`, `/api/v1/openapi.yaml`), which only the console or the
+  docs pages call, are intentionally outside the promise.
 - `Deprecation` and `Sunset` are named as the runtime deprecation headers
   for a future `v1` sunset, because the compatibility rule promises "a
   response header" without saying which.
@@ -275,6 +278,26 @@ helm/preloop/templates/gateway-deployment.yaml:299:              path: /api/v1/h
 
 Mounts: health and version at `app.py:1719` and `:1722`, features at
 `app.py:993`, `openapi.json` at `app.py:1366`.
+
+Who calls the hidden endpoints that are not probes:
+
+```sh
+$ grep -n '@router\.\(get\|post\)' backend/preloop/api/endpoints/features.py
+49:@router.get("/features")
+127:@router.get("/configuration-capabilities")
+$ grep -rn '/api/v1/features\|version/status\|configuration-capabilities' cli/internal frontend/src --include='*.go' --include='*.ts' | grep -v '_test\|\.test\.' | grep -v '^\S*:[0-9]*:\s*//\|^\S*:[0-9]*:\s*\*'
+cli/internal/cmd/models_list.go:70:	if err := client.Get("/api/v1/features", &features); err != nil {
+cli/internal/cmd/capabilities.go:79:	resp, err := client.Get(cfg.APIURL + "/api/v1/features")
+frontend/src/api.ts:6820:      const response = await fetchPublic('/api/v1/features');
+frontend/src/api.ts:7642:  const response = await fetchWithAuth('/api/v1/configuration-capabilities');
+frontend/src/components/update-banner.ts:81:      const response = await fetchWithAuth('/api/v1/version/status');
+frontend/src/test-helpers/capability-api.ts:77:    { path: '/api/v1/features', body: featuresFixture(options.capabilities) },
+```
+
+`/api/v1/features` is read by the CLI; `/api/v1/version/status` and
+`/api/v1/configuration-capabilities` are read only by the console.
+`/api/v1/openapi.json` is the documented location of the schema
+(`docs/guide/api.md:9`).
 
 ### A3. Clients that hardcode `/api/v1` (and the other prefixes)
 

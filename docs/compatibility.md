@@ -13,9 +13,14 @@ rules below apply only to the public surfaces.
 ## Public surfaces
 
 - REST API under `/api/v1` (the paths and schemas in `openapi.yaml`, plus
-  the probe endpoints `/api/v1/ping`, `/api/v1/health` and
-  `/api/v1/version`, which are hidden from the schema). See
-  [API versioning](#api-versioning).
+  five endpoints hidden from the schema that clients outside the console
+  depend on: `/api/v1/ping` and `/api/v1/health` (Helm probes),
+  `/api/v1/version` (CLI and mobile apps), `/api/v1/features` (CLI) and
+  `/api/v1/openapi.json` (the schema itself). Other hidden endpoints under
+  `/api/v1`, such as `/api/v1/version/status` and
+  `/api/v1/configuration-capabilities`, serve only the console, which
+  ships in the same release as the server, and are intentionally outside
+  the promise). See [API versioning](#api-versioning).
 - The MCP endpoint (`/mcp`, canonical `/mcp/v1`), the model gateway
   prefixes (`/openai/v1`, `/anthropic/v1`, `/gemini/v1beta`) and the OAuth
   endpoints (`/oauth/*`, `/.well-known/*`). Their paths are stable; their
