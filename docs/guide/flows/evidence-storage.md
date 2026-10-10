@@ -151,7 +151,7 @@ counts, expiry) atomically with the ciphertext.
 | `FLOW_ARTIFACT_EXPANDED_MAX_BYTES` | 2 GiB | Extraction bomb limit (shared) |
 | `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES` | 4 GiB | Retained encrypted payload per account |
 | `FLOW_EVIDENCE_RETENTION_HOURS` | 720 (30 days) | Evidence expiry; `0` expires on the next janitor pass |
-| `WORKSPACE_SNAPSHOT_TTL_HOURS` | 24 | Workspace checkpoints only |
+| `WORKSPACE_SNAPSHOT_TTL_HOURS` | 24 (hosted: 168) | Workspace checkpoints only |
 | `FLOW_NATIVE_SESSION_RETENTION_HOURS` | 168 | Native session artifacts only |
 
 Evidence retention is independent of workspace checkpoint TTL. Cleanup
@@ -174,6 +174,16 @@ when the pack manifest's `members_digest` matches (a repack of the same files
 whose gzip timestamp differs): expiry moves forward and never earlier, the
 receipt sets `deduplicated: true`, and no second ciphertext or signature is
 stored.
+
+A clean checkout whose `HEAD` is still the cloned commit, with no stash and no
+commit that exists only on a local branch, skips the payload.
+The stored row keeps the checkpoint metadata and counts zero ciphertext bytes
+toward `FLOW_ARTIFACT_ACCOUNT_QUOTA_BYTES`. The marker is
+`PRELOOP_CHECKPOINT skipped clean_checkout`. Open source defaults
+`WORKSPACE_SNAPSHOT_TTL_HOURS` to 24; hosted Preloop sets 168. With the
+default `when_dirty` policy, clean reviews no longer fill that window with
+workspace payloads. See
+[Environments and recovery](environments-and-recovery.md).
 
 ### When a capture is refused for quota
 

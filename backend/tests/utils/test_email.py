@@ -60,6 +60,38 @@ class TestSendEmail:
     @patch("preloop.utils.email.smtplib.SMTP")
     @patch("preloop.utils.email.SMTP_USERNAME", "test@example.com")
     @patch("preloop.utils.email.SMTP_PASSWORD", "password")
+    def test_success_log_omits_the_subject(self, mock_smtp):
+        """The sent-path log names the recipient but not the subject.
+
+        Regression for py/clear-text-logging-sensitive-data: the failure-alert
+        flow passes a subject built from the flow name, and static analysis
+        treats any subject that reaches the shared transport as a secret.
+        """
+        mock_server = MagicMock()
+        mock_smtp.return_value.__enter__.return_value = mock_server
+        handler = _CapturingHandler()
+        email_logger = logging.getLogger("preloop.utils.email")
+        previous_level = email_logger.level
+        email_logger.addHandler(handler)
+        email_logger.setLevel(logging.DEBUG)
+        try:
+            send_email(
+                to_email="recipient@example.com",
+                subject="SUBJECT-SENTINEL-should-not-be-logged",
+                body_text="Test body",
+            )
+        finally:
+            email_logger.removeHandler(handler)
+            email_logger.setLevel(previous_level)
+
+        assert handler.messages, "no log records captured; assertion would be vacuous"
+        combined = "\n".join(handler.messages)
+        assert "recipient@example.com" in combined
+        assert "SUBJECT-SENTINEL-should-not-be-logged" not in combined
+
+    @patch("preloop.utils.email.smtplib.SMTP")
+    @patch("preloop.utils.email.SMTP_USERNAME", "test@example.com")
+    @patch("preloop.utils.email.SMTP_PASSWORD", "password")
     def test_send_email_with_html(self, mock_smtp):
         """Test sending email with both text and HTML bodies."""
         mock_server = MagicMock()
@@ -608,8 +640,13 @@ class TestUnconfiguredSmtpDoesNotLogSecrets:
 
     @patch("preloop.utils.email.SMTP_USERNAME", "")
     @patch("preloop.utils.email.SMTP_PASSWORD", "")
-    def test_body_text_is_not_logged_but_send_is_reported(self):
-        """The body is suppressed while the operator-facing signal survives."""
+    def test_body_and_subject_are_not_logged_but_send_is_reported(self):
+        """Neither body nor subject is logged; the recipient still is.
+
+        The subject carries caller-supplied text (a flow or tool name), so the
+        shared transport must not echo it: covering both keeps
+        py/clear-text-logging-sensitive-data closed for the failure-alert flow.
+        """
         handler = _CapturingHandler()
         email_logger = logging.getLogger("preloop.utils.email")
         previous_level = email_logger.level
@@ -618,7 +655,7 @@ class TestUnconfiguredSmtpDoesNotLogSecrets:
         try:
             send_email(
                 to_email="recipient@example.com",
-                subject="Test Subject",
+                subject="SUBJECT-SENTINEL-should-not-be-logged",
                 body_text="BODY-SENTINEL-should-not-be-logged",
             )
         finally:
@@ -628,9 +665,9 @@ class TestUnconfiguredSmtpDoesNotLogSecrets:
         assert handler.messages, "no log records captured; assertion would be vacuous"
         combined = "\n".join(handler.messages)
         assert "BODY-SENTINEL-should-not-be-logged" not in combined
+        assert "SUBJECT-SENTINEL-should-not-be-logged" not in combined
         # The operator still learns that an email would have been sent.
         assert "recipient@example.com" in combined
-        assert "Test Subject" in combined
 
 
 class TestSendApprovalRequestEmail:

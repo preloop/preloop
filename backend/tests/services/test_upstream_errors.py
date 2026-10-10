@@ -298,3 +298,34 @@ def test_gateway_translation_error_is_terminal_in_the_shared_taxonomy() -> None:
         classify_recorded_error(500, "Internal server error")
         == ERROR_CLASS_UPSTREAM_ERROR
     )
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "Model gateway budget exceeded: account monthly limit reached",
+        "Execution budget exceeded: execution token ceiling reached",
+        "Preloop trial limit for hosted model reached. Please configure your own "
+        "OpenAI/Anthropic API key.",
+    ],
+)
+@pytest.mark.parametrize("status_code", [403, 429])
+def test_recorded_budget_denial_is_not_an_upstream_class(status_code, detail):
+    """The gateway's budget 429 (#1447) is never an upstream rate limit."""
+    from preloop.services.upstream_errors import (
+        classify_recorded_error,
+        is_preloop_budget_denial_detail,
+    )
+
+    assert is_preloop_budget_denial_detail(detail)
+    assert classify_recorded_error(status_code, detail) == "budget_exceeded"
+
+
+def test_recorded_plain_429_is_still_an_upstream_rate_limit():
+    from preloop.services.upstream_errors import classify_recorded_error
+
+    assert classify_recorded_error(429, "slow down") == "upstream_rate_limited"
+    assert (
+        classify_recorded_error(429, "You exceeded your current quota")
+        == "upstream_quota_exhausted"
+    )

@@ -127,6 +127,10 @@ var agentSpecs = []agentSpec{
 		Parser:      parseGenericMCP,
 	},
 	{
+		// VS Code / Copilot Chat. Onboarding writes ~/.vscode/mcp.json only.
+		// Model traffic is manual BYOK (Chat: Manage Language Models ->
+		// Add Models -> Custom Endpoint, then chatLanguageModels.json).
+		// There is no config-file hook for agents onboard to rewrite.
 		Name:        "VSCode / Copilot",
 		ConfigPaths: []string{".vscode/mcp.json"},
 		Parser:      parseGenericMCP,
@@ -273,6 +277,12 @@ func mcpOnlyAgentModelNote(agent AgentConfig) string {
 			"Cursor native action gates are supported separately via --approvals. " +
 			"Preloop does not automatically rewrite Cursor model traffic; its in-app Settings → Models " +
 			"base URL override requires separate configuration and verification."
+	case strings.EqualFold(strings.TrimSpace(agent.Name), "vscode / copilot"):
+		return mcpOnlySupportLabel + scope +
+			"Manual BYOK uses Chat: Manage Language Models -> Add Models -> Custom Endpoint " +
+			"and chatLanguageModels.json. Set the model url to the full gateway path " +
+			"(/openai/v1/chat/completions, /openai/v1/responses, or /anthropic/v1/messages) " +
+			"and toolCalling true. Onboarding writes the MCP firewall entry only."
 	case isCopilotCLIAgent(agent):
 		return mcpOnlySupportLabel + scope +
 			"Copilot CLI native action gates are supported separately via --approvals. " +
@@ -315,6 +325,13 @@ Each listed agent shows a pre-onboarding readiness probe:
 Live validation sends a direct gateway route/accounting probe using managed
 configuration. It does not launch the application or verify that the application
 consumed its configuration.
+
+VSCode / Copilot model routing is Manual BYOK. Discover and onboard leave
+chatLanguageModels.json alone. The click path is Chat: Manage Language Models
+-> Add Models -> Custom Endpoint, with toolCalling true and the model url set
+to the full gateway path (/openai/v1/chat/completions, /openai/v1/responses, or
+/anthropic/v1/messages). Business and Enterprise seats need the admin BYOK
+policy. See docs/guide/clients/vscode-copilot.md.
 
 When the post-scan onboarding prompts run, an error onboarding one agent does
 not stop the remaining agents; a per-agent summary (onboarded / partial /

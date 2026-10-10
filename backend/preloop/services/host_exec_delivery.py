@@ -188,6 +188,7 @@ def build_host_exec_publication(
     target_branch: str,
     flow_name: str,
     execution_id: str,
+    continuation: bool = False,
 ) -> Dict[str, Any]:
     """The runner publication plan for a single-repository checkout.
 
@@ -196,6 +197,8 @@ def build_host_exec_publication(
         target_branch: Branch from ``host_exec_target_branch``.
         flow_name: Flow name for the commit message.
         execution_id: Execution id for the commit message.
+        continuation: Feedback continuation; the branch is the existing
+            pull request branch, which is also the checked out branch.
 
     Returns:
         ``{"path", "branch", "commit_message"}``.
@@ -218,6 +221,18 @@ def build_host_exec_publication(
             "bound code-host tracker"
         )
     branch = target_branch
+    if continuation:
+        if not branch.startswith("preloop/") or branch != repo.get("branch"):
+            raise HostExecDeliveryError(
+                "A host continuation pushes only the existing preloop/ pull "
+                "request branch"
+            )
+        return {
+            "path": repo["path"],
+            "branch": branch,
+            "commit_message": f"Preloop: address feedback ({execution_id[:8]})",
+            "continuation": True,
+        }
     if not branch.startswith("preloop/") or branch == repo.get("branch"):
         raise HostExecDeliveryError(
             "Host publication pushes only managed preloop/ branches; clear "
@@ -274,6 +289,14 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
     if blocked:
         raise HostExecDeliveryError(blocked)
     publishes = bool(job.get(HOST_PUBLICATION_LEASE_KEY))
+    continuation = bool(job.get("host_exec_resume"))
+    trigger = getattr(execution, "trigger_event_details", None) or {}
+    if continuation and not (
+        publishes and isinstance(trigger, dict) and trigger.get("_resume")
+    ):
+        raise HostExecDeliveryError(
+            "resume_unavailable: the continuation lease does not match its execution"
+        )
     if publishes != host_publication_requested(flow.git_clone_config):
         raise HostExecDeliveryError(
             "The flow's pull request setting changed after this run was queued"
@@ -319,6 +342,7 @@ async def hydrate_host_exec_job(db: Session, job: Dict[str, Any]) -> Dict[str, A
                 target_branch=host_exec_target_branch(context or {}),
                 flow_name=str(getattr(flow, "name", None) or "flow"),
                 execution_id=str(execution.id),
+                continuation=continuation,
             )
         if checkout:
             hydrated["host_exec_checkout"] = checkout

@@ -696,7 +696,7 @@ def test_h5_extra_policy_blocks_a_request(
     with pytest.raises(ModelGatewayAPIError) as exc:
         enforcer.enforce_or_raise(db_session, auth, _priced_model(), payload)
 
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == 429
     assert exc.value.code == "budget_limit_exceeded"
     assert extension.policy_calls == [test_user.account_id]
 

@@ -407,9 +407,11 @@ def test_gateway_endpoint_refuses_over_ceiling_execution(
             },
         )
 
-    assert response.status_code == 403, response.text
+    assert response.status_code == 429, response.text
     body = response.json()
     assert "Execution budget exceeded" in str(body)
+    assert body["error"]["preloop_code"] == "execution_budget_exceeded"
+    assert response.headers["x-should-retry"] == "false"
     provider.assert_not_called()
 
     db_session.refresh(execution)

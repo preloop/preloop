@@ -45,9 +45,10 @@ describe('PreloopFlowForm notifications section', () => {
     expect(source).to.include('name="bell"');
   });
 
-  it('never submits a failure notification block', () => {
+  it('carries the failure threshold but never a removed failure block', () => {
     expect(source).to.include('composedNotifications()');
-    expect(source).to.not.include('on_failure:');
+    expect(source).to.include('alert_after_consecutive_failures');
+    expect(source).to.not.include('data-notification="on_failure_comment"');
   });
 });
 
@@ -345,6 +346,48 @@ describe('PreloopFlowForm PR-dependent sections', () => {
     const payload = await submit(element);
     expect(payload.notifications).to.deep.equal({
       on_success: { comment_on_trigger_issue: false },
+    });
+  });
+
+  it('preserves a stored consecutive-failure threshold on save', async () => {
+    // The backend consumes the threshold but this form has no control for it,
+    // so an unrelated save must carry the stored value forward.
+    const element = await mount(
+      sampleFlow({
+        trigger: 'issue',
+        createPullRequest: true,
+        notifications: {
+          on_failure: { alert_after_consecutive_failures: 7 },
+          on_success: { comment_on_trigger_issue: false },
+        },
+      })
+    );
+    const payload = await submit(element);
+    expect(payload.notifications).to.deep.equal({
+      on_success: { comment_on_trigger_issue: false },
+      on_failure: { alert_after_consecutive_failures: 7 },
+    });
+  });
+
+  it('drops ignored failure keys while keeping the threshold', async () => {
+    const element = await mount(
+      sampleFlow({
+        trigger: 'issue',
+        createPullRequest: true,
+        notifications: {
+          on_failure: {
+            alert_after_consecutive_failures: 4,
+            comment_on_trigger_issue: true,
+            attention_item: true,
+          },
+          on_success: { comment_on_trigger_issue: false },
+        },
+      })
+    );
+    const payload = await submit(element);
+    expect(payload.notifications).to.deep.equal({
+      on_success: { comment_on_trigger_issue: false },
+      on_failure: { alert_after_consecutive_failures: 4 },
     });
   });
 

@@ -4400,11 +4400,36 @@ fi
         restore_steps.append("(git log --oneline -3 || true)")
 
         restore_block = " && ".join(restore_steps)
+        metadata_clone = clone_command
         if direct_restore:
             clone_command = "echo PRELOOP_CHECKPOINT repository_missing; exit 1"
+        q_repo = shlex.quote(repo_path)
+        # A metadata-only checkpoint has no .git. The code host still has the
+        # commit, so clone it. A missing repository that was supposed to be a
+        # full restore stays a hard failure.
+        meta_args = " ".join(
+            [
+                shlex.quote("/workspace/.preloop-checkpoint.json"),
+                shlex.quote(repo_path.rstrip("/") + "/.preloop-checkpoint.json"),
+            ]
+        )
+        checker = (
+            "python3 -c '"
+            "import json,sys\n"
+            "for candidate in sys.argv[1:]:\n"
+            "    try:\n"
+            "        document = json.load(open(candidate))\n"
+            "    except Exception:\n"
+            "        continue\n"
+            '    if isinstance(document, dict) and document.get("metadata_only") is True:\n'
+            "        raise SystemExit(0)\n"
+            "raise SystemExit(1)' " + meta_args
+        )
         return (
-            f"if [ -d {shlex.quote(repo_path)}/.git ]; then\n"
+            f"if [ -d {q_repo}/.git ]; then\n"
             f"{restore_block}\n"
+            f"elif {checker}; then\n"
+            f"{metadata_clone}\n"
             "else\n"
             f"{clone_command}\n"
             "fi"
@@ -5026,6 +5051,9 @@ echo "========================================="
 echo "✓ Repository successfully cloned to {q_path}"
 echo "  Branch: {q_target} (from {q_source})"{sha_display}
 echo "========================================="
+if [ -f /tmp/preloop-checkpoint-client.py ]; then
+  python3 /tmp/preloop-checkpoint-client.py record-head {q_path} || true
+fi
 """.strip()
 
     def _build_git_resume_rebase_shell(
