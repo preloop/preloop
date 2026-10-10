@@ -27,6 +27,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "reprice_gateway_usage_task",
     "ingest_provider_billing",
     "ingest_copilot_usage",
+    "ingest_anthropic_usage",
     "send_optimization_digest",
     "reconcile_stripe_subscriptions",
     "sync_model_catalog",
@@ -445,6 +446,42 @@ async def ingest_copilot_usage(account_id: str | None = None) -> object | None:
         return await run_db_off_loop(run)
     except Exception as e:
         logger.error("Copilot usage import failed: %s", e, exc_info=True)
+        return None
+
+
+async def ingest_anthropic_usage(account_id: str | None = None) -> object | None:
+    """Import Claude Code Analytics from the Anthropic Admin API (#1413).
+
+    Runs daily for every active Anthropic connection (or one account when
+    ``account_id`` is given, as the Cost page's "Sync now" does) and no-ops
+    without a connection. Imported rows are never gateway usage. Failures
+    are recorded on the connection, so this only logs unexpected errors.
+
+    Args:
+        account_id: Restrict the import to one account.
+
+    Returns:
+        Per-account sync summaries, or None on an unexpected failure.
+    """
+    from preloop.config import settings
+    from preloop.services.anthropic_usage_import import (
+        ingest_anthropic_usage as run_anthropic_import,
+    )
+
+    if account_id is None and not settings.anthropic_usage_sync_enabled:
+        return None
+
+    def run() -> object:
+        db = next(get_db_session())
+        try:
+            return run_anthropic_import(db, account_id=account_id)
+        finally:
+            db.close()
+
+    try:
+        return await run_db_off_loop(run)
+    except Exception as e:
+        logger.error("Anthropic usage import failed: %s", e, exc_info=True)
         return None
 
 

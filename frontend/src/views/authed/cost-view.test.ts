@@ -776,7 +776,7 @@ describe('CostView', () => {
       ?.querySelector('view-header')
       ?.getAttribute('description');
     expect(description).to.equal(
-      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend.'
+      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot and Claude Code usage.'
     );
 
     const tabs = Array.from(
@@ -787,7 +787,7 @@ describe('CostView', () => {
       'Tools',
       'Sessions',
       'Users',
-      'Copilot',
+      'Copilot and Claude Code',
     ]);
     for (const promised of ['model', 'flow', 'API key']) {
       expect(description).to.not.contain(promised);
@@ -1173,7 +1173,7 @@ describe('CostView', () => {
 
     const description = header?.shadowRoot?.querySelector('.description');
     expect(description?.textContent).to.contain(
-      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot spend.'
+      'Understand gateway spend by agent, tool, session and user, plus imported GitHub Copilot and Claude Code usage.'
     );
   });
 

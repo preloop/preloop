@@ -882,6 +882,7 @@ def _register_control_plane_routes(
         ai_models,
         approval_bypass,
         approval_requests,
+        anthropic_usage,
         artifact_search,
         audio,
         audit_chain,
@@ -1169,6 +1170,12 @@ def _register_control_plane_routes(
     )
     app.include_router(
         issue_costs.router,
+        prefix="/api/v1",
+        tags=["Cost Analytics"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        anthropic_usage.router,
         prefix="/api/v1",
         tags=["Cost Analytics"],
         dependencies=[Depends(get_current_active_user)],
