@@ -125,9 +125,19 @@ def test_pick_runner_decides_on_a_public_runner() -> None:
 def test_pick_runner_falls_back_to_the_public_runner() -> None:
     """Missing secret, disabled variable, or API error all mean ubuntu-latest."""
     script = _pick_script()
-    # The knob that turns overflow off without a commit.
-    assert "CI_SELF_HOSTED_TESTS" in str(load_ci_jobs()["pick-runner"])
+    pick = load_ci_jobs()["pick-runner"]
+    # The knob that turns overflow off without a commit (main pushes only).
+    assert "CI_SELF_HOSTED_TESTS" in str(pick)
     assert '"${SELF_HOSTED_TESTS:-true}" = "false"' in script
+    # PRs and non-main refs force hosted while the self-hosted pool flakes.
+    assert pick["steps"][0]["env"].get("GITHUB_REF") == "${{ github.ref }}"
+    assert '[ "${GITHUB_REF:-}" != "refs/heads/main" ]' in script
+    assert "SELF_HOSTED_TESTS=false" in script
+    assert "SELF_HOSTED_REASON=" in script
+    assert (
+        '"${SELF_HOSTED_REASON:-repository variable CI_SELF_HOSTED_TESTS is false}"'
+        in script
+    )
     # An absent secret is the state on forks and Dependabot PRs.
     assert '-z "${GH_TOKEN:-}"' in script
     # A failed API call must not abort the step.

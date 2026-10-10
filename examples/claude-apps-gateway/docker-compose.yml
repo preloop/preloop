@@ -47,13 +47,20 @@ services:
         condition: service_completed_successfully
       nats:
         condition: service_started
+      idp-tls:
+        condition: service_completed_successfully
     environment:
       <<: *preloop-env
       HOST: 0.0.0.0
       PORT: "8000"
       PRELOOP_SERVICE_ROLE: all
+      # #1414 IdP check: dex-idp sits on the compose network (a private
+      # address) behind the harness CA.
+      GATEWAY_IDP_ALLOW_PRIVATE_ISSUERS: "true"
+      GATEWAY_IDP_CA_BUNDLE: /idp-tls/ca.pem
     volumes:
       - ./seed:/harness-seed:ro
+      - idp-tls:/idp-tls:ro
     command: python -m preloop.server
     ports:
       - "127.0.0.1:${HARNESS_PRELOOP_PORT:-18900}:8000"
@@ -95,6 +102,25 @@ services:
     command: ["python", "/stub/harness_server.py"]
     ports:
       - "127.0.0.1:19100:9100"
+
+  # ---- Customer IdP for Claude Desktop sign-in (#1414) ------------------
+  idp-tls:
+    image: alpine/openssl:latest
+    entrypoint: ["/bin/sh", "/idp-tls-src/make-certs.sh"]
+    volumes:
+      - ./idp-tls:/idp-tls-src:ro
+      - idp-tls:/idp-tls
+    restart: "no"
+
+  dex-idp:
+    image: ghcr.io/dexidp/dex:v2.41.1
+    depends_on:
+      idp-tls:
+        condition: service_completed_successfully
+    command: ["dex", "serve", "/etc/dex/config.yaml"]
+    volumes:
+      - ./dex/idp-config.yaml:/etc/dex/config.yaml:ro
+      - idp-tls:/idp-tls:ro
 
   # ---- Claude apps gateway ----------------------------------------------
   dex:
@@ -165,3 +191,6 @@ services:
     volumes:
       - ./client:/harness-client:ro
     command: ["sleep", "infinity"]
+
+volumes:
+  idp-tls:

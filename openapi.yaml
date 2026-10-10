@@ -1339,6 +1339,188 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/account/gateway-identity-providers:
+    get:
+      tags:
+      - Gateway Identity Providers
+      - Gateway Identity Providers
+      summary: List Gateway Identity Providers
+      description: List the account's identity providers.
+      operationId: list_gateway_identity_providers_api_v1_account_gateway_identity_providers_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/GatewayIdentityProviderRead'
+                type: array
+                title: Response List Gateway Identity Providers Api V1 Account Gateway
+                  Identity Providers Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    post:
+      tags:
+      - Gateway Identity Providers
+      - Gateway Identity Providers
+      summary: Create Gateway Identity Provider
+      description: Register an issuer; ``(issuer, audience)`` is unique across accounts.
+      operationId: create_gateway_identity_provider_api_v1_account_gateway_identity_providers_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayIdentityProviderCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayIdentityProviderRead'
+        '409':
+          description: Issuer and audience or binding key taken
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/account/gateway-identity-providers/{provider_id}:
+    patch:
+      tags:
+      - Gateway Identity Providers
+      - Gateway Identity Providers
+      summary: Update Gateway Identity Provider
+      description: Change a provider; takes effect on the next request.
+      operationId: update_gateway_identity_provider_api_v1_account_gateway_identity_providers__provider_id__patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Provider Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GatewayIdentityProviderUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayIdentityProviderRead'
+        '409':
+          description: Issuer and audience or binding key taken
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    delete:
+      tags:
+      - Gateway Identity Providers
+      - Gateway Identity Providers
+      summary: Delete Gateway Identity Provider
+      description: Remove a provider; its tokens stop working on the next request.
+      operationId: delete_gateway_identity_provider_api_v1_account_gateway_identity_providers__provider_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Provider Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/account/gateway-identity-providers/{provider_id}/test:
+    post:
+      tags:
+      - Gateway Identity Providers
+      - Gateway Identity Providers
+      summary: Test Gateway Identity Provider
+      description: Fetch discovery and JWKS and list the key ids. No token is used.
+      operationId: test_gateway_identity_provider_api_v1_account_gateway_identity_providers__provider_id__test_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: provider_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Provider Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayIdentityProviderTestResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/account/details:
     get:
       tags:
@@ -28606,6 +28788,356 @@ components:
       type: object
       title: GatewayBudgetSummary
       description: Budget snapshot for gateway usage.
+    GatewayIdentityProviderCreate:
+      properties:
+        allowed_email_domains:
+          items:
+            type: string
+          type: array
+          title: Allowed Email Domains
+        email_claim:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Email Claim
+          default: email
+        require_email_verified:
+          type: boolean
+          title: Require Email Verified
+          default: true
+        groups_claim:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Groups Claim
+        allowed_groups:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Groups
+        required_claims:
+          additionalProperties: true
+          type: object
+          title: Required Claims
+        clock_skew_seconds:
+          type: integer
+          maximum: 300.0
+          minimum: 0.0
+          title: Clock Skew Seconds
+          default: 60
+        max_token_lifetime_seconds:
+          type: integer
+          maximum: 2592000.0
+          minimum: 60.0
+          title: Max Token Lifetime Seconds
+          default: 86400
+        allowed_algorithms:
+          items:
+            type: string
+          type: array
+          title: Allowed Algorithms
+        allowed_jwks_hosts:
+          items:
+            type: string
+          type: array
+          title: Allowed Jwks Hosts
+        allow_private_network_issuer:
+          type: boolean
+          title: Allow Private Network Issuer
+          default: false
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        name:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Name
+        issuer:
+          type: string
+          maxLength: 512
+          title: Issuer
+        audiences:
+          items:
+            type: string
+          type: array
+          title: Audiences
+        api_key_id:
+          type: string
+          format: uuid
+          title: Api Key Id
+      type: object
+      required:
+      - name
+      - issuer
+      - audiences
+      - api_key_id
+      title: GatewayIdentityProviderCreate
+      description: Create a provider. ``api_key_id`` is the binding key.
+    GatewayIdentityProviderKey:
+      properties:
+        kid:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kid
+        kty:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Kty
+        alg:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Alg
+      type: object
+      title: GatewayIdentityProviderKey
+      description: One signing key the issuer publishes.
+    GatewayIdentityProviderRead:
+      properties:
+        allowed_email_domains:
+          items:
+            type: string
+          type: array
+          title: Allowed Email Domains
+        email_claim:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Email Claim
+          default: email
+        require_email_verified:
+          type: boolean
+          title: Require Email Verified
+          default: true
+        groups_claim:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Groups Claim
+        allowed_groups:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Groups
+        required_claims:
+          additionalProperties: true
+          type: object
+          title: Required Claims
+        clock_skew_seconds:
+          type: integer
+          maximum: 300.0
+          minimum: 0.0
+          title: Clock Skew Seconds
+          default: 60
+        max_token_lifetime_seconds:
+          type: integer
+          maximum: 2592000.0
+          minimum: 60.0
+          title: Max Token Lifetime Seconds
+          default: 86400
+        allowed_algorithms:
+          items:
+            type: string
+          type: array
+          title: Allowed Algorithms
+        allowed_jwks_hosts:
+          items:
+            type: string
+          type: array
+          title: Allowed Jwks Hosts
+        allow_private_network_issuer:
+          type: boolean
+          title: Allow Private Network Issuer
+          default: false
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        issuer:
+          type: string
+          title: Issuer
+        audiences:
+          items:
+            type: string
+          type: array
+          title: Audiences
+        api_key_id:
+          type: string
+          format: uuid
+          title: Api Key Id
+        allow_private_network_issuer_effective:
+          type: boolean
+          title: Allow Private Network Issuer Effective
+          description: 'Whether private addresses are actually allowed: the provider
+            flag and the instance setting gateway_idp_allow_private_issuers.'
+          default: false
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - name
+      - issuer
+      - audiences
+      - api_key_id
+      - created_at
+      - updated_at
+      title: GatewayIdentityProviderRead
+      description: A configured provider.
+    GatewayIdentityProviderTestResult:
+      properties:
+        ok:
+          type: boolean
+          title: Ok
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        jwks_uri:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Jwks Uri
+        keys:
+          items:
+            $ref: '#/components/schemas/GatewayIdentityProviderKey'
+          type: array
+          title: Keys
+      type: object
+      required:
+      - ok
+      title: GatewayIdentityProviderTestResult
+      description: Outcome of fetching discovery and JWKS; no token is involved.
+    GatewayIdentityProviderUpdate:
+      properties:
+        name:
+          anyOf:
+          - type: string
+            maxLength: 255
+            minLength: 1
+          - type: 'null'
+          title: Name
+        issuer:
+          anyOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+          title: Issuer
+        audiences:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Audiences
+        api_key_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Api Key Id
+        allowed_email_domains:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Email Domains
+        email_claim:
+          anyOf:
+          - type: string
+            maxLength: 128
+            minLength: 1
+          - type: 'null'
+          title: Email Claim
+        require_email_verified:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Require Email Verified
+        groups_claim:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Groups Claim
+        allowed_groups:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Groups
+        required_claims:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Required Claims
+        clock_skew_seconds:
+          anyOf:
+          - type: integer
+            maximum: 300.0
+            minimum: 0.0
+          - type: 'null'
+          title: Clock Skew Seconds
+        max_token_lifetime_seconds:
+          anyOf:
+          - type: integer
+            maximum: 2592000.0
+            minimum: 60.0
+          - type: 'null'
+          title: Max Token Lifetime Seconds
+        allowed_algorithms:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Algorithms
+        allowed_jwks_hosts:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Allowed Jwks Hosts
+        allow_private_network_issuer:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Allow Private Network Issuer
+        enabled:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Enabled
+      type: object
+      title: GatewayIdentityProviderUpdate
+      description: Partial update; omitted fields keep their value.
     GatewayTokenUsage:
       properties:
         prompt_tokens:
