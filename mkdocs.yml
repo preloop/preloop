@@ -304,6 +304,7 @@ nav:
       - System overview: architecture/overview.md
       - Data model: architecture/data-model.md
       - Technical decisions: architecture/decisions.md
+      - 'ADR 0001: API versioning': architecture/decisions/0001-api-versioning.md
       - Agent Control: architecture/agent-control.md
       - Tool configuration and approvals: architecture/approvals.md
       - Cost analytics and budgeting: architecture/cost.md
