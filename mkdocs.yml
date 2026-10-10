@@ -149,6 +149,7 @@ nav:
       - Copilot coverage: guide/copilot.md
       - Copilot CLI: guide/copilot-cli.md
       - Copilot cloud agent: guide/copilot-cloud-agent.md
+      - VS Code Copilot Chat: guide/clients/vscode-copilot.md
       - OpenClaw: guide/integrations/openclaw.md
       - OpenClaw policy examples: guide/examples/policies/openclaw/README.md
       - trigger.dev: guide/integrations/trigger-dev.md
