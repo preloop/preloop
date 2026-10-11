@@ -34,7 +34,6 @@ PINNED_JOBS = (
     "lint",
     "helm-lint",
     "cli-vuln-scan",
-    "build-and-push",
     "ci",
     *HOSTED_JOBS,
 )

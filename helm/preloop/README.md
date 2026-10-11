@@ -331,7 +331,7 @@ helm uninstall preloop
 |---------------------|-----------------------------------------------------------------------------------------------------|-----------------|
 | `replicaCount`      | Number of replicas                                                                                 | `1`             |
 | `image.repository`  | Preloop image repository                                                                        | `ghcr.io/preloop/preloop` |
-| `image.tag`         | Preloop image tag                                                                               | `latest`        |
+| `image.tag`         | Preloop image tag. `latest` is the latest stable release, not main.                            | `latest`        |
 | `image.pullPolicy`  | Preloop image pull policy                                                                       | `Always`  |
 | `imagePullSecrets`  | Secret names for pulling images                                                                    | `[]`            |
 | `existingSecret`    | Existing Secret name for `jwt-secret` (chart skips creating its Secret)                            | `""`            |

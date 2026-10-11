@@ -6,7 +6,8 @@
 #     docker compose -f docker-compose.release.yaml up -d
 #
 # Required environment variables (set in .env or export before running):
-#   PRELOOP_VERSION   - Image tag (e.g., 0.8.0, latest)
+#   PRELOOP_VERSION   - Image tag (e.g., 0.8.0). Defaults to latest,
+#                       the latest stable release.
 #   SECRET_KEY        - Secret key for JWT token signing (generate with: openssl rand -hex 32)
 #
 # Optional environment variables:

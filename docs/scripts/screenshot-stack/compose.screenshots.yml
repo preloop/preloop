@@ -6,7 +6,7 @@
 #     -f docs/scripts/screenshot-stack/compose.screenshots.yml up -d --build
 #
 # Host ports are remapped to 183xx and bound to 127.0.0.1. Images get local
-# tags so the shared ghcr.io/preloop/* tags are not overwritten. The model is
+# tags so a screenshot build does not reuse the dev image. The model is
 # a local OpenAI-compatible stub: no provider key is used. Telemetry is off
 # on every Preloop service (AGENTS.md: test rigs never report to preloop.ai).
 x-no-telemetry: &no_telemetry

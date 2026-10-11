@@ -3,7 +3,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.dev
-    image: ghcr.io/preloop/console:dev
+    image: preloop-console:dev
+    pull_policy: build
     restart: unless-stopped
     depends_on:
       - api
