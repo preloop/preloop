@@ -1736,6 +1736,27 @@ class FlowBase(BaseModel):
         return validate_callable_flows_shape(v)
 
     @model_validator(mode="after")
+    def validate_harness_selector(self):
+        """Validate the harness routing keys of agent_config (contract B).
+
+        ``harness`` must map to ``agent_type`` (copilot_cli -> copilot,
+        cursor_cli -> cursor); ``harness_fallback`` is queue,
+        fallback_server (with ``fallback_model_identifier``) or fail;
+        ``harness_queue_timeout_seconds`` is 60..86400. An update without
+        ``agent_type`` is checked by the endpoint against the stored flow.
+        """
+        if isinstance(self, FlowResponse) or not isinstance(self.agent_config, dict):
+            return self
+        if self.agent_type is None:
+            return self
+        from preloop.services.host_exec import harness_selector_config_error
+
+        error = harness_selector_config_error(self.agent_type, self.agent_config)
+        if error:
+            raise ValueError(error)
+        return self
+
+    @model_validator(mode="after")
     def fold_limit_fields_into_agent_config(self):
         """Store max_budget / max_iterations as agent_config.limits keys.
 
@@ -1943,3 +1964,40 @@ class RunPresetResponse(BaseModel):
     flow_created: bool
     execution_url: Optional[str] = None
     results: Optional[List[RunPresetItemResult]] = None
+
+
+class HarnessModelOption(BaseModel):
+    """One model a harness can run on the caller's runners."""
+
+    id: str
+    source: str
+    runners_online: int = 0
+
+
+class HarnessRunnerOption(BaseModel):
+    """One runner reporting the harness (for the ``runner_id`` pin)."""
+
+    id: UUID
+    name: str
+    online: bool
+    eligible: bool
+    reason: Optional[str] = None
+
+
+class HarnessOption(BaseModel):
+    """One routable harness across the runners the caller may use."""
+
+    harness: str
+    display_name: str
+    agent_type: str
+    billing: str
+    models: List[HarnessModelOption] = Field(default_factory=list)
+    runners_online: int = 0
+    runners_total: int = 0
+    runners: List[HarnessRunnerOption] = Field(default_factory=list)
+
+
+class HarnessOptionsResponse(BaseModel):
+    """``GET /api/v1/flows/harness-options`` (contract B editor endpoint)."""
+
+    harnesses: List[HarnessOption] = Field(default_factory=list)

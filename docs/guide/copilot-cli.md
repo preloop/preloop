@@ -269,6 +269,92 @@ for the shared rules, and
 on publication retry from retained local work and managed OAuth
 credential delivery, which this page does not describe as shipped.
 
+## Run flows on your team's Copilot seats
+
+A flow can name the harness instead of a profile, and Preloop picks a
+runner whose owner has Copilot CLI installed and signed in. This works
+even when Preloop is not the gateway for Copilot: the run uses the seat
+of the runner user, so there is no API spend, and Preloop still records
+the run, its approvals and its audit trail.
+
+1. Each team member runs a Preloop runner with Copilot CLI installed and
+   signed in. A runner that publishes its harness inventory reports which
+   harnesses it has, whether each is signed in and which models it knows. Executable paths, argv,
+   environment values and credentials never leave the host.
+2. On the flow, choose **Copilot CLI (private runner host profile)** and
+   turn on **Route by harness**. The picker shows how many of the runners
+   you may use are online and signed in, and per model how many runners
+   list it.
+3. Optional: pin one runner, pick a model, and choose what happens when no
+   runner is eligible.
+
+The saved `agent_config` looks like this:
+
+```json
+{
+  "harness": "copilot_cli",
+  "copilot_model": "claude-sonnet-4.6",
+  "runner_id": null,
+  "harness_fallback": "queue",
+  "harness_queue_timeout_seconds": 1800,
+  "fallback_model_identifier": null
+}
+```
+
+A runner is eligible when all of these hold:
+
+- it is online and belongs to the account;
+- the flow may use it: the flow pins it with `runner_id`, or names it in
+  `runner_pool`, or (for a flow that names no runner) it was registered by
+  an account admin. A member's own runner only takes flows that name it;
+- its inventory has `copilot_cli` enabled, signed in and runnable;
+- the model is listed, or the harness cannot list models. Copilot has no
+  model listing, so an unlisted model is allowed and fails fast on the
+  host when Copilot rejects it.
+
+A runner that reports no inventory yet still takes flows pinned by
+profile name, and never takes harness-routed flows. A flow that sets both
+`host_exec_profile` and `harness` routes by the profile name, exactly as
+before.
+
+The lease names the harness, the profile the runner generates for it
+(`copilot`) and the model. The runner resolves that profile locally; the
+server never sends an executable or argv.
+
+### When no runner is eligible
+
+`harness_fallback` decides:
+
+| Value | Behavior |
+|---|---|
+| `queue` (default) | The run waits for an eligible runner for `harness_queue_timeout_seconds` (60 to 86400, default 1800), then fails with `queue_timeout`. |
+| `fallback_server` | When the run starts and no runner is eligible, it runs on the server pool with the hosted Codex harness and `fallback_model_identifier` (an AI model id or model identifier of the account). That run is metered by the gateway. |
+| `fail` | The run fails at once with the routing reason. |
+
+While a run waits, or after it fails or falls back, the execution shows
+one routing reason:
+
+| Reason | Meaning |
+|---|---|
+| `no_runner_with_harness` | No runner you may use reports Copilot CLI as runnable (or reports no inventory). |
+| `harness_signed_out` | Copilot CLI is installed but not signed in. |
+| `harness_disabled` | The runner owner disabled Copilot CLI for the runner. |
+| `model_not_available` | The harness lists its models and the chosen one is not among them. |
+| `runner_offline` | The runner that could take the run is offline. |
+| `owner_has_no_runner` | No runner the flow may use exists. |
+| `queue_timeout` | The queue timeout expired. |
+| `fell_back_to_server` | The run moved to the server pool. |
+
+### Cost label
+
+A Copilot or Cursor run on a runner is billed to the runner user's seat.
+The run and the per-issue cost rollup show **Seat (not metered by
+gateway)**, with the premium requests Copilot reported when it reported
+them. The rollup CSV and JSON exports carry `billing_mode` (`seat`,
+`metered` or `mixed` per issue), `billing_label`, `seat_run_count` and
+`premium_requests`, next to the existing elapsed-time columns. Seat runs
+add no dollars to `estimated_cost`.
+
 Copilot plan terms govern how a seat may be used. A developer running
 flows on their own machine with their own seat is ordinary use. Check
 your organization's Copilot Business or Enterprise terms before sharing

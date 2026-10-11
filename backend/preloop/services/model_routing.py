@@ -374,7 +374,14 @@ def validate_default_selection(
     pool = _explicit_pool(getattr(flow, "runner_pool", None))
     if pool is None:
         pool = _explicit_pool(_account_default_runner_pool(flow, db))
-    if (
+    from preloop.services.host_exec import host_exec_harness_selector
+
+    if host_exec_harness_selector(harness, config):
+        # Harness routing (#1481) picks an eligible runner from the
+        # inventory; it needs no profile name and no named pool.
+        if _is_server_pool(_explicit_pool(getattr(flow, "runner_pool", None))):
+            raise ModelRoutingError("harness routing cannot run on hosted compute")
+    elif (
         not isinstance(profile, str)
         or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", profile.strip()) is None
         or pool is None

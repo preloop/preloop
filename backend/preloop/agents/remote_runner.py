@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Mapping, Optional, Tuple
 from uuid import UUID
 
@@ -13,6 +13,7 @@ from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_execut
 from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
+    HOST_EXEC_LEASE_KEY,
     lease_job,
     mark_queued_or_fail,
     runner_blocked_notice,
@@ -22,8 +23,16 @@ from preloop.services.runner_service import (
 )
 
 from preloop.services.host_exec import (
+    BILLING_MODE_SEAT,
+    HARNESS_FALLBACK_FAIL,
+    HARNESS_GENERATED_PROFILES,
     HOST_EXEC_AGENT_TYPE,
     ISOLATED_PUBLICATION_UNAVAILABLE,
+    ROUTING_QUEUE_TIMEOUT,
+    harness_fallback_mode,
+    harness_pinned_runner_id,
+    harness_queue_timeout_seconds,
+    host_exec_harness_selector,
     host_exec_profile_name,
     host_exec_model_identifier,
     host_exec_unavailable_reason,
@@ -100,19 +109,22 @@ class RemoteRunnerExecutor(AgentExecutor):
             execution_context=execution_context,
         )
         owner_id = workspace_owner_runner_id(self.db, payload=payload)
+        outcome: Dict[str, Any] = {}
         runner = lease_job(
             self.db,
             account_id=self.account_id,
             pool=self.pool,
             execution_id=execution_id,
             payload=payload,
-            required_runner_id=owner_id,
+            required_runner_id=owner_id or self._harness_pin(payload),
+            outcome=outcome,
         )
         execution = crud_flow_execution.get(self.db, id=execution_id)
         if runner:
             if execution:
                 if payload.get("_publication"):
                     execution.error_message = None
+                _record_lease_routing(execution, payload, outcome, leased=True)
                 execution.runner_id = runner.id
                 execution.agent_session_reference = f"runner:{runner.id}:{execution_id}"
                 self.db.add(execution)
@@ -136,6 +148,22 @@ class RemoteRunnerExecutor(AgentExecutor):
         if execution:
             from preloop.models.schemas.flow_execution import FlowExecutionUpdate
 
+            _record_lease_routing(execution, payload, outcome, leased=False)
+            if (
+                payload.get(HOST_EXEC_LEASE_KEY)
+                and outcome.get("routing_reason")
+                and harness_fallback_mode(self._flow_agent_config())
+                == HARNESS_FALLBACK_FAIL
+            ):
+                # harness_fallback=fail: no wait, the named reason is the
+                # failure.
+                self.db.add(execution)
+                self.db.commit()
+                raise ValueError(
+                    "No runner can take this run on harness "
+                    f"{payload[HOST_EXEC_LEASE_KEY]['harness']}: "
+                    f"{outcome['routing_reason']}"
+                )
             if payload.get("_publication"):
                 crud_flow_execution.update(
                     self.db,
@@ -206,16 +234,34 @@ class RemoteRunnerExecutor(AgentExecutor):
                 if execution and execution.start_time
                 else datetime.now(timezone.utc)
             )
-            queued = mark_queued_or_fail(
-                queued_since=started, timeout=DEFAULT_QUEUE_TIMEOUT
+            harness_routed = (
+                host_exec_harness_selector(self.agent_type, self._flow_agent_config())
+                is not None
             )
+            queue_timeout = (
+                timedelta(
+                    seconds=harness_queue_timeout_seconds(self._flow_agent_config())
+                )
+                if harness_routed
+                else DEFAULT_QUEUE_TIMEOUT
+            )
+            queued = mark_queued_or_fail(queued_since=started, timeout=queue_timeout)
             owner_id, owner_resolved = (
                 self._owner_runner_id(execution) if execution else (None, True)
             )
             if queued == "FAILED":
                 if execution:
                     execution.status = "FAILED"
-                    if owner_id is not None:
+                    if harness_routed:
+                        waited_for = execution.routing_reason
+                        execution.routing_reason = ROUTING_QUEUE_TIMEOUT
+                        execution.error_message = (
+                            "No eligible runner took this run within "
+                            f"{queue_timeout} ({ROUTING_QUEUE_TIMEOUT}"
+                            + (f"; last reason {waited_for}" if waited_for else "")
+                            + ")"
+                        )
+                    elif owner_id is not None:
                         # A host-bound continuation has exactly one machine
                         # that can finish it. Say so, name the surviving local
                         # state, and stop: moving the run to another host
@@ -253,14 +299,25 @@ class RemoteRunnerExecutor(AgentExecutor):
                     # bound. Resolving from the row alone can miss a config
                     # the payload builder normalizes.
                     owner_id = workspace_owner_runner_id(self.db, payload=payload)
+                outcome: Dict[str, Any] = {}
                 runner = lease_job(
                     self.db,
                     account_id=self.account_id,
                     pool=self.pool,
                     execution_id=execution.id,
                     payload=payload,
-                    required_runner_id=owner_id,
+                    required_runner_id=owner_id or self._harness_pin(payload),
+                    outcome=outcome,
                 )
+                if runner or (
+                    payload.get(HOST_EXEC_LEASE_KEY)
+                    and outcome.get("routing_reason") != execution.routing_reason
+                ):
+                    _record_lease_routing(
+                        execution, payload, outcome, leased=runner is not None
+                    )
+                    self.db.add(execution)
+                    self.db.commit()
                 if runner:
                     payload = await prepare_runner_delivery(self.db, payload)
                     if (execution.result or {}).get("_private_publication"):
@@ -363,6 +420,12 @@ class RemoteRunnerExecutor(AgentExecutor):
         )
         profile = host_exec_profile_name(agent_config, context)
         kind = str(agent_type or "").strip().lower() if agent_type else ""
+        # Contract B: route by harness inventory when the flow names a
+        # harness and pins no profile. The lease names the reserved profile
+        # the runner generates for that harness.
+        harness = host_exec_harness_selector(kind, self._flow_agent_config(flow))
+        if harness and not profile:
+            profile = HARNESS_GENERATED_PROFILES[harness]
         if is_host_exec_agent_type(kind) and not profile:
             raise ValueError(
                 f"agent type {kind} requires agent_config.host_exec_profile "
@@ -487,6 +550,14 @@ class RemoteRunnerExecutor(AgentExecutor):
                     payload["model_identifier"] = alias
             payload["agent_config"] = {"host_exec_profile": profile}
             payload["completion_protocol"] = "host_exec"
+            if harness:
+                # Names only: the runner resolves the profile locally. No
+                # executable, argv or environment ever comes from the server.
+                payload[HOST_EXEC_LEASE_KEY] = {
+                    "harness": harness,
+                    "profile": profile,
+                    "model": payload.get("model_identifier"),
+                }
             if host_publication_requested(git_clone_config):
                 # Data only: assignment requires a host_publication runner
                 # and delivery replaces it with the transient runner plan.
@@ -505,6 +576,21 @@ class RemoteRunnerExecutor(AgentExecutor):
             if resume_from:
                 payload["resume_from"] = resume_from
         return payload
+
+    def _flow_agent_config(self, flow: Any = None) -> Dict[str, Any]:
+        """The flow's own agent_config (not the lease-shaped context copy)."""
+        flow = flow or self.flow
+        config = getattr(flow, "agent_config", None) if flow is not None else None
+        if config is None:
+            config = self.config
+        config = unwrap_agent_config(config)
+        return config if isinstance(config, dict) else {}
+
+    def _harness_pin(self, payload: Mapping[str, Any]) -> Optional[UUID]:
+        """``agent_config.runner_id`` for a harness-routed lease, else None."""
+        if not payload.get(HOST_EXEC_LEASE_KEY):
+            return None
+        return harness_pinned_runner_id(self._flow_agent_config())
 
     def _owner_runner_id(self, execution: Any) -> Tuple[Optional[UUID], bool]:
         """Runner pinned by a persisted-workspace continuation, if any.
@@ -572,6 +658,28 @@ class RemoteRunnerExecutor(AgentExecutor):
             if row.message:
                 lines.append(row.message)
         return lines
+
+
+def _record_lease_routing(
+    execution: Any,
+    payload: Mapping[str, Any],
+    outcome: Mapping[str, Any],
+    *,
+    leased: bool,
+) -> None:
+    """Store the routing reason and billing mode of one lease attempt.
+
+    Host profiles run on the runner user's own seat, so a host lease without
+    an inventory entry (a #956 profile pin) is billed as ``seat`` too.
+    """
+    if payload.get("completion_protocol") != "host_exec":
+        return
+    if not leased:
+        if payload.get(HOST_EXEC_LEASE_KEY):
+            execution.routing_reason = outcome.get("routing_reason")
+        return
+    execution.billing_mode = outcome.get("billing_mode") or BILLING_MODE_SEAT
+    execution.routing_reason = None
 
 
 async def _push_job(runner_id: UUID, payload: Dict[str, Any]) -> None:

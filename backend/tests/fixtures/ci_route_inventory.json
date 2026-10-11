@@ -145,6 +145,7 @@
   "GET /api/v1/flows/executions/{execution_id}/result": "execution:result:read",
   "GET /api/v1/flows/executions/{execution_id}/tree": "deny",
   "GET /api/v1/flows/executions/{execution_id}/workspace": "deny",
+  "GET /api/v1/flows/harness-options": "deny",
   "GET /api/v1/flows/presets": "deny",
   "GET /api/v1/flows/summary": "deny",
   "GET /api/v1/flows/{flow_id}": "deny",

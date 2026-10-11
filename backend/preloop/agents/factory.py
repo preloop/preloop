@@ -95,10 +95,12 @@ def create_executor_for_execution(
     from preloop.agents.agent_control import AgentControlExecutor
     from preloop.agents.remote_runner import RemoteRunnerExecutor
     from preloop.services.host_exec import (
+        HARNESS_FALLBACK_CONTEXT_KEY,
+        host_exec_harness_selector,
         host_exec_profile_name,
         is_host_exec_agent_type,
     )
-    from preloop.services.runner_service import resolve_runner_pool
+    from preloop.services.runner_service import AUTO_RUNNER_POOL, resolve_runner_pool
 
     persistent = _persistent_agent_config(
         config, flow=flow, execution_context=execution_context
@@ -162,9 +164,19 @@ def create_executor_for_execution(
 
     profile = host_exec_profile_name(config, execution_context)
     kind = (agent_type or "").strip().lower()
+    if (execution_context or {}).get(HARNESS_FALLBACK_CONTEXT_KEY):
+        # harness_fallback=fallback_server: the orchestrator already swapped
+        # in the hosted harness and fallback model. Never lease it.
+        return create_agent_executor(agent_type, config)
     pool = None
     if flow is not None:
         pool = resolve_runner_pool(flow, execution_context, db=db)
+        if pool is None and host_exec_harness_selector(
+            kind, getattr(flow, "agent_config", None)
+        ):
+            # Harness routing waits for an eligible runner instead of
+            # failing on hosted compute when none is online right now.
+            pool = AUTO_RUNNER_POOL
     ref = getattr(execution, "agent_session_reference", None) if execution else None
     if not pool and isinstance(ref, str) and ref.startswith("runner:"):
         parts = ref.split(":")

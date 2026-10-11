@@ -303,6 +303,15 @@ class FlowExecution(Base):
     # revisits every unclaimed execution every 30 seconds.
     queued_reason = Column(String(200), nullable=True)
 
+    # Harness routing (#1481, contract B). ``routing_reason`` names why a
+    # harness-routed run is waiting, failed or fell back (no_runner_with_harness,
+    # harness_signed_out, harness_disabled, model_not_available, runner_offline,
+    # owner_has_no_runner, queue_timeout, fell_back_to_server); NULL once a
+    # runner took it. ``billing_mode`` is seat | metered | unknown, taken from
+    # the runner's harness inventory at lease time; NULL is a gateway run.
+    routing_reason = Column(String(64), nullable=True)
+    billing_mode = Column(String(16), nullable=True)
+
     # Stale-claim reaper backoff. How many times the reaper has re-published
     # a task for this execution without it ever being claimed, and when it
     # last did so. Shared state on purpose: every replica reads the same two

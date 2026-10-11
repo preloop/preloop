@@ -287,6 +287,24 @@ class FlowExecutionBase(BaseModel):
             "execution is claimed; null for every other row."
         ),
     )
+    routing_reason: Optional[str] = Field(
+        None,
+        description=(
+            "Why a harness-routed run (agent_config.harness) is waiting, "
+            "failed or fell back: no_runner_with_harness, harness_signed_out, "
+            "harness_disabled, model_not_available, runner_offline, "
+            "owner_has_no_runner, queue_timeout, fell_back_to_server. Null "
+            "once a runner took the run and for every other execution."
+        ),
+    )
+    billing_mode: Optional[str] = Field(
+        None,
+        description=(
+            "How the model usage of this run is billed: seat (the runner "
+            "user's own Copilot or Cursor seat, not metered by the gateway), "
+            "metered or unknown. Null for gateway runs."
+        ),
+    )
     retry_of_execution_id: Optional[uuid.UUID] = Field(
         None, description="ID of the original execution if this is a retry"
     )
@@ -425,6 +443,24 @@ class FlowExecutionListResponse(ExecutionModelProjection):
         description=(
             "Why a PENDING execution has not been admitted yet "
             "(account_concurrency_cap). Null for every other row."
+        ),
+    )
+    routing_reason: Optional[str] = Field(
+        None,
+        description=(
+            "Why a harness-routed run (agent_config.harness) is waiting, "
+            "failed or fell back: no_runner_with_harness, harness_signed_out, "
+            "harness_disabled, model_not_available, runner_offline, "
+            "owner_has_no_runner, queue_timeout, fell_back_to_server. Null "
+            "once a runner took the run and for every other execution."
+        ),
+    )
+    billing_mode: Optional[str] = Field(
+        None,
+        description=(
+            "How the model usage of this run is billed: seat (the runner "
+            "user's own Copilot or Cursor seat, not metered by the gateway), "
+            "metered or unknown. Null for gateway runs."
         ),
     )
     retry_of_execution_id: Optional[uuid.UUID] = None

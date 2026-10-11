@@ -16,6 +16,7 @@ from typing import Any, Iterable, Optional, Sequence
 from sqlalchemy import ColumnElement, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import sqltypes
 
 from preloop.models import models
 
@@ -582,6 +583,79 @@ class CRUDIssueCost:
             rollup.estimated_cost.desc(), rollup.first_event_at.desc(), rollup.id
         ).limit(limit)
         return list(db.scalars(query))
+
+    def billing_totals_by_rollup(
+        self,
+        db: Session,
+        *,
+        rollup_ids: Sequence[uuid.UUID],
+        flow_id: Optional[uuid.UUID] = None,
+    ) -> dict[uuid.UUID, tuple[int, Optional[float]]]:
+        """Seat runs and reported premium requests per issue (#1481).
+
+        A seat run is an execution whose ``billing_mode`` is ``seat`` (a
+        Copilot or Cursor host run on the runner user's own seat). Premium
+        requests are the ones the Copilot CLI reported for those runs
+        (``host_exec_usage`` rows), summed; None when none were reported.
+
+        Returns:
+            ``{rollup_id: (seat_run_count, premium_requests)}`` for issues
+            with at least one seat run.
+        """
+        if not rollup_ids:
+            return {}
+        fact = models.IssueCostExecution
+        execution = models.FlowExecution
+        query = (
+            select(fact.rollup_id, func.count(fact.id))
+            .join(execution, execution.id == fact.execution_id)
+            .where(
+                fact.rollup_id.in_(list(rollup_ids)),
+                execution.billing_mode == "seat",
+            )
+            .group_by(fact.rollup_id)
+        )
+        if flow_id is not None:
+            query = query.where(fact.flow_id == flow_id)
+        seats = {row[0]: int(row[1]) for row in db.execute(query).all()}
+        if not seats:
+            return {}
+        usage = models.ApiUsage
+        premium_value = func.cast(
+            usage.meta_data["premium_requests"].astext, sqltypes.Float
+        )
+        premium_query = (
+            select(fact.rollup_id, func.sum(premium_value))
+            .join(usage, usage.flow_execution_id == fact.execution_id)
+            .where(
+                fact.rollup_id.in_(list(seats)),
+                usage.meta_data["premium_requests"].isnot(None),
+                usage.meta_data["import_source"].astext == "copilot_cli",
+                usage.meta_data["event_type"].astext == "host_exec_result",
+            )
+            .group_by(fact.rollup_id)
+        )
+        if flow_id is not None:
+            premium_query = premium_query.where(fact.flow_id == flow_id)
+        premium = {
+            row[0]: (None if row[1] is None else float(row[1]))
+            for row in db.execute(premium_query).all()
+        }
+        return {rid: (count, premium.get(rid)) for rid, count in seats.items()}
+
+    def billing_modes_for_executions(
+        self, db: Session, *, execution_ids: Sequence[uuid.UUID]
+    ) -> dict[uuid.UUID, Optional[str]]:
+        """``flow_execution.billing_mode`` for the given executions."""
+        if not execution_ids:
+            return {}
+        execution = models.FlowExecution
+        rows = db.execute(
+            select(execution.id, execution.billing_mode).where(
+                execution.id.in_(list(set(execution_ids)))
+            )
+        ).all()
+        return {row[0]: row[1] for row in rows}
 
     def fact_totals_by_rollup_and_flow(
         self, db: Session, *, rollup_ids: Sequence[uuid.UUID]

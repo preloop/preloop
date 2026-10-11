@@ -8,11 +8,13 @@ import {
   getAccountAgents,
   getAccountOrganization,
   getRunners,
+  getFlowHarnessOptions,
   getAllFlows,
   uniqueFlowsById,
   listOrganizations,
   listProjects,
   getFlowPresets,
+  type HarnessOption,
   type RunnerRecord,
 } from '../api';
 import type { Flow } from '../types';
@@ -189,6 +191,15 @@ const HOST_EXEC_HARNESSES: Record<HostExecAgentType, string> = {
   cursor: 'cursor_cli',
   copilot: 'copilot_cli',
 };
+
+/** agent_config keys of harness routing (#1481), dropped when unused. */
+const HARNESS_ROUTING_KEYS = [
+  'harness',
+  'runner_id',
+  'harness_fallback',
+  'harness_queue_timeout_seconds',
+  'fallback_model_identifier',
+] as const;
 
 const FEEDBACK_LIMITS = {
   max_turns: {
@@ -649,6 +660,10 @@ export class PreloopFlowForm extends LitElement {
   @state()
   private runners: RunnerRecord[] = [];
 
+  /** Harness inventory choices (GET /api/v1/flows/harness-options). */
+  @state()
+  private harnessOptions: HarnessOption[] = [];
+
   @state()
   private accountDefaultRunnerPool: string | null = null;
 
@@ -834,6 +849,7 @@ export class PreloopFlowForm extends LitElement {
         runners,
         account,
         flowsResult,
+        harnessOptions,
       ] = await Promise.all([
         getTrackers().catch(remember('trackers')),
         getAIModels().catch(remember('models')),
@@ -852,6 +868,7 @@ export class PreloopFlowForm extends LitElement {
             );
             return { ok: false as const };
           }),
+        getFlowHarnessOptions().catch(() => [] as HarnessOption[]),
       ]);
 
       if (flowsResult.ok) {
@@ -871,6 +888,7 @@ export class PreloopFlowForm extends LitElement {
       this.longRunningAgents = agentsRes.items || [];
       this.presets = presets;
       this.runners = runners;
+      this.harnessOptions = harnessOptions;
       this.accountDefaultRunnerPool = account?.default_runner_pool ?? null;
       this.hostedMinutesLeft = account?.hosted_minutes_remaining ?? null;
 
@@ -2402,14 +2420,252 @@ export class PreloopFlowForm extends LitElement {
           delete base[other];
         }
       }
+      this.composeHarnessRouting(base, hostType);
     } else {
       delete base.host_exec_profile;
       for (const key of Object.values(HOST_EXEC_MODEL_KEYS)) {
         delete base[key];
       }
+      for (const key of HARNESS_ROUTING_KEYS) {
+        delete base[key];
+      }
     }
     this.applyCustomImageOverride(base);
     return base;
+  }
+
+  /**
+   * Keep only valid harness routing keys (#1481) for this host CLI.
+   *
+   * The harness must match the agent type; the queue timeout is stored in
+   * seconds; a server fallback needs its gateway model.
+   */
+  private composeHarnessRouting(
+    base: Record<string, unknown>,
+    hostType: HostExecAgentType
+  ) {
+    if (base.harness !== HOST_EXEC_HARNESSES[hostType]) {
+      for (const key of HARNESS_ROUTING_KEYS) {
+        delete base[key];
+      }
+      return;
+    }
+    const runnerId = String(base.runner_id || '').trim();
+    if (runnerId) {
+      base.runner_id = runnerId;
+    } else {
+      delete base.runner_id;
+    }
+    const fallback = String(base.harness_fallback || 'queue');
+    if (fallback === 'queue') {
+      delete base.harness_fallback;
+    } else {
+      base.harness_fallback = fallback;
+    }
+    const fallbackModel = String(base.fallback_model_identifier || '').trim();
+    if (fallback === 'fallback_server') {
+      if (!fallbackModel) {
+        throw new Error(
+          'Fall back to the server pool needs a fallback gateway model.'
+        );
+      }
+      base.fallback_model_identifier = fallbackModel;
+    } else {
+      delete base.fallback_model_identifier;
+    }
+    const timeout = Number(base.harness_queue_timeout_seconds);
+    if (
+      base.harness_queue_timeout_seconds === undefined ||
+      base.harness_queue_timeout_seconds === null ||
+      base.harness_queue_timeout_seconds === ''
+    ) {
+      delete base.harness_queue_timeout_seconds;
+    } else if (!Number.isInteger(timeout) || timeout < 60 || timeout > 86400) {
+      throw new Error('Queue timeout must be between 1 and 1440 minutes.');
+    } else {
+      base.harness_queue_timeout_seconds = timeout;
+    }
+  }
+
+  private harnessRoutingConfig(): Record<string, unknown> {
+    return this.parseAgentConfig(this.flow.agent_config);
+  }
+
+  private setHarnessRoutingKey(key: string, value: unknown) {
+    const next = { ...(this.flow.agent_config || {}) } as Record<
+      string,
+      unknown
+    >;
+    if (value === undefined || value === null || value === '') {
+      delete next[key];
+    } else {
+      next[key] = value;
+    }
+    this.flow = { ...this.flow, agent_config: next };
+    this.requestUpdate();
+  }
+
+  /** Harness + model picker fed by the runners' harness inventory. */
+  private renderHarnessPicker() {
+    const hostType = this.hostExecAgentType();
+    if (!hostType) {
+      return nothing;
+    }
+    const harness = HOST_EXEC_HARNESSES[hostType];
+    const config = this.harnessRoutingConfig();
+    const routed = config.harness === harness;
+    const option = this.harnessOptions.find((item) => item.harness === harness);
+    const label =
+      option?.display_name ||
+      (hostType === 'cursor' ? 'Cursor CLI' : 'GitHub Copilot CLI');
+    const modelKey = HOST_EXEC_MODEL_KEYS[hostType];
+    const model = typeof config[modelKey] === 'string' ? config[modelKey] : '';
+    const fallback = String(config.harness_fallback || 'queue');
+    const timeoutSeconds = Number(config.harness_queue_timeout_seconds);
+    const timeoutMinutes = Number.isFinite(timeoutSeconds)
+      ? Math.round(timeoutSeconds / 60)
+      : '';
+    return html`
+      <div data-harness-picker class="harness-picker">
+        <sl-switch
+          data-harness-route
+          .checked=${routed}
+          @sl-change=${(event: Event) =>
+            this.setHarnessRoutingKey(
+              'harness',
+              (event.target as HTMLInputElement).checked ? harness : null
+            )}
+          >Route by harness: run on any eligible runner with ${label}</sl-switch
+        >
+        ${
+          routed
+            ? html`
+                <p class="notifications-help" data-harness-summary>
+                  ${
+                    option
+                      ? `${option.runners_online} of ${option.runners_total} runners you may use are online and signed in to ${label}.`
+                      : `No runner you may use reports ${label} yet.`
+                  }
+                  ${
+                    option?.billing === 'seat' || !option
+                      ? html`<br /><span data-harness-billing
+                            >Billing: Seat (not metered by gateway).</span
+                          >`
+                      : nothing
+                  }
+                </p>
+                ${
+                  this.hostExecProfileName()
+                    ? html`<p
+                        class="notifications-help"
+                        data-harness-profile-wins
+                      >
+                        A host execution profile is set, so this flow keeps
+                        routing by that profile name.
+                      </p>`
+                    : nothing
+                }
+                <sl-select
+                  label="Harness model"
+                  data-harness-model
+                  placeholder="Harness default"
+                  clearable
+                  .value=${model}
+                  @sl-change=${(event: Event) =>
+                    this.setHarnessRoutingKey(
+                      modelKey,
+                      (event.target as HTMLSelectElement).value
+                    )}
+                >
+                  ${(option?.models || []).map(
+                    (item) =>
+                      html`<sl-option .value=${item.id}
+                        >${item.id} (${item.runners_online} online)</sl-option
+                      >`
+                  )}
+                </sl-select>
+                <sl-select
+                  label="Runner"
+                  data-harness-runner
+                  placeholder="Any eligible runner"
+                  clearable
+                  .value=${String(config.runner_id || '')}
+                  @sl-change=${(event: Event) =>
+                    this.setHarnessRoutingKey(
+                      'runner_id',
+                      (event.target as HTMLSelectElement).value
+                    )}
+                >
+                  ${(option?.runners || []).map(
+                    (runner) =>
+                      html`<sl-option .value=${runner.id}
+                        >${runner.name}
+                        (${
+                          runner.eligible
+                            ? 'ready'
+                            : runner.reason || 'unavailable'
+                        })</sl-option
+                      >`
+                  )}
+                </sl-select>
+                <sl-select
+                  label="When no runner is eligible"
+                  data-harness-fallback
+                  .value=${fallback}
+                  @sl-change=${(event: Event) => {
+                    const value = (event.target as HTMLSelectElement).value;
+                    this.setHarnessRoutingKey(
+                      'harness_fallback',
+                      value === 'queue' ? null : value
+                    );
+                  }}
+                >
+                  <sl-option value="queue">Wait in the queue</sl-option>
+                  <sl-option value="fallback_server"
+                    >Fall back to the server pool</sl-option
+                  >
+                  <sl-option value="fail">Fail the run</sl-option>
+                </sl-select>
+                ${
+                  fallback === 'queue'
+                    ? html`<sl-input
+                        type="number"
+                        label="Queue timeout (minutes)"
+                        data-harness-queue-timeout
+                        min="1"
+                        max="1440"
+                        placeholder="30"
+                        .value=${String(timeoutMinutes)}
+                        @sl-input=${(event: Event) => {
+                          const raw = (event.target as HTMLInputElement).value;
+                          this.setHarnessRoutingKey(
+                            'harness_queue_timeout_seconds',
+                            raw === '' ? null : Number(raw) * 60
+                          );
+                        }}
+                      ></sl-input>`
+                    : nothing
+                }
+                ${
+                  fallback === 'fallback_server'
+                    ? html`<sl-input
+                        label="Fallback gateway model"
+                        data-harness-fallback-model
+                        help-text="Model id or identifier the hosted Codex harness uses when no runner is eligible. That run is metered by the gateway."
+                        .value=${String(config.fallback_model_identifier || '')}
+                        @sl-input=${(event: Event) =>
+                          this.setHarnessRoutingKey(
+                            'fallback_model_identifier',
+                            (event.target as HTMLInputElement).value
+                          )}
+                      ></sl-input>`
+                    : nothing
+                }
+              `
+            : nothing
+        }
+      </div>
+    `;
   }
 
   /** The host CLI this flow runs as, or null for container harnesses. */
@@ -2652,7 +2908,10 @@ export class PreloopFlowForm extends LitElement {
   /** True when the flow launches on the runner host instead of in a container. */
   private isNativeHostExecFlow(): boolean {
     return (
-      this.hostExecAgentType() !== null && this.hostExecProfileName() !== ''
+      this.hostExecAgentType() !== null &&
+      (this.hostExecProfileName() !== '' ||
+        this.harnessRoutingConfig().harness ===
+          HOST_EXEC_HARNESSES[this.hostExecAgentType() as HostExecAgentType])
     );
   }
 
@@ -4255,6 +4514,7 @@ export class PreloopFlowForm extends LitElement {
                     </sl-details>
                   `
           }
+          ${this.renderHarnessPicker()}
           <sl-details
             data-advanced="runtime"
             summary=${`Advanced runtime: ${this.normalizedFlowRunnerPool() || 'account default runner'}${this.customImageValue ? ', custom image' : ''}${this.hostExecProfileName() ? ', host profile' : ''}`}
