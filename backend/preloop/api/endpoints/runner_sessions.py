@@ -28,12 +28,12 @@ from typing import (
 )
 from uuid import UUID, uuid4
 
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
-from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import models
 from preloop.models.crud import (
     crud_account,
@@ -271,8 +271,10 @@ class RunnerSessionService(Protocol):
         refusal. ``start`` must reserve the slot atomically (row lock or
         conditional insert) and raise ``max_concurrent_reached`` when two
         requests race; the runner enforces its own limit as the final
-        backstop. Blocking database work in the async methods belongs off
-        the event loop (``run_db_off_loop``).
+        backstop. The routes are sync and run on the threadpool; the async
+        service methods are awaited on the event loop (``from_thread.run``)
+        because the runner socket lives there, so they must keep their own
+        blocking database work off the loop.
 
         Raises:
             RunnerSessionError: ``runner_offline`` when the runner socket is
@@ -822,21 +824,23 @@ def _prepare_start(
     status_code=status.HTTP_202_ACCEPTED,
 )
 @require_permission("execute_flows")
-async def start_runner_session(
+def start_runner_session(
     runner_id: UUID,
     body: RunnerSessionStartRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> RunnerSessionStartResponse:
-    """Start a harness session on a runner. Every outcome is audited."""
-    service, plan, audit = await run_db_off_loop(
-        lambda: _prepare_start(db, current_user, runner_id, body)
-    )
+    """Start a harness session on a runner. Every outcome is audited.
+
+    Sync on purpose: FastAPI runs it on the threadpool, so the database work
+    never blocks the event loop. Only the service call, which talks to the
+    runner socket owned by the loop, is handed back to it.
+    """
+    service, plan, audit = _prepare_start(db, current_user, runner_id, body)
     try:
-        record = await service.start(db, plan)
+        record = from_thread.run(service.start, db, plan)
     except RunnerSessionError as exc:
-        code, message = exc.code, exc.message
-        raise await run_db_off_loop(lambda: audit.reject(409, code, message)) from None
+        raise audit.reject(409, exc.code, exc.message) from None
     finally:
         # The credential only ever travels in the session_start frame.
         plan.credential = None
@@ -873,30 +877,27 @@ def list_runner_sessions(
     status_code=status.HTTP_202_ACCEPTED,
 )
 @require_permission("execute_flows")
-async def send_runner_session_turn(
+def send_runner_session_turn(
     session_id: str,
     body: RunnerSessionTurnRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> RunnerSessionTurnResponse:
     """Send the next prompt. Wave 1 allows one running turn at a time."""
-    service, record, audit = await run_db_off_loop(
-        lambda: _prepare_turn(db, current_user, session_id)
-    )
+    service, record, audit = _prepare_turn(db, current_user, session_id)
     turn_id = str(uuid4())
     try:
-        await service.send_turn(db, record, turn_id=turn_id, text=body.text)
-    except RunnerSessionError as exc:
-        code, message = exc.code, exc.message
-        raise await run_db_off_loop(lambda: audit.reject(409, code, message)) from None
-    await run_db_off_loop(
-        lambda: audit.log(
-            "runner_session.turn_sent",
-            resource_id=record.remote_session_id,
-            remote_session_id=record.remote_session_id,
-            turn_id=turn_id,
-            text_length=len(body.text),
+        from_thread.run(
+            lambda: service.send_turn(db, record, turn_id=turn_id, text=body.text)
         )
+    except RunnerSessionError as exc:
+        raise audit.reject(409, exc.code, exc.message) from None
+    audit.log(
+        "runner_session.turn_sent",
+        resource_id=record.remote_session_id,
+        remote_session_id=record.remote_session_id,
+        turn_id=turn_id,
+        text_length=len(body.text),
     )
     return RunnerSessionTurnResponse(turn_id=turn_id, state="queued")
 
@@ -907,32 +908,25 @@ async def send_runner_session_turn(
     status_code=status.HTTP_202_ACCEPTED,
 )
 @require_permission("execute_flows")
-async def stop_runner_session(
+def stop_runner_session(
     session_id: str,
     body: Optional[RunnerSessionStopRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> RunnerSessionStopResponse:
     """Ask the runner to end the session (``graceful``) or kill the harness."""
-    service, record, audit = await run_db_off_loop(
-        lambda: _session_audit(db, current_user, session_id)
-    )
+    service, record, audit = _session_audit(db, current_user, session_id)
     mode = (body or RunnerSessionStopRequest()).mode
     if record.state in ACTIVE_STATES:
+        current = record
         try:
-            record = await service.stop(db, record, mode=mode)
+            record = from_thread.run(lambda: service.stop(db, current, mode=mode))
         except RunnerSessionError as exc:
-            code, message = exc.code, exc.message
-            raise await run_db_off_loop(
-                lambda: audit.reject(409, code, message)
-            ) from None
-    stopped = record
-    await run_db_off_loop(
-        lambda: audit.log(
-            "runner_session.stop_requested",
-            resource_id=stopped.remote_session_id,
-            remote_session_id=stopped.remote_session_id,
-            mode=mode,
-        )
+            raise audit.reject(409, exc.code, exc.message) from None
+    audit.log(
+        "runner_session.stop_requested",
+        resource_id=record.remote_session_id,
+        remote_session_id=record.remote_session_id,
+        mode=mode,
     )
     return RunnerSessionStopResponse(session_id=record.session_id, state=record.state)

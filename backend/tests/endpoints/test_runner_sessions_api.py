@@ -658,28 +658,15 @@ def test_member_cannot_steer_owners_session(db_session, test_user, service):
     )
 
 
-def test_blocking_db_work_runs_off_the_event_loop(
-    db_session, test_user, service, monkeypatch
-):
-    real = runner_sessions.run_db_off_loop
-    calls: List[int] = []
+def test_session_routes_keep_db_work_off_the_event_loop():
+    """Handlers are sync, so FastAPI runs their DB work on the threadpool."""
+    import inspect
 
-    async def recording(operation):
-        calls.append(1)
-        return await real(operation)
-
-    monkeypatch.setattr(runner_sessions, "run_db_off_loop", recording)
-    runner = _runner(db_session, test_user)
-    client = _client(db_session, test_user)
-    session_id = client.post(
-        f"/api/v1/runners/{runner.id}/sessions", json=_start_body()
-    ).json()["session_id"]
-    service.records[session_id].state = "idle"
-    response = client.post(
-        f"/api/v1/runner-sessions/{session_id}/turns", json={"text": "go"}
-    )
-    assert response.status_code == 202
-    response = client.post(f"/api/v1/runner-sessions/{session_id}/stop", json={})
-    assert response.status_code == 202
-    # start: prepare; turn: prepare + audit; stop: lookup + audit.
-    assert len(calls) == 5
+    for handler in (
+        runner_sessions.get_runner_session_options,
+        runner_sessions.start_runner_session,
+        runner_sessions.list_runner_sessions,
+        runner_sessions.send_runner_session_turn,
+        runner_sessions.stop_runner_session,
+    ):
+        assert not inspect.iscoroutinefunction(inspect.unwrap(handler)), handler

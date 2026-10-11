@@ -16350,7 +16350,14 @@ paths:
       tags:
       - Runner sessions
       summary: Start Runner Session
-      description: Start a harness session on a runner. Every outcome is audited.
+      description: 'Start a harness session on a runner. Every outcome is audited.
+
+
+        Sync on purpose: FastAPI runs it on the threadpool, so the database work
+
+        never blocks the event loop. Only the service call, which talks to the
+
+        runner socket owned by the loop, is handed back to it.'
       operationId: start_runner_session_api_v1_runners__runner_id__sessions_post
       security:
       - bearerAuth: []
