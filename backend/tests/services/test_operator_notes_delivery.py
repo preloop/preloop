@@ -789,3 +789,25 @@ def test_mixed_notes_block_does_not_grant_agent_human_authority() -> None:
     assert "does not hold that permission" in text
     assert "Pause the deploy." in text
     assert "The migration is applied; run the backfill." in text
+
+
+def test_empty_gateway_note_claim_does_not_commit_unrelated_work(
+    db_session, account, agent, runtime_session, monkeypatch
+):
+    from unittest.mock import Mock
+
+    commit = Mock(wraps=db_session.commit)
+    monkeypatch.setattr(db_session, "commit", commit)
+    payload = {"messages": [{"role": "user", "content": "No note to carry."}]}
+    delivered = _deliver(
+        db_session,
+        account,
+        agent,
+        runtime_session,
+        protocol=operator_notes.PROTOCOL_OPENAI_CHAT,
+        payload=payload,
+        key="messages",
+    )
+    assert delivered == []
+    commit.assert_not_called()
+    assert payload["messages"] == [{"role": "user", "content": "No note to carry."}]

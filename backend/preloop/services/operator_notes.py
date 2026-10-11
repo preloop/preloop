@@ -472,7 +472,9 @@ def claim_pending_notes(
     moment = now or datetime.now(timezone.utc)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    crud_agent_control_command.expire_notes(db, account_id=account_id, now=moment)
+    expired = crud_agent_control_command.expire_notes(
+        db, account_id=account_id, now=moment
+    )
     candidates = crud_agent_control_command.list_deliverable_notes(
         db,
         account_id=account_id,
@@ -516,7 +518,8 @@ def claim_pending_notes(
             delivery_event=event,
         )
         claimed.append(note)
-    db.commit()
+    if claimed or expired:
+        db.commit()
     if claimed and not defer_delivery:
         _emit_delivered_notes(
             account_id=account_id,
