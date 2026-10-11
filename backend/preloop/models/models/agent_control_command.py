@@ -8,6 +8,7 @@ end-to-end.
 State machine (``status``):
 
 - ``pending``: persisted, not yet sent over a live WebSocket.
+- ``claimed``: a note reserved by a non-carrying hook until its carrying receipt.
 - ``delivered``: written to a connected agent's WebSocket (locally or by the
   pod holding the connection after a NATS fan-out).
 - ``acked``: the runtime plugin confirmed receipt of the command id.

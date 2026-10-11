@@ -55,7 +55,7 @@ func sendNoteReceipt(source, sessionID, block, reason string) {
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
 }
 

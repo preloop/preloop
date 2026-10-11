@@ -465,7 +465,7 @@ def _end_session(
     resolved against the caller's own principal, so a durable credential whose
     token is bound to the agent's identity session still aims the sweep at the
     ``claude -p`` run that just ended. Ending is idempotent: a session already
-    ended keeps its timestamp and the sweep only looks at ``pending`` rows.
+    ended keeps its timestamp and the sweep only looks at uncarried rows.
     """
     from preloop.models.crud import crud_runtime_session
     from preloop.services.event_webhooks.emitters import emit_session_ended

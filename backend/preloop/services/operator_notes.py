@@ -448,9 +448,10 @@ def claim_pending_notes(
 ) -> List[Any]:
     """Claim the notes this session should receive, at most once each.
 
-    Returns the claimed rows, oldest first, or an empty list. Every claim is
-    audited, timelined and enqueued as a webhook event in the caller's
-    transaction; the caller only has to render what comes back.
+    Returns the claimed rows, oldest first, or an empty list. Immediate
+    delivery is audited, timelined and evented in the caller's transaction.
+    A deferred claim only reserves the row and claim timestamp; its receipt
+    records delivery after the carrying output is written.
 
     ``event`` names the harness lifecycle point that asked (``session_start``,
     ``stop`` or ``pre_tool_use``), recorded on the row and in the audit so a
@@ -700,7 +701,7 @@ def undeliver_session_notes(
     runtime_session_id: Any,
     reason: Optional[str] = None,
 ) -> int:
-    """Mark every session-only pending note undeliverable, and audit it.
+    """Mark every session-only pending or claimed note undeliverable, and audit it.
 
     Called when a session ends (the SessionEnd hook, or an operator ending it
     from the console). A note addressed only to this exact session can never

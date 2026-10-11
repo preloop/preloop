@@ -43,9 +43,8 @@ type operatorNoteCreate struct {
 	ExpiresInSeconds int    `json:"expires_in_seconds,omitempty"`
 }
 
-// operatorNoteResponse is the part of the created note this command reports.
-// The response carries delivery state too; listing and tracking notes is a
-// separate command and deliberately not read here.
+// operatorNoteResponse is a delivery receipt returned by create, status or list.
+// send --wait reads this same shape from the single-note route.
 type operatorNoteResponse struct {
 	NoteID              string          `json:"note_id"`
 	State               string          `json:"state"`

@@ -542,14 +542,17 @@ func TestReceiptHookAcknowledgesOnlyAfterCarryingOutputAndFailsOpen(t *testing.T
 				NoteIDs   []string `json:"note_ids"`
 				SessionID string   `json:"session_id"`
 			}
-			json.NewDecoder(r.Body).Decode(&payload)
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Errorf("decode receipt: %v", err)
+				return
+			}
 			if !reflect.DeepEqual(payload.NoteIDs, []string{"receipt-hook"}) || payload.SessionID != "receipt-session" {
 				t.Errorf("wrong ack: %#v", payload)
 			}
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]interface{}{"decision": "allow", "operator_note": "<operator-notes><operator-note id=\"receipt-hook\">Read me</operator-note></operator-notes>"})
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"decision": "allow", "operator_note": "<operator-notes><operator-note id=\"receipt-hook\">Read me</operator-note></operator-notes>"})
 	}))
 	defer server.Close()
 	writeTestPermissionCredential(t, home, "receipt-codex", permissionHookCredential{BaseURL: server.URL, Token: "agt_synthetic", Source: permissionSourceCodexCLI})

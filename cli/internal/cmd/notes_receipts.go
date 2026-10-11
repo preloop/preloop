@@ -68,7 +68,9 @@ func init() {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 		}
 		for _, note := range result.Notes {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s  ", note.NoteID)
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s  ", note.NoteID); err != nil {
+				return err
+			}
 			if err := printNoteReceipt(cmd, note, false); err != nil {
 				return err
 			}

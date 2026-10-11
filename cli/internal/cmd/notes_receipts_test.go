@@ -15,9 +15,9 @@ func TestReceiptCommandsStatusAndList(t *testing.T) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == operatorNotesPath+"/receipt-1" {
-			json.NewEncoder(w).Encode(map[string]string{"note_id": "receipt-1", "state": "claimed", "delivery_channel": "hook", "created_at": "2026-10-11T18:00:00Z"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"note_id": "receipt-1", "state": "claimed", "delivery_channel": "hook", "created_at": "2026-10-11T18:00:00Z"})
 		} else if r.URL.Path == operatorNotesPath && r.URL.Query().Get("runtime_session_id") == "session-1" && r.URL.Query().Get("state") == "claimed" {
-			json.NewEncoder(w).Encode(map[string]interface{}{"notes": []map[string]string{{"note_id": "receipt-1", "state": "claimed"}}})
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"notes": []map[string]string{{"note_id": "receipt-1", "state": "claimed"}}})
 		} else {
 			t.Errorf("unexpected request %s", r.URL)
 			http.NotFound(w, r)
@@ -61,7 +61,7 @@ func TestReceiptWaitExitCodes(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				if r.Method == http.MethodPost {
-					json.NewEncoder(w).Encode(map[string]string{"note_id": "receipt-wait", "state": "pending"})
+					_ = json.NewEncoder(w).Encode(map[string]string{"note_id": "receipt-wait", "state": "pending"})
 					return
 				}
 				if r.URL.Path != operatorNotesPath+"/receipt-wait" {
@@ -70,7 +70,7 @@ func TestReceiptWaitExitCodes(t *testing.T) {
 					return
 				}
 				gets++
-				json.NewEncoder(w).Encode(map[string]string{"note_id": "receipt-wait", "state": tc.state})
+				_ = json.NewEncoder(w).Encode(map[string]string{"note_id": "receipt-wait", "state": tc.state})
 			}))
 			defer server.Close()
 			pointCLIAt(t, server.URL)
