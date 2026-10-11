@@ -102,6 +102,7 @@ preloop login --token <token>        # Save an API token
 preloop login                        # Auto-select loopback or headless OAuth
 preloop login --headless             # Force copy/paste OAuth
 preloop login --loopback             # Force local loopback OAuth
+preloop login --no-runner            # Sign in without offering a runner install
 preloop signup                       # Open the sign-up page, then authenticate the CLI
 preloop auth login                   # Same as preloop login
 preloop auth signup                  # Same as preloop signup
@@ -114,6 +115,8 @@ preloop auth token                   # Print token for scripting
 ```
 
 The login flow resolves the API URL in this order: `--url`, `PRELOOP_URL`, config file, then the default `https://preloop.ai`.
+
+An interactive login asks whether to install a runner (default no). Skip it with `--no-runner` or `PRELOOP_NO_RUNNER=1`. `preloop runner setup` runs the same step later. Headless login, `--token`, and `PRELOOP_TOKEN` never install a runner.
 
 ### Signing out and revoking a login
 
@@ -469,6 +472,7 @@ release.
 ```bash
 preloop runner fg --labels local     # Foreground: register, heartbeat, lease jobs
 preloop runner fg --concurrency 4    # Hold four executions at once (default 2)
+preloop runner setup                 # Offer or install the service after login
 preloop runner enable                # Install launchd / systemd / scheduled task
 preloop runner disable                  # Remove the service
 preloop runner disable --delete [--force]   # ...and delete the runner on the server

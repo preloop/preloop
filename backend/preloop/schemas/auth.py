@@ -141,6 +141,66 @@ class AuthUserUpdate(BaseModel):
     full_name: Optional[str] = None
 
 
+# Capabilities an OSS runner may offer. The schema default, the profile
+# factory, and the OSS policy hook all use this list.
+OSS_RUNNER_CAPABILITIES: List[str] = ["flows", "inventory", "sessions"]
+
+
+def _oss_runner_capabilities() -> List[str]:
+    """Return a copy of the OSS runner capability ids."""
+    return list(OSS_RUNNER_CAPABILITIES)
+
+
+class RunnerPolicy(BaseModel):
+    """Account policy for installing a personal runner on this user's machine."""
+
+    model_config = {"title": "RunnerPolicy"}
+
+    requirement: Literal["optional", "required", "forbidden"] = "optional"
+    capabilities: List[str] = Field(
+        default_factory=_oss_runner_capabilities,
+        description=(
+            "Capabilities a runner installed for this user may offer. "
+            "Ids include flows, inventory, and sessions."
+        ),
+    )
+    mandated_capabilities: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Capabilities the account requires on a member machine when "
+            "requirement is required. Empty when the user may decline."
+        ),
+    )
+    grace_until: Optional[datetime] = None
+    can_decide: bool = Field(
+        True,
+        description=(
+            "True when this user may decline a runner. False for a member "
+            "who is not the owner of a multi-user account. The CLI still "
+            "asks; a decline tells them to ask an admin."
+        ),
+    )
+    message: Optional[str] = Field(
+        None,
+        description=(
+            "Optional sentence the CLI prints for required or forbidden. "
+            "Null uses the CLI's built-in sentence."
+        ),
+    )
+
+
+def _default_runner_policy() -> RunnerPolicy:
+    """Policy used when a caller builds a profile without one."""
+    return RunnerPolicy(
+        requirement="optional",
+        capabilities=_oss_runner_capabilities(),
+        mandated_capabilities=[],
+        grace_until=None,
+        can_decide=True,
+        message=None,
+    )
+
+
 class AuthUserResponse(BaseModel):
     """Response model for user data."""
 
@@ -181,6 +241,15 @@ class AuthUserResponse(BaseModel):
             "Clients intersect these with an approval workflow's "
             "approver_team_ids to tell whether a pending approval is waiting "
             "for this person. Empty when the user is in no team."
+        ),
+    )
+    runner_policy: RunnerPolicy = Field(
+        default_factory=_default_runner_policy,
+        description=(
+            "Whether this user should install a personal runner, and "
+            "whether they may decline. requirement is optional, required, "
+            "or forbidden. An older server omits the object; clients treat "
+            "that as optional."
         ),
     )
 
