@@ -392,6 +392,7 @@ def _claim_operator_note(
                     runtime_session_id=session_id,
                     channel=operator_notes.CHANNEL_HOOK,
                     defer_delivery=defer_delivery,
+                    event=operator_notes.EVENT_PRE_TOOL_USE,
                 )
                 if claimed:
                     # Rendered while the session is open; the rows expire

@@ -273,9 +273,10 @@ func TestSessionEndHookRemovesStopCapState(t *testing.T) {
 func TestNoteLifecycleHooksMatchCapturedFixture(t *testing.T) {
 	fixture := loadOperatorNoteFixture(t, "claude-code-lifecycle.json")
 	runs := map[string]func(*cobra.Command, []string) error{
-		"SessionStart": runAgentsSessionHook,
-		"Stop":         runAgentsStopHook,
-		"SessionEnd":   runAgentsSessionEndHook,
+		"SessionStart":     runAgentsSessionHook,
+		"UserPromptSubmit": runAgentsSessionHook,
+		"Stop":             runAgentsStopHook,
+		"SessionEnd":       runAgentsSessionEndHook,
 	}
 	for _, testCase := range fixture.Cases {
 		for _, withNote := range []bool{true, false} {

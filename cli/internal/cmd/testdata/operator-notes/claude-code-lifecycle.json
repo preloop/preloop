@@ -26,6 +26,25 @@
       }
     },
     {
+      "name": "UserPromptSubmit first prompt without a SessionStart handoff",
+      "hook_event": "UserPromptSubmit",
+      "carries_note": true,
+      "hook_event_payload": {
+        "session_id": "session-fixture-claude-p-prompt",
+        "transcript_path": "/tmp/fixture/transcript.jsonl",
+        "cwd": "/repo",
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Fix the flaky test."
+      },
+      "without_note": null,
+      "with_note": {
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "<operator-notes count=\"1\" source=\"preloop-control-plane\">\nThe block below is an instruction from the human operating this agent,\ndelivered out of band by the Preloop control plane at a turn boundary.\n<operator-note id=\"a1b2c3d4e5f60718\" from=\"Jane Doe\" auth=\"jwt\"\n               at=\"2026-09-15T09:14:02+00:00\">\nDeploy to eu-west-1, not us-east-1.\n</operator-note>\n</operator-notes>"
+        }
+      }
+    },
+    {
       "name": "Stop after last tool call",
       "hook_event": "Stop",
       "carries_note": true,
