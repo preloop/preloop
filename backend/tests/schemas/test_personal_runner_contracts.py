@@ -168,3 +168,47 @@ def test_session_event_payload_capped_at_64_kb() -> None:
             kind="stderr",
             payload={"text": "x" * (64 * 1024)},
         )
+
+
+def test_runner_hash_is_an_opaque_token_kept_when_unknown_entries_drop() -> None:
+    """The server stores the runner's hash verbatim and never recomputes it.
+
+    A newer runner hashes entries this server does not know; recomputing
+    would never match the hash the runner keeps sending on heartbeat.
+    """
+    raw = _load("harness_inventory_copilot_signed_in.json")
+    runner_hash = raw["hash"]
+    raw["entries"].append(raw["entries"][1] | {"harness": "future_cli"})
+    inventory = HarnessInventory.model_validate(raw)
+    assert inventory.hash == runner_hash
+    assert inventory.to_wire()["hash"] == runner_hash
+
+
+def test_unicode_fixture_hash_matches_go() -> None:
+    """U+2028/U+2029 are escaped like Go's encoding/json; other runes are not."""
+    raw = _load("harness_inventory_unicode.json")
+    inventory = HarnessInventory.model_validate(raw)
+    assert " " in inventory.entries[0].display_name
+    assert harness_inventory_hash(inventory.entries) == raw["hash"]
+
+
+@pytest.mark.parametrize("state", ["ended", "failed"])
+def test_terminal_session_state_requires_end_reason(state: str) -> None:
+    with pytest.raises(ValidationError):
+        SessionStateMessage(remote_session_id="s", state=state)
+
+
+def test_rejected_end_reason_must_match_error_code() -> None:
+    with pytest.raises(ValidationError):
+        SessionStateMessage(
+            remote_session_id="s",
+            state="failed",
+            end_reason="runner_rejected:workspace_dirty",
+            error_code="checkout_failed",
+        )
+    assert SessionStateMessage(
+        remote_session_id="s",
+        state="failed",
+        end_reason="runner_rejected:copilot_approval_hook_missing",
+        error_code="copilot_approval_hook_missing",
+    )

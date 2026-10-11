@@ -9,7 +9,14 @@ this module only fixes the wire shapes.
 import json
 from typing import Annotated, Any, Dict, List, Literal, Optional, Union, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from preloop.models.schemas.flow_runner import HarnessId
 
@@ -23,6 +30,7 @@ RunnerSessionState = Literal[
     "failed",
 ]
 RUNNER_SESSION_STATES = frozenset(get_args(RunnerSessionState))
+TERMINAL_SESSION_STATES = frozenset({"ended", "failed"})
 
 RunnerSessionRejectionCode = Literal[
     "harness_not_enabled_for_sessions",
@@ -32,6 +40,7 @@ RunnerSessionRejectionCode = Literal[
     "workspace_dirty",
     "checkout_failed",
     "sessions_disabled_on_host",
+    "copilot_approval_hook_missing",
 ]
 RUNNER_SESSION_REJECTION_CODES = frozenset(get_args(RunnerSessionRejectionCode))
 
@@ -122,6 +131,20 @@ class SessionStateMessage(_Message):
         if value is not None and not is_valid_end_reason(value):
             raise ValueError(f"unknown end_reason: {value}")
         return value
+
+    @model_validator(mode="after")
+    def check_terminal_state(self) -> "SessionStateMessage":
+        """Terminal states name why they ended; the end audit event needs it."""
+        if self.state in TERMINAL_SESSION_STATES and self.end_reason is None:
+            raise ValueError(f"session_state {self.state} requires end_reason")
+        if (
+            self.end_reason is not None
+            and self.end_reason.startswith(RUNNER_REJECTED_PREFIX)
+            and self.error_code is not None
+            and self.end_reason[len(RUNNER_REJECTED_PREFIX) :] != self.error_code
+        ):
+            raise ValueError("runner_rejected end_reason must match error_code")
+        return self
 
 
 class SessionEventMessage(_Message):

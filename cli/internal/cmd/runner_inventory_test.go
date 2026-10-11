@@ -128,3 +128,20 @@ func TestRegisterFixturesDecodeInventory(t *testing.T) {
 		t.Fatalf("schema = %d", current.HarnessInventory.Schema)
 	}
 }
+
+func TestHarnessInventoryUnicodeFixtureHashMatchesServer(t *testing.T) {
+	var inv harnessInventory
+	if err := json.Unmarshal(readPersonalRunnerFixture(t, "harness_inventory_unicode.json"), &inv); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.ContainsRune(inv.Entries[0].DisplayName, ' ') {
+		t.Fatal("fixture must carry U+2028")
+	}
+	got, err := harnessInventoryHash(inv.Entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != inv.Hash {
+		t.Fatalf("hash = %s, server fixture says %s", got, inv.Hash)
+	}
+}
