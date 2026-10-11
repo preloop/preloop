@@ -47,6 +47,9 @@ from preloop.models.db.session import release_transaction
 
 from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
+from preloop.services.runner_workspace_credentials import (
+    normalize_authorized_directories,
+)
 from preloop.services.runner_service import (
     derive_execution_runner,
     emit_runner_deleted,
@@ -230,6 +233,10 @@ def register_runner(
     capabilities = normalize_host_exec_advertisements(
         [profile.model_dump() for profile in advertised]
     )
+    if body.authorized_directories is not None:
+        capabilities["authorized_directories"] = normalize_authorized_directories(
+            body.authorized_directories
+        )
     # A CI account registers a new ephemeral runner per job. Reap the ones
     # whose job died without unregistering before adding another.
     crud_flow_runner.sweep_stale_ephemeral(db, account_id=current_user.account_id)
@@ -844,8 +851,17 @@ async def runner_ws(
                 for assignment in list(runner.assignments or []):
                     if assignment.halt_requested:
                         await close_publication(assignment.execution_id)
-                if "host_exec_profiles" in raw:
-                    runner.capabilities = normalize_host_exec_advertisements(raw)
+                if "host_exec_profiles" in raw or "authorized_directories" in raw:
+                    # Each advertisement replaces only its own key: a
+                    # heartbeat that carries one must not drop the other.
+                    merged = dict(runner.capabilities or {})
+                    if "host_exec_profiles" in raw:
+                        merged.update(normalize_host_exec_advertisements(raw))
+                    if "authorized_directories" in raw:
+                        merged["authorized_directories"] = (
+                            normalize_authorized_directories(raw)
+                        )
+                    runner.capabilities = merged
                 # Busy means no free slot, not "holds a job": a runner with
                 # spare capacity must stay dispatchable while it works.
                 crud_flow_runner.touch_heartbeat(

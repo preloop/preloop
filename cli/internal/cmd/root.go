@@ -103,6 +103,11 @@ func topLevelCommandName(cmd *cobra.Command) string {
 // main: launchers that wrap an external binary return a typed exit-code
 // error so the child's status (not 1) reaches the caller.
 func Execute() error {
+	// Git runs this binary as its askpass helper during a session checkout
+	// with the prompt as the only argument, which is not a command.
+	if code, ok := maybeRunGitAskpass(); ok {
+		os.Exit(code)
+	}
 	return rootCmd.Execute()
 }
 
