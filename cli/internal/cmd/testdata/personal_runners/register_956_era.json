@@ -1,0 +1,20 @@
+{
+  "name": "build-laptop",
+  "hostname": "build-laptop.example.com",
+  "os": "darwin",
+  "arch": "arm64",
+  "labels": [],
+  "host_exec_profiles": [
+    {
+      "name": "copilot",
+      "capabilities": [
+        "host_exec",
+        "copilot_cli",
+        "stdout",
+        "cancel"
+      ],
+      "models": []
+    }
+  ],
+  "concurrency": 1
+}

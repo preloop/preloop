@@ -30828,6 +30828,174 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    HarnessInventory:
+      properties:
+        schema:
+          type: integer
+          minimum: 1.0
+          title: Schema
+          default: 1
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Hash
+        entries:
+          items:
+            $ref: '#/components/schemas/HarnessInventoryEntry'
+          type: array
+          maxItems: 32
+          title: Entries
+      type: object
+      required:
+      - generated_at
+      - hash
+      title: HarnessInventory
+      description: Harness inventory a runner publishes with register and heartbeat.
+    HarnessInventoryEntry:
+      properties:
+        harness:
+          type: string
+          enum:
+          - copilot_cli
+          - cursor_cli
+          - claude_code
+          - codex_cli
+          - opencode
+          - gemini_cli
+          - claude_desktop
+          - vscode_copilot
+          title: Harness
+        display_name:
+          type: string
+          maxLength: 128
+          title: Display Name
+        version:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Version
+        login_state:
+          type: string
+          enum:
+          - signed_in
+          - signed_out
+          - unknown
+          - not_applicable
+          title: Login State
+          default: unknown
+        login_source:
+          type: string
+          enum:
+          - env
+          - stored
+          - cli_status
+          - none
+          - unknown
+          title: Login Source
+          default: unknown
+        account_host:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Account Host
+        governance:
+          type: string
+          enum:
+          - governed
+          - partial
+          - ungoverned
+          - unknown
+          title: Governance
+          default: unknown
+        support_level:
+          type: string
+          enum:
+          - flows_and_sessions
+          - flows_only
+          - presence_only
+          title: Support Level
+          default: presence_only
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        sessions_enabled:
+          type: boolean
+          title: Sessions Enabled
+          default: false
+        session_mode:
+          type: string
+          enum:
+          - resume
+          - stream
+          - replay
+          - none
+          title: Session Mode
+          default: none
+        billing:
+          type: string
+          enum:
+          - seat
+          - metered
+          - unknown
+          title: Billing
+          default: unknown
+        models:
+          items:
+            $ref: '#/components/schemas/HarnessModel'
+          type: array
+          maxItems: 64
+          title: Models
+        generated_profile:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
+          - type: 'null'
+          title: Generated Profile
+        capabilities:
+          items:
+            type: string
+          type: array
+          maxItems: 16
+          title: Capabilities
+      type: object
+      required:
+      - harness
+      - display_name
+      title: HarnessInventoryEntry
+      description: 'One locally installed harness as reported by a runner.
+
+
+        Never carries executable paths, argv, env values, tokens or usernames.'
+    HarnessModel:
+      properties:
+        id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Id
+        source:
+          type: string
+          enum:
+          - probed
+          - configured
+          - static
+          - observed
+          title: Source
+      type: object
+      required:
+      - id
+      - source
+      title: HarnessModel
+      description: One model a harness can run, and where the runner learned about
+        it.
     HostExecProfileAdvertisement:
       properties:
         name:
@@ -36835,6 +37003,10 @@ components:
             maxItems: 64
           - type: 'null'
           title: Host Exec Profiles
+        harness_inventory:
+          anyOf:
+          - $ref: '#/components/schemas/HarnessInventory'
+          - type: 'null'
         concurrency:
           anyOf:
           - type: integer
@@ -36941,6 +37113,16 @@ components:
           additionalProperties: true
           type: object
           title: Capabilities
+        harness_inventory:
+          anyOf:
+          - $ref: '#/components/schemas/HarnessInventory'
+          - type: 'null'
+        harness_inventory_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Harness Inventory Updated At
         created_at:
           type: string
           format: date-time
@@ -37058,6 +37240,16 @@ components:
           additionalProperties: true
           type: object
           title: Capabilities
+        harness_inventory:
+          anyOf:
+          - $ref: '#/components/schemas/HarnessInventory'
+          - type: 'null'
+        harness_inventory_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Harness Inventory Updated At
         created_at:
           type: string
           format: date-time
@@ -42644,7 +42836,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
