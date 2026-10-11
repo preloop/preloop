@@ -670,3 +670,26 @@ def test_session_routes_keep_db_work_off_the_event_loop():
         runner_sessions.stop_runner_session,
     ):
         assert not inspect.iscoroutinefunction(inspect.unwrap(handler)), handler
+
+
+def test_hung_runner_call_is_bounded(db_session, test_user, service, monkeypatch):
+    import anyio
+
+    async def hang(db, plan):
+        await anyio.sleep(30)
+
+    monkeypatch.setattr(runner_sessions, "SERVICE_CALL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(service, "start", hang)
+    runner = _runner(db_session, test_user)
+    response = _client(db_session, test_user).post(
+        f"/api/v1/runners/{runner.id}/sessions", json=_start_body()
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "runner_offline"
+    _assert_audited(
+        db_session,
+        runner,
+        test_user,
+        "runner_session.rejected",
+        reason="runner_offline",
+    )

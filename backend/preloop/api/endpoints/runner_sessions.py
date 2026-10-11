@@ -28,6 +28,7 @@ from typing import (
 )
 from uuid import UUID, uuid4
 
+import anyio
 from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -63,6 +64,10 @@ DEFAULT_IDLE_TIMEOUT_SECONDS = 1800
 MAX_FIRST_PROMPT_CHARS = 32_000
 MAX_TURN_CHARS = 32_000
 MAX_REPOSITORIES_PER_TRACKER = 200
+#: Upper bound on one awaited service call (start, turn, stop). The route's
+#: worker thread waits in ``from_thread.run`` for it and holds a threadpool
+#: token meanwhile, so a half-open runner socket must not hold it longer.
+SERVICE_CALL_TIMEOUT_SECONDS = 15.0
 
 #: Tracker types that can back a ``tracker_checkout`` workspace in wave 1.
 CHECKOUT_PROVIDERS: Dict[str, str] = {
@@ -271,10 +276,17 @@ class RunnerSessionService(Protocol):
         refusal. ``start`` must reserve the slot atomically (row lock or
         conditional insert) and raise ``max_concurrent_reached`` when two
         requests race; the runner enforces its own limit as the final
-        backstop. The routes are sync and run on the threadpool; the async
-        service methods are awaited on the event loop (``from_thread.run``)
-        because the runner socket lives there, so they must keep their own
-        blocking database work off the loop.
+        backstop.
+
+        Threading: the routes are sync and run on the threadpool. The async
+        methods (``start``, ``send_turn``, ``stop``) are awaited on the event
+        loop through ``from_thread.run`` because the runner socket lives
+        there, and are cut off after ``SERVICE_CALL_TIMEOUT_SECONDS`` (the
+        route then answers 409 ``runner_offline``). The waiting route already
+        holds a worker thread, so these coroutines must not offload to the
+        threadpool themselves (``run_db_off_loop`` would take a second token
+        per request and can starve the limiter); keep them to the socket
+        send and do persistence in the sync methods or with an async session.
 
         Raises:
             RunnerSessionError: ``runner_offline`` when the runner socket is
@@ -303,6 +315,26 @@ def register_runner_session_service(service: Optional[RunnerSessionService]) -> 
 def get_runner_session_service() -> Optional[RunnerSessionService]:
     """Return the installed runner session service, or ``None``."""
     return _service
+
+
+def _call_service(factory: Any) -> Any:
+    """Await one service coroutine on the event loop, bounded in time.
+
+    Raises:
+        RunnerSessionError: ``runner_offline`` when the call does not finish
+            within ``SERVICE_CALL_TIMEOUT_SECONDS``.
+    """
+
+    async def bounded() -> Any:
+        try:
+            with anyio.fail_after(SERVICE_CALL_TIMEOUT_SECONDS):
+                return await factory()
+        except TimeoutError:
+            raise RunnerSessionError(
+                "runner_offline", "The runner did not answer in time."
+            ) from None
+
+    return from_thread.run(bounded)
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +870,7 @@ def start_runner_session(
     """
     service, plan, audit = _prepare_start(db, current_user, runner_id, body)
     try:
-        record = from_thread.run(service.start, db, plan)
+        record = _call_service(lambda: service.start(db, plan))
     except RunnerSessionError as exc:
         raise audit.reject(409, exc.code, exc.message) from None
     finally:
@@ -887,7 +919,7 @@ def send_runner_session_turn(
     service, record, audit = _prepare_turn(db, current_user, session_id)
     turn_id = str(uuid4())
     try:
-        from_thread.run(
+        _call_service(
             lambda: service.send_turn(db, record, turn_id=turn_id, text=body.text)
         )
     except RunnerSessionError as exc:
@@ -920,7 +952,7 @@ def stop_runner_session(
     if record.state in ACTIVE_STATES:
         current = record
         try:
-            record = from_thread.run(lambda: service.stop(db, current, mode=mode))
+            record = _call_service(lambda: service.stop(db, current, mode=mode))
         except RunnerSessionError as exc:
             raise audit.reject(409, exc.code, exc.message) from None
     audit.log(
