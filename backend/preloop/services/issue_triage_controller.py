@@ -579,7 +579,12 @@ async def apply_controlled_triage(
                     update={"expected_revision": context.expected_revision}
                 )
             elif row.data.get("source_revision") != request.expected_revision:
-                raise TriageControllerError("triage_execution_revision_mismatch")
+                raise TriageControllerError(
+                    "triage_execution_revision_mismatch: this run can only "
+                    "write the revision it claimed at start. Stop without "
+                    "writing. Do not call get_issue or update_issue again; "
+                    "a later run triages the issue as it is now."
+                )
             execution = crud_issue_lifecycle.pickup_execution(db, row=row)
             if execution is None or execution.status not in ACTIVE_STATUSES:
                 raise TriageControllerError("triage_execution_not_active")
@@ -613,6 +618,20 @@ async def apply_controlled_triage(
         result = await apply_triage(
             provider, effective_request, record, dispatch_label=dispatch_label
         )
+        if (
+            row is not None
+            and result.status == "conflict"
+            and result.reason == "stale_issue"
+        ):
+            # apply_triage tells a caller to refresh and retry. This
+            # execution cannot adopt the new revision, so that instruction
+            # makes the model call get_issue and update_issue until the
+            # loop guard stops the run.
+            result.next_action = (
+                "The issue changed after this run claimed it. Stop without "
+                "writing. Do not call get_issue or update_issue again; a "
+                "later run triages the issue as it is now."
+            )
         if result.issue is not None:
             try:
                 values: dict[str, Any] = {

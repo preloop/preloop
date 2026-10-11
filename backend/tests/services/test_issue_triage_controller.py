@@ -159,6 +159,9 @@ async def test_newer_edit_has_own_claim_and_old_output_cannot_overwrite_it(
     assert newer.id != execution.id and not reused
     result = await _apply(rig, execution, request)
     assert result.status == "conflict" and result.reason == "stale_issue"
+    assert result.next_action is not None
+    assert "Stop without writing" in result.next_action
+    assert "get_issue" in result.next_action
     assert rig.provider.operations == []
     assert "New human acceptance" in rig.provider.issue.body
     refreshed = request.model_copy(
@@ -166,6 +169,11 @@ async def test_newer_edit_has_own_claim_and_old_output_cannot_overwrite_it(
             "expected_revision": (await get_context(rig.provider)).expected_revision
         }
     )
+    with pytest.raises(
+        controller.TriageControllerError, match="triage_execution_revision_mismatch"
+    ) as mismatch:
+        await _apply(rig, execution, refreshed)
+    assert "Stop without writing" in str(mismatch.value)
     assert (await _apply(rig, newer, refreshed)).status == "updated"
 
 

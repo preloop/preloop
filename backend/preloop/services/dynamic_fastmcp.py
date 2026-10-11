@@ -2171,6 +2171,25 @@ async def {internal_name}({params_str}):
         """
         arguments = arguments or {}
 
+        # FastMCP's middleware re-enters this override with
+        # run_middleware=False after the outer call has already authorized
+        # and will record the outcome. Running this body again records a
+        # second succeeded row for one client request (the timeline shows
+        # every MCP call twice, ~10ms apart).
+        if not run_middleware:
+            dispatch_arguments = (
+                self._remap_wrapper_arguments(name, arguments)
+                if name in self._registered_proxied_tools
+                else arguments
+            )
+            return await super().call_tool(
+                name,
+                dispatch_arguments,
+                version=version,
+                run_middleware=False,
+                task_meta=task_meta,
+            )
+
         # Extract justification from arguments before it reaches the tool function.
         # Justification is injected into the schema by list_tools() but isn't part
         # of the actual tool's function signature.

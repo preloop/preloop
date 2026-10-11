@@ -3771,14 +3771,16 @@ class FlowExecutionOrchestrator:
     def _get_recent_runtime_tool_activity_signatures(
         self, limit: int = 12
     ) -> list[str]:
-        """Return recent persisted tool-call signatures for loop detection."""
+        """Return recent tool-call signatures, including failures, for loop detection."""
         if not self.execution_log:
             return []
 
         from preloop.models.crud import crud_runtime_session_activity
 
-        activities = crud_runtime_session_activity.get_recent_successful_tool_calls_by_flow_execution(
-            self.db, flow_execution_id=self.execution_log.id, limit=limit
+        activities = (
+            crud_runtime_session_activity.get_recent_tool_calls_by_flow_execution(
+                self.db, flow_execution_id=self.execution_log.id, limit=limit
+            )
         )
 
         signatures: list[str] = []

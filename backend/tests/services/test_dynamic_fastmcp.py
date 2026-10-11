@@ -2938,6 +2938,73 @@ class TestToolCallUsageOutcome:
         assert kwargs["status"] == "failed"
         assert kwargs["summary"] == "connection closed"
 
+    async def test_middleware_reentry_records_one_tool_call(
+        self, dynamic_mcp, user_context
+    ):
+        """FastMCP re-enters call_tool once per request; record that once.
+
+        The parent runs middleware by calling this override again with
+        run_middleware=False. Both entries used to authorize and persist,
+        so every MCP call showed up twice.
+        """
+        from fastmcp.tools.tool import ToolResult
+
+        dynamic_mcp._user_context_provider = lambda: user_context
+        available_tools = [Tool(name="get_issue", description="x", parameters={})]
+        async_db = MagicMock()
+        async_db.__aenter__ = AsyncMock(return_value=MagicMock())
+        async_db.__aexit__ = AsyncMock(return_value=False)
+        tool_result = ToolResult(content=[types.TextContent(type="text", text="ok")])
+
+        async def super_call(
+            _self,
+            name,
+            arguments=None,
+            *,
+            version=None,
+            run_middleware=True,
+            task_meta=None,
+        ):
+            if run_middleware:
+                return await dynamic_mcp.call_tool(
+                    name,
+                    arguments or {},
+                    version=version,
+                    run_middleware=False,
+                    task_meta=task_meta,
+                )
+            return tool_result
+
+        with (
+            patch.object(dynamic_mcp, "list_tools", return_value=available_tools),
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch(
+                "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+                return_value=[],
+            ),
+            patch(
+                "preloop.models.db.session.get_async_db_session",
+                new=MagicMock(return_value=async_db),
+            ),
+            patch(
+                "preloop.services.policy_evaluator.evaluate_policy_async",
+                new=AsyncMock(return_value=("allow", None, None)),
+            ),
+            patch.object(dynamic_mcp, "_persist_tool_call_activity") as persist,
+            patch.object(
+                dynamic_mcp.__class__.__bases__[0],
+                "call_tool",
+                new=super_call,
+                create=True,
+            ),
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            result = await dynamic_mcp.call_tool("get_issue", {"issue": "ABC-1"})
+
+        assert result is tool_result
+        persist.assert_called_once()
+        assert persist.call_args.kwargs["status"] == "succeeded"
+
 
 class TestApprovalDenialUsageOutcome:
     """Human denial inside a proxied wrapper must not record succeeded."""
