@@ -367,13 +367,16 @@ with the managed-agent runtime bearer token and returns the claimed notes three
 ways at once: the raw envelopes, the rendered block, and a ready
 `notifications/claude/channel` event. `channel` is one of `hook`,
 `claude_channel` or `claude_message`; `gateway` is recorded only by the
-gateway path. Call it from the hook or bridge process, never from the model.
-Claiming is the delivery: what it returns is marked delivered, audited and
-evented before it leaves.
+gateway path. `event` names the harness lifecycle point that asked
+(`session_start`, `stop` or `pre_tool_use`) and is stamped on the delivery, so
+a Stop rescue is distinguishable from the ordinary next-tool-call path. Call it
+from the hook or bridge process, never from the model. Claiming is the delivery:
+what it returns is marked delivered, audited and evented before it leaves.
 
 | Harness | What fires | How to pick the note up |
 | --- | --- | --- |
 | Claude Code | `PreToolUse`, installed by `preloop agents onboard --approvals` | `operator_note` on the permission-check response, written into `hookSpecificOutput.additionalContext` |
+| Claude Code (session start / stop) | `SessionStart`, `Stop` and `SessionEnd`, installed by `preloop agents onboard --approvals` | `SessionStart` (and the first `UserPromptSubmit`) pulls `/agents/notes/pending` with `event=session_start` and returns `hookSpecificOutput.additionalContext`, so a note sent before the run starts lands before the first tool call. `Stop` pulls with `event=stop` and, when something is pending, blocks the stop once with the rendered block as the continuation reason, so the model reads it and may act. `SessionEnd` posts `/agents/session-end`, which marks a note whose only session ended `undeliverable` instead of letting it expire |
 | Claude Code (channels) | An MCP channel server you run | `POST /agents/notes/pending`, then push `channel_event` as `notifications/claude/channel`. The harness wraps our block in its own `<channel source= severity=>` tag |
 | Claude Code (cross-session messaging) | A bridge process holding `CLAUDE_CODE_MESSAGING_TOKEN`, with `crossSessionInbound: accept` on headless `-p` workers | `POST /agents/notes/pending`, then post `text` to the session inbox socket. The harness delivers it between tool calls |
 | Codex CLI | `PreToolUse` and `PermissionRequest` | `operator_note` on the permission-check response, written into the `PreToolUse` `hookSpecificOutput.additionalContext`. `PermissionRequest` has no field for it, so a note claimed there rides the next `PreToolUse` |
@@ -402,9 +405,17 @@ in `cli/internal/cmd/testdata/operator-notes/`.
 The channel and inbox bridges remain a follow-up: they need a process the
 operator runs, not a hook Preloop already installs.
 
-A note whose harness fires no tool call and makes no model call is not
-delivered, and its state stays `pending` until it expires. There is no path
-that pushes into a process that is not asking Preloop anything.
+A note whose harness fires no tool call and makes no model call would never be
+delivered. On Claude Code two more hooks close that gap: a note sent before the
+run starts rides `SessionStart`, and a note that arrives after the last tool
+call is rescued by `Stop`, which keeps the headless run alive for one more step
+so the model can read it. At most three Stop blocks are spent per session, so a
+stream of notes cannot pin a worker in a loop; past that cap the note waits and
+`SessionEnd` marks it `undeliverable` rather than letting it sit `pending` until
+its 24h expiry and look like the agent ignored it. A note addressed to the
+*agent* with no session is untouched by a session ending: it keeps waiting for
+the agent's next run. There is still no path that pushes into a process that is
+not asking Preloop anything.
 
 ## What the model sees
 
@@ -509,7 +520,7 @@ bodies are stored in the clear, exactly as approval comments are, because both
 are operator text that has to be readable in the audit trail and in the
 timeline. Do not put secrets in a note; use the credential store.
 
-Two audit actions, both written in the same transaction as the thing they
+Four audit actions, all written in the same transaction as the thing they
 describe:
 
 | Action | Written when |
@@ -517,6 +528,7 @@ describe:
 | `agent.note_sent` | Before the API tells the author it worked |
 | `agent.note_delivered` | Before the request carrying the note leaves Preloop |
 | `agent.note_scope_denied` | Instead of a note, when an agent's target was out of [its scope](#which-agent-may-note-which-target) |
+| `agent.note_undeliverable` | When a session ends and the notes addressed only to it can no longer arrive |
 
 The same two arrive as webhook events, `agent.note_sent` and
 `agent.note_delivered` (see [webhooks](webhooks.md)), and each delivery is

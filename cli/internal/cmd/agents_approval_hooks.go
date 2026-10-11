@@ -162,6 +162,23 @@ func sessionHookCommand(source string) string {
 	return fmt.Sprintf("%s agents permission-hook session --source %s", preloopExecutableForHooks(), source)
 }
 
+// stopHookCommand is the Stop hook that delivers a note before a headless run
+// exits (#1551). It carries the same permission-hook ownership marker.
+func stopHookCommand(source string) string {
+	return fmt.Sprintf("%s agents permission-hook stop --source %s", preloopExecutableForHooks(), source)
+}
+
+// sessionEndHookCommand is the SessionEnd hook that fails notes whose only
+// session ended (#1551). Same ownership marker as the others.
+func sessionEndHookCommand(source string) string {
+	return fmt.Sprintf("%s agents permission-hook session-end --source %s", preloopExecutableForHooks(), source)
+}
+
+// noteLifecycleHookEvents are the Claude Code events wired to the
+// note-delivery hooks beyond SessionStart/UserPromptSubmit. They are owned by
+// the same marker, so onboarding rewrites and offboarding removes them.
+var noteLifecycleHookEvents = []string{"Stop", "SessionEnd"}
+
 func approvalHookCommand(source string) string {
 	return fmt.Sprintf("%s agents permission-hook --source %s", preloopExecutableForHooks(), source)
 }
@@ -311,6 +328,14 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 				return err
 			}
 		}
+		// Note delivery for headless runs (#1551): Stop rescues a note sent
+		// after the last tool call, SessionEnd fails notes the run never got.
+		if err := upsertNestedCommandHook(configPath, "Stop", "", stopHookCommand(source), sessionHookTimeoutSeconds); err != nil {
+			return err
+		}
+		if err := upsertNestedCommandHook(configPath, "SessionEnd", "", sessionEndHookCommand(source), sessionHookTimeoutSeconds); err != nil {
+			return err
+		}
 	case permissionSourceCodexCLI:
 		// Independent gates: central rules before execution, then remote
 		// handling of any permission prompt Codex's own policy still requires.
@@ -352,6 +377,7 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 		fmt.Fprintln(out, "  Central policy: checks local allows; denies on unavailable or expired approval (no local prompt fallback).")                                      //nolint:errcheck
 		printAgentPolicySummary(out, source, policyPaths, workspaceRoot)
 		if source == permissionSourceClaudeCode {
+			fmt.Fprintln(out, "  Operator notes: SessionStart, Stop and SessionEnd hooks installed for headless runs.") //nolint:errcheck
 			// Cursor loads ~/.claude/settings.json as third-party hooks; the
 			// permission-hook auto-allows under Cursor so this install cannot
 			// accidentally gate Cursor Agent. Spell that out so operators know
@@ -464,6 +490,11 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 			return err
 		}
 		for _, event := range sessionHookEvents {
+			if err := removeNestedCommandHook(configPath, event, false); err != nil {
+				return err
+			}
+		}
+		for _, event := range noteLifecycleHookEvents {
 			if err := removeNestedCommandHook(configPath, event, false); err != nil {
 				return err
 			}

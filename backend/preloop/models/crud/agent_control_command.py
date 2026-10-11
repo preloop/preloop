@@ -604,6 +604,7 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         delivery_channel: str,
         runtime_session_id: Optional[Union[uuid.UUID, str]] = None,
         turn_index: Optional[int] = None,
+        delivery_event: Optional[str] = None,
         commit: bool = False,
     ) -> bool:
         """Take one pending note for delivery, exactly once.
@@ -612,6 +613,10 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         gateway requests for the same session cannot both win: the loser
         matches zero rows and delivers nothing. Callers must only render a
         note this returned ``True`` for.
+
+        ``delivery_event`` records which harness lifecycle point pulled the
+        note (``session_start``, ``stop``, ``pre_tool_use``); it is NULL for
+        the gateway, which has no hook event to name.
         """
         values: Dict[str, Any] = {
             "status": "delivered",
@@ -622,6 +627,8 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             values["delivered_turn_index"] = turn_index
         if runtime_session_id is not None:
             values["runtime_session_id"] = runtime_session_id
+        if delivery_event is not None:
+            values["delivery_event"] = delivery_event
         claimed = (
             db.query(AgentControlCommand)
             .filter(
@@ -634,6 +641,45 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
         if commit:
             db.commit()
         return int(claimed) == 1
+
+    def mark_session_notes_undeliverable(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        runtime_session_id: Union[uuid.UUID, str],
+        reason: Optional[str] = None,
+        commit: bool = True,
+    ) -> int:
+        """Fail every note addressed only to this session, in one statement.
+
+        Called when a session ends: a note targeted at that exact session can
+        no longer reach it, so it must not sit ``pending`` until its 24h
+        expiry and then look like the agent ignored it. A note addressed to
+        the *agent* with no session (``runtime_session_id IS NULL``) is
+        untouched: it waits for the agent's next run, which is a different
+        promise and still keeps it.
+
+        Only ``pending`` rows move. A delivered note already reached the
+        model and stays delivered. Returns how many rows changed so the
+        caller can report one number.
+        """
+        values: Dict[str, Any] = {"status": "undeliverable"}
+        if reason:
+            values["last_error"] = reason[:2000]
+        changed = (
+            db.query(AgentControlCommand)
+            .filter(
+                AgentControlCommand.account_id == account_id,
+                AgentControlCommand.kind == "note",
+                AgentControlCommand.runtime_session_id == runtime_session_id,
+                AgentControlCommand.status == "pending",
+            )
+            .update(values, synchronize_session="fetch")
+        )
+        if commit:
+            db.commit()
+        return int(changed)
 
     def cancel_note(
         self,

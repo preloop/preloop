@@ -808,7 +808,8 @@ export interface OperatorNote {
     | 'acknowledged'
     | 'cancelled'
     | 'expired'
-    | 'failed';
+    | 'failed'
+    | 'undeliverable';
   text: string;
   managed_agent_id?: string | null;
   runtime_session_id?: string | null;
@@ -825,6 +826,8 @@ export interface OperatorNote {
   delivered_at?: string | null;
   /** Which transport carried it: gateway, hook, or a Claude Code channel. */
   delivery_channel?: string | null;
+  /** Which harness lifecycle point pulled it: session_start, stop, pre_tool_use. */
+  delivery_event?: string | null;
   delivered_turn_index?: number | null;
   acknowledged_turn_id?: string | null;
   cancelled_at?: string | null;

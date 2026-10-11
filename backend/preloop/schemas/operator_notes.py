@@ -9,12 +9,21 @@ from pydantic import BaseModel, Field, model_validator
 from preloop.services.operator_notes import MAX_NOTE_BODY_CHARS
 
 OperatorNoteState = Literal[
-    "pending", "delivered", "acknowledged", "cancelled", "expired", "failed"
+    "pending",
+    "delivered",
+    "acknowledged",
+    "cancelled",
+    "expired",
+    "failed",
+    "undeliverable",
 ]
 OperatorNoteChannel = Literal["gateway", "hook", "claude_channel", "claude_message"]
 # Harness pull only. ``gateway`` is stamped by the gateway path itself; a hook
 # must not be able to mislabel a delivery as a turn-boundary inject.
 OperatorNotePullChannel = Literal["hook", "claude_channel", "claude_message"]
+# The lifecycle point that pulled the note. Bounded on purpose: the value lands
+# in the audit record, so the hook must not be able to write arbitrary text.
+OperatorNoteEvent = Literal["session_start", "stop", "pre_tool_use"]
 
 
 class OperatorNoteCreate(BaseModel):
@@ -93,6 +102,7 @@ class OperatorNoteResponse(BaseModel):
     expires_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     delivery_channel: Optional[OperatorNoteChannel] = None
+    delivery_event: Optional[OperatorNoteEvent] = None
     delivered_turn_index: Optional[int] = None
     acknowledged_turn_id: Optional[str] = None
     cancelled_at: Optional[datetime] = None
@@ -116,6 +126,13 @@ class OperatorNotePendingRequest(BaseModel):
         description=(
             "Which harness transport is about to carry the note. Gateway "
             "delivery is recorded by the gateway itself, never by this pull."
+        ),
+    )
+    event: OperatorNoteEvent = Field(
+        "pre_tool_use",
+        description=(
+            "The harness lifecycle point asking for notes: session_start, "
+            "stop or pre_tool_use. Recorded on the delivery for audit."
         ),
     )
     session_id: Optional[str] = Field(
@@ -143,4 +160,35 @@ class OperatorNotePendingResponse(BaseModel):
             "The same block shaped as a Claude Code channel notification, so "
             "a channel server can forward it unchanged."
         ),
+    )
+
+
+class OperatorSessionEndRequest(BaseModel):
+    """A harness telling Preloop its session ended (SessionEnd hook).
+
+    The runtime bearer already names the session, so this body is only the
+    harness's own identifiers and the reason; the server never trusts it to
+    pick a different session.
+    """
+
+    external_session_id: Optional[str] = Field(
+        None,
+        max_length=255,
+        description=(
+            "Harness session id, for logging only; never used to pick a session."
+        ),
+    )
+    reason: Optional[str] = Field(
+        None,
+        max_length=255,
+        description="Why the harness ended the session, e.g. 'exit' or 'clear'.",
+    )
+
+
+class OperatorSessionEndResponse(BaseModel):
+    """What the sweep changed: the bound session and how many notes it failed."""
+
+    runtime_session_id: Optional[UUID] = None
+    marked: int = Field(
+        0, description="Session-only pending notes moved to undeliverable."
     )

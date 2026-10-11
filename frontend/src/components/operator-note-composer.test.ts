@@ -151,6 +151,37 @@ describe('operator-note-composer', () => {
       .exist;
   });
 
+  it('shows the lifecycle event and the undeliverable end state', async () => {
+    fetchStub.resolves(
+      jsonResponse({
+        notes: [
+          note({
+            note_id: 'note-stop',
+            state: 'delivered',
+            delivery_channel: 'hook',
+            delivery_event: 'stop',
+          }),
+          note({
+            note_id: 'note-start',
+            state: 'delivered',
+            delivery_channel: 'hook',
+            delivery_event: 'session_start',
+          }),
+          note({ note_id: 'note-gone', state: 'undeliverable' }),
+        ],
+      })
+    );
+
+    const el = await mount();
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('Delivered to keep the run going')
+    );
+
+    const text = el.shadowRoot!.textContent!;
+    expect(text).to.contain('Delivered at session start');
+    expect(text).to.contain('Session ended before delivery');
+  });
+
   it('reports why a note was refused instead of losing it silently', async () => {
     const el = await mount();
     fetchStub.resolves(

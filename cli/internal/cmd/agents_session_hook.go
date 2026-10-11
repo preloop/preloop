@@ -241,49 +241,91 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 	}
 	isPrompt := strings.EqualFold(event.HookEventName, "UserPromptSubmit")
 	existing, haveFile := readSessionHandoff(externalID)
-	if isPrompt && (strings.TrimSpace(event.Prompt) == "" || (haveFile && existing.TitleSent)) {
-		// The common case: every prompt after the first costs one stat.
+	// Only the first UserPromptSubmit carries the title; later prompts cost
+	// one stat. A prompt with no text is ignored too.
+	hasPrompt := strings.TrimSpace(event.Prompt) != ""
+	needsRegistration := !isPrompt || (hasPrompt && !(haveFile && existing.TitleSent))
+	if isPrompt && !needsRegistration {
+		// Nothing to register and (see below) nothing new to deliver.
 		return nil
 	}
 
-	cred, err := resolvePermissionHookCredential(source)
-	if err != nil {
+	cred, credErr := resolvePermissionHookCredential(source)
+	if credErr != nil {
 		return nil
 	}
-	req := sessionStartRequest{
-		SessionID:       externalID,
-		Source:          source,
-		Cwd:             strings.TrimSpace(event.Cwd),
-		ParentSessionID: strings.TrimSpace(os.Getenv(parentSessionEnvVar)),
-	}
-	if isPrompt {
-		req.FirstPrompt = event.Prompt
-	}
-	resp, err := postSessionStart(cred, req)
-	if err != nil {
-		fmt.Fprintf(errOut, "preloop session hook: could not register the session: %v\n", err)
-		return nil
-	}
-
-	file := sessionHandoffFile{
-		RuntimeSessionID:  resp.RuntimeSessionID,
-		ExternalSessionID: externalID,
-		ParentSessionID:   resp.ParentSessionID,
-		StartedAt:         resp.StartedAt,
-		AgentKind:         source,
-		Cwd:               req.Cwd,
-		TitleSent:         isPrompt || (haveFile && existing.TitleSent),
-	}
-	if err := writeSessionHandoff(file); err != nil {
-		fmt.Fprintf(errOut, "preloop session hook: could not write the session file: %v\n", err)
-	}
-	if !isPrompt {
-		if err := appendClaudeEnvExport(resp.RuntimeSessionID); err != nil {
-			fmt.Fprintf(errOut, "preloop session hook: could not export %s: %v\n", parentSessionEnvVar, err)
+	registered := false
+	if needsRegistration {
+		req := sessionStartRequest{
+			SessionID:       externalID,
+			Source:          source,
+			Cwd:             strings.TrimSpace(event.Cwd),
+			ParentSessionID: strings.TrimSpace(os.Getenv(parentSessionEnvVar)),
 		}
-		if sessionHookNonInteractive() && !(haveFile && existing.RuntimeSessionID == resp.RuntimeSessionID) {
-			fmt.Fprintf(errOut, "preloop runtime_session_id=%s\n", resp.RuntimeSessionID)
+		if isPrompt {
+			req.FirstPrompt = event.Prompt
+		}
+		resp, err := postSessionStart(cred, req)
+		if err != nil {
+			fmt.Fprintf(errOut, "preloop session hook: could not register the session: %v\n", err)
+		} else {
+			registered = true
+			file := sessionHandoffFile{
+				RuntimeSessionID:  resp.RuntimeSessionID,
+				ExternalSessionID: externalID,
+				ParentSessionID:   resp.ParentSessionID,
+				StartedAt:         resp.StartedAt,
+				AgentKind:         source,
+				Cwd:               req.Cwd,
+				TitleSent:         isPrompt || (haveFile && existing.TitleSent),
+			}
+			if err := writeSessionHandoff(file); err != nil {
+				fmt.Fprintf(errOut, "preloop session hook: could not write the session file: %v\n", err)
+			}
+			if !isPrompt {
+				resetStopBlocks(externalID)
+				if err := appendClaudeEnvExport(resp.RuntimeSessionID); err != nil {
+					fmt.Fprintf(errOut, "preloop session hook: could not export %s: %v\n", parentSessionEnvVar, err)
+				}
+				if sessionHookNonInteractive() && !(haveFile && existing.RuntimeSessionID == resp.RuntimeSessionID) {
+					fmt.Fprintf(errOut, "preloop runtime_session_id=%s\n", resp.RuntimeSessionID)
+				}
+			}
+		}
+	} else {
+		registered = haveFile
+	}
+
+	// Notes ride the same event: a note sent before the run started reaches
+	// the model before its first tool call. First turn only, so an interactive
+	// session does not pay a request per prompt; later notes land on the tool
+	// call or the Stop hook.
+	if registered && (!isPrompt || !haveFile) {
+		if text := claimNotesForHook(cred, externalID, noteEventSessionStart); text != "" {
+			writeSessionAdditionalContext(cmd.OutOrStdout(), event.HookEventName, text)
 		}
 	}
 	return nil
+}
+
+// writeSessionAdditionalContext emits the harness JSON that puts a pending
+// note into the model's context at SessionStart or UserPromptSubmit. Both
+// events accept hookSpecificOutput.additionalContext; the event name must
+// match the event that fired.
+func writeSessionAdditionalContext(out io.Writer, hookEventName, text string) {
+	name := "SessionStart"
+	if strings.EqualFold(strings.TrimSpace(hookEventName), "UserPromptSubmit") {
+		name = "UserPromptSubmit"
+	}
+	payload := map[string]interface{}{
+		"hookSpecificOutput": map[string]interface{}{
+			"hookEventName":     name,
+			"additionalContext": text,
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	fmt.Fprintln(out, string(data)) //nolint:errcheck
 }
