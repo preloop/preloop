@@ -424,6 +424,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             service_role,
         )
 
+    # End runner-hosted remote sessions whose runner stayed offline past the
+    # idle timeout (#1482). Idempotent, so every API replica may run it.
+    runner_session_sweeper = None
+    if not is_testing and is_api_role:
+        from preloop.services.runner_session_sweeper import (
+            get_runner_session_sweeper,
+        )
+
+        runner_session_sweeper = get_runner_session_sweeper()
+        await runner_session_sweeper.start()
+
     readiness_sweeper = None
     if not is_testing and is_api_role and settings.ticket_readiness_enabled:
         from preloop.services.readiness.scheduler import ReadinessSweeper
@@ -761,6 +772,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if readiness_sweeper:
         await readiness_sweeper.stop()
+
+    if not is_testing and runner_session_sweeper:
+        try:
+            await runner_session_sweeper.stop()
+        except Exception:
+            logger.error("Error stopping runner session sweeper", exc_info=True)
 
     if not is_testing and issue_cost_rebuild_sweeper:
         try:

@@ -215,6 +215,17 @@ runner, and the runner adds `--resume=<session>` itself, checks the session is o
 the host, and pushes onto the existing pull request branch. A completion naming a
 different session fails `resume_identity_mismatch`.
 
+A personal runner can also host remote harness sessions (#1482): the server
+writes start, turn and stop requests to `runner_remote_sessions`
+(`services/runner_sessions.py`) and delivers them over the runner websocket on
+the next heartbeat or at once from the replica holding the socket; the runner
+(`cli/internal/cmd/runner_sessions.go`) runs Copilot CLI one process per turn
+with `--session-id` then `--resume`, only for harnesses the host user enabled
+with `preloop runner sessions enable`. Each session pairs with a
+`RuntimeSession` of source type `runner_session`, which
+`resolve_session_control_mode` puts in command mode. See
+[Remote sessions](docs/guide/runners/remote-sessions.md).
+
 A flow with an enabled `git_clone_config.backport` block runs in a
 control-plane mode: the orchestrator cherry-picks the merge commit onto each
 target branch in a scratch repository and opens one pull request per target,

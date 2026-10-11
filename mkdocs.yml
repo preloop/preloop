@@ -261,6 +261,7 @@ nav:
       - Linux quickstart: guide/runners/quickstart-linux.md
       - macOS quickstart: guide/runners/quickstart-macos.md
       - Windows quickstart: guide/runners/quickstart-windows.md
+      - Remote sessions: guide/runners/remote-sessions.md
       - Deploy agents onto Linux hosts: operations/agent-deployment.md
       - Runner smoke test: guide/runners/staging-smoke.md
 

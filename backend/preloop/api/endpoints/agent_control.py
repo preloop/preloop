@@ -1802,11 +1802,12 @@ def get_runtime_session_control_mode(
         mode=decision.mode,
         reason_code=decision.reason_code,
         reason=decision.reason,
+        send_path=decision.send_path,
         managed_agent_id=agent.id if agent is not None else None,
         agent_name=agent.display_name if agent is not None else None,
         agent_kind=(agent.agent_kind or agent.session_source_type)
         if agent is not None
-        else None,
+        else decision.kind,
     )
 
 

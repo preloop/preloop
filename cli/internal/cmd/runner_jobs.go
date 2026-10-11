@@ -48,6 +48,9 @@ type runnerJobs struct {
 	completed   []*leasedJobOutcome
 	outcomes    chan leasedJobOutcome
 	events      chan publicationEvent
+	// sessions hosts remote harness sessions; nil in one-shot and test
+	// loops that never accept them.
+	sessions *runnerSessionManager
 }
 
 func newRunnerJobs(concurrency int) *runnerJobs {

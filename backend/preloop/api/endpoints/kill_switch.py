@@ -32,7 +32,9 @@ from preloop.schemas.kill_switch import (
     KillSwitchScopeState,
     KillSwitchStatus,
 )
+from preloop.models.models.account_halt import HALT_SCOPE_FLOWS, HALT_SCOPE_TOOLS
 from preloop.services.kill_switch import invalidate_kill_switch_cache
+from preloop.services.runner_sessions import end_sessions_for_kill_switch
 from preloop.utils.permissions import require_permission, _rbac_checks_enabled
 
 logger = logging.getLogger(__name__)
@@ -187,6 +189,10 @@ def activate_kill_switch(
         reason=payload.reason,
     )
     invalidate_kill_switch_cache(current_user.account_id)
+    if HALT_SCOPE_FLOWS in scopes or HALT_SCOPE_TOOLS in scopes:
+        # Remote sessions on personal runners end with killed_by_kill_switch
+        # (#1485 T10); runners see the stop on their next heartbeat.
+        end_sessions_for_kill_switch(db, current_user.account_id)
 
     logger.warning(
         "KILL SWITCH ACTIVATED: account=%s scopes=%s by=%s reason=%r",

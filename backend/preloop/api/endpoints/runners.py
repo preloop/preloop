@@ -47,6 +47,12 @@ from preloop.models.db.session import release_transaction
 
 from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
+from preloop.services.runner_sessions import (
+    apply_runner_session_message,
+    end_sessions_for_kill_switch,
+    flows_or_tools_halted,
+    pending_runner_messages,
+)
 from preloop.services.runner_service import (
     derive_execution_runner,
     emit_runner_deleted,
@@ -646,6 +652,25 @@ def _parse_runner_execution_id(value: Any) -> Optional[UUID]:
         return None
 
 
+#: Runner -> server remote session frames (contract C, #1482). They are not
+#: acknowledged: the runner re-reports live sessions on every reconnect.
+RUNNER_SESSION_MESSAGE_TYPES = frozenset(
+    {"session_state", "session_event", "session_turn_done"}
+)
+
+
+async def _deliver_session_messages(
+    db: Session, websocket: WebSocket, runner: FlowRunner
+) -> None:
+    """Send pending remote session frames, enforcing the kill switch first."""
+    if flows_or_tools_halted(db, runner.account_id):
+        end_sessions_for_kill_switch(db, runner.account_id)
+    messages = pending_runner_messages(db, runner)
+    release_transaction(db)
+    for message in messages:
+        await websocket.send_json(message)
+
+
 @router.websocket("/runners/{runner_id}/ws")
 async def runner_ws(
     websocket: WebSocket,
@@ -751,6 +776,10 @@ async def runner_ws(
     # payload must not still be holding their locks while we block on the peer.
     release_transaction(db)
     await websocket.send_json(hello)
+    # Remote session commands written while the runner was away (or by a
+    # replica that does not hold this socket).
+    for session_message in pending_runner_messages(db, runner):
+        await websocket.send_json(session_message)
 
     try:
         while True:
@@ -882,6 +911,14 @@ async def runner_ws(
                 # release before `receive_json`.
                 release_transaction(db)
                 await websocket.send_json(reply)
+                await _deliver_session_messages(db, websocket, runner)
+                continue
+
+            if msg_type in RUNNER_SESSION_MESSAGE_TYPES:
+                for session_reply in apply_runner_session_message(db, runner, raw):
+                    await websocket.send_json(session_reply)
+                # A state change can make a queued turn deliverable.
+                await _deliver_session_messages(db, websocket, runner)
                 continue
 
             if msg_type == "status":
