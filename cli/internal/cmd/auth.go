@@ -55,6 +55,9 @@ type UserInfo struct {
 	Email        string `json:"email"`
 	Name         string `json:"name"`
 	Organization string `json:"organization"`
+	// RunnerPolicy is the account runner install policy. Nil when the
+	// server omits the field. Callers treat nil as optional.
+	RunnerPolicy *runnerPolicy `json:"runner_policy,omitempty"`
 }
 
 // authCmd represents the auth command group.
@@ -74,12 +77,18 @@ With --token: saves the provided API token directly (no server required).
 Without --token: starts OAuth authentication. The CLI automatically uses a
 loopback callback on local machines and a copy/paste flow on SSH or headless hosts.
 
+After a successful interactive login the CLI can install a Preloop runner
+on this machine. The default answer is no. Skip that step with --no-runner
+or PRELOOP_NO_RUNNER=1. Headless login, --token, and PRELOOP_TOKEN never
+install a runner. Run it later with 'preloop runner setup'.
+
 Examples:
   preloop login --token <your-token>
   preloop login --token <your-token> --url http://localhost:8000
   PRELOOP_URL=https://review.preloop.ai preloop login --headless
   preloop login
-  preloop login --headless`,
+  preloop login --headless
+  preloop login --no-runner`,
 	RunE: runAuthLogin,
 }
 
@@ -189,6 +198,7 @@ var (
 	loginLoopback bool
 	loginCode     string
 	loginForce    bool
+	loginNoRunner bool
 	// signupRequested tracks whether the current OAuth login flow was
 	// initiated via 'preloop signup'. When true, the browser is sent to the
 	// sign-up page first instead of the sign-in page.
@@ -390,6 +400,7 @@ func configureLoginFlags(command *cobra.Command) {
 	command.Flags().BoolVar(&loginLoopback, "loopback", false, "force the local loopback callback OAuth flow")
 	command.Flags().StringVar(&loginCode, "code", "", "authorization code from a previous headless OAuth login")
 	command.Flags().BoolVar(&loginForce, "force", false, "re-authenticate even when a valid login already exists")
+	command.Flags().BoolVar(&loginNoRunner, "no-runner", false, "do not offer to install a Preloop runner after login")
 }
 
 func shouldUseHeadlessOAuth() bool {
@@ -488,7 +499,7 @@ func runLoopbackOAuthLogin(baseURL string) error {
 		return fmt.Errorf("authentication timed out")
 	}
 
-	return finishOAuthLogin(baseURL, code, redirectURI)
+	return finishOAuthLogin(baseURL, code, redirectURI, false)
 }
 
 func runHeadlessOAuthLogin(baseURL string) error {
@@ -523,10 +534,10 @@ func runHeadlessOAuthLogin(baseURL string) error {
 		return fmt.Errorf("authorization code is required")
 	}
 
-	return finishOAuthLogin(baseURL, code, redirectURI)
+	return finishOAuthLogin(baseURL, code, redirectURI, true)
 }
 
-func finishOAuthLogin(baseURL, code, redirectURI string) error {
+func finishOAuthLogin(baseURL, code, redirectURI string, headless bool) error {
 	fmt.Println("Exchanging code for tokens...")
 	tokenResp, err := exchangeCodeForTokens(baseURL, code, redirectURI)
 	if err != nil {
@@ -566,6 +577,9 @@ func finishOAuthLogin(baseURL, code, redirectURI string) error {
 		baseURL, tokenResp.AccessToken, version.Version, conversionEventName(),
 	)
 
+	// Login already succeeded. A runner install error is printed and does
+	// not fail this command.
+	offerRunnerAfterLogin(os.Stdout, &userInfo, baseURL, headless)
 	return nil
 }
 

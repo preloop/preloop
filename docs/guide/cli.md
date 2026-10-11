@@ -38,6 +38,7 @@ Resolution order, token: `--token` > `PRELOOP_TOKEN` > config file. URL: `--url`
 preloop login                # OAuth via browser (also: preloop auth login)
 preloop login --headless     # copy/paste OAuth for SSH / no-GUI hosts
 preloop login --token <tok>  # skip OAuth, save a token directly
+preloop login --no-runner    # sign in, do not offer a runner install
 preloop signup               # same flow, lands on the sign-up page
 preloop auth status          # active token + API URL
 preloop auth token           # print the current access token
@@ -45,6 +46,20 @@ preloop auth logout
 ```
 
 `--loopback` forces the local-callback OAuth flow; `--code` resumes a previous headless login. `--loopback` and `--headless` are mutually exclusive.
+
+After a successful interactive login the CLI asks whether to install a runner. The default answer is no. See [Install during login](runners/quickstart-linux.md#install-during-login). `--no-runner` and `PRELOOP_NO_RUNNER=1` skip that step. Headless login, `--token`, and `PRELOOP_TOKEN` never install a runner. `preloop runner setup` runs the same step on demand.
+
+## Runners
+
+```bash
+preloop runner setup                 # install the service from account policy
+preloop runner fg --labels local     # foreground: register, heartbeat, lease jobs
+preloop runner enable                # install launchd / systemd / scheduled task
+preloop runner start|stop|restart|status
+preloop runner disable               # remove the service
+```
+
+`preloop runner setup` asks on a terminal when the account policy is `optional`, installs without a question when it is `required`, and prints one line when it is `forbidden`. On Windows, run it from an elevated PowerShell. The installed service registers as the hostname with labels `personal`, `os:<os>` and `arch:<arch>`. Remove it with `preloop runner disable`.
 
 ## Restricted CI
 

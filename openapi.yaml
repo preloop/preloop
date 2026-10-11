@@ -23449,6 +23449,11 @@ components:
             intersect these with an approval workflow's approver_team_ids to tell
             whether a pending approval is waiting for this person. Empty when the
             user is in no team.
+        runner_policy:
+          $ref: '#/components/schemas/RunnerPolicy'
+          description: Whether this user should install a personal runner, and whether
+            they may decline. requirement is optional, required, or forbidden. An
+            older server omits the object; clients treat that as optional.
       type: object
       required:
       - id
@@ -36780,6 +36785,54 @@ components:
       - runner_count
       - online_runner_count
       title: RunnerFleetSummary
+    RunnerPolicy:
+      properties:
+        requirement:
+          type: string
+          enum:
+          - optional
+          - required
+          - forbidden
+          title: Requirement
+          default: optional
+        capabilities:
+          items:
+            type: string
+          type: array
+          title: Capabilities
+          description: Capabilities a runner installed for this user may offer. Ids
+            include flows, inventory, and sessions.
+        mandated_capabilities:
+          items:
+            type: string
+          type: array
+          title: Mandated Capabilities
+          description: Capabilities the account requires on a member machine when
+            requirement is required. Empty when the user may decline.
+        grace_until:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Grace Until
+        can_decide:
+          type: boolean
+          title: Can Decide
+          description: True when this user may decline a runner. False for a member
+            who is not the owner of a multi-user account. The CLI still asks; a decline
+            tells them to ask an admin.
+          default: true
+        message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message
+          description: Optional sentence the CLI prints for required or forbidden.
+            Null uses the CLI's built-in sentence.
+      type: object
+      title: RunnerPolicy
+      description: Account policy for installing a personal runner on this user's
+        machine.
     RunnerRegisterRequest:
       properties:
         name:

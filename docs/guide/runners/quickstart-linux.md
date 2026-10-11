@@ -55,6 +55,33 @@ export PRELOOP_TOKEN=<account-api-token>
 Precedence: `--token`/`--url` flags > `PRELOOP_TOKEN`/`PRELOOP_URL` env >
 `~/.preloop/config.yaml` (written by `preloop login`).
 
+## Install during login
+
+On a terminal, `preloop login` asks whether to install a runner as a
+background service. The default answer is no. The service is a systemd
+user unit. It starts on login, connects outbound to the instance you just
+signed in to, can run flow executions on this machine, and reports
+installed agent harnesses (names, versions, signed in or not). It does
+not read or forward harness credentials. Remote sessions stay off until
+you enable them per harness.
+
+Consent wording (what the runner may see and do):
+<https://docs.preloop.ai/security/personal-runners/>.
+
+An account policy of `required` installs without a question and prints
+why. `forbidden` prints one line and does not install. Skip the step with
+`--no-runner` or `PRELOOP_NO_RUNNER=1`. Headless login, `--token`,
+`PRELOOP_TOKEN`, and a shell that is not a terminal never ask and never
+install. A service that is already installed is left as it is.
+
+Run the same step later with `preloop runner setup`. A decline is
+remembered in `~/.preloop/config.yaml` (`runner_prompt_answered_at`).
+`preloop login --force` asks again. Remove the service with
+`preloop runner disable`.
+
+The runner registers as the machine hostname with labels `personal`,
+`os:<os>` and `arch:<arch>`.
+
 ## 3. Run the runner in the foreground (first test)
 
 ```sh

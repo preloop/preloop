@@ -59,6 +59,7 @@ from preloop.schemas.auth import (
     AuthUserCreate,
     AuthUserResponse,
     AuthUserUpdate,
+    RunnerPolicy,
 )
 from preloop.schemas.subject_governance import (
     SubjectGovernanceConfig,
@@ -98,7 +99,7 @@ from preloop.models.crud import (
 )
 from preloop.models.db.session import get_db_session
 from preloop.models import models
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from preloop.plugins.account_hooks import (
     get_login_row_selector,
     select_email_rows,
@@ -260,6 +261,22 @@ def _resolve_team_ids(user: UserModel, db: Session) -> List[UUID]:
     return [team.id for team in teams]
 
 
+def _runner_policy_for(user: UserModel, db: Session) -> RunnerPolicy:
+    """Resolve ``runner_policy`` for ``/users/me``.
+
+    A provider mapping that does not match the schema falls back to the
+    OSS default so a bad plugin cannot 500 the profile.
+    """
+    raw = account_hooks.resolve_runner_policy(db, user)
+    try:
+        return RunnerPolicy.model_validate(raw)
+    except ValidationError:
+        logger.exception("Invalid runner policy from provider; using OSS default")
+        return RunnerPolicy.model_validate(
+            account_hooks.oss_default_runner_policy(db, user)
+        )
+
+
 def _build_auth_user_response(user: UserModel, db: Session) -> AuthUserResponse:
     """Build the profile payload returned by the ``/users/me`` endpoints."""
     return AuthUserResponse(
@@ -281,6 +298,7 @@ def _build_auth_user_response(user: UserModel, db: Session) -> AuthUserResponse:
         # or a member's billing rights.
         plan_choice_made=user.plan_choice_made_at is not None,
         team_ids=_resolve_team_ids(user, db),
+        runner_policy=_runner_policy_for(user, db),
     )
 
 

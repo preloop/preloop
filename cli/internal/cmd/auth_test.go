@@ -242,6 +242,7 @@ func snapshotLoginFlags() func() {
 	originalLoginLoopback := loginLoopback
 	originalLoginCode := loginCode
 	originalLoginForce := loginForce
+	originalLoginNoRunner := loginNoRunner
 	originalLogoutAll := logoutAll
 
 	return func() {
@@ -250,6 +251,7 @@ func snapshotLoginFlags() func() {
 		loginLoopback = originalLoginLoopback
 		loginCode = originalLoginCode
 		loginForce = originalLoginForce
+		loginNoRunner = originalLoginNoRunner
 		logoutAll = originalLogoutAll
 	}
 }

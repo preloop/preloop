@@ -68,10 +68,11 @@ type Profile struct {
 }
 
 type fileConfig struct {
-	Profile        `mapstructure:",squash"`
-	CurrentProfile string             `mapstructure:"current_profile"`
-	Profiles       map[string]Profile `mapstructure:"profiles"`
-	Runner         RunnerConfig       `mapstructure:"runner"`
+	Profile                `mapstructure:",squash"`
+	CurrentProfile         string             `mapstructure:"current_profile"`
+	Profiles               map[string]Profile `mapstructure:"profiles"`
+	Runner                 RunnerConfig       `mapstructure:"runner"`
+	RunnerPromptAnsweredAt string             `mapstructure:"runner_prompt_answered_at"`
 }
 
 type selection struct {

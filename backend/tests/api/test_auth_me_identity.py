@@ -11,9 +11,10 @@ from unittest.mock import MagicMock
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import router as auth_router
-from preloop.models.crud import crud_account
+from preloop.models.crud import crud_account, crud_user
 from preloop.models.models.team import Team, TeamMembership
 from preloop.models.models.user import User
+from preloop.plugins import account_hooks
 
 ME_PATH = "/api/v1/auth/users/me"
 
@@ -93,3 +94,129 @@ def test_resolve_team_ids_soft_fails_on_db_error():
     db.query.side_effect = RuntimeError("db unavailable")
 
     assert auth_router._resolve_team_ids(MagicMock(), db) == []
+
+
+def test_me_returns_default_runner_policy(client, test_user: User):
+    """OSS /users/me carries optional runner policy when no provider is set."""
+    account_hooks.reset_account_hooks()
+    response = client.get(ME_PATH)
+
+    assert response.status_code == 200
+    policy = response.json()["runner_policy"]
+    assert policy["requirement"] == "optional"
+    assert policy["capabilities"] == ["flows", "inventory", "sessions"]
+    assert policy["mandated_capabilities"] == []
+    assert policy["grace_until"] is None
+    assert policy["can_decide"] is True
+    assert policy["message"] is None
+    assert account_hooks.get_runner_policy_provider() is None
+
+
+def test_me_returns_provider_runner_policy(client, test_user: User):
+    """A registered provider replaces the OSS default on /users/me."""
+
+    def provider(db, account_id, user):
+        assert account_id == test_user.account_id
+        assert user.id == test_user.id
+        return {
+            "requirement": "required",
+            "capabilities": ["flows", "inventory"],
+            "mandated_capabilities": ["flows", "inventory"],
+            "grace_until": "2026-10-20T00:00:00Z",
+            "can_decide": False,
+            "message": "Your organisation requires a Preloop runner on member machines",
+        }
+
+    account_hooks.register_runner_policy_provider(provider)
+    try:
+        response = client.get(ME_PATH)
+    finally:
+        account_hooks.reset_account_hooks()
+
+    assert response.status_code == 200
+    policy = response.json()["runner_policy"]
+    assert policy["requirement"] == "required"
+    assert policy["capabilities"] == ["flows", "inventory"]
+    assert policy["mandated_capabilities"] == ["flows", "inventory"]
+    assert policy["can_decide"] is False
+    assert policy["grace_until"].startswith("2026-10-20")
+    assert policy["message"].startswith("Your organisation requires")
+
+
+def test_me_provider_none_uses_oss_default(client):
+    """A provider that returns None keeps the OSS default."""
+    account_hooks.register_runner_policy_provider(lambda db, account_id, user: None)
+    try:
+        response = client.get(ME_PATH)
+    finally:
+        account_hooks.reset_account_hooks()
+
+    assert response.status_code == 200
+    assert response.json()["runner_policy"]["requirement"] == "optional"
+    assert response.json()["runner_policy"]["can_decide"] is True
+
+
+def test_me_invalid_provider_falls_back(client):
+    """A provider mapping that fails the schema does not 500 /users/me."""
+
+    def provider(db, account_id, user):
+        return {"requirement": "sometimes"}
+
+    account_hooks.register_runner_policy_provider(provider)
+    try:
+        response = client.get(ME_PATH)
+    finally:
+        account_hooks.reset_account_hooks()
+
+    assert response.status_code == 200
+    assert response.json()["runner_policy"]["requirement"] == "optional"
+
+
+def test_me_provider_error_falls_back(client):
+    """A provider that raises does not 500 /users/me."""
+
+    def provider(db, account_id, user):
+        raise RuntimeError("policy down")
+
+    account_hooks.register_runner_policy_provider(provider)
+    try:
+        response = client.get(ME_PATH)
+    finally:
+        account_hooks.reset_account_hooks()
+
+    assert response.status_code == 200
+    assert response.json()["runner_policy"]["requirement"] == "optional"
+
+
+def test_runner_policy_owner_can_decide_member_cannot(
+    db_session: Session, test_user: User
+):
+    """Owner and single-user accounts may decline. Other members may not."""
+    account = crud_account.get(db_session, id=test_user.account_id)
+    assert account is not None
+    crud_account.update(
+        db_session,
+        db_obj=account,
+        obj_in={"primary_user_id": test_user.id},
+    )
+    member = crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "email": "member@example.com",
+            "username": "memberuser",
+            "full_name": "Member User",
+            "is_active": True,
+            "email_verified": True,
+            "hashed_password": "testpassword",
+            "user_source": "local",
+        },
+    )
+
+    owner_policy = account_hooks.oss_default_runner_policy(db_session, test_user)
+    member_policy = account_hooks.oss_default_runner_policy(db_session, member)
+
+    assert owner_policy["can_decide"] is True
+    assert owner_policy["requirement"] == "optional"
+    assert member_policy["can_decide"] is False
+    assert member_policy["requirement"] == "optional"

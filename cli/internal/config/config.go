@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -72,6 +73,13 @@ type Config struct {
 type RunnerConfig struct {
 	// Concurrency is how many executions `preloop runner fg` holds at once.
 	Concurrency int `mapstructure:"concurrency"`
+	// Labels are applied when `preloop runner fg` is started without
+	// --labels. Login setup writes personal, os and arch labels here so
+	// the service unit, which does not pass flags, registers with them.
+	Labels []string `mapstructure:"labels"`
+	// MandatedCapabilities is the account policy list recorded when a
+	// required install runs. The service does not gate on it yet.
+	MandatedCapabilities []string `mapstructure:"mandated_capabilities"`
 }
 
 // configPath returns the full path to the config file.
@@ -227,6 +235,61 @@ func SetTokens(accessToken, refreshToken string) error {
 	cfg.RefreshToken = refreshToken
 
 	return Save(cfg)
+}
+
+// RunnerLabels returns labels stored for a flag-less `preloop runner fg`.
+// Missing or empty config yields nil.
+func RunnerLabels() []string {
+	file, _, err := readFile()
+	if err != nil || len(file.Runner.Labels) == 0 {
+		return nil
+	}
+	out := make([]string, len(file.Runner.Labels))
+	copy(out, file.Runner.Labels)
+	return out
+}
+
+// SetRunnerLabels writes runner.labels without touching the saved login.
+func SetRunnerLabels(labels []string) error {
+	_, v, err := readFile()
+	if err != nil {
+		return err
+	}
+	v.Set("runner.labels", labels)
+	return writeFile(v)
+}
+
+// SetRunnerMandatedCapabilities records the capabilities a required
+// install was told to enable.
+func SetRunnerMandatedCapabilities(capabilities []string) error {
+	_, v, err := readFile()
+	if err != nil {
+		return err
+	}
+	v.Set("runner.mandated_capabilities", capabilities)
+	return writeFile(v)
+}
+
+// RunnerPromptAnswered reports whether this machine already answered the
+// post-login runner prompt. The marker is runner_prompt_answered_at in
+// ~/.preloop/config.yaml.
+func RunnerPromptAnswered() bool {
+	file, _, err := readFile()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(file.RunnerPromptAnsweredAt) != ""
+}
+
+// SetRunnerPromptAnsweredNow stamps runner_prompt_answered_at so the next
+// login does not ask again. `preloop login --force` ignores the stamp.
+func SetRunnerPromptAnsweredNow() error {
+	_, v, err := readFile()
+	if err != nil {
+		return err
+	}
+	v.Set("runner_prompt_answered_at", time.Now().UTC().Format(time.RFC3339))
+	return writeFile(v)
 }
 
 // SetAPIURL updates the API URL in the config.

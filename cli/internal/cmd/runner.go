@@ -113,6 +113,7 @@ var runnerStatusCmd = &cobra.Command{
 
 func init() {
 	runnerCmd.AddCommand(runnerFgCmd)
+	runnerCmd.AddCommand(runnerSetupCmd)
 	runnerCmd.AddCommand(runnerEnableCmd)
 	runnerCmd.AddCommand(runnerDisableCmd)
 	runnerCmd.AddCommand(runnerStartCmd)
@@ -233,7 +234,8 @@ func (m runnerWSMessage) haltedExecutions() []string {
 }
 
 func runRunnerFg(cmd *cobra.Command, args []string) error {
-	labels, _ := cmd.Flags().GetStringSlice("labels")
+	flagLabels, _ := cmd.Flags().GetStringSlice("labels")
+	labels := effectiveRunnerLabels(flagLabels)
 	name, _ := cmd.Flags().GetString("name")
 	once, err := runnerOnceFromFlags(cmd)
 	if err != nil {
@@ -1273,20 +1275,36 @@ func writeRunnerState(state *runnerState) error {
 }
 
 func runRunnerEnable(cmd *cobra.Command, args []string) error {
+	return installRunnerService(cmd.OutOrStdout())
+}
+
+// installRunnerService writes the platform service unit and, on macOS,
+// loads it. Linux enable does not start the unit. Windows creates the
+// logon task and does not run it until start.
+func installRunnerService(out io.Writer) error {
 	bin, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return writeLaunchdPlist(bin, cmd.OutOrStdout())
+		return writeLaunchdPlist(bin, out)
 	case "linux":
-		return writeSystemdUserUnit(bin, cmd.OutOrStdout())
+		return writeSystemdUserUnit(bin, out)
 	case "windows":
-		return writeWindowsScheduledTask(bin, cmd.OutOrStdout())
+		return writeWindowsScheduledTask(bin, out)
 	default:
 		return fmt.Errorf("service install is not implemented on %s; use preloop runner fg", runtime.GOOS)
 	}
+}
+
+// effectiveRunnerLabels uses --labels when the caller passed any, and
+// otherwise the labels saved by `preloop runner setup` or login.
+func effectiveRunnerLabels(flag []string) []string {
+	if len(flag) > 0 {
+		return flag
+	}
+	return config.RunnerLabels()
 }
 
 // Service hooks. Variables so tests can drive disable and rotate-token
