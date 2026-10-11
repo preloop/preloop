@@ -18312,6 +18312,23 @@ paths:
           minimum: 1
           default: 50
           title: Limit
+      - name: state
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - pending
+            - claimed
+            - delivered
+            - acknowledged
+            - cancelled
+            - expired
+            - failed
+            - undeliverable
+            type: string
+          - type: 'null'
+          title: State
       responses:
         '200':
           description: Successful Response
@@ -18319,6 +18336,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OperatorNoteList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/operator-notes/{note_id}:
+    get:
+      tags:
+      - Operator Notes
+      - Operator Notes
+      summary: Get Operator Note
+      description: Read one delivery receipt within the same account and permission
+        as list.
+      operationId: get_operator_note_api_v1_operator_notes__note_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: note_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Note Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorNoteResponse'
         '422':
           description: Validation Error
           content:
@@ -18374,6 +18429,61 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/agents/session-end:
+    post:
+      tags:
+      - Operator Notes
+      - Operator Notes
+      summary: Agent Session End
+      description: 'End a harness session and fail the notes that were addressed to
+        it.
+
+
+        Called by the SessionEnd hook with the same runtime bearer the other hook
+
+        routes use. A note addressed to the session can never reach it now, so it
+
+        moves to ``undeliverable`` in this one request instead of sitting pending
+
+        until expiry. A note addressed to the agent (no session) is untouched.'
+      operationId: agent_session_end_api_v1_agents_session_end_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorSessionEndRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorSessionEndResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/notes/pending:
     post:
       tags:
@@ -18411,6 +18521,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OperatorNotePendingResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/agents/notes/ack:
+    post:
+      tags:
+      - Operator Notes
+      - Operator Notes
+      summary: Acknowledge Operator Notes
+      description: Acknowledge only claims belonging to the authenticated runtime
+        session.
+      operationId: acknowledge_operator_notes_api_v1_agents_notes_ack_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorNoteAckRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorNoteAckResponse'
         '422':
           description: Validation Error
           content:
@@ -21307,6 +21463,14 @@ components:
             ''cursor'', ''opencode'', ''openclaw'', ''hermes'', ''pi'', or ''deepseek''.
             Stored as the ''_preloop_source'' marker inside tool_args so approver
             surfaces can label the requester.'
+        hook_event_name:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Hook Event Name
+          description: Harness event that will carry the response, used for delivery
+            receipts.
         session_id:
           anyOf:
           - type: string
@@ -34931,6 +35095,39 @@ components:
       - username
       - password
       title: OnboardingRequest
+    OperatorNoteAckRequest:
+      properties:
+        note_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 100
+          title: Note Ids
+        session_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Session Id
+        undeliverable_reason:
+          anyOf:
+          - type: string
+            const: spool_dropped
+          - type: 'null'
+          title: Undeliverable Reason
+      type: object
+      title: OperatorNoteAckRequest
+      description: Receipt from a hook after writing a claimed note into carrying
+        output.
+    OperatorNoteAckResponse:
+      properties:
+        ok:
+          type: boolean
+          title: Ok
+          default: true
+      type: object
+      title: OperatorNoteAckResponse
+      description: No per-id results, so ignored ids reveal no existence information.
     OperatorNoteAuthor:
       properties:
         user_id:
@@ -35051,6 +35248,22 @@ components:
           description: Which harness transport is about to carry the note. Gateway
             delivery is recorded by the gateway itself, never by this pull.
           default: hook
+        defer_delivery:
+          type: boolean
+          title: Defer Delivery
+          description: Claim without delivery until a carrying hook acknowledges the
+            note.
+          default: false
+        event:
+          type: string
+          enum:
+          - session_start
+          - stop
+          - pre_tool_use
+          title: Event
+          description: 'The harness lifecycle point asking for notes: session_start,
+            stop or pre_tool_use. Recorded on the delivery for audit.'
+          default: pre_tool_use
         session_id:
           anyOf:
           - type: string
@@ -35101,11 +35314,13 @@ components:
           type: string
           enum:
           - pending
+          - claimed
           - delivered
           - acknowledged
           - cancelled
           - expired
           - failed
+          - undeliverable
           title: State
         text:
           type: string
@@ -35136,6 +35351,32 @@ components:
             format: date-time
           - type: 'null'
           title: Expires At
+        claimed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Claimed At
+        expired_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expired At
+        undeliverable_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Undeliverable At
+        undeliverable_reason:
+          anyOf:
+          - type: string
+            enum:
+            - session_ended
+            - spool_dropped
+          - type: 'null'
+          title: Undeliverable Reason
         delivered_at:
           anyOf:
           - type: string
@@ -35152,6 +35393,15 @@ components:
             - claude_message
           - type: 'null'
           title: Delivery Channel
+        delivery_event:
+          anyOf:
+          - type: string
+            enum:
+            - session_start
+            - stop
+            - pre_tool_use
+          - type: 'null'
+          title: Delivery Event
         delivered_turn_index:
           anyOf:
           - type: integer
@@ -35176,6 +35426,50 @@ components:
       - author
       title: OperatorNoteResponse
       description: One note and everything the sender needs to know about its fate.
+    OperatorSessionEndRequest:
+      properties:
+        external_session_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: External Session Id
+          description: Harness session id, for logging only; never used to pick a
+            session.
+        reason:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Reason
+          description: Why the harness ended the session, e.g. 'exit' or 'clear'.
+      type: object
+      title: OperatorSessionEndRequest
+      description: 'A harness telling Preloop its session ended (SessionEnd hook).
+
+
+        The runtime bearer already names the session, so this body is only the
+
+        harness''s own identifiers and the reason; the server never trusts it to
+
+        pick a different session.'
+    OperatorSessionEndResponse:
+      properties:
+        runtime_session_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Runtime Session Id
+        marked:
+          type: integer
+          title: Marked
+          description: Session-only pending notes moved to undeliverable.
+          default: 0
+      type: object
+      title: OperatorSessionEndResponse
+      description: 'What the sweep changed: the bound session and how many notes it
+        failed.'
     OrganizationCreate:
       properties:
         name:
@@ -43877,7 +44171,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

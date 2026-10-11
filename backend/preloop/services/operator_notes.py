@@ -442,6 +442,7 @@ def claim_pending_notes(
     channel: str,
     turn_index: Optional[int] = None,
     event: Optional[str] = None,
+    defer_delivery: bool = False,
     now: Optional[datetime] = None,
     limit: int = MAX_NOTES_PER_DELIVERY,
 ) -> List[Any]:
@@ -470,6 +471,7 @@ def claim_pending_notes(
     moment = now or datetime.now(timezone.utc)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
+    crud_agent_control_command.expire_notes(db, account_id=account_id, now=moment)
     candidates = crud_agent_control_command.list_deliverable_notes(
         db,
         account_id=account_id,
@@ -488,9 +490,13 @@ def claim_pending_notes(
             runtime_session_id=runtime_session_id,
             turn_index=turn_index,
             delivery_event=event,
+            defer_delivery=defer_delivery,
         ):
             # Another request took it first. Deliver nothing for this row:
             # two copies of one instruction is the failure worth avoiding.
+            continue
+        if defer_delivery:
+            claimed.append(note)
             continue
         _record_delivery(
             db,
@@ -509,8 +515,8 @@ def claim_pending_notes(
             delivery_event=event,
         )
         claimed.append(note)
-    if claimed:
-        db.commit()
+    db.commit()
+    if claimed and not defer_delivery:
         _emit_delivered_notes(
             account_id=account_id,
             runtime_session_id=runtime_session_id,
@@ -675,7 +681,14 @@ def note_state(note: Any) -> str:
     status = getattr(note, "status", None)
     if status == "acked" or getattr(note, "acknowledged_turn_id", None):
         return "acknowledged"
-    if status in {"delivered", "cancelled", "expired", "failed", "undeliverable"}:
+    if status in {
+        "claimed",
+        "delivered",
+        "cancelled",
+        "expired",
+        "failed",
+        "undeliverable",
+    }:
         return status
     return "pending"
 
@@ -697,12 +710,14 @@ def undeliver_session_notes(
 
     Returns how many rows changed; zero is the common, quiet case.
     """
+    transitioned_notes: List[Any] = []
     changed = crud_agent_control_command.mark_session_notes_undeliverable(
         db,
         account_id=account_id,
         runtime_session_id=runtime_session_id,
         reason=reason,
         commit=False,
+        transitioned_notes=transitioned_notes,
     )
     if changed:
         crud_audit_log.log_action(
@@ -716,6 +731,12 @@ def undeliver_session_notes(
             details={"marked": changed, "reason": reason},
             commit=False,
         )
+        from preloop.services.event_webhooks.emitters import (
+            emit_agent_note_undeliverable,
+        )
+
+        for note in transitioned_notes:
+            emit_agent_note_undeliverable(db, note)
         db.commit()
     return changed
 
@@ -880,3 +901,80 @@ def resolve_note_target(
         if session is not None and session.ended_at is None:
             session_id = session.id
     return (agent.id, session_id)
+
+
+def acknowledge_notes(
+    db: Session,
+    *,
+    account_id: str,
+    managed_agent_id: str,
+    runtime_session_id: str,
+    note_ids: Sequence[str],
+    undeliverable_reason: Optional[str] = None,
+) -> None:
+    """Finish authenticated deferred claims once, auditing and eventing atomically."""
+    from preloop.services.event_webhooks.emitters import emit_agent_note_undeliverable
+
+    now = datetime.now(timezone.utc)
+    crud_agent_control_command.expire_notes(db, account_id=account_id, now=now)
+    delivered = []
+    for note_id in dict.fromkeys(note_ids):
+        note = crud_agent_control_command.finish_claimed_note(
+            db,
+            account_id=account_id,
+            managed_agent_id=managed_agent_id,
+            runtime_session_id=runtime_session_id,
+            note_id=note_id,
+            now=now,
+            undeliverable_reason=undeliverable_reason,
+        )
+        if note is None:
+            continue
+        if undeliverable_reason:
+            crud_audit_log.log_action(
+                db,
+                account_id=account_id,
+                user_id=None,
+                action=AUDIT_NOTE_UNDELIVERABLE,
+                resource_type="operator_note",
+                resource_id=note.command_id,
+                status="success",
+                details={"reason": undeliverable_reason},
+                commit=False,
+            )
+            emit_agent_note_undeliverable(db, note)
+        else:
+            _record_delivery(
+                db,
+                note=note,
+                channel=note.delivery_channel,
+                turn_index=note.delivered_turn_index,
+                runtime_session_id=runtime_session_id,
+                delivery_event=note.delivery_event,
+            )
+            _log_timeline(
+                db,
+                note=note,
+                channel=note.delivery_channel,
+                turn_index=note.delivered_turn_index,
+                runtime_session_id=runtime_session_id,
+                delivery_event=note.delivery_event,
+            )
+            delivered.append(note)
+    db.commit()
+    if delivered:
+        _emit_delivered_notes(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            notes=delivered,
+            delivered_at=now,
+            channel=CHANNEL_HOOK,
+        )
+        _index_claimed_notes(
+            db,
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            notes=delivered,
+            delivered_at=now,
+            channel=CHANNEL_HOOK,
+        )

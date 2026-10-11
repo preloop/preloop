@@ -47,10 +47,24 @@ type operatorNoteCreate struct {
 // The response carries delivery state too; listing and tracking notes is a
 // separate command and deliberately not read here.
 type operatorNoteResponse struct {
-	NoteID           string `json:"note_id"`
-	State            string `json:"state"`
-	ManagedAgentID   string `json:"managed_agent_id"`
-	RuntimeSessionID string `json:"runtime_session_id"`
+	NoteID              string          `json:"note_id"`
+	State               string          `json:"state"`
+	Text                string          `json:"text,omitempty"`
+	CreatedAt           string          `json:"created_at,omitempty"`
+	ClaimedAt           string          `json:"claimed_at,omitempty"`
+	DeliveredAt         string          `json:"delivered_at,omitempty"`
+	ExpiresAt           string          `json:"expires_at,omitempty"`
+	ExpiredAt           string          `json:"expired_at,omitempty"`
+	CancelledAt         string          `json:"cancelled_at,omitempty"`
+	UndeliverableAt     string          `json:"undeliverable_at,omitempty"`
+	UndeliverableReason string          `json:"undeliverable_reason,omitempty"`
+	DeliveryChannel     string          `json:"delivery_channel,omitempty"`
+	DeliveryEvent       string          `json:"delivery_event,omitempty"`
+	DeliveredTurnIndex  *int            `json:"delivered_turn_index,omitempty"`
+	AcknowledgedTurnID  string          `json:"acknowledged_turn_id,omitempty"`
+	Author              json.RawMessage `json:"author,omitempty"`
+	ManagedAgentID      string          `json:"managed_agent_id"`
+	RuntimeSessionID    string          `json:"runtime_session_id"`
 }
 
 // noteTarget is the one target named on the command line, before the server
@@ -89,7 +103,7 @@ var (
 // notesCmd is the parent for operator note commands.
 var notesCmd = &cobra.Command{
 	Use:   "notes",
-	Short: "Send operator notes to running agents",
+	Short: "Send and track operator notes",
 	Long: `Send a short instruction to an agent that is already running.
 
 A note is a steer, not a policy override: it is recorded as a human decision,
@@ -134,6 +148,9 @@ func init() {
 }
 
 func runNotesSend(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("wait") && noteWait <= 0 {
+		return errors.New("--wait must be a positive duration")
+	}
 	// Target, body, and --expires-in all run before any client exists: a
 	// note with no target, or with two, or with an expiry the server would
 	// 422, is a mistake the operator can fix in the shell.
@@ -176,6 +193,20 @@ func runNotesSend(cmd *cobra.Command, args []string) error {
 		return explainOperatorNoteError(err)
 	}
 
+	if cmd.Flags().Changed("wait") {
+		if !noteJSON {
+			if err := printSentNote(cmd.OutOrStdout(), note, target, false); err != nil {
+				return err
+			}
+		}
+		receipt, waitErr := waitForNote(cmd, client, note.NoteID, noteWait)
+		if receipt.NoteID != "" {
+			if err := printNoteReceipt(cmd, receipt, noteJSON); err != nil {
+				return err
+			}
+		}
+		return waitErr
+	}
 	return printSentNote(cmd.OutOrStdout(), note, target, noteJSON)
 }
 
@@ -279,7 +310,7 @@ func printSentNote(out io.Writer, note operatorNoteResponse, target noteTarget, 
 		// should not stand there watching for a delivery that needs a run.
 		fmt.Fprintln(out, "  No live session: it waits for the next session this agent opens.") //nolint:errcheck
 	} else {
-		fmt.Fprintln(out, "  Delivered at the agent's next turn boundary.") //nolint:errcheck
+		fmt.Fprintln(out, "  Waiting for the agent's next turn boundary.") //nolint:errcheck
 	}
 	return nil
 }

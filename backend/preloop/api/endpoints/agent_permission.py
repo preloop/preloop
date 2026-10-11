@@ -353,7 +353,10 @@ def _record_session_cwd(
 
 
 def _claim_operator_note(
-    identity: PermissionIdentity, origin_session_id: Optional[str] = None
+    identity: PermissionIdentity,
+    origin_session_id: Optional[str] = None,
+    *,
+    defer_delivery: bool = False,
 ) -> Optional[str]:
     """Claim this session's pending operator notes for the hook channel.
 
@@ -371,7 +374,10 @@ def _claim_operator_note(
         str(identity.runtime_session_id) if identity.runtime_session_id else None
     ]
     if origin_session_id and origin_session_id not in session_ids:
-        session_ids.append(origin_session_id)
+        if defer_delivery:
+            session_ids = [origin_session_id]
+        else:
+            session_ids.append(origin_session_id)
     # Each session is claimed in its own transaction and its own try: a claim
     # commits the notes as delivered, so a failure on the second session must
     # not discard notes the first one already took.
@@ -385,6 +391,7 @@ def _claim_operator_note(
                     managed_agent_id=str(identity.managed_agent_id),
                     runtime_session_id=session_id,
                     channel=operator_notes.CHANNEL_HOOK,
+                    defer_delivery=defer_delivery,
                 )
                 if claimed:
                     # Rendered while the session is open; the rows expire
@@ -470,6 +477,11 @@ class AgentPermissionCheckRequest(BaseModel):
             "'_preloop_source' marker inside tool_args so approver surfaces "
             "can label the requester."
         ),
+    )
+    hook_event_name: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="Harness event that will carry the response, used for delivery receipts.",
     )
     session_id: Optional[str] = Field(
         None, max_length=255, description="Originating agent session id"
@@ -610,13 +622,6 @@ async def agent_permission_check(
             exclude_unset=True, exclude_none=True
         )
 
-    # Claimed before the approval wait, in its own short-lived session, so no
-    # connection is held while a human decides. Delivery is recorded here even
-    # if the tool call is then denied: the agent read the note either way.
-    operator_note = await run_db_off_loop(
-        lambda: _claim_operator_note(identity, origin_session_id=origin_id)
-    )
-
     decision, reason, request_id, timed_out = await request_agent_permission(
         base_url=_permission_check_base_url(),
         account_id=identity.account_id,
@@ -632,6 +637,21 @@ async def agent_permission_check(
         client_decision=payload.client_decision,
         evaluation_phase=payload.evaluation_phase,
         flow_id=identity.flow_id,
+    )
+    # Claim after the decision, so a Cursor ask response is never called delivered.
+    # Codex PermissionRequest and Cursor before* hooks defer until a carrying output.
+    defer_note_delivery = (
+        payload.source == "codex_cli" and payload.evaluation_phase != "pre_tool_use"
+    ) or (
+        payload.source == "cursor"
+        and (
+            payload.hook_event_name != "preToolUse" or decision not in {"allow", "deny"}
+        )
+    )
+    operator_note = await run_db_off_loop(
+        lambda: _claim_operator_note(
+            identity, origin_session_id=origin_id, defer_delivery=defer_note_delivery
+        )
     )
     activity_session_id = origin_id or identity.runtime_session_id
     if activity_session_id is not None and _records_native_tool_call(payload):

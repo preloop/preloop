@@ -804,6 +804,7 @@ export interface OperatorNote {
    */
   state:
     | 'pending'
+    | 'claimed'
     | 'delivered'
     | 'acknowledged'
     | 'cancelled'
@@ -823,6 +824,10 @@ export interface OperatorNote {
   };
   created_at?: string | null;
   expires_at?: string | null;
+  claimed_at?: string | null;
+  expired_at?: string | null;
+  undeliverable_at?: string | null;
+  undeliverable_reason?: 'session_ended' | 'spool_dropped' | null;
   delivered_at?: string | null;
   /** Which transport carried it: gateway, hook, or a Claude Code channel. */
   delivery_channel?: string | null;

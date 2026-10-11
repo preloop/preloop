@@ -10,6 +10,7 @@ from preloop.services.operator_notes import MAX_NOTE_BODY_CHARS
 
 OperatorNoteState = Literal[
     "pending",
+    "claimed",
     "delivered",
     "acknowledged",
     "cancelled",
@@ -100,6 +101,10 @@ class OperatorNoteResponse(BaseModel):
     author: OperatorNoteAuthor
     created_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
+    claimed_at: Optional[datetime] = None
+    expired_at: Optional[datetime] = None
+    undeliverable_at: Optional[datetime] = None
+    undeliverable_reason: Optional[Literal["session_ended", "spool_dropped"]] = None
     delivered_at: Optional[datetime] = None
     delivery_channel: Optional[OperatorNoteChannel] = None
     delivery_event: Optional[OperatorNoteEvent] = None
@@ -127,6 +132,10 @@ class OperatorNotePendingRequest(BaseModel):
             "Which harness transport is about to carry the note. Gateway "
             "delivery is recorded by the gateway itself, never by this pull."
         ),
+    )
+    defer_delivery: bool = Field(
+        False,
+        description="Claim without delivery until a carrying hook acknowledges the note.",
     )
     event: OperatorNoteEvent = Field(
         "pre_tool_use",
@@ -192,3 +201,17 @@ class OperatorSessionEndResponse(BaseModel):
     marked: int = Field(
         0, description="Session-only pending notes moved to undeliverable."
     )
+
+
+class OperatorNoteAckRequest(BaseModel):
+    """Receipt from a hook after writing a claimed note into carrying output."""
+
+    note_ids: list[str] = Field(default_factory=list, max_length=100)
+    session_id: Optional[str] = Field(None, max_length=255)
+    undeliverable_reason: Optional[Literal["spool_dropped"]] = None
+
+
+class OperatorNoteAckResponse(BaseModel):
+    """No per-id results, so ignored ids reveal no existence information."""
+
+    ok: bool = True

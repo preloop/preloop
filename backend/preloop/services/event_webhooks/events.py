@@ -23,6 +23,7 @@ EVENT_BUDGET_EXCEEDED = "budget.exceeded"
 EVENT_FLOW_EXECUTION_FINISHED = "flow.execution.finished"
 EVENT_AGENT_NOTE_SENT = "agent.note_sent"
 EVENT_AGENT_NOTE_DELIVERED = "agent.note_delivered"
+EVENT_AGENT_NOTE_UNDELIVERABLE = "agent.note_undeliverable"
 # CRA Article 14: a run found an actively exploited vulnerability that its
 # own evidence says affects the product. One event per candidate, because
 # each one carries its own clock.
@@ -45,6 +46,7 @@ EVENT_TYPES_V1: tuple[str, ...] = (
     EVENT_FLOW_EXECUTION_FINISHED,
     EVENT_AGENT_NOTE_SENT,
     EVENT_AGENT_NOTE_DELIVERED,
+    EVENT_AGENT_NOTE_UNDELIVERABLE,
     EVENT_CRA_REPORTABLE_VULNERABILITY,
     EVENT_AGENT_DISCOVERED,
     EVENT_AGENT_ONBOARDED,
@@ -70,6 +72,7 @@ EVENT_TYPE_DESCRIPTIONS: dict[str, str] = {
     EVENT_AGENT_NOTE_SENT: (
         "An account member sent an operator note to a running agent."
     ),
+    EVENT_AGENT_NOTE_UNDELIVERABLE: "An operator note could not reach its target session.",
     EVENT_AGENT_NOTE_DELIVERED: (
         "An operator note reached an agent, with the channel that carried "
         "it and the turn it landed on."

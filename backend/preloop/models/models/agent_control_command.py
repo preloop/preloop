@@ -142,6 +142,18 @@ class AgentControlCommand(Base):
     # rescue is distinguishable from the ordinary next-tool-call path. NULL for
     # the gateway, which has no hook event.
     delivery_event: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    claimed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expired_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    undeliverable_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    undeliverable_reason: Mapped[Optional[str]] = mapped_column(
+        String(24), nullable=True
+    )
     # How many messages the conversation held when the note landed, so the
     # timeline can show where in the run it took effect.
     delivered_turn_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -202,7 +214,7 @@ class AgentControlCommand(Base):
         ),
         CheckConstraint(
             "status IN ('pending', 'delivered', 'acked', 'failed', 'expired', "
-            "'cancelled', 'undeliverable')",
+            "'cancelled', 'undeliverable', 'claimed')",
             name="ck_agent_control_command_status",
         ),
         CheckConstraint(

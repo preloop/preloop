@@ -35,6 +35,9 @@ from preloop.models.crud import (
 from preloop.models.db.session import get_db_session, get_session_factory
 from preloop.schemas.operator_notes import (
     OperatorNoteAuthor,
+    OperatorNoteState,
+    OperatorNoteAckRequest,
+    OperatorNoteAckResponse,
     OperatorNoteCreate,
     OperatorNoteList,
     OperatorNotePendingRequest,
@@ -78,6 +81,10 @@ def _to_response(note: Any) -> OperatorNoteResponse:
         ),
         created_at=note.created_at,
         expires_at=note.expires_at,
+        claimed_at=note.claimed_at,
+        expired_at=note.expired_at,
+        undeliverable_at=note.undeliverable_at,
+        undeliverable_reason=note.undeliverable_reason,
         delivered_at=note.delivered_at,
         delivery_channel=note.delivery_channel,
         delivery_event=note.delivery_event,
@@ -257,6 +264,7 @@ def list_operator_notes(
     runtime_session_id: Optional[UUID] = Query(None),
     execution_id: Optional[UUID] = Query(None),
     limit: int = Query(50, ge=1, le=200),
+    state: Optional[OperatorNoteState] = Query(None),
     current_user: models.User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> OperatorNoteList:
@@ -265,6 +273,10 @@ def list_operator_notes(
     account_id = str(current_user.account_id)
 
     def _load() -> list[Any]:
+        crud_agent_control_command.expire_notes(
+            db, account_id=account_id, now=datetime.now(timezone.utc)
+        )
+        db.commit()
         session_id = runtime_session_id
         if execution_id is not None:
             session = operator_notes.session_for_execution(
@@ -284,9 +296,36 @@ def list_operator_notes(
             managed_agent_id=agent_id,
             runtime_session_id=session_id,
             limit=limit,
+            state=state,
         )
 
     return OperatorNoteList(notes=[_to_response(note) for note in _load()])
+
+
+@router.get(
+    "/operator-notes/{note_id}",
+    response_model=OperatorNoteResponse,
+    tags=["Operator Notes"],
+)
+@require_permission(CONTROL_PERMISSION)
+def get_operator_note(
+    note_id: str,
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> OperatorNoteResponse:
+    """Read one delivery receipt within the same account and permission as list."""
+    ensure_permission_in_oss(db, current_user, CONTROL_PERMISSION)
+    account_id = str(current_user.account_id)
+    crud_agent_control_command.expire_notes(
+        db, account_id=account_id, now=datetime.now(timezone.utc)
+    )
+    db.commit()
+    note = crud_agent_control_command.get_note(
+        db, account_id=account_id, note_id=note_id
+    )
+    if note is None:
+        raise HTTPException(status_code=404, detail="Note not found")
+    return _to_response(note)
 
 
 @router.post(
@@ -406,6 +445,7 @@ def _claim_for_hook(
                 runtime_session_id=session_id,
                 channel=payload.channel,
                 event=payload.event,
+                defer_delivery=payload.defer_delivery,
             )
             notes.extend(claimed)
         if not notes:
@@ -523,3 +563,41 @@ async def pending_operator_notes(
         )
     token = authorization.split(" ", 1)[1].strip()
     return await run_db_off_loop(lambda: _claim_for_hook(token, payload))
+
+
+@router.post(
+    "/agents/notes/ack", response_model=OperatorNoteAckResponse, tags=["Operator Notes"]
+)
+async def acknowledge_operator_notes(
+    payload: OperatorNoteAckRequest, authorization: Optional[str] = Header(None)
+) -> OperatorNoteAckResponse:
+    """Acknowledge only claims belonging to the authenticated runtime session."""
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Runtime bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+
+    def acknowledge() -> OperatorNoteAckResponse:
+        with get_session_factory()() as db:
+            context = authenticate_runtime_bearer_token(
+                db, token, enforce_current_binding=False
+            )
+            origin = _hook_origin_session_id(db, context, payload.session_id)
+            session_id = origin or (
+                str(context.runtime_session.id) if context.runtime_session else None
+            )
+            if session_id:
+                operator_notes.acknowledge_notes(
+                    db,
+                    account_id=str(context.api_key.account_id),
+                    managed_agent_id=str(context.managed_agent.id),
+                    runtime_session_id=session_id,
+                    note_ids=payload.note_ids,
+                    undeliverable_reason=payload.undeliverable_reason,
+                )
+            return OperatorNoteAckResponse()
+
+    return await run_db_off_loop(acknowledge)

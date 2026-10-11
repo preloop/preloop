@@ -79,7 +79,8 @@ func runNotesSendCmdOn(t *testing.T, terminal bool, stdin string, args ...string
 		stdinIsTerminal = previousTerminal
 		noteAgentID, noteSessionID, noteExecutionID = "", "", ""
 		noteExpiresIn, noteJSON = 0, false
-		for _, name := range []string{"agent", "session", "execution", "expires-in", "json"} {
+		noteWait = 0
+		for _, name := range []string{"agent", "session", "execution", "expires-in", "json", "wait"} {
 			if flag := notesSendCmd.Flags().Lookup(name); flag != nil {
 				flag.Changed = false
 			}

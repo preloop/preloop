@@ -175,6 +175,20 @@ export class OperatorNoteComposer extends LitElement {
       font-size: var(--console-text-meta, 13px);
     }
 
+    .receipt-times {
+      display: block;
+      color: var(--console-meta-color, var(--sl-color-neutral-600));
+      font-size: var(--console-text-meta, 13px);
+    }
+
+    .state.claimed {
+      color: var(--sl-color-primary-700);
+    }
+
+    .state.undeliverable {
+      color: var(--sl-color-danger-700, #b91c1c);
+    }
+
     .state.pending {
       color: var(--sl-color-warning-700);
     }
@@ -303,8 +317,32 @@ export class OperatorNoteComposer extends LitElement {
     </span>`;
   }
 
+  private renderReceiptTimes(note: OperatorNote) {
+    const timestamps = [
+      ['Created', note.created_at],
+      ['Claimed', note.claimed_at],
+      ['Delivered', note.delivered_at],
+      ['Expired', note.expired_at],
+      ['Cancelled', note.cancelled_at],
+      ['Undeliverable', note.undeliverable_at],
+    ];
+    return html`<span class="receipt-times"
+      >${timestamps
+        .filter(([, at]) => at)
+        .map(
+          ([label, at]) =>
+            html`<span
+              >${label}
+              <time datetime=${at!}>${new Date(at!).toLocaleString()}</time>
+            </span>`
+        )}</span
+    >`;
+  }
+
   private stateLabel(note: OperatorNote): string {
     switch (note.state) {
+      case 'claimed':
+        return 'Claimed, waiting for a carrying hook';
       case 'delivered':
         if (note.delivery_event === 'stop') {
           return 'Delivered to keep the run going';
@@ -324,7 +362,9 @@ export class OperatorNoteComposer extends LitElement {
       case 'failed':
         return 'Not delivered';
       case 'undeliverable':
-        return 'Session ended before delivery';
+        return note.undeliverable_reason === 'spool_dropped'
+          ? 'Dropped before delivery'
+          : 'Session ended before delivery';
       default:
         return 'Waiting for the next turn';
     }
@@ -384,7 +424,7 @@ export class OperatorNoteComposer extends LitElement {
                       class="state ${note.state}"
                       data-testid="note-state-${note.note_id}"
                     >
-                      ${this.stateLabel(note)}
+                      ${this.stateLabel(note)} ${this.renderReceiptTimes(note)}
                       ${
                         note.state === 'pending'
                           ? html`<sl-button

@@ -182,6 +182,53 @@ describe('operator-note-composer', () => {
     expect(text).to.contain('Session ended before delivery');
   });
 
+  it('shows claimed and terminal receipt timestamps with distinct chips', async () => {
+    fetchStub.resolves(
+      jsonResponse({
+        notes: [
+          note({
+            note_id: 'claimed-receipt',
+            state: 'claimed',
+            claimed_at: '2026-10-11T18:01:00Z',
+          }),
+          note({
+            note_id: 'ended-receipt',
+            state: 'undeliverable',
+            undeliverable_at: '2026-10-11T18:02:00Z',
+            undeliverable_reason: 'session_ended',
+          }),
+          note({
+            note_id: 'expired-receipt',
+            state: 'expired',
+            expired_at: '2026-10-11T18:03:00Z',
+          }),
+        ],
+      })
+    );
+    const el = await mount();
+    await waitUntil(() =>
+      Boolean(el.shadowRoot!.querySelector('[data-testid="note-list"]'))
+    );
+    expect(el.shadowRoot!.textContent).to.contain(
+      'Claimed, waiting for a carrying hook'
+    );
+    const times = [...el.shadowRoot!.querySelectorAll('time')].map((time) =>
+      time.getAttribute('datetime')
+    );
+    expect(times).to.include('2026-10-11T18:01:00Z');
+    expect(times).to.include('2026-10-11T18:02:00Z');
+    expect(times).to.include('2026-10-11T18:03:00Z');
+    const ended = el.shadowRoot!.querySelector(
+      '[data-testid="note-state-ended-receipt"]'
+    )!;
+    const expired = el.shadowRoot!.querySelector(
+      '[data-testid="note-state-expired-receipt"]'
+    )!;
+    expect(getComputedStyle(ended).color).not.to.equal(
+      getComputedStyle(expired).color
+    );
+  });
+
   it('reports why a note was refused instead of losing it silently', async () => {
     const el = await mount();
     fetchStub.resolves(

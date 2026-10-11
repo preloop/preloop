@@ -60,6 +60,7 @@ const permissionCheckPath = "/api/v1/agents/permission-check"
 // permissionCheckRequest is the request body for permissionCheckPath. Only
 // tool_name is required by the backend; everything else is optional context.
 type permissionCheckRequest struct {
+	HookEventName   string                 `json:"hook_event_name,omitempty"`
 	Source          string                 `json:"source"`
 	ToolName        string                 `json:"tool_name"`
 	ToolInput       map[string]interface{} `json:"tool_input,omitempty"`
@@ -201,10 +202,16 @@ func runAgentsPermissionHook(cmd *cobra.Command, args []string) error {
 			hookEventNameForOperatorNotes(source, hookEvent, eventRaw),
 			eventRaw,
 		)
+		var writeErr error
 		if source == permissionSourceCodexCLI && hookEvent == "PreToolUse" {
-			return writeCodexPreToolUseDecision(cmd.OutOrStdout(), decision)
+			writeErr = writeCodexPreToolUseDecision(cmd.OutOrStdout(), decision)
+		} else {
+			writeErr = writeHookDecision(cmd.OutOrStdout(), source, decision)
 		}
-		return writeHookDecision(cmd.OutOrStdout(), source, decision)
+		if writeErr == nil && decision.OperatorNote != "" {
+			sendNoteReceipt(source, hookEventSessionID(eventRaw), decision.OperatorNote, "")
+		}
+		return writeErr
 	}
 	raw, err := io.ReadAll(cmd.InOrStdin())
 	if err != nil {
@@ -374,9 +381,8 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 			reason = "Denied via Preloop."
 		}
 	}
-	// The permission check claims a pending operator note and marks it
-	// delivered as it answers, so the block travels with the decision whether
-	// the call was allowed or denied.
+	// Non-carrying responses remain claimed until a carrying hook writes them.
+	// The block still travels with the decision whether the call was allowed or denied.
 	note := ""
 	if resp.OperatorNote != nil {
 		note = strings.TrimSpace(*resp.OperatorNote)
@@ -565,6 +571,7 @@ func buildPermissionRequest(
 	}
 
 	req := permissionCheckRequest{Source: source}
+	req.HookEventName = firstStringField(event, "hook_event_name")
 	req.SessionID = hookEventSessionID(raw)
 	req.Model = firstStringField(event, "model", "model_name")
 	if source == permissionSourceCodexCLI && req.Model == "" {

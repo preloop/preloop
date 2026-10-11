@@ -64,8 +64,29 @@ NOTE
 `--expires-in 2h` overrides the 24 hour default. `--json` emits the note id
 and the target and nothing else, for scripts. A refusal prints the server's
 reason, including an unresolvable target and the rate limit, and exits
-non-zero. The CLI sends notes and does not read them: listing a note's
-delivery state and cancelling one stay in the console and the API.
+non-zero. Track a receipt or list the notes for a target:
+
+```bash
+preloop notes status <note-id> --json
+preloop notes list --session <session-id> --state claimed
+preloop notes list --agent <agent-id> --json
+preloop notes list --execution <execution-id>
+preloop notes send --session <session-id> --wait 5m "Run the final checks."
+```
+
+`status` prints state, channel, creation time and delivery or terminal time.
+`list` takes exactly one target and optionally filters by `--state`. Both accept
+`--json` for the receipt fields, including the author and transition timestamps.
+Against an older server, a status-route 404 prints "server does not support note
+status, or the note was not found in this account"; the same response cannot
+distinguish a missing note from an unsupported route.
+
+`send --wait` polls only that note's status, every two seconds, for at most the
+positive duration. Exit codes are 0 for delivered (or acknowledged), 3 for
+undeliverable or expired, and 4 for timeout. Other errors exit 1. With `--json`,
+waiting returns the final receipt as one JSON document; without waiting it
+keeps the note-id-and-target output. Delivery means the carrying output was
+written, not that the model followed the instruction.
 
 ### Finding the session to steer
 
@@ -118,14 +139,17 @@ overrides the 24 hour default; a note nobody delivered in a day is stale advice,
 and expiring visibly beats rotting silently.
 
 - `GET /api/v1/operator-notes?agent_id=...` (or `runtime_session_id`,
-  `execution_id`) lists notes newest first with their delivery state.
+  `execution_id`) lists notes newest first with their delivery state and receipt
+  timestamps. Add `state=pending` (or another public state) to filter before
+  the result limit is applied.
+- `GET /api/v1/operator-notes/{note_id}` reads one receipt with the same account
+  and permission checks; foreign and missing ids both return 404.
 - `POST /api/v1/operator-notes/{note_id}/cancel` withdraws one that has not
   been delivered. Cancelling is a state, never a delete. A delivered note
   cannot be unsent, so cancelling one returns it unchanged and you can see why.
 
 Mobile is out of scope for now. The iOS and Android clients already hold an
-account session, so they need no new backend: the three endpoints above are the
-whole surface.
+account session, so they can use the same account-scoped endpoints above.
 
 ## A note from an agent
 
@@ -370,8 +394,12 @@ ways at once: the raw envelopes, the rendered block, and a ready
 gateway path. `event` names the harness lifecycle point that asked
 (`session_start`, `stop` or `pre_tool_use`) and is stamped on the delivery, so
 a Stop rescue is distinguishable from the ordinary next-tool-call path. Call it
-from the hook or bridge process, never from the model. Claiming is the delivery:
-what it returns is marked delivered, audited and evented before it leaves.
+from the hook or bridge process, never from the model. Gateway and carrying
+hooks record claim and delivery together. A non-carrying hook uses
+`defer_delivery=true` and gets a `claimed` receipt. After writing the block into
+carrying output, it posts `/api/v1/agents/notes/ack` with `note_ids` and the
+harness `session_id`. Receipt failures do not change the tool decision. Foreign,
+unclaimed and already finished ids are silently ignored.
 
 | Harness | What fires | How to pick the note up |
 | --- | --- | --- |
@@ -416,6 +444,24 @@ its 24h expiry and look like the agent ignored it. A note addressed to the
 *agent* with no session is untouched by a session ending: it keeps waiting for
 the agent's next run. There is still no path that pushes into a process that is
 not asking Preloop anything.
+
+## Delivery receipts
+
+| State | Meaning | Receipt time |
+| --- | --- | --- |
+| `pending` | Waiting for a carrying call or hook | `created_at` |
+| `claimed` | A non-carrying hook has spooled the block for this session | `claimed_at` |
+| `delivered` | Included in the gateway request or written into carrying hook output | `claimed_at`, `delivered_at`, `delivery_channel` |
+| `acknowledged` | The harness recorded the model's acknowledgment | `delivered_at`, `acknowledged_turn_id` |
+| `expired` | An uncarried note passed its TTL | `expired_at` |
+| `cancelled` | The operator withdrew a pending note | `cancelled_at` |
+| `undeliverable` | The only target session ended, or the local spool dropped the block | `undeliverable_at`, `undeliverable_reason` |
+
+`undeliverable_reason` is `session_ended` or `spool_dropped`. A session end sweeps
+pending and claimed notes for that exact session. Agent notes that still have
+no session keep waiting for the next run. Existing rows keep their state and
+have null values for the new receipt columns. The console shows the state and
+available transition times, with undeliverable distinct from expired.
 
 ## What the model sees
 
@@ -530,8 +576,8 @@ describe:
 | `agent.note_scope_denied` | Instead of a note, when an agent's target was out of [its scope](#which-agent-may-note-which-target) |
 | `agent.note_undeliverable` | When a session ends and the notes addressed only to it can no longer arrive |
 
-The same two arrive as webhook events, `agent.note_sent` and
-`agent.note_delivered` (see [webhooks](webhooks.md)), and each delivery is
+Three arrive as webhook events, `agent.note_sent`, `agent.note_delivered` and
+`agent.note_undeliverable` (see [webhooks](webhooks.md)), and each delivery is
 written to the runtime session timeline where it landed, with its channel and
 turn index, so the execution view shows the note in the stream of what the
 agent was doing when it arrived.

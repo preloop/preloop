@@ -527,3 +527,48 @@ func TestHookEventCarriesOperatorNoteCursorAsk(t *testing.T) {
 		t.Fatal("claude ask must still carry")
 	}
 }
+
+func TestReceiptHookAcknowledgesOnlyAfterCarryingOutputAndFailsOpen(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	var out bytes.Buffer
+	ackCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/agents/notes/ack" {
+			ackCalls++
+			if !strings.Contains(out.String(), "additionalContext") {
+				t.Error("ack arrived before carrying output")
+			}
+			var payload struct {
+				NoteIDs   []string `json:"note_ids"`
+				SessionID string   `json:"session_id"`
+			}
+			json.NewDecoder(r.Body).Decode(&payload)
+			if !reflect.DeepEqual(payload.NoteIDs, []string{"receipt-hook"}) || payload.SessionID != "receipt-session" {
+				t.Errorf("wrong ack: %#v", payload)
+			}
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{"decision": "allow", "operator_note": "<operator-notes><operator-note id=\"receipt-hook\">Read me</operator-note></operator-notes>"})
+	}))
+	defer server.Close()
+	writeTestPermissionCredential(t, home, "receipt-codex", permissionHookCredential{BaseURL: server.URL, Token: "agt_synthetic", Source: permissionSourceCodexCLI})
+	for _, event := range []string{"PermissionRequest", "PreToolUse"} {
+		out.Reset()
+		cmd := &cobra.Command{}
+		cmd.Flags().String("source", permissionSourceCodexCLI, "")
+		cmd.Flags().String("hook-event", event, "")
+		cmd.Flags().Bool("fail-open", false, "")
+		cmd.SetIn(strings.NewReader(`{"session_id":"receipt-session","hook_event_name":"` + event + `","tool_name":"Bash","tool_input":{"command":"pwd"}}`))
+		cmd.SetOut(&out)
+		if err := runAgentsPermissionHook(cmd, nil); err != nil {
+			t.Fatalf("hook did not fail open: %v", err)
+		}
+		if event == "PermissionRequest" && ackCalls != 0 {
+			t.Error("non-carrying hook acknowledged")
+		}
+	}
+	if ackCalls != 1 {
+		t.Errorf("acks = %d want 1", ackCalls)
+	}
+}

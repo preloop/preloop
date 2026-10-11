@@ -17,6 +17,7 @@ from preloop.services.event_webhooks import outbox
 from preloop.services.event_webhooks.events import (
     EVENT_AGENT_DISCOVERED,
     EVENT_AGENT_NOTE_DELIVERED,
+    EVENT_AGENT_NOTE_UNDELIVERABLE,
     EVENT_AGENT_NOTE_SENT,
     EVENT_AGENT_ONBOARDED,
     EVENT_APPROVAL_CREATED,
@@ -516,6 +517,10 @@ def operator_note_data(
         },
         "created_at": _iso(getattr(note, "created_at", None)),
         "expires_at": _iso(getattr(note, "expires_at", None)),
+        "claimed_at": _iso(getattr(note, "claimed_at", None)),
+        "expired_at": _iso(getattr(note, "expired_at", None)),
+        "undeliverable_at": _iso(getattr(note, "undeliverable_at", None)),
+        "undeliverable_reason": getattr(note, "undeliverable_reason", None),
         "delivered_at": _iso(getattr(note, "delivered_at", None)),
         "delivery_channel": channel or getattr(note, "delivery_channel", None),
         "turn_index": (
@@ -832,4 +837,17 @@ def emit_agent_onboarded(
         occurred_at=getattr(enrollment, "last_validated_at", None),
         natural_key=f"{EVENT_AGENT_ONBOARDED}:{enrollment_id}",
         subject_id=getattr(agent, "id", None),
+    )
+
+
+def emit_agent_note_undeliverable(db: Any, note: Any) -> None:
+    """Enqueue one terminal receipt per note in the transition transaction."""
+    outbox.enqueue_event(
+        db,
+        account_id=note.account_id,
+        event_type=EVENT_AGENT_NOTE_UNDELIVERABLE,
+        data=operator_note_data(note),
+        occurred_at=note.undeliverable_at,
+        natural_key=f"{EVENT_AGENT_NOTE_UNDELIVERABLE}:{note.command_id}",
+        subject_id=note.id,
     )

@@ -35,7 +35,7 @@ import (
 //     postToolUseFailure, and those two hooks read only permission and
 //     user_message.
 //
-// The permission check marks a note delivered when it returns it, so a note
+// The permission check records a deferred claim for non-carrying hooks, so a note
 // that arrives on a hook that cannot render it must not be dropped. Those hooks
 // spool the block next to the hook credential, keyed by harness session, and
 // the next tool call's carrying hook (which the same onboarding installs)
@@ -154,6 +154,7 @@ func applyOperatorNoteDelivery(
 		blocks = append(blocks, claimed)
 	}
 	decision.OperatorNote = joinOperatorNoteBlocks(source, blocks)
+	receiptDroppedBlocks(source, sessionID, blocks, decision.OperatorNote)
 	return decision
 }
 
@@ -208,6 +209,9 @@ func spoolOperatorNote(source, sessionID, note string) {
 	err = withOperatorNoteSpoolLock(path, func() error {
 		entries := append(readOperatorNoteSpool(path), entry)
 		if len(entries) > operatorNoteSpoolMaxEntries {
+			for _, entry := range entries[:len(entries)-operatorNoteSpoolMaxEntries] {
+				sendNoteReceipt(source, sessionID, entry.Note, "spool_dropped")
+			}
 			entries = entries[len(entries)-operatorNoteSpoolMaxEntries:]
 		}
 		data, err := json.Marshal(entries)
@@ -253,6 +257,7 @@ func drainOperatorNoteSpool(source, sessionID string) []string {
 	var blocks []string
 	for _, entry := range entries {
 		if time.Since(entry.SpooledAt) > operatorNoteSpoolTTL {
+			sendNoteReceipt(source, sessionID, entry.Note, "spool_dropped")
 			continue
 		}
 		if note := strings.TrimSpace(entry.Note); note != "" {
