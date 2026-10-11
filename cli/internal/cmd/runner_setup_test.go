@@ -635,6 +635,7 @@ func TestRunRunnerSetupRequiresLogin(t *testing.T) {
 
 func TestRunRunnerSetupFetchesRequiredPolicy(t *testing.T) {
 	testenv.SetTempHome(t)
+	shortenRunnerOnlineWait(t)
 	installs := stubRunnerInstall(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != userInfoPath {
