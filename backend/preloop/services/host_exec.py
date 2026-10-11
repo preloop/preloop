@@ -27,6 +27,54 @@ HOST_EXEC_MODEL_KEYS: Mapping[str, str] = {
     "copilot": "copilot_model",
 }
 HOST_EXEC_COMPLETION_PROTOCOL = "host_exec"
+#: Inverse of ``HOST_EXEC_HARNESSES``: harness inventory id -> agent type.
+HOST_EXEC_AGENT_TYPE_BY_HARNESS: Mapping[str, str] = {
+    harness: kind for kind, harness in HOST_EXEC_HARNESSES.items()
+}
+#: What to do when no runner is eligible for ``agent_config.harness``.
+HARNESS_FALLBACK_QUEUE = "queue"
+HARNESS_FALLBACK_SERVER = "fallback_server"
+HARNESS_FALLBACK_FAIL = "fail"
+HARNESS_FALLBACK_MODES = frozenset(
+    {HARNESS_FALLBACK_QUEUE, HARNESS_FALLBACK_SERVER, HARNESS_FALLBACK_FAIL}
+)
+HARNESS_QUEUE_TIMEOUT_DEFAULT_SECONDS = 1800
+HARNESS_QUEUE_TIMEOUT_MIN_SECONDS = 60
+HARNESS_QUEUE_TIMEOUT_MAX_SECONDS = 86400
+#: Hosted harness a ``fallback_server`` run uses with its fallback model.
+HARNESS_SERVER_FALLBACK_AGENT_TYPE = "codex"
+#: Execution context flag set when a run fell back to the server pool.
+HARNESS_FALLBACK_CONTEXT_KEY = "_harness_fell_back_to_server"
+#: Routing reasons stored on ``flow_executions.routing_reason`` (contract B).
+ROUTING_NO_RUNNER_WITH_HARNESS = "no_runner_with_harness"
+ROUTING_HARNESS_SIGNED_OUT = "harness_signed_out"
+ROUTING_HARNESS_DISABLED = "harness_disabled"
+ROUTING_MODEL_NOT_AVAILABLE = "model_not_available"
+ROUTING_RUNNER_OFFLINE = "runner_offline"
+ROUTING_OWNER_HAS_NO_RUNNER = "owner_has_no_runner"
+ROUTING_QUEUE_TIMEOUT = "queue_timeout"
+ROUTING_FELL_BACK_TO_SERVER = "fell_back_to_server"
+ROUTING_REASONS = frozenset(
+    {
+        ROUTING_NO_RUNNER_WITH_HARNESS,
+        ROUTING_HARNESS_SIGNED_OUT,
+        ROUTING_HARNESS_DISABLED,
+        ROUTING_MODEL_NOT_AVAILABLE,
+        ROUTING_RUNNER_OFFLINE,
+        ROUTING_OWNER_HAS_NO_RUNNER,
+        ROUTING_QUEUE_TIMEOUT,
+        ROUTING_FELL_BACK_TO_SERVER,
+    }
+)
+#: Billing modes on executions (contract B cost label).
+BILLING_MODE_SEAT = "seat"
+BILLING_MODE_METERED = "metered"
+BILLING_MODE_UNKNOWN = "unknown"
+BILLING_MODES = frozenset(
+    {BILLING_MODE_SEAT, BILLING_MODE_METERED, BILLING_MODE_UNKNOWN}
+)
+#: Console and export wording for a seat run (matches NOT_METERED_MARKER).
+SEAT_BILLING_LABEL = "Seat (not metered by gateway)"
 HOST_EXEC_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 HOST_EXEC_CAPABILITIES = frozenset(
     {
@@ -106,6 +154,157 @@ def host_exec_profile_name(
         if name:
             return name
     return _profile_from_mapping(agent_config)
+
+
+def _unwrapped_config(agent_config: Any) -> Mapping[str, Any]:
+    if not isinstance(agent_config, Mapping):
+        return {}
+    inner = agent_config.get("agent_config")
+    if set(agent_config) == {"agent_config"} and isinstance(inner, Mapping):
+        return inner
+    return agent_config
+
+
+def host_exec_harness_selector(agent_type: Any, agent_config: Any) -> Optional[str]:
+    """Return the inventory harness id when the flow routes by harness.
+
+    A flow routes by harness when ``agent_config.harness`` is set and no
+    ``host_exec_profile`` is pinned (an explicit profile wins, so #956 flows
+    route exactly as before).
+
+    Args:
+        agent_type: Flow agent type (``copilot`` or ``cursor``).
+        agent_config: Flow agent configuration.
+
+    Returns:
+        ``copilot_cli`` / ``cursor_cli``, or None for profile-pinned and
+        non-host flows.
+    """
+    config = _unwrapped_config(agent_config)
+    raw = config.get("harness")
+    harness = raw.strip() if isinstance(raw, str) else ""
+    if not harness or host_exec_profile_name(config):
+        return None
+    if HOST_EXEC_HARNESSES.get(_normalized_agent_type(agent_type)) != harness:
+        return None
+    return harness
+
+
+#: Profile name the runner synthesises for an inventory harness (contract A
+#: reserved names). A hand-written profile with the same name overrides it on
+#: the host, so the name is stable either way.
+HARNESS_GENERATED_PROFILES: Mapping[str, str] = {
+    "copilot_cli": "copilot",
+    "cursor_cli": "cursor",
+}
+
+
+def host_exec_effective_profile(agent_type: Any, agent_config: Any) -> Optional[str]:
+    """Profile name a host run leases: the pinned one, else the harness's.
+
+    ``host_exec_profile`` wins when both are set (explicit beats inferred).
+    """
+    pinned = host_exec_profile_name(agent_config)
+    if pinned:
+        return pinned
+    harness = host_exec_harness_selector(agent_type, agent_config)
+    return HARNESS_GENERATED_PROFILES.get(harness) if harness else None
+
+
+def harness_fallback_mode(agent_config: Any) -> str:
+    """``queue`` (default), ``fallback_server`` or ``fail``."""
+    raw = _unwrapped_config(agent_config).get("harness_fallback")
+    return raw if raw in HARNESS_FALLBACK_MODES else HARNESS_FALLBACK_QUEUE
+
+
+def harness_queue_timeout_seconds(agent_config: Any) -> int:
+    """Queue wait for a harness-routed run, clamped to the allowed range."""
+    raw = _unwrapped_config(agent_config).get("harness_queue_timeout_seconds")
+    if type(raw) is not int:
+        return HARNESS_QUEUE_TIMEOUT_DEFAULT_SECONDS
+    return max(
+        HARNESS_QUEUE_TIMEOUT_MIN_SECONDS,
+        min(HARNESS_QUEUE_TIMEOUT_MAX_SECONDS, raw),
+    )
+
+
+def harness_pinned_runner_id(agent_config: Any) -> Optional[UUID]:
+    """Optional ``agent_config.runner_id`` pin, or None."""
+    raw = _unwrapped_config(agent_config).get("runner_id")
+    if raw in (None, ""):
+        return None
+    try:
+        return UUID(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def harness_selector_config_error(agent_type: Any, agent_config: Any) -> Optional[str]:
+    """Validate the contract B harness keys inside ``agent_config``.
+
+    Returns:
+        A validation message, or None when the keys are absent or valid.
+    """
+    config = _unwrapped_config(agent_config)
+    keys = (
+        "harness",
+        "runner_id",
+        "harness_fallback",
+        "harness_queue_timeout_seconds",
+        "fallback_model_identifier",
+    )
+    if not any(config.get(key) is not None for key in keys):
+        return None
+    harness = config.get("harness")
+    if harness is not None:
+        if (
+            not isinstance(harness, str)
+            or harness not in HOST_EXEC_AGENT_TYPE_BY_HARNESS
+        ):
+            return "agent_config.harness must be one of " + ", ".join(
+                sorted(HOST_EXEC_AGENT_TYPE_BY_HARNESS)
+            )
+        if HOST_EXEC_AGENT_TYPE_BY_HARNESS[harness] != _normalized_agent_type(
+            agent_type
+        ):
+            return (
+                f"agent_config.harness {harness} requires agent_type "
+                f"{HOST_EXEC_AGENT_TYPE_BY_HARNESS[harness]}"
+            )
+    runner_id = config.get("runner_id")
+    if runner_id not in (None, ""):
+        try:
+            UUID(str(runner_id))
+        except (TypeError, ValueError):
+            return "agent_config.runner_id must be a runner id (UUID)"
+    mode = config.get("harness_fallback")
+    if mode is not None and mode not in HARNESS_FALLBACK_MODES:
+        return "agent_config.harness_fallback must be queue, fallback_server or fail"
+    timeout = config.get("harness_queue_timeout_seconds")
+    if timeout is not None and (
+        type(timeout) is not int
+        or not HARNESS_QUEUE_TIMEOUT_MIN_SECONDS
+        <= timeout
+        <= HARNESS_QUEUE_TIMEOUT_MAX_SECONDS
+    ):
+        return (
+            "agent_config.harness_queue_timeout_seconds must be an integer "
+            f"between {HARNESS_QUEUE_TIMEOUT_MIN_SECONDS} and "
+            f"{HARNESS_QUEUE_TIMEOUT_MAX_SECONDS}"
+        )
+    fallback_model = config.get("fallback_model_identifier")
+    if fallback_model is not None and (
+        not isinstance(fallback_model, str)
+        or not fallback_model.strip()
+        or len(fallback_model) > 255
+    ):
+        return "agent_config.fallback_model_identifier must be a model identifier"
+    if mode == HARNESS_FALLBACK_SERVER and not fallback_model:
+        return (
+            "agent_config.harness_fallback fallback_server requires "
+            "agent_config.fallback_model_identifier"
+        )
+    return None
 
 
 def _profile_from_mapping(value: Any) -> Optional[str]:
@@ -254,11 +453,17 @@ def host_exec_flow_error(
         raw = agent_config.get("host_exec_profile")
         if isinstance(raw, str) and raw.strip() and not _validated_profile_name(raw):
             return "host_exec_profile is not a valid profile name"
-    if kind in HOST_EXEC_AGENT_TYPES and not profile:
+    selector_error = harness_selector_config_error(agent_type, agent_config)
+    if selector_error:
+        return selector_error
+    harness = host_exec_harness_selector(agent_type, agent_config)
+    if kind in HOST_EXEC_AGENT_TYPES and not profile and not harness:
         return (
-            f"agent type {kind} requires agent_config.host_exec_profile on a "
-            "private runner"
+            f"agent type {kind} requires agent_config.host_exec_profile or "
+            "agent_config.harness on a private runner"
         )
+    if harness and pool == "server":
+        return "harness routing cannot run on hosted compute"
     if profile and kind and kind not in HOST_EXEC_AGENT_TYPES:
         return (
             "host_exec_profile requires agent_type cursor or copilot; Docker "

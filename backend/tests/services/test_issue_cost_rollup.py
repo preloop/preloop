@@ -2200,3 +2200,78 @@ def test_cycle_time_fields_state_what_they_measure() -> None:
     assert "exclusive" in (report["end"].description or "").lower()
     assert "first_event_at" in (report["start"].description or "")
     assert "lifetime" in (report["flow_id"].description or "")
+
+
+def test_copilot_seat_runs_export_billing_mode_seat(world: World) -> None:
+    """#1481: a Copilot host run shows the seat label and premium requests."""
+    from preloop.models.crud import crud_api_usage
+    from preloop.services.host_exec_usage import (
+        COPILOT_PREMIUM_SOURCE,
+        host_exec_premium_fingerprint,
+    )
+
+    flow = world.make_flow("copilot-seat")
+    seat = world.run(flow, world.issue_details(), start=T0, cost=None, record=False)
+    seat.billing_mode = "seat"
+    world.db.commit()
+    world.record(seat)
+    crud_api_usage.log_imported_usage_event(
+        world.db,
+        account_id=str(world.account.id),
+        timestamp=T0.replace(tzinfo=None),
+        model_alias="claude-sonnet-4.6",
+        source=COPILOT_PREMIUM_SOURCE,
+        cost_usd=None,
+        cost_source="subscription",
+        flow_id=flow.id,
+        flow_execution_id=seat.id,
+        import_fingerprint=host_exec_premium_fingerprint(seat.id),
+        meta_data={
+            "event_type": "host_exec_result",
+            "harness": "copilot_cli",
+            "premium_requests": 3,
+            "gateway_metered": False,
+        },
+        endpoint="/runners/host-exec/copilot",
+    )
+
+    export = world.report(include_execution_ids=True)
+    (row,) = export.issues
+    assert row.billing_mode == "seat"
+    assert row.billing_label == "Seat (not metered by gateway)"
+    assert row.seat_run_count == 1
+    assert row.premium_requests == 3.0
+
+    csv_row = next(csv.DictReader(io.StringIO(rollup_service.report_to_csv(export))))
+    assert csv_row["billing_mode"] == "seat"
+    assert csv_row["billing_label"] == "Seat (not metered by gateway)"
+    assert csv_row["seat_run_count"] == "1"
+    assert csv_row["premium_requests"] == "3.0"
+    assert csv_row["first_event_at"]  # elapsed-time columns still present
+
+    document = json.loads(rollup_service.report_to_json(export))
+    assert document["issues"][0]["billing_mode"] == "seat"
+    executions = rollup_service.list_issue_executions(
+        world.db, account_id=world.account.id, rollup_id=row.id
+    )
+    assert [item.billing_mode for item in executions] == ["seat"]
+
+    # A gateway run on the same issue makes the row mixed.
+    world.run(world.make_flow("gateway"), world.issue_details(), start=T0)
+    (mixed,) = world.report().issues
+    assert (mixed.billing_mode, mixed.seat_run_count) == ("mixed", 1)
+
+
+def test_gateway_only_issue_is_metered_without_seat_label(world: World) -> None:
+    world.run(world.make_flow("gateway"), world.issue_details(), start=T0)
+    (row,) = world.report().issues
+    assert (row.billing_mode, row.billing_label, row.seat_run_count) == (
+        "metered",
+        None,
+        0,
+    )
+    csv_row = next(
+        csv.DictReader(io.StringIO(rollup_service.report_to_csv(world.report())))
+    )
+    assert csv_row["billing_mode"] == "metered"
+    assert csv_row["premium_requests"] == ""

@@ -20,11 +20,14 @@ activity log:
 
 - **Not per ticket.** Nothing here is joined to a flow execution, a
   trigger event or a session. A row cannot be read as "this ticket cost
-  X". A Copilot CLI flow on a private runner records the premium-request
-  count Copilot reported for the run, and this import records what
-  GitHub billed the seat that day; the two are not the same number and
-  are not reconciled. See [Copilot coverage](copilot.md) for what each
-  surface meters.
+  X". A Copilot CLI flow on a private runner is labelled **Seat (not
+  metered by gateway)** on the run and in the per-issue cost rollup, with
+  the premium-request count Copilot reported for the run. This import
+  records what GitHub billed the seat that day; the two are not the same
+  number and are not reconciled. See [Copilot coverage](copilot.md) for
+  what each surface meters, and
+  [Run flows on your team's Copilot seats](copilot-cli.md#run-flows-on-your-teams-copilot-seats)
+  for the seat label.
 - **Not per request.** `netAmount` is a daily total per user and model.
   It is not a price for one prompt, one edit or one model call.
 - **Not a budget for a run.** Nothing here is enforced. Only gateway

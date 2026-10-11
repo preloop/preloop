@@ -104,6 +104,7 @@ from preloop.services.prompt_resolvers import (
 )
 from preloop.services.prompt_resolvers.execution import resume_rebase_conflict_hint
 from preloop.services.flow_execution_logger import FlowExecutionLogger
+from preloop.services.host_exec import HARNESS_FALLBACK_CONTEXT_KEY
 from preloop.services.flow_runtime_token import (
     create_flow_runtime_token,
     revoke_flow_runtime_tokens,
@@ -3128,10 +3129,102 @@ class FlowExecutionOrchestrator:
         await self._attach_git_credentials(context)
         return context
 
+    def _apply_harness_routing_decision(self) -> None:
+        """Apply ``harness_fallback=fallback_server`` before the run starts.
+
+        Only for a harness-routed flow (``agent_config.harness``, no profile
+        pin) whose fallback is ``fallback_server`` and for which no runner is
+        eligible right now: the run switches to the hosted
+        ``HARNESS_SERVER_FALLBACK_AGENT_TYPE`` harness with the flow's
+        ``fallback_model_identifier`` and records ``fell_back_to_server``.
+        ``queue`` and ``fail`` are decided at lease time.
+        """
+        from preloop.services.host_exec import (
+            BILLING_MODE_METERED,
+            HARNESS_FALLBACK_SERVER,
+            HARNESS_SERVER_FALLBACK_AGENT_TYPE,
+            ROUTING_FELL_BACK_TO_SERVER,
+            harness_fallback_mode,
+            harness_pinned_runner_id,
+            host_exec_harness_selector,
+            host_exec_model_identifier,
+        )
+
+        if getattr(self, "_harness_fell_back", False):
+            return
+        from preloop.services.runner_service import unwrap_agent_config
+
+        kind = self.agent_type or self.flow.agent_type
+        config = unwrap_agent_config(self.flow.agent_config)
+        if not isinstance(config, dict):
+            config = {}
+        harness = host_exec_harness_selector(kind, config)
+        if not harness or harness_fallback_mode(config) != HARNESS_FALLBACK_SERVER:
+            return
+        from preloop.models.crud.flow_runner import crud_flow_runner
+        from preloop.services.runner_service import (
+            AUTO_RUNNER_POOL,
+            harness_routing_reason,
+            resolve_fallback_server_model,
+            resolve_runner_pool,
+        )
+
+        pool = (
+            resolve_runner_pool(
+                self.flow,
+                {"trigger_event_data": self.trigger_event_data},
+                db=self.db,
+            )
+            or AUTO_RUNNER_POOL
+        )
+        runners = crud_flow_runner.find_matching(
+            self.db, account_id=self.flow.account_id, pool=pool, online_only=False
+        )
+        pin = harness_pinned_runner_id(config)
+        if pin is not None:
+            runners = [row for row in runners if row.id == pin]
+        eligible, reason = harness_routing_reason(
+            self.db,
+            runners,
+            account_id=self.flow.account_id,
+            harness=harness,
+            model=host_exec_model_identifier(kind, config),
+            pool=pool,
+            pinned_runner_id=pin,
+        )
+        if eligible:
+            return
+        wanted = str(config.get("fallback_model_identifier") or "").strip()
+        model = resolve_fallback_server_model(
+            self.db, account_id=self.flow.account_id, wanted=wanted
+        )
+        if model is None:
+            raise ValueError(
+                f"No runner can take this run on harness {harness} ({reason}) "
+                f"and fallback model {wanted!r} is not available to the account"
+            )
+        logger.info(
+            "Harness %s has no eligible runner (%s); falling back to %s on "
+            "the server pool with model %s",
+            harness,
+            reason,
+            HARNESS_SERVER_FALLBACK_AGENT_TYPE,
+            model.model_identifier,
+        )
+        self.agent_type = HARNESS_SERVER_FALLBACK_AGENT_TYPE
+        self.ai_model = model
+        self._harness_fell_back = True
+        if self.execution_log is not None:
+            self.execution_log.routing_reason = ROUTING_FELL_BACK_TO_SERVER
+            self.execution_log.billing_mode = BILLING_MODE_METERED
+            self.db.add(self.execution_log)
+            self.db.commit()
+
     async def _prepare_execution_context(
         self, *, resolved_prompt: Optional[str] = None
     ) -> Dict[str, Any]:
         """Prepare the full execution context for the agent."""
+        self._apply_harness_routing_decision()
         effective_agent_type = self.agent_type or self.flow.agent_type
         logger.info(
             f"Preparing execution context for agent type: {effective_agent_type}"
@@ -3160,14 +3253,16 @@ class FlowExecutionOrchestrator:
         # secrets here.
         from preloop.services.host_exec import (
             HOST_EXEC_AGENT_TYPE,
+            host_exec_effective_profile,
             host_exec_flow_error,
             host_exec_model_identifier,
-            host_exec_profile_name,
             host_exec_unavailable_reason,
             is_host_exec_agent_type,
         )
 
-        profile = host_exec_profile_name(self.flow.agent_config)
+        profile = host_exec_effective_profile(
+            effective_agent_type, self.flow.agent_config
+        )
         if is_host_exec_agent_type(effective_agent_type) or profile:
             clone_config = self.flow.git_clone_config
             if isinstance(clone_config, dict):
@@ -3297,6 +3392,7 @@ class FlowExecutionOrchestrator:
             "git_clone_config": self._git_clone_config_for_trigger(),
             "custom_commands": self.flow.custom_commands,
             "trigger_event_data": self.trigger_event_data,
+            HARNESS_FALLBACK_CONTEXT_KEY: getattr(self, "_harness_fell_back", False),
             "trigger_project_ids": [str(pid) for pid in self.flow.trigger_project_ids]
             if self.flow.trigger_project_ids
             else None,  # For git clone fallback
@@ -5352,7 +5448,7 @@ class FlowExecutionOrchestrator:
             An actionable ``publication_failed`` message, or None when there
             was nothing to do or the pull request is bound.
         """
-        from preloop.services.host_exec import host_exec_profile_name
+        from preloop.services.host_exec import host_exec_effective_profile
         from preloop.services.host_exec_delivery import (
             build_host_exec_checkout,
             host_exec_target_branch,
@@ -5365,7 +5461,10 @@ class FlowExecutionOrchestrator:
 
         if final_status != "SUCCEEDED" or self.execution_log is None:
             return None
-        if not host_exec_profile_name(getattr(self.flow, "agent_config", None)):
+        if not host_exec_effective_profile(
+            getattr(self, "agent_type", None) or getattr(self.flow, "agent_type", None),
+            getattr(self.flow, "agent_config", None),
+        ):
             return None
         try:
             self.db.refresh(self.execution_log)

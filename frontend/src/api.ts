@@ -5014,6 +5014,44 @@ export interface RunnerRecord {
   } | null;
 }
 
+/** One model a harness can run, with how many eligible runners list it. */
+export interface HarnessModelOption {
+  id: string;
+  source: string;
+  runners_online: number;
+}
+
+/** One runner reporting a harness, for the optional runner pin. */
+export interface HarnessRunnerOption {
+  id: string;
+  name: string;
+  online: boolean;
+  eligible: boolean;
+  reason?: string | null;
+}
+
+/** A routable harness across the runners the caller may use (#1481). */
+export interface HarnessOption {
+  harness: string;
+  display_name: string;
+  agent_type: string;
+  billing: string;
+  models: HarnessModelOption[];
+  runners_online: number;
+  runners_total: number;
+  runners: HarnessRunnerOption[];
+}
+
+/** Harness + model choices for the flow editor, from runner inventories. */
+export async function getFlowHarnessOptions(): Promise<HarnessOption[]> {
+  const response = await fetchWithAuth('/api/v1/flows/harness-options');
+  if (!response.ok) {
+    throw new Error('Failed to fetch harness options');
+  }
+  const body = await response.json();
+  return Array.isArray(body?.harnesses) ? body.harnesses : [];
+}
+
 /** Raise or lower how many executions a runner may hold at once. */
 export async function updateRunnerConcurrency(
   runnerId: string,

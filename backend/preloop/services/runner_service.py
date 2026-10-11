@@ -6,7 +6,7 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -17,7 +17,15 @@ from preloop.models.crud.user import crud_user
 from preloop.models.models.flow import Flow
 from preloop.models.models.flow_runner import FlowRunner
 from preloop.services.host_exec import (
+    BILLING_MODES,
+    BILLING_MODE_UNKNOWN,
     HOST_EXEC_AGENT_TYPE,
+    ROUTING_HARNESS_DISABLED,
+    ROUTING_HARNESS_SIGNED_OUT,
+    ROUTING_MODEL_NOT_AVAILABLE,
+    ROUTING_NO_RUNNER_WITH_HARNESS,
+    ROUTING_OWNER_HAS_NO_RUNNER,
+    ROUTING_RUNNER_OFFLINE,
     host_exec_profile_name,
     runner_has_host_exec_profile,
 )
@@ -428,6 +436,236 @@ def _runner_may_accept(
     return authorize(ctx, ACTION_RUNNER_ACCEPT, runner).allowed
 
 
+#: Lease payload key carrying the harness selection (contract B). Data only:
+#: the runner resolves the named profile locally, never an executable.
+HOST_EXEC_LEASE_KEY = "host_exec"
+
+#: How far a runner got through the eligibility checks. The routing reason
+#: shown for a queued run comes from the runner that got furthest.
+_REASON_RANK = {
+    ROUTING_OWNER_HAS_NO_RUNNER: 0,
+    ROUTING_NO_RUNNER_WITH_HARNESS: 1,
+    ROUTING_HARNESS_DISABLED: 2,
+    ROUTING_HARNESS_SIGNED_OUT: 3,
+    ROUTING_MODEL_NOT_AVAILABLE: 4,
+    ROUTING_RUNNER_OFFLINE: 5,
+}
+
+
+def runner_harness_entries(runner: Any) -> Optional[List[Mapping[str, Any]]]:
+    """Inventory entries a runner published, or None for "inventory unknown".
+
+    Reads ``flow_runners.harness_inventory`` (contract A). A runner that
+    predates the inventory has none and is never eligible for harness
+    routing; profile-pinned flows do not read this.
+    """
+    inventory = getattr(runner, "harness_inventory", None)
+    dump = getattr(inventory, "model_dump", None)
+    if callable(dump):
+        inventory = dump(mode="json", by_alias=True)
+    if not isinstance(inventory, Mapping):
+        return None
+    entries = inventory.get("entries")
+    if not isinstance(entries, list):
+        return None
+    return [entry for entry in entries if isinstance(entry, Mapping)]
+
+
+def runner_harness_entry(runner: Any, harness: str) -> Optional[Mapping[str, Any]]:
+    """The runner's inventory entry for ``harness``, if it reported one."""
+    for entry in runner_harness_entries(runner) or []:
+        if entry.get("harness") == harness:
+            return entry
+    return None
+
+
+def harness_entry_lists_model(entry: Mapping[str, Any], model: Optional[str]) -> bool:
+    """Whether ``model`` may run on this harness entry.
+
+    True when no model is requested, the entry lists it, or the harness
+    cannot list models (no ``probed`` source): Copilot has no listing, so an
+    unknown model is allowed and fails fast on the host with the existing
+    "--model not available" mapping.
+    """
+    if not model:
+        return True
+    models = entry.get("models") or []
+    if not isinstance(models, list):
+        return True
+    ids = {item.get("id") for item in models if isinstance(item, Mapping)}
+    if model in ids:
+        return True
+    return not any(
+        isinstance(item, Mapping) and item.get("source") == "probed" for item in models
+    )
+
+
+def harness_entry_reason(
+    entry: Optional[Mapping[str, Any]], model: Optional[str]
+) -> Optional[str]:
+    """Why an inventory entry cannot take the run, or None when it can."""
+    if entry is None or entry.get("support_level") in (None, "presence_only"):
+        return ROUTING_NO_RUNNER_WITH_HARNESS
+    if entry.get("enabled") is False:
+        return ROUTING_HARNESS_DISABLED
+    if entry.get("login_state") != "signed_in":
+        return ROUTING_HARNESS_SIGNED_OUT
+    if not harness_entry_lists_model(entry, model):
+        return ROUTING_MODEL_NOT_AVAILABLE
+    return None
+
+
+def harness_entry_billing(entry: Optional[Mapping[str, Any]]) -> str:
+    """``seat | metered | unknown`` from the inventory entry."""
+    value = entry.get("billing") if entry is not None else None
+    return value if value in BILLING_MODES else BILLING_MODE_UNKNOWN
+
+
+def _runner_registered_by_admin(
+    db: Optional[Session], runner: Any, cache: Optional[Dict[Any, bool]] = None
+) -> bool:
+    """Whether the runner's registrant is an account admin.
+
+    Superuser, the account's primary user, or a holder of ``manage_account``
+    (the same rule as the console's admin checks).
+    """
+    user_id = getattr(runner, "registered_by_user_id", None)
+    if user_id is None or db is None:
+        return False
+    if cache is not None and user_id in cache:
+        return cache[user_id]
+    from preloop.utils.permissions import user_holds_permission
+
+    user = crud_user.get(db, id=user_id)
+    allowed = False
+    if user is not None:
+        if getattr(user, "is_superuser", False):
+            allowed = True
+        else:
+            account = crud_account.get(db, id=getattr(user, "account_id", None))
+            if account is not None and str(
+                getattr(account, "primary_user_id", "")
+            ) == str(user.id):
+                allowed = True
+            else:
+                allowed = bool(user_holds_permission(db, user, "manage_account"))
+    if cache is not None:
+        cache[user_id] = allowed
+    return allowed
+
+
+def runner_usable_by_flow(
+    db: Optional[Session],
+    runner: Any,
+    *,
+    pool: Optional[str],
+    pinned_runner_id: Optional[UUID] = None,
+    admin_cache: Optional[Dict[Any, bool]] = None,
+) -> bool:
+    """Whether a flow may route harness work to this runner (wave 1).
+
+    A flow uses a runner it names (``agent_config.runner_id`` or an explicit
+    ``runner_pool``). An unpinned flow uses only runners registered by an
+    account admin, so a member's personal runner never takes work it was
+    not named for. EE sharing (#183) plugs in through ``runner:accept``.
+    """
+    if pinned_runner_id is not None:
+        return getattr(runner, "id", None) == pinned_runner_id
+    explicit = _explicit_pool(pool)
+    if explicit and not _is_auto_pool(explicit) and not _is_server_pool(explicit):
+        from preloop.models.crud.flow_runner import runner_matches_pool
+
+        return runner_matches_pool(runner, explicit)
+    return _runner_registered_by_admin(db, runner, admin_cache)
+
+
+def runner_eligible_for_harness(
+    db: Optional[Session],
+    runner: Any,
+    *,
+    account_id: Any,
+    harness: str,
+    model: Optional[str] = None,
+    pool: Optional[str] = None,
+    pinned_runner_id: Optional[UUID] = None,
+    admin_cache: Optional[Dict[Any, bool]] = None,
+) -> Tuple[bool, Optional[str], Optional[Mapping[str, Any]]]:
+    """The single eligibility rule for harness routing (contract B).
+
+    Used by the lease and by the flow editor. A runner is eligible when it
+    belongs to the account, the flow may use it, its inventory has an
+    enabled, signed-in, runnable entry for ``harness`` that can run
+    ``model``, and it is online.
+
+    Returns:
+        ``(eligible, reason, entry)``. ``reason`` is a routing reason when
+        not eligible.
+    """
+    if account_id is not None and str(getattr(runner, "account_id", "")) != str(
+        account_id
+    ):
+        return False, ROUTING_OWNER_HAS_NO_RUNNER, None
+    if not runner_usable_by_flow(
+        db,
+        runner,
+        pool=pool,
+        pinned_runner_id=pinned_runner_id,
+        admin_cache=admin_cache,
+    ):
+        return False, ROUTING_OWNER_HAS_NO_RUNNER, None
+    entry = runner_harness_entry(runner, harness)
+    reason = harness_entry_reason(entry, model)
+    if reason is not None:
+        return False, reason, entry
+    if getattr(runner, "status", None) not in ("online", "busy") or not is_online(
+        runner
+    ):
+        return False, ROUTING_RUNNER_OFFLINE, entry
+    return True, None, entry
+
+
+def harness_routing_reason(
+    db: Optional[Session],
+    runners: Iterable[Any],
+    *,
+    account_id: Any,
+    harness: str,
+    model: Optional[str] = None,
+    pool: Optional[str] = None,
+    pinned_runner_id: Optional[UUID] = None,
+) -> Tuple[int, Optional[str]]:
+    """Count eligible runners and name why the rest cannot take the run.
+
+    Returns:
+        ``(eligible_count, reason)``. ``reason`` is None when at least one
+        runner is eligible, else the reason of the runner that got furthest
+        (``owner_has_no_runner`` when there is no runner at all).
+    """
+    eligible = 0
+    best: Optional[str] = None
+    cache: Dict[Any, bool] = {}
+    for runner in runners:
+        ok, reason, _entry = runner_eligible_for_harness(
+            db,
+            runner,
+            account_id=account_id,
+            harness=harness,
+            model=model,
+            pool=pool,
+            pinned_runner_id=pinned_runner_id,
+            admin_cache=cache,
+        )
+        if ok:
+            eligible += 1
+        elif reason is not None and (
+            best is None or _REASON_RANK[reason] > _REASON_RANK[best]
+        ):
+            best = reason
+    if eligible:
+        return eligible, None
+    return 0, best or ROUTING_OWNER_HAS_NO_RUNNER
+
+
 def lease_job(
     db: Session,
     *,
@@ -436,8 +674,14 @@ def lease_job(
     execution_id: UUID,
     payload: Dict[str, Any],
     required_runner_id: Optional[UUID] = None,
+    outcome: Optional[Dict[str, Any]] = None,
 ) -> Optional[FlowRunner]:
     """Assign a pending job to one matching online runner. None if queued.
+
+    A payload with ``host_exec`` (contract B harness routing) only goes to a
+    runner that :func:`runner_eligible_for_harness` accepts. ``outcome``,
+    when given, receives ``billing_mode`` (from the inventory entry) on a
+    lease and ``routing_reason`` when the job stays queued.
 
     Candidates are re-fetched with ``SELECT ... FOR UPDATE SKIP LOCKED`` so
     two concurrent leases cannot hand out the same free slot. A runner may
@@ -469,10 +713,31 @@ def lease_job(
         if row.status in ("online", "busy") and row.free_slots > 0
     ]
     required_profile = host_exec_profile_name(payload)
+    selection = payload.get(HOST_EXEC_LEASE_KEY)
+    harness = selection.get("harness") if isinstance(selection, Mapping) else None
+    harness_model = selection.get("model") if isinstance(selection, Mapping) else None
+    # ``agent_config.runner_id`` and a host-bound continuation both arrive
+    # as ``required_runner_id``: a runner the flow names explicitly.
+    pinned = required_runner_id
+    admin_cache: Dict[Any, bool] = {}
     stored = persistable_job_payload(payload)
     execution = crud_flow_execution.get(db, id=str(execution_id), account_id=account_id)
     flow_id = str(execution.flow_id) if execution else None
     for candidate in available:
+        entry = None
+        if harness:
+            ok, _reason, entry = runner_eligible_for_harness(
+                db,
+                candidate,
+                account_id=account_id,
+                harness=harness,
+                model=harness_model,
+                pool=pool,
+                pinned_runner_id=pinned,
+                admin_cache=admin_cache,
+            )
+            if not ok:
+                continue
         if not _runner_may_accept(
             db,
             account_id=account_id,
@@ -485,7 +750,9 @@ def lease_job(
         if required_profile and not runner_has_host_exec_profile(
             candidate,
             required_profile,
-            payload.get("model_identifier"),
+            # Harness routing checked the model against the inventory; the
+            # profile advertisement need not repeat the model list.
+            None if harness else payload.get("model_identifier"),
             payload.get("agent_type") or HOST_EXEC_AGENT_TYPE,
             require_publication=bool(payload.get("host_exec_publication")),
             require_continuation=bool(payload.get("host_exec_resume")),
@@ -523,8 +790,27 @@ def lease_job(
         db.commit()
         db.refresh(runner)
         emit_runner_updated(runner, db)
+        if outcome is not None and harness:
+            outcome["billing_mode"] = harness_entry_billing(entry)
         return runner
     db.commit()
+    if outcome is not None and harness:
+        everyone = crud_flow_runner.find_matching(
+            db, account_id=account_id, pool=pool, online_only=False
+        )
+        if required_runner_id is not None:
+            everyone = [row for row in everyone if row.id == required_runner_id]
+        _count, reason = harness_routing_reason(
+            db,
+            everyone,
+            account_id=account_id,
+            harness=harness,
+            model=harness_model,
+            pool=pool,
+            pinned_runner_id=pinned,
+        )
+        # Eligible but every slot is taken: still queued, no named cause.
+        outcome["routing_reason"] = reason
     return None
 
 
@@ -614,3 +900,129 @@ def emit_runner_deleted(account_id: Any, runner_id: Any) -> None:
             payload={"id": str(runner_id)},
         )
     )
+
+
+_HARNESS_DISPLAY_NAMES = {
+    "copilot_cli": "GitHub Copilot CLI",
+    "cursor_cli": "Cursor CLI",
+}
+
+
+def harness_options(
+    db: Optional[Session],
+    runners: Iterable[Any],
+    *,
+    account_id: Any,
+    usable: Any,
+) -> Dict[str, Any]:
+    """Harness + model choices for the flow editor (contract B).
+
+    Args:
+        db: Database session (unused by the pure checks; kept for symmetry).
+        runners: Account runners.
+        account_id: Caller's account.
+        usable: ``callable(runner) -> bool``, whether the caller may route
+            to the runner (registrant or account admin in wave 1).
+
+    Returns:
+        ``{"harnesses": [...]}`` for runnable harnesses (``copilot_cli``,
+        ``cursor_cli``) reported by at least one usable runner. A runner is
+        counted online when :func:`runner_eligible_for_harness` accepts it
+        (pinned to itself, so the owner rule is the caller's, not a flow's).
+    """
+    from preloop.services.host_exec import (
+        HOST_EXEC_AGENT_TYPE_BY_HARNESS,
+    )
+
+    options: Dict[str, Dict[str, Any]] = {}
+    for runner in runners:
+        if str(getattr(runner, "account_id", "")) != str(account_id) or not usable(
+            runner
+        ):
+            continue
+        for entry in runner_harness_entries(runner) or []:
+            harness = entry.get("harness")
+            if harness not in HOST_EXEC_AGENT_TYPE_BY_HARNESS:
+                continue
+            if entry.get("support_level") in (None, "presence_only"):
+                continue
+            ok, reason, _entry = runner_eligible_for_harness(
+                db,
+                runner,
+                account_id=account_id,
+                harness=harness,
+                pinned_runner_id=getattr(runner, "id", None),
+            )
+            option = options.setdefault(
+                harness,
+                {
+                    "harness": harness,
+                    "display_name": _HARNESS_DISPLAY_NAMES.get(
+                        harness, entry.get("display_name") or harness
+                    ),
+                    "agent_type": HOST_EXEC_AGENT_TYPE_BY_HARNESS[harness],
+                    "billing": harness_entry_billing(entry),
+                    "models": {},
+                    "runners_online": 0,
+                    "runners_total": 0,
+                    "runners": [],
+                },
+            )
+            option["runners_total"] += 1
+            if ok:
+                option["runners_online"] += 1
+            option["runners"].append(
+                {
+                    "id": runner.id,
+                    "name": runner.name,
+                    "online": bool(
+                        getattr(runner, "status", None) in ("online", "busy")
+                        and is_online(runner)
+                    ),
+                    "eligible": ok,
+                    "reason": reason,
+                }
+            )
+            for item in entry.get("models") or []:
+                if not isinstance(item, Mapping) or not isinstance(item.get("id"), str):
+                    continue
+                model = option["models"].setdefault(
+                    item["id"],
+                    {
+                        "id": item["id"],
+                        "source": item.get("source") or "static",
+                        "runners_online": 0,
+                    },
+                )
+                if ok:
+                    model["runners_online"] += 1
+    harnesses = []
+    for harness in sorted(options):
+        option = options[harness]
+        option["models"] = list(option["models"].values())
+        harnesses.append(option)
+    return {"harnesses": harnesses}
+
+
+def resolve_fallback_server_model(db: Session, *, account_id: Any, wanted: Any) -> Any:
+    """The AI model a ``fallback_server`` run uses, or None.
+
+    ``wanted`` is an AI model id or model identifier visible to the account
+    that the hosted fallback harness can reach. Used when the flow is saved
+    (reject an unknown value) and when the run starts (load the model), so a
+    flow cannot be saved in a state that only fails when the fallback is
+    needed.
+    """
+    from preloop.models.crud import crud_ai_model
+    from preloop.services.host_exec import HARNESS_SERVER_FALLBACK_AGENT_TYPE
+    from preloop.services.model_routing import model_usable_for_agent
+
+    name = wanted.strip() if isinstance(wanted, str) else ""
+    if not name or account_id is None:
+        return None
+    for model in crud_ai_model.get_all_for_account(db, account_id=account_id):
+        if str(model.id) != name and model.model_identifier != name:
+            continue
+        if model_usable_for_agent(model, HARNESS_SERVER_FALLBACK_AGENT_TYPE):
+            return model
+    return None

@@ -64,6 +64,21 @@ class IssueCostExecutionRow(BaseModel):
     total_tokens: int = 0
     start_time: datetime
     end_time: Optional[datetime] = None
+    billing_mode: Optional[str] = Field(
+        None,
+        description=(
+            "seat for a Copilot or Cursor host run on the runner user's own "
+            "seat (not metered by the gateway), metered or unknown; null for "
+            "a gateway run."
+        ),
+    )
+
+
+BILLING_MODE_ROW_DESCRIPTION = (
+    "How the issue's runs were billed: seat when every run used a runner "
+    "user's own Copilot or Cursor seat (not metered by the gateway), metered "
+    "when none did, mixed otherwise. Seat runs contribute no estimated_cost."
+)
 
 
 class IssueCostRow(BaseModel):
@@ -107,6 +122,24 @@ class IssueCostRow(BaseModel):
     total_tokens: int
     run_count: int
     failed_run_count: int
+    billing_mode: str = Field("metered", description=BILLING_MODE_ROW_DESCRIPTION)
+    billing_label: Optional[str] = Field(
+        None,
+        description=(
+            "Console and export wording for seat runs: "
+            "'Seat (not metered by gateway)'. Null when no run used a seat."
+        ),
+    )
+    seat_run_count: int = Field(
+        0, description="Runs that used a runner user's own seat."
+    )
+    premium_requests: Optional[float] = Field(
+        None,
+        description=(
+            "Copilot premium requests the CLI reported for the seat runs; "
+            "null when none were reported."
+        ),
+    )
     first_event_at: Optional[datetime] = Field(
         None,
         description=(

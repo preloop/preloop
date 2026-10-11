@@ -35,6 +35,7 @@ from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.user import User
 from preloop.models.schemas.flow import (
     FLOW_LIMIT_FIELDS,
+    HarnessOptionsResponse,
     apply_flow_limit_fields,
     flow_schedule_state,
 )
@@ -80,8 +81,11 @@ from preloop.services.flow_delegation import (
     validate_callable_flows,
 )
 from preloop.services.host_exec import (
+    HARNESS_FALLBACK_SERVER,
+    harness_fallback_mode,
+    harness_pinned_runner_id,
+    host_exec_effective_profile,
     host_exec_flow_error,
-    host_exec_profile_name,
     host_exec_unavailable_reason,
     PULL_REQUEST_UNAVAILABLE,
 )
@@ -159,6 +163,7 @@ def _reject_host_exec_flow(
     custom_commands: Any = None,
     db: Optional[Session] = None,
     account_id: Any = None,
+    current_user: Any = None,
 ) -> None:
     """Reject hosted Cursor / publication / invalid host-exec combinations.
 
@@ -173,7 +178,9 @@ def _reject_host_exec_flow(
     )
     if error:
         raise HTTPException(status_code=400, detail=error)
-    profile = host_exec_profile_name(agent_config)
+    _reject_unusable_runner_pin(agent_config, db=db, current_user=current_user)
+    _reject_unknown_fallback_model(agent_config, db=db, account_id=account_id)
+    profile = host_exec_effective_profile(agent_type, agent_config)
     if profile:
         blocked = host_exec_unavailable_reason(
             git_clone_config=git_clone_config,
@@ -189,6 +196,59 @@ def _reject_host_exec_flow(
             )
         ):
             raise HTTPException(status_code=400, detail=PULL_REQUEST_UNAVAILABLE)
+
+
+def _caller_may_use_runner(db: Session, current_user: Any, runner: Any) -> bool:
+    """Wave 1: the runner's registrant or an account admin may route to it."""
+    from preloop.api.auth.router import _is_account_admin
+
+    if str(getattr(runner, "registered_by_user_id", "")) == str(current_user.id):
+        return True
+    return _is_account_admin(db, current_user)
+
+
+def _reject_unusable_runner_pin(
+    agent_config: Any, *, db: Optional[Session], current_user: Any
+) -> None:
+    """``agent_config.runner_id`` must name a runner the editor may use."""
+    pin = harness_pinned_runner_id(agent_config)
+    if pin is None or db is None or current_user is None:
+        return
+    runner = crud_flow_runner.get(db, id=pin)
+    if (
+        runner is None
+        or str(runner.account_id) != str(current_user.account_id)
+        or not _caller_may_use_runner(db, current_user, runner)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="agent_config.runner_id must be a runner you may use",
+        )
+
+
+def _reject_unknown_fallback_model(
+    agent_config: Any, *, db: Optional[Session], account_id: Any
+) -> None:
+    """``fallback_server`` needs a fallback model the hosted harness can use."""
+    if db is None or harness_fallback_mode(agent_config) != HARNESS_FALLBACK_SERVER:
+        return
+    from preloop.services.runner_service import (
+        resolve_fallback_server_model,
+        unwrap_agent_config,
+    )
+
+    config = unwrap_agent_config(agent_config)
+    wanted = (
+        config.get("fallback_model_identifier") if isinstance(config, dict) else None
+    )
+    if resolve_fallback_server_model(db, account_id=account_id, wanted=wanted) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "agent_config.fallback_model_identifier must name an AI model "
+                "of this account that the hosted Codex harness can use"
+            ),
+        )
 
 
 def _reject_unsupported_persistent_preset(agent_config: Any, preset: Any) -> None:
@@ -274,6 +334,7 @@ def create_flow(
         custom_commands=flow_in.custom_commands,
         db=db,
         account_id=current_user.account_id,
+        current_user=current_user,
     )
 
     # If creating from a preset, validate and compute source hashes for template tracking
@@ -508,6 +569,38 @@ def preview_flow_schedule(
         description=config.describe(),
         timezone=config.timezone,
         next_run_times=config.next_fire_times(count=3),
+    )
+
+
+@router.get("/flows/harness-options", response_model=HarnessOptionsResponse)
+@require_permission("view_flows")
+def get_flow_harness_options(
+    *,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> HarnessOptionsResponse:
+    """Harness + model choices for the flow editor.
+
+    Computed from the harness inventory of the runners the caller may route
+    to (their own, or every account runner for an admin), with online
+    eligible runner counts per harness and per model.
+    """
+    from preloop.services.runner_service import harness_options
+
+    runners = crud_flow_runner.list_for_account(
+        db, account_id=current_user.account_id, limit=500
+    )
+    admin: Dict[str, bool] = {}
+
+    def usable(runner: Any) -> bool:
+        if str(getattr(runner, "registered_by_user_id", "")) == str(current_user.id):
+            return True
+        if "value" not in admin:
+            admin["value"] = _caller_may_use_runner(db, current_user, runner)
+        return admin["value"]
+
+    return HarnessOptionsResponse.model_validate(
+        harness_options(db, runners, account_id=current_user.account_id, usable=usable)
     )
 
 
@@ -2823,6 +2916,7 @@ def update_flow(
         ),
         db=db,
         account_id=current_user.account_id,
+        current_user=current_user,
     )
 
     old_enabled = flow.is_enabled
