@@ -145,13 +145,15 @@ else:
   inherited (fd 3 on Linux and macOS, an inherited handle on Windows). The
   token is never in a process environment, on the command line, in the
   remote URL or in `.git/config`.
-- Global and system git configuration are ignored for the clone, and
-  `credential.helper` is cleared, so a credential helper (keychain, Windows
-  credential manager, `store`), a `url.<base>.insteadOf` rewrite, a proxy or
-  a certificate override on the host can neither see nor redirect the
-  credential. `GIT_SSL_CAINFO` and `GIT_SSL_CAPATH` from the runner's
-  environment are kept so a host behind an inspecting proxy can still verify
-  the provider certificate.
+- The user's global git configuration (`~/.gitconfig`,
+  `~/.config/git/config`) is ignored for the clone and `credential.helper`
+  is cleared, so a credential helper (keychain, Windows credential manager,
+  `store`), a `url.<base>.insteadOf` rewrite, a proxy or a certificate
+  override in it can neither see, keep nor redirect the credential. The
+  system configuration installed by the administrator stays in force (on
+  Windows it selects the TLS backend), and `GIT_SSL_CAINFO` and
+  `GIT_SSL_CAPATH` from the runner's environment are kept so a host behind
+  an inspecting proxy can still verify the provider certificate.
 - Only `https` is allowed and redirects are refused.
 - After the clone the runner clears the token from its memory and the pipe.
   The harness then runs in the checkout without any credential: it cannot

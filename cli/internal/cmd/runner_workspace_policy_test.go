@@ -472,13 +472,13 @@ func TestSessionCheckoutGitEnvIsCredentialFree(t *testing.T) {
 		"GIT_ASKPASS=/tmp/x", "GIT_SSL_NO_VERIFY=1", "GIT_SSL_CAINFO=/etc/ca.pem", "PRELOOP_GIT_ASKPASS_FD=9", "XDG_CONFIG_HOME=/x", "SSH_ASKPASS=/y"}
 	env := sessionCheckoutGitEnv(environ, "/opt/preloop", "x-token-auth", []string{gitAskpassFDEnv + "=3"})
 	joined := strings.Join(env, "\n")
-	for _, absent := range []string{"evil.example", "GIT_ASKPASS=/tmp/x", "GIT_SSL_NO_VERIFY", "PRELOOP_GIT_ASKPASS_FD=9", "XDG_CONFIG_HOME", "SSH_ASKPASS", "GIT_CONFIG_COUNT=1\n"} {
+	for _, absent := range []string{"evil.example", "GIT_ASKPASS=/tmp/x", "GIT_SSL_NO_VERIFY", "PRELOOP_GIT_ASKPASS_FD=9", "XDG_CONFIG_HOME", "SSH_ASKPASS", "GIT_CONFIG_COUNT=1\n", "GIT_CONFIG_NOSYSTEM"} {
 		if strings.Contains(joined, absent) {
 			t.Errorf("env must not contain %q:\n%s", absent, joined)
 		}
 	}
 	for _, present := range []string{"PATH=/bin", "HOME=/home/u", "GIT_SSL_CAINFO=/etc/ca.pem", "GIT_ASKPASS=/opt/preloop", "GIT_TERMINAL_PROMPT=0",
-		"GIT_ALLOW_PROTOCOL=https", "GIT_CONFIG_GLOBAL=" + os.DevNull, "GIT_CONFIG_NOSYSTEM=1", gitAskpassUsernameEnv + "=x-token-auth", gitAskpassFDEnv + "=3",
+		"GIT_ALLOW_PROTOCOL=https", "GIT_CONFIG_GLOBAL=" + os.DevNull, gitAskpassUsernameEnv + "=x-token-auth", gitAskpassFDEnv + "=3",
 		"credential.helper", "http.followRedirects", "=false"} {
 		if !strings.Contains(joined, present) {
 			t.Errorf("env must contain %q:\n%s", present, joined)

@@ -937,11 +937,13 @@ func resolveTrackerCheckoutWorkspace(ctx context.Context, remoteSessionID string
 
 // sessionCheckoutGitEnv is the environment of the clone. The credential is
 // not in it: git asks the runner binary for it (GIT_ASKPASS) and the binary
-// reads it from the inherited pipe the askpass channel attached. Global and
-// system git config are ignored so a credential helper, URL rewrite, proxy
-// or CA override on the host cannot see or redirect the credential, and
-// credential.helper is cleared so nothing stores the token after a
-// successful clone. Only https is allowed and redirects are refused.
+// reads it from the inherited pipe the askpass channel attached. The user's
+// global git config is ignored so a credential helper, URL rewrite, proxy
+// or CA override in it cannot see or redirect the credential, and
+// credential.helper is cleared so nothing (keychain, credential manager,
+// store) keeps the token after a successful clone. The system config stays
+// in force: it is installed by the administrator and on Windows carries the
+// TLS backend. Only https is allowed and redirects are refused.
 func sessionCheckoutGitEnv(environ []string, selfBinary, username string, channelEnv []string) []string {
 	out := make([]string, 0, len(environ)+16)
 	for _, entry := range environ {
@@ -974,7 +976,6 @@ func sessionCheckoutGitEnv(environ []string, selfBinary, username string, channe
 		"GIT_ASKPASS="+selfBinary,
 		"GIT_ALLOW_PROTOCOL="+sessionCheckoutGitProtocols,
 		"GIT_CONFIG_GLOBAL="+os.DevNull,
-		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_COUNT="+fmt.Sprint(len(pairs)),
 		gitAskpassUsernameEnv+"="+username,
 	)
