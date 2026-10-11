@@ -811,3 +811,31 @@ def test_empty_gateway_note_claim_does_not_commit_unrelated_work(
     assert delivered == []
     commit.assert_not_called()
     assert payload["messages"] == [{"role": "user", "content": "No note to carry."}]
+
+
+def test_empty_gateway_claim_does_not_sweep_expired_notes_elsewhere(
+    db_session, account, agent, runtime_session, monkeypatch
+):
+    from unittest.mock import Mock
+
+    other_agent = crud_managed_agent.create_custom_agent(
+        db_session, account_id=account.id, display_name="Other worker", commit=True
+    )
+    expired = _send(
+        db_session,
+        account,
+        other_agent,
+        expires_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    commit = Mock(wraps=db_session.commit)
+    monkeypatch.setattr(db_session, "commit", commit)
+    delivered = operator_notes.claim_pending_notes(
+        db_session,
+        account_id=str(account.id),
+        managed_agent_id=str(agent.id),
+        runtime_session_id=str(runtime_session.id),
+        channel="gateway",
+    )
+    assert delivered == []
+    commit.assert_not_called()
+    assert expired.status == "pending"
