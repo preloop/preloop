@@ -94,11 +94,13 @@ func (c *askpassChannel) serve() {
 	defer close(c.done)
 	for !c.closed.Load() {
 		err := windows.ConnectNamedPipe(c.pipe, nil)
+		if errors.Is(err, windows.ERROR_NO_DATA) {
+			// A client connected and left before we got here.
+			_ = windows.DisconnectNamedPipe(c.pipe)
+			continue
+		}
 		if err != nil && !errors.Is(err, windows.ERROR_PIPE_CONNECTED) {
-			if c.closed.Load() {
-				return
-			}
-			// The handle is unusable; do not spin.
+			// Closed or unusable; do not spin.
 			return
 		}
 		if !c.closed.Load() {
