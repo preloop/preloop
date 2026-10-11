@@ -674,3 +674,118 @@ def test_session_end_marks_session_only_notes_undeliverable(
 
 def test_session_end_requires_a_runtime_bearer(client):
     assert client.post(SESSION_END_URL, json={"reason": "exit"}).status_code == 401
+
+
+SESSION_START_URL = "/api/v1/agents/session-start"
+
+
+def _start_run(client, token: str, external_id: str) -> str:
+    response = client.post(
+        SESSION_START_URL,
+        json={"session_id": external_id, "source": "claude_code"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["runtime_session_id"]
+
+
+def test_session_start_pull_claims_notes_for_the_registered_run(
+    client, db_session, test_user
+):
+    """A note sent to a `claude -p` run before its first tool call lands at
+    SessionStart, even when the token is bound to the agent's identity
+    session rather than the run."""
+    token = _issue_runtime_token(client)
+    run_id = _start_run(client, token, "run-early")
+    note_id = client.post(
+        NOTES_URL, json={"runtime_session_id": run_id, "text": "Use eu-west-1."}
+    ).json()["note_id"]
+
+    response = client.post(
+        PENDING_URL,
+        json={"channel": "hook", "event": "session_start", "session_id": "run-early"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [n["note_id"] for n in response.json()["notes"]] == [note_id]
+    stored = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=note_id
+    )
+    assert stored.status == "delivered"
+    assert stored.delivery_event == "session_start"
+    assert str(stored.runtime_session_id) == run_id
+
+
+def test_session_end_sweeps_the_run_named_by_the_harness(client, db_session, test_user):
+    """SessionEnd fails the run's notes in one request, keyed by the harness
+    session id the hook knows."""
+    token = _issue_runtime_token(client)
+    run_id = _start_run(client, token, "run-late")
+    note_id = client.post(
+        NOTES_URL, json={"runtime_session_id": run_id, "text": "Too late."}
+    ).json()["note_id"]
+
+    response = client.post(
+        SESSION_END_URL,
+        json={"external_session_id": "run-late", "reason": "other"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"runtime_session_id": run_id, "marked": 1}
+    stored = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=note_id
+    )
+    assert stored.status == "undeliverable"
+
+
+def test_session_end_cannot_reach_another_principals_session(
+    client, db_session, test_user
+):
+    """The body names a harness id, never a session the caller does not own:
+    a same-account session keyed on the bare id (an importer row with no
+    runtime principal) is not ended and its notes stay pending."""
+    from preloop.models.crud import crud_runtime_session
+
+    token = _issue_runtime_token(client)
+    foreign = crud_runtime_session.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "session_source_type": "claude_code",
+            "session_source_id": "someone-elses-run",
+            "started_at": datetime.now(UTC),
+        },
+    )
+    note_id = operator_notes.new_note_id()
+    crud_agent_control_command.create_note(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=_runtime_agent(db_session, test_user).id,
+        runtime_session_id=foreign.id,
+        note_id=note_id,
+        body="Not yours to fail.",
+        envelope={"kind": "message"},
+        author_display="Test User",
+        author_auth_method="jwt",
+        created_by_user_id=None,
+        expires_at=None,
+    )
+
+    response = client.post(
+        SESSION_END_URL,
+        json={"external_session_id": "someone-elses-run", "reason": "exit"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # Nothing the caller owns matched, so nothing is ended: not the foreign
+    # session and not the token's own identity session either.
+    assert response.status_code == 200, response.text
+    assert response.json() == {"runtime_session_id": None, "marked": 0}
+    db_session.expire_all()
+    assert crud_runtime_session.get(db_session, id=foreign.id).ended_at is None
+    stored = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=note_id
+    )
+    assert stored.status == "pending"
