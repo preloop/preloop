@@ -36,6 +36,15 @@ class RunnerRegisterRequest(BaseModel):
     host_exec_profiles: Optional[List[HostExecProfileAdvertisement]] = Field(
         default_factory=list, max_length=64
     )
+    #: Directories the operator authorized for remote sessions, as
+    #: ``{id, label, mode, harnesses}``. Paths never leave the host; the
+    #: list is bounded by ``normalize_authorized_directories`` before it is
+    #: stored. Registration always resets the stored list to what this
+    #: process sent: a runner that omits the field (it predates remote
+    #: sessions) advertises none.
+    authorized_directories: Optional[List[Dict[str, Any]]] = Field(
+        default=None, max_length=64
+    )
 
     @field_validator("host_exec_profiles", mode="before")
     @classmethod

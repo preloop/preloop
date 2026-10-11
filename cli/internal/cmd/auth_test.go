@@ -285,6 +285,11 @@ func TestMain(m *testing.M) {
 		runBlockingJobHelper()
 		os.Exit(0)
 	}
+	// The session checkout tests run git with this test binary as the
+	// askpass helper, exactly as the CLI's Execute does for the real binary.
+	if code, ok := maybeRunGitAskpass(); ok {
+		os.Exit(code)
+	}
 
 	// Prevent tests from reading the developer's real config. This is the
 	// package-wide backstop for any test that forgets to redirect the home

@@ -215,6 +215,24 @@ runner, and the runner adds `--resume=<session>` itself, checks the session is o
 the host, and pushes onto the existing pull request branch. A completion naming a
 different session fails `resume_identity_mismatch`.
 
+Remote sessions on a personal runner (`docs/guide/runners/remote-sessions.md`)
+use a workspace policy that keeps paths on the host: the operator lists
+directories with `preloop runner dirs add` (stored in `~/.preloop/runner.json`,
+advertised as id, label, mode and harness list with register and heartbeat),
+and the runner (`cli/internal/cmd/runner_workspace_policy.go`) re-validates
+the entry and proves a requested path stays inside it after realpath
+resolution (case-folded on Windows, reparse points treated as symlinks, root
+and home refused) before a session opens it; a git work tree with uncommitted
+changes is refused unless the owner allows it. A tracker checkout clones into
+`host-workspaces/sessions/<id>` with a credential minted per start by
+`backend/preloop/services/runner_workspace_credentials.py` (a GitHub App
+installation token scoped to one repository with `contents: read`, or the
+managed Bitbucket Cloud OAuth token; PAT, app password and access-token
+trackers are refused by name), delivered only in the start message, served
+to git through an askpass helper over an inherited pipe, never written to
+disk, `.git/config` or a log, stripped from persisted payloads, and the
+directory is deleted when the session ends.
+
 A flow with an enabled `git_clone_config.backport` block runs in a
 control-plane mode: the orchestrator cherry-picks the merge commit onto each
 target branch in a scratch repository and opens one pull request per target,

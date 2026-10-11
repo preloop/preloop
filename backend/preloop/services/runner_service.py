@@ -257,18 +257,23 @@ def resolve_runner_pool(
     return None
 
 
-_PERSISTED_SECRET_KEYS = ("account_api_token", "launch")
+_PERSISTED_SECRET_KEYS = ("account_api_token", "launch", "credential")
 
 
 def persistable_job_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Copy a lease payload without credentials that must not hit JSONB.
 
     The live WebSocket push still receives the original payload, including
-    ``account_api_token``, for that lease only.
+    ``account_api_token``, for that lease only. A session checkout
+    credential (``workspace.credential`` or any nested ``credential`` key)
+    is removed at every depth.
     """
     from preloop.config import settings
+    from preloop.services.runner_workspace_credentials import (
+        without_checkout_credentials,
+    )
 
-    stored = dict(payload)
+    stored = without_checkout_credentials(dict(payload))
     for key in _PERSISTED_SECRET_KEYS:
         stored.pop(key, None)
     if (

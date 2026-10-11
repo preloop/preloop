@@ -36835,6 +36835,15 @@ components:
             maxItems: 64
           - type: 'null'
           title: Host Exec Profiles
+        authorized_directories:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+            maxItems: 64
+          - type: 'null'
+          title: Authorized Directories
         concurrency:
           anyOf:
           - type: integer
