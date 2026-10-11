@@ -595,12 +595,14 @@ func (m *runnerSessionManager) reportLive() {
 	defer m.mu.Unlock()
 	for _, id := range m.sortedIDs() {
 		s := m.sessions[id]
-		// The last completion may have been lost with the previous socket
-		// or process; the server applies it idempotently.
+		// State first: it is what tells the server a first prompt is the
+		// turn in flight. Then the last completion, which may have been lost
+		// with the previous socket or process; the server applies it
+		// idempotently.
+		m.enqueue(m.stateMessage(s))
 		if n := len(s.TurnResults); n > 0 && s.current == nil {
 			m.enqueue(s.TurnResults[n-1].message(id))
 		}
-		m.enqueue(m.stateMessage(s))
 	}
 }
 

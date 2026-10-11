@@ -698,9 +698,17 @@ def _apply_turn_done(
     on every reconnect and for a redelivered turn, so a result for a turn the
     server is no longer waiting on changes nothing."""
     pending = row.pending_turn or {}
-    tracked = message.turn_id in {pending.get("turn_id"), row.active_turn_id}
+    first_unacknowledged = message.turn_id == "first" and bool(row.first_prompt)
+    tracked = first_unacknowledged or message.turn_id in {
+        pending.get("turn_id"),
+        row.active_turn_id,
+    }
     if not tracked:
         return
+    if first_unacknowledged:
+        # The result overtook the state frame that would have marked the
+        # first prompt as running (a replay after a crash).
+        row.first_prompt = None
     if pending.get("turn_id") == message.turn_id:
         row.pending_turn = None
         row.pending_turn_sent_at = None

@@ -690,3 +690,16 @@ func TestRunnerSessionOutboxNeverEvictsTurnResults(t *testing.T) {
 		t.Fatalf("the turn result was evicted")
 	}
 }
+
+func TestRunnerSessionReportLiveSendsStateBeforeReplayedResult(t *testing.T) {
+	h := newSessionHarness(t, true)
+	start := startMsg(sessTestID)
+	start.FirstPrompt = "first"
+	h.m.handle(start)
+	h.waitFor(isTurnDone(runnerSessionFirstTurnID))
+	h.m.reportLive()
+	msgs := h.drain()
+	if len(msgs) != 2 || msgs[0]["type"] != "session_state" || msgs[1]["type"] != "session_turn_done" {
+		t.Fatalf("want state then replayed result, got %v", msgs)
+	}
+}

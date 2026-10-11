@@ -617,3 +617,18 @@ def test_send_path_is_keyed_by_runtime_session_id(db_session, runner, test_user)
     )
     assert found is not None and found.id == row.id
     assert row.runtime_session_id != row.id
+
+
+def test_first_turn_result_before_any_state_frame(db_session, runner, test_user):
+    """A runner that crashed before the server saw idle/running replays
+    turn_done("first") while the row is still starting: it still releases
+    the first prompt, and the state frame after it does not re-block."""
+    row = _start(db_session, runner, test_user, first_prompt="first")
+    svc.pending_runner_messages(db_session, runner)
+    svc.apply_runner_session_message(db_session, runner, _state(row, "starting"))
+    svc.apply_runner_session_message(db_session, runner, _turn_done(row, "first"))
+    svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
+    db_session.refresh(row)
+    assert row.first_prompt is None and row.active_turn_id is None
+    assert _turn_done_activities(db_session, row) == 1
+    svc.queue_turn(db_session, row, actor=test_user, text="next")
