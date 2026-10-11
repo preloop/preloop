@@ -93,6 +93,36 @@ status: `new`, `onboarded` or `ignored`.
 `truncated` is true when the fleet is larger than that page, so the console
 can say it is showing the first 500.
 
+## Harness inventory from runners
+
+Separately from this opt-in report, a connected
+[runner](runners/quickstart-linux.md#harnesses-are-detected-automatically)
+publishes the harnesses installed on its host with its registration and
+heartbeat. It is stored on the runner (`harness_inventory`) and shown on the
+Runners page. Every entry has these fields:
+
+| Field | Content |
+| --- | --- |
+| `harness` | `copilot_cli`, `cursor_cli`, `claude_code`, `codex_cli`, `opencode`, `gemini_cli`, `claude_desktop` or `vscode_copilot`. |
+| `display_name` | Product name. |
+| `version` | Harness version, when the runner could read it. Visible to the runner owner and account admins only. |
+| `login_state` | `signed_in`, `signed_out`, `unknown` or `not_applicable`. Never a token or user name. |
+| `login_source` | `env` (a token variable is set; only its name was checked), `stored`, `cli_status`, `none` or `unknown`. |
+| `account_host` | Host of the account (for example `github.com`), GitHub harnesses only. Visible to the runner owner and account admins only. |
+| `governance` | `governed` (Preloop hooks and approval hook), `partial` (usage hooks or MCP only), `ungoverned` or `unknown`. |
+| `support_level` | `flows_and_sessions`, `flows_only` or `presence_only`. |
+| `enabled` | False when the host turned the harness off in `runner.json`. Disabled harnesses are still listed. |
+| `sessions_enabled` | Set on the host only. |
+| `session_mode` | `resume`, `stream`, `replay` or `none`. |
+| `billing` | `seat` (subscription, not metered by the gateway), `metered` or `unknown`. |
+| `models[]` | Up to 64 `{id, source}` pairs; `source` is `probed`, `configured`, `static` or `observed`. |
+| `generated_profile` | Name of the host execution profile the runner generated (`copilot`, `cursor`), or null when a hand-written profile wins. |
+| `capabilities` | Host execution capability flags. |
+
+The inventory carries at most 32 entries and a `sha256:` hash of its entries.
+Executable paths, arguments, environment values and user names never leave
+the host. Each change is audited as `runner.harness_inventory_changed`.
+
 ## Versioned source observations
 
 The existing report accepts an optional `evidence` envelope with

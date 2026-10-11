@@ -305,6 +305,10 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("PRELOOP_DISABLE_TELEMETRY", "true"); err != nil {
 		panic(err)
 	}
+	// Never probe harnesses installed on the developer's machine.
+	runnerInventory = newRunnerInventoryPublisher(func() harnessInventory {
+		return buildHarnessInventory(emptyHostInventoryDeps())
+	})
 
 	// PRELOOP_TOKEN, PRELOOP_URL, PRELOOP_PROFILE and PRELOOP_ACCOUNT override
 	// the login a test saved. A developer shell that exports one would make

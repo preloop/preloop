@@ -19,6 +19,7 @@ import {
   RunnerHasLeasesError,
   updateAccountOrganization,
   updateRunnerConcurrency,
+  type HarnessInventoryEntry,
   type RunnerRecord,
 } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -118,6 +119,33 @@ export class RunnersView extends LitElement {
         .muted {
           color: var(--console-meta-color);
           font-size: 13px;
+        }
+        .harnesses {
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+          min-width: 180px;
+        }
+        .harness summary {
+          cursor: pointer;
+          list-style: none;
+          display: flex;
+          gap: 6px;
+          align-items: center;
+          flex-wrap: wrap;
+        }
+        .harness dl {
+          margin: 4px 0 0 0;
+          display: grid;
+          grid-template-columns: max-content 1fr;
+          gap: 2px 8px;
+          font-size: 13px;
+        }
+        .harness dt {
+          color: var(--console-meta-color);
+        }
+        .harness dd {
+          margin: 0;
         }
         table {
           width: 100%;
@@ -263,6 +291,12 @@ export class RunnersView extends LitElement {
       return;
     }
     const current = this.runners[index];
+    // Console events carry the member view of the inventory (no version or
+    // account host). Keep the fuller copy the API returned while the
+    // inventory itself is unchanged.
+    const sameInventory =
+      !!incoming.harness_inventory &&
+      incoming.harness_inventory.hash === current.harness_inventory?.hash;
     this.runners = [
       ...this.runners.slice(0, index),
       {
@@ -270,6 +304,9 @@ export class RunnersView extends LitElement {
         ...incoming,
         registered_by_email:
           incoming.registered_by_email || current.registered_by_email,
+        ...(sameInventory
+          ? { harness_inventory: current.harness_inventory }
+          : {}),
       },
       ...this.runners.slice(index + 1),
     ];
@@ -354,6 +391,119 @@ export class RunnersView extends LitElement {
     } finally {
       this.releaseRow(row.id);
     }
+  }
+
+  private static readonly loginLabels: Record<string, string> = {
+    signed_in: 'signed in',
+    signed_out: 'signed out',
+    unknown: 'login unknown',
+    not_applicable: 'no login',
+  };
+
+  private static readonly governanceLabels: Record<string, string> = {
+    governed: 'Governed (hooks and approvals)',
+    partial: 'Partial (usage hooks or MCP only)',
+    ungoverned: 'Ungoverned',
+    unknown: 'Unknown',
+  };
+
+  private static readonly billingLabels: Record<string, string> = {
+    seat: 'Seat (not metered by gateway)',
+    metered: 'Metered',
+    unknown: 'Unknown',
+  };
+
+  private static readonly supportLabels: Record<string, string> = {
+    flows_and_sessions: 'Flows and sessions',
+    flows_only: 'Flows',
+    presence_only: 'Present only',
+  };
+
+  private loginVariant(entry: HarnessInventoryEntry): string {
+    if (!entry.enabled) return 'neutral';
+    if (entry.login_state === 'signed_in') return 'success';
+    if (entry.login_state === 'signed_out') return 'warning';
+    return 'neutral';
+  }
+
+  private renderHarnesses(row: RunnerRecord) {
+    const inventory = row.harness_inventory;
+    if (!inventory) {
+      return html`<span
+        class="muted inventory-unknown"
+        title="This runner has not reported its harnesses. Update the Preloop CLI on the host to see them."
+        >Inventory unknown</span
+      >`;
+    }
+    if (inventory.entries.length === 0) {
+      return html`<span class="muted">No harnesses found</span>`;
+    }
+    const updated = row.harness_inventory_updated_at || inventory.generated_at;
+    return html`<div class="harnesses">
+      ${inventory.entries.map(
+        (entry) =>
+          html`<details class="harness" data-harness=${entry.harness}>
+            <summary>
+              <span>${entry.display_name}</span>
+              <sl-badge class="chip" pill variant=${this.loginVariant(entry)}
+                >${
+                  entry.enabled
+                    ? RunnersView.loginLabels[entry.login_state] ||
+                      entry.login_state
+                    : 'disabled'
+                }</sl-badge
+              >
+            </summary>
+            <dl>
+              ${
+                entry.version
+                  ? html`<dt>Version</dt>
+                      <dd>${entry.version}</dd>`
+                  : nothing
+              }
+              ${
+                entry.account_host
+                  ? html`<dt>Account host</dt>
+                      <dd>${entry.account_host}</dd>`
+                  : nothing
+              }
+              <dt>Governance</dt>
+              <dd>
+                ${
+                  RunnersView.governanceLabels[entry.governance] ||
+                  entry.governance
+                }
+              </dd>
+              <dt>Use</dt>
+              <dd>
+                ${
+                  RunnersView.supportLabels[entry.support_level] ||
+                  entry.support_level
+                }
+              </dd>
+              <dt>Billing</dt>
+              <dd>
+                ${RunnersView.billingLabels[entry.billing] || entry.billing}
+              </dd>
+              ${
+                entry.models.length
+                  ? html`<dt>Models</dt>
+                      <dd>
+                        ${entry.models.map((model) => model.id).join(', ')}
+                      </dd>`
+                  : nothing
+              }
+            </dl>
+          </details>`
+      )}
+      ${
+        updated
+          ? html`<span class="muted" title=${formatLocalDateTime(updated)}
+              >Reported ${formatRelativeTime(updated)}</span
+            >`
+          : nothing
+      }
+    </div>`;
   }
 
   private renderActions(row: RunnerRecord) {
@@ -660,7 +810,7 @@ export class RunnersView extends LitElement {
                   </p>
                 `
               : html`
-                  <!-- Nine columns do not fit a phone: the table scrolls
+                  <!-- Ten columns do not fit a phone: the table scrolls
                        sideways inside this box instead of the whole page. -->
 
                   <div class="table-scroll">
@@ -671,6 +821,7 @@ export class RunnersView extends LitElement {
                           <th>Labels</th>
                           <th>Registered by</th>
                           <th>Host</th>
+                          <th>Harnesses</th>
                           <th>Status</th>
                           <th>Last heartbeat</th>
                           <th>Running / slots</th>
@@ -702,6 +853,7 @@ export class RunnersView extends LitElement {
                                   ${[row.os, row.arch].filter(Boolean).join('/')}
                                 </div>
                               </td>
+                              <td>${this.renderHarnesses(row)}</td>
                               <td>
                                 <sl-badge
                                   class="chip"

@@ -175,6 +175,133 @@ describe('RunnersView', () => {
     expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
   });
 
+  const copilotInventory = {
+    schema: 1,
+    generated_at: '2026-10-16T09:00:00Z',
+    hash: 'sha256:' + 'a'.repeat(64),
+    entries: [
+      {
+        harness: 'copilot_cli',
+        display_name: 'GitHub Copilot CLI',
+        version: '1.0.95',
+        login_state: 'signed_in',
+        login_source: 'stored',
+        account_host: 'github.com',
+        governance: 'governed',
+        support_level: 'flows_and_sessions',
+        enabled: true,
+        sessions_enabled: false,
+        session_mode: 'resume',
+        billing: 'seat',
+        models: [
+          { id: 'auto', source: 'static' },
+          { id: 'claude-sonnet-4.6', source: 'configured' },
+        ],
+        generated_profile: 'copilot',
+        capabilities: ['host_exec', 'copilot_cli'],
+      },
+      {
+        harness: 'cursor_cli',
+        display_name: 'Cursor CLI',
+        login_state: 'signed_out',
+        login_source: 'cli_status',
+        governance: 'ungoverned',
+        support_level: 'flows_only',
+        enabled: false,
+        sessions_enabled: false,
+        session_mode: 'none',
+        billing: 'seat',
+        models: [],
+        capabilities: [],
+      },
+    ],
+  };
+
+  async function renderWith(runners: unknown[]) {
+    fetchStub = createFetchStub(runners);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+    return element;
+  }
+
+  it('renders the harness inventory with login, governance, models and billing', async () => {
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'laptop',
+        status: 'online',
+        harness_inventory: copilotInventory,
+        harness_inventory_updated_at: '2026-10-16T09:00:00Z',
+      },
+    ]);
+    const harnesses = element.shadowRoot?.querySelectorAll('details.harness');
+    expect(harnesses).to.have.lengthOf(2);
+    const copilot = harnesses?.[0];
+    expect(copilot?.getAttribute('data-harness')).to.equal('copilot_cli');
+    const text = copilot?.textContent || '';
+    expect(text).to.contain('GitHub Copilot CLI');
+    expect(text).to.contain('signed in');
+    expect(text).to.contain('1.0.95');
+    expect(text).to.contain('github.com');
+    expect(text).to.contain('Governed');
+    expect(text).to.contain('Seat (not metered by gateway)');
+    expect(text).to.contain('claude-sonnet-4.6');
+    expect(harnesses?.[1]?.textContent).to.contain('disabled');
+    expect(element.shadowRoot?.querySelector('.inventory-unknown')).to.not
+      .exist;
+  });
+
+  it('shows inventory unknown for a runner that predates the inventory', async () => {
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'old-runner',
+        status: 'online',
+        harness_inventory: null,
+      },
+    ]);
+    const unknown = element.shadowRoot?.querySelector('.inventory-unknown');
+    expect(unknown?.textContent).to.contain('Inventory unknown');
+  });
+
+  it('keeps the owner view of an unchanged inventory on a websocket update', async () => {
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'laptop',
+        status: 'online',
+        harness_inventory: copilotInventory,
+      },
+    ]);
+    const memberView = {
+      ...copilotInventory,
+      entries: copilotInventory.entries.map((entry) => {
+        const {
+          version: _version,
+          account_host: _host,
+          ...rest
+        } = entry as Record<string, unknown>;
+        return rest;
+      }),
+    };
+    onRunnerMessage?.({
+      type: 'runner_updated',
+      payload: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'laptop',
+        status: 'online',
+        harness_inventory: memberView,
+      },
+    });
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('1.0.95');
+  });
+
   it('badges an ephemeral runner only while it is connected', async () => {
     fetchStub = createFetchStub([
       {

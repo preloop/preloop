@@ -150,6 +150,9 @@ type runnerState struct {
 	ID    string `json:"id"`
 	Token string `json:"token"`
 	Name  string `json:"name"`
+	// Harnesses holds per-harness switches, e.g.
+	// {"cursor_cli": {"enabled": false}}. Kept on rewrite.
+	Harnesses map[string]runnerHarnessConfig `json:"harnesses,omitempty"`
 }
 
 type runnerAPIRecord struct {
@@ -195,6 +198,8 @@ type runnerWSMessage struct {
 	HaltExecutionIDs []string         `json:"halt_execution_ids,omitempty"`
 	Error            string           `json:"error,omitempty"`
 	RunnerID         string           `json:"runner_id,omitempty"`
+	// InventoryWanted on an ack asks for the full harness inventory.
+	InventoryWanted bool `json:"inventory_wanted,omitempty"`
 }
 
 // deliveredJobs returns every job in one server frame, first one first and
@@ -317,6 +322,7 @@ func loadOrRegisterRunner(
 		concurrency = config.DefaultRunnerConcurrency
 	}
 	req := map[string]any{
+		"harness_inventory":  runnerInventory.current(true),
 		"host_exec_profiles": hostExecAdvertisements(),
 		"name":               name,
 		"hostname":           hostname,
@@ -340,6 +346,7 @@ func loadOrRegisterRunner(
 				existing.Token = resumed.Token
 			}
 			_ = writeRunnerState(existing)
+			runnerInventory.markSent(registeredInventoryHash(req))
 			return existing, nil
 		}
 		delete(req, "runner_id")
@@ -350,9 +357,14 @@ func loadOrRegisterRunner(
 		return nil, fmt.Errorf("register runner: %w", err)
 	}
 	state := &runnerState{ID: created.ID, Token: created.Token, Name: created.Name}
+	if previous, err := readRunnerState(); err == nil {
+		// A fresh registration keeps the operator's harness switches.
+		state.Harnesses = previous.Harnesses
+	}
 	if err := writeRunnerState(state); err != nil {
 		return nil, err
 	}
+	runnerInventory.markSent(registeredInventoryHash(req))
 	return state, nil
 }
 
@@ -741,6 +753,9 @@ func runRunnerSession(
 						return err
 					}
 				}
+			}
+			if msg.Type == "ack" && msg.InventoryWanted {
+				runnerInventory.requestFull()
 			}
 			if msg.Type == "logs_ack" {
 				if b := jobs.job(msg.ExecutionID).logBuffer(); b != nil {

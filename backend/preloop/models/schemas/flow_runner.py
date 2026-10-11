@@ -6,7 +6,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, get_args
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidatorFunctionWrapHandler,
+    field_validator,
+)
 
 from preloop.models.models.flow_runner import (
     DEFAULT_RUNNER_CONCURRENCY,
@@ -162,6 +169,21 @@ class RunnerRegisterRequest(BaseModel):
     #: Locally installed harnesses (contract A). Absent or null for runners
     #: that predate it ("inventory unknown").
     harness_inventory: Optional[HarnessInventory] = None
+
+    @field_validator("harness_inventory", mode="wrap")
+    @classmethod
+    def ignore_invalid_harness_inventory(
+        cls, value: Any, handler: ValidatorFunctionWrapHandler
+    ) -> Optional[HarnessInventory]:
+        """Register without inventory rather than fail on a malformed one.
+
+        The runner then sees ``inventory_wanted`` on its first heartbeat and
+        resends it, where the server caps sizes before validating.
+        """
+        try:
+            return handler(value)
+        except ValidationError:
+            return None
 
     #: How many jobs this process is willing to run at once. It may lower the
     #: stored ceiling for as long as it is connected; it never raises it.

@@ -410,6 +410,7 @@ func copilotRunnerResult(capture copilotCapture) (map[string]any, error) {
 	if capture.Model != "" {
 		result["model"] = capture.Model
 	}
+	noteHarnessRunSucceeded(hostExecHarnessCopilot, capture.Model)
 	if capture.PremiumRequests != nil {
 		result["premium_requests"] = *capture.PremiumRequests
 	}
@@ -426,6 +427,7 @@ func copilotHostExecFailure(buffer *runnerLogBuffer, profileName string, job map
 	buffer.mu.Unlock()
 	switch {
 	case strings.Contains(line, "No authentication information found"):
+		noteHarnessSignedOut(hostExecHarnessCopilot)
 		return "copilot_not_logged_in: Copilot CLI on this runner has no login; run `copilot login` as the runner user or export COPILOT_GITHUB_TOKEN"
 	case strings.Contains(line, "--model") && strings.Contains(line, "not available"):
 		requested := jobModelIdentifier(job)

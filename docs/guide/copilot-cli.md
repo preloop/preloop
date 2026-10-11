@@ -263,7 +263,7 @@ does not resume sessions. Pull requests are opened only through the
 opt-in managed publication above (one Bitbucket Cloud repository, legacy
 mode). Other requests are refused before the run with a message naming
 the missing capability; they are not silently dropped. See
-[host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
+[host execution profiles](runners/quickstart-linux.md#host-execution-profiles-advanced-override-private-only)
 for the shared rules, and
 [#1069](https://github.com/preloop/preloop/issues/1069) for the open work
 on publication retry from retained local work and managed OAuth

@@ -88,6 +88,14 @@ class FlowRunner(Base):
     capabilities: Mapped[Dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict
     )
+    #: Last harness inventory the runner published (#1480); null means the
+    #: runner predates inventory ("inventory unknown").
+    harness_inventory: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB, nullable=True
+    )
+    harness_inventory_updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     account = relationship("Account")
     registered_by = relationship("User")
