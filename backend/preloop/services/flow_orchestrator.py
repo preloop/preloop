@@ -3152,8 +3152,12 @@ class FlowExecutionOrchestrator:
 
         if getattr(self, "_harness_fell_back", False):
             return
+        from preloop.services.runner_service import unwrap_agent_config
+
         kind = self.agent_type or self.flow.agent_type
-        config = self.flow.agent_config
+        config = unwrap_agent_config(self.flow.agent_config)
+        if not isinstance(config, dict):
+            config = {}
         harness = host_exec_harness_selector(kind, config)
         if not harness or harness_fallback_mode(config) != HARNESS_FALLBACK_SERVER:
             return
@@ -3161,6 +3165,7 @@ class FlowExecutionOrchestrator:
         from preloop.services.runner_service import (
             AUTO_RUNNER_POOL,
             harness_routing_reason,
+            resolve_fallback_server_model,
             resolve_runner_pool,
         )
 
@@ -3189,8 +3194,10 @@ class FlowExecutionOrchestrator:
         )
         if eligible:
             return
-        wanted = str((config or {}).get("fallback_model_identifier") or "").strip()
-        model = self._fallback_server_model(wanted)
+        wanted = str(config.get("fallback_model_identifier") or "").strip()
+        model = resolve_fallback_server_model(
+            self.db, account_id=self.flow.account_id, wanted=wanted
+        )
         if model is None:
             raise ValueError(
                 f"No runner can take this run on harness {harness} ({reason}) "
@@ -3212,17 +3219,6 @@ class FlowExecutionOrchestrator:
             self.execution_log.billing_mode = BILLING_MODE_METERED
             self.db.add(self.execution_log)
             self.db.commit()
-
-    def _fallback_server_model(self, wanted: str) -> Any:
-        """Account-visible AI model named by id or model identifier."""
-        if not wanted:
-            return None
-        for model in crud_ai_model.get_all_for_account(
-            self.db, account_id=self.flow.account_id
-        ):
-            if str(model.id) == wanted or model.model_identifier == wanted:
-                return model
-        return None
 
     async def _prepare_execution_context(
         self, *, resolved_prompt: Optional[str] = None

@@ -94,3 +94,35 @@ def test_runner_pin_must_be_a_runner_the_editor_may_use(
     response = client.post("/api/v1/flows", json=body)
     assert response.status_code == 200, response.text
     assert response.json()["agent_config"]["harness"] == "copilot_cli"
+
+
+def test_fallback_model_must_resolve_when_the_flow_is_saved(
+    client, test_user, monkeypatch
+) -> None:
+    known = SimpleNamespace(id=uuid4(), model_identifier="gpt-5.2")
+    monkeypatch.setattr(
+        "preloop.models.crud.crud_ai_model.get_all_for_account",
+        lambda db, **kw: [known],
+    )
+    monkeypatch.setattr(
+        "preloop.services.model_routing.model_usable_for_agent",
+        lambda model, agent_type: agent_type == "codex",
+    )
+    body = {
+        "name": f"seat-fallback-{uuid4().hex[:6]}",
+        "prompt_template": "review",
+        "agent_type": "copilot",
+        "trigger_event_source": "webhook",
+        "agent_config": {
+            "harness": "copilot_cli",
+            "harness_fallback": "fallback_server",
+            "fallback_model_identifier": "gpt-typo",
+        },
+    }
+    response = client.post("/api/v1/flows", json=body)
+    assert response.status_code == 400, response.text
+    assert "fallback_model_identifier" in response.json()["detail"]
+
+    body["agent_config"]["fallback_model_identifier"] = str(known.id)
+    response = client.post("/api/v1/flows", json=body)
+    assert response.status_code == 200, response.text

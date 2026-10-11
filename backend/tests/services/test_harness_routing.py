@@ -614,32 +614,48 @@ def test_factory_runs_server_fallback_on_hosted_harness() -> None:
     assert isinstance(executor, CodexAgent)
 
 
-def test_orchestrator_falls_back_to_server_pool(monkeypatch) -> None:
+@pytest.mark.parametrize("nested", [False, True])
+def test_orchestrator_falls_back_to_server_pool(monkeypatch, nested) -> None:
+    """Also for the doubly wrapped ``{"agent_config": {...}}`` storage shape."""
     from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
     account_id = uuid4()
     offline = _runner(account_id, online=False)
     model = SimpleNamespace(id=uuid4(), model_identifier="gpt-5.2")
+    unusable = SimpleNamespace(id=uuid4(), model_identifier="gpt-5.2")
     monkeypatch.setattr(crud_flow_runner, "find_matching", lambda db, **kw: [offline])
     monkeypatch.setattr(
-        "preloop.services.flow_orchestrator.crud_ai_model.get_all_for_account",
-        lambda db, **kw: [SimpleNamespace(id=uuid4(), model_identifier="x"), model],
+        "preloop.models.crud.crud_ai_model.get_all_for_account",
+        lambda db, **kw: [
+            SimpleNamespace(id=uuid4(), model_identifier="x"),
+            unusable,
+            model,
+        ],
     )
+    monkeypatch.setattr(
+        "preloop.services.model_routing.model_usable_for_agent",
+        lambda candidate, agent_type: (
+            candidate is not unusable and agent_type == "codex"
+        ),
+    )
+    config = {
+        "harness": "copilot_cli",
+        "harness_fallback": "fallback_server",
+        "fallback_model_identifier": "gpt-5.2",
+    }
     orchestrator = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
     orchestrator.db = MagicMock()
     orchestrator.agent_type = "copilot"
     orchestrator.ai_model = None
     orchestrator.trigger_event_data = {}
-    orchestrator.execution_log = SimpleNamespace(routing_reason=None, billing_mode=None)
+    orchestrator.execution_log = SimpleNamespace(
+        routing_reason=None, billing_mode=None
+    )
     orchestrator.flow = SimpleNamespace(
         agent_type="copilot",
         runner_pool="jonas-laptop",
         account_id=account_id,
-        agent_config={
-            "harness": "copilot_cli",
-            "harness_fallback": "fallback_server",
-            "fallback_model_identifier": "gpt-5.2",
-        },
+        agent_config={"agent_config": config} if nested else config,
     )
     orchestrator._apply_harness_routing_decision()
     assert orchestrator.agent_type == "codex"

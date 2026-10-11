@@ -1002,3 +1002,27 @@ def harness_options(
         option["models"] = list(option["models"].values())
         harnesses.append(option)
     return {"harnesses": harnesses}
+
+
+def resolve_fallback_server_model(db: Session, *, account_id: Any, wanted: Any) -> Any:
+    """The AI model a ``fallback_server`` run uses, or None.
+
+    ``wanted`` is an AI model id or model identifier visible to the account
+    that the hosted fallback harness can reach. Used when the flow is saved
+    (reject an unknown value) and when the run starts (load the model), so a
+    flow cannot be saved in a state that only fails when the fallback is
+    needed.
+    """
+    from preloop.models.crud import crud_ai_model
+    from preloop.services.host_exec import HARNESS_SERVER_FALLBACK_AGENT_TYPE
+    from preloop.services.model_routing import model_usable_for_agent
+
+    name = wanted.strip() if isinstance(wanted, str) else ""
+    if not name or account_id is None:
+        return None
+    for model in crud_ai_model.get_all_for_account(db, account_id=account_id):
+        if str(model.id) != name and model.model_identifier != name:
+            continue
+        if model_usable_for_agent(model, HARNESS_SERVER_FALLBACK_AGENT_TYPE):
+            return model
+    return None

@@ -81,6 +81,8 @@ from preloop.services.flow_delegation import (
     validate_callable_flows,
 )
 from preloop.services.host_exec import (
+    HARNESS_FALLBACK_SERVER,
+    harness_fallback_mode,
     harness_pinned_runner_id,
     host_exec_effective_profile,
     host_exec_flow_error,
@@ -177,6 +179,7 @@ def _reject_host_exec_flow(
     if error:
         raise HTTPException(status_code=400, detail=error)
     _reject_unusable_runner_pin(agent_config, db=db, current_user=current_user)
+    _reject_unknown_fallback_model(agent_config, db=db, account_id=account_id)
     profile = host_exec_effective_profile(agent_type, agent_config)
     if profile:
         blocked = host_exec_unavailable_reason(
@@ -220,6 +223,29 @@ def _reject_unusable_runner_pin(
         raise HTTPException(
             status_code=400,
             detail="agent_config.runner_id must be a runner you may use",
+        )
+
+
+def _reject_unknown_fallback_model(
+    agent_config: Any, *, db: Optional[Session], account_id: Any
+) -> None:
+    """``fallback_server`` needs a fallback model the hosted harness can use."""
+    if db is None or harness_fallback_mode(agent_config) != HARNESS_FALLBACK_SERVER:
+        return
+    from preloop.services.runner_service import (
+        resolve_fallback_server_model,
+        unwrap_agent_config,
+    )
+
+    config = unwrap_agent_config(agent_config)
+    wanted = config.get("fallback_model_identifier") if isinstance(config, dict) else None
+    if resolve_fallback_server_model(db, account_id=account_id, wanted=wanted) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "agent_config.fallback_model_identifier must name an AI model "
+                "of this account that the hosted Codex harness can use"
+            ),
         )
 
 
