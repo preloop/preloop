@@ -59,7 +59,6 @@ def downgrade() -> None:
     op.create_check_constraint(
         STATUS_CHECK,
         TABLE,
-        "status IN ('pending', 'delivered', 'acked', 'failed', 'expired', "
-        "'cancelled')",
+        "status IN ('pending', 'delivered', 'acked', 'failed', 'expired', 'cancelled')",
     )
     op.drop_column(TABLE, "delivery_event")
