@@ -648,9 +648,7 @@ def test_orchestrator_falls_back_to_server_pool(monkeypatch, nested) -> None:
     orchestrator.agent_type = "copilot"
     orchestrator.ai_model = None
     orchestrator.trigger_event_data = {}
-    orchestrator.execution_log = SimpleNamespace(
-        routing_reason=None, billing_mode=None
-    )
+    orchestrator.execution_log = SimpleNamespace(routing_reason=None, billing_mode=None)
     orchestrator.flow = SimpleNamespace(
         agent_type="copilot",
         runner_pool="jonas-laptop",

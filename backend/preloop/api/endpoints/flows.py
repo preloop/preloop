@@ -238,7 +238,9 @@ def _reject_unknown_fallback_model(
     )
 
     config = unwrap_agent_config(agent_config)
-    wanted = config.get("fallback_model_identifier") if isinstance(config, dict) else None
+    wanted = (
+        config.get("fallback_model_identifier") if isinstance(config, dict) else None
+    )
     if resolve_fallback_server_model(db, account_id=account_id, wanted=wanted) is None:
         raise HTTPException(
             status_code=400,
