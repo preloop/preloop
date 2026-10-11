@@ -35269,7 +35269,8 @@ components:
           - type: string
           - type: 'null'
           title: Session Id
-          description: Harness session id, for logging only.
+          description: Harness session id. Resolved only against sessions the caller's
+            own runtime principal registered, to claim notes for that run.
       type: object
       title: OperatorNotePendingRequest
       description: 'A harness-side pull for whatever this session has been told.

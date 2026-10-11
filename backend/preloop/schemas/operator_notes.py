@@ -145,7 +145,11 @@ class OperatorNotePendingRequest(BaseModel):
         ),
     )
     session_id: Optional[str] = Field(
-        None, description="Harness session id, for logging only."
+        None,
+        description=(
+            "Harness session id. Resolved only against sessions the caller's "
+            "own runtime principal registered, to claim notes for that run."
+        ),
     )
 
 

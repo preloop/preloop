@@ -1143,3 +1143,26 @@ def test_receipt_durable_hook_ack_uses_its_agents_current_session(
     assert (
         client.get(f"{NOTES_URL}/{created['note_id']}").json()["state"] == "delivered"
     )
+
+
+def test_operator_ending_a_session_fails_its_session_only_notes(
+    client, db_session, test_user
+):
+    """Ending a run from the console is a session end too: notes addressed
+    only to it move to undeliverable in the same request."""
+    token = _issue_runtime_token(client)
+    run_id = _start_run(client, token, "run-console-end")
+    note_id = client.post(
+        NOTES_URL, json={"runtime_session_id": run_id, "text": "Never read."}
+    ).json()["note_id"]
+
+    response = client.patch(
+        f"/api/v1/runtime-sessions/{run_id}", json={"action": "end"}
+    )
+
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    stored = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=note_id
+    )
+    assert stored.status == "undeliverable"
