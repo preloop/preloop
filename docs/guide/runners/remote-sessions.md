@@ -55,9 +55,22 @@ extension.
 | `workspace_not_authorized` | The directory is not authorized for this agent. |
 | `max_concurrent_reached` | The runner already runs its maximum of remote sessions (2 by default). |
 | `checkout_not_available` | Repository checkouts are not available on this server yet. |
+| `checkout_source_not_supported` | The tracker is not GitHub or Bitbucket Cloud. |
+| `checkout_requires_app_or_oauth` | A GitHub tracker using a personal access token; checkouts need a GitHub App tracker. |
+| `checkout_requires_oauth` | A Bitbucket Cloud tracker using an access token or app password; checkouts need OAuth. |
+| `checkout_failed` | The runner could not clone the repository. |
+| `workspace_dirty` | The runner refused the directory because of uncommitted changes. |
+| `sessions_disabled_on_host` | Remote sessions are turned off on this host. |
 | `remote_sessions_unavailable` | This server does not run the session service yet. |
+| `not_runner_owner` | You are neither the runner owner nor an account admin (403). |
 
-Every start, refusal, message and stop is written to the audit log
+Any other code the runner reports when it rejects a session is passed through
+unchanged, and the session ends with `runner_rejected:<code>`. After a start,
+`turn_in_progress` means a message is still being answered and
+`session_ended` means the session can no longer take messages.
+
+Every start, refusal (including a refused read of a runner's session
+options or session list), message and stop is written to the audit log
 (`runner_session.*` events) with the actor, runner, host, agent, model and
 workspace label. Message text is never stored in the audit log, only its
 length.

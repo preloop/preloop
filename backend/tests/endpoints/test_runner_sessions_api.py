@@ -293,7 +293,16 @@ def test_other_member_is_refused(db_session, test_user, service):
     )
     assert row.status == "denied"
     assert not service.plans
-    assert client.get(f"/api/v1/runners/{runner.id}/session-options").status_code == 403
+    for path in ("session-options", "sessions"):
+        assert client.get(f"/api/v1/runners/{runner.id}/{path}").status_code == 403
+    denied = [
+        r
+        for r in _audit(db_session, runner)
+        if r.action == "runner_session.rejected" and r.status == "denied"
+    ]
+    # The start and both reads are each audited.
+    assert len(denied) == 3
+    assert all(r.details["actor_user_id"] == str(member.id) for r in denied)
 
 
 def test_authorizer_can_share_and_deny(db_session, test_user, service):
@@ -647,3 +656,30 @@ def test_member_cannot_steer_owners_session(db_session, test_user, service):
         ).status_code
         == 404
     )
+
+
+def test_blocking_db_work_runs_off_the_event_loop(
+    db_session, test_user, service, monkeypatch
+):
+    real = runner_sessions.run_db_off_loop
+    calls: List[int] = []
+
+    async def recording(operation):
+        calls.append(1)
+        return await real(operation)
+
+    monkeypatch.setattr(runner_sessions, "run_db_off_loop", recording)
+    runner = _runner(db_session, test_user)
+    client = _client(db_session, test_user)
+    session_id = client.post(
+        f"/api/v1/runners/{runner.id}/sessions", json=_start_body()
+    ).json()["session_id"]
+    service.records[session_id].state = "idle"
+    response = client.post(
+        f"/api/v1/runner-sessions/{session_id}/turns", json={"text": "go"}
+    )
+    assert response.status_code == 202
+    response = client.post(f"/api/v1/runner-sessions/{session_id}/stop", json={})
+    assert response.status_code == 202
+    # start: prepare; turn: prepare + audit; stop: lookup + audit.
+    assert len(calls) == 5

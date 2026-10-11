@@ -6,6 +6,26 @@ import './runtime-sessions-view';
 import type { RuntimeSessionsView } from './runtime-sessions-view';
 import { formatCueStart } from './runtime-sessions-view';
 
+const SESSION_OPTIONS = {
+  runner_id: 'r',
+  online: true,
+  sessions_available: true,
+  harnesses: [
+    {
+      harness: 'copilot_cli',
+      display_name: 'GitHub Copilot CLI',
+      session_mode: 'resume',
+      models: [{ id: 'auto', source: 'static' }],
+      available: true,
+    },
+  ],
+  authorized_directories: [
+    { id: 'dir_api', label: 'api', mode: 'write', harnesses: 'all' },
+  ],
+  checkout_sources: [],
+  limits: { max_concurrent: 2, active: 0, idle_timeout_seconds: 1800 },
+};
+
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
@@ -625,7 +645,12 @@ describe('RuntimeSessionsView', () => {
     ];
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      const body = url === '/api/v1/runners' ? runners : {};
+      const body =
+        url === '/api/v1/runners'
+          ? runners
+          : url.includes('/session-options')
+            ? SESSION_OPTIONS
+            : {};
       return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -649,6 +674,18 @@ describe('RuntimeSessionsView', () => {
     expect(dialog.runners.map((r: { id: string }) => r.id)).to.deep.equal([
       'r-1',
     ]);
+    await waitUntil(
+      () => dialog.options !== null,
+      'session options did not load'
+    );
+    await dialog.updateComplete;
+    expect(dialog.selectedRunnerId).to.equal('r-1');
+    expect(dialog.shadowRoot!.querySelector('sl-alert.error')).to.not.exist;
+    expect(
+      dialog
+        .shadowRoot!.querySelector('sl-select.directory')!
+        .getAttribute('value')
+    ).to.equal('dir_api');
 
     dialog.dispatchEvent(
       new CustomEvent('runner-session-started', {

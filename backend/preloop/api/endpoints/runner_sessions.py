@@ -33,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import models
 from preloop.models.crud import (
     crud_account,
@@ -265,6 +266,13 @@ class RunnerSessionService(Protocol):
 
     async def start(self, db: Session, plan: SessionStartPlan) -> RemoteSessionRecord:
         """Persist the session and send ``session_start``.
+
+        The endpoint's ``count_active`` check is an early, best-effort
+        refusal. ``start`` must reserve the slot atomically (row lock or
+        conditional insert) and raise ``max_concurrent_reached`` when two
+        requests race; the runner enforces its own limit as the final
+        backstop. Blocking database work in the async methods belongs off
+        the event loop (``run_db_off_loop``).
 
         Raises:
             RunnerSessionError: ``runner_offline`` when the runner socket is
@@ -633,6 +641,20 @@ def _session_audit(
     return service, record, audit
 
 
+def _prepare_turn(
+    db: Session, user: Any, session_id: str
+) -> tuple[RunnerSessionService, RemoteSessionRecord, _AuditContext]:
+    """Authorize a turn and refuse it while the session cannot take one."""
+    service, record, audit = _session_audit(db, user, session_id)
+    if record.state not in ACTIVE_STATES or record.state == "stopping":
+        raise audit.reject(409, "session_ended", "The session has ended.")
+    if record.turn_in_progress or record.state == "running":
+        raise audit.reject(
+            409, "turn_in_progress", "Wait for the current turn to finish."
+        )
+    return service, record, audit
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -647,20 +669,9 @@ def get_runner_session_options(
 ) -> RunnerSessionOptions:
     """What the caller may start on this runner: harnesses, workspaces, limits."""
     runner = _get_runner(db, runner_id, current_user)
-    decision = may_start_runner_session(
-        AuthorizationContext(
-            account_id=current_user.account_id, db=db, user=current_user
-        ),
-        runner,
-        is_account_admin=_is_account_admin(db, current_user),
-    )
-    if not decision.allowed:
-        raise _error(
-            403,
-            decision.reason or "not_runner_owner",
-            "Only the runner owner or an account admin can use sessions on "
-            "this runner.",
-        )
+    # A denied read is audited like a denied start: probing someone else's
+    # runner must leave a trace.
+    _authorize(_AuditContext(db=db, user=current_user, runner=runner))
     return RunnerSessionOptions(
         runner_id=str(runner.id),
         online=_runner_online(runner),
@@ -672,19 +683,14 @@ def get_runner_session_options(
     )
 
 
-@router.post(
-    "/runners/{runner_id}/sessions",
-    response_model=RunnerSessionStartResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-@require_permission("execute_flows")
-async def start_runner_session(
-    runner_id: UUID,
-    body: RunnerSessionStartRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-) -> RunnerSessionStartResponse:
-    """Start a harness session on a runner. Every outcome is audited."""
+def _prepare_start(
+    db: Session, current_user: Any, runner_id: UUID, body: RunnerSessionStartRequest
+) -> tuple[RunnerSessionService, SessionStartPlan, _AuditContext]:
+    """Authorize, validate, mint and audit a start request (blocking, off-loop).
+
+    Raises:
+        HTTPException: A refusal, already written to the audit log.
+    """
     runner = _get_runner(db, runner_id, current_user)
     workspace = body.workspace
     audit = _AuditContext(
@@ -807,14 +813,33 @@ async def start_runner_session(
         title=body.title,
         limits=limits,
     )
+    return service, plan, audit
+
+
+@router.post(
+    "/runners/{runner_id}/sessions",
+    response_model=RunnerSessionStartResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@require_permission("execute_flows")
+async def start_runner_session(
+    runner_id: UUID,
+    body: RunnerSessionStartRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> RunnerSessionStartResponse:
+    """Start a harness session on a runner. Every outcome is audited."""
+    service, plan, audit = await run_db_off_loop(
+        lambda: _prepare_start(db, current_user, runner_id, body)
+    )
     try:
         record = await service.start(db, plan)
     except RunnerSessionError as exc:
-        raise audit.reject(409, exc.code, exc.message) from None
+        code, message = exc.code, exc.message
+        raise await run_db_off_loop(lambda: audit.reject(409, code, message)) from None
     finally:
         # The credential only ever travels in the session_start frame.
         plan.credential = None
-        credential = None
     return RunnerSessionStartResponse(
         session_id=record.session_id,
         remote_session_id=record.remote_session_id,
@@ -832,15 +857,7 @@ def list_runner_sessions(
 ) -> List[RunnerSessionListItem]:
     """Recent remote sessions on one runner (owner and admins)."""
     runner = _get_runner(db, runner_id, current_user)
-    decision = may_start_runner_session(
-        AuthorizationContext(
-            account_id=current_user.account_id, db=db, user=current_user
-        ),
-        runner,
-        is_account_admin=_is_account_admin(db, current_user),
-    )
-    if not decision.allowed:
-        raise _error(403, decision.reason or "not_runner_owner", "Not allowed.")
+    _authorize(_AuditContext(db=db, user=current_user, runner=runner))
     service = _service
     if service is None:
         return []
@@ -863,24 +880,23 @@ async def send_runner_session_turn(
     current_user: User = Depends(get_current_active_user),
 ) -> RunnerSessionTurnResponse:
     """Send the next prompt. Wave 1 allows one running turn at a time."""
-    service, record, audit = _session_audit(db, current_user, session_id)
-    if record.state not in ACTIVE_STATES or record.state == "stopping":
-        raise audit.reject(409, "session_ended", "The session has ended.")
-    if record.turn_in_progress or record.state == "running":
-        raise audit.reject(
-            409, "turn_in_progress", "Wait for the current turn to finish."
-        )
+    service, record, audit = await run_db_off_loop(
+        lambda: _prepare_turn(db, current_user, session_id)
+    )
     turn_id = str(uuid4())
     try:
         await service.send_turn(db, record, turn_id=turn_id, text=body.text)
     except RunnerSessionError as exc:
-        raise audit.reject(409, exc.code, exc.message) from None
-    audit.log(
-        "runner_session.turn_sent",
-        resource_id=record.remote_session_id,
-        remote_session_id=record.remote_session_id,
-        turn_id=turn_id,
-        text_length=len(body.text),
+        code, message = exc.code, exc.message
+        raise await run_db_off_loop(lambda: audit.reject(409, code, message)) from None
+    await run_db_off_loop(
+        lambda: audit.log(
+            "runner_session.turn_sent",
+            resource_id=record.remote_session_id,
+            remote_session_id=record.remote_session_id,
+            turn_id=turn_id,
+            text_length=len(body.text),
+        )
     )
     return RunnerSessionTurnResponse(turn_id=turn_id, state="queued")
 
@@ -898,17 +914,25 @@ async def stop_runner_session(
     current_user: User = Depends(get_current_active_user),
 ) -> RunnerSessionStopResponse:
     """Ask the runner to end the session (``graceful``) or kill the harness."""
-    service, record, audit = _session_audit(db, current_user, session_id)
+    service, record, audit = await run_db_off_loop(
+        lambda: _session_audit(db, current_user, session_id)
+    )
     mode = (body or RunnerSessionStopRequest()).mode
     if record.state in ACTIVE_STATES:
         try:
             record = await service.stop(db, record, mode=mode)
         except RunnerSessionError as exc:
-            raise audit.reject(409, exc.code, exc.message) from None
-    audit.log(
-        "runner_session.stop_requested",
-        resource_id=record.remote_session_id,
-        remote_session_id=record.remote_session_id,
-        mode=mode,
+            code, message = exc.code, exc.message
+            raise await run_db_off_loop(
+                lambda: audit.reject(409, code, message)
+            ) from None
+    stopped = record
+    await run_db_off_loop(
+        lambda: audit.log(
+            "runner_session.stop_requested",
+            resource_id=stopped.remote_session_id,
+            remote_session_id=stopped.remote_session_id,
+            mode=mode,
+        )
     )
     return RunnerSessionStopResponse(session_id=record.session_id, state=record.state)

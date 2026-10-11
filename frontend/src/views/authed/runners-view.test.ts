@@ -9,6 +9,26 @@ import { invalidateApiCaches } from '../../api';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
+const SESSION_OPTIONS = {
+  runner_id: 'r',
+  online: true,
+  sessions_available: true,
+  harnesses: [
+    {
+      harness: 'copilot_cli',
+      display_name: 'GitHub Copilot CLI',
+      session_mode: 'resume',
+      models: [{ id: 'auto', source: 'static' }],
+      available: true,
+    },
+  ],
+  authorized_directories: [
+    { id: 'dir_api', label: 'api', mode: 'write', harnesses: 'all' },
+  ],
+  checkout_sources: [],
+  limits: { max_concurrent: 2, active: 0, idle_timeout_seconds: 1800 },
+};
+
 describe('RunnersView', () => {
   let fetchStub: sinon.SinonStub;
   let onRunnerMessage: ((message: unknown) => void) | undefined;
@@ -60,6 +80,9 @@ describe('RunnersView', () => {
               ? ['22222222-2222-4222-8222-222222222222']
               : [],
           });
+        }
+        if (url.includes('/session-options')) {
+          return json(SESSION_OPTIONS);
         }
         if (url.includes('/api/v1/runners')) {
           return json(runners);
@@ -222,6 +245,17 @@ describe('RunnersView', () => {
     expect(dialog.getAttribute('runner-id')).to.equal(
       '11111111-1111-4111-8111-111111111111'
     );
+    await waitUntil(
+      () => (dialog as any).options !== null,
+      'session options did not load'
+    );
+    await (dialog as any).updateComplete;
+    expect(dialog.shadowRoot!.querySelector('sl-alert.error')).to.not.exist;
+    expect(
+      dialog
+        .shadowRoot!.querySelector('sl-select.harness')!
+        .getAttribute('value')
+    ).to.equal('copilot_cli');
   });
 
   it('badges an ephemeral runner only while it is connected', async () => {
