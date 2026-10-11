@@ -1136,6 +1136,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     FlowExecution.error_message,
                     FlowExecution.failure_category,
                     FlowExecution.queued_reason,
+                    FlowExecution.routing_reason,
+                    FlowExecution.billing_mode,
                     # Why a row in this tree changed state, which for a
                     # cascading stop (#689) is the only place the tree can
                     # say "stopped with its parent" rather than "stopped".
@@ -1505,6 +1507,10 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     # noticed, so "why is it not starting" must not be a
                     # per-row lazy load.
                     FlowExecution.queued_reason,
+                    # Harness routing (#1481): why a harness-routed run waits
+                    # and whether it ran on a seat. Same per-row reason.
+                    FlowExecution.routing_reason,
+                    FlowExecution.billing_mode,
                     FlowExecution.runner_id,
                     FlowExecution.agent_session_reference,
                     FlowExecution.retry_of_execution_id,
