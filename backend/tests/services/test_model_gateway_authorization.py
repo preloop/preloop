@@ -3,8 +3,13 @@
 Subscription-OAuth (Claude Code / Codex) models are bound to one managed
 agent's credentials. They must only be surfaced to — and resolvable by — the
 gateway principal whose ``managed_agent_id`` has an active row in
-``managed_agent_ai_model_binding`` for that model. BYOK/API-key models stay
-visible to every principal, and console user tokens keep full visibility.
+``managed_agent_ai_model_binding`` for that model.
+
+A managed agent that has configured models (active bindings) and no explicit
+``allowed_models`` allowlist sees exactly those configured models: account-wide
+BYOK / hosted rows are not offered to it just because they exist. Agents with
+no bindings, legacy credentials and console user tokens keep seeing every
+BYOK/API-key model, and console user tokens keep full visibility.
 
 The rules are pinned at the single authorized-set chokepoint
 (``compute_authorized_model_ids``) via the service surfaces that consume it:
@@ -180,11 +185,11 @@ def test_own_bound_model_visible_to_its_principal(db_session, test_user):
         db_session, _agent_context(db_session, test_user, agent_a)
     )
 
-    assert sorted(_listed_ids(service)) == sorted([BYOK_ALIAS, BOUND_ALIAS_A])
+    assert BOUND_ALIAS_A in _listed_ids(service)
 
 
-def test_byok_models_listed_for_every_principal(db_session, test_user):
-    """CRITICAL regression: BYOK models stay visible to all principals."""
+def test_byok_models_listed_for_unbound_principals(db_session, test_user):
+    """BYOK models stay visible to agents without bindings, legacy keys, users."""
     agent_a = _make_agent(db_session, test_user, source_id="hermes-a")
     agent_b = _make_agent(db_session, test_user, source_id="hermes-b")
     _make_byok_gateway_model(db_session, test_user)
@@ -192,7 +197,6 @@ def test_byok_models_listed_for_every_principal(db_session, test_user):
     _bind_model_to_agent(db_session, test_user, agent_a, bound, alias=BOUND_ALIAS_A)
 
     contexts = [
-        _agent_context(db_session, test_user, agent_a),
         _agent_context(db_session, test_user, agent_b),
         _legacy_context(db_session, test_user),
         _user_context(test_user),
@@ -200,6 +204,118 @@ def test_byok_models_listed_for_every_principal(db_session, test_user):
     for context in contexts:
         service = OpenAIGatewayService(db_session, context)
         assert BYOK_ALIAS in _listed_ids(service)
+
+
+def test_configured_agent_sees_only_its_configured_models(db_session, test_user):
+    """An agent with bindings and no allowlist is limited to what it configured.
+
+    Account-wide BYOK rows exist, but they are not this agent's models: the
+    listing, the alias resolution and the "available" enumeration all leave
+    them out, and a request for one is a 400 that says so (not "bound to
+    another agent").
+    """
+    agent_a = _make_agent(db_session, test_user, source_id="hermes-a")
+    _make_byok_gateway_model(db_session, test_user)
+    bound = _make_bound_gateway_model(db_session, test_user, alias=BOUND_ALIAS_A)
+    _bind_model_to_agent(db_session, test_user, agent_a, bound, alias=BOUND_ALIAS_A)
+
+    service = OpenAIGatewayService(
+        db_session, _agent_context(db_session, test_user, agent_a)
+    )
+
+    assert _listed_ids(service) == [BOUND_ALIAS_A]
+    with pytest.raises(ModelGatewayAPIError) as excinfo:
+        service._resolve_requested_model(BYOK_ALIAS, provider="openai")
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.code == "model_not_authorized"
+    assert excinfo.value.message == (
+        f"Model '{BYOK_ALIAS}' is not configured for this agent. Models "
+        f"available to this credential: {BOUND_ALIAS_A}. Add it under the "
+        "agent's Models & spend in the Preloop console, or re-run "
+        "`preloop agents onboard` with it selected."
+    )
+
+
+def test_configured_byok_agent_sees_only_its_byok_model(db_session, test_user):
+    """The configured-models default applies to BYOK bindings as well."""
+    agent_a = _make_agent(db_session, test_user, source_id="hermes-a")
+    mine = _make_byok_gateway_model(db_session, test_user, alias="openai/gpt-5-mine")
+    _make_byok_gateway_model(db_session, test_user, alias="openai/gpt-5-other")
+    _bind_model_to_agent(
+        db_session, test_user, agent_a, mine, alias="openai/gpt-5-mine"
+    )
+
+    service = OpenAIGatewayService(
+        db_session, _agent_context(db_session, test_user, agent_a)
+    )
+
+    assert _listed_ids(service) == ["openai/gpt-5-mine"]
+    assert (
+        service._resolve_requested_model("openai/gpt-5-mine", provider="openai").id
+        == mine.id
+    )
+
+
+def _set_agent_allowlist(db_session, test_user, agent, allowed: list[str]) -> None:
+    from preloop.models.crud import crud_account
+    from preloop.services.subject_governance import (
+        SUBJECT_TYPE_MANAGED_AGENTS,
+        set_subject_governance,
+    )
+
+    account = crud_account.get(db_session, id=test_user.account_id)
+    meta = set_subject_governance(
+        account.meta_data or {},
+        subject_type=SUBJECT_TYPE_MANAGED_AGENTS,
+        subject_id=str(agent.id),
+        config={"allowed_models": allowed},
+    )
+    crud_account.update(db_session, db_obj=account, obj_in={"meta_data": meta})
+
+
+def test_explicit_allowlist_replaces_configured_default(db_session, test_user):
+    """Checking models under Models & spend is the explicit list; it wins.
+
+    The allowlist names a BYOK row the agent never bound: that row becomes
+    usable, while an unlisted configured model is no longer offered.
+    """
+    agent_a = _make_agent(db_session, test_user, source_id="hermes-a")
+    byok = _make_byok_gateway_model(db_session, test_user)
+    bound = _make_bound_gateway_model(db_session, test_user, alias=BOUND_ALIAS_A)
+    _bind_model_to_agent(db_session, test_user, agent_a, bound, alias=BOUND_ALIAS_A)
+    _set_agent_allowlist(db_session, test_user, agent_a, [BYOK_ALIAS])
+
+    service = OpenAIGatewayService(
+        db_session, _agent_context(db_session, test_user, agent_a)
+    )
+
+    assert _listed_ids(service) == [BYOK_ALIAS]
+    assert service._resolve_requested_model(BYOK_ALIAS, provider="openai").id == (
+        byok.id
+    )
+    anthropic_ids = [item["id"] for item in service.list_anthropic_models()["data"]]
+    assert anthropic_ids == [BYOK_ALIAS]
+
+
+def test_allowlist_cannot_grant_another_agents_bound_model(db_session, test_user):
+    """The allowlist widens the configured default, never the binding rule."""
+    agent_a = _make_agent(db_session, test_user, source_id="hermes-a")
+    agent_b = _make_agent(db_session, test_user, source_id="hermes-b")
+    byok = _make_byok_gateway_model(db_session, test_user)
+    bound = _make_bound_gateway_model(db_session, test_user, alias=BOUND_ALIAS_A)
+    _bind_model_to_agent(db_session, test_user, agent_a, bound, alias=BOUND_ALIAS_A)
+    _bind_model_to_agent(db_session, test_user, agent_b, byok, alias=BYOK_ALIAS)
+    _set_agent_allowlist(db_session, test_user, agent_b, [BYOK_ALIAS, BOUND_ALIAS_A])
+
+    service = OpenAIGatewayService(
+        db_session, _agent_context(db_session, test_user, agent_b)
+    )
+
+    assert _listed_ids(service) == [BYOK_ALIAS]
+    with pytest.raises(ModelGatewayAPIError) as excinfo:
+        service._resolve_requested_model(BOUND_ALIAS_A, provider="openai")
+    assert excinfo.value.status_code == 400
+    assert "bound to another agent" in excinfo.value.message
 
 
 def test_user_token_listing_unchanged(db_session, test_user):
@@ -266,8 +382,8 @@ def test_agents_sharing_runtime_only_see_their_own_bound_models(db_session, test
         db_session, _agent_context(db_session, test_user, agent_b)
     )
 
-    assert sorted(_listed_ids(service_a)) == sorted([BYOK_ALIAS, BOUND_ALIAS_A])
-    assert sorted(_listed_ids(service_b)) == sorted([BYOK_ALIAS, BOUND_ALIAS_B])
+    assert _listed_ids(service_a) == [BOUND_ALIAS_A]
+    assert _listed_ids(service_b) == [BOUND_ALIAS_B]
     assert (
         service_a._resolve_requested_model(BOUND_ALIAS_A, provider="openai").id
         == bound_a.id

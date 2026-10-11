@@ -14,6 +14,13 @@ if TYPE_CHECKING:
     from .ai_model import AIModel
     from .managed_agent import ManagedAgent
 
+# ``config_key`` prefix of bindings the model gateway creates on its own when
+# an agent asks for a subscription-OAuth sibling model the onboarding import
+# did not register (``gateway.autoregister.<model_identifier>``). The CLI
+# never enumerates these slots, so a binding-set replacement must recognise
+# them by prefix rather than expect them in the payload.
+AUTOREGISTER_CONFIG_KEY_PREFIX = "gateway.autoregister."
+
 
 class ManagedAgentAIModelBinding(Base):
     """Persist one managed-agent binding to one durable AI model."""

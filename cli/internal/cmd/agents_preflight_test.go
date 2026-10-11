@@ -321,8 +321,8 @@ func TestDetectAgentAuthStateMatrix(t *testing.T) {
 }
 
 func TestSupportLevelForAgentMatrix(t *testing.T) {
-	fullAgents := []string{"Claude Code", "Codex CLI", "OpenCode", "Gemini CLI", "Hermes", "OpenClaw"}
-	mcpOnlyAgents := []string{"Cursor", "Claude Desktop", "Windsurf", "VSCode / Copilot", "Antigravity", "Devin"}
+	fullAgents := []string{"Claude Code", "Codex CLI", "OpenCode", "Gemini CLI", "Hermes", "OpenClaw", "Claude Desktop"}
+	mcpOnlyAgents := []string{"Cursor", "Windsurf", "VSCode / Copilot", "Antigravity", "Devin"}
 	for _, name := range fullAgents {
 		if level := supportLevelForAgent(AgentConfig{Name: name}); level != agentSupportLevelFull {
 			t.Fatalf("expected %s to be full support, got %q", name, level)
@@ -401,7 +401,7 @@ func TestClassifySuccessfulOnboardingReflectsAuthAndSupport(t *testing.T) {
 	}
 
 	mcpOnly := classifyAgentOnboardingOutcome(AgentConfig{
-		Name:      "Claude Desktop",
+		Name:      "Cursor",
 		AuthState: string(agentAuthStateUnknown),
 	}, nil)
 	if !strings.Contains(mcpOnly.Reason, mcpOnlySupportLabel) || !strings.Contains(mcpOnly.Reason, "application behavior unverified") {
@@ -421,7 +421,7 @@ func TestPrintAgentOnboardingSummaryShowsSupportLevelReason(t *testing.T) {
 	var buffer bytes.Buffer
 	printAgentOnboardingSummary(&buffer, []agentOnboardingOutcome{
 		classifyAgentOnboardingOutcome(AgentConfig{
-			Name:      "Claude Desktop",
+			Name:      "Cursor",
 			AuthState: string(agentAuthStateUnknown),
 		}, nil),
 	})
@@ -431,13 +431,15 @@ func TestPrintAgentOnboardingSummaryShowsSupportLevelReason(t *testing.T) {
 }
 
 func TestMCPOnlyAgentModelNoteLeadsWithSupportLabel(t *testing.T) {
-	for _, name := range []string{"Cursor", "VSCode / Copilot", "Claude Desktop", "Antigravity", "Devin", "Windsurf"} {
+	for _, name := range []string{"Cursor", "VSCode / Copilot", "Antigravity", "Devin", "Windsurf"} {
 		note := mcpOnlyAgentModelNote(AgentConfig{Name: name})
 		if !strings.HasPrefix(note, mcpOnlySupportLabel) {
 			t.Fatalf("expected %s note to lead with the support label, got %q", name, note)
 		}
 	}
-	for _, name := range []string{"Claude Code", "Codex CLI", "OpenClaw"} {
+	// Claude Desktop routes models through the managed configuration the
+	// default onboarding installs, so it carries no MCP-only note either.
+	for _, name := range []string{"Claude Code", "Codex CLI", "OpenClaw", "Claude Desktop"} {
 		if note := mcpOnlyAgentModelNote(AgentConfig{Name: name}); note != "" {
 			t.Fatalf("expected no mcp-only note for %s, got %q", name, note)
 		}

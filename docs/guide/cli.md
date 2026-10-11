@@ -170,7 +170,7 @@ native binary.
 | Hermes | Yes | Yes | Yes (runtime plugin) |
 | OpenClaw | Yes | Yes (OpenAI-compatible gateway) | Yes (runtime plugin) |
 | Cursor | Yes | Manual BYOK: set the OpenAI base-URL override in Cursor's Settings → Models yourself; covers the AI panel incl. Agent mode | n/a |
-| Claude Desktop | Yes | Yes, via managed config: `--model-route direct` or `apps-gateway` prints it for your MDM ([Claude Desktop](clients/claude-desktop.md)) | n/a |
+| Claude Desktop | Yes | Yes: the default onboarding installs the direct route into this device's managed configuration (asks for administrator rights); `--model-route direct` or `apps-gateway` prints it for your MDM ([Claude Desktop](clients/claude-desktop.md)) | n/a |
 | Windsurf | Yes | No | n/a |
 | VS Code / Copilot | Yes | Manual BYOK: Chat: Manage Language Models -> Add Models -> Custom Endpoint, then `chatLanguageModels.json`. Full URLs end in `/openai/v1/chat/completions`, `/openai/v1/responses`, or `/anthropic/v1/messages`. Set `toolCalling: true`. Business and Enterprise need the admin BYOK policy. See [VS Code Copilot](clients/vscode-copilot.md) | n/a |
 | Copilot CLI | Yes (`~/.copilot/mcp-config.json`) | No on onboard. `preloop copilot` launches the CLI with gateway env vars | n/a |

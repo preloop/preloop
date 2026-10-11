@@ -4,9 +4,29 @@ Editions: OSS, Cloud, Enterprise. Everything on this page ships in OSS.
 
 After this page you can route Claude Desktop model traffic (Chat, Cowork and Code tabs) through the Preloop model gateway, either directly or behind a Claude apps gateway, and you know what Preloop sees and does not see on each route.
 
-Claude Desktop in third-party mode reads its inference settings from the operating system's managed configuration. Preloop generates that configuration for you; your MDM (Jamf, Intune, Kandji, Fleet, or a root-owned file on Linux) deploys it. The CLI never writes managed configuration itself: those locations are admin-owned, and a wrong file there can disable Desktop's local settings entirely.
+Claude Desktop in third-party mode reads its inference settings from the operating system's managed configuration, which is admin-owned (macOS managed preferences, machine policy on Windows, a root-owned file on Linux).
 
-Tool governance is separate and unchanged: `preloop agents onboard "Claude Desktop"` (without `--model-route`) adds the managed MCP bridge, or you add Preloop as a custom connector. See [Cursor, Claude Desktop and other MCP clients](other-mcp-clients.md).
+## One device: the default onboarding
+
+```bash
+preloop agents onboard "Claude Desktop"
+```
+
+This is the full onboarding for the machine you run it on. It adds the managed MCP bridge for tool governance, then offers to install the **direct route** (below) into the managed configuration of this device:
+
+- macOS: `/Library/Managed Preferences/<user>/com.anthropic.claudefordesktop.plist`, written with `sudo install` (you are asked for your password once).
+- Linux: `/etc/claude-desktop/managed-settings.json`, root-owned, mode 0644.
+- Windows: `HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Claude`, through an elevated `reg import`.
+
+The preview before the confirmation names the destination. Answer `n` to the routing question to keep an MCP-only enrollment; the configuration is then left in `~/.preloop/agents/claude-desktop/` with the one-line install command. `--yes` installs without asking and uses non-interactive `sudo -n`; when that needs a password the file is staged the same way. A managed configuration that is not this Preloop's (an apps gateway, or another gateway) is never overwritten. `preloop agents offboard "Claude Desktop"` removes the configuration it installed (asking first) and the cached credential.
+
+The credential helper's cache is pre-seeded with the managed agent's own credential, so Desktop traffic shows up on the **Claude Desktop** agent in the console (sessions, Models & spend, approvals) rather than on an anonymous per-user key. Restart Claude Desktop after onboarding; on macOS, log out and back in if it still shows its own provider, because macOS caches managed preferences.
+
+## A fleet: `--model-route`
+
+For many devices, Preloop generates the configuration and your MDM (Jamf, Intune, Kandji, Fleet, or a root-owned file on Linux) deploys it. `--model-route` only prints files and never writes a managed location itself.
+
+Tool governance is separate: `preloop agents onboard "Claude Desktop"` adds the managed MCP bridge, or you add Preloop as a custom connector. See [Cursor, Claude Desktop and other MCP clients](other-mcp-clients.md).
 
 ## Pick a route
 

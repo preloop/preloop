@@ -334,14 +334,18 @@ func TestClaudeDesktopRouteNeverWritesAdminLocations(t *testing.T) {
 			t.Fatalf("--out %s must be refused", out)
 		}
 	}
-	// No code path writes the registry or macOS preferences.
+	// The only code that writes the registry or managed preferences is the
+	// default onboarding's privileged install (agents_claude_desktop_onboard.go),
+	// which runs after an explicit confirmation through claudeDesktopRunPrivileged.
+	// No other file may carry a managed-config write command, and the
+	// --model-route printer above never reaches that path.
 	sources, _ := filepath.Glob("*.go")
 	for _, src := range sources {
-		if strings.HasSuffix(src, "_test.go") {
+		if strings.HasSuffix(src, "_test.go") || src == "agents_claude_desktop_onboard.go" {
 			continue
 		}
 		data, _ := os.ReadFile(src)
-		for _, forbidden := range []string{`"reg", "add"`, `"reg", "import"`, `"defaults", "write"`, `"profiles", "install"`} {
+		for _, forbidden := range []string{`"reg", "add"`, `"reg", "import"`, `"defaults", "write"`, `"profiles", "install"`, "claudeDesktopRunPrivileged("} {
 			if bytes.Contains(data, []byte(forbidden)) {
 				t.Fatalf("%s contains a managed-config write command %s", src, forbidden)
 			}

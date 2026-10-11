@@ -448,6 +448,66 @@ def compute_authorized_model_ids(
     )
 
 
+def collect_subject_model_allowlists(
+    db: Session, auth_context: ModelGatewayAuthContext
+) -> list[list[str]]:
+    """Non-empty ``allowed_models`` of every governance scope of a request.
+
+    Scopes, in order: the gateway subject on a trusted upstream request, then
+    the API key, flow and managed agent (``subject_scope_chain``), then the
+    owner's agent policy when the agent is consumed through a resource share.
+    A model must be permitted by all of them.
+
+    Args:
+        db: Active database session.
+        auth_context: Authenticated model gateway request context.
+
+    Returns:
+        One normalized, non-empty allowlist per scope that restricts models.
+        Empty when no scope restricts (every model the principal is
+        authorized for is allowed).
+    """
+    from preloop.models.crud import crud_account
+    from preloop.models.crud.resource_share import crud_resource_share
+    from preloop.services.model_allowlist import normalize_allowed_models
+    from preloop.services.subject_governance import (
+        build_subject_context_from_api_key,
+        get_subject_governance,
+        subject_scope_chain,
+    )
+
+    subject_context: dict[str, Any] = (
+        build_subject_context_from_api_key(auth_context.api_key)
+        if auth_context.api_key
+        else {}
+    )
+    gateway_subject = getattr(auth_context, "gateway_subject", None)
+    if gateway_subject is not None:
+        subject_context["gateway_subject_id"] = str(gateway_subject.id)
+    allowlists: list[list[str]] = []
+    account = crud_account.get(db, id=auth_context.account_id)
+    if account is not None:
+        for subject_type, subject_id in subject_scope_chain(subject_context):
+            config = get_subject_governance(
+                account.meta_data or {},
+                subject_type=subject_type,
+                subject_id=subject_id,
+            )
+            raw = config.get("allowed_models")
+            allowed = normalize_allowed_models(raw if isinstance(raw, list) else None)
+            if allowed:
+                allowlists.append(allowed)
+    owner_config = crud_resource_share.shared_agent_governance(
+        db,
+        account_id=auth_context.account_id,
+        agent_id=resolve_managed_agent_id_for_context(db, auth_context),
+    )
+    owner_allowed = normalize_allowed_models(owner_config.get("allowed_models"))
+    if owner_allowed:
+        allowlists.append(owner_allowed)
+    return allowlists
+
+
 def _principal_authorized_model_ids(
     db: Session,
     auth_context: ModelGatewayAuthContext,
@@ -457,13 +517,21 @@ def _principal_authorized_model_ids(
 
     Authorization rules, in order:
 
-    - BYOK / API-key-backed / ambient models are authorized for every
-      principal in the account (unchanged behavior).
+    - User tokens (console-originated calls, no API key and no OAuth MCP
+      token) keep full visibility of the account inventory.
     - Subscription-OAuth models (``is_principal_bound_oauth``) are authorized
       ONLY for the managed-agent principal whose id has an active row in
       ``managed_agent_ai_model_binding`` for that model.
-    - User tokens (console-originated calls, no API key and no OAuth MCP
-      token) keep full visibility of the account inventory.
+    - A managed agent with at least one active binding and no explicit
+      ``allowed_models`` allowlist on any governance scope is restricted to
+      its configured models: the rows its onboarding bound plus the siblings
+      the gateway registered for it. Account-wide BYOK and hosted models are
+      not offered to it merely because they exist. Checking models under the
+      agent's *Models & spend* replaces this default with the explicit list,
+      which the allowlist preflight then enforces.
+    - Credentials that resolve to a managed agent with no bindings (custom
+      runtimes enrolled through a runtime session token, MCP-only
+      enrollments) keep every BYOK / API-key / ambient model, as before.
     - Fail closed: credentials that resolve to no managed agent — legacy
       gateway keys without ``managed_agent_id`` and OAuth MCP client tokens —
       are never authorized for principal-bound models, and bound models with
@@ -483,8 +551,6 @@ def _principal_authorized_model_ids(
         for ai_model in account_models
         if bool(getattr(ai_model, "is_principal_bound_oauth", False))
     }
-    if not bound_ids:
-        return all_ids
 
     is_user_token = (
         auth_context.api_key is None and auth_context.oauth_access_token is None
@@ -502,8 +568,8 @@ def _principal_authorized_model_ids(
         account_id=str(auth_context.account_id),
         agent_id=managed_agent_id,
     )
-    for binding in bindings:
-        bound_model_id = str(binding.ai_model_id)
-        if bound_model_id in bound_ids:
-            authorized.add(bound_model_id)
+    configured_ids = {str(binding.ai_model_id) for binding in bindings} & all_ids
+    authorized |= configured_ids & bound_ids
+    if configured_ids and not collect_subject_model_allowlists(db, auth_context):
+        authorized &= configured_ids
     return frozenset(authorized)

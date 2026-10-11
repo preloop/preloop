@@ -44,7 +44,10 @@ func capabilitiesForAgent(agent AgentConfig) agentCapabilities {
 	if managedMCP {
 		capabilities.ManagedMCP = controlSupported
 	}
-	if supportsManagedGateway(agent) || isOpenClawAgent(agent) {
+	// Claude Desktop routes through the OS managed configuration, which the
+	// default onboarding installs on this device (or --model-route prints
+	// for an MDM).
+	if supportsManagedGateway(agent) || isOpenClawAgent(agent) || isClaudeDesktopAgent(agent) {
 		capabilities.ModelRoute = controlSupported
 	}
 	// Local permission hooks and the runtime plugin/control-channel adapters

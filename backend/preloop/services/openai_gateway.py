@@ -90,6 +90,9 @@ from preloop.services.codex_tool_compat import (
     sanitize_codex_tools,
 )
 from preloop.models import models
+from preloop.models.models.managed_agent_ai_model_binding import (
+    AUTOREGISTER_CONFIG_KEY_PREFIX,
+)
 from preloop.services.gateway_execution import (
     GatewayModelSnapshot,
     GatewayModel,
@@ -127,6 +130,7 @@ from preloop.services.deepseek_responses_reasoning import (
 )
 from preloop.services.model_gateway_auth import (
     ModelGatewayAuthContext,
+    collect_subject_model_allowlists,
     compute_authorized_model_ids,
     resolve_managed_agent_id_for_context,
 )
@@ -1824,15 +1828,25 @@ class OpenAIGatewayService:
 
     @gateway_database_scope
     def list_models(self) -> Dict[str, Any]:
-        """List gateway-enabled models available to this gateway principal."""
+        """List gateway-enabled models available to this gateway principal.
+
+        The inventory is the principal's authorized set
+        (``compute_authorized_model_ids``: principal-bound rules and the
+        configured-models default) further filtered by the ``allowed_models``
+        of every governance scope, so a model picker never offers a model the
+        gateway would refuse. Same rule as :meth:`list_anthropic_models`.
+        """
         data = []
         account_models = self._get_account_models()
         authorized_ids = self._authorized_model_ids(account_models)
+        allowlists = self._subject_model_allowlists()
         for ai_model in account_models:
             if str(ai_model.id) not in authorized_ids:
                 continue
             runtime = resolve_ai_model_runtime(ai_model)
             if not runtime.model_gateway_enabled:
+                continue
+            if not self._allowlists_permit(ai_model, allowlists):
                 continue
             data.append(
                 {
@@ -1874,8 +1888,6 @@ class OpenAIGatewayService:
         its agent), so a model picker never offers a model the gateway
         would refuse.
         """
-        from preloop.services.model_allowlist import allowlist_permits_model
-
         allowlists = self._subject_model_allowlists()
         data: List[Dict[str, Any]] = []
         account_models = self._get_account_models()
@@ -1887,13 +1899,7 @@ class OpenAIGatewayService:
             alias = runtime.model_gateway_model_alias
             if not runtime.model_gateway_enabled or not alias:
                 continue
-            spellings = gateway_model_alias_candidates(ai_model)
-            if not all(
-                allowlist_permits_model(
-                    allowed, ai_model, requested_spellings=spellings
-                )
-                for allowed in allowlists
-            ):
+            if not self._allowlists_permit(ai_model, allowlists):
                 continue
             created_at = ai_model.created_at
             if created_at is not None and created_at.tzinfo is None:
@@ -1922,51 +1928,25 @@ class OpenAIGatewayService:
 
         Scopes: the gateway subject on a trusted upstream request, then the
         API key, flow and managed agent. A model must be permitted by all.
+        Shared with the authorization chokepoint
+        (``collect_subject_model_allowlists``) so the configured-models default
+        and the allowlist preflight read the same policy.
         """
-        from preloop.models.crud import crud_account
-        from preloop.services.model_allowlist import normalize_allowed_models
-        from preloop.services.subject_governance import (
-            get_subject_governance,
-            subject_scope_chain,
-        )
+        return collect_subject_model_allowlists(self.db, self.auth_context)
 
-        subject_context: Dict[str, Any] = (
-            build_subject_context_from_api_key(self.auth_context.api_key)
-            if self.auth_context.api_key
-            else {}
-        )
-        gateway_subject = getattr(self.auth_context, "gateway_subject", None)
-        if gateway_subject is not None:
-            subject_context["gateway_subject_id"] = str(gateway_subject.id)
-        allowlists: List[List[str]] = []
-        account = crud_account.get(self.db, id=self.auth_context.account_id)
-        if account is not None:
-            for subject_type, subject_id in subject_scope_chain(subject_context):
-                config = get_subject_governance(
-                    account.meta_data or {},
-                    subject_type=subject_type,
-                    subject_id=subject_id,
-                )
-                raw = config.get("allowed_models")
-                allowed = normalize_allowed_models(
-                    raw if isinstance(raw, list) else None
-                )
-                if allowed:
-                    allowlists.append(allowed)
-        from preloop.models.crud.resource_share import crud_resource_share
-        from preloop.services.model_gateway_auth import (
-            resolve_managed_agent_id_for_context,
-        )
+    def _allowlists_permit(
+        self, ai_model: models.AIModel, allowlists: List[List[str]]
+    ) -> bool:
+        """True when every scope allowlist permits ``ai_model`` (none = all)."""
+        if not allowlists:
+            return True
+        from preloop.services.model_allowlist import allowlist_permits_model
 
-        owner_config = crud_resource_share.shared_agent_governance(
-            self.db,
-            account_id=self.auth_context.account_id,
-            agent_id=resolve_managed_agent_id_for_context(self.db, self.auth_context),
+        spellings = gateway_model_alias_candidates(ai_model)
+        return all(
+            allowlist_permits_model(allowed, ai_model, requested_spellings=spellings)
+            for allowed in allowlists
         )
-        owner_allowed = normalize_allowed_models(owner_config.get("allowed_models"))
-        if owner_allowed:
-            allowlists.append(owner_allowed)
-        return allowlists
 
     @gateway_database_scope
     def create_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -4214,10 +4194,11 @@ class OpenAIGatewayService:
             runtime = resolve_ai_model_runtime(ai_model)
             if runtime.model_gateway_enabled and runtime.model_gateway_model_alias:
                 if str(ai_model.id) not in authorized_ids:
-                    # Principal-bound models outside this credential's
-                    # authorized set never match or become the default; they
-                    # are kept only to distinguish 400 (bound to another
-                    # agent) from 404 (unknown model) below.
+                    # Models outside this credential's authorized set (bound
+                    # to another agent, or account models this agent has not
+                    # configured) never match or become the default; they are
+                    # kept only to distinguish 400 (exists, not authorized)
+                    # from 404 (unknown model) below.
                     unauthorized_gateway_models.append(
                         (ai_model, runtime.model_gateway_model_alias)
                     )
@@ -4317,28 +4298,26 @@ class OpenAIGatewayService:
                     shadowed,
                 )
                 return chosen
-            for _, alias in unauthorized_gateway_models:
-                if alias in spellings or (
-                    suffix_tail and alias.endswith(f"/{suffix_tail}")
-                ):
-                    available = (
-                        ", ".join(
-                            authorized_alias
-                            for _, authorized_alias in gateway_enabled_models
-                        )
-                        or "none"
-                    )
-                    raise ModelGatewayAPIError(
-                        provider=provider,
-                        status_code=400,
-                        message=(
-                            f"Model '{requested_model}' is bound to another "
-                            "agent's subscription credentials and can't serve "
-                            "this credential. Models available to this "
-                            f"credential: {available}."
-                        ),
-                        code="model_not_authorized",
-                    )
+            unauthorized_matches = [
+                ai_model
+                for ai_model, alias in unauthorized_gateway_models
+                if alias in spellings
+                or (suffix_tail and alias.endswith(f"/{suffix_tail}"))
+            ]
+            if unauthorized_matches:
+                # The alias names a subscription-OAuth row this credential has
+                # no active binding for. When the row shares its credential
+                # secret with a model this principal IS authorized for, it is
+                # the same OAuth lineage — typically a sibling the gateway
+                # autoregistered earlier whose binding a re-onboard
+                # deactivated — so re-bind it instead of refusing.
+                rebound = self._maybe_rebind_same_lineage_sibling(
+                    unauthorized_matches,
+                    requested_model=str(requested_model),
+                    gateway_enabled_models=gateway_enabled_models,
+                )
+                if rebound is not None:
+                    return rebound
             autoregistered = self._maybe_autoregister_claude_family_model(
                 requested_model,
                 provider=provider,
@@ -4353,6 +4332,13 @@ class OpenAIGatewayService:
             )
             if autoregistered is not None:
                 return autoregistered
+            if unauthorized_matches:
+                raise self._unauthorized_model_error(
+                    unauthorized_matches,
+                    requested_model=str(requested_model),
+                    provider=provider,
+                    gateway_enabled_models=gateway_enabled_models,
+                )
             from preloop.models.crud.resource_share import crud_resource_share
 
             formerly_shared = crud_resource_share.formerly_shared_model_alias(
@@ -4483,6 +4469,161 @@ class OpenAIGatewayService:
         and gateway registry lookup share one rule.
         """
         return strip_claude_context_window_suffix(model_ref)
+
+    def _unauthorized_model_error(
+        self,
+        unauthorized_matches: List[models.AIModel],
+        *,
+        requested_model: str,
+        provider: GatewayProvider,
+        gateway_enabled_models: List[tuple[models.AIModel, str]],
+    ) -> ModelGatewayAPIError:
+        """Build the 400 for an alias that exists but this credential may not use.
+
+        Two causes share the ``model_not_authorized`` code and get distinct
+        messages so the remedy is obvious: a subscription-OAuth row bound to
+        another agent (re-onboard or pick an own model), or an account model
+        this agent simply has not configured (add it under *Models & spend*
+        or re-onboard with it). The enumeration of usable models is the same
+        set the model listing endpoints return: authorized and allowlisted.
+
+        Args:
+            unauthorized_matches: Rows whose alias matched the request.
+            requested_model: The client's model string.
+            provider: Gateway protocol of the request.
+            gateway_enabled_models: Authorized (model, alias) pairs.
+
+        Returns:
+            The error to raise.
+        """
+        allowlists = self._subject_model_allowlists()
+        available = (
+            ", ".join(
+                alias
+                for ai_model, alias in gateway_enabled_models
+                if self._allowlists_permit(ai_model, allowlists)
+            )
+            or "none"
+        )
+        if any(
+            bool(getattr(ai_model, "is_principal_bound_oauth", False))
+            for ai_model in unauthorized_matches
+        ):
+            message = (
+                f"Model '{requested_model}' is bound to another agent's "
+                "subscription credentials and can't serve this credential. "
+                f"Models available to this credential: {available}."
+            )
+        else:
+            message = (
+                f"Model '{requested_model}' is not configured for this agent. "
+                f"Models available to this credential: {available}. Add it "
+                "under the agent's Models & spend in the Preloop console, or "
+                "re-run `preloop agents onboard` with it selected."
+            )
+        return ModelGatewayAPIError(
+            provider=provider,
+            status_code=400,
+            message=message,
+            code="model_not_authorized",
+        )
+
+    def _maybe_rebind_same_lineage_sibling(
+        self,
+        unauthorized_matches: List[models.AIModel],
+        *,
+        requested_model: str,
+        gateway_enabled_models: List[tuple[models.AIModel, str]],
+    ) -> Optional[models.AIModel]:
+        """Re-bind a principal-bound row that shares an authorized model's secret.
+
+        Subscription-OAuth rows are authorized per managed-agent binding. The
+        gateway autoregisters sibling rows (``gpt-6.1-sol`` next to the
+        onboarded ``gpt-6-astra``) on the *same* credential secret, and a
+        later re-onboard replaces the agent's binding set with only the
+        onboarded model, leaving those siblings with no active binding. They
+        are still this agent's subscription — the secret is the proof — so
+        the request is served and the binding reactivated rather than refused
+        with "bound to another agent".
+
+        Rows on a different secret are left alone: that is genuinely another
+        agent's lineage and the caller decides between autoregistering an own
+        sibling and the 400.
+
+        Args:
+            unauthorized_matches: Principal-bound rows whose alias matched the
+                request but which this credential is not authorized for.
+            requested_model: The client's model string, for logging.
+            gateway_enabled_models: Authorized (model, alias) pairs for this
+                principal.
+
+        Returns:
+            The re-bound model, or ``None`` when no match shares a secret
+            with an authorized model or the credential names no managed agent.
+        """
+        authorized_secret_ids = {
+            str(ai_model.credentials_secret_id)
+            for ai_model, _alias in gateway_enabled_models
+            if ai_model.credentials_secret_id is not None
+        }
+        if not authorized_secret_ids:
+            return None
+        candidate: Optional[models.AIModel] = None
+        for ai_model in unauthorized_matches:
+            if (
+                bool(getattr(ai_model, "is_principal_bound_oauth", False))
+                and ai_model.credentials_secret_id is not None
+                and str(ai_model.credentials_secret_id) in authorized_secret_ids
+            ):
+                candidate = ai_model
+                break
+        if candidate is None:
+            return None
+        managed_agent_id = resolve_managed_agent_id_for_context(
+            self.db, self.auth_context
+        )
+        if managed_agent_id is None:
+            return None
+
+        runtime = resolve_ai_model_runtime(candidate)
+        alias = runtime.model_gateway_model_alias or str(requested_model)
+        identifier = (candidate.model_identifier or "").strip() or alias.rpartition(
+            "/"
+        )[2]
+        try:
+            with self.db.begin_nested():
+                crud_managed_agent_ai_model_binding.ensure_active_binding(
+                    self.db,
+                    account_id=str(self.auth_context.account_id),
+                    agent_id=managed_agent_id,
+                    ai_model_id=str(candidate.id),
+                    gateway_alias=alias,
+                    config_key=f"{AUTOREGISTER_CONFIG_KEY_PREFIX}{identifier}",
+                    commit=False,
+                )
+            self.db.commit()
+        except (SQLAlchemyError, ValueError):
+            logger.warning(
+                "gateway_sibling_rebind_failed account=%s agent=%s model=%s "
+                "requested=%r",
+                self.auth_context.account_id,
+                managed_agent_id,
+                candidate.id,
+                requested_model,
+                exc_info=True,
+            )
+            return None
+        logger.info(
+            "gateway_sibling_rebound account=%s agent=%s model=%s alias=%r "
+            "requested=%r",
+            self.auth_context.account_id,
+            managed_agent_id,
+            candidate.id,
+            alias,
+            requested_model,
+        )
+        self._authorized_model_ids_cache = None
+        return candidate
 
     def _maybe_autoregister_claude_family_model(
         self,
@@ -4823,30 +4964,27 @@ class OpenAIGatewayService:
                 # lookup is the sequential idempotency so we do not
                 # auto-suffix a duplicate sibling. Still bind this agent:
                 # principal-bound OAuth is authorized per binding, and
-                # another agent on the same secret must not 400.
+                # another agent on the same secret must not 400. A slot a
+                # re-onboard deactivated is reactivated in place.
                 try:
                     with self.db.begin_nested():
-                        now = datetime.now(timezone.utc)
-                        crud_managed_agent_ai_model_binding.create(
+                        crud_managed_agent_ai_model_binding.ensure_active_binding(
                             self.db,
-                            obj_in={
-                                "account_id": account_id,
-                                "managed_agent_id": managed_agent_id,
-                                "ai_model_id": model.id,
-                                "binding_type": "configured",
-                                "config_key": f"gateway.autoregister.{identifier}",
-                                "gateway_alias": alias,
-                                "is_primary": False,
-                                "status": "gateway_ready",
-                                "first_seen_at": now,
-                                "last_seen_at": now,
-                            },
+                            account_id=str(account_id),
+                            agent_id=managed_agent_id,
+                            ai_model_id=str(model.id),
+                            gateway_alias=alias,
+                            config_key=f"{AUTOREGISTER_CONFIG_KEY_PREFIX}{identifier}",
                             commit=False,
                         )
                     self.db.commit()
                 except (SQLAlchemyError, ValueError):
-                    # Binding slot already occupied for this agent.
-                    pass
+                    logger.warning(
+                        "%s sibling binding failed for %s",
+                        log_label,
+                        identifier,
+                        exc_info=True,
+                    )
                 self._authorized_model_ids_cache = None
                 return model
 
@@ -4899,7 +5037,7 @@ class OpenAIGatewayService:
                         "managed_agent_id": managed_agent_id,
                         "ai_model_id": created.id,
                         "binding_type": "configured",
-                        "config_key": f"gateway.autoregister.{identifier}",
+                        "config_key": f"{AUTOREGISTER_CONFIG_KEY_PREFIX}{identifier}",
                         "gateway_alias": alias,
                         "is_primary": False,
                         "status": "gateway_ready",

@@ -582,6 +582,31 @@ machine. The runner never reads, copies or forwards harness credentials. See
 
 ### Changed
 
+- **`preloop agents onboard "Claude Desktop"` is the full onboarding.** It
+  adds the MCP bridge as before and then offers to install Desktop's direct
+  model route into this device's managed configuration (macOS managed
+  preferences via `sudo install`, `/etc/claude-desktop/managed-settings.json`
+  on Linux, machine policy via `reg import` on Windows), after naming the
+  destination in the preview and asking once. The credential helper's cache
+  is pre-seeded with the managed agent's credential so Desktop traffic is
+  attributed to the Claude Desktop agent. A managed configuration that is not
+  this Preloop's is never touched; declining or a failed privilege escalation
+  leaves the file staged under `~/.preloop/agents/claude-desktop/` with the
+  install command. Offboarding removes what onboarding installed. A routed
+  Desktop now reports `fully_onboarded`; `--model-route` keeps printing the
+  configuration for an MDM.
+- **Agents see their own models, not the whole account.** A managed agent's
+  gateway credential is now offered exactly its configured models: the
+  explicit allowlist under the agent's *Models & spend* when one is set,
+  otherwise the models its onboarding bound plus the siblings the gateway
+  registered for it. Account-wide BYOK and hosted models no longer appear in
+  `GET /openai/v1/models` (the Anthropic listing already filtered by
+  allowlist) or in the `model_not_authorized` enumeration just because they
+  exist, and a request for one is a `400` that says the model is not
+  configured for this agent. Agents with no configured models, plain API
+  keys and console user tokens keep seeing the full inventory. The console's
+  *Models & spend* status line describes the configured-models default
+  instead of claiming every model is allowed.
 - **Backend CI is eighteen shards, each aimed under seven minutes.**
   Durations from a green main run balance `duration_based_chunks`. A shard
   reuses Postgres on `127.0.0.1:5432` when it is already up and only creates
@@ -699,6 +724,19 @@ machine. The runner never reads, copies or forwards harness credentials. See
 
 ### Fixed
 
+- **Re-onboarding no longer strands gateway-registered subscription models.**
+  Picking a model in Codex CLI's or Claude Code's own picker makes the
+  gateway register a sibling row on the agent's subscription-OAuth secret and
+  bind it to the agent. `preloop agents onboard` then replaced the agent's
+  binding set with the onboarded model only, and the next request for the
+  sibling was refused with `400 model_not_authorized` ("bound to another
+  agent's subscription credentials") although nothing else held it. The
+  binding replacement now keeps autoregistered siblings that share a
+  credential secret with the new set, and the gateway re-binds a stranded
+  same-secret sibling (reactivating the slot, never duplicating the row)
+  before it considers refusing. A bound row on a different secret still gets
+  the 400 unless the principal holds its own subscription template, in which
+  case it registers its own sibling as before.
 - **Windows runner runs as a per-user logon task without elevation**
   (#1513): `preloop runner enable` (and the login prompt) register the task
   from an XML definition with a logon trigger scoped to the user and an

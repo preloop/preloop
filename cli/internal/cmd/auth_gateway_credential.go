@@ -29,8 +29,10 @@ the format a credential helper must print (a single bare token on stdout).
 
 The key is minted on first use, cached in ~/.preloop/gateway-credentials with
 mode 0600, and re-minted when it was revoked. Claude Desktop runs this command
-through inferenceCredentialHelper when it is configured by
-'preloop agents onboard "Claude Desktop" --model-route direct'.
+through inferenceCredentialHelper, which 'preloop agents onboard "Claude
+Desktop"' installs on this device (and '--model-route direct' prints for an
+MDM). Onboarding pre-seeds the cache with the managed agent's credential so
+Desktop traffic is attributed to that agent.
 
 Exits non-zero, with nothing on stdout, when you are not signed in.
 

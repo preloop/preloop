@@ -12,7 +12,7 @@ func TestAgentCapabilitiesRegistry(t *testing.T) {
 		"Pi":               {controlSupported, controlSupported, controlSupported},
 		"DeepSeek Harness": {controlSupported, controlSupported, controlSupported},
 		"Claude Code":      {controlSupported, controlSupported, controlSupported},
-		"Claude Desktop":   {controlUnsupported, controlUnsupported, controlSupported},
+		"Claude Desktop":   {controlSupported, controlUnsupported, controlSupported},
 		"Cursor":           {controlUnsupported, controlSupported, controlSupported},
 		"Windsurf":         {controlUnsupported, controlUnsupported, controlSupported},
 		"VSCode / Copilot": {controlUnsupported, controlUnsupported, controlSupported},
@@ -61,10 +61,15 @@ func TestAgentCapabilitiesRegistry(t *testing.T) {
 
 func TestControlDisclosureText(t *testing.T) {
 	setPreflightTestEnv(t)
-	note := mcpOnlyAgentModelNote(AgentConfig{Name: "Claude Desktop"})
-	for _, fragment := range []string{"managed MCP bridge", "does not configure", "--model-route direct", "only calls routed through the managed MCP entry"} {
+	// Desktop model routing is part of the default onboarding, so the
+	// MCP-only disclosure no longer applies to it.
+	if note := mcpOnlyAgentModelNote(AgentConfig{Name: "Claude Desktop"}); note != "" {
+		t.Fatalf("Desktop must not carry the MCP-only disclosure: %s", note)
+	}
+	note := mcpOnlyAgentModelNote(AgentConfig{Name: "Cursor"})
+	for _, fragment := range []string{"only calls routed through the managed MCP entry", "--approvals"} {
 		if !strings.Contains(note, fragment) {
-			t.Fatalf("Desktop disclosure missing %q: %s", fragment, note)
+			t.Fatalf("Cursor disclosure missing %q: %s", fragment, note)
 		}
 	}
 	for _, forbidden := range []string{"by design", "cannot be repointed", "fixed to", "tool calls are governed"} {

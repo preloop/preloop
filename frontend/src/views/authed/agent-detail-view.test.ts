@@ -1456,6 +1456,8 @@ describe('AgentDetailView', () => {
     // The toggle must stay unchecked after the re-render instead of bouncing
     // back to checked: an empty list is "all allowed", rendered as such.
     expect(gptToggle.checked).to.be.false;
+    // This fixture agent has no configured bindings, so an empty allowlist
+    // really is "every model allowed".
     const status = element.shadowRoot?.querySelector(
       '#available-models-status'
     );
@@ -1467,6 +1469,61 @@ describe('AgentDetailView', () => {
       'sl-input[label="Allowed models"]'
     ) as any;
     expect(overrideInput.value).to.equal('');
+  });
+
+  it('describes the configured-models default when bindings exist and no allowlist is set', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+
+    await waitUntil(
+      () => !(element as any).loading && (element as any).agent !== null,
+      'Agent detail view did not finish loading'
+    );
+
+    // Two onboarding bindings and an empty allowlist: the gateway offers the
+    // agent exactly those two models, and the status line must say so
+    // instead of claiming every model is allowed.
+    (element as any).agent = {
+      ...(element as any).agent,
+      configured_models: [
+        {
+          ai_model_id: 'model-astra',
+          gateway_alias: 'openai/gpt-6-astra',
+          config_key: 'model',
+          binding_type: 'configured',
+          is_primary: true,
+          status: 'gateway_ready',
+        },
+        {
+          ai_model_id: 'model-sol',
+          gateway_alias: 'openai/gpt-6.1-sol',
+          config_key: 'gateway.autoregister.gpt-6.1-sol',
+          binding_type: 'configured',
+          is_primary: false,
+          status: 'gateway_ready',
+        },
+      ],
+    };
+    (element as any).activeTab = 'models';
+    await waitUntil(() => (element as any).editorContextReady);
+    await element.updateComplete;
+    // The governance fixture allows openai/gpt-5; clear it the way the
+    // console does when the last checkbox is unchecked.
+    (element as any).governance = {
+      ...(element as any).governance,
+      allowed_models: [],
+    };
+    (element as any).allowedModelsText = '';
+    await element.updateComplete;
+
+    const status = element.shadowRoot?.querySelector(
+      '#available-models-status'
+    );
+    const text = getDeepText(status).replace(/\s+/g, ' ');
+    expect(text).to.contain('uses its configured models');
+    expect(text).to.contain('2');
+    expect(text).to.not.contain('Every model is currently allowed');
   });
 
   it('saving budgets no longer derives allowed_models from the budget keys', async () => {

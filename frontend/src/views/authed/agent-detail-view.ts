@@ -3651,9 +3651,17 @@ export class AgentDetailView extends LitElement {
                             ${
                               (this.governance.allowed_models || []).length ===
                               0
-                                ? html`Every model is currently allowed. Check a
-                                  model to restrict this agent to selected
-                                  models only.`
+                                ? this.getConfiguredModelBindings().length > 0
+                                  ? html`No explicit allowlist: this agent uses
+                                    its configured models (the
+                                    ${this.getConfiguredModelBindings().length}
+                                    bound at onboarding or picked in the agent)
+                                    and nothing else. Check models to replace
+                                    that default with an explicit list.`
+                                  : html`Every model is currently allowed: this
+                                    agent has no configured models yet. Check a
+                                    model to restrict this agent to selected
+                                    models only.`
                                 : html`This agent may only use the checked
                                   models.`
                             }

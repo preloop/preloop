@@ -24,7 +24,7 @@ That gives you the MCP firewall (access rules, approvals, audit) for every tool 
 | [Hermes](../hermes.md) | Automatic | Automatic |
 | [OpenClaw](../integrations/openclaw.md) | Automatic | Automatic (OpenAI-compatible gateway) |
 | Cursor | Automatic | **Manual BYOK**: AI panel incl. Agent mode (see below) |
-| [Claude Desktop](claude-desktop.md) | Automatic | **Managed config**: `--model-route direct` or `apps-gateway` prints the MDM configuration |
+| [Claude Desktop](claude-desktop.md) | Automatic | **Managed config**: the default onboarding installs the direct route on this device; `--model-route direct` or `apps-gateway` prints the MDM configuration |
 | Windsurf | Automatic | Not available |
 | VS Code / Copilot | Automatic | **Manual BYOK**: Chat: Manage Language Models -> Add Models -> Custom Endpoint (see below) |
 | Copilot CLI | Automatic (`~/.copilot/mcp-config.json`) | Not rewritten on onboard. `preloop copilot` sets the gateway env vars |
@@ -95,7 +95,7 @@ Plan entitlement, checked 2026-10-10 against the [VS Code language models doc](h
 
 ## Claude Desktop
 
-Discovered and onboarded for MCP governance. Model routing uses Claude Desktop's third-party gateway mode: `preloop agents onboard "Claude Desktop" --model-route direct` (or `--model-route apps-gateway` behind a Claude apps gateway) prints the managed configuration for macOS, Windows and Linux, which your MDM deploys. See [Claude Desktop](claude-desktop.md).
+Discovered and onboarded for MCP governance and model routing. `preloop agents onboard "Claude Desktop"` adds the MCP bridge and offers to install Desktop's third-party gateway configuration on this device (administrator rights are needed once). For a fleet, `--model-route direct` (or `--model-route apps-gateway` behind a Claude apps gateway) prints the managed configuration for macOS, Windows and Linux, which your MDM deploys. See [Claude Desktop](claude-desktop.md).
 
 ## Everything else
 

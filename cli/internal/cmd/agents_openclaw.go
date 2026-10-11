@@ -677,6 +677,12 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	if note := mcpOnlyAgentModelNote(agent); note != "" && !plan.MCPConfigSkipped {
 		plan.Notes = append(plan.Notes, note)
 	}
+	if isClaudeDesktopAgent(agent) {
+		// Desktop model routing is part of the default onboarding (installed
+		// into the OS managed configuration with administrator rights), so
+		// the preview says what will happen before the confirmation.
+		plan.Notes = append(plan.Notes, claudeDesktopRoutePlanNote(baseURL))
+	}
 
 	printEnrollmentPlan(plan, opts.DryRun)
 	if opts.DryRun {
@@ -965,6 +971,25 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			fmt.Fprintf(output, "           %s\n", hint) //nolint:errcheck
 		}
 	}
+	var claudeDesktopRoute *claudeDesktopRouteInstallResult
+	if isClaudeDesktopAgent(agent) {
+		// Full onboarding for Desktop: install this device's direct model
+		// route (asks once; needs administrator rights) and hand the
+		// credential helper this agent's credential so Desktop traffic is
+		// attributed to it. Nothing here fails the enrollment; what could not
+		// be done is reported in the notes and the validation result.
+		if err := seedClaudeDesktopGatewayCredential(client, credentialResp); err != nil {
+			fmt.Fprintf(output, "  Warning: could not pre-seed the Claude Desktop credential helper: %v\n", err) //nolint:errcheck
+		}
+		routeResult := applyClaudeDesktopModelRoute(input, output, baseURL, opts.AutoApprove)
+		claudeDesktopRoute = &routeResult
+		for _, note := range routeResult.Notes {
+			fmt.Fprintf(output, "  %s\n", publicPlanNote(note)) //nolint:errcheck
+		}
+		if routeResult.Routed() {
+			backupState.ClaudeDesktopModelRoutePath = routeResult.Path
+		}
+	}
 	if opts.Approvals && isApprovalHookSupportedAgent(agent) {
 		if err := installApprovalHooks(agent, baseURL, credentialResp.Token, output); err != nil {
 			return err
@@ -1022,6 +1047,12 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 	)
 	validationResult = mergeStringMaps(validationResult, pluginInstallResult)
 	validationResult = mergeStringMaps(validationResult, gatewayRestartResult)
+	if claudeDesktopRoute != nil {
+		validationResult = mergeStringMaps(
+			validationResult,
+			claudeDesktopRouteValidationResult(*claudeDesktopRoute),
+		)
+	}
 	validationResult = mergeStringMaps(
 		validationResult,
 		defaultManagedLiveValidationResult(agent),

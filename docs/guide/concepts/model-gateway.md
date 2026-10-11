@@ -125,6 +125,16 @@ The console **Cost**, **Audit > Sessions** and **Models** views read from this l
 
 ---
 
+## Which models an agent sees
+
+A managed agent's credential is offered exactly the models that belong to it, on `GET /openai/v1/models`, `GET /anthropic/v1/models` and in the enumeration of a `model_not_authorized` error:
+
+1. **Explicit allowlist first.** When the agent (or its API key, flow or gateway subject) has `allowed_models` set — the checked models under **Models & spend** on the agent page — that list is what the agent sees and may call.
+2. **Otherwise its configured models.** With no allowlist, an agent that has configured models — the models `preloop agents onboard` bound for it plus any sibling the gateway registered when the agent picked a model in its own picker — sees those and nothing else. Account-wide BYOK and Preloop-hosted models are not offered to it just because they exist in the account.
+3. **Agents with no configured models** (custom runtimes enrolled through a runtime session token, MCP-only enrollments), plain API keys and console user tokens keep seeing every BYOK, API-key and hosted model in the account.
+
+Subscription OAuth models (Claude Code, Codex) are additionally bound to one managed agent and never appear for any other credential, whatever the allowlist says. A request for a model that exists in the account but is outside the agent's set returns `400` `model_not_authorized`; the message says whether the model belongs to another agent's subscription or is simply not configured for this agent, and lists the models the credential can use.
+
 ## Budget and Allowed Models
 
 Before dispatching upstream, Preloop evaluates:

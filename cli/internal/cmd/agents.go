@@ -266,12 +266,6 @@ func mcpOnlyAgentModelNote(agent AgentConfig) string {
 	}
 	scope := ": only calls routed through the managed MCP entry reach Preloop. "
 	switch {
-	case isClaudeDesktopAgent(agent):
-		return mcpOnlySupportLabel + scope +
-			"Onboarding adds a managed MCP bridge and does not configure Desktop model routing by itself. " +
-			"To route Desktop model traffic through Preloop, run " +
-			"`preloop agents onboard \"Claude Desktop\" --model-route direct` (or `--model-route apps-gateway`) " +
-			"and deploy the printed managed configuration with your MDM."
 	case strings.EqualFold(strings.TrimSpace(agent.Name), "cursor"):
 		return mcpOnlySupportLabel + scope +
 			"Cursor native action gates are supported separately via --approvals. " +
@@ -780,6 +774,11 @@ type localEnrollmentState struct {
 	// OffboardArchived checkpoints completed recovery/config restore/archive so
 	// cleanup can be retried even after its model credential has been deleted.
 	OffboardArchived bool `json:"offboard_archived,omitempty"`
+	// ClaudeDesktopModelRoutePath is the OS managed configuration the
+	// default onboarding installed for Claude Desktop model routing;
+	// offboarding removes that path (removeClaudeDesktopModelRoute) rather
+	// than recomputing it.
+	ClaudeDesktopModelRoutePath string `json:"claude_desktop_model_route_path,omitempty"`
 	// CodexOAuthSyncedLastRefresh is the auth.json or Keychain last_refresh
 	// value last pushed for this enrollment. The Codex permission hook
 	// compares the local ChatGPT login against it.
@@ -2548,6 +2547,16 @@ func executeOffboard(agent AgentConfig, autoApprove bool, modelRemovalPolicy, se
 		// after credentials were recovered.
 		if err := removeClaudeAPIKeyApproval(agent); err != nil {
 			fmt.Printf("  Warning: could not remove the gateway key approval from Claude Code's user config: %v\n", err)
+		}
+		if isClaudeDesktopAgent(agent) {
+			// The default onboarding installed Desktop's model route into the
+			// OS managed configuration; take it out again, or Desktop keeps
+			// asking the credential helper for a key after the agent is gone.
+			recordedPath := ""
+			if state != nil {
+				recordedPath = state.ClaudeDesktopModelRoutePath
+			}
+			removeClaudeDesktopModelRoute(os.Stdin, os.Stdout, strings.TrimRight(client.BaseURL(), "/"), recordedPath, autoApprove)
 		}
 		if state != nil {
 			if _, err := restoreAgentFromBackup(agent, state); err != nil {
