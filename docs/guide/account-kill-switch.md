@@ -75,3 +75,6 @@ a resource but fails before its reference is recorded, a halt cannot safely
 confirm termination or automatically launch a replacement. The execution reports
 `Stop unconfirmed` and requires operator inspection of the runtime using its
 execution identity. Missing reference alone never proves nothing was launched.
+
+Remote sessions on personal runners end with `killed_by_kill_switch` when the
+halt applies; see [Personal runners: threat model and controls](../security/personal-runners.md#t10-kill-switch-and-stop).

@@ -293,6 +293,7 @@ nav:
       - Redaction: security/redaction.md
       - OWASP Top 10 coverage: security/owasp-top-10-coverage.md
       - Agent pod isolation: security/agent-isolation.md
+      - Personal runners threat model: security/personal-runners.md
       - CRA Article 14 runbooks: security/article-14-runbooks.md
       - Historical secret-scan findings: security/secrets-history.md
       - Code signing policy: code-signing-policy.md
