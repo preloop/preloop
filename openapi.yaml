@@ -16307,6 +16307,220 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/session-options:
+    get:
+      tags:
+      - Runner sessions
+      summary: Get Runner Session Options
+      description: 'What the caller may start on this runner: harnesses, workspaces,
+        limits.'
+      operationId: get_runner_session_options_api_v1_runners__runner_id__session_options_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerSessionOptions'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/sessions:
+    post:
+      tags:
+      - Runner sessions
+      summary: Start Runner Session
+      description: Start a harness session on a runner. Every outcome is audited.
+      operationId: start_runner_session_api_v1_runners__runner_id__sessions_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerSessionStartRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerSessionStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Runner sessions
+      summary: List Runner Sessions
+      description: Recent remote sessions on one runner (owner and admins).
+      operationId: list_runner_sessions_api_v1_runners__runner_id__sessions_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RunnerSessionListItem'
+                title: Response List Runner Sessions Api V1 Runners  Runner Id  Sessions
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/runner-sessions/{session_id}/turns:
+    post:
+      tags:
+      - Runner sessions
+      summary: Send Runner Session Turn
+      description: Send the next prompt. Wave 1 allows one running turn at a time.
+      operationId: send_runner_session_turn_api_v1_runner_sessions__session_id__turns_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerSessionTurnRequest'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerSessionTurnResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/runner-sessions/{session_id}/stop:
+    post:
+      tags:
+      - Runner sessions
+      summary: Stop Runner Session
+      description: Ask the runner to end the session (``graceful``) or kill the harness.
+      operationId: stop_runner_session_api_v1_runner_sessions__session_id__stop_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Session Id
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/RunnerSessionStopRequest'
+              - type: 'null'
+              title: Body
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerSessionStopResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/policies/evaluate:
     post:
       tags:
@@ -23499,6 +23713,24 @@ components:
       - challenge_token
       title: AuthenticationVerifyRequest
       description: Authenticator response for the authentication ceremony.
+    AuthorizedDirectoryWorkspace:
+      properties:
+        kind:
+          type: string
+          const: authorized_directory
+          title: Kind
+        id:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Id
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - id
+      title: AuthorizedDirectoryWorkspace
+      description: 'Contract D: a directory the host owner authorized for remote sessions.'
     AvailableModelsRequest:
       properties:
         api_key:
@@ -30828,6 +31060,174 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    HarnessInventory:
+      properties:
+        schema:
+          type: integer
+          minimum: 1.0
+          title: Schema
+          default: 1
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        hash:
+          type: string
+          pattern: ^sha256:[0-9a-f]{64}$
+          title: Hash
+        entries:
+          items:
+            $ref: '#/components/schemas/HarnessInventoryEntry'
+          type: array
+          maxItems: 32
+          title: Entries
+      type: object
+      required:
+      - generated_at
+      - hash
+      title: HarnessInventory
+      description: Harness inventory a runner publishes with register and heartbeat.
+    HarnessInventoryEntry:
+      properties:
+        harness:
+          type: string
+          enum:
+          - copilot_cli
+          - cursor_cli
+          - claude_code
+          - codex_cli
+          - opencode
+          - gemini_cli
+          - claude_desktop
+          - vscode_copilot
+          title: Harness
+        display_name:
+          type: string
+          maxLength: 128
+          title: Display Name
+        version:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Version
+        login_state:
+          type: string
+          enum:
+          - signed_in
+          - signed_out
+          - unknown
+          - not_applicable
+          title: Login State
+          default: unknown
+        login_source:
+          type: string
+          enum:
+          - env
+          - stored
+          - cli_status
+          - none
+          - unknown
+          title: Login Source
+          default: unknown
+        account_host:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Account Host
+        governance:
+          type: string
+          enum:
+          - governed
+          - partial
+          - ungoverned
+          - unknown
+          title: Governance
+          default: unknown
+        support_level:
+          type: string
+          enum:
+          - flows_and_sessions
+          - flows_only
+          - presence_only
+          title: Support Level
+          default: presence_only
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        sessions_enabled:
+          type: boolean
+          title: Sessions Enabled
+          default: false
+        session_mode:
+          type: string
+          enum:
+          - resume
+          - stream
+          - replay
+          - none
+          title: Session Mode
+          default: none
+        billing:
+          type: string
+          enum:
+          - seat
+          - metered
+          - unknown
+          title: Billing
+          default: unknown
+        models:
+          items:
+            $ref: '#/components/schemas/HarnessModel'
+          type: array
+          maxItems: 64
+          title: Models
+        generated_profile:
+          anyOf:
+          - type: string
+            maxLength: 64
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
+          - type: 'null'
+          title: Generated Profile
+        capabilities:
+          items:
+            type: string
+          type: array
+          maxItems: 16
+          title: Capabilities
+      type: object
+      required:
+      - harness
+      - display_name
+      title: HarnessInventoryEntry
+      description: 'One locally installed harness as reported by a runner.
+
+
+        Never carries executable paths, argv, env values, tokens or usernames.'
+    HarnessModel:
+      properties:
+        id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Id
+        source:
+          type: string
+          enum:
+          - probed
+          - configured
+          - static
+          - observed
+          title: Source
+      type: object
+      required:
+      - id
+      - source
+      title: HarnessModel
+      description: One model a harness can run, and where the runner learned about
+        it.
     HostExecProfileAdvertisement:
       properties:
         name:
@@ -36835,6 +37235,10 @@ components:
             maxItems: 64
           - type: 'null'
           title: Host Exec Profiles
+        harness_inventory:
+          anyOf:
+          - $ref: '#/components/schemas/HarnessInventory'
+          - type: 'null'
         concurrency:
           anyOf:
           - type: integer
@@ -36941,6 +37345,16 @@ components:
           additionalProperties: true
           type: object
           title: Capabilities
+        harness_inventory:
+          anyOf:
+          - $ref: '#/components/schemas/HarnessInventory'
+          - type: 'null'
+        harness_inventory_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Harness Inventory Updated At
         created_at:
           type: string
           format: date-time
@@ -37058,6 +37472,16 @@ components:
           additionalProperties: true
           type: object
           title: Capabilities
+        harness_inventory:
+          anyOf:
+          - $ref: '#/components/schemas/HarnessInventory'
+          - type: 'null'
+        harness_inventory_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Harness Inventory Updated At
         created_at:
           type: string
           format: date-time
@@ -37075,6 +37499,202 @@ components:
       - created_at
       - updated_at
       title: RunnerResponse
+    RunnerSessionListItem:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        remote_session_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Remote Session Id
+        state:
+          type: string
+          title: State
+        harness:
+          type: string
+          title: Harness
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model
+        actor_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor User Id
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        last_activity_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Activity At
+        end_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: End Reason
+      type: object
+      required:
+      - session_id
+      - state
+      - harness
+      title: RunnerSessionListItem
+    RunnerSessionOptions:
+      properties:
+        runner_id:
+          type: string
+          title: Runner Id
+        online:
+          type: boolean
+          title: Online
+        sessions_available:
+          type: boolean
+          title: Sessions Available
+          default: true
+        harnesses:
+          items:
+            $ref: '#/components/schemas/SessionOptionHarness'
+          type: array
+          title: Harnesses
+        authorized_directories:
+          items:
+            $ref: '#/components/schemas/SessionOptionDirectory'
+          type: array
+          title: Authorized Directories
+        checkout_sources:
+          items:
+            $ref: '#/components/schemas/SessionOptionCheckoutSource'
+          type: array
+          title: Checkout Sources
+        limits:
+          $ref: '#/components/schemas/SessionOptionLimits'
+      type: object
+      required:
+      - runner_id
+      - online
+      - limits
+      title: RunnerSessionOptions
+    RunnerSessionStartRequest:
+      properties:
+        harness:
+          type: string
+          enum:
+          - copilot_cli
+          - cursor_cli
+          - claude_code
+          - codex_cli
+          - opencode
+          - gemini_cli
+          - claude_desktop
+          - vscode_copilot
+          title: Harness
+        model:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Model
+        workspace:
+          oneOf:
+          - $ref: '#/components/schemas/AuthorizedDirectoryWorkspace'
+          - $ref: '#/components/schemas/TrackerCheckoutWorkspace'
+          title: Workspace
+          discriminator:
+            propertyName: kind
+            mapping:
+              authorized_directory: '#/components/schemas/AuthorizedDirectoryWorkspace'
+              tracker_checkout: '#/components/schemas/TrackerCheckoutWorkspace'
+        first_prompt:
+          anyOf:
+          - type: string
+            maxLength: 32000
+          - type: 'null'
+          title: First Prompt
+        title:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Title
+      type: object
+      required:
+      - harness
+      - workspace
+      title: RunnerSessionStartRequest
+    RunnerSessionStartResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        remote_session_id:
+          type: string
+          title: Remote Session Id
+        state:
+          type: string
+          title: State
+          default: requested
+      type: object
+      required:
+      - session_id
+      - remote_session_id
+      title: RunnerSessionStartResponse
+    RunnerSessionStopRequest:
+      properties:
+        mode:
+          type: string
+          enum:
+          - graceful
+          - kill
+          title: Mode
+          default: graceful
+      type: object
+      title: RunnerSessionStopRequest
+    RunnerSessionStopResponse:
+      properties:
+        session_id:
+          type: string
+          title: Session Id
+        state:
+          type: string
+          title: State
+      type: object
+      required:
+      - session_id
+      - state
+      title: RunnerSessionStopResponse
+    RunnerSessionTurnRequest:
+      properties:
+        text:
+          type: string
+          maxLength: 32000
+          minLength: 1
+          title: Text
+      type: object
+      required:
+      - text
+      title: RunnerSessionTurnRequest
+    RunnerSessionTurnResponse:
+      properties:
+        turn_id:
+          type: string
+          title: Turn Id
+        state:
+          type: string
+          title: State
+          default: queued
+      type: object
+      required:
+      - turn_id
+      title: RunnerSessionTurnResponse
     RuntimeSessionActivityItem:
       properties:
         activity_id:
@@ -39303,6 +39923,130 @@ components:
         cap. A client that round trips nullable values must not turn embedding
 
         off, or be refused for naming a provider, by sending ``null``.'
+    SessionOptionCheckoutSource:
+      properties:
+        tracker_id:
+          type: string
+          title: Tracker Id
+        tracker_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tracker Name
+        provider:
+          type: string
+          title: Provider
+        repositories:
+          items:
+            $ref: '#/components/schemas/SessionOptionRepository'
+          type: array
+          title: Repositories
+      type: object
+      required:
+      - tracker_id
+      - provider
+      title: SessionOptionCheckoutSource
+    SessionOptionDirectory:
+      properties:
+        id:
+          type: string
+          title: Id
+        label:
+          type: string
+          title: Label
+        mode:
+          type: string
+          title: Mode
+        harnesses:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: string
+            const: all
+          title: Harnesses
+          default: all
+      type: object
+      required:
+      - id
+      - label
+      - mode
+      title: SessionOptionDirectory
+    SessionOptionHarness:
+      properties:
+        harness:
+          type: string
+          title: Harness
+        display_name:
+          type: string
+          title: Display Name
+        session_mode:
+          type: string
+          title: Session Mode
+        models:
+          items:
+            $ref: '#/components/schemas/SessionOptionModel'
+          type: array
+          title: Models
+        available:
+          type: boolean
+          title: Available
+          default: true
+        unavailable_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unavailable Reason
+      type: object
+      required:
+      - harness
+      - display_name
+      - session_mode
+      title: SessionOptionHarness
+    SessionOptionLimits:
+      properties:
+        max_concurrent:
+          type: integer
+          title: Max Concurrent
+        active:
+          type: integer
+          title: Active
+        idle_timeout_seconds:
+          type: integer
+          title: Idle Timeout Seconds
+      type: object
+      required:
+      - max_concurrent
+      - active
+      - idle_timeout_seconds
+      title: SessionOptionLimits
+    SessionOptionModel:
+      properties:
+        id:
+          type: string
+          title: Id
+        source:
+          type: string
+          title: Source
+      type: object
+      required:
+      - id
+      - source
+      title: SessionOptionModel
+    SessionOptionRepository:
+      properties:
+        full_name:
+          type: string
+          title: Full Name
+        default_branch:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Default Branch
+      type: object
+      required:
+      - full_name
+      title: SessionOptionRepository
     SessionSavedSearchCreate:
       properties:
         name:
@@ -41947,6 +42691,35 @@ components:
       - period_end
       title: ToolUsageStatsResponse
       description: Account-wide tool invocation and schema-cost stats.
+    TrackerCheckoutWorkspace:
+      properties:
+        kind:
+          type: string
+          const: tracker_checkout
+          title: Kind
+        tracker_id:
+          type: string
+          format: uuid
+          title: Tracker Id
+        repository:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Repository
+        ref:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Ref
+      additionalProperties: false
+      type: object
+      required:
+      - kind
+      - tracker_id
+      - repository
+      title: TrackerCheckoutWorkspace
+      description: 'Contract D: a fresh checkout of a tracker repository on the host.'
     TrackerCreateResponse:
       properties:
         id:

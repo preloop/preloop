@@ -924,6 +924,7 @@ def _register_control_plane_routes(
         pull_requests,
         retention,
         roles,
+        runner_sessions,
         runners,
         runtime_session_artifacts,
         runtime_session_browser_steps,
@@ -1241,6 +1242,11 @@ def _register_control_plane_routes(
         runners.router,
         prefix="/api/v1",
         tags=["Runners"],
+    )
+    app.include_router(
+        runner_sessions.router,
+        prefix="/api/v1",
+        tags=["Runner sessions"],
     )
 
     # Policies router for policy-as-code YAML import/export

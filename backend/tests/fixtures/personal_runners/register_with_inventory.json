@@ -1,0 +1,84 @@
+{
+  "name": "build-laptop",
+  "hostname": "build-laptop.example.com",
+  "os": "darwin",
+  "arch": "arm64",
+  "labels": [],
+  "host_exec_profiles": [
+    {
+      "name": "copilot",
+      "capabilities": [
+        "host_exec",
+        "copilot_cli",
+        "stdout",
+        "cancel",
+        "host_publication",
+        "host_continuation"
+      ],
+      "models": [
+        "auto",
+        "gpt-5.2",
+        "claude-sonnet-4.6"
+      ]
+    }
+  ],
+  "concurrency": 1,
+  "harness_inventory": {
+    "schema": 1,
+    "generated_at": "2026-10-16T09:00:00Z",
+    "hash": "sha256:602c0af2014af2b006df29b2a296f624da99547d6cd07956f6ea0270e365b0ac",
+    "entries": [
+      {
+        "harness": "copilot_cli",
+        "display_name": "GitHub Copilot CLI",
+        "version": "1.0.95",
+        "login_state": "signed_in",
+        "login_source": "stored",
+        "account_host": "github.com",
+        "governance": "governed",
+        "support_level": "flows_and_sessions",
+        "enabled": true,
+        "sessions_enabled": false,
+        "session_mode": "resume",
+        "billing": "seat",
+        "models": [
+          {
+            "id": "auto",
+            "source": "static"
+          },
+          {
+            "id": "gpt-5.2",
+            "source": "static"
+          },
+          {
+            "id": "claude-sonnet-4.6",
+            "source": "configured"
+          }
+        ],
+        "generated_profile": "copilot",
+        "capabilities": [
+          "host_exec",
+          "copilot_cli",
+          "stdout",
+          "cancel",
+          "host_publication",
+          "host_continuation"
+        ]
+      },
+      {
+        "harness": "claude_desktop",
+        "display_name": "Claude Desktop",
+        "login_state": "not_applicable",
+        "login_source": "none",
+        "governance": "ungoverned",
+        "support_level": "presence_only",
+        "enabled": true,
+        "sessions_enabled": false,
+        "session_mode": "none",
+        "billing": "unknown",
+        "models": [],
+        "capabilities": []
+      }
+    ]
+  }
+}
