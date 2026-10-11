@@ -3590,6 +3590,15 @@ async def update_account_runtime_session(
             status_code=status.HTTP_404_NOT_FOUND, detail="Runtime session not found"
         )
 
+    # A note addressed only to this session can no longer arrive (#1551).
+    from preloop.services.operator_notes import undeliver_session_notes
+
+    undeliver_session_notes(
+        db,
+        account_id=str(account.id),
+        runtime_session_id=updated.id,
+        reason="session ended (operator)",
+    )
     emit_session_ended(db, updated, reason="operator")
     db.commit()
 
