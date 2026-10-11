@@ -591,3 +591,24 @@ def test_note_summaries_with_no_sessions_reads_nothing(
         )
         == {}
     )
+
+
+def test_claimed_note_remains_visible_in_session_summary(db_session, create_account):
+    account = create_account()
+    agent = _agent(db_session, account.id)
+    session = _session(db_session, account.id)
+    note = _note(db_session, account, agent, runtime_session_id=session.id)
+    assert crud_agent_control_command.claim_note(
+        db_session,
+        note_id=note.id,
+        delivered_at=datetime.now(UTC),
+        delivery_channel="hook",
+        runtime_session_id=session.id,
+        defer_delivery=True,
+        commit=True,
+    )
+    summaries = crud_agent_control_command.note_summaries_for_sessions(
+        db_session, account_id=account.id, runtime_session_ids=[str(session.id)]
+    )
+    assert str(session.id) in summaries
+    assert summaries[str(session.id)].note_count == 1

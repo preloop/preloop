@@ -38,11 +38,11 @@ class SessionNoteSummary:
     latest_note_at: Optional[datetime]
 
 
-# Pending still will, delivered and acked already did. Cancelled, expired and
+# Pending and claimed still will, delivered and acked already did. Cancelled, expired and
 # failed never steered, so they do not belong on the sessions-list badge.
 # ``list_notes`` still returns those rows: the composer is the history of what
 # was written, including a withdrawal.
-NOTE_STATUSES_THAT_STEER = ("pending", "delivered", "acked")
+NOTE_STATUSES_THAT_STEER = ("pending", "claimed", "delivered", "acked")
 
 
 class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
