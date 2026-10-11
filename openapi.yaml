@@ -35434,8 +35434,9 @@ components:
             maxLength: 255
           - type: 'null'
           title: External Session Id
-          description: Harness session id, for logging only; never used to pick a
-            session.
+          description: Harness session id. Resolved only against sessions the caller's
+            own runtime principal registered; otherwise the token's bound session
+            is ended.
         reason:
           anyOf:
           - type: string

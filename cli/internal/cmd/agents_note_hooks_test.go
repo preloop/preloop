@@ -3,10 +3,12 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -262,5 +264,55 @@ func TestSessionEndHookRemovesStopCapState(t *testing.T) {
 	runNoteHook(t, runAgentsSessionEndHook, `{"session_id":"sess-cap-reset","hook_event_name":"SessionEnd"}`)
 	if got := readStopBlockCount("sess-cap-reset"); got != 0 {
 		t.Fatalf("session end must clear the stop cap, got %d", got)
+	}
+}
+
+// TestNoteLifecycleHooksMatchCapturedFixture drives each lifecycle hook with
+// the input the installed harness sends and compares stdout with the shape it
+// reads. null means the harness must see no output at all.
+func TestNoteLifecycleHooksMatchCapturedFixture(t *testing.T) {
+	fixture := loadOperatorNoteFixture(t, "claude-code-lifecycle.json")
+	runs := map[string]func(*cobra.Command, []string) error{
+		"SessionStart": runAgentsSessionHook,
+		"Stop":         runAgentsStopHook,
+		"SessionEnd":   runAgentsSessionEndHook,
+	}
+	for _, testCase := range fixture.Cases {
+		for _, withNote := range []bool{true, false} {
+			name := fmt.Sprintf("%s/note=%v", testCase.Name, withNote)
+			t.Run(name, func(t *testing.T) {
+				stub, _ := newNoteHookStub(t)
+				want := testCase.WithoutNote
+				if withNote {
+					stub.pendingText = fixture.OperatorNote
+					want = testCase.WithNote
+				}
+				run, ok := runs[testCase.HookEvent]
+				if !ok {
+					t.Fatalf("no hook for event %q", testCase.HookEvent)
+				}
+				raw, err := json.Marshal(testCase.Event)
+				if err != nil {
+					t.Fatalf("marshal event: %v", err)
+				}
+				out := strings.TrimSpace(runNoteHook(t, run, string(raw)))
+				if want == nil {
+					if out != "" {
+						t.Fatalf("expected no output, got %q", out)
+					}
+					return
+				}
+				var got map[string]interface{}
+				if err := json.Unmarshal([]byte(out), &got); err != nil {
+					t.Fatalf("invalid hook JSON %q: %v", out, err)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("hook output mismatch\n got: %#v\nwant: %#v", got, want)
+				}
+				if testCase.CarriesNote && countRenderedNotes(t, out, fixture.OperatorNote) != 1 {
+					t.Fatalf("note must appear exactly once in %q", out)
+				}
+			})
+		}
 	}
 }
