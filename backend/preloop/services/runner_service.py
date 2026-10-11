@@ -16,6 +16,7 @@ from preloop.models.crud.flow_runner import ONLINE_HEARTBEAT_TTL, crud_flow_runn
 from preloop.models.crud.user import crud_user
 from preloop.models.models.flow import Flow
 from preloop.models.models.flow_runner import FlowRunner
+from preloop.services.harness_inventory import redact_harness_inventory
 from preloop.services.host_exec import (
     HOST_EXEC_AGENT_TYPE,
     host_exec_profile_name,
@@ -558,6 +559,7 @@ def runner_console_payload(
     heartbeat = runner.last_heartbeat
     execution_id = runner.current_execution_id
     assignments = list(getattr(runner, "assignments", None) or [])
+    inventory_updated = getattr(runner, "harness_inventory_updated_at", None)
     return {
         "id": str(runner.id),
         "name": runner.name,
@@ -577,6 +579,14 @@ def runner_console_payload(
         ),
         "registered_by_email": registered_by_email,
         "capabilities": dict(getattr(runner, "capabilities", None) or {}),
+        # Console events go to every account member, so they carry the
+        # member view; owners and admins get version and host from the API.
+        "harness_inventory": redact_harness_inventory(
+            getattr(runner, "harness_inventory", None)
+        ),
+        "harness_inventory_updated_at": (
+            inventory_updated.isoformat() if inventory_updated is not None else None
+        ),
     }
 
 

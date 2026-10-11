@@ -5,7 +5,7 @@ Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this pa
 The Preloop CLI **is** the self-hosted runner on macOS: it registers with
 your control plane, holds an outbound WebSocket, leases flow executions, and
 runs them locally. On a Mac the primary execution mode is a
-[host execution profile](#host-execution-profiles-on-macos): the runner
+[host execution profile](#host-execution-profiles-on-macos-advanced-override): the runner
 starts a locally installed agent CLI (Cursor, Copilot CLI) under your own
 login. Docker execution also works when Docker Desktop (or another engine)
 is installed, but host profiles do not need it.
@@ -71,7 +71,27 @@ a minimal environment.
 agent with `launchctl`. A LaunchAgent runs while you are logged in; a Mac
 that must run jobs with nobody logged in should use a Linux runner instead.
 
-## Host execution profiles on macOS
+## Harnesses are detected automatically
+
+The runner reports the agent harnesses installed for the user it runs as
+(Copilot CLI, Cursor CLI, Claude Code and others) and generates host
+execution profiles named `copilot` and `cursor` for Copilot CLI and Cursor
+CLI, so no profile file is needed. Sign in to the harness as that user, then
+check what the runner reports:
+
+```bash
+preloop runner inventory --refresh
+```
+
+Because harness logins live in the user's session (keychain, `~/.copilot`),
+run the runner as a LaunchAgent for that user, as installed by
+`preloop runner enable`. What is checked and what is never read is described
+in the [Linux quickstart](quickstart-linux.md#harnesses-are-detected-automatically).
+
+## Host execution profiles on macOS (advanced override)
+
+A hand-written profile replaces the generated one for the same harness or
+name. Use it to pin a working directory, map model aliases or grant tools.
 
 The profile file is `~/.preloop/runner-host-profiles.json` (or point
 `PRELOOP_RUNNER_HOST_PROFILES` at an absolute path):
@@ -99,7 +119,7 @@ The profile file is `~/.preloop/runner-host-profiles.json` (or point
 ```
 
 Everything in the
-[Linux host execution profile section](quickstart-linux.md#host-execution-profiles-opt-in-private-only)
+[Linux host execution profile section](quickstart-linux.md#host-execution-profiles-advanced-override-private-only)
 applies (profile validation, model mapping, prompt delivery, structured
 completion, injection rejection, process-group halt). macOS specifics:
 

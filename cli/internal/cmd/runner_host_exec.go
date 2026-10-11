@@ -232,8 +232,20 @@ func validateHostExecArgv(argv []string) error {
 	return nil
 }
 
-func hostExecAdvertisements() []hostExecAdvertisement {
+// effectiveHostExecProfiles is the hand-written profile file plus one
+// generated profile per enabled, runnable harness the inventory found
+// (reserved names "copilot" and "cursor"). A hand-written profile for the
+// same harness or name wins; an unreadable profile file disables both.
+func effectiveHostExecProfiles() ([]hostExecProfile, error) {
 	profiles, err := loadHostExecProfiles()
+	if err != nil {
+		return nil, err
+	}
+	return append(profiles, generatedHostExecProfiles(runnerInventory.current(false))...), nil
+}
+
+func hostExecAdvertisements() []hostExecAdvertisement {
+	profiles, err := effectiveHostExecProfiles()
 	if err != nil || len(profiles) == 0 {
 		// A non-nil empty slice marshals as [], not JSON null. Registration
 		// and the WebSocket hello both send this key; the control plane
@@ -324,7 +336,7 @@ func lookupHostExecProfile(name string) (hostExecProfile, error) {
 	if want == "" {
 		return hostExecProfile{}, fmt.Errorf("host execution profile is required")
 	}
-	profiles, err := loadHostExecProfiles()
+	profiles, err := effectiveHostExecProfiles()
 	if err != nil {
 		return hostExecProfile{}, err
 	}
@@ -781,6 +793,7 @@ func cloneJobWithPrompt(job map[string]any, prompt string) map[string]any {
 func runnerHeartbeatMessage(concurrency int) map[string]any {
 	msg := publicationHeartbeat()
 	msg["host_exec_profiles"] = hostExecAdvertisements()
+	runnerInventory.addToHeartbeat(msg)
 	// Re-assert ephemeral on every handshake and heartbeat. Registration
 	// already set it, but a row that predates the flag (or a reconnect to a
 	// replica that has not seen the register) must still be deletable when

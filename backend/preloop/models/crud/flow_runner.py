@@ -744,6 +744,31 @@ class CRUDFlowRunner(CRUDBase[FlowRunner]):
             db.flush()
         return runner
 
+    def set_harness_inventory(
+        self,
+        db: Session,
+        *,
+        runner: FlowRunner,
+        inventory: Dict[str, Any],
+        commit: bool = True,
+    ) -> Optional[str]:
+        """Store a normalized harness inventory; return the previous hash.
+
+        The timestamp moves on every store so the console can show how fresh
+        the inventory is, even when the hash did not change.
+        """
+        previous = runner.harness_inventory or {}
+        runner.harness_inventory = inventory
+        runner.harness_inventory_updated_at = datetime.now(timezone.utc)
+        db.add(runner)
+        if commit:
+            db.commit()
+            db.refresh(runner)
+        else:
+            db.flush()
+        previous_hash = previous.get("hash") if isinstance(previous, dict) else None
+        return previous_hash if isinstance(previous_hash, str) else None
+
     def counts_for_instance(self, db: Session, *, instance_id: UUID) -> Dict[str, Any]:
         cutoff = datetime.now(timezone.utc) - ONLINE_HEARTBEAT_TTL
         total = (

@@ -47,6 +47,13 @@ from preloop.models.db.session import release_transaction
 
 from preloop.plugins.account_hooks import VISIBLE_RUNNER, filter_viewable
 from preloop.services.flow_pr_binding import record_runner_handoff_markers
+from preloop.services.harness_inventory import (
+    inventory_for_viewer,
+    inventory_hash_known,
+    record_harness_inventory,
+    redact_harness_inventory,
+    viewer_is_account_admin,
+)
 from preloop.services.runner_service import (
     derive_execution_runner,
     emit_runner_deleted,
@@ -208,13 +215,26 @@ def _evict_live_runner_from_worker(
 
 
 def _to_response(
-    row: FlowRunner, db: Optional[Session] = None
+    row: FlowRunner,
+    db: Optional[Session] = None,
+    viewer: Optional[User] = None,
+    viewer_is_admin: Optional[bool] = None,
 ) -> schemas.RunnerResponse:
     data = schemas.RunnerResponse.model_validate(row)
     if db is not None and row.registered_by_user_id:
         user = crud_user.get(db, id=row.registered_by_user_id)
         if user is not None:
             data.registered_by_email = user.email
+    if row.harness_inventory is not None:
+        # Version and account host are for the owner and account admins.
+        visible = (
+            inventory_for_viewer(db, row, viewer, viewer_is_admin=viewer_is_admin)
+            if db is not None
+            else redact_harness_inventory(row.harness_inventory)
+        )
+        data.harness_inventory = (
+            schemas.HarnessInventory.model_validate(visible) if visible else None
+        )
     return data
 
 
@@ -257,9 +277,12 @@ def register_runner(
         existing = crud_flow_runner.set_reported_concurrency(
             db, runner=existing, reported=body.concurrency
         )
+        if body.harness_inventory is not None:
+            record_harness_inventory(db, existing, body.harness_inventory)
         emit_runner_updated(existing, db)
         return schemas.RunnerRegisterResponse(
-            **_to_response(existing, db).model_dump(), token=token
+            **_to_response(existing, db, current_user).model_dump(by_alias=True),
+            token=token,
         )
 
     token = mint_runner_token()
@@ -286,9 +309,11 @@ def register_runner(
         row = crud_flow_runner.set_reported_concurrency(
             db, runner=row, reported=body.concurrency
         )
+    if body.harness_inventory is not None:
+        record_harness_inventory(db, row, body.harness_inventory)
     emit_runner_updated(row, db)
     return schemas.RunnerRegisterResponse(
-        **_to_response(row, db).model_dump(), token=token
+        **_to_response(row, db, current_user).model_dump(by_alias=True), token=token
     )
 
 
@@ -309,8 +334,19 @@ def list_runners(
     rows = filter_viewable(db, current_user, VISIBLE_RUNNER, rows)
     # A runner shared from another account (account hook H3) never names
     # the user who registered it.
+    # One admin check for the whole page, not two queries per runner.
+    is_admin = (
+        viewer_is_account_admin(db, current_user)
+        if any(row.harness_inventory is not None for row in rows)
+        else False
+    )
     return [
-        _to_response(row, db if row.account_id == current_user.account_id else None)
+        _to_response(
+            row,
+            db if row.account_id == current_user.account_id else None,
+            current_user,
+            viewer_is_admin=is_admin,
+        )
         for row in rows
     ]
 
@@ -348,7 +384,7 @@ def update_runner_concurrency(
         raise HTTPException(status_code=404, detail="Runner not found")
     row = crud_flow_runner.set_concurrency(db, runner=row, concurrency=body.concurrency)
     emit_runner_updated(row, db)
-    return _to_response(row, db)
+    return _to_response(row, db, current_user)
 
 
 @router.delete("/runners/{runner_id}", response_model=schemas.RunnerDeleteResponse)
@@ -446,10 +482,12 @@ def rotate_runner_token(
         resource_id=str(runner_id),
         status="success",
     )
-    rotated = _to_response(row, db)
+    rotated = _to_response(row, db, current_user)
     _evict_live_runner_from_worker(str(runner_id), RUNNER_TOKEN_ROTATED_ERROR)
     response.headers["Cache-Control"] = "no-store"
-    return schemas.RunnerRegisterResponse(**rotated.model_dump(), token=token)
+    return schemas.RunnerRegisterResponse(
+        **rotated.model_dump(by_alias=True), token=token
+    )
 
 
 @router.get("/runners/{runner_id}", response_model=schemas.RunnerResponse)
@@ -464,7 +502,7 @@ def get_runner(
     )
     if not row:
         raise HTTPException(status_code=404, detail="Runner not found")
-    return _to_response(row, db)
+    return _to_response(row, db, current_user)
 
 
 async def _publish_flow_update(execution_id: str, payload: Dict[str, Any]) -> None:
@@ -846,6 +884,18 @@ async def runner_ws(
                         await close_publication(assignment.execution_id)
                 if "host_exec_profiles" in raw:
                     runner.capabilities = normalize_host_exec_advertisements(raw)
+                # Harness inventory (#1480): every heartbeat names its hash,
+                # the body comes only when it changed or we asked for it.
+                inventory_wanted = False
+                inventory_changed = False
+                if isinstance(raw.get("harness_inventory"), dict):
+                    inventory_changed = record_harness_inventory(
+                        db, runner, raw["harness_inventory"]
+                    )
+                elif "harness_inventory_hash" in raw:
+                    inventory_wanted = not inventory_hash_known(
+                        runner, raw.get("harness_inventory_hash")
+                    )
                 # Busy means no free slot, not "holds a job": a runner with
                 # spare capacity must stay dispatchable while it works.
                 crud_flow_runner.touch_heartbeat(
@@ -853,6 +903,10 @@ async def runner_ws(
                 )
                 db.refresh(runner)
                 reply: Dict[str, Any] = {"type": "ack", "concurrency": runner.capacity}
+                if inventory_wanted:
+                    reply["inventory_wanted"] = True
+                if inventory_changed:
+                    emit_runner_updated(runner, db)
                 heartbeat_jobs = []
                 halts = []
                 for assignment in list(runner.assignments or []):

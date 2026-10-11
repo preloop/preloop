@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "generated_at": "2026-10-16T09:00:00Z",
+  "hash": "sha256:25abdd45d66a6ccdb552d10aacedeb721084cec19814e188f401d7fea17cd115",
+  "entries": [
+    {
+      "harness": "cursor_cli",
+      "display_name": "Cursor CLI \u00e9\u2028line\u2029para <&>",
+      "login_state": "unknown",
+      "login_source": "unknown",
+      "governance": "unknown",
+      "support_level": "flows_only",
+      "enabled": true,
+      "sessions_enabled": false,
+      "session_mode": "none",
+      "billing": "seat",
+      "models": [
+        {
+          "id": "auto",
+          "source": "static"
+        }
+      ],
+      "capabilities": []
+    }
+  ]
+}

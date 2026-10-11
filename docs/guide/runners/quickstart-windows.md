@@ -5,7 +5,7 @@ Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this pa
 The Preloop CLI **is** the self-hosted runner on Windows too: it registers
 with your control plane, holds an outbound WebSocket, leases flow executions,
 and runs them locally. On a Windows developer laptop the primary execution
-mode is a [host execution profile](#host-execution-profiles-on-windows): the
+mode is a [host execution profile](#host-execution-profiles-on-windows-advanced-override): the
 runner starts a locally installed agent CLI (Cursor, Copilot CLI) under your
 own login. Docker execution also works when a Docker engine is available
 (Docker Desktop runs the same Linux agent containers), but it is not required
@@ -78,7 +78,30 @@ The task starts at logon, not at boot: host execution runs under your
 interactive login by design. A machine that must run jobs with nobody logged
 in should use a Linux runner or a dedicated service account.
 
-## Host execution profiles on Windows
+## Harnesses are detected automatically
+
+The runner reports the agent harnesses installed for the user it runs as
+(Copilot CLI, Cursor CLI, Claude Code and others) and generates host
+execution profiles named `copilot` and `cursor` for Copilot CLI and Cursor
+CLI, so no profile file is needed. Sign in to the harness as that user (for
+Copilot CLI: `copilot login`, or set `COPILOT_GITHUB_TOKEN` for the runner
+user), then check what the runner reports:
+
+```powershell
+preloop runner inventory --refresh
+```
+
+The Copilot login record is read from `%USERPROFILE%\.copilot\config.json`
+(or `%COPILOT_HOME%\config.json`); only its host is read. To turn a harness
+off, add `"harnesses": {"cursor_cli": {"enabled": false}}` to
+`%USERPROFILE%\.preloop\runner.json`. What is checked and what is never
+read is described in the
+[Linux quickstart](quickstart-linux.md#harnesses-are-detected-automatically).
+
+## Host execution profiles on Windows (advanced override)
+
+A hand-written profile replaces the generated one for the same harness or
+name. Use it to pin a working directory, map model aliases or grant tools.
 
 The profile file is `%USERPROFILE%\.preloop\runner-host-profiles.json` (or
 point `PRELOOP_RUNNER_HOST_PROFILES` at an absolute path):
@@ -106,7 +129,7 @@ point `PRELOOP_RUNNER_HOST_PROFILES` at an absolute path):
 ```
 
 Everything in the
-[Linux host execution profile section](quickstart-linux.md#host-execution-profiles-opt-in-private-only)
+[Linux host execution profile section](quickstart-linux.md#host-execution-profiles-advanced-override-private-only)
 applies (profile validation, model mapping, prompt delivery, structured
 completion, injection rejection). Windows specifics:
 

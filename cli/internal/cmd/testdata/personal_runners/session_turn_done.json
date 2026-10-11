@@ -1,0 +1,9 @@
+{
+  "type": "session_turn_done",
+  "remote_session_id": "0b8f3c2e-5d1a-4c47-9e0a-3f6b2d9c1a10",
+  "turn_id": "turn-2",
+  "status": "ok",
+  "usage": {
+    "premium_requests": 1
+  }
+}

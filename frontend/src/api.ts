@@ -4983,6 +4983,17 @@ export async function getRunners(): Promise<RunnerRecord[]> {
   return response.json();
 }
 
+/** One runner as the caller may see it (owner and admins get host details). */
+export async function getRunner(runnerId: string): Promise<RunnerRecord> {
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch runner');
+  }
+  return response.json();
+}
+
 export interface RunnerRecord {
   id: string;
   name: string;
@@ -5012,6 +5023,36 @@ export interface RunnerRecord {
       models?: string[];
     }>;
   } | null;
+  /** Harnesses the runner host reports; null for runners that predate it. */
+  harness_inventory?: HarnessInventory | null;
+  harness_inventory_updated_at?: string | null;
+}
+
+export interface HarnessInventoryEntry {
+  harness: string;
+  display_name: string;
+  /** Owner and account admins only. */
+  version?: string | null;
+  login_state: 'signed_in' | 'signed_out' | 'unknown' | 'not_applicable';
+  login_source: string;
+  /** Owner and account admins only. */
+  account_host?: string | null;
+  governance: 'governed' | 'partial' | 'ungoverned' | 'unknown';
+  support_level: 'flows_and_sessions' | 'flows_only' | 'presence_only';
+  enabled: boolean;
+  sessions_enabled: boolean;
+  session_mode: string;
+  billing: 'seat' | 'metered' | 'unknown';
+  models: Array<{ id: string; source: string }>;
+  generated_profile?: string | null;
+  capabilities: string[];
+}
+
+export interface HarnessInventory {
+  schema: number;
+  generated_at: string;
+  hash: string;
+  entries: HarnessInventoryEntry[];
 }
 
 /** Raise or lower how many executions a runner may hold at once. */

@@ -410,7 +410,7 @@ The flow-scoped MCP server for a host run is written by
 profile may not override are `copilotManagedFlags`
 (`cli/internal/cmd/runner_host_exec_copilot.go`). The shared host rules,
 including the rejected publication and resume paths, are in
-[host execution profiles](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only).
+[host execution profiles](runners/quickstart-linux.md#host-execution-profiles-advanced-override-private-only).
 
 The cloud agent MCP click path, including the GitHub how-to URL, is in
 [Copilot cloud agent](copilot-cloud-agent.md).
@@ -422,4 +422,4 @@ The cloud agent MCP click path, including the GitHub how-to URL, is in
 - [Copilot cloud agent MCP](copilot-cloud-agent.md)
 - [Usage hooks](usage-hooks.md) (Copilot CLI section)
 - [Premium-request import](copilot-usage-import.md)
-- [Host execution profiles on a private runner](runners/quickstart-linux.md#host-execution-profiles-opt-in-private-only)
+- [Host execution profiles on a private runner](runners/quickstart-linux.md#host-execution-profiles-advanced-override-private-only)
