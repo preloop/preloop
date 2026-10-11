@@ -195,6 +195,18 @@ type runnerWSMessage struct {
 	HaltExecutionIDs []string         `json:"halt_execution_ids,omitempty"`
 	Error            string           `json:"error,omitempty"`
 	RunnerID         string           `json:"runner_id,omitempty"`
+
+	// Remote session frames (session_start, session_turn, session_stop).
+	RemoteSessionID string              `json:"remote_session_id,omitempty"`
+	TurnID          string              `json:"turn_id,omitempty"`
+	Text            string              `json:"text,omitempty"`
+	Mode            string              `json:"mode,omitempty"`
+	Harness         string              `json:"harness,omitempty"`
+	Model           string              `json:"model,omitempty"`
+	FirstPrompt     string              `json:"first_prompt,omitempty"`
+	Workspace       map[string]any      `json:"workspace,omitempty"`
+	Actor           *runnerSessionActor `json:"actor,omitempty"`
+	Limits          map[string]any      `json:"limits,omitempty"`
 }
 
 // deliveredJobs returns every job in one server frame, first one first and
@@ -515,6 +527,8 @@ func runnerForegroundLoop(
 	}
 
 	jobs := newRunnerJobs(concurrency)
+	jobs.sessions = newRunnerSessionManager(out)
+	defer jobs.sessions.shutdown()
 	backoff := runnerReconnectMin
 	connectedOnce := false
 
@@ -638,6 +652,13 @@ func runRunnerSession(
 	if err := writeRunnerJSON(conn, runnerHeartbeatMessage(jobs.concurrency)); err != nil {
 		return fmt.Errorf("initial heartbeat: %w", err)
 	}
+	// Remote sessions outlive the socket; tell this connection which are
+	// live so the server resumes delivery to them.
+	jobs.sessions.reportLive()
+	sendSessionFrame := func(msg map[string]any) error { return writeRunnerJSON(conn, msg) }
+	if err := jobs.sessions.flush(sendSessionFrame); err != nil {
+		return fmt.Errorf("session report: %w", err)
+	}
 
 	// Unacknowledged output has to be offered again on the new socket, for
 	// every held job and every outcome still waiting to be reported.
@@ -663,6 +684,7 @@ func runRunnerSession(
 		case <-interrupt:
 			fmt.Fprintf(out, "Unregistering...\n")
 			jobs.haltAll()
+			jobs.sessions.shutdown()
 			_ = writeRunnerJSON(conn, map[string]any{"type": "unregister"})
 			return nil
 		case <-logTicker.C:
@@ -685,7 +707,12 @@ func runRunnerSession(
 					return err
 				}
 			}
+		case <-jobs.sessions.notifyChan():
+			if err := jobs.sessions.flush(sendSessionFrame); err != nil {
+				return fmt.Errorf("session delivery: %w", err)
+			}
 		case <-ticker.C:
+			jobs.sessions.tick()
 			if !jobs.publicationActive() {
 				_ = cleanupPublicationRecovery(time.Now())
 			}
@@ -717,6 +744,9 @@ func runRunnerSession(
 				return err
 			}
 		case msg := <-incoming:
+			if jobs.sessions.handle(msg) {
+				continue
+			}
 			if msg.Type == "hello" {
 				logAcknowledgements = msg.LogAcknowledgements
 				// The echo is how a one-shot run learns whether this
