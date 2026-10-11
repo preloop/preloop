@@ -1,0 +1,76 @@
+{
+  "harness": "Claude Code",
+  "harness_version": "2.1.288",
+  "source": "claude_code",
+  "captured_from": "claude --version reported 2.1.288 (Claude Code) on the machine this fixture was written on. Read from that build's bundled hook dispatcher: SessionStart input carries hook_event_name SessionStart plus source, agent_type, model and session_title, and its hookSpecificOutput.additionalContext is injected into model context. Stop input carries hook_event_name Stop, stop_hook_active and last_assistant_message; a Stop response with decision block keeps the turn going with reason as the model-visible feedback, and the harness itself overrides after CLAUDE_CODE_STOP_HOOK_BLOCK_CAP (default 8) consecutive blocks, which is above our cap of 3. SessionEnd input carries hook_event_name SessionEnd and reason; SessionEnd output is not read by the model, so the hook prints nothing. SessionEnd hooks run under CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS, otherwise the larger of a short built-in bound and the configured hook timeout, so the 10 s install timeout is the effective bound.",
+  "operator_note": "<operator-notes count=\"1\" source=\"preloop-control-plane\">\nThe block below is an instruction from the human operating this agent,\ndelivered out of band by the Preloop control plane at a turn boundary.\n<operator-note id=\"a1b2c3d4e5f60718\" from=\"Jane Doe\" auth=\"jwt\"\n               at=\"2026-09-15T09:14:02+00:00\">\nDeploy to eu-west-1, not us-east-1.\n</operator-note>\n</operator-notes>",
+  "cases": [
+    {
+      "name": "SessionStart startup",
+      "hook_event": "SessionStart",
+      "carries_note": true,
+      "hook_event_payload": {
+        "session_id": "session-fixture-claude-p",
+        "transcript_path": "/tmp/fixture/transcript.jsonl",
+        "cwd": "/repo",
+        "hook_event_name": "SessionStart",
+        "source": "startup",
+        "model": "claude-opus-5-5"
+      },
+      "without_note": null,
+      "with_note": {
+        "hookSpecificOutput": {
+          "hookEventName": "SessionStart",
+          "additionalContext": "<operator-notes count=\"1\" source=\"preloop-control-plane\">\nThe block below is an instruction from the human operating this agent,\ndelivered out of band by the Preloop control plane at a turn boundary.\n<operator-note id=\"a1b2c3d4e5f60718\" from=\"Jane Doe\" auth=\"jwt\"\n               at=\"2026-09-15T09:14:02+00:00\">\nDeploy to eu-west-1, not us-east-1.\n</operator-note>\n</operator-notes>"
+        }
+      }
+    },
+    {
+      "name": "Stop after last tool call",
+      "hook_event": "Stop",
+      "carries_note": true,
+      "hook_event_payload": {
+        "session_id": "session-fixture-claude-p-stop",
+        "transcript_path": "/tmp/fixture/transcript.jsonl",
+        "cwd": "/repo",
+        "hook_event_name": "Stop",
+        "stop_hook_active": false,
+        "last_assistant_message": "Done."
+      },
+      "without_note": null,
+      "with_note": {
+        "decision": "block",
+        "reason": "<operator-notes count=\"1\" source=\"preloop-control-plane\">\nThe block below is an instruction from the human operating this agent,\ndelivered out of band by the Preloop control plane at a turn boundary.\n<operator-note id=\"a1b2c3d4e5f60718\" from=\"Jane Doe\" auth=\"jwt\"\n               at=\"2026-09-15T09:14:02+00:00\">\nDeploy to eu-west-1, not us-east-1.\n</operator-note>\n</operator-notes>"
+      }
+    },
+    {
+      "name": "Stop while a block is already active",
+      "hook_event": "Stop",
+      "carries_note": false,
+      "hook_event_payload": {
+        "session_id": "session-fixture-claude-p-active",
+        "transcript_path": "/tmp/fixture/transcript.jsonl",
+        "cwd": "/repo",
+        "hook_event_name": "Stop",
+        "stop_hook_active": true,
+        "last_assistant_message": "Read the note."
+      },
+      "without_note": null,
+      "with_note": null
+    },
+    {
+      "name": "SessionEnd",
+      "hook_event": "SessionEnd",
+      "carries_note": false,
+      "hook_event_payload": {
+        "session_id": "session-fixture-claude-p",
+        "transcript_path": "/tmp/fixture/transcript.jsonl",
+        "cwd": "/repo",
+        "hook_event_name": "SessionEnd",
+        "reason": "other"
+      },
+      "without_note": null,
+      "with_note": null
+    }
+  ]
+}
