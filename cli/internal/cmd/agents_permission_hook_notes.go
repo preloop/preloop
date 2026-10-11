@@ -64,6 +64,8 @@ const cursorAdditionalContextLimit = 10000
 
 // operatorNoteSpoolEntry is one claimed-but-unrendered note block.
 type operatorNoteSpoolEntry struct {
+	Source    string    `json:"source,omitempty"`
+	SessionID string    `json:"session_id,omitempty"`
 	Note      string    `json:"note"`
 	SpooledAt time.Time `json:"spooled_at"`
 }
@@ -203,15 +205,16 @@ func spoolOperatorNote(source, sessionID, note string) {
 		return
 	}
 	entry := operatorNoteSpoolEntry{
+		Source:    source,
+		SessionID: sessionID,
 		Note:      note,
 		SpooledAt: time.Now().UTC(),
 	}
+	var dropped []operatorNoteSpoolEntry
 	err = withOperatorNoteSpoolLock(path, func() error {
 		entries := append(readOperatorNoteSpool(path), entry)
 		if len(entries) > operatorNoteSpoolMaxEntries {
-			for _, entry := range entries[:len(entries)-operatorNoteSpoolMaxEntries] {
-				sendNoteReceipt(source, sessionID, entry.Note, "spool_dropped")
-			}
+			dropped = entries[:len(entries)-operatorNoteSpoolMaxEntries]
 			entries = entries[len(entries)-operatorNoteSpoolMaxEntries:]
 		}
 		data, err := json.Marshal(entries)
@@ -225,6 +228,10 @@ func spoolOperatorNote(source, sessionID, note string) {
 	})
 	if err != nil {
 		return
+	}
+	// Report a drop only once the replacement is durable and the lock is released.
+	for _, entry := range dropped {
+		sendNoteReceipt(source, sessionID, entry.Note, "spool_dropped")
 	}
 	purgeExpiredOperatorNoteSpoolFiles(path)
 }
@@ -343,7 +350,8 @@ func purgeExpiredOperatorNoteSpoolFiles(keepPath string) {
 		if path == keepPath {
 			continue
 		}
-		_ = withOperatorNoteSpoolLock(path, func() error {
+		var dropped []operatorNoteSpoolEntry
+		err = withOperatorNoteSpoolLock(path, func() error {
 			info, err := os.Stat(path)
 			if err != nil {
 				return nil
@@ -351,8 +359,20 @@ func purgeExpiredOperatorNoteSpoolFiles(keepPath string) {
 			if time.Since(info.ModTime()) <= operatorNoteSpoolTTL {
 				return nil
 			}
-			_ = os.Remove(path)
+			entries := readOperatorNoteSpool(path)
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			dropped = entries
 			return nil
 		})
+		if err != nil {
+			continue
+		}
+		for _, entry := range dropped {
+			if entry.Source != "" && entry.SessionID != "" {
+				sendNoteReceipt(entry.Source, entry.SessionID, entry.Note, "spool_dropped")
+			}
+		}
 	}
 }
