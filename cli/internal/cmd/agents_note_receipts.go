@@ -64,12 +64,25 @@ func receiptDroppedBlocks(source, sessionID string, before []string, after strin
 	for _, id := range noteReceiptIDs(after) {
 		delivered[id] = true
 	}
+	var dropped []string
 	for _, block := range before {
 		ids := noteReceiptIDs(block)
 		for _, id := range ids {
 			if !delivered[id] {
-				sendNoteReceipt(source, sessionID, `<operator-note id="`+id+`">`, "spool_dropped")
+				dropped = append(dropped, `<operator-note id="`+id+`">`)
 			}
 		}
 	}
+	sendNoteReceipt(source, sessionID, strings.Join(dropped, "\n"), "spool_dropped")
+}
+
+func receiptSpoolDrops(source, sessionID string, entries []operatorNoteSpoolEntry) {
+	blocks := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		// Older spool entries have no metadata; the caller supplies its own key.
+		if (entry.Source == "" || entry.Source == source) && (entry.SessionID == "" || entry.SessionID == sessionID) {
+			blocks = append(blocks, entry.Note)
+		}
+	}
+	sendNoteReceipt(source, sessionID, strings.Join(blocks, "\n"), "spool_dropped")
 }

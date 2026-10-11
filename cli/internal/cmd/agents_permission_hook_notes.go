@@ -230,9 +230,7 @@ func spoolOperatorNote(source, sessionID, note string) {
 		return
 	}
 	// Report a drop only once the replacement is durable and the lock is released.
-	for _, entry := range dropped {
-		sendNoteReceipt(source, sessionID, entry.Note, "spool_dropped")
-	}
+	receiptSpoolDrops(source, sessionID, dropped)
 	purgeExpiredOperatorNoteSpoolFiles(path)
 }
 
@@ -262,15 +260,17 @@ func drainOperatorNoteSpool(source, sessionID string) []string {
 		return nil
 	}
 	var blocks []string
+	var dropped []operatorNoteSpoolEntry
 	for _, entry := range entries {
 		if time.Since(entry.SpooledAt) > operatorNoteSpoolTTL {
-			sendNoteReceipt(source, sessionID, entry.Note, "spool_dropped")
+			dropped = append(dropped, entry)
 			continue
 		}
 		if note := strings.TrimSpace(entry.Note); note != "" {
 			blocks = append(blocks, note)
 		}
 	}
+	receiptSpoolDrops(source, sessionID, dropped)
 	return blocks
 }
 
@@ -336,6 +336,8 @@ func writeOperatorNoteSpoolAtomic(path string, data []byte) error {
 // purgeExpiredOperatorNoteSpoolFiles deletes sibling spool files whose mtime is
 // older than the TTL. Called from spoolOperatorNote so expiry is storage
 // cleanup, not only a read-time filter. keepPath is the file just written.
+// Sweep at most one expired session per invocation and batch its receipt so
+// accumulated stale sessions cannot multiply network waits on a tool decision.
 func purgeExpiredOperatorNoteSpoolFiles(keepPath string) {
 	dir := filepath.Dir(keepPath)
 	entries, err := os.ReadDir(dir)
@@ -369,10 +371,13 @@ func purgeExpiredOperatorNoteSpoolFiles(keepPath string) {
 		if err != nil {
 			continue
 		}
-		for _, entry := range dropped {
-			if entry.Source != "" && entry.SessionID != "" {
-				sendNoteReceipt(entry.Source, entry.SessionID, entry.Note, "spool_dropped")
-			}
+		if len(dropped) == 0 {
+			continue
 		}
+		entry := dropped[0]
+		if entry.Source != "" && entry.SessionID != "" {
+			receiptSpoolDrops(entry.Source, entry.SessionID, dropped)
+		}
+		return
 	}
 }

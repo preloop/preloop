@@ -587,7 +587,7 @@ describe:
 | `agent.note_sent` | Before the API tells the author it worked |
 | `agent.note_delivered` | Before the request carrying the note leaves Preloop |
 | `agent.note_scope_denied` | Instead of a note, when an agent's target was out of [its scope](#which-agent-may-note-which-target) |
-| `agent.note_undeliverable` | When a session ends and the notes addressed only to it can no longer arrive |
+| `agent.note_undeliverable` | When session-only notes can no longer arrive (`session_ended`), or a local spool drops a claimed block (`spool_dropped`) |
 
 Three arrive as webhook events, `agent.note_sent`, `agent.note_delivered` and
 `agent.note_undeliverable` (see [webhooks](webhooks.md)), and each delivery is

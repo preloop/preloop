@@ -651,3 +651,56 @@ func TestReceiptExpiredSpoolFileReportsItsOwnSession(t *testing.T) {
 		t.Errorf("purge receipts = %d want 1", calls)
 	}
 }
+
+func TestReceiptExpiredSpoolSweepIsBoundedAndBatched(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	calls, ids := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			NoteIDs []string `json:"note_ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			return
+		}
+		calls++
+		ids += len(payload.NoteIDs)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	writeTestPermissionCredential(t, home, "bounded-codex", permissionHookCredential{BaseURL: server.URL, Token: "agt_synthetic", Source: permissionSourceCodexCLI})
+	var paths []string
+	for _, session := range []string{"bounded-a", "bounded-b", "bounded-c"} {
+		for _, id := range []string{"one", "two", "three", "four", "five"} {
+			spoolOperatorNote(permissionSourceCodexCLI, session, `<operator-note id="`+session+"-"+id+`">Old</operator-note>`)
+		}
+		path, err := operatorNoteSpoolPath(permissionSourceCodexCLI, session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	old := time.Now().Add(-operatorNoteSpoolTTL - time.Hour)
+	for _, path := range paths {
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep, err := operatorNoteSpoolPath(permissionSourceCodexCLI, "bounded-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	purgeExpiredOperatorNoteSpoolFiles(keep)
+	if calls != 1 || ids != 5 {
+		t.Errorf("sweep made %d requests for %d ids; want one request for five ids", calls, ids)
+	}
+	remaining := 0
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			remaining++
+		}
+	}
+	if remaining != 2 {
+		t.Errorf("remaining files = %d; want 2", remaining)
+	}
+}
