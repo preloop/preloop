@@ -233,6 +233,12 @@ def register_runner(
     capabilities = normalize_host_exec_advertisements(
         [profile.model_dump() for profile in advertised]
     )
+    # Registration is the connecting process's full advertisement and
+    # replaces the stored capabilities wholesale (no merge with the resumed
+    # row): a CLI that omits the field (it predates remote sessions, or the
+    # operator rolled back) cannot host a session, so a resumed row must not
+    # keep listing directories from an earlier process. Heartbeats update
+    # per key instead.
     if body.authorized_directories is not None:
         capabilities["authorized_directories"] = normalize_authorized_directories(
             body.authorized_directories

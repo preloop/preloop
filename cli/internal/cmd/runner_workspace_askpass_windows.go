@@ -17,14 +17,16 @@ import (
 // down (git, git-remote-https, askpass), opens the same numeric handle.
 // Git for Windows restricts inheritance to the standard handles by default;
 // sessionCheckoutGitEnv turns that off for the clone's git processes.
-func (c *askpassChannel) attach(cmd *exec.Cmd) []string {
+func (c *askpassChannel) attach(cmd *exec.Cmd) ([]string, error) {
 	handle := windows.Handle(c.reader.Fd())
-	_ = windows.SetHandleInformation(handle, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT)
+	if err := windows.SetHandleInformation(handle, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		return nil, fmt.Errorf("mark credential pipe inheritable: %w", err)
+	}
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	cmd.SysProcAttr.AdditionalInheritedHandles = append(cmd.SysProcAttr.AdditionalInheritedHandles, syscall.Handle(handle))
-	return []string{gitAskpassHandleEnv + "=" + strconv.FormatUint(uint64(handle), 10)}
+	return []string{gitAskpassHandleEnv + "=" + strconv.FormatUint(uint64(handle), 10)}, nil
 }
 
 func openAskpassInheritedFile(getenv func(string) string) (*os.File, error) {

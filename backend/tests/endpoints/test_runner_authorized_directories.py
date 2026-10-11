@@ -20,6 +20,9 @@ from preloop.api.endpoints import runners
 from preloop.models import models
 from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.models.db.session import get_db_session as get_db
+from preloop.services.runner_workspace_credentials import (
+    runner_authorized_directories,
+)
 
 DIRECTORIES = [
     {"id": "dir_9f2c", "label": "ims", "mode": "write", "harnesses": "all"},
@@ -82,12 +85,40 @@ def test_register_stores_the_advertisement_without_paths(
     assert "/home/jane" not in str(saved.capabilities)
 
 
-def test_register_without_the_field_keeps_old_runners_working(
+def test_register_without_the_field_advertises_no_directories(
     db_session: Session, test_user: models.User
 ) -> None:
     with _client(db_session, test_user) as client:
-        _runner_id, _token, body = _register(client, host_exec_profiles=PROFILES)
-    assert body["capabilities"] == {"host_exec_profiles": PROFILES}
+        runner_id, _token, body = _register(client, host_exec_profiles=PROFILES)
+        assert body["capabilities"] == {"host_exec_profiles": PROFILES}
+        # A current CLI registers directories, then an older CLI (or a
+        # rollback) resumes the same runner without the field: the stale
+        # list must not survive, because that process cannot host sessions.
+        response = client.post(
+            "/api/v1/runners/register",
+            json={
+                "name": "laptop",
+                "runner_id": runner_id,
+                "host_exec_profiles": PROFILES,
+                "authorized_directories": DIRECTORIES,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["capabilities"]["authorized_directories"] == DIRECTORIES
+        response = client.post(
+            "/api/v1/runners/register",
+            json={
+                "name": "laptop",
+                "runner_id": runner_id,
+                "host_exec_profiles": PROFILES,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["capabilities"] == {"host_exec_profiles": PROFILES}
+    db_session.expire_all()
+    saved = crud_flow_runner.get(db_session, id=UUID(runner_id))
+    assert "authorized_directories" not in saved.capabilities
+    assert runner_authorized_directories(saved) == []
 
 
 def test_heartbeat_updates_directories_and_profiles_independently(

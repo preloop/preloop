@@ -1011,7 +1011,11 @@ func runSessionCheckout(ctx context.Context, gitBin, root, dest, cloneURL, ref, 
 	cmd := exec.CommandContext(ctx, gitBin, args...)
 	cmd.Dir = root
 	cmd.SysProcAttr = hostExecSysProcAttr()
-	cmd.Env = sessionCheckoutGitEnv(os.Environ(), self, username, channel.attach(cmd))
+	channelEnv, err := channel.attach(cmd)
+	if err != nil {
+		return workspaceError(workspaceErrCheckout, "could not attach the credential channel: %v", err)
+	}
+	cmd.Env = sessionCheckoutGitEnv(os.Environ(), self, username, channelEnv)
 	cmd.Cancel = func() error {
 		killRunnerJobProcess(cmd)
 		return nil

@@ -39,7 +39,9 @@ class RunnerRegisterRequest(BaseModel):
     #: Directories the operator authorized for remote sessions, as
     #: ``{id, label, mode, harnesses}``. Paths never leave the host; the
     #: list is bounded by ``normalize_authorized_directories`` before it is
-    #: stored. Omitted by runners that predate remote sessions.
+    #: stored. Registration always resets the stored list to what this
+    #: process sent: a runner that omits the field (it predates remote
+    #: sessions) advertises none.
     authorized_directories: Optional[List[Dict[str, Any]]] = Field(
         default=None, max_length=64
     )

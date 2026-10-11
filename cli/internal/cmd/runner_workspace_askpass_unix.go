@@ -12,9 +12,9 @@ import (
 // attach hands the read end to the git process as fd 3. Git does not close
 // inherited descriptors, so git-remote-https and the askpass helper it
 // spawns see the same fd.
-func (c *askpassChannel) attach(cmd *exec.Cmd) []string {
+func (c *askpassChannel) attach(cmd *exec.Cmd) ([]string, error) {
 	cmd.ExtraFiles = append(cmd.ExtraFiles, c.reader)
-	return []string{gitAskpassFDEnv + "=" + strconv.Itoa(2+len(cmd.ExtraFiles))}
+	return []string{gitAskpassFDEnv + "=" + strconv.Itoa(2+len(cmd.ExtraFiles))}, nil
 }
 
 func openAskpassInheritedFile(getenv func(string) string) (*os.File, error) {

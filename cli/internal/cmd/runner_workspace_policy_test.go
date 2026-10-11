@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
-	"net/http/cgi"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -465,8 +464,9 @@ func TestSessionCheckoutSpecValidation(t *testing.T) {
 }
 
 // The clone environment never holds the token, drops inherited git
-// overrides, ignores global and system config, clears credential helpers
-// and allows only https without redirects.
+// overrides, ignores the user's global config (the admin-installed system
+// config stays in force), clears credential helpers and allows only https
+// without redirects.
 func TestSessionCheckoutGitEnvIsCredentialFree(t *testing.T) {
 	environ := []string{"PATH=/bin", "HOME=/home/u", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=url.https://evil.example/.insteadOf",
 		"GIT_ASKPASS=/tmp/x", "GIT_SSL_NO_VERIFY=1", "GIT_SSL_CAINFO=/etc/ca.pem", "PRELOOP_GIT_ASKPASS_FD=9", "XDG_CONFIG_HOME=/x", "SSH_ASKPASS=/y"}
@@ -520,7 +520,11 @@ func TestGitAskpassHelperReadsTokenFromInheritedPipe(t *testing.T) {
 	cmd := exec.Command(self, "Password for 'https://x-token-auth@github.com': ")
 	cmd.Env = append([]string{}, os.Environ()...)
 	cmd.Env = append(cmd.Env, gitAskpassUsernameEnv+"=x-token-auth")
-	cmd.Env = append(cmd.Env, channel.attach(cmd)...)
+	channelEnv, err := channel.attach(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(cmd.Env, channelEnv...)
 	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("helper: %v (%s)", err, out)
@@ -547,13 +551,13 @@ func TestGitAskpassHelperReadsTokenFromInheritedPipe(t *testing.T) {
 	}
 }
 
-// sessionCheckoutTestServer serves one bare repository over smart HTTP
-// behind Basic auth; the git environment of every request is dumped by a
-// wrapper so the test can prove the token never entered it.
+// sessionCheckoutTestServer serves one bare repository over the dumb HTTP
+// protocol (static files, no CGI, so it runs on Windows too) behind Basic
+// auth. The clone therefore exercises the real chain on every platform:
+// git -> git-remote-https -> askpass helper (this test binary).
 func sessionCheckoutTestServer(t *testing.T, username, token string) (string, string) {
 	t.Helper()
-	skipNoShebangOnWindows(t, "git http backend")
-	gitBin, run := gitForTest(t)
+	_, run := gitForTest(t)
 	root, work := t.TempDir(), t.TempDir()
 	run(work, "init", "--quiet", "--initial-branch=main")
 	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("hello\n"), 0o644); err != nil {
@@ -574,11 +578,8 @@ func sessionCheckoutTestServer(t *testing.T, username, token string) (string, st
 	bare := filepath.Join(root, "example", "app.git")
 	run(work, "push", "--quiet", bare, "main:refs/heads/main", "feature/x:refs/heads/feature/x")
 	run(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-	backend := &cgi.Handler{
-		Path: gitBin,
-		Args: []string{"http-backend"},
-		Env:  []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"},
-	}
+	run(bare, "update-server-info")
+	files := http.FileServer(http.Dir(root))
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte(username+":"+token))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != want {
@@ -586,16 +587,21 @@ func sessionCheckoutTestServer(t *testing.T, username, token string) (string, st
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
-		backend.ServeHTTP(w, r)
+		files.ServeHTTP(w, r)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL + "/", bare
 }
 
 // installGitEnvDumper puts a git wrapper first on PATH that records the
-// environment of every git invocation before running the real git.
+// environment of every git invocation before running the real git. The
+// wrapper is a shell script, so it returns "" on Windows and the caller
+// skips the environment assertion there.
 func installGitEnvDumper(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		return ""
+	}
 	gitBin, err := exec.LookPath("git")
 	if err != nil {
 		t.Skip("git not installed")
@@ -673,15 +679,17 @@ func TestTrackerCheckoutLeavesNoCredentialBehind(t *testing.T) {
 	if listed := run(ws.Dir, "config", "--list", "--local"); strings.Contains(listed, token) {
 		t.Fatalf("git config --list carries the token:\n%s", listed)
 	}
-	envDump, err := os.ReadFile(dump)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(envDump), token) || strings.Contains(string(envDump), base64.StdEncoding.EncodeToString([]byte(username+":"+token))) {
-		t.Fatal("the token entered a git process environment")
-	}
-	if !strings.Contains(string(envDump), "GIT_ASKPASS=") {
-		t.Fatalf("clone did not run through askpass:\n%s", envDump)
+	if dump != "" {
+		envDump, err := os.ReadFile(dump)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(envDump), token) || strings.Contains(string(envDump), base64.StdEncoding.EncodeToString([]byte(username+":"+token))) {
+			t.Fatal("the token entered a git process environment")
+		}
+		if !strings.Contains(string(envDump), "GIT_ASKPASS=") {
+			t.Fatalf("clone did not run through askpass:\n%s", envDump)
+		}
 	}
 	for _, line := range logs {
 		if strings.Contains(line, token) {
