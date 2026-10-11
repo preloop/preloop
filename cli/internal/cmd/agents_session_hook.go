@@ -292,9 +292,9 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 				}
 			}
 		}
-	} else {
-		registered = haveFile
 	}
+	// Reaching here means needsRegistration was true: a prompt that needs no
+	// registration returned above. So `registered` is set only by the post.
 
 	// Notes ride the same event: a note sent before the run started reaches
 	// the model before its first tool call. First turn only, so an interactive
