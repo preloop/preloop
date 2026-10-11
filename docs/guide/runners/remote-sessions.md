@@ -141,10 +141,14 @@ else:
 - git runs with `GIT_ASKPASS` pointing at the Preloop binary; git asks it for
   the username (answered from an environment variable, `x-access-token` for
   GitHub, `x-token-auth` for Bitbucket) and for the password, which the
-  helper reads from a pipe the runner created and the git process tree
-  inherited (fd 3 on Linux and macOS, an inherited handle on Windows). The
-  token is never in a process environment, on the command line, in the
-  remote URL or in `.git/config`.
+  helper reads from a channel the runner serves from memory for the
+  duration of the clone: on Linux and macOS a pipe the git process tree
+  inherits as fd 3; on Windows a named pipe (`\\.\pipe\preloop-askpass-<random>`)
+  whose access control list admits only the runner's own user and that
+  rejects remote clients, because Git for Windows passes only the standard
+  handles through its intermediate launcher process. The token is never in
+  a process environment, on the command line, in the remote URL or in
+  `.git/config`.
 - The user's global git configuration (`~/.gitconfig`,
   `~/.config/git/config`) is ignored for the clone and `credential.helper`
   is cleared, so a credential helper (keychain, Windows credential manager,

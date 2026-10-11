@@ -504,9 +504,10 @@ func TestSessionCheckoutGitEnvIsCredentialFree(t *testing.T) {
 }
 
 // The askpass helper answers the username from the environment and the
-// password from the inherited pipe, in a real child process so handle
-// inheritance is exercised on every platform.
-func TestGitAskpassHelperReadsTokenFromInheritedPipe(t *testing.T) {
+// password from the runner's channel, in a real child process so the
+// transport (inherited fd on Unix, per-user named pipe on Windows) is
+// exercised on every platform.
+func TestGitAskpassHelperReadsTokenFromRunnerChannel(t *testing.T) {
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
