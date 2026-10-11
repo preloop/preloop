@@ -175,7 +175,9 @@ class OperatorSessionEndRequest(BaseModel):
         None,
         max_length=255,
         description=(
-            "Harness session id, for logging only; never used to pick a session."
+            "Harness session id. Resolved only against sessions the caller's "
+            "own runtime principal registered; otherwise the token's bound "
+            "session is ended."
         ),
     )
     reason: Optional[str] = Field(

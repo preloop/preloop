@@ -356,18 +356,16 @@ def _hook_origin_session_id(
     except Exception:
         logger.warning("Resolving the hook origin session failed", exc_info=True)
         return None
-    # The exact principal-qualified match is already first; keep the fallback
-    # from reaching another agent's bare-id session in the same account.
+    # Ownership must be positive: a session with no runtime principal (an
+    # importer row keyed on the bare id) or another principal's session in the
+    # same account is never the caller's, so it is never claimed into or ended.
     qualified = f"{principal_id}:{external}"
     for session in matches:
         runtime_principal_id = getattr(session, "runtime_principal_id", None)
         runtime_principal_type = getattr(session, "runtime_principal_type", None)
-        if runtime_principal_type and runtime_principal_type != principal_type:
+        if runtime_principal_type != principal_type:
             continue
-        if runtime_principal_id and runtime_principal_id not in {
-            principal_id,
-            qualified,
-        }:
+        if runtime_principal_id not in {principal_id, qualified}:
             continue
         return str(session.id)
     return None
@@ -443,6 +441,11 @@ def _end_session(
             session = crud_runtime_session.get_account_session(
                 db, account_id=account_id, runtime_session_id=origin_id
             )
+        if session is None and (payload.external_session_id or "").strip():
+            # The harness named a run the caller never registered. Ending the
+            # token's bound session instead would end a durable credential's
+            # identity session on every headless exit, so do nothing.
+            return OperatorSessionEndResponse(runtime_session_id=None, marked=0)
         if session is None:
             session = context.runtime_session
         if session is None:

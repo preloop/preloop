@@ -414,7 +414,20 @@ stream of notes cannot pin a worker in a loop; past that cap the note waits and
 `SessionEnd` marks it `undeliverable` rather than letting it sit `pending` until
 its 24h expiry and look like the agent ignored it. A note addressed to the
 *agent* with no session is untouched by a session ending: it keeps waiting for
-the agent's next run. There is still no path that pushes into a process that is
+the agent's next run.
+
+The lifecycle hooks are installed for Claude Code only. Codex CLI 0.162 has
+`Stop`, `SessionStart` and `SessionEnd` hook events too, but `onboard
+--approvals` does not wire them yet, so a Codex note still relies on
+`PreToolUse` and, if the session ends first, expires after 24h. Cursor CLI is
+unchanged. The Claude Code input and output shapes for these events are pinned
+in `cli/internal/cmd/testdata/operator-notes/claude-code-lifecycle.json`.
+
+A Stop block is only spent when `stop_hook_active` is false, which Claude Code
+sets on the stop that follows a block. A headless `claude -p` run therefore
+continues for at most one extra model step per stop, and a note that arrives
+during that step waits for `SessionEnd`. If the hook names a run the caller's
+credential never registered, `session-end` changes nothing. There is still no path that pushes into a process that is
 not asking Preloop anything.
 
 ## What the model sees
