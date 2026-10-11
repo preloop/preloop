@@ -265,6 +265,7 @@
   "POST /api/v1/agents/extract-name": "deny",
   "POST /api/v1/agents/notes/pending": "deny",
   "POST /api/v1/agents/permission-check": "deny",
+  "POST /api/v1/agents/session-end": "deny",
   "POST /api/v1/agents/session-start": "deny",
   "POST /api/v1/agents/{agent_id}/control/commands": "deny",
   "POST /api/v1/agents/{agent_id}/control/prompts": "deny",

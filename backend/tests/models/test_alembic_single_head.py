@@ -347,4 +347,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert result_schema.down_revision == "20261011_runner_presence"
     audit_outbox = script.get_revision("20261011_audit_outbox")
     assert audit_outbox.down_revision == "20261011_flow_result_schema"
-    assert script.get_heads() == ["20261011_audit_outbox"]
+    note_delivery_event = script.get_revision("20261012_note_delivery_event")
+    assert note_delivery_event.down_revision == "20261011_audit_outbox"
+    assert script.get_heads() == ["20261012_note_delivery_event"]
