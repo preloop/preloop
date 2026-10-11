@@ -145,7 +145,10 @@ the host-exec profile applies, deny always wins over allow, and
 - BYOK variables (for example `COPILOT_PROVIDER_BASE_URL`) are stripped by the
   environment allowlist, so a seat session really uses GitHub-hosted models
   under the user's Copilot plan and policies.
-- `--assisted-approval` is not used.
+- Model-judged (assisted) permission approval is never enabled: the runner does
+  not pass `--assisted-approval` (present in Copilot CLI 1.0.95 help, marked
+  experimental) and does not switch to the `/permissions assisted` mode. Tool
+  decisions come only from the Preloop approval hook (T7).
 
 Implemented by #1482.
 
