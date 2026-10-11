@@ -639,13 +639,19 @@ async def agent_permission_check(
         flow_id=identity.flow_id,
     )
     # Claim after the decision, so a Cursor ask response is never called delivered.
-    # Codex PermissionRequest and Cursor before* hooks defer until a carrying output.
+    # Copilot has no note carrier. Codex PermissionRequest and Cursor before*
+    # hooks defer until carrying output, or become terminal when the run ends.
     defer_note_delivery = (
-        payload.source == "codex_cli" and payload.evaluation_phase != "pre_tool_use"
-    ) or (
-        payload.source == "cursor"
-        and (
-            payload.hook_event_name != "preToolUse" or decision not in {"allow", "deny"}
+        payload.source == "copilot_cli"
+        or (
+            payload.source == "codex_cli" and payload.evaluation_phase != "pre_tool_use"
+        )
+        or (
+            payload.source == "cursor"
+            and (
+                payload.hook_event_name != "preToolUse"
+                or decision not in {"allow", "deny"}
+            )
         )
     )
     operator_note = await run_db_off_loop(

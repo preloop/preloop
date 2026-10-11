@@ -945,6 +945,7 @@ def test_receipt_spool_dropped_records_reason(client, db_session, test_user):
     "source,phase,event,decision,expected",
     [
         ("codex_cli", "pre_tool_use", "PreToolUse", "allow", "delivered"),
+        ("copilot_cli", "permission_request", None, "allow", "claimed"),
         ("cursor", "permission_request", "beforeShellExecution", "allow", "claimed"),
         ("cursor", "pre_tool_use", "preToolUse", "allow", "delivered"),
         ("cursor", "pre_tool_use", "preToolUse", "ask", "claimed"),
