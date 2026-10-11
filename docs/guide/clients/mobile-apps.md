@@ -95,6 +95,24 @@ The core approval experience matches iOS: receive notifications, inspect the req
 
 ---
 
+## Remote sessions on your runners (coming)
+
+Starting a session with an agent on one of your own machines (for example
+GitHub Copilot CLI behind a Preloop runner) works from the web console today
+and is coming to the mobile apps. The apps will use the same endpoints as the
+console:
+
+- `GET /api/v1/runners/{runner_id}/session-options`
+- `POST /api/v1/runners/{runner_id}/sessions`
+- `GET /api/v1/runners/{runner_id}/sessions`
+- `POST /api/v1/runner-sessions/{session_id}/turns`
+- `POST /api/v1/runner-sessions/{session_id}/stop`
+
+See [Remote sessions on your runners](../runners/remote-sessions.md) for the
+request shapes, who may start a session and why a start can be refused.
+
+---
+
 ## Self-Hosted Deployments
 
 Both mobile apps work with self-hosted Preloop deployments.

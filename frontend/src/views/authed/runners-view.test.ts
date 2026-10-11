@@ -175,6 +175,55 @@ describe('RunnersView', () => {
     expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
   });
 
+  it('opens the new session dialog for an online runner', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        status: 'online',
+        labels: [],
+      },
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        name: 'ci-once',
+        status: 'online',
+        ephemeral: true,
+        labels: [],
+      },
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        name: 'old-box',
+        status: 'offline',
+        labels: [],
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading,
+      'Runners view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const buttons = [
+      ...element.shadowRoot!.querySelectorAll('sl-button.new-session'),
+    ];
+    // Ephemeral CI runners never host sessions.
+    expect(buttons).to.have.length(2);
+    expect(buttons[1].hasAttribute('disabled')).to.equal(true);
+    const dialog = element.shadowRoot!.querySelector(
+      'new-runner-session-dialog'
+    )!;
+    expect(dialog.hasAttribute('open')).to.equal(false);
+    (buttons[0] as HTMLElement).click();
+    await element.updateComplete;
+    expect(dialog.hasAttribute('open')).to.equal(true);
+    expect(dialog.getAttribute('runner-id')).to.equal(
+      '11111111-1111-4111-8111-111111111111'
+    );
+  });
+
   it('badges an ephemeral runner only while it is connected', async () => {
     fetchStub = createFetchStub([
       {

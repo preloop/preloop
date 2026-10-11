@@ -26,12 +26,14 @@ import '../../components/list-toolbar.ts';
 import '../../components/preloop-session-observer.ts';
 import '../../components/token-figures.ts';
 import '../../components/session-embedding-settings.ts';
+import '../../components/new-runner-session-dialog';
 import {
   getAccountRuntimeSessionDetail,
   getAccountRuntimeSessions,
   getEntitlements,
   getFeatures,
   getFlowExecutionGatewayEvents,
+  getRunners,
   getRuntimeSessionGatewayEvents,
   getAccountRuntimeSessionActivityTimeline,
   getAccountRuntimeSessionInteractions,
@@ -40,6 +42,8 @@ import {
   type RuntimeSessionDetailParams,
   type RuntimeSessionInteractionsParams,
   type RuntimeSessionListParams,
+  type RunnerRecord,
+  type RunnerSessionStarted,
 } from '../../api';
 import type {
   AccountGatewayUsageSearchResponse,
@@ -157,6 +161,16 @@ export class RuntimeSessionsView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private sessions: AccountRuntimeSessionListResponse | null = null;
+
+  /** Runners offered by the "New session" dialog; loaded when it opens. */
+  @state()
+  private sessionRunners: RunnerRecord[] = [];
+
+  @state()
+  private newSessionOpen = false;
+
+  @state()
+  private newSessionError = '';
 
   @state()
   private detail: AccountRuntimeSessionDetailResponse | null = null;
@@ -1519,6 +1533,33 @@ export class RuntimeSessionsView extends LitElement {
     );
   }
 
+  /** Open the "New session" dialog over the runners the account can see. */
+  async openNewSession(): Promise<void> {
+    this.newSessionError = '';
+    try {
+      const runners = await getRunners();
+      this.sessionRunners = runners.filter((runner) => !runner.ephemeral);
+    } catch (error) {
+      this.newSessionError =
+        error instanceof Error ? error.message : String(error);
+      return;
+    }
+    if (this.sessionRunners.length === 0) {
+      this.newSessionError =
+        'No runner is registered. Install one on your machine first: preloop runner enable.';
+      return;
+    }
+    this.newSessionOpen = true;
+  }
+
+  private handleRunnerSessionStarted(
+    event: CustomEvent<RunnerSessionStarted>
+  ): void {
+    this.newSessionOpen = false;
+    this.selectSession(event.detail.session_id);
+    void this.loadSessions(true);
+  }
+
   private selectSession(sessionId: string) {
     if (sessionId === this.selectedSessionId) {
       // The observer echoes its own auto selection back. That is not the
@@ -2724,7 +2765,36 @@ export class RuntimeSessionsView extends LitElement {
         headerText="Sessions"
         description="Everything your agents did, as it happened: prompts, responses, tool calls, and cost per session. Follow live or replay later."
         width="extra-wide"
-      ></view-header>
+      >
+        <sl-button
+          slot="main-column"
+          class="new-runner-session"
+          size="small"
+          variant="primary"
+          @click=${() => void this.openNewSession()}
+          >New session</sl-button
+        >
+      </view-header>
+      ${
+        this.newSessionError
+          ? html`<sl-alert
+              class="new-session-error"
+              variant="warning"
+              open
+              closable
+              @sl-after-hide=${() => (this.newSessionError = '')}
+            >
+              <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
+              ${this.newSessionError}
+            </sl-alert>`
+          : nothing
+      }
+      <new-runner-session-dialog
+        .runners=${this.sessionRunners}
+        ?open=${this.newSessionOpen}
+        @runner-session-dialog-hide=${() => (this.newSessionOpen = false)}
+        @runner-session-started=${this.handleRunnerSessionStarted}
+      ></new-runner-session-dialog>
       <div class="dashboard extra-wide">
         <div class="main-column">
           <div class="page">
