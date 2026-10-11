@@ -378,16 +378,13 @@ func canonicalAuthorizedPath(raw string) (string, error) {
 	if isVolumeRoot(cleaned) {
 		return "", fmt.Errorf("the filesystem root cannot be an authorized directory")
 	}
-	resolved, err := filepath.EvalSymlinks(cleaned)
+	resolved, err := evalLinks(cleaned)
 	if err != nil {
 		return "", fmt.Errorf("path cannot be resolved: %w", err)
 	}
 	info, err := os.Lstat(resolved)
 	if err != nil {
 		return "", fmt.Errorf("path cannot be read: %w", err)
-	}
-	if info.Mode()&os.ModeIrregular != 0 {
-		return "", fmt.Errorf("path is a reparse point of unknown type")
 	}
 	if !info.IsDir() {
 		return "", fmt.Errorf("path is not a directory")
@@ -399,6 +396,58 @@ func canonicalAuthorizedPath(raw string) (string, error) {
 		return "", err
 	}
 	return resolved, nil
+}
+
+// evalLinks is realpath for the policy: symlinks and, on Windows, junctions
+// (mount points), which Go's EvalSymlinks leaves in place since Go 1.23 and
+// reports as irregular. A junction is read and followed like a symlink; any
+// other reparse point (cloud placeholder, app execution alias, ...) is
+// refused. The walk is bounded so a link loop terminates.
+func evalLinks(path string) (string, error) {
+	current := filepath.Clean(path)
+	for i := 0; i < 40; i++ {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err != nil {
+			return "", err
+		}
+		link, rest, err := firstIrregularComponent(resolved)
+		if err != nil {
+			return "", err
+		}
+		if link == "" {
+			return resolved, nil
+		}
+		target, err := os.Readlink(link)
+		if err != nil || !filepath.IsAbs(target) {
+			return "", fmt.Errorf("%s is a reparse point of unknown type", filepath.Base(link))
+		}
+		current = filepath.Join(target, rest)
+	}
+	return "", fmt.Errorf("too many links")
+}
+
+// firstIrregularComponent walks the components of an absolute path and
+// returns the first one that is an irregular file (on Windows: a reparse
+// point that is not a symlink) plus the remainder of the path below it.
+func firstIrregularComponent(path string) (link, rest string, err error) {
+	volume := filepath.VolumeName(path)
+	body := strings.TrimPrefix(path, volume)
+	segments := strings.Split(strings.Trim(body, string(filepath.Separator)), string(filepath.Separator))
+	current := volume + string(filepath.Separator)
+	for i, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		current = filepath.Join(current, segment)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", "", err
+		}
+		if info.Mode()&os.ModeIrregular != 0 {
+			return current, filepath.Join(segments[i+1:]...), nil
+		}
+	}
+	return "", "", nil
 }
 
 // isVolumeRoot reports whether path is / on Unix, a drive root (C:\) or a
@@ -415,7 +464,7 @@ func refuseHomeDirectory(resolved string) error {
 	if err != nil || home == "" {
 		return nil
 	}
-	canonicalHome, err := filepath.EvalSymlinks(filepath.Clean(home))
+	canonicalHome, err := evalLinks(home)
 	if err != nil {
 		canonicalHome = filepath.Clean(home)
 	}
@@ -487,12 +536,11 @@ func validateWorkspaceSubpath(raw string) (string, error) {
 }
 
 // containedRealPath resolves base/subpath and proves the result is inside
-// base after symlink (and on Windows reparse point) resolution. Every
-// component below base is inspected: a symlink or junction that leaves the
-// directory, a reparse point of unknown type, or anything that is not a
-// directory is refused.
+// base after symlink (and on Windows junction) resolution. A symlink or
+// junction that leaves the directory, a reparse point of unknown type, or
+// anything that is not a directory is refused.
 func containedRealPath(base, subpath string) (string, error) {
-	canonicalBase, err := filepath.EvalSymlinks(base)
+	canonicalBase, err := evalLinks(base)
 	if err != nil {
 		return "", fmt.Errorf("authorized directory cannot be resolved: %w", err)
 	}
@@ -506,20 +554,7 @@ func containedRealPath(base, subpath string) (string, error) {
 	if !pathWithin(canonicalBase, target) {
 		return "", fmt.Errorf("path leaves the authorized directory")
 	}
-	// Inspect each component as named (before resolution) so a reparse
-	// point of unknown type is refused rather than passed through.
-	current := canonicalBase
-	for _, segment := range strings.Split(subpath, "/") {
-		current = filepath.Join(current, segment)
-		info, err := os.Lstat(current)
-		if err != nil {
-			return "", fmt.Errorf("path does not exist")
-		}
-		if info.Mode()&os.ModeIrregular != 0 {
-			return "", fmt.Errorf("%s is a reparse point of unknown type", segment)
-		}
-	}
-	real, err := filepath.EvalSymlinks(target)
+	real, err := evalLinks(target)
 	if err != nil {
 		return "", fmt.Errorf("path cannot be resolved: %w", err)
 	}
@@ -705,13 +740,21 @@ func resolveAuthorizedDirectoryWorkspace(ctx context.Context, spec *sessionWorks
 	}, nil
 }
 
-// sessionWorkspacesRoot is ~/.preloop/host-workspaces/sessions.
-func sessionWorkspacesRoot() (string, error) {
+// sessionWorkspacesRootPath is ~/.preloop/host-workspaces/sessions.
+func sessionWorkspacesRootPath() (string, error) {
 	dir, err := config.GetConfigDir()
 	if err != nil {
 		return "", err
 	}
-	root := filepath.Join(dir, hostExecWorkspacesDirName, sessionWorkspacesDirName)
+	return filepath.Join(dir, hostExecWorkspacesDirName, sessionWorkspacesDirName), nil
+}
+
+// sessionWorkspacesRoot creates the sessions root (owner-only) if needed.
+func sessionWorkspacesRoot() (string, error) {
+	root, err := sessionWorkspacesRootPath()
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", err
 	}
@@ -743,7 +786,7 @@ func newSessionWorkspaceDir(remoteSessionID string) (string, error) {
 // directory directly under the sessions root is removed, so a stray
 // symlink can never turn the cleanup into a delete elsewhere.
 func removeSessionWorkspaceDir(dir string) error {
-	root, err := sessionWorkspacesRoot()
+	root, err := sessionWorkspacesRootPath()
 	if err != nil {
 		return err
 	}
@@ -767,12 +810,15 @@ func removeSessionWorkspaceDir(dir string) error {
 // cleanupSessionWorkspaces removes session directories that are not in
 // keep. At runner start keep is empty: no session survives a restart.
 func cleanupSessionWorkspaces(keep map[string]bool) error {
-	root, err := sessionWorkspacesRoot()
+	root, err := sessionWorkspacesRootPath()
 	if err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
 		return err
 	}
 	var first error

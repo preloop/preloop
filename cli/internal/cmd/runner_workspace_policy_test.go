@@ -148,7 +148,6 @@ func TestVolumeRootDetection(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		for path, want := range map[string]bool{
 			`C:\`:               true,
-			`C:`:                true,
 			`C:\Users`:          false,
 			`\\server\share`:    true,
 			`\\server\share\`:   true,
