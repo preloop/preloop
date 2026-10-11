@@ -268,6 +268,10 @@ ACTION_RUNNER_ACCEPT = "runner:accept"
 ACTION_FLOW_RUN = "flow:run"
 ACTION_RESOURCE_SHARE = "resource:share"
 ACTION_RESOURCE_VIEW = "resource:view"
+#: Start (or steer) a remote harness session on a personal runner (#1483).
+#: The open source rule is "runner owner or account admin", see
+#: :func:`may_start_runner_session`.
+ACTION_RUNNER_SESSION_START = "runner:session_start"
 
 
 @dataclass(frozen=True)
@@ -338,6 +342,66 @@ def authorize(ctx: AuthorizationContext, action: str, resource: Any = None) -> D
         return ALLOW
     decision = authorizer(ctx, action, resource)
     return decision if decision is not None else ALLOW
+
+
+def may_start_runner_session(
+    ctx: AuthorizationContext, runner: Any, *, is_account_admin: bool
+) -> Decision:
+    """Decide :data:`ACTION_RUNNER_SESSION_START` for one runner.
+
+    Default rule: the user who registered the runner, or an account admin,
+    in the runner's own account. The registered authorizer is then asked
+    with ``attributes["default_allowed"]`` set. It may always deny. It may
+    widen the default (team sharing of a runner) only with an explicit
+    ``allow`` that names the rules which granted it, so an authorizer that
+    simply has no opinion never opens someone's laptop to other members.
+
+    Args:
+        ctx: Caller context; ``ctx.user`` is the acting user.
+        runner: The ``FlowRunner`` row.
+        is_account_admin: Whether the caller administers ``ctx.account_id``.
+
+    Returns:
+        The decision; a denial carries ``reason="not_runner_owner"`` unless
+        the authorizer gave its own reason.
+    """
+    user = ctx.user
+    same_account = user is not None and str(runner.account_id) == str(
+        getattr(user, "account_id", None)
+    )
+    is_owner = (
+        same_account
+        and runner.registered_by_user_id is not None
+        and str(runner.registered_by_user_id) == str(user.id)
+    )
+    default_allowed = bool(same_account and (is_owner or is_account_admin))
+    authorizer = _authorizer
+    if authorizer is not None:
+        attrs = dict(ctx.attributes)
+        attrs["default_allowed"] = default_allowed
+        decision = authorizer(
+            AuthorizationContext(
+                account_id=ctx.account_id,
+                db=ctx.db,
+                user=user,
+                principal=ctx.principal,
+                attributes=attrs,
+            ),
+            ACTION_RUNNER_SESSION_START,
+            runner,
+        )
+        if decision is not None:
+            if not decision.allowed:
+                return Decision(
+                    "deny",
+                    decision.rule_ids,
+                    decision.reason or "not_runner_owner",
+                )
+            if decision.rule_ids and not default_allowed:
+                return decision
+    if default_allowed:
+        return ALLOW
+    return Decision("deny", ("oss:runner_owner_or_admin",), "not_runner_owner")
 
 
 def filter_viewable(

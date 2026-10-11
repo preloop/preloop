@@ -6,6 +6,26 @@ import './runtime-sessions-view';
 import type { RuntimeSessionsView } from './runtime-sessions-view';
 import { formatCueStart } from './runtime-sessions-view';
 
+const SESSION_OPTIONS = {
+  runner_id: 'r',
+  online: true,
+  sessions_available: true,
+  harnesses: [
+    {
+      harness: 'copilot_cli',
+      display_name: 'GitHub Copilot CLI',
+      session_mode: 'resume',
+      models: [{ id: 'auto', source: 'static' }],
+      available: true,
+    },
+  ],
+  authorized_directories: [
+    { id: 'dir_api', label: 'api', mode: 'write', harnesses: 'all' },
+  ],
+  checkout_sources: [],
+  limits: { max_concurrent: 2, active: 0, idle_timeout_seconds: 1800 },
+};
+
 describe('RuntimeSessionsView', () => {
   let fetchStub: sinon.SinonStub;
   let wsStub: sinon.SinonStub;
@@ -616,6 +636,91 @@ describe('RuntimeSessionsView', () => {
     fetchStub.restore();
     localStorage.clear();
     window.history.replaceState({}, '', '/console/runtime-sessions');
+  });
+
+  it('opens the new session dialog over non-ephemeral runners', async () => {
+    const runners = [
+      { id: 'r-1', name: 'laptop', status: 'online', labels: [] },
+      { id: 'r-2', name: 'ci', status: 'online', ephemeral: true, labels: [] },
+    ];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const body =
+        url === '/api/v1/runners'
+          ? runners
+          : url.includes('/session-options')
+            ? SESSION_OPTIONS
+            : {};
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const element = (await fixture(
+      html`<runtime-sessions-view></runtime-sessions-view>`
+    )) as RuntimeSessionsView;
+    await element.updateComplete;
+
+    const button = element.shadowRoot!.querySelector(
+      'sl-button.new-runner-session'
+    ) as HTMLElement;
+    expect(button).to.exist;
+    await (element as any).openNewSession();
+    await element.updateComplete;
+    const dialog = element.shadowRoot!.querySelector(
+      'new-runner-session-dialog'
+    ) as any;
+    expect(dialog.hasAttribute('open')).to.equal(true);
+    expect(dialog.runners.map((r: { id: string }) => r.id)).to.deep.equal([
+      'r-1',
+    ]);
+    await waitUntil(
+      () => dialog.options !== null,
+      'session options did not load'
+    );
+    await dialog.updateComplete;
+    expect(dialog.selectedRunnerId).to.equal('r-1');
+    expect(dialog.shadowRoot!.querySelector('sl-alert.error')).to.not.exist;
+    expect(
+      dialog
+        .shadowRoot!.querySelector('sl-select.directory')!
+        .getAttribute('value')
+    ).to.equal('dir_api');
+
+    dialog.dispatchEvent(
+      new CustomEvent('runner-session-started', {
+        detail: {
+          session_id: 'rs-9',
+          remote_session_id: 'x',
+          state: 'requested',
+        },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await element.updateComplete;
+    expect((element as any).newSessionOpen).to.equal(false);
+    expect((element as any).selectedSessionId).to.equal('rs-9');
+  });
+
+  it('tells the user to install a runner when there is none', async () => {
+    fetchStub.callsFake(
+      async () =>
+        new Response('[]', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+    );
+    const element = (await fixture(
+      html`<runtime-sessions-view></runtime-sessions-view>`
+    )) as RuntimeSessionsView;
+    await (element as any).openNewSession();
+    await element.updateComplete;
+    expect((element as any).newSessionOpen).to.equal(false);
+    expect(
+      element.shadowRoot!.querySelector('sl-alert.new-session-error')!
+        .textContent
+    ).to.contain('preloop runner enable');
   });
 
   it('shows a first-run empty state when no sessions exist and no filters are active', async () => {

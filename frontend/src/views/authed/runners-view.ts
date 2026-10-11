@@ -27,6 +27,9 @@ import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
 import { AUTO_RUNNER_POOL } from '../../utils/runner-pool';
 import '../../components/preloop-runner-pool-select';
 import '../../components/capability-extension';
+import '../../components/new-runner-session-dialog';
+import type { RunnerSessionStarted } from '../../api';
+import { Router } from '../../router';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 @customElement('runners-view')
@@ -37,6 +40,10 @@ export class RunnersView extends LitElement {
 
   @state()
   private loading = true;
+
+  /** Runner whose "New session" dialog is open, if any. */
+  @state()
+  private sessionRunnerId = '';
 
   @state()
   private error: string | null = null;
@@ -360,6 +367,20 @@ export class RunnersView extends LitElement {
     const busy = this.isBusy(row.id);
     return html`
       <div class="actions">
+        ${
+          row.ephemeral
+            ? nothing
+            : html`<sl-button
+                class="new-session"
+                size="small"
+                variant="primary"
+                outline
+                ?disabled=${busy || !this.isPresent(row.status)}
+                title="Start a session with an agent installed on this runner"
+                @click=${() => (this.sessionRunnerId = row.id)}
+                >New session</sl-button
+              >`
+        }
         <sl-button
           class="rotate-token"
           size="small"
@@ -768,6 +789,17 @@ export class RunnersView extends LitElement {
                   </div>
                 `
       }
+      <new-runner-session-dialog
+        runner-id=${this.sessionRunnerId}
+        ?open=${Boolean(this.sessionRunnerId)}
+        @runner-session-dialog-hide=${() => (this.sessionRunnerId = '')}
+        @runner-session-started=${(e: CustomEvent<RunnerSessionStarted>) =>
+          Router.go(
+            `/console/runtime-sessions?sessionId=${encodeURIComponent(
+              e.detail.session_id
+            )}`
+          )}
+      ></new-runner-session-dialog>
       <capability-extension
         name="runner-pools"
         .context=${{ pools: this.poolNames().join(',') }}

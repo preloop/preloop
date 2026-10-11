@@ -9,6 +9,26 @@ import { invalidateApiCaches } from '../../api';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 
+const SESSION_OPTIONS = {
+  runner_id: 'r',
+  online: true,
+  sessions_available: true,
+  harnesses: [
+    {
+      harness: 'copilot_cli',
+      display_name: 'GitHub Copilot CLI',
+      session_mode: 'resume',
+      models: [{ id: 'auto', source: 'static' }],
+      available: true,
+    },
+  ],
+  authorized_directories: [
+    { id: 'dir_api', label: 'api', mode: 'write', harnesses: 'all' },
+  ],
+  checkout_sources: [],
+  limits: { max_concurrent: 2, active: 0, idle_timeout_seconds: 1800 },
+};
+
 describe('RunnersView', () => {
   let fetchStub: sinon.SinonStub;
   let onRunnerMessage: ((message: unknown) => void) | undefined;
@@ -60,6 +80,9 @@ describe('RunnersView', () => {
               ? ['22222222-2222-4222-8222-222222222222']
               : [],
           });
+        }
+        if (url.includes('/session-options')) {
+          return json(SESSION_OPTIONS);
         }
         if (url.includes('/api/v1/runners')) {
           return json(runners);
@@ -173,6 +196,66 @@ describe('RunnersView', () => {
       'Auto (default): private first, then hosted'
     );
     expect(control?.shadowRoot?.textContent).to.contain('Preloop hosted only');
+  });
+
+  it('opens the new session dialog for an online runner', async () => {
+    fetchStub = createFetchStub([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'office-mac',
+        status: 'online',
+        labels: [],
+      },
+      {
+        id: '33333333-3333-4333-8333-333333333333',
+        name: 'ci-once',
+        status: 'online',
+        ephemeral: true,
+        labels: [],
+      },
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        name: 'old-box',
+        status: 'offline',
+        labels: [],
+      },
+    ]);
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading,
+      'Runners view did not finish loading'
+    );
+    await element.updateComplete;
+
+    const buttons = [
+      ...element.shadowRoot!.querySelectorAll('sl-button.new-session'),
+    ];
+    // Ephemeral CI runners never host sessions.
+    expect(buttons).to.have.length(2);
+    expect(buttons[1].hasAttribute('disabled')).to.equal(true);
+    const dialog = element.shadowRoot!.querySelector(
+      'new-runner-session-dialog'
+    )!;
+    expect(dialog.hasAttribute('open')).to.equal(false);
+    (buttons[0] as HTMLElement).click();
+    await element.updateComplete;
+    expect(dialog.hasAttribute('open')).to.equal(true);
+    expect(dialog.getAttribute('runner-id')).to.equal(
+      '11111111-1111-4111-8111-111111111111'
+    );
+    await waitUntil(
+      () => (dialog as any).options !== null,
+      'session options did not load'
+    );
+    await (dialog as any).updateComplete;
+    expect(dialog.shadowRoot!.querySelector('sl-alert.error')).to.not.exist;
+    expect(
+      dialog
+        .shadowRoot!.querySelector('sl-select.harness')!
+        .getAttribute('value')
+    ).to.equal('copilot_cli');
   });
 
   it('badges an ephemeral runner only while it is connected', async () => {
