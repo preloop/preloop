@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.config import settings
+from preloop.models import models
 from preloop.models.crud import agent_control_connection as control_connection
 from preloop.models.crud import (
     crud_agent_control_command,
@@ -562,6 +563,10 @@ class SessionControlMode:
     reason_code: Optional[str]
     reason: Optional[str]
     agent: Any = None
+    #: Set when no managed agent runs the session: the kind shown to the
+    #: operator and where a command-mode line is sent (runner sessions).
+    kind: Optional[str] = None
+    send_path: Optional[str] = None
 
 
 def session_managed_agent(db: Session, *, account_id: str, session: Any) -> Any:
@@ -594,6 +599,58 @@ def session_managed_agent(db: Session, *, account_id: str, session: Any) -> Any:
     return None
 
 
+#: ``RuntimeSession.session_source_type`` of a runner-hosted session (#1482).
+RUNNER_SESSION_SOURCE_TYPE = "runner_session"
+
+
+def _runner_session_control_mode(
+    db: Session, *, account_id: str, session: Any
+) -> SessionControlMode:
+    """Command mode for a live runner-hosted session whose runner is online.
+
+    The runner itself is the host, so there is no managed agent: a typed line
+    becomes the next turn through ``send_path``. Notes and approvals keep
+    working as for every governed session.
+    """
+    from preloop.models.crud import crud_runner_remote_session
+    from preloop.services.runner_service import is_online
+
+    row = crud_runner_remote_session.get_by_runtime_session(
+        db, account_id=account_id, runtime_session_id=session.id
+    )
+    kind = RUNNER_SESSION_SOURCE_TYPE
+    if row is None:
+        return SessionControlMode(
+            "note",
+            "not_managed",
+            "this runner session has no record on the server; a line is a note",
+            kind=kind,
+        )
+    if not row.is_live or row.stop_mode:
+        return SessionControlMode(
+            "note",
+            "session_ended",
+            "the session has ended; nothing can be sent",
+            kind=kind,
+        )
+    runner = db.get(models.FlowRunner, row.runner_id)
+    if runner is None or not is_online(runner):
+        return SessionControlMode(
+            "note",
+            "control_offline",
+            "the runner hosting this session is offline; a line is a note until "
+            "it reconnects",
+            kind=kind,
+        )
+    return SessionControlMode(
+        "command",
+        None,
+        None,
+        kind=kind,
+        send_path=f"/api/v1/runner-sessions/{session.id}/turns",
+    )
+
+
 def resolve_session_control_mode(
     db: Session,
     *,
@@ -621,6 +678,8 @@ def resolve_session_control_mode(
         return SessionControlMode(
             "note", "session_ended", "the session has ended; nothing can be sent"
         )
+    if session.session_source_type == RUNNER_SESSION_SOURCE_TYPE:
+        return _runner_session_control_mode(db, account_id=account_id, session=session)
     agent = session_managed_agent(db, account_id=account_id, session=session)
     if agent is None:
         return SessionControlMode(

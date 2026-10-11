@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/api"
@@ -51,15 +52,33 @@ type attachControl struct {
 	ManagedAgentID string `json:"managed_agent_id"`
 	AgentName      string `json:"agent_name"`
 	AgentKind      string `json:"agent_kind"`
+	// SendPath is set for sessions no managed agent runs (a runner-hosted
+	// session, #1482): a line is POSTed there as {"text": ...}.
+	SendPath string `json:"send_path"`
+}
+
+// runnerSessionSendPathRe bounds where a server-named send_path may point:
+// only the runner session turn endpoint, so a control response cannot send
+// the operator's line (and token) anywhere else.
+var runnerSessionSendPathRe = regexp.MustCompile(`^/api/v1/runner-sessions/[0-9a-fA-F-]{36}/turns$`)
+
+func (c attachControl) runnerTurnPath() string {
+	if c.ManagedAgentID == "" && runnerSessionSendPathRe.MatchString(c.SendPath) {
+		return c.SendPath
+	}
+	return ""
 }
 
 func (c attachControl) isCommand() bool {
-	return c.Mode == attachModeCommand && c.ManagedAgentID != ""
+	return c.Mode == attachModeCommand && (c.ManagedAgentID != "" || c.runnerTurnPath() != "")
 }
 
 // indicator is the one line that says what a typed line will do.
 func (c attachControl) indicator() string {
 	if c.isCommand() {
+		if c.runnerTurnPath() != "" {
+			return "mode: command. A line is the next turn of this runner session; /note <text> sends a note instead"
+		}
 		return fmt.Sprintf("mode: command. A line starts a new turn for %s through Agent Control; /note <text> sends a note instead",
 			firstNonEmpty(c.AgentName, "the agent"))
 	}
@@ -130,6 +149,18 @@ func agentCommandStatusPath(agentID, commandID string) string {
 
 // sendCommand dispatches one line as a new turn and follows its delivery.
 func (s *attachSession) sendCommand(ctx context.Context, control attachControl, text string) {
+	if path := control.runnerTurnPath(); path != "" {
+		var turn struct {
+			TurnID string `json:"turn_id"`
+			State  string `json:"state"`
+		}
+		if err := s.client.Post(path, map[string]string{"text": text}, &turn); err != nil {
+			s.notice(s.explainCommandError(err))
+			return
+		}
+		s.notice(fmt.Sprintf("turn %s %s", shortSessionID(turn.TurnID), firstNonEmpty(turn.State, "queued")))
+		return
+	}
 	body := agentPromptRequest{
 		Message:         text,
 		TargetSessionID: s.sessionID,
@@ -204,6 +235,9 @@ func (s *attachSession) explainCommandError(err error) string {
 	reason := operatorNoteRefusalReason(apiErr.Body)
 	switch apiErr.StatusCode {
 	case http.StatusForbidden:
+		if s.currentControl().runnerTurnPath() != "" {
+			return "the turn was refused: only the runner owner and account admins can send turns to this session; /note <text> still sends a note"
+		}
 		return "the command was refused: this account lacks the control_managed_agent permission; /note <text> still sends a note"
 	case http.StatusConflict, http.StatusServiceUnavailable, http.StatusNotFound, http.StatusBadRequest:
 		control := s.loadControl()

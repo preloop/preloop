@@ -353,7 +353,9 @@ func TestRunnerSessionOneTurnAtATime(t *testing.T) {
 	for i := 0; i < runnerSessionQueuedTurns+1; i++ {
 		h.m.handle(runnerWSMessage{Type: "session_turn", RemoteSessionID: sessTestID, TurnID: "q" + string(rune('0'+i)), Text: "more"})
 	}
-	busy := h.waitFor(func(m map[string]any) bool { return m["type"] == "session_turn_done" && m["error_code"] == "turn_in_progress" })
+	busy := h.waitFor(func(m map[string]any) bool {
+		return m["type"] == "session_turn_done" && m["error_code"] == "turn_in_progress"
+	})
 	if findMsg(busy, isTurnDone("a")) != nil {
 		t.Fatalf("turn a must still be running")
 	}
@@ -594,5 +596,33 @@ func TestRunnerSessionsEnableCommand(t *testing.T) {
 	}
 	if _, err := runnerSessionHarnessArg("cursor_cli"); err == nil {
 		t.Fatalf("cursor sessions are not in this version")
+	}
+}
+
+func TestRunnerSessionRestartReportsInterruptedTurnAndIgnoresRedelivery(t *testing.T) {
+	h := newSessionHarness(t, true)
+	h.adapter.block = make(chan struct{})
+	h.m.handle(startMsg(sessTestID))
+	h.m.handle(runnerWSMessage{Type: "session_turn", RemoteSessionID: sessTestID, TurnID: "a", Text: "long"})
+	h.waitFor(isState("running"))
+	// The process dies without finishing the turn: the old turn stays
+	// blocked forever and its manager is abandoned.
+	h.adapter.mu.Lock()
+	h.adapter.block = nil
+	h.adapter.mu.Unlock()
+	h.m = h.newManager()
+	done := findMsg(h.drain(), isTurnDone("a"))
+	if done == nil || done["error_code"] != "runner_restarted" {
+		t.Fatalf("interrupted turn must be reported, got %v", done)
+	}
+	h.adapter.mu.Lock()
+	before := len(h.adapter.turns)
+	h.adapter.mu.Unlock()
+	h.m.handle(runnerWSMessage{Type: "session_turn", RemoteSessionID: sessTestID, TurnID: "a", Text: "long"})
+	time.Sleep(50 * time.Millisecond)
+	h.adapter.mu.Lock()
+	defer h.adapter.mu.Unlock()
+	if len(h.adapter.turns) != before {
+		t.Fatalf("a redelivered turn must not run twice")
 	}
 }

@@ -37652,6 +37652,11 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        send_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Send Path
         managed_agent_id:
           anyOf:
           - type: string

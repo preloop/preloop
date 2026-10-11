@@ -363,15 +363,20 @@ type runnerRemoteSession struct {
 	LastActivityAt   time.Time      `json:"last_activity_at"`
 	IdleTimeoutSecs  int            `json:"idle_timeout_seconds"`
 	Turns            int            `json:"turns"`
+	// ActiveTurnID is the turn running when the state was saved; a restart
+	// reports it interrupted instead of leaving the server waiting.
+	ActiveTurnID string `json:"active_turn_id,omitempty"`
+	// RecentTurns lets a restarted runner ignore a redelivered turn it
+	// already ran.
+	RecentTurns []string `json:"recent_turns,omitempty"`
 
-	state       string
-	current     *runnerSessionTurn
-	queue       []runnerSessionTurnRequest
-	recentTurns []string
-	seq         int
-	stopping    bool
-	endReason   string
-	stopTimer   *time.Timer
+	state     string
+	current   *runnerSessionTurn
+	queue     []runnerSessionTurnRequest
+	seq       int
+	stopping  bool
+	endReason string
+	stopTimer *time.Timer
 }
 
 type runnerSessionTurnRequest struct {
@@ -391,6 +396,13 @@ func (s *runnerRemoteSession) idleTimeout() time.Duration {
 	return time.Duration(s.IdleTimeoutSecs) * time.Second
 }
 
+func (s *runnerRemoteSession) rememberTurn(id string) {
+	s.RecentTurns = append(s.RecentTurns, id)
+	if len(s.RecentTurns) > runnerSessionRecentTurns {
+		s.RecentTurns = s.RecentTurns[len(s.RecentTurns)-runnerSessionRecentTurns:]
+	}
+}
+
 func (s *runnerRemoteSession) knowsTurn(id string) bool {
 	if s.current != nil && s.current.id == id {
 		return true
@@ -400,7 +412,7 @@ func (s *runnerRemoteSession) knowsTurn(id string) bool {
 			return true
 		}
 	}
-	for _, done := range s.recentTurns {
+	for _, done := range s.RecentTurns {
 		if done == id {
 			return true
 		}
@@ -797,7 +809,9 @@ func (m *runnerSessionManager) queueTurn(s *runnerRemoteSession, turn runnerSess
 func (m *runnerSessionManager) startTurn(s *runnerRemoteSession, turn runnerSessionTurnRequest) {
 	ctx, cancel := context.WithCancel(context.Background())
 	s.current = &runnerSessionTurn{id: turn.ID, cancel: cancel}
+	s.ActiveTurnID = turn.ID
 	s.LastActivityAt = m.now()
+	m.persist(s)
 	m.setState(s, runnerSessionStateRunning)
 	adapter := m.adapters[s.Harness]
 	doc, err := m.loadConfig()
@@ -856,11 +870,9 @@ func (m *runnerSessionManager) finishTurn(sessionID, turnID string, result runne
 		return
 	}
 	session.current = nil
+	session.ActiveTurnID = ""
 	session.LastActivityAt = m.now()
-	session.recentTurns = append(session.recentTurns, turnID)
-	if len(session.recentTurns) > runnerSessionRecentTurns {
-		session.recentTurns = session.recentTurns[1:]
-	}
+	session.rememberTurn(turnID)
 	if result.SessionCreated {
 		session.SessionCreated = true
 	}
@@ -1052,6 +1064,13 @@ func (m *runnerSessionManager) restore() {
 			continue
 		}
 		s.state = runnerSessionStateIdle
+		if s.ActiveTurnID != "" {
+			// The previous process died mid-turn. The harness session on
+			// disk survives; the turn's result does not.
+			m.enqueue(turnDoneMessage(id, s.ActiveTurnID, "error", "runner_restarted", nil))
+			s.rememberTurn(s.ActiveTurnID)
+			s.ActiveTurnID = ""
+		}
 		restored := s
 		m.sessions[id] = &restored
 		m.logf("Remote session %s restored (%s in %s)", id, restored.Harness, restored.WorkspaceLabel)
