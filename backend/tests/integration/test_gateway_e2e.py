@@ -116,6 +116,14 @@ def fake_upstream() -> Iterator[_UpstreamState]:
 
 
 @pytest.fixture(autouse=True)
+def _allow_loopback_fake_upstream(monkeypatch: Any) -> None:
+    """The harness upstream listens on 127.0.0.1. Production leaves the allowlist empty."""
+    from preloop.config import settings
+
+    monkeypatch.setattr(settings, "model_endpoint_allowed_cidrs", "127.0.0.0/8,::1/128")
+
+
+@pytest.fixture(autouse=True)
 def _reset_upstream(request: Any) -> None:
     """Reset the upstream request counter before each test that uses it."""
     if "fake_upstream" in request.fixturenames:

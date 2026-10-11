@@ -12,6 +12,9 @@ carry endpoint URLs and key material (2026-08-04 key-leak incident).
 import asyncio
 import ipaddress
 import logging
+import re
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlsplit
@@ -269,6 +272,236 @@ def _discovery_http_client(*, required: bool = False) -> Optional[Any]:
     if verify is not None:
         client_kwargs["verify"] = verify
     return httpx.AsyncClient(**client_kwargs)
+
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "localhost.localdomain"})
+_NUMERIC_HOST = re.compile(r"^[0-9.xa-fA-F]+$")
+
+
+def _unwrap_mapped(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    """Return the IPv4 address embedded in an IPv4-mapped IPv6 literal."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+def _parse_ip_literal(
+    host: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """Parse a host that is an IP, including non-canonical IPv4 spellings.
+
+    ``ipaddress`` rejects ``127.1``, decimal ``2130706433`` and hex
+    ``0x7f000001``, but the OS resolver still maps those to loopback.
+    """
+    try:
+        return _unwrap_mapped(ipaddress.ip_address(host))
+    except ValueError:
+        pass
+    if _NUMERIC_HOST.fullmatch(host) is None:
+        return None
+    import socket
+
+    try:
+        packed = socket.inet_aton(host)
+    except OSError:
+        return None
+    return ipaddress.ip_address(packed)
+
+
+def _allowed_endpoint_networks() -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """CIDRs an operator has opted in for loopback or private model servers."""
+    from preloop.config import settings
+
+    raw = str(getattr(settings, "model_endpoint_allowed_cidrs", "") or "")
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for part in raw.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(token, strict=False))
+        except ValueError:
+            logger.warning(
+                "Ignoring invalid MODEL_ENDPOINT_ALLOWED_CIDRS entry %r", token
+            )
+    return networks
+
+
+#: Seconds a successful endpoint resolution is reused. Bounds how often the
+#: request path (CRUD and every upstream call) blocks on the system resolver.
+_ENDPOINT_RESOLUTION_TTL_SECONDS = 30.0
+#: Upper bound on cached hostnames. Expired entries are purged when it is
+#: reached, and the oldest entries go if every entry is still fresh.
+_ENDPOINT_RESOLUTION_CACHE_MAX = 512
+_endpoint_resolution_cache: dict[
+    str, tuple[float, list[ipaddress.IPv4Address | ipaddress.IPv6Address]]
+] = {}
+_endpoint_resolution_lock = threading.Lock()
+
+
+def _clear_endpoint_resolution_cache() -> None:
+    """Drop cached endpoint resolutions (tests, or after a DNS change)."""
+    with _endpoint_resolution_lock:
+        _endpoint_resolution_cache.clear()
+
+
+def _resolve_endpoint_host(
+    host: str,
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Resolve every address a hostname dials, unwrapping IPv4-mapped answers.
+
+    Successful answers are cached for ``_ENDPOINT_RESOLUTION_TTL_SECONDS`` so
+    a hostname endpoint does not hit the blocking resolver on every call.
+    Failures are not cached.
+
+    This is a policy check on what the name points at, not a DNS-rebinding
+    barrier: litellm/httpx resolve the name again when they connect, and
+    nothing pins that connection to the address checked here. A name that
+    answers publicly now and with loopback later is caught on a later call
+    once the cached answer expires, not on the connection that races it.
+    """
+    now = time.monotonic()
+    with _endpoint_resolution_lock:
+        cached = _endpoint_resolution_cache.get(host)
+    if cached is not None and now - cached[0] < _ENDPOINT_RESOLUTION_TTL_SECONDS:
+        return list(cached[1])
+    found = _resolve_endpoint_host_uncached(host)
+    if found:
+        with _endpoint_resolution_lock:
+            _store_endpoint_resolution(host, now, found)
+    return found
+
+
+def _store_endpoint_resolution(
+    host: str,
+    now: float,
+    found: list[ipaddress.IPv4Address | ipaddress.IPv6Address],
+) -> None:
+    """Cache one answer, keeping the cache bounded. Caller holds the lock."""
+    cache = _endpoint_resolution_cache
+    cache.pop(host, None)
+    if len(cache) >= _ENDPOINT_RESOLUTION_CACHE_MAX:
+        for key in [
+            key
+            for key, (stamp, _ips) in cache.items()
+            if now - stamp >= _ENDPOINT_RESOLUTION_TTL_SECONDS
+        ]:
+            del cache[key]
+        while len(cache) >= _ENDPOINT_RESOLUTION_CACHE_MAX:
+            del cache[next(iter(cache))]
+    cache[host] = (now, list(found))
+
+
+def _resolve_endpoint_host_uncached(
+    host: str,
+) -> list[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """One system-resolver lookup for :func:`_resolve_endpoint_host`."""
+    import socket
+
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (socket.gaierror, UnicodeError):
+        # Nothing to dial means nothing to refuse. Failing closed here would
+        # turn a transient DNS error into a 400 (and block saving an endpoint
+        # whose server is not up yet) without adding protection: the check
+        # runs again immediately before the upstream call, against whatever
+        # the name resolves to then.
+        return []
+    found: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
+    for info in infos:
+        raw_ip = str(info[4][0]).split("%", 1)[0]
+        try:
+            ip = _unwrap_mapped(ipaddress.ip_address(raw_ip))
+        except ValueError:
+            continue
+        if ip not in seen:
+            seen.add(ip)
+            found.append(ip)
+    return found
+
+
+def _endpoint_address_error(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> Optional[str]:
+    """Why this address cannot be a model endpoint, or None when it can.
+
+    Link-local and unspecified addresses stay refused even when listed in
+    ``MODEL_ENDPOINT_ALLOWED_CIDRS``. Loopback and private addresses are
+    refused unless the operator listed a CIDR that contains them.
+    """
+    if ip.is_unspecified or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+        return "api_endpoint must not use a link-local or unspecified address"
+    if ip.is_loopback or ip.is_private:
+        if any(ip in network for network in networks):
+            return None
+        if ip.is_loopback:
+            return (
+                "api_endpoint must not use localhost. That address is the "
+                "Preloop process, not the machine running your model server."
+            )
+        return (
+            "api_endpoint must not use a private address. Add its CIDR to "
+            "MODEL_ENDPOINT_ALLOWED_CIDRS on this instance to allow it."
+        )
+    return None
+
+
+def validate_gateway_api_endpoint(
+    api_endpoint: Optional[str],
+    *,
+    resolve: Optional[Any] = None,
+) -> Optional[str]:
+    """Reject an endpoint the gateway must not dial.
+
+    Empty means the provider default and is left alone. A hostname is
+    resolved, and every answer is checked, so a name that points at a
+    private or loopback address is refused the same way as the address
+    itself. The check runs again immediately before the upstream call.
+    A name that does not resolve has nothing to dial and is not refused.
+    The hostname check is best-effort against DNS rebinding: the upstream
+    client resolves again and the connection is not pinned (see
+    :func:`_resolve_endpoint_host`).
+
+    Args:
+        api_endpoint: Stored or submitted base URL.
+        resolve: Hostname resolver, used by tests. Defaults to DNS.
+
+    Returns:
+        The stripped URL when it is safe to dial.
+
+    Raises:
+        ProviderValidationError: The URL is not http(s), or it targets a
+            refused address.
+    """
+    raw = (api_endpoint or "").strip()
+    if not raw:
+        return None
+    parts = urlsplit(raw)
+    if parts.scheme not in {"http", "https"}:
+        raise ProviderValidationError("api_endpoint must be an http(s) URL")
+    host = (parts.hostname or "").strip().rstrip(".").lower()
+    if not host:
+        raise ProviderValidationError("api_endpoint must include a host")
+    networks = _allowed_endpoint_networks()
+    if host in _LOOPBACK_HOSTS or host.endswith(".localhost"):
+        addresses: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = [
+            ipaddress.ip_address("127.0.0.1")
+        ]
+    else:
+        literal = _parse_ip_literal(host)
+        if literal is not None:
+            addresses = [literal]
+        else:
+            addresses = (resolve or _resolve_endpoint_host)(host)
+    for ip in addresses:
+        reason = _endpoint_address_error(_unwrap_mapped(ip), networks)
+        if reason is not None:
+            raise ProviderValidationError(reason)
+    return raw
 
 
 def validate_discovery_endpoint(api_endpoint: str) -> str:

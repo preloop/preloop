@@ -352,6 +352,19 @@ class Settings(BaseSettings):
     product_team_email: str = Field("", description="Product team email address")
     nats_url: str = Field("nats://localhost:4222", description="NATS server URL")
     preloop_url: str = Field("http://localhost:8000", description="Preloop URL")
+    model_endpoint_allowed_cidrs: str = Field(
+        "",
+        description=(
+            "Comma-separated CIDRs a model api_endpoint may use beyond the "
+            "public internet (MODEL_ENDPOINT_ALLOWED_CIDRS). Empty refuses "
+            "loopback and private addresses, including hostnames that resolve "
+            "there. Link-local and unspecified addresses are always refused, "
+            "even if listed. Preloop Cloud leaves this empty. A self-hosted "
+            "install that reaches a model server on the LAN, or on localhost "
+            "for a native single-host setup, adds that range, for example "
+            "192.168.1.0/24 or 127.0.0.0/8."
+        ),
+    )
     PROMPTS_FILE: str = Field(
         "backend/preloop/prompts.yaml",
         description="Path to the prompts YAML file",

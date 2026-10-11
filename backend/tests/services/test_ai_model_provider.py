@@ -1688,6 +1688,232 @@ class TestCatalogProviderSdkMissing:
         assert result.error == "sdk_missing"
 
 
+class TestGatewayEndpointValidation:
+    """Saved chat endpoints must not dial the gateway container."""
+
+    @pytest.mark.parametrize(
+        "endpoint",
+        [
+            "http://localhost:1234/v1",
+            "http://LOCALHOST:1234/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://127.1:1234/v1",
+            "http://2130706433:1234/v1",
+            "http://0x7f000001:1234/v1",
+            "http://[::1]:1234/v1",
+            "http://[::ffff:127.0.0.1]:1234/v1",
+            "http://[::ffff:169.254.169.254]/latest/meta-data",
+            "http://169.254.169.254/latest/meta-data",
+            "http://0.0.0.0:1234/v1",
+            "http://192.168.1.10:1234/v1",
+            "file:///etc/passwd",
+        ],
+    )
+    def test_rejects_container_local_endpoints(self, endpoint: str) -> None:
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        with pytest.raises(ValueError):
+            validate_gateway_api_endpoint(endpoint, resolve=lambda _host: [])
+
+    def test_rejects_hostname_that_resolves_to_a_private_address(self) -> None:
+        import ipaddress
+
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        def resolve(_host: str) -> list[ipaddress.IPv4Address]:
+            return [ipaddress.ip_address("10.1.2.3")]
+
+        with pytest.raises(ValueError, match="private address"):
+            validate_gateway_api_endpoint("https://gpu.example.com/v1", resolve=resolve)
+
+    @pytest.mark.parametrize("endpoint", [None, ""])
+    def test_empty_endpoint_uses_the_provider_default(
+        self, endpoint: str | None
+    ) -> None:
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        assert validate_gateway_api_endpoint(endpoint) is None
+
+    def test_allows_a_public_address_and_a_public_hostname(self) -> None:
+        import ipaddress
+
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        public = "https://93.184.216.34/v1"
+        assert validate_gateway_api_endpoint(public) == public
+
+        def resolve(_host: str) -> list[ipaddress.IPv4Address]:
+            return [ipaddress.ip_address("93.184.216.34")]
+
+        name = "https://openrouter.ai/api/v1"
+        assert validate_gateway_api_endpoint(name, resolve=resolve) == name
+
+    def test_operator_cidr_allows_loopback_and_a_lan(self, monkeypatch) -> None:
+        from preloop.config import settings
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        monkeypatch.setattr(
+            settings,
+            "model_endpoint_allowed_cidrs",
+            "127.0.0.0/8,192.168.1.0/24",
+        )
+        loopback = "http://127.0.0.1:1234/v1"
+        lan = "http://192.168.1.10:1234/v1"
+        assert validate_gateway_api_endpoint(loopback) == loopback
+        assert validate_gateway_api_endpoint(lan) == lan
+
+    def test_operator_cidr_cannot_allow_link_local(self, monkeypatch) -> None:
+        from preloop.config import settings
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        monkeypatch.setattr(settings, "model_endpoint_allowed_cidrs", "169.254.0.0/16")
+        with pytest.raises(ValueError, match="link-local"):
+            validate_gateway_api_endpoint("http://169.254.169.254/latest/meta-data")
+
+    def test_crud_rejects_localhost_on_create(self) -> None:
+        from preloop.models.crud.ai_model import CRUDAIModel
+
+        with pytest.raises(ValueError, match="localhost"):
+            CRUDAIModel._validate_local_api_endpoint(
+                {
+                    "provider_name": "lmstudio",
+                    "api_endpoint": "http://localhost:1234/v1",
+                }
+            )
+
+    def test_crud_partial_update_can_rename_a_legacy_localhost_row(self) -> None:
+        from types import SimpleNamespace
+
+        from preloop.models.crud.ai_model import CRUDAIModel
+
+        existing = SimpleNamespace(api_endpoint="http://localhost:1234/v1")
+        CRUDAIModel._validate_local_api_endpoint({"name": "renamed"}, existing)
+
+    def test_unresolvable_hostname_is_not_a_validation_error(self, monkeypatch) -> None:
+        """No address means nothing to dial; DNS failure must not become a 400.
+
+        The call-time recheck still refuses the name once it resolves to a
+        refused address.
+        """
+        import socket
+
+        from preloop.services import ai_model_provider
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        def no_dns(*_args, **_kwargs):
+            raise socket.gaierror(socket.EAI_NONAME, "no such host")
+
+        ai_model_provider._clear_endpoint_resolution_cache()
+        monkeypatch.setattr(socket, "getaddrinfo", no_dns)
+        endpoint = "https://custom.example.invalid/v1"
+        assert ai_model_provider._resolve_endpoint_host("custom.example.invalid") == []
+        assert validate_gateway_api_endpoint(endpoint) == endpoint
+
+        def loopback_dns(*_args, **_kwargs):
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+
+        monkeypatch.setattr(socket, "getaddrinfo", loopback_dns)
+        with pytest.raises(ValueError, match="localhost"):
+            validate_gateway_api_endpoint(endpoint)
+        ai_model_provider._clear_endpoint_resolution_cache()
+
+    def test_resolution_is_cached_and_rebinding_is_caught_after_expiry(
+        self, monkeypatch
+    ) -> None:
+        """Successful answers are reused for the TTL, failures are not.
+
+        Documents the residual rebinding gap: a name that flips from public to
+        loopback passes while the public answer is cached and is refused on
+        the first call after it expires. The connection is not pinned.
+        """
+        import socket
+
+        from preloop.services import ai_model_provider
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        ai_model_provider._clear_endpoint_resolution_cache()
+        answers = iter(["93.184.216.34", "127.0.0.1"])
+        calls: list[str] = []
+
+        def flipping_dns(host, *_args, **_kwargs):
+            calls.append(host)
+            ip = next(answers)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+        clock = [1000.0]
+        monkeypatch.setattr(socket, "getaddrinfo", flipping_dns)
+        monkeypatch.setattr(ai_model_provider.time, "monotonic", lambda: clock[0])
+        endpoint = "https://rebind.example.test/v1"
+        assert validate_gateway_api_endpoint(endpoint) == endpoint
+        assert validate_gateway_api_endpoint(endpoint) == endpoint
+        assert calls == ["rebind.example.test"]
+
+        clock[0] += ai_model_provider._ENDPOINT_RESOLUTION_TTL_SECONDS + 1
+        with pytest.raises(ValueError, match="localhost"):
+            validate_gateway_api_endpoint(endpoint)
+        assert len(calls) == 2
+        ai_model_provider._clear_endpoint_resolution_cache()
+
+    def test_resolution_cache_stays_bounded(self, monkeypatch) -> None:
+        """Many distinct hostnames cannot grow the cache past its cap."""
+        import socket
+
+        from preloop.services import ai_model_provider
+        from preloop.services.ai_model_provider import validate_gateway_api_endpoint
+
+        ai_model_provider._clear_endpoint_resolution_cache()
+        monkeypatch.setattr(ai_model_provider, "_ENDPOINT_RESOLUTION_CACHE_MAX", 4)
+        clock = [1000.0]
+        monkeypatch.setattr(ai_model_provider.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            socket,
+            "getaddrinfo",
+            lambda *_a, **_k: [
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
+            ],
+        )
+        for index in range(10):
+            validate_gateway_api_endpoint(f"https://h{index}.example.test/v1")
+            assert len(ai_model_provider._endpoint_resolution_cache) <= 4
+        assert "h9.example.test" in ai_model_provider._endpoint_resolution_cache
+
+        clock[0] += ai_model_provider._ENDPOINT_RESOLUTION_TTL_SECONDS + 1
+        validate_gateway_api_endpoint("https://fresh.example.test/v1")
+        assert list(ai_model_provider._endpoint_resolution_cache) == [
+            "fresh.example.test"
+        ]
+        ai_model_provider._clear_endpoint_resolution_cache()
+
+    def test_aux_credentials_refuse_a_legacy_localhost_row(self) -> None:
+        """Auxiliary flows get the same refusal as the gateway, as a 400."""
+        from types import SimpleNamespace
+
+        from preloop.services.model_credentials import resolve_model_call_credentials
+        from preloop.services.model_gateway_errors import ModelGatewayAPIError
+
+        model = SimpleNamespace(
+            provider_name="lmstudio",
+            model_identifier="local-model",
+            api_endpoint="http://[::ffff:127.0.0.1]:1234/v1",
+        )
+        with pytest.raises(ModelGatewayAPIError) as error:
+            resolve_model_call_credentials(model)
+        assert error.value.status_code == 400
+        assert error.value.provider == "openai"
+
+    def test_non_string_api_base_is_not_validated(self) -> None:
+        """Only stored strings are dialed; mock stand-ins pass through unchanged."""
+        from unittest.mock import MagicMock, patch
+
+        from preloop.services.openai_gateway import checked_model_api_base
+
+        sentinel = MagicMock()
+        with patch(
+            "preloop.services.openai_gateway.model_api_base", return_value=sentinel
+        ):
+            assert checked_model_api_base(object(), provider="openai") is sentinel
+
+
 class TestDiscoveryEndpointValidation:
     """SSRF guard on the user-supplied discovery endpoint.
 

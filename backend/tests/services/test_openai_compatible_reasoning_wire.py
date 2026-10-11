@@ -142,6 +142,9 @@ def stub(responses_status):
 
 
 def rig(monkeypatch, provider, api_endpoint, mode):
+    from preloop.config import settings
+
+    monkeypatch.setattr(settings, "model_endpoint_allowed_cidrs", "127.0.0.0/8,::1/128")
     ai_model = models.AIModel(
         id=uuid4(),
         account_id=uuid4(),

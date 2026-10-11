@@ -1009,6 +1009,44 @@ def _session_id_from_openai_payload(
 _GatewayCallPurpose = Literal["gateway", "runtime_session_summary"]
 
 
+def checked_model_api_base(ai_model: Any, *, provider: str) -> Optional[str]:
+    """Return the upstream base URL, or reject one the process would dial itself.
+
+    Args:
+        ai_model: Resolved gateway model.
+        provider: Gateway protocol name for the client error.
+
+    Returns:
+        The configured base URL, or ``None`` when the provider default applies.
+
+    Raises:
+        ModelGatewayAPIError: The stored endpoint is localhost, loopback, or
+            link-local. Status 400 so the call is not retried or paged as an
+            upstream 502.
+    """
+    api_base = model_api_base(ai_model)
+    if not api_base:
+        return None
+    if not isinstance(api_base, str):
+        # Only stored strings are dialed; non-string stand-ins pass through.
+        return api_base
+    from preloop.services.ai_model_provider import (
+        ProviderValidationError,
+        validate_gateway_api_endpoint,
+    )
+
+    try:
+        validate_gateway_api_endpoint(api_base)
+    except ProviderValidationError as exc:
+        raise ModelGatewayAPIError(
+            provider=provider,
+            status_code=400,
+            message=str(exc),
+            error_type="invalid_request_error",
+        ) from exc
+    return api_base
+
+
 def gateway_database_scope(operation: Callable[..., Any]) -> Callable[..., Any]:
     """Close an HTTP entry phase even if preparation fails before provider I/O."""
 
@@ -7847,7 +7885,7 @@ class OpenAIGatewayService:
                 **client_stream_options,
                 "include_usage": True,
             }
-        if api_base := model_api_base(ai_model):
+        if api_base := checked_model_api_base(ai_model, provider=provider):
             kwargs["api_base"] = api_base
         # Azure needs the resource root (not the pasted deployment URL) and
         # an api-version; both come from the stored model. Entra ID models
@@ -8240,7 +8278,7 @@ class OpenAIGatewayService:
             )
         if region := _bedrock_region(ai_model):
             kwargs.setdefault("aws_region_name", region)
-        if api_base := model_api_base(ai_model):
+        if api_base := checked_model_api_base(ai_model, provider="openai"):
             kwargs["api_base"] = api_base
         # Azure needs the resource root (not the pasted deployment URL) and
         # an api-version; both come from the stored model. Entra ID models

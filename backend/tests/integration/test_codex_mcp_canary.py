@@ -318,6 +318,8 @@ def canary_env(tmp_path_factory: pytest.TempPathFactory) -> Iterator[_CanaryEnv]
             "PRELOOP_DISABLE_TELEMETRY": "true",
             "SENTRY_DSN": "",
             "PRELOOP_E2E_FAKE_UPSTREAM": f"http://127.0.0.1:{upstream_port}/v1",
+            # The fake upstream is loopback. Production leaves this empty.
+            "MODEL_ENDPOINT_ALLOWED_CIDRS": "127.0.0.0/8,::1/128",
             # A placeholder so provider-key guards pass; the scripted
             # upstream ignores auth entirely. Never a real credential.
             "ANTHROPIC_API_KEY": env_placeholder(),

@@ -24,8 +24,12 @@ account:
 Run it standalone after the backend DB is migrated and INIT_TEST_DATA has run:
 
     source .venv/bin/activate  # or ../.venv/bin/activate
+    MODEL_ENDPOINT_ALLOWED_CIDRS=127.0.0.0/8 \
     PRELOOP_E2E_FAKE_UPSTREAM=http://127.0.0.1:8081/v1 \
         python -m tests.e2e_support.seed_gateway_model
+
+The server process needs the same ``MODEL_ENDPOINT_ALLOWED_CIDRS`` value.
+Production and Preloop Cloud leave it empty, so a loopback endpoint is refused.
 
 It is idempotent: re-running updates the existing seeded model's endpoint
 rather than creating duplicates. It prints the resolved model alias on success.
