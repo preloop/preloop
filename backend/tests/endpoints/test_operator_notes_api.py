@@ -565,6 +565,7 @@ def test_permission_check_carries_a_pending_note(client, db_session, test_user):
         db_session, account_id=test_user.account_id, note_id=note_id
     )
     assert stored.delivery_channel == operator_notes.CHANNEL_HOOK
+    assert stored.delivery_event == operator_notes.EVENT_PRE_TOOL_USE
 
 
 def test_expired_notes_are_not_handed_to_a_hook(client, db_session, test_user):

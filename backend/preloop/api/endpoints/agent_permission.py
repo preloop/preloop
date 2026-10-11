@@ -385,6 +385,7 @@ def _claim_operator_note(
                     managed_agent_id=str(identity.managed_agent_id),
                     runtime_session_id=session_id,
                     channel=operator_notes.CHANNEL_HOOK,
+                    event=operator_notes.EVENT_PRE_TOOL_USE,
                 )
                 if claimed:
                     # Rendered while the session is open; the rows expire
