@@ -1,0 +1,19 @@
+{
+  "type": "session_start",
+  "remote_session_id": "0b8f3c2e-5d1a-4c47-9e0a-3f6b2d9c1a10",
+  "harness": "copilot_cli",
+  "model": "auto",
+  "workspace": {
+    "kind": "authorized_directory",
+    "id": "dir_9f2c"
+  },
+  "first_prompt": "Summarize the open TODOs in this repository.",
+  "actor": {
+    "user_id": "7d3e1f20-8a4b-4c5d-9e6f-0a1b2c3d4e5f",
+    "display_name": "Jane Doe"
+  },
+  "limits": {
+    "idle_timeout_seconds": 1800,
+    "max_concurrent": 2
+  }
+}

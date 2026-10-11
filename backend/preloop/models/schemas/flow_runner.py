@@ -1,7 +1,9 @@
 """Pydantic schemas for self-hosted flow runners."""
 
+import hashlib
+import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, get_args
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -18,6 +20,127 @@ class HostExecProfileAdvertisement(BaseModel):
     name: str = Field(max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
     capabilities: List[str] = Field(default_factory=list, max_length=16)
     models: List[str] = Field(default_factory=list, max_length=64)
+
+
+#: Harness ids a runner may report (contract A, closed in wave 1; extend by PR).
+HarnessId = Literal[
+    "copilot_cli",
+    "cursor_cli",
+    "claude_code",
+    "codex_cli",
+    "opencode",
+    "gemini_cli",
+    "claude_desktop",
+    "vscode_copilot",
+]
+HARNESS_IDS = frozenset(get_args(HarnessId))
+HarnessLoginState = Literal["signed_in", "signed_out", "unknown", "not_applicable"]
+HarnessLoginSource = Literal["env", "stored", "cli_status", "none", "unknown"]
+HarnessGovernance = Literal["governed", "partial", "ungoverned", "unknown"]
+HarnessSupportLevel = Literal["flows_and_sessions", "flows_only", "presence_only"]
+HarnessSessionMode = Literal["resume", "stream", "replay", "none"]
+HarnessBilling = Literal["seat", "metered", "unknown"]
+HarnessModelSource = Literal["probed", "configured", "static", "observed"]
+
+MAX_HARNESS_INVENTORY_ENTRIES = 32
+MAX_HARNESS_MODELS = 64
+MAX_HARNESS_MODEL_ID_LENGTH = 128
+
+
+class HarnessModel(BaseModel):
+    """One model a harness can run, and where the runner learned about it."""
+
+    id: str = Field(min_length=1, max_length=MAX_HARNESS_MODEL_ID_LENGTH)
+    source: HarnessModelSource
+
+
+class HarnessInventoryEntry(BaseModel):
+    """One locally installed harness as reported by a runner.
+
+    Never carries executable paths, argv, env values, tokens or usernames.
+    """
+
+    harness: HarnessId
+    display_name: str = Field(max_length=128)
+    version: Optional[str] = Field(None, max_length=64)
+    login_state: HarnessLoginState = "unknown"
+    login_source: HarnessLoginSource = "unknown"
+    #: Host only (``github.com``, ``<x>.ghe.com``); absent for non-GitHub harnesses.
+    account_host: Optional[str] = Field(None, max_length=255)
+    governance: HarnessGovernance = "unknown"
+    support_level: HarnessSupportLevel = "presence_only"
+    enabled: bool = True
+    #: Set on the host only (``preloop runner sessions enable``), never by the server.
+    sessions_enabled: bool = False
+    session_mode: HarnessSessionMode = "none"
+    billing: HarnessBilling = "unknown"
+    models: List[HarnessModel] = Field(
+        default_factory=list, max_length=MAX_HARNESS_MODELS
+    )
+    generated_profile: Optional[str] = Field(
+        None, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    )
+    capabilities: List[str] = Field(default_factory=list, max_length=16)
+
+
+class HarnessInventory(BaseModel):
+    """Harness inventory a runner publishes with register and heartbeat."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    #: Wire name is ``schema``; renamed here because it shadows BaseModel.schema.
+    #: ``hash`` is the runner's opaque version token, stored as reported.
+    schema_version: int = Field(1, ge=1, alias="schema")
+    generated_at: datetime
+    hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    entries: List[HarnessInventoryEntry] = Field(
+        default_factory=list, max_length=MAX_HARNESS_INVENTORY_ENTRIES
+    )
+
+    @field_validator("entries", mode="before")
+    @classmethod
+    def drop_unknown_harnesses(cls, value: Any) -> Any:
+        """Ignore entries for harness ids this server does not know yet.
+
+        A newer runner may report a harness added after this release; that
+        must not make the whole register or heartbeat fail.
+        """
+        if not isinstance(value, list):
+            return value
+        return [
+            entry
+            for entry in value
+            if not isinstance(entry, dict) or entry.get("harness") in HARNESS_IDS
+        ]
+
+    def to_wire(self) -> Dict[str, Any]:
+        """Serialize with wire field names, dropping absent optional fields."""
+        return self.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+def harness_inventory_hash(entries: List[HarnessInventoryEntry]) -> str:
+    """Return ``sha256:<hex>`` of the canonical JSON of ``entries``.
+
+    Canonical JSON: absent (null) fields omitted, keys sorted, no whitespace,
+    UTF-8 without ASCII escaping except U+2028 and U+2029, which are written
+    as ``\\u2028``/``\\u2029`` because Go's encoding/json always escapes them.
+    The Go runner computes the same value (``harnessInventoryHash`` in
+    ``cli/internal/cmd/runner_inventory.go``).
+
+    The hash is the runner's: the server stores the reported ``hash`` verbatim
+    as an opaque version token and never recomputes it, because a newer
+    runner may hash entries this server drops as unknown.
+    """
+    payload = [
+        entry.model_dump(mode="json", by_alias=True, exclude_none=True)
+        for entry in entries
+    ]
+    canonical = (
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class RunnerRegisterRequest(BaseModel):
@@ -44,6 +167,10 @@ class RunnerRegisterRequest(BaseModel):
         if value is None:
             return []
         return value
+
+    #: Locally installed harnesses (contract A). Absent or null for runners
+    #: that predate it ("inventory unknown").
+    harness_inventory: Optional[HarnessInventory] = None
 
     #: How many jobs this process is willing to run at once. It may lower the
     #: stored ceiling for as long as it is connected; it never raises it.
@@ -77,6 +204,9 @@ class RunnerResponse(BaseModel):
     running_execution_ids: List[UUID] = Field(default_factory=list)
     registered_by_email: Optional[str] = None
     capabilities: Dict[str, Any] = Field(default_factory=dict)
+    #: Last published harness inventory; null means "inventory unknown".
+    harness_inventory: Optional[HarnessInventory] = None
+    harness_inventory_updated_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
