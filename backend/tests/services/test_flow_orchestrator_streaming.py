@@ -250,6 +250,39 @@ class TestLogStreaming:
         assert detection["pattern_length"] == 1
         assert detection["repetitions"] == 4
 
+    def test_failed_writes_between_reads_are_not_a_read_loop(self):
+        """A failed update between identical reads breaks a get_issue streak.
+
+        The guard used to drop failed calls, so get / update-409 / get looked
+        like four identical reads and the stop message named only get_issue.
+        """
+        get_issue = json.dumps(
+            {
+                "server_name": "preloop-mcp",
+                "tool_name": "get_issue",
+                "arguments_hash": "issue-1488",
+            },
+            sort_keys=True,
+        )
+        update_issue = json.dumps(
+            {
+                "server_name": "preloop-mcp",
+                "tool_name": "update_issue",
+                "arguments_hash": "stale-revision",
+            },
+            sort_keys=True,
+        )
+        signatures = [get_issue, update_issue] * 3 + [get_issue]
+
+        detection = FlowExecutionOrchestrator._detect_repeated_tool_cycle(signatures)
+
+        assert detection is not None
+        assert detection["pattern_length"] == 2
+        assert [item["tool_name"] for item in detection["pattern"]] == [
+            "update_issue",
+            "get_issue",
+        ]
+
     def test_get_recent_signatures_prefer_hash_over_summary_alone(self, orchestrator):
         """Persisted rows with different hashes yield distinct signatures."""
         activities = []
@@ -266,7 +299,7 @@ class TestLogStreaming:
 
         with patch(
             "preloop.models.crud.crud_runtime_session_activity"
-            ".get_recent_successful_tool_calls_by_flow_execution",
+            ".get_recent_tool_calls_by_flow_execution",
             return_value=list(reversed(activities)),
         ):
             orchestrator.execution_log = MagicMock(id="exec-1")
@@ -292,7 +325,7 @@ class TestLogStreaming:
 
         with patch(
             "preloop.models.crud.crud_runtime_session_activity"
-            ".get_recent_successful_tool_calls_by_flow_execution",
+            ".get_recent_tool_calls_by_flow_execution",
             return_value=list(reversed(activities)),
         ):
             orchestrator.execution_log = MagicMock(id="exec-1")

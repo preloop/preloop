@@ -1293,5 +1293,24 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .all()
         )
 
+    def get_recent_tool_calls_by_flow_execution(
+        self, db: Session, flow_execution_id: Any, limit: int = 12
+    ) -> list[RuntimeSessionActivity]:
+        """Return recent tool calls of every outcome for loop detection.
+
+        A failed call is a different step. Dropping it makes a
+        read / write-fail cycle look like a streak of identical reads.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.flow_execution_id == flow_execution_id,
+                self.model.activity_type == "tool_call",
+            )
+            .order_by(self.model.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
+
 
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)
