@@ -37,6 +37,7 @@ from preloop.utils.encryption import encrypt_value
 
 NOTES_URL = "/api/v1/operator-notes"
 PENDING_URL = "/api/v1/agents/notes/pending"
+SESSION_END_URL = "/api/v1/agents/session-end"
 TOKEN_URL = "/api/v1/auth/runtime-sessions/token"
 PERMISSION_CHECK_URL = "/api/v1/agents/permission-check"
 
@@ -587,3 +588,89 @@ def test_expired_notes_are_not_handed_to_a_hook(client, db_session, test_user):
     )
 
     assert response.json()["notes"] == []
+
+
+# --- lifecycle events and session end (#1551) -------------------------------
+
+
+def test_hook_pull_records_the_lifecycle_event(client, db_session, test_user):
+    """The Stop pull stamps the event, so a rescue is distinguishable."""
+    token = _issue_runtime_token(client)
+    agent = _runtime_agent(db_session, test_user)
+    note_id = client.post(
+        NOTES_URL, json={"agent_id": str(agent.id), "text": "Ship the fix."}
+    ).json()["note_id"]
+
+    response = client.post(
+        PENDING_URL,
+        json={"channel": "hook", "event": "stop"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    stored = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=note_id
+    )
+    assert stored.status == "delivered"
+    assert stored.delivery_event == "stop"
+
+
+def test_hook_pull_rejects_an_unknown_lifecycle_event(client):
+    token = _issue_runtime_token(client)
+    response = client.post(
+        PENDING_URL,
+        json={"channel": "hook", "event": "whenever"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422
+
+
+def test_session_end_marks_session_only_notes_undeliverable(
+    client, db_session, test_user
+):
+    """A note whose only session ended fails; an agent note keeps waiting."""
+    token = _issue_runtime_token(client)
+    agent = _runtime_agent(db_session, test_user)
+    session_note_id = client.post(
+        NOTES_URL, json={"agent_id": str(agent.id), "text": "Too late."}
+    ).json()["note_id"]
+    # A note addressed to the agent with no session waits for the next run and
+    # must survive this session ending.
+    agent_note_id = operator_notes.new_note_id()
+    crud_agent_control_command.create_note(
+        db_session,
+        account_id=test_user.account_id,
+        managed_agent_id=agent.id,
+        runtime_session_id=None,
+        note_id=agent_note_id,
+        body="Wait for the next run.",
+        envelope={"kind": "message"},
+        author_display="Test User",
+        author_auth_method="jwt",
+        created_by_user_id=None,
+        expires_at=None,
+    )
+
+    response = client.post(
+        SESSION_END_URL,
+        json={"external_session_id": "laptop", "reason": "exit"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["marked"] == 1
+    assert body["runtime_session_id"] == str(agent.runtime_session_id)
+    ended = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=session_note_id
+    )
+    assert ended.status == "undeliverable"
+    assert operator_notes.note_state(ended) == "undeliverable"
+    still_waiting = crud_agent_control_command.get_note(
+        db_session, account_id=test_user.account_id, note_id=agent_note_id
+    )
+    assert still_waiting.status == "pending"
+
+
+def test_session_end_requires_a_runtime_bearer(client):
+    assert client.post(SESSION_END_URL, json={"reason": "exit"}).status_code == 401

@@ -13,6 +13,9 @@ State machine (``status``):
 - ``acked``: the runtime plugin confirmed receipt of the command id.
 - ``failed``: no delivery channel was available (see ``last_error``).
 - ``expired``: still pending past ``expires_at``; never redelivered.
+- ``undeliverable``: a note (never a command) whose only session ended before
+  any turn boundary could carry it. Terminal, and distinct from ``expired``:
+  the note did not run out of time, the conversation it was addressed to did.
 
 Backward compatibility: runtime plugins that never send acks simply leave
 commands in ``delivered`` state — that is expected and harmless. Redelivery
@@ -134,6 +137,11 @@ class AgentControlCommand(Base):
     # (Claude Code channels), ``claude_message`` (Claude Code cross-session
     # inbox). NULL until delivery.
     delivery_channel: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
+    # Which harness lifecycle point pulled the note: ``session_start``, ``stop``
+    # or ``pre_tool_use``. Recorded on the delivery for audit so a Stop-block
+    # rescue is distinguishable from the ordinary next-tool-call path. NULL for
+    # the gateway, which has no hook event.
+    delivery_event: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     # How many messages the conversation held when the note landed, so the
     # timeline can show where in the run it took effect.
     delivered_turn_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -194,7 +202,7 @@ class AgentControlCommand(Base):
         ),
         CheckConstraint(
             "status IN ('pending', 'delivered', 'acked', 'failed', 'expired', "
-            "'cancelled')",
+            "'cancelled', 'undeliverable')",
             name="ck_agent_control_command_status",
         ),
         CheckConstraint(

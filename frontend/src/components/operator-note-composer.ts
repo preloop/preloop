@@ -306,6 +306,12 @@ export class OperatorNoteComposer extends LitElement {
   private stateLabel(note: OperatorNote): string {
     switch (note.state) {
       case 'delivered':
+        if (note.delivery_event === 'stop') {
+          return 'Delivered to keep the run going';
+        }
+        if (note.delivery_event === 'session_start') {
+          return 'Delivered at session start';
+        }
         return note.delivery_channel === 'gateway'
           ? 'Delivered at a turn boundary'
           : 'Delivered to the agent';
@@ -317,6 +323,8 @@ export class OperatorNoteComposer extends LitElement {
         return 'Expired undelivered';
       case 'failed':
         return 'Not delivered';
+      case 'undeliverable':
+        return 'Session ended before delivery';
       default:
         return 'Waiting for the next turn';
     }
