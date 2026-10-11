@@ -52,6 +52,7 @@ from preloop.services.harness_inventory import (
     inventory_hash_known,
     record_harness_inventory,
     redact_harness_inventory,
+    viewer_is_account_admin,
 )
 from preloop.services.runner_service import (
     derive_execution_runner,
@@ -217,6 +218,7 @@ def _to_response(
     row: FlowRunner,
     db: Optional[Session] = None,
     viewer: Optional[User] = None,
+    viewer_is_admin: Optional[bool] = None,
 ) -> schemas.RunnerResponse:
     data = schemas.RunnerResponse.model_validate(row)
     if db is not None and row.registered_by_user_id:
@@ -226,7 +228,7 @@ def _to_response(
     if row.harness_inventory is not None:
         # Version and account host are for the owner and account admins.
         visible = (
-            inventory_for_viewer(db, row, viewer)
+            inventory_for_viewer(db, row, viewer, viewer_is_admin=viewer_is_admin)
             if db is not None
             else redact_harness_inventory(row.harness_inventory)
         )
@@ -332,11 +334,18 @@ def list_runners(
     rows = filter_viewable(db, current_user, VISIBLE_RUNNER, rows)
     # A runner shared from another account (account hook H3) never names
     # the user who registered it.
+    # One admin check for the whole page, not two queries per runner.
+    is_admin = (
+        viewer_is_account_admin(db, current_user)
+        if any(row.harness_inventory is not None for row in rows)
+        else False
+    )
     return [
         _to_response(
             row,
             db if row.account_id == current_user.account_id else None,
             current_user,
+            viewer_is_admin=is_admin,
         )
         for row in rows
     ]

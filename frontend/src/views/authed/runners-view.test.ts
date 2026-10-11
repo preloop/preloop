@@ -302,6 +302,63 @@ describe('RunnersView', () => {
     expect(element.shadowRoot?.textContent).to.contain('1.0.95');
   });
 
+  it('re-reads the owner view when the inventory changes over websocket', async () => {
+    const element = await renderWith([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'laptop',
+        status: 'online',
+        harness_inventory: copilotInventory,
+      },
+    ]);
+    const changedHash = 'sha256:' + 'b'.repeat(64);
+    const ownerView = {
+      ...copilotInventory,
+      hash: changedHash,
+      entries: [{ ...copilotInventory.entries[0], version: '1.0.96' }],
+    };
+    fetchStub.restore();
+    const detailStub = sinon.stub(window, 'fetch').callsFake(
+      async () =>
+        new Response(
+          JSON.stringify({
+            id: '11111111-1111-4111-8111-111111111111',
+            name: 'laptop',
+            status: 'online',
+            harness_inventory: ownerView,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+    );
+    const memberEntry = { ...copilotInventory.entries[0] } as Record<
+      string,
+      unknown
+    >;
+    delete memberEntry.version;
+    delete memberEntry.account_host;
+    onRunnerMessage?.({
+      type: 'runner_updated',
+      payload: {
+        id: '11111111-1111-4111-8111-111111111111',
+        name: 'laptop',
+        status: 'online',
+        harness_inventory: {
+          ...copilotInventory,
+          hash: changedHash,
+          entries: [memberEntry],
+        },
+      },
+    });
+    await waitUntil(
+      () => element.shadowRoot?.textContent?.includes('1.0.96'),
+      'owner view was not re-read'
+    );
+    expect(String(detailStub.firstCall.args[0])).to.contain(
+      '/api/v1/runners/11111111-1111-4111-8111-111111111111'
+    );
+    expect(element.shadowRoot?.textContent).to.contain('github.com');
+  });
+
   it('badges an ephemeral runner only while it is connected', async () => {
     fetchStub = createFetchStub([
       {

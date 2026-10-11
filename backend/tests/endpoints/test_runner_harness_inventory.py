@@ -312,3 +312,32 @@ async def test_heartbeat_with_invalid_inventory_is_ignored(
     db_session.expire_all()
     assert crud_flow_runner.get(db_session, id=ws_runner.id).harness_inventory is None
     assert crud_audit_log is not None
+
+
+def test_list_resolves_the_admin_check_once_per_request(
+    db_session: Session, test_user: models.User, monkeypatch
+) -> None:
+    with _app(db_session, test_user, monkeypatch) as client:
+        for index in range(3):
+            body = _fixture("register_with_inventory.json") | {"name": f"r{index}"}
+            assert client.post("/api/v1/runners/register", json=body).status_code == 200
+    member = _member(db_session, test_user)
+    calls: List[str] = []
+    from preloop.utils import permissions
+
+    real = permissions.user_holds_permission
+
+    def counting(db, user, name):
+        calls.append(name)
+        return real(db, user, name)
+
+    monkeypatch.setattr(permissions, "user_holds_permission", counting)
+    with _app(db_session, member, monkeypatch) as client:
+        listed = client.get("/api/v1/runners")
+    assert listed.status_code == 200, listed.text
+    with_inventory = [r for r in listed.json() if r["harness_inventory"]]
+    assert len(with_inventory) == 3
+    assert all(
+        r["harness_inventory"]["entries"][0]["version"] is None for r in with_inventory
+    )
+    assert calls.count("manage_account") == 1

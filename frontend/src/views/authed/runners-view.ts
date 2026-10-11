@@ -14,6 +14,7 @@ import '../../components/view-header.ts';
 import {
   deleteRunner,
   getAccountOrganization,
+  getRunner,
   getRunners,
   rotateRunnerToken,
   RunnerHasLeasesError,
@@ -310,6 +311,41 @@ export class RunnersView extends LitElement {
       },
       ...this.runners.slice(index + 1),
     ];
+    if (
+      incoming.harness_inventory &&
+      !sameInventory &&
+      this.inventoryHasHostDetails(current)
+    ) {
+      void this.refreshInventory(incoming.id, incoming.harness_inventory.hash);
+    }
+  }
+
+  /** True when the API gave this viewer version or account host. */
+  private inventoryHasHostDetails(row: RunnerRecord): boolean {
+    return (row.harness_inventory?.entries || []).some(
+      (entry) => !!entry.version || !!entry.account_host
+    );
+  }
+
+  /**
+   * A changed inventory arrives as the member view. Owners and admins
+   * re-read the runner so version and account host are not lost.
+   */
+  private async refreshInventory(runnerId: string, hash: string) {
+    try {
+      const fresh = await getRunner(runnerId);
+      this.runners = this.runners.map((row) =>
+        row.id === runnerId && row.harness_inventory?.hash === hash
+          ? {
+              ...row,
+              harness_inventory: fresh.harness_inventory,
+              harness_inventory_updated_at: fresh.harness_inventory_updated_at,
+            }
+          : row
+      );
+    } catch {
+      // Keep the member view; the next page load shows the full one.
+    }
   }
 
   private removeRunner(runnerId: string) {

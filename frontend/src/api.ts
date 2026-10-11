@@ -4983,6 +4983,17 @@ export async function getRunners(): Promise<RunnerRecord[]> {
   return response.json();
 }
 
+/** One runner as the caller may see it (owner and admins get host details). */
+export async function getRunner(runnerId: string): Promise<RunnerRecord> {
+  const response = await fetchWithAuth(
+    `/api/v1/runners/${encodeURIComponent(runnerId)}`
+  );
+  if (!response.ok) {
+    throw new Error('Failed to fetch runner');
+  }
+  return response.json();
+}
+
 export interface RunnerRecord {
   id: string;
   name: string;

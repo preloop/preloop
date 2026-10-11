@@ -105,10 +105,32 @@ def redact_harness_inventory(
     return {**inventory, "entries": entries}
 
 
+def viewer_is_account_admin(db: Session, viewer: Optional[models.User]) -> bool:
+    """Superuser, the account's primary user, or a manage_account holder.
+
+    Costs up to two queries; resolve it once per request and pass it to
+    ``inventory_for_viewer`` when rendering many runners.
+    """
+    if viewer is None:
+        return False
+    if getattr(viewer, "is_superuser", False):
+        return True
+    account = crud_account.get(db, id=viewer.account_id)
+    if account is not None and str(account.primary_user_id) == str(viewer.id):
+        return True
+    from preloop.utils.permissions import user_holds_permission
+
+    return user_holds_permission(db, viewer, "manage_account")
+
+
 def viewer_sees_full_inventory(
-    db: Session, runner: models.FlowRunner, viewer: Optional[models.User]
+    db: Session,
+    runner: models.FlowRunner,
+    viewer: Optional[models.User],
+    *,
+    viewer_is_admin: Optional[bool] = None,
 ) -> bool:
-    """Runner owner, account primary user, superuser or manage_account holder."""
+    """Runner owner, or an admin of the runner's account."""
     if viewer is None:
         return False
     if getattr(viewer, "is_superuser", False):
@@ -118,20 +140,23 @@ def viewer_sees_full_inventory(
         return True
     if str(getattr(runner, "account_id", "")) != str(viewer.account_id):
         return False
-    account = crud_account.get(db, id=viewer.account_id)
-    if account is not None and str(account.primary_user_id) == str(viewer.id):
-        return True
-    from preloop.utils.permissions import user_holds_permission
-
-    return user_holds_permission(db, viewer, "manage_account")
+    if viewer_is_admin is None:
+        viewer_is_admin = viewer_is_account_admin(db, viewer)
+    return viewer_is_admin
 
 
 def inventory_for_viewer(
-    db: Session, runner: models.FlowRunner, viewer: Optional[models.User]
+    db: Session,
+    runner: models.FlowRunner,
+    viewer: Optional[models.User],
+    *,
+    viewer_is_admin: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     """The stored inventory as this viewer may see it."""
     inventory = getattr(runner, "harness_inventory", None)
-    if inventory is None or viewer_sees_full_inventory(db, runner, viewer):
+    if inventory is None or viewer_sees_full_inventory(
+        db, runner, viewer, viewer_is_admin=viewer_is_admin
+    ):
         return inventory
     return redact_harness_inventory(inventory)
 
