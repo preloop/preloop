@@ -96,6 +96,7 @@ class HarnessInventory(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     #: Wire name is ``schema``; renamed here because it shadows BaseModel.schema.
+    #: ``hash`` is the runner's opaque version token, stored as reported.
     schema_version: int = Field(1, ge=1, alias="schema")
     generated_at: datetime
     hash: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
@@ -128,15 +129,23 @@ def harness_inventory_hash(entries: List[HarnessInventoryEntry]) -> str:
     """Return ``sha256:<hex>`` of the canonical JSON of ``entries``.
 
     Canonical JSON: absent (null) fields omitted, keys sorted, no whitespace,
-    UTF-8 without ASCII escaping. The Go runner computes the same value
-    (``harnessInventoryHash`` in ``cli/internal/cmd/runner_inventory.go``).
+    UTF-8 without ASCII escaping except U+2028 and U+2029, which are written
+    as ``\\u2028``/``\\u2029`` because Go's encoding/json always escapes them.
+    The Go runner computes the same value (``harnessInventoryHash`` in
+    ``cli/internal/cmd/runner_inventory.go``).
+
+    The hash is the runner's: the server stores the reported ``hash`` verbatim
+    as an opaque version token and never recomputes it, because a newer
+    runner may hash entries this server drops as unknown.
     """
     payload = [
         entry.model_dump(mode="json", by_alias=True, exclude_none=True)
         for entry in entries
     ]
-    canonical = json.dumps(
-        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    canonical = (
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
     )
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
