@@ -1097,3 +1097,49 @@ def test_session_end_cannot_reach_another_principals_session(
         db_session, account_id=test_user.account_id, note_id=note_id
     )
     assert stored.status == "pending"
+
+
+def test_receipt_durable_hook_ack_uses_its_agents_current_session(
+    client, db_session, test_user
+):
+    from unittest.mock import AsyncMock, patch
+    from preloop.models.crud import crud_api_key
+
+    _issue_runtime_token(client)
+    agent = _runtime_agent(db_session, test_user)
+    _, token = crud_api_key.create_runtime_key(
+        db_session,
+        name="durable-receipt",
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        context_data={"managed_agent_id": str(agent.id)},
+    )
+    db_session.commit()
+    created = client.post(
+        NOTES_URL, json={"agent_id": str(agent.id), "text": "Durable hook receipt."}
+    ).json()
+    headers = {"Authorization": f"Bearer {token}"}
+    with patch(
+        "preloop.api.endpoints.agent_permission.request_agent_permission",
+        AsyncMock(return_value=("allow", "Allowed", None, False)),
+    ):
+        response = client.post(
+            PERMISSION_CHECK_URL,
+            json={
+                "source": "codex_cli",
+                "tool_name": "Bash",
+                "evaluation_phase": "permission_request",
+            },
+            headers=headers,
+        )
+    assert response.status_code == 200, response.text
+    assert created["note_id"] in response.json()["operator_note"]
+    ack = client.post(
+        "/api/v1/agents/notes/ack",
+        json={"note_ids": [created["note_id"]]},
+        headers=headers,
+    )
+    assert ack.status_code == 200, ack.text
+    assert (
+        client.get(f"{NOTES_URL}/{created['note_id']}").json()["state"] == "delivered"
+    )
