@@ -283,10 +283,9 @@ func handleRunnerSetupSkip(req runnerSetupRequest, reason string) error {
 		fmt.Fprintln(req.Out, runnerForbiddenNotice(req.Policy))
 	case "not_tty":
 		if req.Env.OnDemand {
-			fmt.Fprintf(
+			fmt.Fprintln(
 				req.Out,
-				"A terminal is required to choose runner install. Run: %s\n",
-				runnerSetupManualCommand,
+				"A terminal is required to choose a runner install. Run this from an interactive shell.",
 			)
 		}
 	case "already_installed":
@@ -319,17 +318,23 @@ func installRunnerFromSetup(req runnerSetupRequest) error {
 		)
 		return nil
 	}
+	started := true
 	if err := setupStartRunner(); err != nil {
 		fmt.Fprintf(
 			req.Out,
 			"Runner installed but it did not start: %v\nStart it with: preloop runner start\n",
 			err,
 		)
+		started = false
 	}
 	if err := config.SetRunnerPromptAnsweredNow(); err != nil {
 		fmt.Fprintf(req.Out, "Could not record the answer: %v\n", err)
 	}
-	waitForRunnerOnline(req.Out)
+	// A start failure already told the user what to do. Waiting for the
+	// runner to report online would only block login until the timeout.
+	if started {
+		waitForRunnerOnline(req.Out)
+	}
 	return nil
 }
 

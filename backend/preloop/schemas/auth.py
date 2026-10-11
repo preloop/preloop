@@ -141,6 +141,16 @@ class AuthUserUpdate(BaseModel):
     full_name: Optional[str] = None
 
 
+# Capabilities an OSS runner may offer. The schema default, the profile
+# factory, and the OSS policy hook all use this list.
+OSS_RUNNER_CAPABILITIES: List[str] = ["flows", "inventory", "sessions"]
+
+
+def _oss_runner_capabilities() -> List[str]:
+    """Return a copy of the OSS runner capability ids."""
+    return list(OSS_RUNNER_CAPABILITIES)
+
+
 class RunnerPolicy(BaseModel):
     """Account policy for installing a personal runner on this user's machine."""
 
@@ -148,7 +158,7 @@ class RunnerPolicy(BaseModel):
 
     requirement: Literal["optional", "required", "forbidden"] = "optional"
     capabilities: List[str] = Field(
-        default_factory=lambda: ["flows", "inventory", "sessions"],
+        default_factory=_oss_runner_capabilities,
         description=(
             "Capabilities a runner installed for this user may offer. "
             "Ids include flows, inventory, and sessions."
@@ -183,7 +193,7 @@ def _default_runner_policy() -> RunnerPolicy:
     """Policy used when a caller builds a profile without one."""
     return RunnerPolicy(
         requirement="optional",
-        capabilities=["flows", "inventory", "sessions"],
+        capabilities=_oss_runner_capabilities(),
         mandated_capabilities=[],
         grace_until=None,
         can_decide=True,

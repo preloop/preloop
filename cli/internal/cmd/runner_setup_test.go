@@ -536,6 +536,179 @@ func TestRunnerSetupCommandAndNoRunnerFlag(t *testing.T) {
 	}
 }
 
+func TestPerformRunnerSetupStartFailureSkipsOnlineWait(t *testing.T) {
+	testenv.SetTempHome(t)
+	previousInstall := setupInstallRunner
+	previousStart := setupStartRunner
+	previousSleep := runnerSetupSleep
+	setupInstallRunner = func(io.Writer) error { return nil }
+	setupStartRunner = func() error { return io.ErrClosedPipe }
+	runnerSetupSleep = func(time.Duration) {
+		t.Fatal("online wait slept after the start failure")
+	}
+	t.Cleanup(func() {
+		setupInstallRunner = previousInstall
+		setupStartRunner = previousStart
+		runnerSetupSleep = previousSleep
+	})
+	probes := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probes++
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	saveRunnerSetupClient(t, server.URL)
+	if err := writeRunnerState(&runnerState{
+		ID: "11111111-1111-4111-8111-111111111111", Token: "rt", Name: "box",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	tty := true
+	var out bytes.Buffer
+	err := performRunnerSetup(runnerSetupRequest{
+		Out:       &out,
+		In:        strings.NewReader("y\n"),
+		Policy:    &runnerPolicy{Requirement: "optional"},
+		TTY:       &tty,
+		Installed: func() bool { return false },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probes != 0 {
+		t.Fatalf("start failure still polled the runner %d times", probes)
+	}
+	if !strings.Contains(out.String(), "did not start") {
+		t.Fatalf("output %q", out.String())
+	}
+	if strings.Contains(out.String(), "has not reported online") {
+		t.Fatalf("printed the online timeout after a start failure: %q", out.String())
+	}
+	if !config.RunnerPromptAnswered() {
+		t.Fatal("a started install that failed to launch should still record the answer")
+	}
+}
+
+func TestOnDemandNonTTYDoesNotRepeatTheCommand(t *testing.T) {
+	var out bytes.Buffer
+	err := performRunnerSetup(runnerSetupRequest{
+		Out: &out,
+		Env: runnerSetupEnv{OnDemand: true},
+		TTY: boolPtr(false),
+		Policy: &runnerPolicy{
+			Requirement: "optional",
+		},
+		Installed: func() bool { return false },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := out.String()
+	if strings.Contains(text, runnerSetupManualCommand) {
+		t.Fatalf("non-TTY hint repeats the command: %q", text)
+	}
+	if !strings.Contains(text, "interactive shell") {
+		t.Fatalf("output %q", text)
+	}
+}
+
+func TestRunRunnerSetupRequiresLogin(t *testing.T) {
+	testenv.SetTempHome(t)
+	t.Setenv("PRELOOP_TOKEN", "")
+	t.Setenv("PRELOOP_URL", "")
+	oldURL, oldToken := FlagURL, FlagToken
+	FlagURL, FlagToken = "", ""
+	t.Cleanup(func() { FlagURL, FlagToken = oldURL, oldToken })
+
+	var out bytes.Buffer
+	runnerSetupCmd.SetOut(&out)
+	t.Cleanup(func() { runnerSetupCmd.SetOut(nil) })
+	err := runRunnerSetup(runnerSetupCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "not logged in") {
+		t.Fatalf("err = %v", err)
+	}
+	if !strings.Contains(out.String(), "Log in first with: preloop login") {
+		t.Fatalf("output %q", out.String())
+	}
+}
+
+func TestRunRunnerSetupFetchesRequiredPolicy(t *testing.T) {
+	testenv.SetTempHome(t)
+	installs := stubRunnerInstall(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != userInfoPath {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "user-1",
+			"email": "ada@example.com",
+			"name":  "Ada Lovelace",
+			"runner_policy": map[string]any{
+				"requirement":           "required",
+				"can_decide":            false,
+				"mandated_capabilities": []string{"flows"},
+			},
+		})
+	}))
+	defer server.Close()
+	saveRunnerSetupClient(t, server.URL)
+
+	var out bytes.Buffer
+	runnerSetupCmd.SetOut(&out)
+	runnerSetupCmd.SetIn(strings.NewReader(""))
+	t.Cleanup(func() {
+		runnerSetupCmd.SetOut(nil)
+		runnerSetupCmd.SetIn(nil)
+	})
+	if err := runRunnerSetup(runnerSetupCmd, nil); err != nil {
+		t.Fatal(err)
+	}
+	if *installs != 1 {
+		t.Fatalf("installs = %d", *installs)
+	}
+	if !strings.Contains(out.String(), runnerRequiredDefault) {
+		t.Fatalf("output %q", out.String())
+	}
+}
+
+func TestFetchRunnerPolicy(t *testing.T) {
+	testenv.SetTempHome(t)
+	var mode string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch mode {
+		case "error":
+			http.Error(w, "nope", http.StatusInternalServerError)
+		case "absent":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "user-1", "email": "ada@example.com", "name": "Ada",
+			})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "user-1", "email": "ada@example.com", "name": "Ada",
+				"runner_policy": map[string]any{"requirement": "forbidden"},
+			})
+		}
+	}))
+	defer server.Close()
+	saveRunnerSetupClient(t, server.URL)
+
+	mode = "present"
+	got := fetchRunnerPolicy()
+	if got == nil || got.Requirement != "forbidden" {
+		t.Fatalf("policy = %#v", got)
+	}
+	mode = "absent"
+	if fetchRunnerPolicy() != nil {
+		t.Fatal("missing runner_policy was not treated as absent")
+	}
+	mode = "error"
+	if fetchRunnerPolicy() != nil {
+		t.Fatal("a failed user-info request returned a policy")
+	}
+}
+
 func stringPtr(v string) *string { return &v }
 
 func stubRunnerInstall(t *testing.T) *int {

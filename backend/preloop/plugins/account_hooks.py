@@ -613,8 +613,6 @@ RunnerPolicyProvider = Callable[["Session", Any, "User"], Optional[Mapping[str, 
 
 _runner_policy_provider: Optional[RunnerPolicyProvider] = None
 
-_OSS_RUNNER_CAPABILITIES = ["flows", "inventory", "sessions"]
-
 
 def register_runner_policy_provider(
     provider: Optional[RunnerPolicyProvider],
@@ -646,6 +644,7 @@ def oss_default_runner_policy(db: "Session", user: "User") -> dict[str, Any]:
         the provider returns ``None``.
     """
     from preloop.models.crud import crud_account, crud_user
+    from preloop.schemas.auth import OSS_RUNNER_CAPABILITIES
 
     account = crud_account.get(db, id=user.account_id)
     is_owner = (
@@ -656,7 +655,7 @@ def oss_default_runner_policy(db: "Session", user: "User") -> dict[str, Any]:
     member_count = crud_user.count_by_account(db, account_id=str(user.account_id))
     return {
         "requirement": "optional",
-        "capabilities": list(_OSS_RUNNER_CAPABILITIES),
+        "capabilities": list(OSS_RUNNER_CAPABILITIES),
         "mandated_capabilities": [],
         "grace_until": None,
         "can_decide": is_owner or member_count <= 1,

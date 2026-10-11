@@ -104,7 +104,10 @@ def test_me_returns_default_runner_policy(client, test_user: User):
     assert response.status_code == 200
     policy = response.json()["runner_policy"]
     assert policy["requirement"] == "optional"
-    assert policy["capabilities"] == ["flows", "inventory", "sessions"]
+    from preloop.schemas.auth import OSS_RUNNER_CAPABILITIES, RunnerPolicy
+
+    assert policy["capabilities"] == list(OSS_RUNNER_CAPABILITIES)
+    assert RunnerPolicy().capabilities == list(OSS_RUNNER_CAPABILITIES)
     assert policy["mandated_capabilities"] == []
     assert policy["grace_until"] is None
     assert policy["can_decide"] is True
