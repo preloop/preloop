@@ -133,7 +133,9 @@ session.
   only; no prompts, output or credentials) under `~/.preloop/runner-sessions`.
   A runner that comes back within the idle timeout picks them up again and the
   next turn resumes the same Copilot session. A turn that was running when the
-  runner stopped is reported as failed with `runner_restarted`.
+  runner stopped is reported as failed with `runner_restarted`, and the result
+  of the last finished turn is sent again on every reconnect, so a result lost
+  in transit never leaves the session waiting.
 - **Runner offline**: if the runner stays offline past the idle timeout, the
   server ends the session with `runner_offline`.
 - **Account kill switch**: halting flows or tools ends every live session with

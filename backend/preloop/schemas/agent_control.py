@@ -159,7 +159,9 @@ class RuntimeSessionControlResponse(BaseModel):
     reason: Optional[str] = None
     #: Where a command-mode line is POSTed as ``{"text": ...}`` when the
     #: session is not run by a managed agent. Set for runner-hosted sessions
-    #: (``agent_kind="runner_session"``, #1482); absent otherwise.
+    #: (``agent_kind="runner_session"``, #1482):
+    #: ``/api/v1/runner-sessions/{runtime_session_id}/turns``, keyed by this
+    #: response's ``runtime_session_id``. Absent otherwise.
     send_path: Optional[str] = None
     managed_agent_id: Optional[UUID] = None
     agent_name: Optional[str] = None

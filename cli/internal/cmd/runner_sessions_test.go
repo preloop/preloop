@@ -626,3 +626,67 @@ func TestRunnerSessionRestartReportsInterruptedTurnAndIgnoresRedelivery(t *testi
 		t.Fatalf("a redelivered turn must not run twice")
 	}
 }
+
+// A completion still in the outbox when the runner stops must not wedge the
+// server: the restarted runner re-sends the last result on connect, and a
+// redelivered finished turn gets its result again instead of being ignored.
+func TestRunnerSessionLostCompletionIsReplayed(t *testing.T) {
+	h := newSessionHarness(t, true)
+	start := startMsg(sessTestID)
+	start.FirstPrompt = "first"
+	h.m.handle(start)
+	// Wait for the turn to finish without draining the outbox to the
+	// "server": the frames are lost with this process.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		h.m.mu.Lock()
+		done := len(h.m.sessions[sessTestID].TurnResults) == 1
+		h.m.mu.Unlock()
+		if done || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.m.shutdown()
+
+	h.m = h.newManager()
+	h.m.reportLive()
+	msgs := h.drain()
+	done := findMsg(msgs, isTurnDone(runnerSessionFirstTurnID))
+	if done == nil || done["status"] != "ok" {
+		t.Fatalf("reconnect must replay the last turn result, got %v", msgs)
+	}
+
+	h.m.handle(runnerWSMessage{Type: "session_turn", RemoteSessionID: sessTestID, TurnID: "t2", Text: "two"})
+	h.waitFor(isTurnDone("t2"))
+	h.adapter.mu.Lock()
+	ran := len(h.adapter.turns)
+	h.adapter.mu.Unlock()
+	h.m.handle(runnerWSMessage{Type: "session_turn", RemoteSessionID: sessTestID, TurnID: "t2", Text: "two"})
+	again := h.drain()
+	if findMsg(again, isTurnDone("t2")) == nil || findMsg(again, isState("idle")) == nil {
+		t.Fatalf("a redelivered finished turn must get its result again, got %v", again)
+	}
+	h.adapter.mu.Lock()
+	defer h.adapter.mu.Unlock()
+	if len(h.adapter.turns) != ran {
+		t.Fatalf("a redelivered finished turn must not run again")
+	}
+}
+
+func TestRunnerSessionOutboxNeverEvictsTurnResults(t *testing.T) {
+	m := &runnerSessionManager{notify: make(chan struct{}, 1)}
+	m.mu.Lock()
+	m.enqueue(turnDoneMessage(sessTestID, "keep", "ok", "", nil))
+	for i := 0; i < runnerSessionOutboxLimit+50; i++ {
+		m.enqueue(map[string]any{"type": "session_state", "remote_session_id": sessTestID, "state": "idle"})
+	}
+	m.enqueue(map[string]any{"type": "session_event", "remote_session_id": sessTestID})
+	m.mu.Unlock()
+	if len(m.outbox) != runnerSessionOutboxLimit {
+		t.Fatalf("outbox must stay bounded, got %d", len(m.outbox))
+	}
+	if m.outbox[0]["turn_id"] != "keep" {
+		t.Fatalf("the turn result was evicted")
+	}
+}

@@ -12,7 +12,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from preloop.api.endpoints import runners
 from preloop.models import models
-from preloop.models.crud import crud_account_halt
+from preloop.models.crud import crud_account_halt, crud_runner_remote_session
 from preloop.services import runner_sessions as svc
 from preloop.services.agent_control_dispatch import resolve_session_control_mode
 from preloop.services.kill_switch import invalidate_kill_switch_cache
@@ -531,3 +531,89 @@ def test_kill_switch_activation_endpoint_stops_sessions(
             user_id=test_user.id,
         )
         invalidate_kill_switch_cache(test_user.account_id)
+
+
+def _turn_done(row: models.RunnerRemoteSession, turn_id: str) -> dict:
+    return {
+        "type": "session_turn_done",
+        "remote_session_id": str(row.id),
+        "turn_id": turn_id,
+        "status": "ok",
+    }
+
+
+def _turn_done_activities(db: Session, row: models.RunnerRemoteSession) -> int:
+    return (
+        db.query(models.RuntimeSessionActivity)
+        .filter(
+            models.RuntimeSessionActivity.runtime_session_id == row.runtime_session_id,
+            models.RuntimeSessionActivity.activity_type == "turn_done",
+        )
+        .count()
+    )
+
+
+def test_restart_before_completion_frame_is_delivered(db_session, runner, test_user):
+    """The runner restarts after the first turn finished but before its
+    session_turn_done reached the server. On reconnect it re-reports the
+    session and replays the last result; the session takes turns again."""
+    row = _start(db_session, runner, test_user, first_prompt="first")
+    svc.pending_runner_messages(db_session, runner)
+    svc.apply_runner_session_message(db_session, runner, _state(row, "starting"))
+    svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
+    svc.apply_runner_session_message(db_session, runner, _state(row, "running"))
+    # ... completion lost here; the runner restarts and reconnects:
+    svc.apply_runner_session_message(db_session, runner, _turn_done(row, "first"))
+    svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
+    db_session.refresh(row)
+    assert row.active_turn_id is None
+    turn_id = svc.queue_turn(db_session, row, actor=test_user, text="next")
+
+    # A second reconnect replays the same old result: nothing changes.
+    svc.apply_runner_session_message(db_session, runner, _turn_done(row, "first"))
+    db_session.refresh(row)
+    assert row.pending_turn == {"turn_id": turn_id, "text": "next"}
+    assert _turn_done_activities(db_session, row) == 1
+
+
+def test_lost_completion_of_a_queued_turn_is_released_by_redelivery_reply(
+    db_session, runner, test_user
+):
+    row = _start(db_session, runner, test_user)
+    svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
+    turn_id = svc.queue_turn(db_session, row, actor=test_user, text="go")
+    now = _naive_now()
+    svc.pending_runner_messages(db_session, runner, now=now)
+    svc.apply_runner_session_message(db_session, runner, _state(row, "running"))
+    svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
+    # The result was lost; the turn is offered again after the delay and the
+    # runner answers with the cached result instead of running it again.
+    again = svc.pending_runner_messages(
+        db_session, runner, now=now + svc.REDELIVERY_AFTER + timedelta(seconds=1)
+    )
+    assert [m["turn_id"] for m in again] == [turn_id]
+    svc.apply_runner_session_message(db_session, runner, _turn_done(row, turn_id))
+    db_session.refresh(row)
+    assert row.pending_turn is None and row.active_turn_id is None
+    svc.queue_turn(db_session, row, actor=test_user, text="and the next")
+
+
+def test_turn_done_for_unknown_turn_is_ignored(db_session, runner, test_user):
+    row = _start(db_session, runner, test_user)
+    svc.apply_runner_session_message(db_session, runner, _state(row, "idle"))
+    svc.apply_runner_session_message(db_session, runner, _turn_done(row, "stale"))
+    assert _turn_done_activities(db_session, row) == 0
+
+
+def test_send_path_is_keyed_by_runtime_session_id(db_session, runner, test_user):
+    row = _start(db_session, runner, test_user)
+    assert svc.runner_session_turns_path(row.runtime_session_id) == (
+        f"/api/v1/runner-sessions/{row.runtime_session_id}/turns"
+    )
+    found = crud_runner_remote_session.get_by_runtime_session(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=row.runtime_session_id,
+    )
+    assert found is not None and found.id == row.id
+    assert row.runtime_session_id != row.id

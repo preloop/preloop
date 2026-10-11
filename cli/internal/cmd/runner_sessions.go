@@ -369,6 +369,11 @@ type runnerRemoteSession struct {
 	// RecentTurns lets a restarted runner ignore a redelivered turn it
 	// already ran.
 	RecentTurns []string `json:"recent_turns,omitempty"`
+	// TurnResults keeps the outcome of recent turns so a session_turn_done
+	// lost with the outbox (runner stop, crash, dropped socket) is sent
+	// again: on every reconnect for the latest turn, and whenever the
+	// server redelivers a turn the runner already finished.
+	TurnResults []runnerSessionTurnRecord `json:"turn_results,omitempty"`
 
 	state     string
 	current   *runnerSessionTurn
@@ -377,6 +382,18 @@ type runnerRemoteSession struct {
 	stopping  bool
 	endReason string
 	stopTimer *time.Timer
+}
+
+// runnerSessionTurnRecord is a finished turn's session_turn_done content.
+type runnerSessionTurnRecord struct {
+	TurnID    string         `json:"turn_id"`
+	Status    string         `json:"status"`
+	ErrorCode string         `json:"error_code,omitempty"`
+	Usage     map[string]any `json:"usage,omitempty"`
+}
+
+func (r runnerSessionTurnRecord) message(sessionID string) map[string]any {
+	return turnDoneMessage(sessionID, r.TurnID, r.Status, r.ErrorCode, r.Usage)
 }
 
 type runnerSessionTurnRequest struct {
@@ -401,6 +418,24 @@ func (s *runnerRemoteSession) rememberTurn(id string) {
 	if len(s.RecentTurns) > runnerSessionRecentTurns {
 		s.RecentTurns = s.RecentTurns[len(s.RecentTurns)-runnerSessionRecentTurns:]
 	}
+}
+
+// recordTurn remembers a finished turn and its result.
+func (s *runnerRemoteSession) recordTurn(record runnerSessionTurnRecord) {
+	s.rememberTurn(record.TurnID)
+	s.TurnResults = append(s.TurnResults, record)
+	if len(s.TurnResults) > runnerSessionRecentTurns {
+		s.TurnResults = s.TurnResults[len(s.TurnResults)-runnerSessionRecentTurns:]
+	}
+}
+
+func (s *runnerRemoteSession) turnResult(id string) (runnerSessionTurnRecord, bool) {
+	for i := len(s.TurnResults) - 1; i >= 0; i-- {
+		if s.TurnResults[i].TurnID == id {
+			return s.TurnResults[i], true
+		}
+	}
+	return runnerSessionTurnRecord{}, false
 }
 
 func (s *runnerRemoteSession) knowsTurn(id string) bool {
@@ -463,25 +498,34 @@ func (m *runnerSessionManager) logf(format string, args ...any) {
 }
 
 // enqueue adds one message for the server. When the outbox is full the
-// oldest session_event goes first; state changes and turn results are kept.
-// Caller holds m.mu.
+// oldest session_event goes first, then the oldest session_state (live
+// sessions are re-reported on every reconnect). A session_turn_done is never
+// evicted: it is the only frame that releases the server's turn slot, and
+// there is at most one per finished turn. Caller holds m.mu.
 func (m *runnerSessionManager) enqueue(msg map[string]any) {
 	m.outbox = append(m.outbox, msg)
 	if len(m.outbox) > runnerSessionOutboxLimit {
-		for i, queued := range m.outbox {
-			if queued["type"] == "session_event" {
-				m.outbox = append(m.outbox[:i], m.outbox[i+1:]...)
-				break
-			}
-		}
+		m.evictOne("session_event")
 		if len(m.outbox) > runnerSessionOutboxLimit {
-			m.outbox = m.outbox[1:]
+			m.evictOne("session_state")
 		}
 	}
 	select {
 	case m.notify <- struct{}{}:
 	default:
 	}
+}
+
+// evictOne drops the oldest queued frame of kind and reports whether one was
+// found.
+func (m *runnerSessionManager) evictOne(kind string) bool {
+	for i, queued := range m.outbox {
+		if queued["type"] == kind {
+			m.outbox = append(m.outbox[:i], m.outbox[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // next returns the oldest unsent message without removing it.
@@ -550,7 +594,13 @@ func (m *runnerSessionManager) reportLive() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, id := range m.sortedIDs() {
-		m.enqueue(m.stateMessage(m.sessions[id]))
+		s := m.sessions[id]
+		// The last completion may have been lost with the previous socket
+		// or process; the server applies it idempotently.
+		if n := len(s.TurnResults); n > 0 && s.current == nil {
+			m.enqueue(s.TurnResults[n-1].message(id))
+		}
+		m.enqueue(m.stateMessage(s))
 	}
 }
 
@@ -761,7 +811,16 @@ func (m *runnerSessionManager) handleTurn(msg runnerWSMessage) {
 		}
 		return
 	}
-	if turnID == "" || len(turnID) > 128 || session.knowsTurn(turnID) {
+	if turnID == "" || len(turnID) > 128 {
+		return
+	}
+	if record, done := session.turnResult(turnID); done {
+		// A redelivery of a finished turn: its result was lost on the way.
+		m.enqueue(record.message(id))
+		m.enqueue(m.stateMessage(session))
+		return
+	}
+	if session.knowsTurn(turnID) {
 		return
 	}
 	if session.stopping {
@@ -872,7 +931,6 @@ func (m *runnerSessionManager) finishTurn(sessionID, turnID string, result runne
 	session.current = nil
 	session.ActiveTurnID = ""
 	session.LastActivityAt = m.now()
-	session.rememberTurn(turnID)
 	if result.SessionCreated {
 		session.SessionCreated = true
 	}
@@ -881,7 +939,9 @@ func (m *runnerSessionManager) finishTurn(sessionID, turnID string, result runne
 	if status != "ok" {
 		status = "error"
 	}
-	m.enqueue(turnDoneMessage(sessionID, turnID, status, result.ErrorCode, result.Usage))
+	record := runnerSessionTurnRecord{TurnID: turnID, Status: status, ErrorCode: result.ErrorCode, Usage: result.Usage}
+	session.recordTurn(record)
+	m.enqueue(record.message(sessionID))
 	if result.Error != "" {
 		m.logf("Remote session %s turn %s: %s", sessionID, turnID, result.Error)
 	}
@@ -1067,9 +1127,11 @@ func (m *runnerSessionManager) restore() {
 		if s.ActiveTurnID != "" {
 			// The previous process died mid-turn. The harness session on
 			// disk survives; the turn's result does not.
-			m.enqueue(turnDoneMessage(id, s.ActiveTurnID, "error", "runner_restarted", nil))
-			s.rememberTurn(s.ActiveTurnID)
+			record := runnerSessionTurnRecord{TurnID: s.ActiveTurnID, Status: "error", ErrorCode: "runner_restarted"}
+			m.enqueue(record.message(id))
+			s.recordTurn(record)
 			s.ActiveTurnID = ""
+			m.persist(&s)
 		}
 		restored := s
 		m.sessions[id] = &restored

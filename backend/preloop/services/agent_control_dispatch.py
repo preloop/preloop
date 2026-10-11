@@ -614,6 +614,7 @@ def _runner_session_control_mode(
     """
     from preloop.models.crud import crud_runner_remote_session
     from preloop.services.runner_service import is_online
+    from preloop.services.runner_sessions import runner_session_turns_path
 
     row = crud_runner_remote_session.get_by_runtime_session(
         db, account_id=account_id, runtime_session_id=session.id
@@ -647,7 +648,8 @@ def _runner_session_control_mode(
         None,
         None,
         kind=kind,
-        send_path=f"/api/v1/runner-sessions/{session.id}/turns",
+        # Keyed by the runtime session id, per contract C.
+        send_path=runner_session_turns_path(session.id),
     )
 
 

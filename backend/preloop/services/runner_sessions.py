@@ -63,6 +63,19 @@ ACTIVITY_TEXT_LIMIT = 4000
 
 STOP_MODES = frozenset({"graceful", "kill"})
 
+
+def runner_session_turns_path(runtime_session_id: Any) -> str:
+    """The turn endpoint of a runner session (contract C, served by #1483).
+
+    ``{session_id}`` in ``/runner-sessions/{session_id}/...`` is the
+    **runtime session** id (the ``session_id`` the start endpoint returns),
+    not ``runner_remote_sessions.id`` (the ``remote_session_id`` used only on
+    the runner websocket). Handlers resolve it with
+    ``crud_runner_remote_session.get_by_runtime_session``.
+    """
+    return f"/api/v1/runner-sessions/{runtime_session_id}/turns"
+
+
 #: Allowed runner-reported transitions. Terminal states accept nothing.
 _TRANSITIONS: Dict[str, frozenset[str]] = {
     "requested": frozenset({"starting", "idle", "running", "failed", "ended"}),
@@ -681,13 +694,18 @@ def _apply_turn_done(
     message: SessionTurnDoneMessage,
     raw: Mapping[str, Any],
 ) -> None:
-    if row.pending_turn and row.pending_turn.get("turn_id") == message.turn_id:
+    """Release the turn slot. Idempotent: the runner re-sends the last result
+    on every reconnect and for a redelivered turn, so a result for a turn the
+    server is no longer waiting on changes nothing."""
+    pending = row.pending_turn or {}
+    tracked = message.turn_id in {pending.get("turn_id"), row.active_turn_id}
+    if not tracked:
+        return
+    if pending.get("turn_id") == message.turn_id:
         row.pending_turn = None
         row.pending_turn_sent_at = None
     if row.active_turn_id == message.turn_id:
         row.active_turn_id = None
-    if message.turn_id == "first":
-        row.first_prompt = None
     _touch(row)
     db.add(row)
     error_code = raw.get("error_code")
