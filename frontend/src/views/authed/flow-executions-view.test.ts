@@ -1364,6 +1364,27 @@ describe('FlowExecutionsView', () => {
       ).to.be.true;
     });
 
+    it('pages with the shared pager and a chosen page size', async () => {
+      const el = await renderRows(EXECUTIONS);
+      const urls = () => fetchStub.getCalls().map((c) => String(c.args[0]));
+      const pager = el.shadowRoot!.querySelector('table-pagination')!;
+      pager.dispatchEvent(
+        new CustomEvent('page-change', { detail: { pageIndex: 1 } })
+      );
+      await waitUntil(
+        () => urls().some((url) => url.includes('skip=25')),
+        'second page of 25'
+      );
+      pager.dispatchEvent(
+        new CustomEvent('page-size-change', { detail: { pageSize: 50 } })
+      );
+      await waitUntil(
+        () => urls().some((url) => url.includes('limit=51')),
+        'first page of 50'
+      );
+      expect(el.shadowRoot!.querySelector('.pagination')).to.equal(null);
+    });
+
     it('says live updates are off before a connection exists, never disconnected', async () => {
       const el = await renderRows(EXECUTIONS);
       const status = el.shadowRoot?.querySelector('.connection-status');

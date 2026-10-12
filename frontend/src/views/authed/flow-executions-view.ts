@@ -61,6 +61,7 @@ import {
   saveFlowExecutionFilters,
   type FlowExecutionListFilters,
 } from '../../utils/list-filters';
+import '../../table/table-pagination';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import '../../components/view-header.ts';
@@ -403,18 +404,6 @@ export class FlowExecutionsView extends AuthedElement {
         .load-error .retry-button {
           display: block;
           margin-top: 8px;
-        }
-        .pagination {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          margin-top: 16px;
-          padding-top: 12px;
-          border-top: 1px solid var(--console-hairline);
-        }
-        .pagination-page {
-          color: var(--console-meta-color);
-          font-size: var(--console-text-meta);
         }
       `,
     ],
@@ -1030,18 +1019,11 @@ export class FlowExecutionsView extends AuthedElement {
     void this.loadExecutions();
   }
 
-  nextPage() {
-    if (this.hasNextPage) {
-      this.currentPage++;
-      void this.loadExecutions();
-    }
-  }
-
-  prevPage() {
-    if (this.currentPage > 1) {
-      this.currentPage--;
-      void this.loadExecutions();
-    }
+  /** The shared pager's page change; pages are 1-based here. */
+  goToPage(page: number) {
+    if (page < 1) return;
+    this.currentPage = page;
+    void this.loadExecutions();
   }
 
   connectWebSocket() {
@@ -1475,33 +1457,24 @@ export class FlowExecutionsView extends AuthedElement {
                     </div>
                   </div>
 
-                  ${
-                    this.currentPage > 1 || this.hasNextPage
-                      ? html`
-                          <div class="pagination">
-                            <sl-button
-                              size="small"
-                              @click=${this.prevPage}
-                              ?disabled=${this.currentPage === 1}
-                            >
-                              <sl-icon name="chevron-left"></sl-icon>
-                              Previous
-                            </sl-button>
-                            <div class="pagination-page">
-                              Page ${this.currentPage}
-                            </div>
-                            <sl-button
-                              size="small"
-                              @click=${this.nextPage}
-                              ?disabled=${!this.hasNextPage}
-                            >
-                              Next
-                              <sl-icon name="chevron-right"></sl-icon>
-                            </sl-button>
-                          </div>
-                        `
-                      : ''
-                  }
+                  <table-pagination
+                    page-index=${this.currentPage - 1}
+                    page-size=${this.pageSize}
+                    .pageSizes=${[25, 50, 100]}
+                    .total=${null}
+                    page-rows=${this.executions.length}
+                    ?has-next=${this.hasNextPage}
+                    noun="runs"
+                    @page-change=${(
+                      event: CustomEvent<{ pageIndex: number }>
+                    ) => this.goToPage(event.detail.pageIndex + 1)}
+                    @page-size-change=${(
+                      event: CustomEvent<{ pageSize: number }>
+                    ) => {
+                      this.pageSize = event.detail.pageSize;
+                      this.goToPage(1);
+                    }}
+                  ></table-pagination>
                 `
           }
         </div>
