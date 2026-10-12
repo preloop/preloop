@@ -281,8 +281,8 @@ export class IssueCostView extends AuthedElement {
           text-align: right;
         }
         /* One line per issue; the full title is on hover. */
-        .issue-title {
-          max-width: 20rem;
+        .issue-line {
+          max-width: 26rem;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -638,15 +638,16 @@ export class IssueCostView extends AuthedElement {
         firstSort: 'asc',
         width: 320,
         value: (row) => row.issue_key,
+        // One line: the key, then the title cut to fit, whole on hover.
         cell: (row) =>
-          html`${this.renderLink(row.issue_url, row.issue_key)}
-          ${
-            row.title
-              ? html`<div class="muted issue-title" title=${row.title}>
-                  ${row.title}
-                </div>`
-              : nothing
-          }`,
+          html`<div class="issue-line" title=${row.title || nothing}>
+            ${this.renderLink(row.issue_url, row.issue_key)}
+            ${
+              row.title
+                ? html`<span class="muted issue-title">${row.title}</span>`
+                : nothing
+            }
+          </div>`,
       },
       {
         id: 'cost',
