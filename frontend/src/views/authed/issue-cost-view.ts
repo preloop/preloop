@@ -282,7 +282,7 @@ export class IssueCostView extends AuthedElement {
         }
         /* One line per issue; the full title is on hover. */
         .issue-line {
-          max-width: 26rem;
+          max-width: 14rem;
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
