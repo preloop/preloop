@@ -924,9 +924,9 @@ ${offlineAuditCommand(range)}</pre>
         ></table-pagination>
         ${
           this.checkpointError
-            ? html`<p class="error" role="alert" data-testid="checkpoint-error">
-                ${this.checkpointError}
-              </p>`
+            ? html`<div data-testid="checkpoint-error">
+                ${this.renderError(this.checkpointError)}
+              </div>`
             : nothing
         }
       </section>
