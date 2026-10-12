@@ -529,7 +529,8 @@ describe('RecordsView', () => {
   });
 
   it('pages checkpoints oldest first with the shared pager', async () => {
-    const page = Array.from({ length: 50 }, (_, index) => ({
+    // 51 rows for a page of 50: the extra one says a next page exists.
+    const page = Array.from({ length: 51 }, (_, index) => ({
       seq: index + 1,
       chain_hash: 'abc',
       row_count: 1,
@@ -554,5 +555,45 @@ describe('RecordsView', () => {
     expect(
       pager()!.shadowRoot!.querySelector('.range')!.textContent!.trim()
     ).to.equal('1-50 checkpoints, oldest first');
+  });
+
+  it('offers no Next when the checkpoints end exactly on a page', async () => {
+    const page = Array.from({ length: 50 }, (_, index) => ({
+      seq: index + 1,
+      chain_hash: 'abc',
+      row_count: 1,
+      checkpointed_at: '2026-09-25T00:00:00Z',
+      signing_key_id: 'psk_active',
+      signature: 'sig',
+      signed_payload: {},
+      digest: 'dig',
+      signature_document: null,
+    }));
+    install({ checkpoints: page });
+    const el = await mount();
+    const pager = () =>
+      el.shadowRoot?.querySelector('table-pagination.checkpoint-pager') as
+        (HTMLElement & { hasNext: boolean }) | null;
+    await waitUntil(
+      () => (el as any).checkpoints.length === 50,
+      'checkpoints did not load'
+    );
+    await el.updateComplete;
+    expect(pager()!.hasNext).to.equal(false);
+  });
+
+  it('keeps the page and says why when a later page fails', async () => {
+    install({ checkpoints: [] });
+    const el = await mount();
+    const view = el as any;
+    view.checkpoints = [{ seq: 7 }];
+    view.checkpointAfter = [0, 50];
+    fetchStub.callsFake(async () => new Response('{}', { status: 500 }));
+    await view.loadCheckpoints(1);
+    await el.updateComplete;
+    expect(view.checkpointPage).to.equal(0);
+    expect(view.checkpoints).to.deep.equal([{ seq: 7 }]);
+    expect(el.shadowRoot!.querySelector('[data-testid="checkpoint-error"]')).to
+      .exist;
   });
 });

@@ -1,4 +1,4 @@
-import { html, fixture, expect } from '@open-wc/testing';
+import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import '../../components/view-header.ts';
 import './issues-compliance-view';
@@ -127,5 +127,32 @@ describe('IssuesComplianceView', () => {
         String(call.args[0]).includes('/api/v1/issue_compliance/')
       ).length;
     expect(after).to.be.greaterThan(before);
+  });
+
+  it('pages with the shared pager and a chosen page size', async () => {
+    fetchStub = stubFetch();
+    const el = await mount();
+    const calls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => new URL(String(call.args[0]), window.location.origin))
+        .filter((url) => url.pathname.includes('/api/v1/search'));
+    await waitUntil(() => calls().length > 0, 'first page');
+    (el as any)._onPageChange(
+      new CustomEvent('page-change', { detail: { pageIndex: 2 } })
+    );
+    await waitUntil(
+      () => calls().at(-1)!.searchParams.get('skip') === '20',
+      'third page of ten'
+    );
+    (el as any)._onPageSizeChange(
+      new CustomEvent('page-size-change', { detail: { pageSize: 25 } })
+    );
+    await waitUntil(
+      () =>
+        calls().at(-1)!.searchParams.get('limit') === '25' &&
+        (calls().at(-1)!.searchParams.get('skip') ?? '0') === '0',
+      'first page of 25'
+    );
   });
 });

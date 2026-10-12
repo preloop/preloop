@@ -102,6 +102,7 @@ export class RecordsView extends LitElement {
   @state() private checkpointPageSize = CHECKPOINT_PAGE;
   @state() private checkpointAfter: Array<number | null> = [0];
   @state() private checkpointsLoading = false;
+  @state() private checkpointError = '';
 
   @state() private keys: SigningKeyList | null = null;
   @state() private keysError: string | null = null;
@@ -312,24 +313,32 @@ export class RecordsView extends LitElement {
     const after = pageIndex === 0 ? 0 : this.checkpointAfter[pageIndex];
     if (after === null || after === undefined) return;
     this.checkpointsLoading = true;
+    this.checkpointError = '';
     try {
+      // One row more than the page: it says whether a next page exists, so
+      // Next never leads to an empty page.
       const page = await listAuditChainCheckpoints({
         afterSeq: after,
-        limit: this.checkpointPageSize,
+        limit: this.checkpointPageSize + 1,
       });
-      const rows = Array.isArray(page) ? page : [];
+      const all = Array.isArray(page) ? page : [];
+      const hasMore = all.length > this.checkpointPageSize;
+      const rows = hasMore ? all.slice(0, this.checkpointPageSize) : all;
+      const last = rows[rows.length - 1];
       this.checkpoints = rows;
       this.checkpointPage = pageIndex;
-      const last = rows[rows.length - 1];
-      // A full page may have newer rows after it; a short one is the end.
       this.checkpointAfter = [
         ...this.checkpointAfter.slice(0, pageIndex + 1),
-        rows.length >= this.checkpointPageSize && last ? last.seq : null,
+        hasMore && last ? last.seq : null,
       ];
     } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'Could not load checkpoints';
       if (pageIndex === 0) {
-        this.statusError =
-          err instanceof Error ? err.message : 'Could not load checkpoints';
+        this.statusError = message;
+      } else {
+        // The current page stays; the error sits beside the pager.
+        this.checkpointError = message;
       }
     } finally {
       this.checkpointsLoading = false;
@@ -913,6 +922,13 @@ ${offlineAuditCommand(range)}</pre>
             void this.loadCheckpoints(0);
           }}
         ></table-pagination>
+        ${
+          this.checkpointError
+            ? html`<p class="error" role="alert" data-testid="checkpoint-error">
+                ${this.checkpointError}
+              </p>`
+            : nothing
+        }
       </section>
     `;
   }

@@ -397,4 +397,34 @@ describe('IssuesView', () => {
     await el.updateComplete;
     expect((el as any)._isFilterModalOpen).to.be.true;
   });
+
+  it('pages with the shared pager and a chosen page size', async () => {
+    fetchStub = stubFetch({
+      projects: [{ id: 'p1', name: 'P' }],
+      duplicates: [makePair(1)],
+    });
+    const el = (await fixture(html`<issues-view></issues-view>`)) as IssuesView;
+    const calls = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => new URL(String(call.args[0]), window.location.origin))
+        .filter((url) => url.pathname === '/api/v1/issue-duplicates');
+    await waitUntil(() => calls().length > 0, 'first page');
+    (el as any)._onPageChange(
+      new CustomEvent('page-change', { detail: { pageIndex: 2 } })
+    );
+    await waitUntil(
+      () => calls().at(-1)!.searchParams.get('skip') === '20',
+      'third page of ten'
+    );
+    (el as any)._onPageSizeChange(
+      new CustomEvent('page-size-change', { detail: { pageSize: 25 } })
+    );
+    await waitUntil(
+      () =>
+        calls().at(-1)!.searchParams.get('limit') === '25' &&
+        (calls().at(-1)!.searchParams.get('skip') ?? '0') === '0',
+      'first page of 25'
+    );
+  });
 });
