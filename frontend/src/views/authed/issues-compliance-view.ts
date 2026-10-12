@@ -21,7 +21,7 @@ import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '../../components/project-filter-modal.ts';
 import '../../components/single-issue-detail-view.ts';
 import '../../components/improve-compliance-modal.ts';
-import '../../components/pagination-controls.ts';
+import '../../table/table-pagination';
 import { getStatusVariant, getComplianceVariant } from '../../utils/verdict';
 import {
   listProjects,
@@ -813,30 +813,33 @@ export class IssuesComplianceView extends LitElement {
             </table>
           </div>
         </sl-card>
-        <pagination-controls
-          .currentPage=${this._currentPage}
-          .hasMorePages=${this._hasMorePages}
-          .loading=${this._loading}
-          @prev-page=${this._goToPreviousPage}
-          @next-page=${this._goToNextPage}
-        ></pagination-controls>
+        <table-pagination
+          page-index=${this._currentPage - 1}
+          page-size=${this._pageSize}
+          .pageSizes=${[10, 25, 50]}
+          .total=${null}
+          page-rows=${this._issues.length}
+          ?has-next=${this._hasMorePages}
+          ?loading=${this._loading}
+          noun="issues"
+          @page-change=${this._onPageChange}
+          @page-size-change=${this._onPageSizeChange}
+        ></table-pagination>
       </div>
     `;
   }
 
-  private _goToNextPage() {
-    if (this._hasMorePages) {
-      this._currentPage += 1;
-      this.fetchIssues();
-    }
-  }
+  /** The shared pager: a 0-based page index, the API pages from 1. */
+  private _onPageChange = (event: CustomEvent<{ pageIndex: number }>) => {
+    this._currentPage = event.detail.pageIndex + 1;
+    void this.fetchIssues();
+  };
 
-  private _goToPreviousPage() {
-    if (this._currentPage > 1) {
-      this._currentPage -= 1;
-      this.fetchIssues();
-    }
-  }
+  private _onPageSizeChange = (event: CustomEvent<{ pageSize: number }>) => {
+    this._pageSize = event.detail.pageSize;
+    this._currentPage = 1;
+    void this.fetchIssues();
+  };
 
   private _renderNoProjectsState() {
     return html`

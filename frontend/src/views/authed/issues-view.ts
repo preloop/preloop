@@ -19,7 +19,7 @@ import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import '../../components/project-filter-modal.ts';
 import '../../components/resolve-issue-modal.ts';
 import '../../components/issue-detail-view.ts';
-import '../../components/pagination-controls.ts';
+import '../../table/table-pagination';
 import '../../components/view-header.ts';
 import {
   listProjects,
@@ -624,17 +624,17 @@ export class IssuesView extends LitElement {
     this.fetchDuplicates();
   }
 
-  private _goToPreviousPage() {
-    if (this._currentPage > 1) {
-      this._currentPage--;
-      this.fetchDuplicates();
-    }
-  }
+  /** The shared pager: a 0-based page index, the API pages from 1. */
+  private _onPageChange = (event: CustomEvent<{ pageIndex: number }>) => {
+    this._currentPage = event.detail.pageIndex + 1;
+    void this.fetchDuplicates();
+  };
 
-  private _goToNextPage() {
-    this._currentPage++;
-    this.fetchDuplicates();
-  }
+  private _onPageSizeChange = (event: CustomEvent<{ pageSize: number }>) => {
+    this._pageSize = event.detail.pageSize;
+    this._currentPage = 1;
+    void this.fetchDuplicates();
+  };
 
   render() {
     return html`
@@ -856,13 +856,18 @@ export class IssuesView extends LitElement {
                         </table>
                       </div>
                     </sl-card>
-                    <pagination-controls
-                      .currentPage=${this._currentPage}
-                      .hasMorePages=${this._hasMorePages}
-                      .loading=${this._loading}
-                      @prev-page=${this._goToPreviousPage}
-                      @next-page=${this._goToNextPage}
-                    ></pagination-controls>
+                    <table-pagination
+                      page-index=${this._currentPage - 1}
+                      page-size=${this._pageSize}
+                      .pageSizes=${[10, 25, 50]}
+                      .total=${null}
+                      page-rows=${this._duplicates.length}
+                      ?has-next=${this._hasMorePages}
+                      ?loading=${this._loading}
+                      noun="pairs"
+                      @page-change=${this._onPageChange}
+                      @page-size-change=${this._onPageSizeChange}
+                    ></table-pagination>
                   `
                 : html`
                     <sl-alert variant="primary" open>

@@ -35,7 +35,7 @@ import type {
   IssueStatus,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
-import '../../components/pagination-controls.ts';
+import '../../table/table-pagination';
 import { getStatusVariant } from '../../utils/verdict';
 import '../../components/view-header';
 
@@ -283,21 +283,19 @@ export class IssuesDependenciesView extends LitElement {
     this._updateUrl();
   }
 
-  private _goToNextPage() {
-    if (this._hasMorePages) {
-      this._currentPage++;
-      this.fetchIssues();
-      this._updateUrl();
-    }
-  }
+  /** The shared pager: a 0-based page index, the API pages from 1. */
+  private _onPageChange = (event: CustomEvent<{ pageIndex: number }>) => {
+    this._currentPage = event.detail.pageIndex + 1;
+    void this.fetchIssues();
+    this._updateUrl();
+  };
 
-  private _goToPreviousPage() {
-    if (this._currentPage > 1) {
-      this._currentPage--;
-      this.fetchIssues();
-      this._updateUrl();
-    }
-  }
+  private _onPageSizeChange = (event: CustomEvent<{ pageSize: number }>) => {
+    this._pageSize = event.detail.pageSize;
+    this._currentPage = 1;
+    void this.fetchIssues();
+    this._updateUrl();
+  };
 
   private _toggleRow(issueId: string) {
     if (this._expandedRowKey === issueId) {
@@ -648,13 +646,18 @@ export class IssuesDependenciesView extends LitElement {
           </table>
         </div>
       </sl-card>
-      <pagination-controls
-        .currentPage=${this._currentPage}
-        .hasMorePages=${this._hasMorePages}
-        .loading=${this._loadingIssues}
-        @prev-page=${this._goToPreviousPage}
-        @next-page=${this._goToNextPage}
-      ></pagination-controls>
+      <table-pagination
+        page-index=${this._currentPage - 1}
+        page-size=${this._pageSize}
+        .pageSizes=${[10, 25, 50]}
+        .total=${null}
+        page-rows=${this._issues.length}
+        ?has-next=${this._hasMorePages}
+        ?loading=${this._loadingIssues}
+        noun="issues"
+        @page-change=${this._onPageChange}
+        @page-size-change=${this._onPageSizeChange}
+      ></table-pagination>
     `;
   }
 

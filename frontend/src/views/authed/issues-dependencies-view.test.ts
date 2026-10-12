@@ -84,4 +84,34 @@ describe('IssuesDependenciesView project selection', () => {
     const element = await renderAt('');
     expect((element as any)._selectedProjectId).to.equal(PROJECTS[0].id);
   });
+
+  it('pages with the shared pager and a chosen page size', async () => {
+    const element = await renderAt(`?projects=${PROJECTS[0].id}`);
+    const searches = () =>
+      fetchStub
+        .getCalls()
+        .map((call) => new URL(String(call.args[0]), window.location.origin))
+        .filter((url) => url.pathname.includes('/api/v1/search'));
+    await waitUntil(() => searches().length > 0, 'first page');
+    (element as any)._onPageChange(
+      new CustomEvent('page-change', { detail: { pageIndex: 2 } })
+    );
+    await waitUntil(
+      () => searches().at(-1)!.searchParams.get('skip') === '20',
+      'third page of ten'
+    );
+    (element as any)._onPageSizeChange(
+      new CustomEvent('page-size-change', { detail: { pageSize: 25 } })
+    );
+    await waitUntil(
+      () =>
+        searches().at(-1)!.searchParams.get('limit') === '25' &&
+        (searches().at(-1)!.searchParams.get('skip') ?? '0') === '0',
+      'first page of 25'
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('pagination-controls')).to.equal(
+      null
+    );
+  });
 });

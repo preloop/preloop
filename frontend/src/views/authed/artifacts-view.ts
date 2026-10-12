@@ -32,6 +32,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/tag/tag.js';
 import '@shoelace-style/shoelace/dist/components/radio-group/radio-group.js';
 import '@shoelace-style/shoelace/dist/components/radio-button/radio-button.js';
+import '../../table/table-pagination';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 /** Every artifact kind the deposit API accepts, in filter order. */
@@ -253,8 +254,15 @@ export class ArtifactsView extends AuthedElement {
   @state() private loading = true;
   @state() private loadingMore = false;
   @state() private error = '';
-  /** A failed Load more; the loaded rows stay on screen. */
+  /** A failed page change; the current page stays on screen. */
   @state() private moreError = '';
+  /**
+   * Cursor paging with the shared pager: `cursors[i]` fetches page i, so
+   * Previous is a page already seen and Next is the server's next_cursor.
+   */
+  @state() private pageIndex = 0;
+  @state() private pageSize = 50;
+  private cursors: Array<string | null> = [null];
   @state() private permissionError: PermissionError | null = null;
   @state() private agents: Array<{ id: string; name: string }> = [];
   @state() private labelDraft = '';
@@ -461,13 +469,6 @@ export class ArtifactsView extends AuthedElement {
         padding: var(--sl-spacing-x-large) var(--sl-spacing-medium);
         color: var(--sl-color-neutral-600);
       }
-      .more {
-        display: flex;
-        align-items: center;
-        gap: var(--sl-spacing-small);
-        justify-content: center;
-        margin-top: var(--sl-spacing-medium);
-      }
       .error {
         color: var(--sl-color-danger-700);
       }
@@ -514,11 +515,16 @@ export class ArtifactsView extends AuthedElement {
       return;
     }
     this.loading = true;
+    this.pageIndex = 0;
+    this.cursors = [null];
     try {
-      const page = await searchAccountArtifacts(searchParamsFor(this.filters));
+      const page = await searchAccountArtifacts(
+        searchParamsFor(this.filters, { limit: this.pageSize })
+      );
       if (seq !== this.requestSeq) return;
       this.result = page;
       this.items = page.items ?? [];
+      this.cursors = [null, page.next_cursor ?? null];
       this.permissionError = null;
     } catch (error) {
       if (seq !== this.requestSeq) return;
@@ -535,26 +541,64 @@ export class ArtifactsView extends AuthedElement {
     }
   }
 
-  private async loadMore(): Promise<void> {
-    const cursor = this.result?.next_cursor;
-    if (!cursor || this.loadingMore) return;
+  /** Show page `pageIndex` of the current filter. */
+  private async goToPage(pageIndex: number): Promise<void> {
+    if (pageIndex < 0 || pageIndex >= this.cursors.length) return;
+    const cursor = this.cursors[pageIndex];
+    if (pageIndex > 0 && !cursor) return;
+    if (this.loadingMore) return;
     const seq = this.requestSeq;
     this.loadingMore = true;
     this.moreError = '';
     try {
       const page = await searchAccountArtifacts(
-        searchParamsFor(this.filters, { cursor })
+        searchParamsFor(this.filters, { cursor, limit: this.pageSize })
       );
       if (seq !== this.requestSeq) return;
-      this.items = [...this.items, ...(page.items ?? [])];
+      this.items = page.items ?? [];
+      this.pageIndex = pageIndex;
+      this.cursors = [
+        ...this.cursors.slice(0, pageIndex + 1),
+        page.next_cursor ?? null,
+      ];
+      // Facets describe the whole filter, not one page.
       this.result = { ...page, facets: this.result!.facets };
     } catch (error) {
       if (seq !== this.requestSeq) return;
       this.moreError =
-        error instanceof Error ? error.message : 'Could not load more.';
+        error instanceof Error ? error.message : 'Could not load the page.';
     } finally {
       this.loadingMore = false;
     }
+  }
+
+  private renderPager(): TemplateResult | typeof nothing {
+    return html`
+      <table-pagination
+        data-testid="artifact-pager"
+        page-index=${this.pageIndex}
+        page-size=${this.pageSize}
+        .pageSizes=${[25, 50, 100]}
+        .total=${null}
+        page-rows=${this.items.length}
+        ?has-next=${Boolean(this.cursors[this.pageIndex + 1])}
+        ?loading=${this.loadingMore}
+        noun="artifacts"
+        @page-change=${(event: CustomEvent<{ pageIndex: number }>) =>
+          void this.goToPage(event.detail.pageIndex)}
+        @page-size-change=${(event: CustomEvent<{ pageSize: number }>) => {
+          this.pageSize = event.detail.pageSize;
+          void this.load();
+        }}
+      ></table-pagination>
+      ${
+        this.moreError
+          ? html`<span class="error" role="alert" data-testid="more-error"
+              >${this.moreError}</span
+            >`
+          : nothing
+      }
+    `;
   }
 
   /** Apply a filter change: update the URL, then reload. */
@@ -1036,29 +1080,7 @@ export class ArtifactsView extends AuthedElement {
               ${this.items.map((item) => this.renderRow(item))}
             </ul>`
       }
-      ${
-        this.result?.next_cursor
-          ? html`<div class="more">
-              <sl-button
-                size="small"
-                ?loading=${this.loadingMore}
-                @click=${() => this.loadMore()}
-                data-testid="load-more"
-                >Load more</sl-button
-              >
-              ${
-                this.moreError
-                  ? html`<span
-                      class="error"
-                      role="alert"
-                      data-testid="more-error"
-                      >${this.moreError}</span
-                    >`
-                  : nothing
-              }
-            </div>`
-          : nothing
-      }
+      ${this.renderPager()}
     `;
   }
 

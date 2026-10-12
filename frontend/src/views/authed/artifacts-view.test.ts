@@ -303,7 +303,7 @@ describe('artifacts-view', () => {
     expect([...lastQuery().keys()]).to.deep.equal(['limit']);
   });
 
-  it('Load more appends the next page and keeps rows when it fails', async () => {
+  it('pages by cursor with the shared pager and keeps the page when Next fails', async () => {
     let failMore = false;
     respond = (url) => {
       if (url.searchParams.get('cursor') === 'c1') {
@@ -326,23 +326,42 @@ describe('artifacts-view', () => {
       });
     };
     const el = await mount();
+    const pager = () =>
+      $(el, '[data-testid="artifact-pager"]') as HTMLElement & {
+        hasNext: boolean;
+        pageIndex: number;
+      };
+    const go = (pageIndex: number) =>
+      pager().dispatchEvent(
+        new CustomEvent('page-change', { detail: { pageIndex } })
+      );
+    expect(pager().hasNext).to.equal(true);
 
     failMore = true;
-    ($(el, '[data-testid="load-more"]') as HTMLElement).click();
+    go(1);
     await waitUntil(() => $(el, '[data-testid="more-error"]'), 'no error');
     expect(el.shadowRoot!.querySelectorAll('a.row').length).to.equal(3);
-    expect($(el, '[data-testid="load-more"]')).to.exist;
 
     failMore = false;
-    ($(el, '[data-testid="load-more"]') as HTMLElement).click();
+    go(1);
+    // Page two replaces page one.
     await waitUntil(
-      () => el.shadowRoot!.querySelectorAll('a.row').length === 4
+      () => el.shadowRoot!.querySelectorAll('a.row').length === 1
     );
     expect(lastQuery().get('cursor')).to.equal('c1');
-    expect($(el, '[data-testid="load-more"]')).to.not.exist;
+    await el.updateComplete;
+    expect(pager().pageIndex).to.equal(1);
+    expect(pager().hasNext).to.equal(false);
     expect($(el, '[data-testid="more-error"]')).to.not.exist;
     // Facets describe the whole filter, not the last page.
     expect($(el, '[data-facet="document"]')?.textContent?.trim()).to.equal('2');
+
+    // Previous goes back to the first page, without a cursor.
+    go(0);
+    await waitUntil(
+      () => el.shadowRoot!.querySelectorAll('a.row').length === 3
+    );
+    expect(lastQuery().has('cursor')).to.equal(false);
   });
 
   it('shows an error when the search fails', async () => {

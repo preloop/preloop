@@ -528,7 +528,7 @@ describe('RecordsView', () => {
     ).to.equal(false);
   });
 
-  it('labels the next checkpoint page as newer rows', async () => {
+  it('pages checkpoints oldest first with the shared pager', async () => {
     const page = Array.from({ length: 50 }, (_, index) => ({
       seq: index + 1,
       chain_hash: 'abc',
@@ -542,9 +542,17 @@ describe('RecordsView', () => {
     }));
     install({ checkpoints: page });
     const el = await mount();
-    await waitUntil(
-      () => el.shadowRoot?.textContent?.includes('Newer checkpoints'),
-      'checkpoint pager did not render'
-    );
+    const pager = () =>
+      el.shadowRoot?.querySelector('table-pagination.checkpoint-pager') as
+        | (HTMLElement & {
+            hasNext: boolean;
+            updateComplete: Promise<unknown>;
+          })
+        | null;
+    await waitUntil(() => pager()?.hasNext, 'checkpoint pager did not render');
+    await pager()!.updateComplete;
+    expect(
+      pager()!.shadowRoot!.querySelector('.range')!.textContent!.trim()
+    ).to.equal('1-50 checkpoints, oldest first');
   });
 });
