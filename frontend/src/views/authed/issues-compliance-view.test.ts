@@ -150,7 +150,7 @@ describe('IssuesComplianceView', () => {
     );
     await waitUntil(
       () =>
-        calls().at(-1)!.searchParams.get('limit') === '25' &&
+        calls().at(-1)!.searchParams.get('limit') === '26' &&
         (calls().at(-1)!.searchParams.get('skip') ?? '0') === '0',
       'first page of 25'
     );

@@ -405,7 +405,8 @@ export class IssuesComplianceView extends LitElement {
       const searchParams: any = {
         project_ids: project_ids,
         status: this._selectedStatus,
-        limit: this._pageSize,
+        // One row ahead: it says whether a next page exists.
+        limit: this._pageSize + 1,
         skip: skip,
       };
 
@@ -414,8 +415,8 @@ export class IssuesComplianceView extends LitElement {
       }
 
       const issues = await searchIssues(searchParams);
-      this._issues = issues;
-      this._hasMorePages = issues.length === this._pageSize;
+      this._hasMorePages = issues.length > this._pageSize;
+      this._issues = issues.slice(0, this._pageSize);
       this._updateUrl(); // Update URL after fetching
       this.fetchComplianceResults();
     } catch (error) {

@@ -320,8 +320,10 @@ export class IssuesView extends LitElement {
     const skip = (this._currentPage - 1) * this._pageSize;
 
     try {
+      // One row ahead: it says whether a next page exists, so Next never
+      // leads to an empty page.
       const data: DuplicatesResponse = await listIssueDuplicates({
-        limit: this._pageSize,
+        limit: this._pageSize + 1,
         skip: skip,
         project_ids: this._selectedProjectIds,
         status: this._selectedStatus,
@@ -329,8 +331,8 @@ export class IssuesView extends LitElement {
         similarity_threshold: this._similarityThreshold,
       });
 
-      this._duplicates = data.duplicates;
-      this._hasMorePages = data.duplicates.length === this._pageSize;
+      this._hasMorePages = data.duplicates.length > this._pageSize;
+      this._duplicates = data.duplicates.slice(0, this._pageSize);
       this._updateUrl(); // Update URL after fetching
       void this.fetchAIModelVerdicts();
     } catch (error) {

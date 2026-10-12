@@ -128,14 +128,16 @@ export class IssuesDependenciesView extends LitElement {
 
     try {
       const skip = (this._currentPage - 1) * this._pageSize;
-      const issues = await searchIssues({
+      // One row ahead: it says whether a next page exists.
+      const fetched = await searchIssues({
         project_ids: [this._selectedProjectId],
-        limit: this._pageSize,
+        limit: this._pageSize + 1,
         skip: skip,
         status: this._selectedStatus || undefined,
       });
+      this._hasMorePages = fetched.length > this._pageSize;
+      const issues = fetched.slice(0, this._pageSize);
       this._issues = issues;
-      this._hasMorePages = issues.length === this._pageSize;
 
       if (issues.length > 0) {
         this.fetchDependencies(issues.map((i) => i.id));

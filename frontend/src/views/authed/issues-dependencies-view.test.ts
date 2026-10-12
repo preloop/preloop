@@ -105,7 +105,7 @@ describe('IssuesDependenciesView project selection', () => {
     );
     await waitUntil(
       () =>
-        searches().at(-1)!.searchParams.get('limit') === '25' &&
+        searches().at(-1)!.searchParams.get('limit') === '26' &&
         (searches().at(-1)!.searchParams.get('skip') ?? '0') === '0',
       'first page of 25'
     );
