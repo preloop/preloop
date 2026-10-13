@@ -62,6 +62,14 @@ preloop codex sidecar disable
 `preloop codex sidecar run` execs `preloop-codex-plugin run` against the
 control file. It is the command launchd and systemd start.
 
+`sidecar enable` writes HOME and the PATH it was run with (plugin and node
+directories first) into the launchd plist or systemd unit, and sends the
+sidecar's output to `~/.preloop/logs/<command>-sidecar.log`
+(`claude-sidecar.log`, `codex-sidecar.log`). `sidecar status` prints the last
+exit status and the log path when the socket is down. After upgrading the
+CLI, or moving node, run `sidecar enable` again to rewrite the service file.
+The same applies to `preloop claude sidecar`.
+
 Offboard removes `~/.codex/preloop-control.json` and the sidecar service.
 `~/.codex/config.toml` is restored from the onboarding backup and is not
 rewritten by Agent Control.
