@@ -802,3 +802,27 @@ async def test_approval_email_displays_origin_before_omitting_markers(
     assert "Session: 11111111-session · Model: gpt-alpha" in html
     assert "_preloop_origin" not in text
     assert "shared-session" not in text
+
+
+def test_send_email_explicit_socket_timeout(monkeypatch):
+    from unittest.mock import MagicMock
+    from preloop.utils import email
+
+    monkeypatch.setattr(email, "SMTP_USERNAME", "test")
+    monkeypatch.setattr(email, "SMTP_PASSWORD", "test")
+    smtp = MagicMock()
+    monkeypatch.setattr(email.smtplib, "SMTP", smtp)
+    email.send_email("owner@example.com", "allowance", "notice", timeout=10)
+    smtp.assert_called_once_with(email.SMTP_HOST, email.SMTP_PORT, timeout=10)
+
+
+def test_send_email_timeout_is_delivery_failure(monkeypatch):
+    from unittest.mock import MagicMock
+    from preloop.utils import email
+
+    monkeypatch.setattr(email, "SMTP_USERNAME", "test")
+    monkeypatch.setattr(email, "SMTP_PASSWORD", "test")
+    smtp = MagicMock(side_effect=TimeoutError("SMTP timed out"))
+    monkeypatch.setattr(email.smtplib, "SMTP", smtp)
+    with pytest.raises(email.EmailError, match="SMTP timed out"):
+        email.send_email("owner@example.com", "allowance", "notice", timeout=10)

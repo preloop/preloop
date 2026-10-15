@@ -38,6 +38,8 @@ def send_email(
     body_text: str,
     body_html: Optional[str] = None,
     from_email: Optional[str] = None,
+    *,
+    timeout: Optional[float] = None,
 ) -> None:
     """Send an email using the configured SMTP server.
 
@@ -47,6 +49,8 @@ def send_email(
         body_text: Plain text email body.
         body_html: HTML email body (optional).
         from_email: Sender email address (defaults to SMTP_FROM).
+        timeout: Optional SMTP socket timeout in seconds. Omit to retain
+            the process socket default.
 
     Raises:
         EmailError: If email sending fails.
@@ -94,7 +98,12 @@ def send_email(
 
     try:
         # Send the message via SMTP server
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        connection = (
+            smtplib.SMTP(SMTP_HOST, SMTP_PORT)
+            if timeout is None
+            else smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=timeout)
+        )
+        with connection as server:
             server.starttls()  # Secure the connection
             server.login(SMTP_USERNAME, SMTP_PASSWORD)
             server.sendmail(from_email, to_email, msg.as_string())
