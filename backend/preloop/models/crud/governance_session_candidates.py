@@ -2,10 +2,11 @@
 
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 
 from preloop.models import models
+from preloop.models.gateway_usage import AGENT_GATEWAY_PREDICATE
 
 
 def list_session_digest_candidates(
@@ -28,24 +29,9 @@ def list_session_digest_candidates(
     traffic = (
         usage.account_id == account_id,
         usage.runtime_session_id == runtime.id,
-        usage.action_type == "model_gateway",
-        or_(
-            usage.meta_data["purpose"].astext.is_(None),
-            usage.meta_data["purpose"].astext == "",
-        ),
+        text(AGENT_GATEWAY_PREDICATE),
     )
-    count = (
-        select(func.count(usage.id))
-        .where(*traffic)
-        .correlate(runtime)
-        .scalar_subquery()
-    )
-    latest = (
-        select(func.max(usage.timestamp))
-        .where(*traffic)
-        .correlate(runtime)
-        .scalar_subquery()
-    )
+    count = select(func.count()).where(*traffic).correlate(runtime).scalar_subquery()
     segment = (
         select(digest.request_watermark)
         .where(digest.account_id == account_id, digest.runtime_session_id == runtime.id)
@@ -58,6 +44,14 @@ def list_session_digest_candidates(
         select(digest.window_end)
         .where(digest.account_id == account_id, digest.runtime_session_id == runtime.id)
         .order_by(digest.segment_index.desc())
+        .limit(1)
+        .correlate(runtime)
+        .scalar_subquery()
+    )
+    latest = (
+        select(usage.timestamp)
+        .where(*traffic)
+        .order_by(usage.timestamp.desc())
         .limit(1)
         .correlate(runtime)
         .scalar_subquery()

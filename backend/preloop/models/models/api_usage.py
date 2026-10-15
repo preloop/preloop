@@ -11,6 +11,8 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
 
+from preloop.models.gateway_usage import AGENT_GATEWAY_PREDICATE
+
 from .base import Base
 
 # Columns the gateway window aggregates read, carried in
@@ -194,6 +196,13 @@ class ApiUsage(Base):
     user: Mapped[Optional["User"]] = relationship("User", back_populates="api_usages")
 
     __table_args__ = (
+        Index(
+            "ix_api_usage_governance_candidate",
+            "account_id",
+            "runtime_session_id",
+            "timestamp",
+            postgresql_where=text(AGENT_GATEWAY_PREDICATE),
+        ),
         CheckConstraint(
             "cost_source IS NULL OR cost_source IN "
             "('override', 'model_config', 'provider', 'catalog', 'subscription', "

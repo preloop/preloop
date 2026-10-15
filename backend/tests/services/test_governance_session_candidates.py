@@ -43,6 +43,7 @@ def test_candidates_are_bounded_account_scoped_and_keyset_stable(
                 "runtime_session_id": runtime.id,
                 "action_type": "model_gateway",
                 "timestamp": now,
+                "meta_data": {"purpose": "customer.task"},
             },
         )
     first = list_session_digest_candidates(db_session, account_id=owner, limit=1)
@@ -64,6 +65,21 @@ def test_candidates_are_bounded_account_scoped_and_keyset_stable(
         )
         == sorted(identifiers)[1:]
     )
+    for purpose in ("governance_session_digest", "governance_review", "session_title"):
+        crud_api_usage.create(
+            db_session,
+            obj_in={
+                "endpoint": "test",
+                "method": "POST",
+                "status_code": 200,
+                "duration": 0,
+                "account_id": owner,
+                "runtime_session_id": first[0],
+                "action_type": "model_gateway",
+                "timestamp": now + timedelta(seconds=1),
+                "meta_data": {"purpose": purpose},
+            },
+        )
     assert first[0] not in list_session_digest_candidates(db_session, account_id=owner)
     assert list_session_digest_candidates(db_session, account_id=uuid4()) == []
     # A new request at precisely the covered timestamp must still be found.
@@ -91,3 +107,25 @@ def test_candidates_are_bounded_account_scoped_and_keyset_stable(
         request_watermark=100,
     )
     assert first[0] in list_session_digest_candidates(db_session, account_id=owner)
+
+
+def test_candidate_index_matches_frozen_migration_predicate() -> None:
+    import importlib.util
+    from pathlib import Path
+    from preloop.models.gateway_usage import AGENT_GATEWAY_PREDICATE
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "preloop/models/alembic/versions/20261017_governance_candidate_idx.py"
+    )
+    spec = importlib.util.spec_from_file_location("candidate_migration", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.PREDICATE == AGENT_GATEWAY_PREDICATE
+    index = next(i for i in models.ApiUsage.__table__.indexes if i.name == module.INDEX)
+    assert [column.name for column in index.columns] == [
+        "account_id",
+        "runtime_session_id",
+        "timestamp",
+    ]
+    assert str(index.dialect_options["postgresql"]["where"]) == module.PREDICATE

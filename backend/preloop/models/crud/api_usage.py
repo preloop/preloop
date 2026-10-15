@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session, aliased, joinedload
 from sqlalchemy.orm.attributes import set_committed_value
 
 from preloop.models import models
+from preloop.models.gateway_usage import GATEWAY_USAGE_PURPOSES
 from ...services.cache_accounting import uncached_input_tokens
 from ...utils.jsonb_sanitize import sanitize_for_jsonb
 from .base import CRUDBase
@@ -71,18 +72,6 @@ def _refresh_committed_row(db: Session, db_obj: Any) -> None:
         for key, value in snapshot.items():
             set_committed_value(db_obj, key, value)
 
-
-# Known ``meta_data.purpose`` tags for internal model-gateway usage rows.
-GATEWAY_USAGE_PURPOSES = frozenset(
-    {
-        "session_title",
-        "session_optimization",
-        "replay_validation",
-        "session_embedding",
-        "governance_session_digest",
-        "governance_review",
-    }
-)
 
 GATEWAY_USAGE_FUNDING = frozenset({"platform", "account"})
 
