@@ -129,3 +129,10 @@ def test_candidate_index_matches_frozen_migration_predicate() -> None:
         "timestamp",
     ]
     assert str(index.dialect_options["postgresql"]["where"]) == module.PREDICATE
+
+
+def test_session_traffic_uses_the_same_internal_purpose_vocabulary() -> None:
+    from preloop.models.gateway_usage import GATEWAY_USAGE_PURPOSES
+    from preloop.models.crud.runtime_session import INTERNAL_USAGE_PURPOSES
+
+    assert set(INTERNAL_USAGE_PURPOSES) == GATEWAY_USAGE_PURPOSES
