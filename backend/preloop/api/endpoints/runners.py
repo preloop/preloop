@@ -6,6 +6,7 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import socket
 import secrets
 import weakref
@@ -86,7 +87,7 @@ from preloop.cra.persist import (
     apply_cra_persist_boundary,
     resolve_persist_authority,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import require_permission, user_holds_permission
 
 FlowRunner = models.FlowRunner
 User = models.User
@@ -244,6 +245,16 @@ def _to_response(
     from preloop.models.crud.flow_runner import runner_labels
 
     data = schemas.RunnerResponse.model_validate(row)
+    if data.workstation_fingerprint is not None and not (
+        db is not None
+        and viewer is not None
+        and viewer.account_id == row.account_id
+        and (
+            viewer.id == row.registered_by_user_id
+            or user_holds_permission(db, viewer, "manage_agents")
+        )
+    ):
+        data.workstation_fingerprint = None
     data.labels = runner_labels(row)
     presence = derive_presence(row)
     data.presence = presence.state
@@ -304,6 +315,11 @@ def register_runner(
             "status": "online",
             "last_heartbeat": datetime.now(timezone.utc),
             "ephemeral": body.ephemeral or existing.ephemeral,
+            "workstation_fingerprint": (
+                None
+                if body.ephemeral or existing.ephemeral
+                else body.workstation_fingerprint
+            ),
         }
         for field in ("name", "hostname", "os", "arch", "labels", "instance_id"):
             if value := getattr(body, field):
@@ -337,6 +353,9 @@ def register_runner(
             "arch": body.arch,
             "labels": body.labels or [],
             "ephemeral": body.ephemeral,
+            "workstation_fingerprint": (
+                None if body.ephemeral else body.workstation_fingerprint
+            ),
             "status": "online",
             "last_heartbeat": datetime.now(timezone.utc),
             "token_hash": hash_runner_token(token),
@@ -988,6 +1007,22 @@ async def runner_ws(
                     crud_flow_runner.update(
                         db, db_obj=runner, obj_in={"capabilities": merged}
                     )
+                if runner.ephemeral:
+                    if getattr(runner, "workstation_fingerprint", None) is not None:
+                        crud_flow_runner.update(
+                            db, db_obj=runner, obj_in={"workstation_fingerprint": None}
+                        )
+                elif "workstation_fingerprint" in raw:
+                    fingerprint = raw["workstation_fingerprint"]
+                    # Malformed optional metadata must not interrupt the runner.
+                    if isinstance(fingerprint, str) and re.fullmatch(
+                        r"[0-9a-f]{64}", fingerprint
+                    ):
+                        crud_flow_runner.update(
+                            db,
+                            db_obj=runner,
+                            obj_in={"workstation_fingerprint": fingerprint},
+                        )
                 # Harness inventory (#1480): every heartbeat names its hash,
                 # the body comes only when it changed or we asked for it.
                 inventory_wanted = False

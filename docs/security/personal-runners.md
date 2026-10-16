@@ -252,3 +252,20 @@ file excerpts and are visible in the session events.
   sends to its own model provider.
 - A compromised host user account: the runner runs as that user and inherits
   its access.
+
+### Discovery correlation key
+
+Persistent CLI runners report `workstation_fingerprint` on registration and
+heartbeats using the same account salt, HMAC namespace and machine ID fallback as
+`preloop agents discover --report`. The raw machine ID is never sent. For an
+explicit reference, start the runner with `preloop runner fg --device-ref <reference>`
+and use the same `--device-ref` with discovery. The runner keeps this override in
+its local state for service restarts.
+
+The CLI refreshes the account salt every five minutes and sends the updated key
+on a subsequent heartbeat after rotation. If the salt endpoint is unavailable,
+registration still works and the CLI retries later. Ephemeral runners omit the key.
+Older CLIs may leave it null. Runner API responses expose it only to the registrant
+or a user in the same account with `manage_agents`.
+
+This is a self-reported correlation key, not verified device identity or attestation.

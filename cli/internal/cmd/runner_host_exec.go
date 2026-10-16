@@ -887,6 +887,7 @@ func cloneJobWithPrompt(job map[string]any, prompt string) map[string]any {
 // ceiling it may lower, never raise.
 func runnerHeartbeatMessage(concurrency int) map[string]any {
 	msg := publicationHeartbeat()
+	runnerFingerprint.addToHeartbeat(msg)
 	msg["docker_available"] = advertisedDockerAvailable()
 	msg["host_exec_profiles"] = hostExecAdvertisements()
 	msg["authorized_directories"] = authorizedDirectoryAdvertisements()

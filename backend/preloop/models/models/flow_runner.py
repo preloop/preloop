@@ -51,6 +51,10 @@ class FlowRunner(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     hostname: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    #: Self-reported, account-salted correlation key; not verified device identity.
+    workstation_fingerprint: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     os: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     arch: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
     labels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)

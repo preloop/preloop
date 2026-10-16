@@ -116,6 +116,7 @@ var runnerStatusCmd = &cobra.Command{
 }
 
 func init() {
+	runnerFgCmd.Flags().StringVar(&runnerDeviceRef, "device-ref", "", "workstation reference override, matching agents discover --device-ref")
 	runnerCmd.AddCommand(runnerFgCmd)
 	runnerCmd.AddCommand(runnerSetupCmd)
 	runnerCmd.AddCommand(runnerEnableCmd)
@@ -152,9 +153,10 @@ func init() {
 }
 
 type runnerState struct {
-	ID    string `json:"id"`
-	Token string `json:"token"`
-	Name  string `json:"name"`
+	ID        string `json:"id"`
+	Token     string `json:"token"`
+	Name      string `json:"name"`
+	DeviceRef string `json:"device_ref,omitempty"`
 	// AuthorizedDirectories is the operator's list of directories remote
 	// sessions may open (preloop runner dirs). Kept here so a token
 	// rotation or re-registration never drops it.
@@ -361,6 +363,20 @@ func loadOrRegisterRunner(
 	}
 	if runnerOnce.registersEphemeral() {
 		return registerEphemeralRunner(client, req)
+	}
+	deviceRef := runnerDeviceRef
+	if existing, err := readRunnerState(); err == nil && deviceRef == "" {
+		deviceRef = existing.DeviceRef
+	}
+	runnerFingerprint = newRunnerFingerprintPublisher(client, deviceRef)
+	runnerFingerprint.addToHeartbeat(req)
+	if deviceRef != "" {
+		if err := updateRunnerState(func(current *runnerState) error {
+			current.DeviceRef = deviceRef
+			return nil
+		}); err != nil {
+			return nil, err
+		}
 	}
 	if existing, err := readRunnerState(); err == nil && existing.ID != "" && existing.Token != "" {
 		req["runner_id"] = existing.ID

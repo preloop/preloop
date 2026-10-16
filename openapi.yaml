@@ -39584,6 +39584,15 @@ components:
             maxLength: 255
           - type: 'null'
           title: Hostname
+        workstation_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Workstation Fingerprint
+          description: Self-reported account-salted correlation key shared with agent
+            discovery, not verified device identity or attestation. Visible only to
+            the registrant and same-account users with manage_agents.
         os:
           anyOf:
           - type: string
@@ -39682,6 +39691,15 @@ components:
           - type: string
           - type: 'null'
           title: Hostname
+        workstation_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Workstation Fingerprint
+          description: Self-reported account-salted correlation key shared with agent
+            discovery, not verified device identity or attestation. Visible only to
+            the registrant and same-account users with manage_agents.
         os:
           anyOf:
           - type: string
@@ -39834,6 +39852,15 @@ components:
           - type: string
           - type: 'null'
           title: Hostname
+        workstation_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Workstation Fingerprint
+          description: Self-reported account-salted correlation key shared with agent
+            discovery, not verified device identity or attestation. Visible only to
+            the registrant and same-account users with manage_agents.
         os:
           anyOf:
           - type: string

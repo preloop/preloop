@@ -156,6 +156,15 @@ class RunnerRegisterRequest(BaseModel):
 
     name: Optional[str] = Field(None, max_length=200)
     hostname: Optional[str] = Field(None, max_length=255)
+    workstation_fingerprint: Optional[str] = Field(
+        None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "Self-reported account-salted correlation key shared with agent discovery, "
+            "not verified device identity or attestation. Visible only to the "
+            "registrant and same-account users with manage_agents."
+        ),
+    )
     os: Optional[str] = Field(None, max_length=30)
     arch: Optional[str] = Field(None, max_length=30)
     labels: List[str] = Field(default_factory=list)
@@ -233,6 +242,15 @@ class RunnerResponse(BaseModel):
     instance_id: Optional[UUID] = None
     name: str
     hostname: Optional[str] = None
+    workstation_fingerprint: Optional[str] = Field(
+        None,
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "Self-reported account-salted correlation key shared with agent discovery, "
+            "not verified device identity or attestation. Visible only to the "
+            "registrant and same-account users with manage_agents."
+        ),
+    )
     os: Optional[str] = None
     arch: Optional[str] = None
     labels: List[str] = Field(default_factory=list)
