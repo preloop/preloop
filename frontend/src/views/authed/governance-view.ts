@@ -7,6 +7,7 @@ import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/view-header';
 import '../../components/resource-actions';
 import '../../components/list-toolbar';
+import '../../components/weekly-value-section';
 import {
   loadViewMode,
   saveViewMode,
@@ -359,6 +360,10 @@ export class GovernanceView extends LitElement {
   @state() private reviewMode: string | null = null;
   @state() private unsubscribe: '' | 'ask' | 'done' = '';
   private scrollToSection = false;
+  @state() private weeklyValueEnabled = false;
+  private valueStart = '';
+  private valueEnd = '';
+  private valueDeepLink = false;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -372,13 +377,18 @@ export class GovernanceView extends LitElement {
     const section = params.get('section') ?? '';
     this.section = section in SECTIONS ? section : '';
     this.scrollToSection = !!section;
+    this.valueDeepLink = section === 'valuable_work';
+    this.valueStart = params.get('start') ?? '';
+    this.valueEnd = params.get('end') ?? '';
     if (params.get('unsubscribe') === 'weekly-report') this.unsubscribe = 'ask';
   }
   protected updated(): void {
     if (!this.scrollToSection || this.loading) return;
     this.scrollToSection = false;
     this.renderRoot
-      .querySelector('[aria-label="Findings"]')
+      .querySelector(
+        this.valueDeepLink ? 'weekly-value-section' : '[aria-label="Findings"]'
+      )
       ?.scrollIntoView({ block: 'start' });
   }
   private async stopEmails(): Promise<void> {
@@ -447,6 +457,7 @@ export class GovernanceView extends LitElement {
       if (generation !== this.generation) return;
       this.enabled = hasCapability(features.features, 'governance_review');
       this.permissions = profile.permissions;
+      this.weeklyValueEnabled = features.features?.weekly_work_value === true;
       if (!this.enabled) return;
       if (hasPermission(this.permissions, 'view_policies'))
         getGovernanceReviewSettings()
@@ -1115,6 +1126,14 @@ export class GovernanceView extends LitElement {
                 ? this.detailView(this.detail)
                 : nothing
               : html` ${this.notices()} ${this.coverage(this.selectedRun)}
+                  ${
+                    this.weeklyValueEnabled && this.canCost
+                      ? html`<weekly-value-section
+                          .start=${this.valueDeepLink ? this.valueStart : (this.selectedRun?.window_start ?? '')}
+                          .end=${this.valueDeepLink ? this.valueEnd : (this.selectedRun?.window_end ?? '')}
+                        ></weekly-value-section>`
+                      : nothing
+                  }
                   <dl class="kinds" data-kind-legend>
                     ${Object.entries(KIND_HELP).map(
                       ([kind, help]) =>

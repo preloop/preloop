@@ -80,6 +80,12 @@ DIGEST_FUNDING: tuple[str, ...] = (
     DIGEST_FUNDING_ACCOUNT,
 )
 
+#: Stable literal shared by the retry reader and its partial queue index.
+SESSION_DIGEST_RETRY_PREDICATE = (
+    "(digest ->> 'summary_status') IN "
+    "('budget_limited', 'provider_failed', 'summarizing')"
+)
+
 #: Structured digest JSON, serialized, from spec section 4.3.
 DIGEST_MAX_BYTES = 4 * 1024
 DIGEST_INTENT_MAX_CHARS = 300
@@ -296,6 +302,15 @@ class GovernanceSessionDigest(Base):
             "ix_governance_session_digest_account_window_end",
             "account_id",
             "window_end",
+        ),
+        Index(
+            "ix_governance_session_digest_retry_queue",
+            "account_id",
+            "window_end",
+            "runtime_session_id",
+            "segment_index",
+            "id",
+            postgresql_where=text(SESSION_DIGEST_RETRY_PREDICATE),
         ),
         CheckConstraint(
             "segment_index >= 0",

@@ -407,4 +407,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     weekly_email = script.get_revision("20261022_weekly_report_email")
     assert weekly_email.down_revision == "20261021_mcp_fleet_merge"
-    assert script.get_heads() == ["20261022_weekly_report_email"]
+    retry_index = script.get_revision("20261023_gov_retry_idx")
+    assert retry_index.down_revision == "20261022_weekly_report_email"
+    value_cache = script.get_revision("20261023_weekly_value_cache")
+    assert value_cache.down_revision == "20261023_gov_retry_idx"
+    assert script.get_heads() == ["20261023_weekly_value_cache"]

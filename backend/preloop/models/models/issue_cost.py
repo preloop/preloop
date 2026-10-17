@@ -33,7 +33,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false as sa_false,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -220,5 +220,12 @@ class IssueCostPullRequest(Base):
         DateTime(timezone=True), nullable=True
     )
     merged_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Bounded forge evidence cache for weekly outcome attribution. NULL means
+    # not observed, never zero changes. Refresh open requests once per week.
+    value_evidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    value_observed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
