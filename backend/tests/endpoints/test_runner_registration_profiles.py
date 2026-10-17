@@ -30,6 +30,7 @@ def test_register_profiles_can_be_selected_for_lease(
     app.dependency_overrides[get_current_active_user] = lambda: test_user
     body = {
         "name": "native-registration",
+        "flow_execution_consent": "always",
         "host_exec_profiles": [
             {
                 "name": "cursor-ask",
@@ -44,6 +45,7 @@ def test_register_profiles_can_be_selected_for_lease(
             obj_in={
                 "account_id": test_user.account_id,
                 "name": "existing",
+                "registered_by_user_id": test_user.id,
                 "token_hash": "old-token",
                 "capabilities": {},
             },
@@ -185,7 +187,11 @@ def test_register_copilot_profile_leases_only_copilot_jobs(
     with _register_client(db_session, test_user) as client:
         response = client.post(
             "/api/v1/runners/register",
-            json={"name": "copilot-desk", "host_exec_profiles": profiles},
+            json={
+                "name": "copilot-desk",
+                "host_exec_profiles": profiles,
+                "flow_execution_consent": "always",
+            },
         )
     assert response.status_code == 200, response.text
     assert response.json()["capabilities"] == {

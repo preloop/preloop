@@ -4,7 +4,15 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,6 +38,16 @@ class FlowRunner(Base):
     """
 
     __tablename__ = "flow_runner"
+    __table_args__ = (
+        CheckConstraint(
+            "flow_execution_consent IN ('always', 'ask_me', 'never')",
+            name="ck_flow_runner_execution_consent",
+        ),
+    )
+
+    flow_execution_consent: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ask_me", server_default="ask_me"
+    )
 
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

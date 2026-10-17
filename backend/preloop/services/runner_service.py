@@ -131,6 +131,7 @@ def _has_online_private_runner(
                 is True
             )
         )
+        and getattr(row, "flow_execution_consent", None) != "never"
         and getattr(row, "status", None) in ("online", "busy")
         and int(getattr(row, "free_slots", 0)) > 0
         for row in (matches or [])
@@ -778,7 +779,7 @@ def lease_job(
     recovery state. No other runner is considered, even an idle one in the
     same pool: the work would restart from a cold clone there.
     """
-    from preloop.models.crud import crud_flow_execution
+    from preloop.models.crud import crud_audit_log, crud_flow_execution
 
     # Keep the account lock through lease assignment. A stopped queued
     # execution cannot acquire a new runner after activation's snapshot.
@@ -790,6 +791,13 @@ def lease_job(
     matches = crud_flow_runner.find_matching(
         db, account_id=account_id, pool=pool, online_only=True
     )
+    from preloop.models.crud.owner_consent import runner_for_execution
+
+    consent_runner = runner_for_execution(
+        db, account_id=account_id, execution_id=execution_id
+    )
+    if isinstance(consent_runner, str):
+        matches = [row for row in matches if str(row.id) == consent_runner]
     if required_runner_id is not None:
         matches = [row for row in matches if row.id == required_runner_id]
     available = [
@@ -854,8 +862,71 @@ def lease_job(
             # Only a runner whose owner authorized this directory for the
             # harness may take a run that works in it.
             continue
+        consent_mode = getattr(candidate, "flow_execution_consent", None) or "ask_me"
+        consent_owner = getattr(candidate, "registered_by_user_id", None)
+        if consent_mode == "never":
+            crud_audit_log.log_action(
+                db,
+                account_id=account_id,
+                action="runner_flow_consent",
+                resource_type="flow_runner",
+                resource_id=str(candidate.id),
+                status="denied",
+                details={"execution_id": str(execution_id), "decision": "never"},
+                commit=False,
+            )
+            if outcome is not None:
+                outcome["consent_status"] = "declined"
+            continue
+        if consent_mode != "always":
+            if consent_owner is None:
+                if outcome is not None:
+                    outcome["consent_status"] = "declined"
+                continue
+            from preloop.services.owner_consent import check_owner_consent
+
+            try:
+                consent = check_owner_consent(
+                    db,
+                    account_id=account_id,
+                    owner_user_id=consent_owner,
+                    action="runner_flow",
+                    subject_id=str(candidate.id),
+                    request_key=f"{execution_id}:{candidate.id}:{consent_owner}",
+                    details={
+                        "execution_id": str(execution_id),
+                        "runner_id": str(candidate.id),
+                    },
+                    execution_id=str(execution_id),
+                )
+            except ValueError:
+                if outcome is not None:
+                    outcome["consent_status"] = "declined"
+                continue
+            if outcome is not None:
+                outcome["owner_consent"] = consent
+                outcome["consent_status"] = consent.status
+            if consent.status != "approved":
+                # Bind this run to one owner's decision rather than asking
+                # every machine in the pool for the same work.
+                db.commit()
+                return None
+            # Approval persistence releases the account lock. Recheck runtime
+            # admission and claim the runner anew before constructing a lease.
+            if not crud_flow_execution.admit_runtime_start(
+                db, execution_id=execution_id, commit=False
+            ):
+                db.commit()
+                return None
         runner = crud_flow_runner.claim_free_slot(db, runner_id=candidate.id)
         if runner is None:
+            continue
+        if (
+            getattr(runner, "flow_execution_consent", None) or "ask_me"
+        ) != consent_mode or getattr(
+            runner, "registered_by_user_id", None
+        ) != consent_owner:
+            db.rollback()
             continue
         if not runner_accepts_job(runner, pool, payload, pinned_runner_id=pinned):
             db.rollback()
@@ -877,6 +948,8 @@ def lease_job(
                 account_id=account_id,
                 nonce=payload["_publication"]["nonce"],
             )
+        if outcome is not None:
+            outcome["consent_status"] = "approved"
         assignment = crud_flow_runner.create_assignment(
             db,
             runner_id=runner.id,
@@ -885,6 +958,16 @@ def lease_job(
             commit=False,
         )
         assignment.reported_status = "PENDING"
+        crud_audit_log.log_action(
+            db,
+            account_id=account_id,
+            action="runner_flow_consent",
+            resource_type="flow_runner",
+            resource_id=str(runner.id),
+            status="success",
+            details={"execution_id": str(execution_id), "decision": consent_mode},
+            commit=False,
+        )
         db.add(assignment)
         db.commit()
         db.refresh(runner)
@@ -956,6 +1039,8 @@ def runner_console_payload(
         "labels": runner_labels(runner),
         "paused": bool(getattr(runner, "paused", False)),
         "accept_untagged": bool(getattr(runner, "accept_untagged", False)),
+        "flow_execution_consent": getattr(runner, "flow_execution_consent", None)
+        or "ask_me",
         "status": runner.status,
         "last_heartbeat": heartbeat.isoformat() if heartbeat is not None else None,
         "current_execution_id": str(execution_id) if execution_id else None,

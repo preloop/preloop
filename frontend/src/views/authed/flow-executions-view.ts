@@ -38,6 +38,7 @@ import {
   executionStatusLabel,
   executionStatusVariant,
   formatEstimatedCost,
+  isWaitingForRunnerOwner,
   parkedRowTitle,
   renderExecutionModel,
   renderExecutionRunnerKind,
@@ -1509,7 +1510,9 @@ export class FlowExecutionsView extends AuthedElement {
   /** The status chip, the live dot, and what kind of failure it was. */
   private renderStatusCell(exec: FlowExecution) {
     const isLive = RUNNING_STATUSES.has(exec.status);
-    const variant = executionStatusVariant(exec.status);
+    // Held for the runner owner's approval: amber, like any wait on a person.
+    const ownerWait = isWaitingForRunnerOwner(exec);
+    const variant = ownerWait ? 'warning' : executionStatusVariant(exec.status);
     // A parked row is a status, not an activity: no live dot, and the chip
     // carries when the approval window closes rather than a running clock.
     const waitingTitle = parkedRowTitle(exec);
@@ -1532,7 +1535,11 @@ export class FlowExecutionsView extends AuthedElement {
           data-testid=${
             exec.status === 'WAITING_FOR_HUMAN' ? 'waiting-chip' : nothing
           }
-          >${executionStatusLabel(exec.status)}</sl-badge
+          >${
+            ownerWait
+              ? 'Waiting for runner owner'
+              : executionStatusLabel(exec.status)
+          }</sl-badge
         >
         <!-- "Failed" says that it broke; the category says what broke, which
              is the difference between a provider hiccup and a flow that never

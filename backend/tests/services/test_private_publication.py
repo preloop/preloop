@@ -104,6 +104,7 @@ def case(db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch):
         obj_in={
             "account_id": test_user.account_id,
             "name": "private",
+            "flow_execution_consent": "always",
             "token_hash": hash_runner_token("runner-token"),
             "status": "online",
             "last_heartbeat": datetime.now(timezone.utc),

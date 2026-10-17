@@ -5,6 +5,7 @@ import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -269,7 +270,13 @@ def test_owner_starts_session(db_session, test_user, service):
     assert row.details["remote_session_id"] == body["remote_session_id"]
 
 
-def test_admin_starts_session_on_another_members_runner(db_session, test_user, service):
+def test_admin_starts_session_on_another_members_runner(
+    db_session, test_user, service, monkeypatch
+):
+    monkeypatch.setattr(
+        "preloop.services.owner_consent.require_owner_consent",
+        AsyncMock(return_value=uuid4()),
+    )
     member = _member(db_session, test_user, "member")
     runner = _runner(db_session, member)
     # The account's primary user administers it, with or without seeded roles.
@@ -277,7 +284,8 @@ def test_admin_starts_session_on_another_members_runner(db_session, test_user, s
     account.primary_user_id = test_user.id
     db_session.flush()
     response = _client(db_session, test_user).post(
-        f"/api/v1/runners/{runner.id}/sessions", json=_start_body()
+        f"/api/v1/runners/{runner.id}/sessions",
+        json=_start_body(consent_request_id=str(uuid4())),
     )
     assert response.status_code == 202, response.text
     _assert_audited(db_session, runner, test_user, "runner_session.start_requested")
@@ -360,7 +368,11 @@ def test_other_member_is_refused(db_session, test_user, service):
     assert all(r.details["actor_user_id"] == str(member.id) for r in denied)
 
 
-def test_authorizer_can_share_and_deny(db_session, test_user, service):
+def test_authorizer_can_share_and_deny(db_session, test_user, service, monkeypatch):
+    monkeypatch.setattr(
+        "preloop.services.owner_consent.require_owner_consent",
+        AsyncMock(return_value=uuid4()),
+    )
     runner = _runner(db_session, test_user)
     member = _member(db_session, test_user, "member")
     seen: List[Any] = []
@@ -373,7 +385,8 @@ def test_authorizer_can_share_and_deny(db_session, test_user, service):
 
     account_hooks.register_authorizer(share)
     response = _client(db_session, member).post(
-        f"/api/v1/runners/{runner.id}/sessions", json=_start_body()
+        f"/api/v1/runners/{runner.id}/sessions",
+        json=_start_body(consent_request_id=str(uuid4())),
     )
     assert response.status_code == 202, response.text
     assert seen[0] == (ACTION_RUNNER_SESSION_START, False)

@@ -371,6 +371,7 @@ class TestAutoResolutionEvents:
         service, db = make_service()
         request = make_request()
 
+        service.get_approval_request = AsyncMock(return_value=request)
         service.update_approval_request = AsyncMock(return_value=request)
         service._broadcast_approval_update = AsyncMock()
 

@@ -71,6 +71,8 @@ type Config struct {
 
 // RunnerConfig holds the `runner:` block of ~/.preloop/config.yaml.
 type RunnerConfig struct {
+	// FlowExecutionConsent controls whether flows require the runner owner.
+	FlowExecutionConsent string `mapstructure:"flow_execution_consent"`
 	// Concurrency is how many executions `preloop runner fg` holds at once.
 	Concurrency int `mapstructure:"concurrency"`
 	// Labels are applied when `preloop runner fg` is started without

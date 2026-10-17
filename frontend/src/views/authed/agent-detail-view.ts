@@ -66,6 +66,13 @@ import {
   getUserProfile,
   listOperatorNotesPage,
 } from '../../api';
+import '../../components/owner-consent-control';
+import {
+  SESSION_CONSENT_LABEL,
+  SESSION_CONSENT_OPTIONS,
+  SESSION_CONSENT_OWNER_ONLY,
+  type SessionStartConsent,
+} from '../../utils/owner-consent';
 import type {
   GatewayUsageByModel,
   ManagedAgentDetailResponse,
@@ -468,6 +475,26 @@ export class AgentDetailView extends LitElement {
          reference and status on the left, the spend the page is scoped to on
          the right. The card this replaced held two meta lines and one number
          above 100px of nothing. */
+      /* One setting on a hairline row under the strip: label left, control
+         and its help to the right. No card (depth limit two). */
+      .consent-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 8px var(--sl-spacing-medium);
+        padding: 12px 0;
+        border-bottom: 1px solid
+          var(--console-hairline, var(--sl-color-neutral-200));
+        font-size: var(--console-text-body, var(--sl-font-size-small));
+      }
+      .consent-label {
+        font-weight: 600;
+        min-width: 14em;
+      }
+      .consent-row owner-consent-control {
+        flex: 1 1 20em;
+      }
+
       .summary-strip {
         display: flex;
         flex-wrap: wrap;
@@ -1704,6 +1731,7 @@ export class AgentDetailView extends LitElement {
     if (generation !== this.detailLoadGeneration) return;
     this.desktopEndpoints = endpoints;
     this.canControlDesktop = canTakeDesktopControl(profile);
+    this.currentUserId = profile?.id ?? null;
     if (this.activeTab === 'desktop' && endpoints.length === 0) {
       this.activeTab = 'sessions';
     }
@@ -1793,6 +1821,52 @@ export class AgentDetailView extends LitElement {
     }
 
     this.scheduleRefresh();
+  }
+
+  /** Signed-in user, so the owner alone gets the session consent select. */
+  @state() private currentUserId: string | null = null;
+  @state() private savingSessionConsent = false;
+  @state() private sessionConsentError = '';
+
+  private async saveSessionConsent(value: SessionStartConsent): Promise<void> {
+    if (!this.agentId) return;
+    this.savingSessionConsent = true;
+    this.sessionConsentError = '';
+    try {
+      await updateAccountAgent(this.agentId, {
+        others_may_start_sessions: value,
+      });
+      await this.loadData();
+    } catch (error) {
+      this.sessionConsentError =
+        error instanceof Error
+          ? error.message
+          : 'Could not change who may start sessions';
+    } finally {
+      this.savingSessionConsent = false;
+    }
+  }
+
+  private renderSessionConsent(): TemplateResult | typeof nothing {
+    const agent = this.agent;
+    if (!agent || agent.is_shared) return nothing;
+    const owner =
+      this.currentUserId != null && agent.owner_user_id === this.currentUserId;
+    return html`<div class="consent-row" data-testid="session-consent">
+      <span class="consent-label">${SESSION_CONSENT_LABEL}</span>
+      <owner-consent-control
+        label=${SESSION_CONSENT_LABEL}
+        value=${agent.others_may_start_sessions ?? 'ask_me'}
+        .options=${SESSION_CONSENT_OPTIONS}
+        ?editable=${owner && !agent.read_only}
+        ?saving=${this.savingSessionConsent}
+        ownerOnly=${owner ? '' : SESSION_CONSENT_OWNER_ONLY}
+        error=${this.sessionConsentError}
+        @consent-change=${(
+          event: CustomEvent<{ value: SessionStartConsent }>
+        ) => void this.saveSessionConsent(event.detail.value)}
+      ></owner-consent-control>
+    </div>`;
   }
 
   private async saveOwnerAssignment(): Promise<void> {
@@ -3602,7 +3676,8 @@ export class AgentDetailView extends LitElement {
         </div>
       </view-header>
       <div class="page" style="padding-top: 0;">
-        ${this.renderSummaryStrip(aggregate)} ${this.renderIdentityHistory()}
+        ${this.renderSummaryStrip(aggregate)} ${this.renderSessionConsent()}
+        ${this.renderIdentityHistory()}
 
         <!-- Sub-view Tab Navigation -->
         ${(() => {

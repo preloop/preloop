@@ -2675,6 +2675,17 @@ class TestEscalationBehavior:
 class TestAutoApproveRequest:
     """Test _auto_approve_request method."""
 
+    @pytest.fixture(autouse=True)
+    def mock_request_lookup(self, approval_service, sample_approval_request):
+        """Provide the request inspected before any automatic decision."""
+        with patch.object(
+            approval_service,
+            "get_approval_request",
+            new_callable=AsyncMock,
+            return_value=sample_approval_request,
+        ):
+            yield
+
     async def test_auto_approve_sets_status_and_ai_fields(
         self, approval_service, sample_approval_request
     ):
@@ -2729,6 +2740,17 @@ class TestAutoApproveRequest:
 
 class TestAutoDenyRequest:
     """Test _auto_deny_request method."""
+
+    @pytest.fixture(autouse=True)
+    def mock_request_lookup(self, approval_service, sample_approval_request):
+        """Provide the request inspected before any automatic decision."""
+        with patch.object(
+            approval_service,
+            "get_approval_request",
+            new_callable=AsyncMock,
+            return_value=sample_approval_request,
+        ):
+            yield
 
     async def test_auto_deny_sets_status_and_ai_fields(
         self, approval_service, sample_approval_request

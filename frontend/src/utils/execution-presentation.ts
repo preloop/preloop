@@ -475,3 +475,17 @@ export function parkedRowTitle(
     ? `${parts.join(', ')}.`
     : 'Waiting for a human decision.';
 }
+
+/** The server's marker on a queued run held for the runner owner's approval. */
+export const WAITING_FOR_RUNNER_OWNER = 'Waiting for runner owner';
+
+/** A queued run that waits on the runner owner, not a failure. */
+export function isWaitingForRunnerOwner(execution: {
+  status?: string | null;
+  error_message?: string | null;
+}): boolean {
+  return (
+    ['PENDING', 'QUEUED'].includes((execution.status || '').toUpperCase()) &&
+    execution.error_message === WAITING_FOR_RUNNER_OWNER
+  );
+}

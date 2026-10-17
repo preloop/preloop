@@ -46,6 +46,7 @@ def _runner(*caps):
     return SimpleNamespace(
         id=uuid4(),
         status="online",
+        flow_execution_consent="always",
         free_slots=1,
         capabilities={
             "host_exec_profiles": [

@@ -710,6 +710,38 @@ describe('AgentDetailView', () => {
     expect(el.shadowRoot!.querySelector('tools-editor-component')).to.exist;
   });
 
+  it('lets only the agent owner change who may start sessions', async () => {
+    let patched: unknown = null;
+    fetchStub.callsFake(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === 'PATCH' && input.toString().endsWith('/agent-1')) {
+          patched = JSON.parse(String(init.body));
+        }
+        return defaultFetch(input, init);
+      }
+    );
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => !(el as any).loading && !!(el as any).agent);
+    const control = () =>
+      el.shadowRoot!.querySelector('owner-consent-control')!;
+    (el as any).currentUserId = 'someone-else';
+    (el as any).agent = { ...(el as any).agent, owner_user_id: 'owner-1' };
+    await el.updateComplete;
+    expect(control().editable).to.equal(false);
+    expect(control().ownerOnly).to.contain('agent owner');
+
+    (el as any).currentUserId = 'owner-1';
+    await el.updateComplete;
+    expect(control().editable).to.equal(true);
+    control().dispatchEvent(
+      new CustomEvent('consent-change', { detail: { value: 'deny' } })
+    );
+    await waitUntil(() => patched !== null);
+    expect(patched).to.deep.equal({ others_may_start_sessions: 'deny' });
+  });
+
   it('names every device the agent runs on, linked to its device page', async () => {
     const devices = [
       {

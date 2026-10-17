@@ -125,6 +125,10 @@ func init() {
 	runnerCmd.AddCommand(runnerRestartCmd)
 	runnerCmd.AddCommand(runnerStatusCmd)
 	runnerCmd.AddCommand(runnerRotateTokenCmd)
+	for _, command := range []*cobra.Command{runnerSetupCmd, runnerFgCmd, runnerEnableCmd} {
+		command.Flags().String("flow-execution-consent", "", "whether flows on this runner need your approval: ask_me (default, ask each time), always (run without asking), never (no flows)")
+	}
+	runnerSetupCmd.Flags().Bool("yes", false, "install without asking; pair it with --flow-execution-consent unless managed configuration sets it")
 	runnerDisableCmd.Flags().Bool(
 		"delete", false,
 		"also delete the runner on the server and forget its local state",
@@ -263,6 +267,9 @@ func (m runnerWSMessage) haltedExecutions() []string {
 }
 
 func runRunnerFg(cmd *cobra.Command, args []string) error {
+	if err := prepareRunnerConsent(cmd); err != nil {
+		return err
+	}
 	flagLabels, _ := cmd.Flags().GetStringSlice("labels")
 	labels := effectiveRunnerLabels(flagLabels)
 	name, _ := cmd.Flags().GetString("name")
@@ -353,6 +360,13 @@ func loadOrRegisterRunner(
 	if concurrency < 1 {
 		concurrency = config.DefaultRunnerConcurrency
 	}
+	consent, managedConsent, err := config.RunnerFlowExecutionConsent()
+	if err != nil {
+		return nil, err
+	}
+	if consent == "" {
+		consent = "ask_me"
+	}
 	runnerFingerprint.Store("")
 	req := map[string]any{
 		"model_proxy_version":    1,
@@ -367,7 +381,11 @@ func loadOrRegisterRunner(
 		"labels":                 labels,
 		"concurrency":            concurrency,
 	}
+	if managedConsent || runnerConsentOverride != "" {
+		req["flow_execution_consent"] = consent
+	}
 	if runnerOnce.registersEphemeral() {
+		req["flow_execution_consent"] = consent
 		return registerEphemeralRunner(client, req)
 	}
 	if fingerprint := runnerWorkstationFingerprint(client, deviceRefs...); fingerprint != "" {
@@ -399,6 +417,7 @@ func loadOrRegisterRunner(
 		delete(req, "runner_id")
 	}
 
+	req["flow_execution_consent"] = consent
 	var created runnerAPIRecord
 	if err := client.Post("/api/v1/runners/register", req, &created); err != nil {
 		return nil, fmt.Errorf("register runner: %w", err)
@@ -1472,6 +1491,9 @@ func writeRunnerState(state *runnerState) error {
 }
 
 func runRunnerEnable(cmd *cobra.Command, args []string) error {
+	if err := prepareRunnerConsent(cmd); err != nil {
+		return err
+	}
 	return installRunnerService(cmd.OutOrStdout())
 }
 

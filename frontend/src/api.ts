@@ -1,4 +1,5 @@
 import { LitElement } from 'lit';
+import { ownerConsentRequest } from './utils/owner-consent-request';
 import { withSafeIcon } from './utils/icon-name';
 import { Router } from './router';
 import { DEFAULT_SIMILARITY_THRESHOLD } from './config';
@@ -2600,10 +2601,12 @@ export async function replaceManagedAgentModelBindings(
 
 export async function sendAgentControlCommand(
   agentId: string,
-  payload: AgentControlCommandRequest
+  payload: AgentControlCommandRequest,
+  signal?: AbortSignal
 ): Promise<AgentControlCommandResponse> {
   const url = `/api/v1/agents/${agentId}/control/commands`;
-  const response = await fetchWithAuth(url, {
+  const response = await ownerConsentRequest(fetchWithAuth, url, {
+    signal,
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -2620,6 +2623,7 @@ export async function sendAgentControlCommand(
     (payload.target_session_id || payload.session_mode)
   ) {
     const legacyResponse = await fetchWithAuth(url, {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2728,11 +2732,14 @@ export async function cancelOperatorNote(
 
 export async function sendAgentControlVoiceTranscript(
   agentId: string,
-  payload: AgentControlVoiceTranscriptRequest
+  payload: AgentControlVoiceTranscriptRequest,
+  signal?: AbortSignal
 ): Promise<AgentControlCommandResponse> {
-  const response = await fetchWithAuth(
+  const response = await ownerConsentRequest(
+    fetchWithAuth,
     `/api/v1/agents/${agentId}/control/voice-transcripts`,
     {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -2758,11 +2765,14 @@ export async function sendAgentControlTakeover(
     target_session_id?: string | null;
     start_new_session?: boolean;
     spawn_worktree?: boolean;
-  } = {}
+  } = {},
+  signal?: AbortSignal
 ): Promise<AgentControlCommandResponse> {
-  const response = await fetchWithAuth(
+  const response = await ownerConsentRequest(
+    fetchWithAuth,
     `/api/v1/agents/${agentId}/control/takeover`,
     {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -2779,11 +2789,14 @@ export async function sendAgentControlTakeover(
 
 export async function sendAgentControlRelease(
   agentId: string,
-  payload: { target_session_id?: string | null } = {}
+  payload: { target_session_id?: string | null } = {},
+  signal?: AbortSignal
 ): Promise<AgentControlCommandResponse> {
-  const response = await fetchWithAuth(
+  const response = await ownerConsentRequest(
+    fetchWithAuth,
     `/api/v1/agents/${agentId}/control/release`,
     {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -5291,6 +5304,8 @@ export interface RunnerRecord {
   running_execution_ids?: string[] | null;
   registered_by_email?: string | null;
   registered_by_user_id?: string | null;
+  /** Whether the owner approves each flow before it runs here. */
+  flow_execution_consent?: 'ask_me' | 'always' | 'never';
   capabilities?: {
     host_exec_profiles?: Array<{
       name?: string;
@@ -5389,6 +5404,25 @@ export async function updateRunnerScheduling(
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
       extractErrorMessage(errorData, 'Failed to update runner scheduling')
+    );
+  }
+  return response.json();
+}
+
+/** Owner only: decide whether flows on this runner need their approval. */
+export async function updateRunnerConsent(
+  runnerId: string,
+  flowExecutionConsent: 'ask_me' | 'always' | 'never'
+): Promise<RunnerRecord> {
+  const response = await fetchWithAuth(`/api/v1/runners/${runnerId}/consent`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ flow_execution_consent: flowExecutionConsent }),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Could not change the flow run setting')
     );
   }
   return response.json();
@@ -5554,9 +5588,12 @@ export class RunnerSessionApiError extends Error {
 async function runnerSessionRequest<T>(
   path: string,
   fallback: string,
-  init?: RequestInit
+  init?: RequestInit,
+  ownerConsent = false
 ): Promise<T> {
-  const response = await fetchWithAuth(path, init);
+  const response = ownerConsent
+    ? await ownerConsentRequest(fetchWithAuth, path, init!)
+    : await fetchWithAuth(path, init);
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     const code =
@@ -5583,16 +5620,19 @@ export function getRunnerSessionOptions(
 
 export function startRunnerSession(
   runnerId: string,
-  body: RunnerSessionStartBody
+  body: RunnerSessionStartBody,
+  signal?: AbortSignal
 ): Promise<RunnerSessionStarted> {
   return runnerSessionRequest(
     `/api/v1/runners/${encodeURIComponent(runnerId)}/sessions`,
     'Failed to start the session',
     {
+      signal,
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }
+    },
+    true
   );
 }
 

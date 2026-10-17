@@ -77,6 +77,7 @@ def _runner(
         name=name,
         labels=[],
         registered_by_user_id=uuid4(),
+        flow_execution_consent="always",
         status="online" if online else "offline",
         last_heartbeat=datetime.now(timezone.utc)
         - (timedelta(0) if online else timedelta(hours=2)),
@@ -435,7 +436,7 @@ def test_lease_job_routes_harness_to_eligible_runner_only(monkeypatch) -> None:
         outcome=outcome,
     )
     assert result is eligible
-    assert outcome == {"billing_mode": "seat"}
+    assert outcome == {"billing_mode": "seat", "consent_status": "approved"}
 
 
 def test_lease_job_names_the_reason_when_queued(monkeypatch) -> None:

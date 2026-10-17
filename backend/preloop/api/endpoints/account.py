@@ -2803,6 +2803,12 @@ async def update_account_managed_agent(
     previous_display_name = agent.display_name
     previous_lifecycle_reason = agent.lifecycle_reason
     previous_tags = dict(agent.tags or {})
+    previous_session_consent = agent.others_may_start_sessions
+    if "others_may_start_sessions" in update.model_fields_set:
+        if str(agent.owner_user_id) != str(current_user.id):
+            raise HTTPException(403, "Only the agent owner can change session consent")
+        if update.others_may_start_sessions is None:
+            raise HTTPException(422, "Session consent cannot be null")
 
     set_owner = "owner_user_id" in update.model_fields_set
     set_display_name = "display_name" in update.model_fields_set
@@ -2859,6 +2865,7 @@ async def update_account_managed_agent(
         account_id=str(account.id),
         agent_id=agent_id,
         owner_user_id=owner_user_id,
+        others_may_start_sessions=update.others_may_start_sessions,
         set_owner=set_owner,
         display_name=update.display_name,
         set_display_name=set_display_name,
@@ -2924,6 +2931,7 @@ async def update_account_managed_agent(
         or previous_owner_user_id != owner_id_after
         or previous_display_name != updated.display_name
         or previous_tags != dict(updated.tags or {})
+        or previous_session_consent != updated.others_may_start_sessions
     )
     # Explicit lifecycle requests may restore/revoke access even when the
     # visible state is unchanged, and still deserve an operator action record.
@@ -2948,6 +2956,8 @@ async def update_account_managed_agent(
                     "lifecycle_state": updated.lifecycle_state,
                     "previous_lifecycle_reason": previous_lifecycle_reason,
                     "lifecycle_reason": updated.lifecycle_reason,
+                    "previous_session_consent": previous_session_consent,
+                    "others_may_start_sessions": updated.others_may_start_sessions,
                     "previous_tags": previous_tags,
                     "tags": dict(updated.tags or {}),
                     "previous_display_name": previous_display_name,

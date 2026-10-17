@@ -54,6 +54,7 @@ import {
   parkWaitingSummary,
   type ExecutionPark,
   formatEstimatedCost,
+  isWaitingForRunnerOwner,
   formatTokenCount,
   renderExecutionModel,
   renderExecutionRunner,
@@ -2071,6 +2072,19 @@ export class FlowExecutionView extends LitElement {
   }
 
   private renderWaitingLine(execution: FlowExecution) {
+    if (isWaitingForRunnerOwner(execution)) {
+      return html`<div class="waiting-line" data-testid="waiting-line">
+        <sl-icon name="hourglass-split"></sl-icon>
+        <div class="waiting-text">
+          <span>Waiting for runner owner</span>
+          <span class="waiting-question"
+            >The runner's owner asked to approve each flow before it runs on
+            their machine. The run starts when they approve, and stops if the
+            request times out.</span
+          >
+        </div>
+      </div>`;
+    }
     if (execution.status !== 'WAITING_FOR_HUMAN' || !execution.park) return '';
     const summary = parkWaitingSummary(execution.park);
     const question = execution.park.question;
@@ -3191,7 +3205,9 @@ export class FlowExecutionView extends LitElement {
             : ''
         }
         ${
-          execution.error_message && !stopReason
+          execution.error_message &&
+          !stopReason &&
+          !isWaitingForRunnerOwner(execution)
             ? html`
                 <section class="output-section">
                   <h2 class="section-title">Error</h2>

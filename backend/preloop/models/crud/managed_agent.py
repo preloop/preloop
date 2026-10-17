@@ -598,6 +598,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         lifecycle_reason: Optional[str] = None,
         tags: Optional[dict[str, str]] = None,
         set_tags: bool = False,
+        others_may_start_sessions: Optional[str] = None,
         commit: bool = True,
     ) -> Optional[ManagedAgent]:
         """Update ownership and lifecycle controls for one managed agent.
@@ -640,6 +641,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db_obj.owner_user_id = owner_user_id
         if set_display_name and display_name is not None:
             db_obj.display_name = display_name.strip()
+        if others_may_start_sessions is not None:
+            if others_may_start_sessions not in {"ask_me", "allow", "deny"}:
+                raise ValueError("Invalid session consent mode")
+            db_obj.others_may_start_sessions = others_may_start_sessions
         if set_tags and tags is not None:
             db_obj.tags = tags
         if lifecycle_state is not None:
@@ -1007,6 +1012,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.id,
                 self.model.runtime_session_id,
                 self.model.owner_user_id,
+                self.model.others_may_start_sessions,
                 self.model.agent_kind,
                 self.model.display_name,
                 self.model.session_source_type,
@@ -1040,6 +1046,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.id,
                 self.model.runtime_session_id,
                 self.model.owner_user_id,
+                self.model.others_may_start_sessions,
                 self.model.agent_kind,
                 self.model.display_name,
                 self.model.session_source_type,
@@ -1132,6 +1139,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.id,
                 self.model.runtime_session_id,
                 self.model.owner_user_id,
+                self.model.others_may_start_sessions,
                 self.model.agent_kind,
                 self.model.display_name,
                 self.model.session_source_type,
@@ -1165,6 +1173,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 self.model.id,
                 self.model.runtime_session_id,
                 self.model.owner_user_id,
+                self.model.others_may_start_sessions,
                 self.model.agent_kind,
                 self.model.display_name,
                 self.model.session_source_type,
@@ -1345,6 +1354,9 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 str(row.runtime_session_id) if row.runtime_session_id else None
             ),
             "owner_user_id": str(row.owner_user_id) if row.owner_user_id else None,
+            "others_may_start_sessions": getattr(
+                row, "others_may_start_sessions", "ask_me"
+            ),
             "owner_username": row.owner_username,
             "owner_email": row.owner_email,
             "agent_kind": row.agent_kind,

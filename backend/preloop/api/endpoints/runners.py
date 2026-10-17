@@ -351,6 +351,13 @@ def register_runner(
         )
         if not existing:
             raise HTTPException(status_code=404, detail="Runner not found")
+        if (
+            body.flow_execution_consent is not None
+            and existing.registered_by_user_id != current_user.id
+        ):
+            raise HTTPException(
+                status_code=403, detail="Only the runner owner can change consent"
+            )
         token = mint_runner_token()
         updates = {
             "token_hash": hash_runner_token(token),
@@ -359,6 +366,8 @@ def register_runner(
             "last_heartbeat": datetime.now(timezone.utc),
             "ephemeral": body.ephemeral or existing.ephemeral,
         }
+        if body.flow_execution_consent is not None:
+            updates["flow_execution_consent"] = body.flow_execution_consent
         for field in (
             "name",
             "hostname",
@@ -393,6 +402,7 @@ def register_runner(
         obj_in={
             "account_id": current_user.account_id,
             "registered_by_user_id": current_user.id,
+            "flow_execution_consent": body.flow_execution_consent or "ask_me",
             "instance_id": body.instance_id,
             "name": name,
             "hostname": body.hostname,
@@ -498,6 +508,43 @@ def runner_fleet_summary(
     return schemas.RunnerFleetSummary(
         **crud_flow_runner.counts_for_account(db, account_id=current_user.account_id)
     )
+
+
+@router.patch("/runners/{runner_id}/consent", response_model=schemas.RunnerResponse)
+@require_permission("execute_flows")
+def update_runner_consent(
+    runner_id: UUID,
+    body: schemas.RunnerConsentUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> schemas.RunnerResponse:
+    """Let the runner owner decide when flows may execute on their machine."""
+    row = crud_flow_runner.get(
+        db, id=runner_id, account_id=str(current_user.account_id)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Runner not found")
+    if row.registered_by_user_id != current_user.id:
+        raise HTTPException(
+            status_code=403, detail="Only the runner owner can change consent"
+        )
+    previous = row.flow_execution_consent
+    row = crud_flow_runner.update(db, db_obj=row, obj_in=body.model_dump())
+    crud_audit_log.log_action(
+        db,
+        account_id=current_user.account_id,
+        user_id=current_user.id,
+        action="runner_consent_updated",
+        resource_type="flow_runner",
+        resource_id=str(row.id),
+        status="success",
+        details={
+            "previous": previous,
+            "flow_execution_consent": row.flow_execution_consent,
+        },
+    )
+    emit_runner_updated(row, db)
+    return _to_response(row, db, current_user)
 
 
 @router.patch("/runners/{runner_id}/scheduling", response_model=schemas.RunnerResponse)

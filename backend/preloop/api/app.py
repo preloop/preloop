@@ -363,6 +363,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         else:
             logger.info("DB pool monitor disabled via DB_MONITORING_ENABLED.")
 
+    owner_consent_notifications = None
+    if not is_testing and is_api_role:
+        from preloop.services.owner_consent import retry_owner_notifications
+
+        owner_consent_notifications = asyncio.create_task(retry_owner_notifications())
+
     # Start the optimization-job recovery sweeper (skip in testing mode). It
     # runs one sweep immediately, recovering jobs abandoned by the previous
     # process, then every couple of minutes.
@@ -681,6 +687,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         yield
     finally:
+        if owner_consent_notifications is not None:
+            owner_consent_notifications.cancel()
+            await asyncio.gather(owner_consent_notifications, return_exceptions=True)
         set_model_io_approval_loop(None)
         if price_refresher is not None:
             await price_refresher.stop()

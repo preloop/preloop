@@ -1046,6 +1046,25 @@ class ApprovalService:
             return expired or approval_request
         return None
 
+    async def _require_consent_owner(
+        self, approval_request: ApprovalRequest, user_id: Optional[uuid.UUID]
+    ) -> None:
+        """Owner decisions require the bound human, never a bearer or AI vote."""
+        from fastapi import HTTPException
+        from preloop.models.crud.owner_consent import get_by_approval_async
+
+        consent = await get_by_approval_async(self.db, approval_request.id)
+        if consent is None and approval_request.tool_name != "owner_consent":
+            return
+        if (
+            consent is None
+            or user_id is None
+            or str(user_id) != str(consent.owner_user_id)
+        ):
+            raise HTTPException(
+                status_code=403, detail="Only the owner can decide this request"
+            )
+
     async def approve_request(
         self,
         request_id: uuid.UUID,
@@ -1080,6 +1099,8 @@ class ApprovalService:
         approval_request = await self.get_approval_request_for_update(request_id)
         if not approval_request:
             return None
+
+        await self._require_consent_owner(approval_request, user_id)
 
         # Do not re-decide an already-resolved or expired request.
         guarded = await self._reject_if_not_actionable(approval_request)
@@ -1287,6 +1308,8 @@ class ApprovalService:
         approval_request = await self.get_approval_request_for_update(request_id)
         if not approval_request:
             return None
+
+        await self._require_consent_owner(approval_request, user_id)
 
         # Do not re-decide an already-resolved or expired request.
         guarded = await self._reject_if_not_actionable(approval_request)
@@ -1663,6 +1686,7 @@ class ApprovalService:
         Returns:
             The updated, approved approval request.
         """
+        await self._require_consent_owner(approval_request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,
@@ -1738,6 +1762,9 @@ class ApprovalService:
         Returns:
             Updated approval request or None if not found
         """
+        request = await self.get_approval_request(request_id)
+        if request is not None:
+            await self._require_consent_owner(request, None)
         update = ApprovalRequestUpdate(
             status="approved",
             approver_comment=reason,
@@ -1798,6 +1825,9 @@ class ApprovalService:
         Returns:
             Updated approval request or None if not found
         """
+        request = await self.get_approval_request(request_id)
+        if request is not None:
+            await self._require_consent_owner(request, None)
         update = ApprovalRequestUpdate(
             status="declined",
             approver_comment=reason,
@@ -2456,7 +2486,7 @@ class ApprovalService:
                 request_age = (
                     datetime.utcnow() - approval_request.requested_at
                 ).total_seconds()
-                if request_age > 30:
+                if request_age > 30 and approval_request.tool_name != "owner_consent":
                     logger.warning(
                         f"Skipping notifications for approval request {approval_request.id} - "
                         f"request is {request_age:.1f}s old (likely duplicate call)"

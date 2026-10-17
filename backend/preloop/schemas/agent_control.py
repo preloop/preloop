@@ -44,6 +44,7 @@ class AgentControlSendMessageRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     target_session_id: Optional[UUID] = None
     start_new_session: bool = False
+    consent_request_id: Optional[UUID] = None
     input_mode: AgentControlInputMode = "text"
     voice: dict[str, Any] = Field(default_factory=dict)
     spawn_worktree: bool = False
@@ -66,6 +67,7 @@ class AgentControlVoiceTranscriptRequest(BaseModel):
     voice: dict[str, Any] = Field(default_factory=dict)
     target_session_id: Optional[UUID] = None
     start_new_session: bool = False
+    consent_request_id: Optional[UUID] = None
 
 
 class AgentControlSessionActionRequest(BaseModel):
@@ -73,6 +75,7 @@ class AgentControlSessionActionRequest(BaseModel):
 
     target_session_id: Optional[UUID] = None
     start_new_session: bool = False
+    consent_request_id: Optional[UUID] = None
     spawn_worktree: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 

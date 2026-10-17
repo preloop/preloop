@@ -17,6 +17,7 @@ from preloop.utils.redaction import redact_dict
 from preloop.utils.secret_scrubbing import scrub_secrets
 from preloop.models.crud import (
     crud_agent_control_command,
+    crud_audit_log,
     crud_flow_execution,
     crud_managed_agent,
     crud_runtime_session,
@@ -41,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 _NOT_CONNECTED = "persistent target {name} is not connected to Agent Control"
 _SESSION_PREFIX = "control"
+_CONSENT_PREFIX = "control-consent"
 
 
 def parse_control_session_reference(
@@ -372,6 +374,8 @@ class AgentControlExecutor(AgentExecutor):
         self.account_id = account_id
         self.flow = flow
         self.execution = execution
+        self._consent_queue_context: Optional[Dict[str, Any]] = None
+        self._consent_command_reference: Optional[str] = None
 
     async def cleanup(self) -> None:
         """Persistent dispatch has no hosted runtime to tear down."""
@@ -456,6 +460,146 @@ class AgentControlExecutor(AgentExecutor):
         if not control_heartbeat_is_fresh(agent.control_last_heartbeat_at):
             self._raise_not_connected(agent, target_id)
         return agent, target_id
+
+    async def _flow_owner_consent(
+        self, agent: Any, execution_context: Dict[str, Any], *, consume: bool
+    ) -> bool:
+        """Gate automated new sessions without guessing a human actor."""
+        mode = getattr(agent, "others_may_start_sessions", "ask_me")
+        execution_id = self._execution_id(execution_context)
+        if mode == "allow":
+            if consume:
+                crud_audit_log.log_action(
+                    self.db,
+                    account_id=agent.account_id,
+                    action="agent_flow_session_consent",
+                    resource_type="managed_agent",
+                    resource_id=str(agent.id),
+                    status="success",
+                    details={"decision": "allow", "execution_id": str(execution_id)},
+                )
+            return True
+        owner_id = getattr(agent, "owner_user_id", None)
+        if mode != "ask_me" or owner_id is None or execution_id is None:
+            crud_audit_log.log_action(
+                self.db,
+                account_id=agent.account_id,
+                action="agent_flow_session_consent",
+                resource_type="managed_agent",
+                resource_id=str(agent.id),
+                status="denied",
+                details={"decision": "deny", "execution_id": str(execution_id)},
+            )
+            raise AgentStartError(
+                "The agent owner does not permit this flow to start a session",
+                category="runner_error",
+            )
+        from preloop.models.crud.owner_consent import consume as consume_approval
+        from preloop.services.owner_consent import (
+            check_owner_consent,
+            notify_owner_consent,
+        )
+
+        try:
+            consent = check_owner_consent(
+                self.db,
+                account_id=agent.account_id,
+                owner_user_id=owner_id,
+                subject_id=str(agent.id),
+                action="agent_flow_session",
+                request_key=f"{execution_id}:{agent.id}:{owner_id}",
+                details={"execution_id": str(execution_id), "agent_id": str(agent.id)},
+                execution_id=str(execution_id),
+                managed_agent_id=agent.id,
+            )
+        except ValueError as exc:
+            raise AgentStartError(
+                "Agent session consent could not be verified", category="runner_error"
+            ) from exc
+        if consent.created:
+            try:
+                await asyncio.wait_for(
+                    notify_owner_consent(consent.approval_id), timeout=25
+                )
+            except Exception:
+                logger.warning("Agent flow owner notification deferred", exc_info=True)
+        if consent.status == "pending":
+            return False
+        if consent.status != "approved" or (
+            consume and not consume_approval(self.db, approval_id=consent.approval_id)
+        ):
+            raise AgentStartError(
+                "Agent owner did not authorize this flow session",
+                category="runner_error",
+            )
+        if consume:
+            crud_audit_log.log_action(
+                self.db,
+                account_id=agent.account_id,
+                action="agent_flow_session_consent",
+                resource_type="managed_agent",
+                resource_id=str(agent.id),
+                status="success",
+                details={"decision": "approved", "execution_id": str(execution_id)},
+            )
+        return True
+
+    async def _consent_queue_status(self, session_reference: str) -> AgentStatus:
+        """Resume an approved flow once; durable binding wins after delivery."""
+        if self._consent_command_reference is not None:
+            return await self.get_status(self._consent_command_reference)
+        execution_id = UUID(session_reference.split(":")[-1])
+        execution = crud_flow_execution.get(self.db, id=execution_id, refresh=True)
+        if execution is None:
+            return AgentStatus.FAILED
+        if execution.status in {"FAILED", "TIMEOUT", "CANCELLED", "STOPPED"}:
+            return (
+                AgentStatus.STOPPED
+                if execution.status in {"CANCELLED", "STOPPED"}
+                else AgentStatus.FAILED
+            )
+        bound = getattr(execution, "agent_session_reference", None)
+        if isinstance(bound, str) and bound.startswith(f"{_SESSION_PREFIX}:"):
+            self._consent_command_reference = bound
+            return await self.get_status(bound)
+        stop_request = crud_flow_execution.get_stop_request(
+            self.db, execution_id=execution_id
+        )
+        if isinstance(stop_request, dict):
+            return AgentStatus.STOPPED
+        target_id = session_reference.split(":")[1]
+        agent = crud_managed_agent.get_visible_target(
+            self.db, account_id=str(self.account_id), agent_id=target_id
+        )
+        if agent is None or agent.lifecycle_state != "active":
+            return AgentStatus.FAILED
+        context = self._consent_queue_context or {"execution_id": str(execution_id)}
+        try:
+            approved = await self._flow_owner_consent(agent, context, consume=False)
+            if not approved:
+                return AgentStatus.PENDING
+            if self._consent_queue_context is None:
+                raise AgentStartError(
+                    "Restart this flow to rebuild its temporary runtime credentials",
+                    category="runner_error",
+                )
+            reference = await self.start(self._consent_queue_context)
+        except AgentStartError as exc:
+            from preloop.models.schemas.flow_execution import FlowExecutionUpdate
+
+            crud_flow_execution.update(
+                self.db,
+                db_obj=execution,
+                obj_in=FlowExecutionUpdate(
+                    status="FAILED", end_time=datetime.now(UTC), error_message=str(exc)
+                ),
+            )
+            return AgentStatus.FAILED
+        if reference.startswith(f"{_CONSENT_PREFIX}:"):
+            return AgentStatus.PENDING
+        self._consent_command_reference = reference
+        self._consent_queue_context = None
+        return AgentStatus.STARTING
 
     async def start(self, execution_context: Dict[str, Any]) -> str:
         """Dispatch the rendered flow prompt to the target managed agent.
@@ -559,6 +703,33 @@ class AgentControlExecutor(AgentExecutor):
                 or dispatch_context.get("allowed_mcp_tools")
             )
             metadata["run_limits"]["timeout_seconds"] = self._timeout_seconds()
+        execution_id = self._execution_id(execution_context)
+        if execution_id is not None and not crud_flow_execution.admit_runtime_start(
+            self.db, execution_id=execution_id, commit=False
+        ):
+            raise AgentStartError("Flow execution is stopped", category="runner_error")
+        if not await self._flow_owner_consent(agent, execution_context, consume=True):
+            from preloop.models.schemas.flow_execution import FlowExecutionUpdate
+
+            self._consent_queue_context = dict(execution_context)
+            reference = f"{_CONSENT_PREFIX}:{agent.id}:{execution_id}"
+            execution = crud_flow_execution.get(self.db, id=execution_id)
+            if execution is not None:
+                crud_flow_execution.update(
+                    self.db,
+                    db_obj=execution,
+                    obj_in=FlowExecutionUpdate(
+                        agent_session_reference=reference,
+                        error_message="Waiting for agent owner",
+                    ),
+                )
+            return reference
+        # Consuming approval commits its own transaction. Re-admit under the
+        # account halt lock immediately before creating/delivering a command.
+        if execution_id is not None and not crud_flow_execution.admit_runtime_start(
+            self.db, execution_id=execution_id, commit=False
+        ):
+            raise AgentStartError("Flow execution is stopped", category="runner_error")
         try:
             dispatched = await dispatch_operator_message(
                 self.db,
@@ -636,6 +807,17 @@ class AgentControlExecutor(AgentExecutor):
         return reference
 
     def _load_command(self, session_reference: str) -> Optional[Any]:
+        if session_reference.startswith(f"{_CONSENT_PREFIX}:"):
+            if self._consent_command_reference is None:
+                execution = crud_flow_execution.get(
+                    self.db, id=UUID(session_reference.split(":")[-1]), refresh=True
+                )
+                bound = getattr(execution, "agent_session_reference", None)
+                if isinstance(bound, str) and bound.startswith(f"{_SESSION_PREFIX}:"):
+                    self._consent_command_reference = bound
+            if self._consent_command_reference is None:
+                return None
+            session_reference = self._consent_command_reference
         try:
             managed_agent_id, command_id = parse_control_session_reference(
                 session_reference
@@ -689,6 +871,8 @@ class AgentControlExecutor(AgentExecutor):
 
     async def get_status(self, session_reference: str) -> AgentStatus:
         """Map the bound command row onto the executor status enum."""
+        if session_reference.startswith(f"{_CONSENT_PREFIX}:"):
+            return await self._consent_queue_status(session_reference)
         record = self._load_command(session_reference)
         if record is None:
             return AgentStatus.FAILED
@@ -832,6 +1016,24 @@ class AgentControlExecutor(AgentExecutor):
         command is still running, the runtime resolves target_command_id to
         its owned task. Failure leaves the command visibly non-terminal.
         """
+        if (
+            session_reference.startswith(f"{_CONSENT_PREFIX}:")
+            and self._load_command(session_reference) is None
+        ):
+            from preloop.models.schemas.flow_execution import FlowExecutionUpdate
+
+            execution_id = UUID(session_reference.split(":")[-1])
+            execution = crud_flow_execution.get(self.db, id=execution_id, refresh=True)
+            if execution is not None:
+                crud_flow_execution.update(
+                    self.db,
+                    db_obj=execution,
+                    obj_in=FlowExecutionUpdate(
+                        status="STOPPED", end_time=datetime.now(UTC)
+                    ),
+                )
+            self._consent_queue_context = None
+            return
         record = self._load_command(session_reference)
         binding = self._binding(session_reference)
         # `_binding()` already parses a missing `_agent_control` dict. Keep
@@ -918,6 +1120,14 @@ class AgentControlExecutor(AgentExecutor):
 
     async def is_stopped(self, session_reference: str) -> bool:
         """True after stop has marked the bound command failed."""
+        if (
+            session_reference.startswith(f"{_CONSENT_PREFIX}:")
+            and self._load_command(session_reference) is None
+        ):
+            execution = crud_flow_execution.get(
+                self.db, id=UUID(session_reference.split(":")[-1]), refresh=True
+            )
+            return execution is not None and execution.status == "STOPPED"
         record = self._load_command(session_reference)
         if record is None:
             return False

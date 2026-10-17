@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import uuid
@@ -30,6 +31,7 @@ from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
     crud_agent_control_command,
+    crud_audit_log,
     crud_managed_agent,
     crud_managed_agent_enrollment,
     crud_runtime_session,
@@ -1546,6 +1548,88 @@ def _public_shared_command_envelope(
     )
 
 
+async def _require_session_start_consent(
+    db: Session,
+    *,
+    agent: Any,
+    request: AgentControlSendMessageRequest,
+    current_user: models.User,
+) -> None:
+    """Authorize a new session before any command or history row is created."""
+    starts_session = request.start_new_session or request.spawn_worktree
+    if not starts_session and request.target_session_id is None:
+        current = (
+            crud_runtime_session.get_account_session(
+                db,
+                account_id=str(agent.account_id),
+                runtime_session_id=str(agent.runtime_session_id),
+            )
+            if agent.runtime_session_id is not None
+            else None
+        )
+        starts_session = current is None or current.ended_at is not None
+    if not starts_session:
+        return
+
+    mode = agent.others_may_start_sessions
+    is_owner = agent.owner_user_id is not None and str(agent.owner_user_id) == str(
+        current_user.id
+    )
+    if is_owner or mode == "allow":
+        crud_audit_log.log_action(
+            db,
+            account_id=agent.account_id,
+            user_id=current_user.id,
+            action="agent_session_consent",
+            resource_type="managed_agent",
+            resource_id=str(agent.id),
+            status="success",
+            details={"decision": "owner" if is_owner else "allow"},
+        )
+        return
+    if mode != "ask_me" or agent.owner_user_id is None:
+        crud_audit_log.log_action(
+            db,
+            account_id=agent.account_id,
+            user_id=current_user.id,
+            action="agent_session_consent",
+            resource_type="managed_agent",
+            resource_id=str(agent.id),
+            status="denied",
+            details={"decision": "deny"},
+        )
+        raise HTTPException(403, "The agent owner does not permit new sessions")
+    if request.consent_request_id is None:
+        raise HTTPException(
+            422,
+            "A consent_request_id is required to request owner approval",
+        )
+    from preloop.services.owner_consent import require_owner_consent
+
+    intent = {
+        "agent_id": str(agent.id),
+        "requester_id": str(current_user.id),
+        "account_id": str(current_user.account_id),
+        "request": request.model_dump(mode="json"),
+    }
+    request_key = hashlib.sha256(
+        json.dumps(intent, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    await require_owner_consent(
+        db,
+        account_id=agent.account_id,
+        owner_user_id=agent.owner_user_id,
+        requester_user_id=current_user.id,
+        subject_id=str(agent.id),
+        action="agent_session_start",
+        request_key=request_key,
+        details={
+            "agent_name": agent.display_name,
+            "consent_request_id": str(request.consent_request_id),
+        },
+    )
+
+
 async def _route_managed_agent_prompt(
     *,
     agent_id: str,
@@ -1594,6 +1678,9 @@ async def _route_managed_agent_prompt(
         account_id=str(current_user.account_id),
         agent=agent,
         request=request,
+    )
+    await _require_session_start_consent(
+        db, agent=agent, request=request, current_user=current_user
     )
     try:
         dispatched = await dispatch_operator_message(
@@ -1886,6 +1973,7 @@ async def send_managed_agent_voice_transcript(
     """Mobile-friendly alias that routes a voice transcript as a prompt."""
     prompt_request = AgentControlSendMessageRequest(
         message=request.transcript,
+        consent_request_id=request.consent_request_id,
         metadata=request.metadata,
         target_session_id=request.target_session_id,
         start_new_session=request.start_new_session,
@@ -1911,6 +1999,7 @@ async def _route_session_action(
     """Persist and deliver request_takeover or release."""
     prompt = AgentControlSendMessageRequest(
         message=name,
+        consent_request_id=request.consent_request_id,
         metadata={**request.metadata, "command": name},
         target_session_id=request.target_session_id,
         start_new_session=request.start_new_session,
@@ -1943,6 +2032,9 @@ async def _route_session_action(
         account_id=str(current_user.account_id),
         agent=agent,
         request=prompt,
+    )
+    await _require_session_start_consent(
+        db, agent=agent, request=prompt, current_user=current_user
     )
     payload: dict[str, Any] = {
         "metadata": prompt.metadata,

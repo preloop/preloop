@@ -487,6 +487,7 @@ class ManagedAgentSummary(BaseModel):
     id: str
     runtime_session_id: Optional[str] = None
     owner_user_id: Optional[str] = None
+    others_may_start_sessions: Literal["ask_me", "allow", "deny"] = "ask_me"
     owner_username: Optional[str] = None
     owner_email: Optional[str] = None
     agent_kind: Optional[str] = None
@@ -778,6 +779,7 @@ class ManagedAgentUpdateRequest(BaseModel):
     """Operator-driven updates for one managed agent."""
 
     owner_user_id: Optional[str] = None
+    others_may_start_sessions: Optional[Literal["ask_me", "allow", "deny"]] = None
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     lifecycle_action: Optional[str] = Field(
         default=None, pattern="^(suspend|resume|decommission|reenroll)$"

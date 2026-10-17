@@ -409,4 +409,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert weekly_email.down_revision == "20261021_mcp_fleet_merge"
     retry_index = script.get_revision("20261023_gov_retry_idx")
     assert retry_index.down_revision == "20261022_weekly_report_email"
-    assert script.get_heads() == ["20261023_gov_retry_idx"]
+    owner_consent = script.get_revision("20261022_owner_consent")
+    assert owner_consent.down_revision == "20261023_gov_retry_idx"
+    assert script.get_heads() == ["20261022_owner_consent"]

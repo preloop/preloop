@@ -149,6 +149,7 @@ async def test_lifecycle_change_persists_actor_and_previous_state(
         lifecycle_reason="operator request",
         tags={},
         owner_user_id=None,
+        others_may_start_sessions="ask_me",
         runtime_session_id=None,
     )
     db = MagicMock()

@@ -504,6 +504,35 @@ preloop runner rotate-token             # New runner token, service restarted
 preloop runner start|stop|restart|status
 ```
 
+Runner setup asks whether Preloop should ask you before it runs a flow on
+your machine. The choices are `ask_me` (default: each flow waits for your
+approval), `always` (flows run without asking), and `never` (no flows run
+here; your own sessions still work). For unattended setup:
+
+```bash
+preloop runner setup --yes --flow-execution-consent=ask_me
+```
+
+The flag also works with `runner fg` and `runner enable`. Personal setup
+stores `runner.flow_execution_consent` in `~/.preloop/config.yaml`. This
+initial choice is sent when the runner registers; later restarts preserve
+changes made in the console. An explicit foreground flag updates the setting.
+
+MDM installations can deliver this YAML to the managed configuration file:
+
+```yaml
+runner:
+  flow_execution_consent: ask_me
+```
+
+Default locations are `/Library/Application Support/Preloop/managed-config.yaml`
+on macOS, `/etc/preloop/managed-config.yaml` on Linux, and
+`%ProgramData%\Preloop\managed-config.yaml` on Windows. Set
+`PRELOOP_MANAGED_CONFIG` to select another file. Managed consent overrides the
+personal choice; a conflicting flag or invalid managed value stops setup.
+Deliver the file with administrator write permissions. Managed configuration
+is read again on each runner start; it does not provide device attestation.
+
 `preloop runner fg` opens a durable WebSocket to the configured server,
 leases executions whose runner pool matches this runner's id, name, or
 labels, streams logs, and honors halt. Ctrl-C unregisters. Persist the

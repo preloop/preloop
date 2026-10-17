@@ -720,6 +720,8 @@ export interface ManagedAgentSummary {
   id: string;
   runtime_session_id: string | null;
   owner_user_id: string | null;
+  /** Whether other account members need the owner's approval to start a session. */
+  others_may_start_sessions?: 'ask_me' | 'allow' | 'deny';
   owner_username: string | null;
   owner_email: string | null;
   agent_kind?: string | null;
@@ -974,6 +976,8 @@ export interface ManagedAgentUpdateRequest {
   tags?: Record<string, string> | null;
   lifecycle_action?: 'suspend' | 'resume' | 'decommission' | 'reenroll';
   reason?: string | null;
+  /** Owner only: whether other members need approval to start a session. */
+  others_may_start_sessions?: 'ask_me' | 'allow' | 'deny';
 }
 
 export interface SubjectGovernanceConfig {

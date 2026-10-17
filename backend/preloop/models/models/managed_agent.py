@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import CheckConstraint, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -24,6 +24,10 @@ class ManagedAgent(Base):
 
     __tablename__ = "managed_agent"
     __table_args__ = (
+        CheckConstraint(
+            "others_may_start_sessions IN ('ask_me', 'allow', 'deny')",
+            name="ck_managed_agent_session_consent",
+        ),
         UniqueConstraint(
             "account_id",
             "session_source_type",
@@ -49,6 +53,9 @@ class ManagedAgent(Base):
         ForeignKey("user.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
+    )
+    others_may_start_sessions: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ask_me", server_default="ask_me"
     )
     agent_kind: Mapped[str] = mapped_column(String(64), nullable=False)
     session_source_type: Mapped[str] = mapped_column(String(64), nullable=False)

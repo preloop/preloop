@@ -251,7 +251,7 @@ func TestPerformRunnerSetupYesThenInstalledSkips(t *testing.T) {
 	}
 }
 
-func TestPerformRunnerSetupRequiredDoesNotAsk(t *testing.T) {
+func TestPerformRunnerSetupRequiredAsksConsentOnly(t *testing.T) {
 	testenv.SetTempHome(t)
 	shortenRunnerOnlineWait(t)
 	installs := stubRunnerInstall(t)
@@ -275,8 +275,8 @@ func TestPerformRunnerSetupRequiredDoesNotAsk(t *testing.T) {
 	if *installs != 1 {
 		t.Fatalf("required did not install, output %q", out.String())
 	}
-	if strings.Contains(out.String(), "[y/N]") {
-		t.Fatal("required asked a question")
+	if strings.Contains(out.String(), "Install a Preloop runner on this machine?") {
+		t.Fatal("required asked whether to install")
 	}
 	if !strings.Contains(out.String(), "Your organisation requires a Preloop runner") {
 		t.Fatalf("missing required notice: %q", out.String())
@@ -645,6 +645,9 @@ func TestRunRunnerSetupRequiresLogin(t *testing.T) {
 }
 
 func TestRunRunnerSetupFetchesRequiredPolicy(t *testing.T) {
+	oldTerminal := loginTerminal
+	loginTerminal = func() bool { return true }
+	t.Cleanup(func() { loginTerminal = oldTerminal })
 	testenv.SetTempHome(t)
 	shortenRunnerOnlineWait(t)
 	installs := stubRunnerInstall(t)

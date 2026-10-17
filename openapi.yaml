@@ -6214,6 +6214,44 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/approval-requests/{request_id}/consent-status:
+    get:
+      tags:
+      - Approval Requests
+      - approval_requests
+      summary: Get Owner Consent Status
+      description: Let a human requester wait for their own session permission.
+      operationId: get_owner_consent_status_api_v1_approval_requests__request_id__consent_status_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: request_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Request Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnerConsentStatusResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/approval-requests/stats:
     get:
       tags:
@@ -16793,6 +16831,49 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/runners/{runner_id}/consent:
+    patch:
+      tags:
+      - Runners
+      summary: Update Runner Consent
+      description: Let the runner owner decide when flows may execute on their machine.
+      operationId: update_runner_consent_api_v1_runners__runner_id__consent_patch
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: runner_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Runner Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunnerConsentUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunnerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runners/{runner_id}/scheduling:
     patch:
       tags:
@@ -22590,6 +22671,12 @@ components:
           type: boolean
           title: Start New Session
           default: false
+        consent_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Consent Request Id
         input_mode:
           type: string
           enum:
@@ -22626,6 +22713,12 @@ components:
           type: boolean
           title: Start New Session
           default: false
+        consent_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Consent Request Id
         spawn_worktree:
           type: boolean
           title: Spawn Worktree
@@ -22661,6 +22754,12 @@ components:
           type: boolean
           title: Start New Session
           default: false
+        consent_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Consent Request Id
       type: object
       required:
       - transcript
@@ -36035,6 +36134,14 @@ components:
           - type: string
           - type: 'null'
           title: Owner User Id
+        others_may_start_sessions:
+          type: string
+          enum:
+          - ask_me
+          - allow
+          - deny
+          title: Others May Start Sessions
+          default: ask_me
         owner_username:
           anyOf:
           - type: string
@@ -36336,6 +36443,15 @@ components:
           - type: string
           - type: 'null'
           title: Owner User Id
+        others_may_start_sessions:
+          anyOf:
+          - type: string
+            enum:
+            - ask_me
+            - allow
+            - deny
+          - type: 'null'
+          title: Others May Start Sessions
         display_name:
           anyOf:
           - type: string
@@ -37479,6 +37595,23 @@ components:
       type: object
       title: OrganizationUpdate
       description: Model for updating an organization.
+    OwnerConsentStatusResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        expires_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Expires At
+      type: object
+      required:
+      - status
+      - expires_at
+      title: OwnerConsentStatusResponse
+      description: Minimal decision visibility without approval payload or queue access.
     PIIDetectorConfig:
       properties:
         types:
@@ -39773,6 +39906,20 @@ components:
       - concurrency
       title: RunnerConcurrencyUpdate
       description: Edit one runner's slot ceiling from the console.
+    RunnerConsentUpdate:
+      properties:
+        flow_execution_consent:
+          type: string
+          enum:
+          - always
+          - ask_me
+          - never
+          title: Flow Execution Consent
+      type: object
+      required:
+      - flow_execution_consent
+      title: RunnerConsentUpdate
+      description: Owner preference for flow executions on a private runner.
     RunnerDeleteResponse:
       properties:
         id:
@@ -39862,6 +40009,15 @@ components:
         machine.
     RunnerRegisterRequest:
       properties:
+        flow_execution_consent:
+          anyOf:
+          - type: string
+            enum:
+            - always
+            - ask_me
+            - never
+          - type: 'null'
+          title: Flow Execution Consent
         model_proxy_version:
           anyOf:
           - type: integer
@@ -39972,6 +40128,14 @@ components:
             format: uuid
           - type: 'null'
           title: Registered By User Id
+        flow_execution_consent:
+          type: string
+          enum:
+          - always
+          - ask_me
+          - never
+          title: Flow Execution Consent
+          default: ask_me
         instance_id:
           anyOf:
           - type: string
@@ -40131,6 +40295,14 @@ components:
             format: uuid
           - type: 'null'
           title: Registered By User Id
+        flow_execution_consent:
+          type: string
+          enum:
+          - always
+          - ask_me
+          - never
+          title: Flow Execution Consent
+          default: ask_me
         instance_id:
           anyOf:
           - type: string
@@ -40371,6 +40543,12 @@ components:
       title: RunnerSessionOptions
     RunnerSessionStartRequest:
       properties:
+        consent_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Consent Request Id
         harness:
           type: string
           enum:

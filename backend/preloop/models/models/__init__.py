@@ -83,6 +83,7 @@ from .discovered_agent_candidate import (
     AccountDiscoverySalt,
     DiscoveredAgentCandidate,
 )
+from .owner_consent import OwnerConsent
 from .managed_agent import ManagedAgent
 from .managed_agent_ai_model_binding import ManagedAgentAIModelBinding
 from .managed_agent_credential import ManagedAgentCredential
@@ -183,6 +184,7 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "OwnerConsent",
     "MCPInventoryFinding",
     "MCPInventoryReview",
     "FleetFinding",

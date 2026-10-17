@@ -592,12 +592,14 @@ def test_h4_runner_accept_skips_a_denied_runner(
     denied = SimpleNamespace(
         id=uuid.uuid4(),
         status="online",
+        flow_execution_consent="always",
         free_slots=1,
         capabilities={"docker_available": True},
     )
     accepted = SimpleNamespace(
         id=uuid.uuid4(),
         status="online",
+        flow_execution_consent="always",
         free_slots=1,
         capabilities={"docker_available": True},
     )

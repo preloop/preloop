@@ -40,7 +40,7 @@ pytestmark = pytest.mark.asyncio
 @pytest.fixture
 def mock_db():
     """Create mock async database session."""
-    return AsyncMock()
+    return AsyncMock(run_sync=AsyncMock(return_value=None))
 
 
 @pytest.fixture

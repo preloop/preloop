@@ -136,8 +136,12 @@ var runnerSetupCmd = &cobra.Command{
 	Long: `Install the Preloop runner as a background service, using the account
 runner policy from the server.
 
-optional asks first (the default answer is no). required installs without
-a question. forbidden prints one line and does not install.
+optional asks whether to install (the default answer is no). required skips
+the installation question. Both ask whether flows require your approval,
+with ask_me as the default. forbidden does not install.
+
+Use --yes --flow-execution-consent=always|ask_me|never for unattended setup.
+Managed installations use runner.flow_execution_consent from managed config.
 
 The service starts on login, connects outbound to this instance, and can
 run flow executions on this machine. It reports installed agent harnesses
@@ -157,10 +161,14 @@ func runRunnerSetup(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(out, "Log in first with: preloop login")
 		return fmt.Errorf("not logged in")
 	}
+	consent, _ := cmd.Flags().GetString("flow-execution-consent")
+	yes, _ := cmd.Flags().GetBool("yes")
 	tty := loginTerminal()
 	return performRunnerSetup(runnerSetupRequest{
 		Out:      out,
 		In:       cmd.InOrStdin(),
+		Consent:  consent,
+		Yes:      yes,
 		Policy:   fetchRunnerPolicy(),
 		Instance: cfg.APIURL,
 		TTY:      &tty,
@@ -179,7 +187,7 @@ func offerRunnerAfterLogin(out io.Writer, user *UserInfo, instance string, headl
 		policy = user.RunnerPolicy
 	}
 	tty := loginTerminal()
-	_ = performRunnerSetup(runnerSetupRequest{
+	if err := performRunnerSetup(runnerSetupRequest{
 		Out:      out,
 		In:       os.Stdin,
 		Policy:   policy,
@@ -194,7 +202,9 @@ func offerRunnerAfterLogin(out io.Writer, user *UserInfo, instance string, headl
 			PromptAnswered: config.RunnerPromptAnswered(),
 			Force:          loginForce,
 		},
-	})
+	}); err != nil {
+		fmt.Fprintf(out, "Runner setup: %v\n", err)
+	}
 }
 
 // loginTerminal is a variable so tests can simulate an interactive login.
@@ -203,6 +213,8 @@ var loginTerminal = func() bool {
 }
 
 type runnerSetupRequest struct {
+	Consent  string
+	Yes      bool
 	Out      io.Writer
 	In       io.Reader
 	Policy   *runnerPolicy
@@ -235,12 +247,21 @@ func performRunnerSetup(req runnerSetupRequest) error {
 	if req.In == nil {
 		req.In = os.Stdin
 	}
+	// Share one buffered reader across the installation and consent prompts.
+	if _, ok := req.In.(*bufio.Reader); !ok {
+		req.In = bufio.NewReader(req.In)
+	}
 	decision := decideRunnerSetup(req.Policy, req.Env, req.tty(), req.installed())
+	if req.Yes && req.Env.OnDemand && decision.Reason == "not_tty" {
+		decision = runnerSetupDecision{Action: runnerSetupInformInstall}
+	}
 	switch decision.Action {
 	case runnerSetupSkip:
 		return handleRunnerSetupSkip(req, decision.Reason)
 	case runnerSetupInformInstall:
-		fmt.Fprintln(req.Out, runnerRequiredNotice(req.Policy))
+		if req.Policy.requirement() == "required" {
+			fmt.Fprintln(req.Out, runnerRequiredNotice(req.Policy))
+		}
 		if caps := req.Policy.mandated(); len(caps) > 0 {
 			fmt.Fprintf(req.Out, "Required capabilities: %s\n", strings.Join(caps, ", "))
 		}
@@ -248,8 +269,11 @@ func performRunnerSetup(req runnerSetupRequest) error {
 		return installRunnerFromSetup(req)
 	default:
 		fmt.Fprintln(req.Out, runnerSetupConsequences(req.Instance))
+		if req.Yes {
+			return installRunnerFromSetup(req)
+		}
 		answer, err := promptForTextInput(
-			bufio.NewReader(req.In),
+			req.In.(*bufio.Reader),
 			req.Out,
 			"Install a Preloop runner on this machine? [y/N] ",
 		)
@@ -299,6 +323,9 @@ func handleRunnerSetupSkip(req runnerSetupRequest, reason string) error {
 }
 
 func installRunnerFromSetup(req runnerSetupRequest) error {
+	if err := chooseRunnerConsent(req.In, req.Out, req.tty(), req.Consent); err != nil {
+		return err
+	}
 	if runnerHasDocker() {
 		fmt.Fprintln(req.Out, "Docker daemon reachable (docker ps succeeded). The runner can advertise the docker tag.")
 	} else {

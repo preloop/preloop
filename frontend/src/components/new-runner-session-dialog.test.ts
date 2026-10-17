@@ -133,7 +133,13 @@ describe('new-runner-session-dialog', () => {
       'runner-session-started'
     )) as CustomEvent;
     expect(event.detail.session_id).to.equal('rs-1');
-    expect(startBodies()).to.deep.equal([
+    const bodies = startBodies();
+    expect(bodies).to.have.length(1);
+    const { consent_request_id, ...startPayload } = bodies[0];
+    expect(consent_request_id).to.match(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+    );
+    expect([startPayload]).to.deep.equal([
       {
         harness: 'copilot_cli',
         model: 'auto',

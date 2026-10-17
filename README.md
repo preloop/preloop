@@ -103,7 +103,9 @@ Preset copies start disabled so their event types cannot subscribe to every conn
 
 CI can trigger a flow too: the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md) (`.github/actions/run-flow`) starts a flow from a workflow job, streams the execution log, and fails the job on the execution's verdict. Where the agent container runs is your choice. [Private runners](docs/guide/runners/quickstart-linux.md) run it on your own machines over an outbound WebSocket, with no inbound ports: `preloop runner fg` holds several executions at once (default 2), and `--once --ephemeral` is a one-shot runner that exists for a single CI job.
 
-Runners advertise `docker` only after a timed `docker ps` succeeds, and installed, enabled, signed-in agents contribute capability tags such as `cursor_cli` and `copilot_cli`. New runners accept tagged work by default; the console can enable untagged jobs or pause new work without stopping current jobs. Native Cursor and Copilot execution works without Docker.
+Runners advertise `docker` only after a timed `docker ps` succeeds, and installed, enabled, signed-in agents contribute capability tags such as `cursor_cli` and `copilot_cli`. Personal runners default to asking their owner before each flow execution. Set `--flow-execution-consent always|ask_me|never` during runner setup, or change the owner preference in the console. Agent owners can also require approval before another member starts a new session; existing sessions continue.
+
+New runners accept tagged work by default; the console can enable untagged jobs or pause new work without stopping current jobs. Native Cursor and Copilot execution works without Docker.
 
 With an Enterprise runner policy provider, Account settings exposes account, role and team requirements; Runners shows member compliance and harness governance. Non-compliant members see a warning when the policy requests it. The console gates these controls on the provider feature and user permissions.
 

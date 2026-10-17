@@ -17,10 +17,12 @@ import {
   getAccountOrganization,
   getRunner,
   getRunners,
+  getUserProfile,
   rotateRunnerToken,
   RunnerHasLeasesError,
   updateAccountOrganization,
   updateRunnerConcurrency,
+  updateRunnerConsent,
   updateRunnerScheduling,
   type HarnessInventoryEntry,
   type RunnerRecord,
@@ -36,6 +38,13 @@ import {
 import '../../components/preloop-runner-pool-select';
 import '../../components/capability-extension';
 import '../../components/new-runner-session-dialog';
+import '../../components/owner-consent-control';
+import {
+  FLOW_CONSENT_LABEL,
+  FLOW_CONSENT_OPTIONS,
+  FLOW_CONSENT_OWNER_ONLY,
+  type FlowExecutionConsent,
+} from '../../utils/owner-consent';
 import type { RunnerSessionStarted } from '../../api';
 import { Router } from '../../router';
 import { fleetAccess, fleetHref } from '../../device-fleet-api';
@@ -50,6 +59,12 @@ export class RunnersView extends LitElement {
 
   @state()
   private loading = true;
+
+  /** The signed-in user: only a runner's owner may change its flow consent. */
+  @state() private currentUserId: string | null = null;
+
+  @state() private consentError: { runnerId: string; message: string } | null =
+    null;
 
   /** Runner whose "New session" dialog is open, if any. */
   @state()
@@ -587,6 +602,45 @@ export class RunnersView extends LitElement {
     }
   }
 
+  private async setConsent(
+    row: RunnerRecord,
+    value: FlowExecutionConsent
+  ): Promise<void> {
+    if (!this.claimRow(row.id)) return;
+    this.consentError = null;
+    try {
+      const updated = await updateRunnerConsent(row.id, value);
+      this.runners = this.runners.map((runner) =>
+        runner.id === row.id ? updated : runner
+      );
+    } catch (error) {
+      this.consentError = {
+        runnerId: row.id,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      this.releaseRow(row.id);
+    }
+  }
+
+  private renderConsent(row: RunnerRecord) {
+    const owner =
+      this.currentUserId != null &&
+      row.registered_by_user_id === this.currentUserId;
+    return html`<owner-consent-control
+      compact
+      label=${FLOW_CONSENT_LABEL}
+      value=${row.flow_execution_consent ?? 'ask_me'}
+      .options=${FLOW_CONSENT_OPTIONS}
+      ?editable=${owner}
+      ?saving=${this.isBusy(row.id)}
+      ownerOnly=${owner ? '' : FLOW_CONSENT_OWNER_ONLY}
+      error=${this.consentError?.runnerId === row.id ? this.consentError.message : ''}
+      @consent-change=${(event: CustomEvent<{ value: FlowExecutionConsent }>) =>
+        void this.setConsent(row, event.detail.value)}
+    ></owner-consent-control>`;
+  }
+
   private renderActions(row: RunnerRecord) {
     const busy = this.isBusy(row.id);
     return html`
@@ -648,7 +702,7 @@ export class RunnersView extends LitElement {
     }
     return html`
       <tr class="action-notice">
-        <td colspan="9">
+        <td colspan="10">
           <span class="action-notice-text">${notice.text}</span>
           ${
             notice.conflict
@@ -671,11 +725,13 @@ export class RunnersView extends LitElement {
     this.loading = true;
     this.error = null;
     try {
-      const [runners, account] = await Promise.all([
+      const [runners, account, profile] = await Promise.all([
         getRunners(),
         getAccountOrganization().catch(() => null),
+        getUserProfile().catch(() => null),
       ]);
       this.runners = runners;
+      this.currentUserId = profile?.id ?? null;
       this.defaultRunnerPool = account?.default_runner_pool ?? null;
       this.hostedMinutesLeft = account?.hosted_minutes_remaining ?? null;
     } catch (err) {
@@ -959,6 +1015,7 @@ export class RunnersView extends LitElement {
                           <th>Name</th>
                           <th>Labels</th>
                           <th>Registered by</th>
+                          <th>Flow runs</th>
                           <th>Host</th>
                           ${this.fleetEnabled ? html`<th>Device</th>` : nothing}
                           <th>Harnesses</th>
@@ -991,6 +1048,7 @@ export class RunnersView extends LitElement {
                               <td class="muted">
                                 ${row.registered_by_email || '-'}
                               </td>
+                              <td>${this.renderConsent(row)}</td>
                               <td>
                                 ${row.hostname || '-'}
                                 <div class="muted">

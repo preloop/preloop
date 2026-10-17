@@ -105,6 +105,7 @@ def _runner(
         labels=[],
         registered_by_user_id=uuid4(),
         status="online",
+        flow_execution_consent="always",
         last_heartbeat=datetime.now(timezone.utc),
         free_slots=1,
         paused=False,

@@ -152,9 +152,19 @@ def harness_inventory_hash(entries: List[HarnessInventoryEntry]) -> str:
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+FlowExecutionConsent = Literal["always", "ask_me", "never"]
+
+
+class RunnerConsentUpdate(BaseModel):
+    """Owner preference for flow executions on a private runner."""
+
+    flow_execution_consent: FlowExecutionConsent
+
+
 class RunnerRegisterRequest(BaseModel):
     """Register or resume a runner for the logged-in account."""
 
+    flow_execution_consent: Optional[FlowExecutionConsent] = None
     model_proxy_version: Optional[Literal[1]] = None
 
     name: Optional[str] = Field(None, max_length=200)
@@ -238,6 +248,7 @@ class RunnerResponse(BaseModel):
     id: UUID
     account_id: UUID
     registered_by_user_id: Optional[UUID] = None
+    flow_execution_consent: FlowExecutionConsent = "ask_me"
     instance_id: Optional[UUID] = None
     name: str
     workstation_fingerprint: Optional[str] = Field(

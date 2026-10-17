@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Mapping, Optional, Tuple
@@ -9,7 +10,12 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from preloop.models.crud import crud_flow, crud_flow_execution, crud_flow_execution_log
+from preloop.models.crud import (
+    crud_audit_log,
+    crud_flow,
+    crud_flow_execution,
+    crud_flow_execution_log,
+)
 from preloop.models.crud.flow_runner import crud_flow_runner
 from preloop.services.runner_service import (
     DEFAULT_QUEUE_TIMEOUT,
@@ -102,6 +108,44 @@ class RemoteRunnerExecutor(AgentExecutor):
         self.flow = flow
         self.execution = execution
 
+    async def _owner_consent_outcome(
+        self, outcome: Dict[str, Any], execution_id: UUID
+    ) -> None:
+        """Notify the selected owner and stop work after a negative decision."""
+        consent = outcome.get("owner_consent")
+        if consent is not None and consent.created:
+            from preloop.services.owner_consent import notify_owner_consent
+
+            try:
+                await asyncio.wait_for(
+                    notify_owner_consent(consent.approval_id), timeout=25
+                )
+            except Exception:
+                # The durable outbox retries delivery. A notification failure
+                # cannot discard the queued execution or its approval request.
+                logger.warning(
+                    "Runner owner notification deferred for approval %s",
+                    consent.approval_id,
+                    exc_info=True,
+                )
+        status = outcome.get("consent_status")
+        if status in {"declined", "expired", "cancelled", "consumed"}:
+            raise ValueError(
+                "The runner owner declined this run, or the approval request timed out."
+            )
+        if status == "pending":
+            execution = crud_flow_execution.get(self.db, id=execution_id)
+            if execution is not None:
+                from preloop.models.schemas.flow_execution import FlowExecutionUpdate
+
+                crud_flow_execution.update(
+                    self.db,
+                    db_obj=execution,
+                    obj_in=FlowExecutionUpdate(
+                        error_message="Waiting for runner owner"
+                    ),
+                )
+
     async def start(self, execution_context: Dict[str, Any]) -> str:
         execution_id = UUID(str(execution_context["execution_id"]))
         payload = self._lease_payload(
@@ -121,6 +165,7 @@ class RemoteRunnerExecutor(AgentExecutor):
             required_runner_id=owner_id or self._harness_pin(payload),
             outcome=outcome,
         )
+        await self._owner_consent_outcome(outcome, execution_id)
         execution = crud_flow_execution.get(self.db, id=execution_id)
         if runner:
             if execution:
@@ -153,6 +198,7 @@ class RemoteRunnerExecutor(AgentExecutor):
             _record_lease_routing(execution, payload, outcome, leased=False)
             if (
                 payload.get(HOST_EXEC_LEASE_KEY)
+                and outcome.get("consent_status") != "pending"
                 and outcome.get("routing_reason")
                 and harness_fallback_mode(self._flow_agent_config())
                 == HARNESS_FALLBACK_FAIL
@@ -166,7 +212,9 @@ class RemoteRunnerExecutor(AgentExecutor):
                     f"{payload[HOST_EXEC_LEASE_KEY]['harness']}: "
                     f"{outcome['routing_reason']}"
                 )
-            if payload.get("_publication"):
+            if outcome.get("consent_status") == "pending":
+                execution.error_message = "Waiting for runner owner"
+            elif payload.get("_publication"):
                 crud_flow_execution.update(
                     self.db,
                     db_obj=execution,
@@ -231,6 +279,45 @@ class RemoteRunnerExecutor(AgentExecutor):
                 and _execution_id_from_ref(assigned_reference) == execution_id
             ):
                 return await self.get_status(assigned_reference)
+            # Decisions belong to the durable request, including when its
+            # runner has disconnected. Candidate discovery only sees online
+            # runners and cannot expire an offline owner's request.
+            from preloop.models.crud.owner_consent import poll_runner_execution
+
+            consent_status = poll_runner_execution(
+                self.db, account_id=self.account_id, execution_id=execution_id
+            )
+            if consent_status in {"declined", "expired", "cancelled", "consumed"}:
+                if execution is not None:
+                    self._fail_owner_consent(execution)
+                return AgentStatus.FAILED
+            if consent_status == "pending":
+                if execution is not None:
+                    from preloop.models.schemas.flow_execution import (
+                        FlowExecutionUpdate,
+                    )
+
+                    crud_flow_execution.update(
+                        self.db,
+                        db_obj=execution,
+                        obj_in=FlowExecutionUpdate(
+                            error_message="Waiting for runner owner"
+                        ),
+                    )
+                return AgentStatus.PENDING
+            if (
+                execution is not None
+                and execution.error_message == "Waiting for runner owner"
+            ):
+                # A decision or removed request must not disable the ordinary
+                # runner queue deadline forever.
+                from preloop.models.schemas.flow_execution import FlowExecutionUpdate
+
+                crud_flow_execution.update(
+                    self.db,
+                    db_obj=execution,
+                    obj_in=FlowExecutionUpdate(error_message=None),
+                )
             started = (
                 execution.start_time
                 if execution and execution.start_time
@@ -311,6 +398,11 @@ class RemoteRunnerExecutor(AgentExecutor):
                     required_runner_id=owner_id or self._harness_pin(payload),
                     outcome=outcome,
                 )
+                try:
+                    await self._owner_consent_outcome(outcome, execution.id)
+                except ValueError:
+                    self._fail_owner_consent(execution)
+                    return AgentStatus.FAILED
                 if runner or (
                     payload.get(HOST_EXEC_LEASE_KEY)
                     and outcome.get("routing_reason") != execution.routing_reason
@@ -324,6 +416,7 @@ class RemoteRunnerExecutor(AgentExecutor):
                     payload = await prepare_runner_delivery(self.db, payload)
                     if (execution.result or {}).get("_private_publication"):
                         execution.error_message = None
+                    execution.error_message = None
                     execution.runner_id = runner.id
                     execution.agent_session_reference = (
                         f"runner:{runner.id}:{execution.id}"
@@ -344,6 +437,32 @@ class RemoteRunnerExecutor(AgentExecutor):
         if execution:
             return _map_status(execution.status)
         return AgentStatus.PENDING
+
+    def _fail_owner_consent(self, execution: Any) -> None:
+        """Persist the terminal decision so polling cannot retry its lease."""
+        from preloop.models.schemas.flow_execution import FlowExecutionUpdate
+
+        if execution.status == "FAILED":
+            return
+        crud_audit_log.log_action(
+            self.db,
+            account_id=self.account_id,
+            action="runner_flow_consent",
+            resource_type="flow_execution",
+            resource_id=str(execution.id),
+            status="denied",
+            details={"decision": "not_authorized"},
+            commit=False,
+        )
+        crud_flow_execution.update(
+            self.db,
+            db_obj=execution,
+            obj_in=FlowExecutionUpdate(
+                status="FAILED",
+                end_time=datetime.now(timezone.utc),
+                error_message="The runner owner declined this run, or the approval request timed out.",
+            ),
+        )
 
     async def get_result(self, session_reference: str) -> AgentExecutionResult:
         status = await self.get_status(session_reference)

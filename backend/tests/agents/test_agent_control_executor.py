@@ -25,6 +25,7 @@ def _account_id():
 def _agent(**overrides: Any) -> SimpleNamespace:
     values = {
         "id": uuid4(),
+        "others_may_start_sessions": "allow",
         "account_id": _account_id(),
         "display_name": "Review node",
         "lifecycle_state": "active",

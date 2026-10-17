@@ -270,6 +270,7 @@ def test_lease_uses_the_owning_runner_once_it_has_a_slot(
     owner = SimpleNamespace(
         id=uuid4(),
         status="online",
+        flow_execution_consent="always",
         free_slots=1,
         capabilities={"docker_available": True},
     )
@@ -283,6 +284,7 @@ def test_lease_uses_the_owning_runner_once_it_has_a_slot(
         "claim_free_slot",
         lambda db, *, runner_id: SimpleNamespace(
             id=runner_id,
+            flow_execution_consent="always",
             publication_capabilities=None,
             capabilities={"docker_available": True},
         ),
