@@ -10,6 +10,7 @@ timezone-aware. Naive ``timestamp`` columns are read as UTC.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, NamedTuple, Optional
 from uuid import UUID
@@ -141,7 +142,12 @@ _NOT_REPLAY = """
 
 
 def approval_signals(
-    db: Session, *, account_id: UUID, start: datetime, end: datetime
+    db: Session,
+    *,
+    account_id: UUID,
+    start: datetime,
+    end: datetime,
+    user_id: UUID | None = None,
 ) -> ApprovalProjection:
     """Count real requests, separating policy/AI decisions from human work.
 
@@ -157,6 +163,14 @@ def approval_signals(
                 CASE WHEN decided_by_ai THEN 'ai_decision' END) AS automatic_reason
             FROM approval_request
             WHERE account_id = CAST(:account_id AS uuid)
+                AND (CAST(:user_id AS uuid) IS NULL
+                    OR api_key_id IN (SELECT id FROM api_key
+                        WHERE account_id = CAST(:account_id AS uuid)
+                        AND user_id = CAST(:user_id AS uuid))
+                    OR managed_agent_id IN (SELECT id FROM managed_agent
+                        WHERE account_id = CAST(:account_id AS uuid)
+                        AND owner_user_id = CAST(:user_id AS uuid))
+                    OR responses @> CAST(:response AS jsonb))
         ), counts AS (
             SELECT
                 COUNT(*) FILTER (WHERE automatic_reason IS NULL
@@ -191,11 +205,15 @@ def approval_signals(
                 FROM reasons), '[]'::jsonb) AS auto_approved_reasons
         FROM counts
     """),
-            _params(
-                account_id,
-                start.astimezone(timezone.utc).replace(tzinfo=None),
-                end.astimezone(timezone.utc).replace(tzinfo=None),
-            ),
+            {
+                **_params(
+                    account_id,
+                    start.astimezone(timezone.utc).replace(tzinfo=None),
+                    end.astimezone(timezone.utc).replace(tzinfo=None),
+                ),
+                "user_id": str(user_id) if user_id else None,
+                "response": json.dumps([{"user_id": str(user_id)}]),
+            },
         )
         .mappings()
         .one()

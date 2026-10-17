@@ -4365,7 +4365,14 @@ def put_weekly_report_preferences(
     from preloop.models.crud.weekly_report import update_preferences
     from preloop.utils.permissions import user_permission_names
 
-    if payload.account_enabled is not None and not (
+    if any(
+        value is not None
+        for value in (
+            payload.account_enabled,
+            payload.members_enabled,
+            payload.member_policy_findings_enabled,
+        )
+    ) and not (
         current_user.is_superuser
         or account.primary_user_id == current_user.id
         or "manage_account" in user_permission_names(db, current_user)
@@ -4380,5 +4387,7 @@ def put_weekly_report_preferences(
             user=current_user,
             account_enabled=payload.account_enabled,
             user_enabled=payload.user_enabled,
+            members_enabled=payload.members_enabled,
+            member_policy_findings_enabled=payload.member_policy_findings_enabled,
         )
     )

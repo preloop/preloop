@@ -150,8 +150,13 @@ export const restoreGovernanceFinding = (
 
 /** Weekly report email switches: the account's and the signed-in user's. */
 export interface WeeklyReportPreferences {
+  /** The full report for owners and admins. */
   account_enabled: boolean;
   user_enabled: boolean;
+  /** Personal reports for regular members; absent on older servers. */
+  members_enabled?: boolean;
+  /** Members see policy findings attributed to them. */
+  member_policy_findings_enabled?: boolean;
 }
 async function preferences<T>(options?: RequestInit): Promise<T> {
   const response = await fetchWithAuth('/api/v1/weekly-report/preferences', {

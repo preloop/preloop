@@ -922,3 +922,13 @@ deny and approval rules fail closed. A bounded CEL program cache shares compiled
 expressions between validation and evaluation without retaining request bindings.
 The [back-office policy pack](docs/guide/policies/back-office-ai.md) demonstrates
 portable server allowlists, write approvals and bulk-export checks.
+
+Weekly report settings live in core Account fields and the audited
+`models.crud.weekly_report` transaction. `/account/weekly-report/preferences`
+keeps individual unsubscribe separate from independent account controls for
+owner/admin delivery, member delivery, and member policy findings. An unset
+member-delivery field uses an optional edition service for its effective plan
+default. The capability-gated Lit settings card lives in OSS. Report queries in
+`models.crud.weekly_report_data` apply account and user attribution before
+aggregation; report orchestration and delivery remain in the commercial plugin.
+See [the settings contract](docs/weekly-report-v3.md).

@@ -82,6 +82,13 @@ class Account(Base):
         Boolean, nullable=False, default=True, server_default="true"
     )
 
+    weekly_member_report_enabled: Mapped[Optional[bool]] = mapped_column(
+        Boolean, nullable=True, default=None
+    )
+    weekly_member_policy_findings_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     # Organization details
     organization_name: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, comment="Display name for the organization"

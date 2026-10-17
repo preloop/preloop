@@ -1,4 +1,5 @@
 import '../../../components/runner-policy-settings';
+import '../../../components/weekly-report-settings';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { billingStatusLabel } from '../../../utils/billing-status';
@@ -766,6 +767,7 @@ export class AccountView extends LitElement {
               ? html`<subaccounts-view embedded></subaccounts-view>`
               : ''
           }
+          <weekly-report-settings></weekly-report-settings>
           <runner-policy-settings></runner-policy-settings>
           ${this._renderSessionArtifactUsage()}
           ${

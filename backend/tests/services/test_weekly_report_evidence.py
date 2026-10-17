@@ -94,6 +94,8 @@ def test_preferences_default_on_and_changes_are_audited(
     assert preferences(db_session, account=account, user=test_user) == {
         "account_enabled": True,
         "user_enabled": True,
+        "members_enabled": False,
+        "member_policy_findings_enabled": False,
     }
     assert update_preferences(
         db_session,
@@ -101,7 +103,12 @@ def test_preferences_default_on_and_changes_are_audited(
         user=test_user,
         account_enabled=False,
         user_enabled=False,
-    ) == {"account_enabled": False, "user_enabled": False}
+    ) == {
+        "account_enabled": False,
+        "user_enabled": False,
+        "members_enabled": False,
+        "member_policy_findings_enabled": False,
+    }
     logs = (
         db_session.query(models.AuditLog)
         .filter_by(account_id=account.id, action="weekly_report_preferences_updated")

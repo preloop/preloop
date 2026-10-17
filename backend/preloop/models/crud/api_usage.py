@@ -1858,7 +1858,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             for row in rows
         ]
 
-    def _gateway_ranking(self, db: Session, grouped: Any) -> List[Dict[str, Any]]:
+    def _gateway_ranking(
+        self, db: Session, grouped: Any, *, limit: Optional[int] = 3
+    ) -> List[Dict[str, Any]]:
         """Return three known identities and a total-bearing unknown bucket.
 
         Window totals retain the entire population while the result is bounded
@@ -1882,7 +1884,10 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             db.query(ranked)
             .filter(
                 or_(
-                    and_(ranked.c.name.isnot(None), ranked.c.rank <= 3),
+                    and_(
+                        ranked.c.name.isnot(None),
+                        true() if limit is None else ranked.c.rank <= limit,
+                    ),
                     and_(ranked.c.name.is_(None), ranked.c.rank == 1),
                 )
             )
@@ -1933,6 +1938,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         account_id: str,
         start_date: datetime,
         end_date: datetime,
+        user_id: Optional[str] = None,
+        limit: Optional[int] = 3,
     ) -> List[Dict[str, Any]]:
         """Rank agents over every qualifying request in the exact window.
 
@@ -2052,6 +2059,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .outerjoin(session_agent, session_agent.id == session_agent_id)
             .filter(
                 ApiUsage.account_id == account_id,
+                ApiUsage.user_id == user_id if user_id is not None else true(),
                 ApiUsage.action_type == "model_gateway",
                 exclude_replay_usage_condition(),
                 ApiUsage.timestamp >= start_date,
@@ -2060,7 +2068,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .group_by(identity, managed_id)
             .subquery()
         )
-        return self._gateway_ranking(db, grouped)
+        return self._gateway_ranking(db, grouped, limit=limit)
 
     def get_gateway_usage_by_flow(
         self,
