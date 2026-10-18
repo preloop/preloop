@@ -64,6 +64,21 @@ def caller_has_owner_role(db: Session, user: User) -> bool:
     return False
 
 
+def _ensure_can_remove_user(db: Session, current_user: User, user: User) -> None:
+    """Require ownership before removing a primary user or another owner."""
+    if current_user.is_superuser:
+        return
+    account = crud_account.get(db, id=user.account_id)
+    protected = (
+        account is not None and account.primary_user_id == user.id
+    ) or caller_has_owner_role(db, user)
+    if protected and not caller_has_owner_role(db, current_user):
+        raise HTTPException(
+            status_code=403,
+            detail="Only an account owner can remove an owner or primary user; transfer ownership first",
+        )
+
+
 def _ensure_can_grant_role(db: Session, current_user: User, role: Role) -> None:
     """Block privilege escalation when granting a role.
 
@@ -137,7 +152,7 @@ def _build_member_page(db: Session, users: list[User]) -> list[AdminUserResponse
 
 
 @router.get("/users/me", response_model=AdminUserResponse)
-async def get_current_user_info(
+def get_current_user_info(
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
 ) -> Any:
@@ -154,7 +169,7 @@ async def get_current_user_info(
 
 
 @router.patch("/users/me", response_model=AdminUserResponse)
-async def update_current_user(
+def update_current_user(
     update_data: AdminUserUpdate,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -194,7 +209,7 @@ def _update_shared_profile(
 
 
 @router.post("/users/me/change-password", status_code=status.HTTP_204_NO_CONTENT)
-async def change_password(
+def change_password(
     password_data: UserPasswordUpdate,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -237,7 +252,7 @@ async def change_password(
     "/users", response_model=AdminUserResponse, status_code=status.HTTP_201_CREATED
 )
 @require_permission("manage_users")
-async def create_user(
+def create_user(
     user_data: AdminUserCreate,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -319,7 +334,7 @@ async def create_user(
 
 @router.get("/users", response_model=UserListResponse)
 @require_permission("view_users")
-async def list_users(
+def list_users(
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
     skip: int = 0,
@@ -349,7 +364,7 @@ async def list_users(
 
 @router.get("/users/{user_id}", response_model=AdminUserResponse)
 @require_permission("view_users")
-async def get_user(
+def get_user(
     user_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -387,7 +402,7 @@ async def get_user(
 
 @router.patch("/users/{user_id}", response_model=AdminUserResponse)
 @require_permission("manage_users")
-async def update_user(
+def update_user(
     user_id: UUID,
     update_data: AdminUserUpdate,
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -446,8 +461,12 @@ async def update_user(
         enforce_seat_available(db, current_user.account_id)
     # Switching a membership off is a removal: a primary row hands the
     # person's credentials to another membership first, as deactivate does.
-    if update_fields.get("is_active") is False and user.is_active:
-        _release_membership(db, user)
+    if update_fields.get("is_active") is False:
+        if user.id == current_user.id:
+            raise HTTPException(400, "Cannot deactivate your own account")
+        _ensure_can_remove_user(db, current_user, user)
+        if user.is_active:
+            _release_membership(db, user)
 
     updated_user = crud_user.update(db=db, db_obj=user, obj_in=update_fields)
     db.commit()
@@ -465,7 +484,7 @@ def _release_membership(db: Session, user: User) -> None:
 
 @router.post("/users/{user_id}/deactivate", status_code=status.HTTP_204_NO_CONTENT)
 @require_permission("manage_users")
-async def deactivate_user(
+def deactivate_user(
     user_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -501,6 +520,7 @@ async def deactivate_user(
             detail="Cannot deactivate user from different account",
         )
 
+    _ensure_can_remove_user(db, current_user, user)
     _release_membership(db, user)
     crud_user.deactivate(db=db, user_id=user_id)
     db.commit()
@@ -568,7 +588,7 @@ def _purge_account(db: Session, account_id: str, deleted_by: str) -> None:
 
 @router.post("/users/bulk-delete", response_model=BulkDeleteUsersResponse)
 @require_permission("manage_users")
-async def bulk_delete_users(
+def bulk_delete_users(
     request: BulkDeleteUsersRequest,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -634,6 +654,15 @@ async def bulk_delete_users(
 
         account_id = str(user.account_id)
         try:
+            try:
+                _ensure_can_remove_user(db, current_user, user)
+            except HTTPException as exc:
+                results.append(
+                    BulkDeleteUserResult(
+                        user_id=user_id, status="skipped", reason=str(exc.detail)
+                    )
+                )
+                continue
             if not request.hard_delete:
                 _release_membership(db, user)
                 crud_user.deactivate(db=db, user_id=user.id)
@@ -705,7 +734,7 @@ async def bulk_delete_users(
 
 @router.get("/users/search/{username}", response_model=List[UserSummary])
 @require_permission("view_users")
-async def search_users_by_username(
+def search_users_by_username(
     username: str,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -737,7 +766,7 @@ async def search_users_by_username(
 
 @router.get("/users/{user_id}/roles", response_model=List[dict])
 @require_permission("view_users")
-async def get_user_roles(
+def get_user_roles(
     user_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -792,11 +821,17 @@ async def get_user_roles(
     return roles
 
 
+class UserRoleAssignment(BaseModel):
+    """A role identifier validated before querying account roles."""
+
+    role_id: UUID | None = None
+
+
 @router.post("/users/{user_id}/roles", status_code=status.HTTP_201_CREATED)
 @require_permission("assign_roles")
-async def assign_user_role(
+def assign_user_role(
     user_id: UUID,
-    role_data: dict,
+    role_data: UserRoleAssignment,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
 ) -> Any:
@@ -831,7 +866,7 @@ async def assign_user_role(
     # Verify role exists
     from preloop.models.crud import crud_role
 
-    role_id = role_data.get("role_id")
+    role_id = role_data.role_id
     if not role_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -883,7 +918,7 @@ async def assign_user_role(
     "/users/{user_id}/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 @require_permission("assign_roles")
-async def remove_user_role(
+def remove_user_role(
     user_id: UUID,
     role_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],

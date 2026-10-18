@@ -21655,9 +21655,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: true
-              title: Role Data
+              $ref: '#/components/schemas/UserRoleAssignment'
       responses:
         '201':
           description: Successful Response
@@ -49122,6 +49120,17 @@ components:
       - new_password
       title: UserPasswordUpdate
       description: Schema for updating user password.
+    UserRoleAssignment:
+      properties:
+        role_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Role Id
+      type: object
+      title: UserRoleAssignment
+      description: A role identifier validated before querying account roles.
     UserSummary:
       properties:
         id:

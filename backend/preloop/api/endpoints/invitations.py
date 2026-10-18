@@ -48,7 +48,7 @@ public_router = APIRouter()  # Public endpoints (no auth required)
     status_code=status.HTTP_201_CREATED,
 )
 @require_permission("invite_users")
-async def create_invitation(
+def create_invitation(
     invitation_data: InvitationCreate,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -224,7 +224,7 @@ async def create_invitation(
 
 @router.get("/invitations", response_model=InvitationListResponse)
 @require_permission("view_users")
-async def list_invitations(
+def list_invitations(
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
     skip: int = 0,
@@ -264,7 +264,7 @@ async def list_invitations(
 
 @router.get("/invitations/{invitation_id}", response_model=InvitationResponse)
 @require_permission("view_users")
-async def get_invitation(
+def get_invitation(
     invitation_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -302,7 +302,7 @@ async def get_invitation(
 
 @router.delete("/invitations/{invitation_id}", status_code=status.HTTP_204_NO_CONTENT)
 @require_permission("invite_users")
-async def cancel_invitation(
+def cancel_invitation(
     invitation_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -350,7 +350,7 @@ async def cancel_invitation(
     "/invitations/{invitation_id}/resend", status_code=status.HTTP_204_NO_CONTENT
 )
 @require_permission("invite_users")
-async def resend_invitation(
+def resend_invitation(
     invitation_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -464,7 +464,7 @@ async def resend_invitation(
 
 # Public endpoint (no authentication required)
 @public_router.get("/invitations/public/{token}", response_model=InvitationPublicInfo)
-async def get_invitation_info(
+def get_invitation_info(
     token: str,
     db: Session = Depends(get_db_session),
 ) -> Any:
@@ -533,7 +533,11 @@ async def get_invitation_info(
             UUID(rid.strip()) for rid in invitation.role_ids.split(",") if rid.strip()
         ]
         for role_id in role_ids:
-            role = crud_role.get(db=db, id=role_id)
+            role = crud_role.get(db=db, id=role_id, account_id=invitation.account_id)
+            if not role:
+                role = crud_role.get(db=db, id=role_id)
+                if role and role.account_id is not None:
+                    role = None
             if role:
                 role_names.append(role.name)
 
@@ -547,7 +551,7 @@ async def get_invitation_info(
             UUID(tid.strip()) for tid in invitation.team_ids.split(",") if tid.strip()
         ]
         for team_id in team_ids:
-            team = crud_team.get(db=db, id=team_id)
+            team = crud_team.get(db=db, id=team_id, account_id=invitation.account_id)
             if team:
                 team_names.append(team.name)
 
@@ -563,7 +567,7 @@ async def get_invitation_info(
 
 # Public endpoint (no authentication required)
 @public_router.post("/invitations/accept", status_code=status.HTTP_201_CREATED)
-async def accept_invitation(
+def accept_invitation(
     accept_data: InvitationAccept,
     db: Session = Depends(get_db_session),
 ) -> Any:

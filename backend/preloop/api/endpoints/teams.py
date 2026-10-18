@@ -5,6 +5,7 @@ from typing import Any, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
@@ -72,7 +73,7 @@ def _team_member_responses(
 
 @router.post("/teams", response_model=TeamResponse, status_code=status.HTTP_201_CREATED)
 @require_permission("create_teams")
-async def create_team(
+def create_team(
     team_data: TeamCreate,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -101,7 +102,7 @@ async def create_team(
 
 @router.get("/teams", response_model=TeamListResponse)
 @require_permission("view_teams")
-async def list_teams(
+def list_teams(
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
     skip: int = 0,
@@ -161,7 +162,7 @@ async def list_teams(
 
 @router.get("/teams/{team_id}", response_model=TeamDetailResponse)
 @require_permission("view_teams")
-async def get_team(
+def get_team(
     team_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -210,7 +211,7 @@ async def get_team(
 
 @router.patch("/teams/{team_id}", response_model=TeamResponse)
 @require_permission("edit_teams")
-async def update_team(
+def update_team(
     team_id: UUID,
     team_data: TeamUpdate,
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -256,7 +257,7 @@ async def update_team(
 
 @router.delete("/teams/{team_id}", status_code=status.HTTP_204_NO_CONTENT)
 @require_permission("delete_teams")
-async def delete_team(
+def delete_team(
     team_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -296,7 +297,7 @@ async def delete_team(
 
 @router.post("/teams/{team_id}/members", status_code=status.HTTP_201_CREATED)
 @require_permission("manage_teams")
-async def add_team_member(
+def add_team_member(
     team_id: UUID,
     member_data: TeamMemberAdd,
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -347,15 +348,25 @@ async def add_team_member(
             detail="Cannot add user from different account to team",
         )
 
-    # Add member to team
-    membership = crud_team.add_member(
-        db=db,
-        team_id=team_id,
-        user_id=member_data.user_id,
-        role=member_data.role,
-        added_by=current_user.id,
-    )
-    db.commit()
+    if crud_team.get_membership(db, team_id=team_id, user_id=member_data.user_id):
+        raise HTTPException(409, "User is already a member of this team")
+    try:
+        membership = crud_team.add_member(
+            db=db,
+            team_id=team_id,
+            user_id=member_data.user_id,
+            role=member_data.role,
+            added_by=current_user.id,
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        if (
+            getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            == "uq_team_user"
+        ):
+            raise HTTPException(409, "User is already a member of this team") from exc
+        raise
 
     logger.info(
         f"User {member_data.user_id} added to team {team_id} by {current_user.username}"
@@ -381,7 +392,7 @@ async def add_team_member(
     "/teams/{team_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT
 )
 @require_permission("manage_teams")
-async def remove_team_member(
+def remove_team_member(
     team_id: UUID,
     user_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
@@ -423,16 +434,15 @@ async def remove_team_member(
 
     db.commit()
 
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
     logger.info(
         f"User {user_id} removed from team {team_id} by {current_user.username}"
     )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/teams/{team_id}/members", response_model=list[TeamMemberResponse])
 @require_permission("view_teams")
-async def get_team_members(
+def get_team_members(
     team_id: UUID,
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
@@ -471,7 +481,7 @@ async def get_team_members(
 
 @router.patch("/teams/{team_id}/members/{user_id}")
 @require_permission("manage_teams")
-async def update_team_member(
+def update_team_member(
     team_id: UUID,
     user_id: UUID,
     member_data: TeamMemberUpdate,

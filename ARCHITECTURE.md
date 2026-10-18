@@ -580,13 +580,15 @@ The lookup exposes no account identifiers and does not change model routing.
 Preloop (OSS) owns user, invitation and team CRUD in
 `preloop.api.endpoints.users`, `invitations` and `teams`. Models, schemas and
 CRUD remain in `preloop.models`. Core registers these routers once, including
-the unauthenticated invitation inspection/acceptance routes. User and team
+the unauthenticated invitation inspection/acceptance routes. Blocking CRUD
+handlers use FastAPI's synchronous thread-pool dispatch. User and team
 management and basic role capability flags are present without commercial
 plugins, including with `DISABLE_PROPRIETARY_PLUGINS=true`.
 
 The system `admin` and `member` roles are available in Preloop (OSS). Existing
 `owner` assignments retain account ownership and only owners can grant that
-role. New OSS colleagues default to member. The core permission decorator
+role. Removing an owner or primary user also requires ownership; bulk operations
+report denied targets as skipped. New OSS colleagues default to member. The core permission decorator
 checks the seeded permission matrix when advanced RBAC is absent; member
 permissions exclude user, role and team administration and the administrative
 user directory. Invitation token lists require administrative user visibility.

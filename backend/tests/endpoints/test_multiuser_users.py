@@ -3,7 +3,6 @@
 from uuid import uuid4
 from unittest.mock import patch
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -338,10 +337,7 @@ def test_tenant_admin_cannot_update_another_person_identity(
     )
 
 
-@pytest.mark.asyncio
-async def test_update_user_response_serializes_roles(
-    test_user: User, db_session: Session
-):
+def test_update_user_response_serializes_roles(test_user: User, db_session: Session):
     """Test updating a user with roles returns serialized role data."""
     target_user = crud_user.create(
         db_session,
@@ -372,7 +368,7 @@ async def test_update_user_response_serializes_roles(
 
     from preloop.api.endpoints.users import update_user
 
-    response = await update_user(
+    response = update_user(
         target_user.id,
         AdminUserUpdate(is_active=False),
         test_user,
