@@ -270,6 +270,42 @@ available for a later session. The [operator-note guide](docs/guide/operator-not
 lists harness capabilities; the [verification guide](docs/guide/operator-notes-smoke.md)
 provides isolated receipt and lifecycle checks.
 
+### Live activity and presence
+
+The prompt, turn-end and session-end hooks now persist *when* they fired, never
+what was typed (#1889). `POST /agents/session-start` with `hook_event_name`
+`UserPromptSubmit` (Cursor `beforeSubmitPrompt`) writes a `user_prompt` row to
+`runtime_session_activity`; `POST /agents/session-event` writes `turn_end` for
+Stop/SubagentStop and `session_end` (stamping `ended_at` once, never
+re-opening) for SessionEnd. The three activity types carry a NULL `summary`
+and metadata limited to source, hook name, actor user and managed agent; a
+repeat of the same kind on a session within 2 s is dropped
+(`services/session_hook_events.py`, `crud_runtime_session_activity.log_hook_turn_event`).
+Each write emits `runtime_session_prompt`, `runtime_session_turn_ended` or
+`runtime_session_hook_ended` on the `runtime_sessions` topic. The CLI's
+`permission-hook session`, `stop` and `session-end` and the `claude-preloop`
+and `codex-preloop` runtime plugins send them, fail-open.
+
+The Cloud/Enterprise live activity board derives presence and agent work
+states from these timestamps. Its tables are created in the open-source
+schema and written only by the extension plugin; the open-source edition ships
+them empty and reports `live_activity: false` from `/features`:
+
+| Table | Holds |
+|---|---|
+| `activity_rollup` | per-account, per-subject minute and hour counts, spend and latency histograms |
+| `presence_state` | each subject's current state (`until IS NULL`, partial unique) and recent history |
+| `activity_worker_watermark` | how far the worker has read each raw source |
+| `activity_settings` | the per-account presence switch (absent row = on) |
+
+All access goes through `models/crud/live_activity.py`. Board reads touch only
+those tables plus `user`, `managed_agent` and `runtime_session`; the worker's
+source reads are incremental, time-bounded and row-limited, served by
+`ix_rsa_account_turn_events`, `ix_approval_request_requested_at` and
+`ix_approval_request_resolved_at`. Two realtime topics carry the board:
+`activity_metrics` (account aggregates) and `presence`, whose person and device
+events reach only sockets holding `view_users`, plus the subject's own socket.
+
 Runner registration and heartbeats report `docker_available` from a five-second `docker ps` probe. Container leases require that capability, including explicitly pinned runners. The CRUD layer excludes paused runners from selection and slot claims; leasing rechecks scheduling preferences after locking the row. Capability tags are derived from the current daemon result and enabled, signed-in harness inventory alongside custom labels. `accept_untagged` defaults to false and `paused` defaults to false; console scheduling edits persist independently of the process's registration and heartbeat. Automatic routing uses hosted compute when no private runner accepts the job.
 
 Cursor remote sessions require host consent and the Preloop approval hooks. The host creates a chat with `cursor-agent create-chat` and uses `--resume` for each turn, with the same authorized workspace policy and process cancellation as Copilot sessions.

@@ -37,6 +37,19 @@ describe('lazy route modules', () => {
       expect(route.load).to.equal(capabilityRouteLoaders['governance-view']);
   });
 
+  it('registers the Activity page only with live_activity', () => {
+    expect(
+      capabilityRoutesFor(new Set()).some(
+        (route) => route.component === 'live-activity-view'
+      )
+    ).to.equal(false);
+    const routes = capabilityRoutesFor(new Set(['live_activity']));
+    expect(routes.map((route) => route.path)).to.eql(['activity']);
+    expect(routes[0].load).to.equal(
+      capabilityRouteLoaders['live-activity-view']
+    );
+  });
+
   it('loads only matching routes and waits for registration before rendering', async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => {

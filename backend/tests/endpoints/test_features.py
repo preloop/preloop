@@ -64,6 +64,7 @@ class TestGetFeatures:
                 "account_hierarchy": False,
                 "abac_rules": False,
                 "anthropic_inference_hooks": False,
+                "live_activity": False,
                 "ticket_readiness": False,
                 "desktop_views": False,
             },
@@ -105,6 +106,7 @@ class TestGetFeatures:
                 "account_hierarchy": False,
                 "abac_rules": False,
                 "anthropic_inference_hooks": False,
+                "live_activity": False,
                 "ticket_readiness": False,
                 "desktop_views": False,
             },
@@ -137,7 +139,7 @@ class TestGetFeatures:
         assert "plugins" in result
         assert "features" in result
         assert len(result["plugins"]) == 3
-        assert len(result["features"]) == 19
+        assert len(result["features"]) == 20
         assert result["features"]["policy_simulation"] is True
         assert result["features"]["session_optimization"] is True
         assert result["features"]["chat_connections"] is True
@@ -395,6 +397,7 @@ class TestAccountCapabilities:
         "account_hierarchy",
         "abac_rules",
         "anthropic_inference_hooks",
+        "live_activity",
     )
 
     @patch("preloop.api.auth.bootstrap.crud_user")

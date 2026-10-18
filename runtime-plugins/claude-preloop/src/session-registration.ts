@@ -23,6 +23,30 @@ export class SessionRegistrar {
     return task;
   }
 
+  /**
+   * Record a turn end or session end for the live activity board (#1889).
+   * Only the hook name and the session id are sent, never turn text. Fire and
+   * forget: a failure is logged and never fails the turn.
+   */
+  recordEvent(sessionId: string | undefined, hookEventName: "Stop" | "SessionEnd"): Promise<void> {
+    if (!sessionId || !this.config.control_ws_url || !this.config.bearer_token) return Promise.resolve();
+    if (!/^[A-Za-z0-9_.:\-]{1,200}$/.test(sessionId) || sessionId.includes("..")) return Promise.resolve();
+    const url = new URL(this.config.control_ws_url);
+    url.protocol = url.protocol === "wss:" ? "https:" : "http:";
+    url.pathname = "/api/v1/agents/session-event";
+    url.search = "";
+    return fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${this.config.bearer_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, hook_event_name: hookEventName, source: this.source }),
+      signal: AbortSignal.timeout(5000),
+    }).then(response => {
+      if (!response.ok) throw new Error(`API error (status ${response.status})`);
+    }).catch(error => {
+      process.stderr.write(`preloop session event: could not record ${hookEventName}: ${String(error)}\n`);
+    });
+  }
+
   private async post(sessionId: string, cwd?: string): Promise<void> {
     if (!this.config.control_ws_url || !this.config.bearer_token) return;
     if (!/^[A-Za-z0-9_.:\-]{1,200}$/.test(sessionId) || sessionId.includes("..")) return;

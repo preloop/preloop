@@ -24,6 +24,11 @@ ACCOUNT_TOPIC_GATEWAY_ACTIVITY = "gateway_activity"
 ACCOUNT_TOPIC_BUDGET_HEALTH = "budget_health"
 ACCOUNT_TOPIC_AUDIT = "audit"
 ACCOUNT_TOPIC_RUNNERS = "runners"
+# Live activity board (#1889): aggregate metrics for every account viewer,
+# and presence changes gated per subject in ``WebSocketManager``.
+ACCOUNT_TOPIC_ACTIVITY_METRICS = "activity_metrics"
+ACCOUNT_TOPIC_PRESENCE = "presence"
+PRESENCE_PERSON_SUBJECTS = frozenset({"person", "device", "person_device"})
 MAX_NATS_PAYLOAD_BYTES = 1_000_000
 
 ACCOUNT_REALTIME_TOPICS = {
@@ -37,6 +42,8 @@ ACCOUNT_REALTIME_TOPICS = {
     ACCOUNT_TOPIC_BUDGET_HEALTH,
     ACCOUNT_TOPIC_AUDIT,
     ACCOUNT_TOPIC_RUNNERS,
+    ACCOUNT_TOPIC_ACTIVITY_METRICS,
+    ACCOUNT_TOPIC_PRESENCE,
 }
 
 

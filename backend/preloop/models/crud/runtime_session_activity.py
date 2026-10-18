@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
@@ -27,6 +27,10 @@ MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN = 2000
 # ``success`` is kept in the success set so rows written before the outcome
 # split still aggregate as successes.
 TOOL_CALL_SUCCESS_STATUSES = ("success", "succeeded")
+
+# Timestamps the harness hooks report (#1889). They carry no content.
+HOOK_TURN_ACTIVITY_TYPES = ("user_prompt", "turn_end", "session_end")
+HOOK_EVENT_DEDUPE_SECONDS = 2.0
 
 
 def _tool_call_failure_count_expr(status_column: Any) -> Any:
@@ -603,6 +607,80 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if commit:
             db.commit()
             db.refresh(db_obj)
+        return db_obj
+
+    def log_hook_turn_event(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        activity_type: str,
+        api_key_id: Optional[Any] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        timestamp: Optional[datetime] = None,
+        dedupe_seconds: float = HOOK_EVENT_DEDUPE_SECONDS,
+        commit: bool = True,
+    ) -> Optional[RuntimeSessionActivity]:
+        """Persist one prompt, turn-end or session-end timestamp from a hook.
+
+        These rows carry a time and a kind only: ``summary`` is always NULL,
+        so prompt text never reaches this table. A repeat of the same kind on
+        the same session within ``dedupe_seconds`` is dropped, because a
+        harness may run the hook twice (CLI hook and runtime plugin).
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            runtime_session_id: Session the event belongs to.
+            activity_type: One of :data:`HOOK_TURN_ACTIVITY_TYPES`.
+            api_key_id: Hook credential that reported it.
+            metadata: Source, hook event name and actor; never content.
+            timestamp: Server receive time; defaults to now.
+            dedupe_seconds: Window in which a repeat is dropped.
+            commit: Commit when True, flush otherwise.
+
+        Returns:
+            The new row, or None when it was a duplicate.
+
+        Raises:
+            ValueError: When ``activity_type`` is not a hook turn type.
+        """
+        if activity_type not in HOOK_TURN_ACTIVITY_TYPES:
+            raise ValueError(f"Unsupported hook activity type: {activity_type}")
+        activity_timestamp = timestamp or datetime.now(timezone.utc)
+        duplicate = (
+            db.query(RuntimeSessionActivity.id)
+            .filter(
+                RuntimeSessionActivity.runtime_session_id == runtime_session_id,
+                RuntimeSessionActivity.activity_type == activity_type,
+                RuntimeSessionActivity.timestamp
+                >= activity_timestamp - timedelta(seconds=dedupe_seconds),
+            )
+            .first()
+        )
+        if duplicate is not None:
+            return None
+        db_obj = RuntimeSessionActivity(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            api_key_id=api_key_id,
+            activity_type=activity_type,
+            status=None,
+            summary=None,
+            metadata_=sanitize_for_jsonb(metadata),
+            timestamp=activity_timestamp,
+        )
+        db.add(db_obj)
+        session = db.get(RuntimeSession, runtime_session_id)
+        if session is not None and activity_type != "session_end":
+            session.last_activity_at = activity_timestamp
+            db.add(session)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
         return db_obj
 
     def log_agent_control_message(

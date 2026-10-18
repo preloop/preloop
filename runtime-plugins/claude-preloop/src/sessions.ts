@@ -196,6 +196,8 @@ class OwnedSession {
           } else {
             this.settleNextWaiter(reply ?? "", readTurnUsage(message));
           }
+          // The turn's end time for the live activity board (#1889).
+          void this.registrar.recordEvent(this.sessionId, "Stop");
         }
       }
     } catch (error) {
@@ -205,6 +207,7 @@ class OwnedSession {
       }
     } finally {
       this.ended = true;
+      void this.registrar.recordEvent(this.sessionId, "SessionEnd");
       const error = this.endError
         ? new Error(`Claude Code session ended: ${this.endError.message}`)
         : new Error("Claude Code session ended");

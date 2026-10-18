@@ -19,7 +19,11 @@ from sqlalchemy.exc import (
 
 from preloop.sync.services.event_bus import get_task_publisher
 from preloop.models.db.session import get_db_session as get_db
-from preloop.services.account_realtime import ACCOUNT_REALTIME_TOPICS
+from preloop.services.account_realtime import (
+    ACCOUNT_REALTIME_TOPICS,
+    ACCOUNT_TOPIC_PRESENCE,
+    PRESENCE_PERSON_SUBJECTS,
+)
 
 from preloop.sync.tasks import notify_admins
 
@@ -395,6 +399,10 @@ class WebSocketManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.connection_accounts: Dict[str, str] = {}  # connection_id -> account_id
         self.approval_visibility: Dict[str, bool] = {}
+        # connection_id -> may see other people's presence (view_users)
+        self.presence_visibility: Dict[str, bool] = {}
+        # connection_id -> authenticated user id, for the own-row exception
+        self.connection_users: Dict[str, str] = {}
         self.connection_topics: Dict[str, Set[str]] = {}  # connection_id -> topics
         # connection_id -> filter, for sockets attached to one session
         self.session_streams: Dict[str, "SessionStreamFilter"] = {}
@@ -502,6 +510,24 @@ class WebSocketManager:
             return "flow_executions"
         return None
 
+    def _accepts_presence(self, connection_id: str, data: dict) -> bool:
+        """Gate person and device presence like approvals (#1889).
+
+        Agent subjects reach every connection on the account. A person or
+        device subject reaches a connection that holds ``view_users``, or
+        the connection of the person the event is about.
+        """
+        payload = data.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        if payload.get("subject_type") not in PRESENCE_PERSON_SUBJECTS:
+            return True
+        if self.presence_visibility.get(connection_id, False):
+            return True
+        own = self.connection_users.get(connection_id)
+        subject = str(payload.get("subject_id") or "")
+        person = subject.split(":", 1)[0]
+        return own is not None and own in {subject, person}
+
     def _accepts_topic(self, connection_id: str, topic: Optional[str]) -> bool:
         topics = self.connection_topics.get(connection_id)
         if not topics or topic is None:
@@ -519,6 +545,8 @@ class WebSocketManager:
         if connection_id in self.connection_accounts:
             del self.connection_accounts[connection_id]
         self.approval_visibility.pop(connection_id, None)
+        self.presence_visibility.pop(connection_id, None)
+        self.connection_users.pop(connection_id, None)
         self.connection_topics.pop(connection_id, None)
         self.session_streams.pop(connection_id, None)
 
@@ -624,6 +652,10 @@ class WebSocketManager:
                     continue
             if topic == "approvals" and not self.approval_visibility.get(
                 connection_id, False
+            ):
+                continue
+            if topic == ACCOUNT_TOPIC_PRESENCE and not self._accepts_presence(
+                connection_id, data
             ):
                 continue
             if not self._accepts_topic(connection_id, topic):

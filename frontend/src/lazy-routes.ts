@@ -43,6 +43,11 @@ export interface CapabilityRoute {
  */
 export const CAPABILITY_ROUTES: readonly CapabilityRoute[] = [
   {
+    capability: 'live_activity',
+    path: 'activity',
+    component: 'live-activity-view',
+  },
+  {
     capability: 'cloud_support',
     path: 'support/:conversationId',
     component: 'support-conversation-view',
@@ -93,6 +98,7 @@ export const capabilityRouteLoaders: ComponentLoaders = {
   'support-conversation-view': () =>
     import('./views/authed/support-conversation-view'),
   'device-fleet-view': () => import('./views/authed/device-fleet-view'),
+  'live-activity-view': () => import('./views/authed/live-activity-view'),
   'governance-view': () => import('./views/authed/governance-view'),
   'inference-hooks-view': () =>
     import('./views/authed/settings/inference-hooks-view'),

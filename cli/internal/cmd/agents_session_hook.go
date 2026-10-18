@@ -85,6 +85,9 @@ type sessionStartRequest struct {
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	FirstPrompt     string `json:"first_prompt,omitempty"`
 	Alias           string `json:"alias,omitempty"`
+	// HookEventName lets the server tell a prompt from a session start, so
+	// it can record when each prompt was submitted (#1889). Never the text.
+	HookEventName string `json:"hook_event_name,omitempty"`
 }
 
 type sessionStartResponse struct {
@@ -266,7 +269,20 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 	hasPrompt := strings.TrimSpace(event.Prompt) != ""
 	needsRegistration := !isPrompt || (hasPrompt && !(haveFile && existing.TitleSent))
 	if isPrompt && !needsRegistration {
-		// Nothing to register and (see below) nothing new to deliver.
+		// Nothing to register and (see below) nothing new to deliver, but
+		// the server still records when this prompt was submitted (#1889).
+		// No prompt text is sent.
+		if cred, err := resolvePermissionHookCredential(source); err == nil {
+			req := sessionStartRequest{
+				SessionID:     externalID,
+				Source:        source,
+				Cwd:           strings.TrimSpace(event.Cwd),
+				HookEventName: strings.TrimSpace(event.HookEventName),
+			}
+			if _, err := postSessionStart(cred, req); err != nil {
+				fmt.Fprintf(errOut, "preloop session hook: could not record the prompt: %v\n", err)
+			}
+		}
 		return nil
 	}
 
@@ -282,6 +298,7 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 			Cwd:             strings.TrimSpace(event.Cwd),
 			ParentSessionID: strings.TrimSpace(os.Getenv(parentSessionEnvVar)),
 			Alias:           strings.TrimSpace(os.Getenv(sessionAliasEnvVar)),
+			HookEventName:   strings.TrimSpace(event.HookEventName),
 		}
 		if isPrompt {
 			req.FirstPrompt = event.Prompt

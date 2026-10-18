@@ -54,6 +54,7 @@ from .account import CRUDAccount
 from .account_halt import CRUDAccountHalt, crud_account_halt
 from .expected_device import crud_expected_device
 from .fleet import crud_fleet_finding, crud_fleet_alert_settings
+from .live_activity import crud_live_activity
 from .account_milestone import CRUDAccountMilestone, crud_account_milestone
 from .agent_control_command import CRUDAgentControlCommand
 from .ai_model import CRUDAIModel
@@ -314,6 +315,7 @@ __all__ = [
     "crud_mcp_inventory",
     "crud_fleet_finding",
     "crud_fleet_alert_settings",
+    "crud_live_activity",
     "identity_directory",
     "CRUDPerson",
     "IdentityConflictError",

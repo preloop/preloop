@@ -49,6 +49,7 @@ import {
   type FleetMapPoints,
 } from '../utils/fleet-map-spatial';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
+import { attachFullscreen } from '../utils/fullscreen-host';
 import { getAgentKindPresentation } from '../utils/agent-kinds';
 import consoleStyles from '../styles/console-styles.css?inline';
 
@@ -306,9 +307,10 @@ export class FleetMap extends LitElement {
 
   protected updated(changed: Map<string, unknown>): void {
     if (changed.has('fullscreen')) {
-      document.body.style.overflow = this.fullscreen ? 'hidden' : '';
-      if (this.fullscreen) window.addEventListener('keydown', this.onWindowKey);
-      else window.removeEventListener('keydown', this.onWindowKey);
+      this.releaseFullscreen?.();
+      this.releaseFullscreen = this.fullscreen
+        ? attachFullscreen(this, { onEscape: this.onWindowKey })
+        : undefined;
       this.refit = true;
     }
     // A background refresh replaces the graph; only the first graph or a new
@@ -337,8 +339,8 @@ export class FleetMap extends LitElement {
     if (this.refreshTimer !== undefined) clearInterval(this.refreshTimer);
     if (this.staleTimer !== undefined) clearTimeout(this.staleTimer);
     this.refreshTimer = this.staleTimer = undefined;
-    window.removeEventListener('keydown', this.onWindowKey);
-    if (this.fullscreen) document.body.style.overflow = '';
+    this.releaseFullscreen?.();
+    this.releaseFullscreen = undefined;
   }
 
   // The Agents canvas uses the same transformed Lit nodes, SVG links and
@@ -482,8 +484,9 @@ export class FleetMap extends LitElement {
   }
 
   /** Esc anywhere first clears a selection, then leaves full screen. */
+  private releaseFullscreen?: () => void;
+
   private onWindowKey = (event: KeyboardEvent): void => {
-    if (event.key !== 'Escape' || event.defaultPrevented) return;
     if (this.hasSelection()) this.clearSelection();
     else this.toggleFullscreen();
     event.preventDefault();

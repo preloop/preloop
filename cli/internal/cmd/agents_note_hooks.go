@@ -249,6 +249,14 @@ func runAgentsStopHook(cmd *cobra.Command, _ []string) error {
 	if sessionID == "" {
 		return nil
 	}
+	cred, ok := hookCredentialForCommand(cmd)
+	if !ok {
+		return nil
+	}
+	// Record the turn end (#1889) beside the note pull. A Stop that then
+	// blocks with a note records one too; the server counts consecutive
+	// turn ends without a prompt between them once, from the last.
+	defer startSessionEvent(cred, sessionID, sessionEventName(cred.Source, event.HookEventName, false), errOut, "stop")()
 	// Respect the harness's own loop guard: `stop_hook_active` means this
 	// Stop already follows a block, so blocking again would spin.
 	if event.StopHookActive || event.LoopCount >= stopBlockSessionMax {
@@ -258,10 +266,6 @@ func runAgentsStopHook(cmd *cobra.Command, _ []string) error {
 	// block we then refuse would lose it. Past the cap the note stays pending
 	// and SessionEnd marks it undeliverable.
 	if readStopBlockCount(sessionID) >= stopBlockSessionMax {
-		return nil
-	}
-	cred, ok := hookCredentialForCommand(cmd)
-	if !ok {
 		return nil
 	}
 	if cred.Source != permissionSourceClaudeCode && cred.Source != permissionSourceCodexCLI && cred.Source != permissionSourceCursor {
@@ -329,6 +333,10 @@ func runAgentsSessionEndHook(cmd *cobra.Command, _ []string) error {
 	if !ok {
 		return nil
 	}
+	// The session-end timestamp for the live activity board (#1889), sent
+	// beside the note cleanup rather than after it.
+	wait := startSessionEvent(cred, sessionID, sessionEventName(cred.Source, event.HookEventName, true), cmd.ErrOrStderr(), "session-end")
+	defer wait()
 	payload := map[string]string{"external_session_id": sessionID}
 	if reason := strings.TrimSpace(event.Reason); reason != "" {
 		payload["reason"] = reason

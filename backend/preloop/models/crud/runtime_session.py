@@ -394,6 +394,47 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             db.flush()
         return db_obj
 
+    def mark_ended_by_hook(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        ended_at: datetime,
+        commit: bool = True,
+    ) -> tuple[Optional[RuntimeSession], bool]:
+        """Stamp ``ended_at`` from a SessionEnd hook, at most once.
+
+        Idempotent and one-way: an ended session keeps its first ``ended_at``
+        and is never re-opened here.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            runtime_session_id: Session to end.
+            ended_at: Server receive time of the hook.
+            commit: Commit when True, flush otherwise.
+
+        Returns:
+            The session (None when absent) and whether this call ended it.
+        """
+        db_obj = self.get_account_session(
+            db, account_id=str(account_id), runtime_session_id=str(runtime_session_id)
+        )
+        if db_obj is None:
+            return None, False
+        if db_obj.ended_at is not None:
+            return db_obj, False
+        db_obj.ended_at = ended_at
+        db_obj.last_activity_at = ended_at
+        db.add(db_obj)
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
+        return db_obj, True
+
     def reopen_for_managed_agent(
         self,
         db: Session,

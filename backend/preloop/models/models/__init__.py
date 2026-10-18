@@ -30,6 +30,12 @@ from .flow import Flow
 from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
 from .fleet import FleetFinding, FleetAlertSettings
+from .live_activity import (
+    ActivityRollup,
+    ActivitySettings,
+    ActivityWorkerWatermark,
+    PresenceState,
+)
 from .flow_runner import (
     DEFAULT_RUNNER_CONCURRENCY,
     MAX_RUNNER_CONCURRENCY,
@@ -197,6 +203,10 @@ __all__ = [
     "MCPInventoryReview",
     "FleetFinding",
     "FleetAlertSettings",
+    "ActivityRollup",
+    "ActivitySettings",
+    "ActivityWorkerWatermark",
+    "PresenceState",
     "DESKTOP_VIEW_OPEN_STATES",
     "DesktopEndpoint",
     "DesktopView",

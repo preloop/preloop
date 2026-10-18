@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from preloop.api.auth.jwt import (
@@ -32,6 +32,11 @@ from preloop.models.crud import (
 from preloop.models.db.session import get_session_factory
 from preloop.services import operator_notes
 from preloop.services.agent_permission_service import request_agent_permission
+from preloop.services.session_hook_events import (
+    is_prompt_event,
+    record_prompt,
+    record_session_event,
+)
 from preloop.services.flow_approval_policy import (
     FlowApprovalGrant,
     resolve_flow_grant,
@@ -838,6 +843,14 @@ class AgentSessionStartRequest(BaseModel):
         max_length=20000,
         description="The first user prompt. Only a redacted 120 character title is kept.",
     )
+    hook_event_name: Optional[str] = Field(
+        None,
+        max_length=64,
+        description=(
+            "The hook that sent this call. UserPromptSubmit (Cursor "
+            "beforeSubmitPrompt) records the time of a prompt, never its text."
+        ),
+    )
 
 
 class AgentSessionStartResponse(BaseModel):
@@ -860,7 +873,7 @@ def _register_session_start(
     if not principal_type or not principal_id:
         return None
     with get_session_factory()() as db:
-        return register_session_start(
+        result = register_session_start(
             db,
             account_id=identity.account_id,
             principal_type=principal_type,
@@ -874,6 +887,24 @@ def _register_session_start(
             alias=payload.alias,
             actor_user_id=identity.user_id,
         )
+        if result is not None and is_prompt_event(payload.hook_event_name):
+            try:
+                record_prompt(
+                    db,
+                    account_id=identity.account_id,
+                    runtime_session_id=UUID(result.runtime_session_id),
+                    api_key_id=identity.api_key_id,
+                    actor_user_id=identity.user_id,
+                    source=payload.source,
+                    hook_event_name=(payload.hook_event_name or "").strip(),
+                    managed_agent_id=identity.managed_agent_id,
+                )
+            except Exception:
+                # The prompt timestamp is analytics; registration already
+                # succeeded and the hook must not fail on it.
+                db.rollback()
+                logger.warning("Could not record the prompt event", exc_info=True)
+        return result
 
 
 @router.post(
@@ -923,3 +954,98 @@ async def agent_session_start(
         created=result.created,
         alias=result.alias,
     )
+
+
+class AgentSessionEventRequest(BaseModel):
+    """A harness turn ending or session ending under a hook (#1889).
+
+    Sent by the Stop, SubagentStop and SessionEnd hooks. Only the time and
+    the kind are kept.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: str = Field(
+        ..., min_length=1, max_length=200, description="The harness's own session id"
+    )
+    hook_event_name: Literal["Stop", "SubagentStop", "SessionEnd", "stop", "sessionEnd"]
+    source: Optional[str] = Field(
+        None, max_length=64, description="Agent adapter, e.g. 'claude_code'"
+    )
+
+
+def _record_session_event(
+    identity: PermissionIdentity, payload: AgentSessionEventRequest
+) -> bool:
+    """Resolve the hook's session and record the event; False when unknown."""
+    from preloop.models.crud import crud_runtime_session
+    from preloop.services.agent_session_headers import normalize_session_id
+    from preloop.services.agent_session_lineage import (
+        resolve_external_session,
+        session_source_id_for,
+    )
+
+    principal_type = identity.runtime_principal_type
+    principal_id = identity.runtime_principal_id
+    external = normalize_session_id(payload.session_id)
+    if not principal_type or not principal_id or external is None:
+        return False
+    with get_session_factory()() as db:
+        session = crud_runtime_session.get_by_source(
+            db,
+            account_id=identity.account_id,
+            session_source_type=principal_type,
+            session_source_id=session_source_id_for(principal_id, external),
+        )
+        if session is None:
+            found = resolve_external_session(
+                db,
+                account_id=identity.account_id,
+                external_session_id=external,
+                principal_type=principal_type,
+                principal_id=principal_id,
+            )
+            session = found[0] if found else None
+        if session is None:
+            return False
+        record_session_event(
+            db,
+            session=session,
+            api_key_id=identity.api_key_id,
+            actor_user_id=identity.user_id,
+            source=payload.source,
+            hook_event_name=payload.hook_event_name,
+            managed_agent_id=identity.managed_agent_id,
+        )
+        return True
+
+
+@router.post(
+    "/agents/session-event",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    tags=["Agent Permissions"],
+)
+async def agent_session_event(
+    payload: AgentSessionEventRequest,
+    authorization: Optional[str] = Header(None),
+) -> Response:
+    """Record that a hook-governed turn or session ended (#1889).
+
+    Stop and SubagentStop write a ``turn_end`` activity; SessionEnd writes
+    ``session_end`` and stamps ``ended_at`` once. An unknown session, or a
+    failure to record, still answers 204: a hook must never fail the harness.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Runtime bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    try:
+        await run_db_off_loop(lambda: _record_session_event(identity, payload))
+    except Exception:
+        logger.warning("Could not record the session event", exc_info=True)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

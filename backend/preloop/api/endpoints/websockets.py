@@ -44,6 +44,12 @@ async def _resolve_token_user(token: str) -> Optional[models.User]:
     return await run_db_async(_lookup)
 
 
+@require_permission("view_users")
+def _presence_visibility(*, current_user: models.User, db: Session) -> bool:
+    """Whether the viewer may see other people's presence (#1889)."""
+    return True
+
+
 @require_permission("view_approvals")
 def _approval_visibility(*, current_user: models.User, db: Session) -> bool:
     """Apply the same OSS, RBAC and account authorizer as approval REST reads."""
@@ -145,6 +151,35 @@ async def _set_approval_visibility(connection_id: str, user: models.User) -> Non
         logger.warning("Approval websocket authorization failed", exc_info=True)
 
 
+async def _set_presence_visibility(connection_id: str, user: models.User) -> None:
+    """Record whether this socket may receive other people's presence.
+
+    Fails closed: until the check answers, and when it fails, the socket
+    receives only its own user's presence events.
+    """
+    manager.presence_visibility[connection_id] = False
+    manager.connection_users[connection_id] = str(user.id)
+
+    def check(db: Session) -> bool:
+        return _presence_visibility(current_user=user, db=db)
+
+    try:
+        manager.presence_visibility[connection_id] = await run_db_async(check)
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            logger.warning(
+                "Presence websocket authorization unavailable", exc_info=True
+            )
+    except Exception:
+        logger.warning("Presence websocket authorization failed", exc_info=True)
+
+
+async def _set_topic_visibility(connection_id: str, user: models.User) -> None:
+    """Apply every per-permission topic gate for one authenticated socket."""
+    await _set_approval_visibility(connection_id, user)
+    await _set_presence_visibility(connection_id, user)
+
+
 @router.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """
@@ -200,7 +235,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # Connect with account_id for filtering
     connection_id = await manager.connect_with_account(websocket, str(user.account_id))
-    await _set_approval_visibility(connection_id, user)
+    await _set_topic_visibility(connection_id, user)
 
     logger.info(
         f"WebSocket session {session.id} established for {user.username} "
@@ -508,7 +543,7 @@ async def unified_websocket(websocket: WebSocket):
             manager_connection_id = await manager.connect_with_account(
                 websocket, str(user.account_id)
             )
-            await _set_approval_visibility(manager_connection_id, user)
+            await _set_topic_visibility(manager_connection_id, user)
         else:
             # For anonymous users, register without account filtering
             manager_connection_id = str(session.connection_id)
@@ -600,7 +635,7 @@ async def unified_websocket(websocket: WebSocket):
                     manager_connection_id = await manager.connect_with_account(
                         websocket, str(user.account_id)
                     )
-                    await _set_approval_visibility(manager_connection_id, user)
+                    await _set_topic_visibility(manager_connection_id, user)
                     for topic in subscribed_topics:
                         manager.subscribe(manager_connection_id, topic)
 

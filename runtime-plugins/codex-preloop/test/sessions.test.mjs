@@ -314,7 +314,7 @@ test("spawn env registers an SDK session and records the final alias", async () 
   const { manager } = makeManager();
   try {
     await manager.sendMessage({text:"hello"});
-    assert.equal(requests.length, 1);
+    assert.equal(requests.filter((r) => r.url.endsWith("/session-start")).length, 1);
     assert.equal(requests[0].body.alias, "brief");
     assert.equal(requests[0].body.parent_session_id, process.env.PRELOOP_PARENT_SESSION_ID);
     const file = JSON.parse(await fs.readFile(path.join(home, ".preloop/sessions/thread-1.json"), "utf8"));
@@ -364,5 +364,29 @@ test("execution-scoped workers register with the execution credential", async ()
   } finally {
     manager.stop(); globalThis.fetch=original.fetch;
     if(original.alias===undefined) delete process.env.PRELOOP_SESSION_ALIAS; else process.env.PRELOOP_SESSION_ALIAS=original.alias;
+  }
+});
+
+
+test("a finished turn records its end time and no turn text (#1889)", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({url: String(url), body: JSON.parse(options.body)});
+    return new Response(null, {status: 204});
+  };
+  const { manager } = makeManager();
+  try {
+    await manager.sendMessage({text: "secret plan"});
+    await new Promise((resolve) => setImmediate(resolve));
+    const events = requests.filter((r) => r.url.endsWith("/api/v1/agents/session-event"));
+    assert.equal(events.length, 1);
+    assert.equal(events[0].body.hook_event_name, "Stop");
+    assert.equal(events[0].body.source, "codex");
+    assert.ok(events[0].body.session_id);
+    assert.ok(!JSON.stringify(requests).includes("secret plan"));
+  } finally {
+    manager.stop();
+    globalThis.fetch = original;
   }
 });

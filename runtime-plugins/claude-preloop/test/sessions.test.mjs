@@ -228,7 +228,8 @@ test("spawn env registers an SDK session and records the final alias", async () 
   const { manager } = makeManager();
   try {
     await manager.sendMessage({ text: "hello" });
-    assert.equal(requests.length, 1);
+    const starts = requests.filter((r) => r.url.endsWith("/session-start"));
+    assert.equal(starts.length, 1);
     assert.equal(requests[0].body.alias, "brief");
     assert.equal(
       requests[0].body.parent_session_id,
@@ -307,5 +308,36 @@ test("turn progress forwards bounded assistant/tool output and final usage", asy
     assert.equal(JSON.stringify(events).includes("excluded"), false);
   } finally {
     manager.stop();
+  }
+});
+
+
+test("a finished turn records its end time and no turn text (#1889)", async () => {
+  const original = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, options) => {
+    requests.push({ url: String(url), body: JSON.parse(options.body) });
+    return new Response(null, { status: 204 });
+  };
+  const { manager } = makeManager();
+  try {
+    await manager.sendMessage({ text: "secret plan" });
+    await new Promise((resolve) => setImmediate(resolve));
+    const events = requests.filter((r) => r.url.endsWith("/session-event"));
+    assert.equal(events.length, 1);
+    assert.equal(
+      events[0].url,
+      "https://example.preloop.ai/api/v1/agents/session-event",
+    );
+    assert.deepEqual(events[0].body, {
+      session_id: "session-1",
+      hook_event_name: "Stop",
+      source: "claude_code",
+    });
+    assert.ok(!JSON.stringify(requests).includes("secret plan"));
+  } finally {
+    manager.stop();
+    await new Promise((resolve) => setImmediate(resolve));
+    globalThis.fetch = original;
   }
 });

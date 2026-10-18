@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -21,6 +21,19 @@ class RuntimeSessionActivity(Base):
     """One durable activity item associated with a runtime session."""
 
     __tablename__ = "runtime_session_activity"
+    __table_args__ = (
+        # Prompt, turn-end and session-end timestamps (#1889), kept small
+        # next to the tool-call volume so the live activity worker reads
+        # them without scanning the table.
+        Index(
+            "ix_rsa_account_turn_events",
+            "account_id",
+            text("timestamp DESC"),
+            postgresql_where=text(
+                "activity_type IN ('user_prompt', 'turn_end', 'session_end')"
+            ),
+        ),
+    )
 
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

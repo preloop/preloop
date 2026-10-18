@@ -145,11 +145,34 @@ func TestFirstPromptIsSentOnce(t *testing.T) {
 	runSessionHook(t, map[string]interface{}{"hook_event_name": "UserPromptSubmit", "session_id": "ext-p", "prompt": "And another"})
 
 	calls := server.calls()
-	if len(calls) != 2 {
-		t.Fatalf("want 2 registrations (start, first prompt), got %d: %+v", len(calls), calls)
+	if len(calls) != 3 {
+		t.Fatalf("want 3 calls (start, first prompt, prompt marker), got %d: %+v", len(calls), calls)
 	}
 	if calls[1].FirstPrompt != "Fix the bug" {
 		t.Fatalf("first prompt = %q", calls[1].FirstPrompt)
+	}
+	// Every prompt is timestamped (#1889); only the first carries text.
+	if calls[0].HookEventName != "SessionStart" || calls[1].HookEventName != "UserPromptSubmit" {
+		t.Fatalf("hook_event_name not forwarded: %+v", calls)
+	}
+	if calls[2].HookEventName != "UserPromptSubmit" || calls[2].FirstPrompt != "" {
+		t.Fatalf("a later prompt must send its event name and no text: %+v", calls[2])
+	}
+}
+
+func TestLaterPromptFailsOpenWithoutServer(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("CLAUDE_ENV_FILE", "")
+	writeTestPermissionCredential(t, home, "claude_machine", permissionHookCredential{
+		BaseURL: "http://127.0.0.1:1", Token: "agt_session", Source: permissionSourceClaudeCode,
+	})
+	if err := writeSessionHandoff(sessionHandoffFile{RuntimeSessionID: "r", ExternalSessionID: "ext-down", TitleSent: true}); err != nil {
+		t.Fatal(err)
+	}
+	stderr := runSessionHook(t, map[string]interface{}{"hook_event_name": "UserPromptSubmit", "session_id": "ext-down", "prompt": "next"})
+	if !strings.Contains(stderr, "could not record the prompt") {
+		t.Fatalf("expected a logged failure, got %q", stderr)
 	}
 }
 

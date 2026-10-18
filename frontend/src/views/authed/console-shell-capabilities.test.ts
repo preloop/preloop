@@ -72,9 +72,25 @@ describe('ConsoleShell capability gating', () => {
     for (const href of GATED_LINKS) {
       expect(root.querySelector(`a[href="${href}"]`), href).to.equal(null);
     }
+    expect(root.querySelector('a[href="/console/activity"]')).to.equal(null);
     expect(root.querySelector('capability-extension')).to.equal(null);
     expect(customElements.get('account-switcher')).to.equal(undefined);
     expect(api!.callsTo('/api/v1/me/memberships')).to.have.length(0);
+  });
+
+  it('shows the Activity link under Overview with live_activity', async () => {
+    const el = await renderShell(['live_activity']);
+    await waitUntil(
+      () =>
+        el.shadowRoot!.querySelector('a[href="/console/activity"]') !== null,
+      'Activity link did not render'
+    );
+    const links = [
+      ...el.shadowRoot!.querySelectorAll<HTMLAnchorElement>('.nav-list a'),
+    ].map((a) => a.getAttribute('href'));
+    expect(links.indexOf('/console/activity')).to.equal(
+      links.indexOf('/console') + 1
+    );
   });
 
   it('shows the Settings items with account_hierarchy', async () => {

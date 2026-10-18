@@ -375,6 +375,8 @@ export class SessionManager {
       });
       this.remember(session);
       await session.registrar.register(session.thread.id ?? undefined, session.cwd);
+      // The turn's end time for the live activity board (#1889).
+      void session.registrar.recordEvent(session.thread.id ?? undefined, "Stop");
       return {
         reply_text: turn.finalResponse ?? "",
         session_id: session.thread.id ?? session.key,

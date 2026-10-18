@@ -27,6 +27,7 @@ type noteHookStub struct {
 	pendingText     string
 	pendingRequests []notePendingRequest
 	sessionEnd      []map[string]string
+	sessionEvents   []sessionEventRequest
 	startRuntimeID  string
 }
 
@@ -57,6 +58,11 @@ func (s *noteHookStub) handler() http.HandlerFunc {
 			_ = json.Unmarshal(body, &req)
 			s.sessionEnd = append(s.sessionEnd, req)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"marked": 0})
+		case agentSessionEventPath:
+			var req sessionEventRequest
+			_ = json.Unmarshal(body, &req)
+			s.sessionEvents = append(s.sessionEvents, req)
+			w.WriteHeader(http.StatusNoContent)
 		case agentSessionStartPath:
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"runtime_session_id": s.startRuntimeID,
@@ -314,6 +320,69 @@ func TestNoteLifecycleHooksMatchCapturedFixture(t *testing.T) {
 					t.Fatalf("note must appear exactly once in %q", out)
 				}
 			})
+		}
+	}
+}
+
+func (s *noteHookStub) events() []sessionEventRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]sessionEventRequest(nil), s.sessionEvents...)
+}
+
+func TestStopHookRecordsTheTurnEnd(t *testing.T) {
+	stub, _ := newNoteHookStub(t)
+	runNoteHook(t, runAgentsStopHook, `{"session_id":"sess-turn-1","hook_event_name":"Stop"}`)
+	// A Stop following a block still marks the turn end; the server dedupes.
+	runNoteHook(t, runAgentsStopHook, `{"session_id":"sess-turn-1","hook_event_name":"Stop","stop_hook_active":true}`)
+	events := stub.events()
+	if len(events) != 2 {
+		t.Fatalf("expected two turn-end posts, got %#v", events)
+	}
+	for _, event := range events {
+		if event.SessionID != "sess-turn-1" || event.HookEventName != "Stop" || event.Source != permissionSourceClaudeCode {
+			t.Errorf("turn-end body wrong: %#v", event)
+		}
+	}
+}
+
+func TestSessionEndHookRecordsTheSessionEnd(t *testing.T) {
+	stub, _ := newNoteHookStub(t)
+	runNoteHook(t, runAgentsSessionEndHook, `{"session_id":"sess-end-2","reason":"exit"}`)
+	events := stub.events()
+	if len(events) != 1 || events[0].HookEventName != "SessionEnd" || events[0].SessionID != "sess-end-2" {
+		t.Fatalf("expected one SessionEnd event, got %#v", events)
+	}
+}
+
+func TestSessionEventHooksFailOpenWithoutServer(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	writeTestPermissionCredential(t, home, "agent-claude", permissionHookCredential{
+		BaseURL: "http://127.0.0.1:1", Token: "agt_synthetic", Source: permissionSourceClaudeCode,
+	})
+	if out := runNoteHook(t, runAgentsStopHook, `{"session_id":"sess-down","hook_event_name":"Stop"}`); strings.TrimSpace(out) != "" {
+		t.Errorf("an unreachable server must not block the stop, got %q", out)
+	}
+	runNoteHook(t, runAgentsSessionEndHook, `{"session_id":"sess-down"}`)
+}
+
+func TestSessionEventNameUsesTheSourceSpelling(t *testing.T) {
+	cases := []struct {
+		source, reported string
+		end              bool
+		want             string
+	}{
+		{permissionSourceClaudeCode, "Stop", false, "Stop"},
+		{permissionSourceClaudeCode, "SubagentStop", false, "SubagentStop"},
+		{permissionSourceClaudeCode, "", true, "SessionEnd"},
+		{permissionSourceClaudeCode, "SessionEnd", false, "Stop"},
+		{permissionSourceCursor, "", false, "stop"},
+		{permissionSourceCursor, "", true, "sessionEnd"},
+		{permissionSourceCodexCLI, "Stop", false, "Stop"},
+	}
+	for _, c := range cases {
+		if got := sessionEventName(c.source, c.reported, c.end); got != c.want {
+			t.Errorf("sessionEventName(%q, %q, %v) = %q, want %q", c.source, c.reported, c.end, got, c.want)
 		}
 	}
 }

@@ -47,6 +47,7 @@ import { planPageUrl, premiumFeatureLabel } from '../../utils/premium-features';
 
 /** Nav items that require at least one of the listed permissions when RBAC is on. */
 const NAV_PERMISSIONS: Record<string, string[]> = {
+  '/console/activity': ['view_runtime_sessions'],
   '/console/agents': ['view_agents'],
   '/console/flows': ['view_flows'],
   '/console/settings/runners': ['view_flows'],
@@ -1204,6 +1205,23 @@ export class ConsoleShell extends LitElement {
                       `,
                       true
                     )}
+                    ${
+                      hasCapability(this.features, 'live_activity') &&
+                      this._canAccess('/console/activity')
+                        ? this._renderNavLink(
+                            '/console/activity',
+                            html`
+                              <span class="nav-row">
+                                <sl-icon
+                                  name="activity"
+                                  slot="prefix"
+                                ></sl-icon>
+                                <span class="sidebar-label">Activity</span>
+                              </span>
+                            `
+                          )
+                        : nothing
+                    }
                     ${this._renderNavLink(
                       '/console/agents',
                       html`

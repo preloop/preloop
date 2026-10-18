@@ -44,6 +44,30 @@ Common creation paths:
 
 ---
 
+## Prompt and turn timestamps
+
+The hooks that onboarding installs report when a prompt was submitted
+(`UserPromptSubmit`, Cursor `beforeSubmitPrompt`), when the agent finished a
+turn (`Stop`) and when the session ended (`SessionEnd`). Preloop records each as
+a session activity with a time and a kind only: the prompt text is never
+stored (the first prompt still feeds the redacted 120-character session
+title). A session end also marks the session ended.
+
+## Presence
+
+Preloop Cloud and Preloop Enterprise turn these timestamps into an Activity
+board. A person is **active** within 5 minutes of a prompt, an approval
+decision or console use; **idle** up to 30 minutes, or up to 2 hours while one
+of their agents worked in the last 15 minutes; **away** after that. An agent
+is **working** within 60 seconds of a model request or tool call, **waiting for
+approval** while an approval is open, and **waiting for a reply** after a turn
+end that no prompt has followed, for up to 4 hours. Prompts are attributed
+through the onboarding credential's user. Aggregate rates are visible to
+anyone who can view runtime sessions; names, per-person states and reply
+latency need the `view_users` permission, and everyone can see their own row.
+
+---
+
 ## Session Explorer
 
 Account-scoped APIs expose recent sessions plus captured gateway interactions. The console can drill from aggregate usage charts into one session timeline: model calls, tool calls, approvals, and operator actions on the same canvas.

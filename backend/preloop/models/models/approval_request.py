@@ -81,6 +81,14 @@ class ApprovalRequest(Base):
             "requested_at",
             postgresql_ops={"requested_at": "DESC"},
         ),
+        # The live activity worker reads approvals incrementally across
+        # every account by request time and by decision time (#1889).
+        Index("ix_approval_request_requested_at", "requested_at"),
+        Index(
+            "ix_approval_request_resolved_at",
+            "resolved_at",
+            postgresql_where=text("resolved_at IS NOT NULL"),
+        ),
         # One pending security-maintenance request per work item. Concurrent
         # creators race past the advisory lock; this partial unique index is
         # the durable control. Crash/retry binds the surviving row.

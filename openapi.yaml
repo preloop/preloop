@@ -19514,6 +19514,54 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/agents/session-event:
+    post:
+      tags:
+      - Agent Permissions
+      - Agent Permissions
+      summary: Agent Session Event
+      description: 'Record that a hook-governed turn or session ended (#1889).
+
+
+        Stop and SubagentStop write a ``turn_end`` activity; SessionEnd writes
+
+        ``session_end`` and stamps ``ended_at`` once. An unknown session, or a
+
+        failure to record, still answers 204: a hook must never fail the harness.'
+      operationId: agent_session_event_api_v1_agents_session_event_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentSessionEventRequest'
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/chat/connections:
     get:
       tags:
@@ -23682,6 +23730,41 @@ components:
         bounded: the object travels into approval ``tool_args`` and onto the
 
         session timeline, and this is untrusted network input.'
+    AgentSessionEventRequest:
+      properties:
+        session_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Session Id
+          description: The harness's own session id
+        hook_event_name:
+          type: string
+          enum:
+          - Stop
+          - SubagentStop
+          - SessionEnd
+          - stop
+          - sessionEnd
+          title: Hook Event Name
+        source:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source
+          description: Agent adapter, e.g. 'claude_code'
+      type: object
+      required:
+      - session_id
+      - hook_event_name
+      title: AgentSessionEventRequest
+      description: 'A harness turn ending or session ending under a hook (#1889).
+
+
+        Sent by the Stop, SubagentStop and SessionEnd hooks. Only the time and
+
+        the kind are kept.'
     AgentSessionStartRequest:
       properties:
         session_id:
@@ -23729,6 +23812,14 @@ components:
           title: First Prompt
           description: The first user prompt. Only a redacted 120 character title
             is kept.
+        hook_event_name:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Hook Event Name
+          description: The hook that sent this call. UserPromptSubmit (Cursor beforeSubmitPrompt)
+            records the time of a prompt, never its text.
       type: object
       required:
       - session_id
