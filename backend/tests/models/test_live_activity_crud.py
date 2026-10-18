@@ -465,3 +465,28 @@ def test_board_rollups_across_granularities_count_each_event_once(
     )
     person = [r for r in rows if r.subject_type == "person"]
     assert [(r.subject_id, r.prompts) for r in person] == [("p", 4)]
+
+
+def test_board_rollups_can_start_account_buckets_before_the_window(
+    db_session: Session, account_id: uuid.UUID
+) -> None:
+    crud_live_activity.upsert_rollups(
+        db_session,
+        deltas=[
+            RollupDelta(
+                account_id, 60, _minute(3), "account", str(account_id), requests=1
+            ),
+            RollupDelta(account_id, 60, _minute(3), "person", "early", prompts=1),
+            RollupDelta(account_id, 60, _minute(0), "person", "late", prompts=1),
+        ],
+        pass_id=uuid.uuid4(),
+    )
+    rows, _ = crud_live_activity.read_board_rollups(
+        db_session,
+        account_id=account_id,
+        granularities=[60],
+        since=_minute(1),
+        account_since=_minute(5),
+    )
+    assert [r.subject_type for r in rows if r.subject_type == "account"] == ["account"]
+    assert [r.subject_id for r in rows if r.subject_type == "person"] == ["late"]

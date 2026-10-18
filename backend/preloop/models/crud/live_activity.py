@@ -270,9 +270,14 @@ class CRUDLiveActivity:
         account_id: Any,
         granularities: Iterable[int],
         since: Optional[datetime],
+        account_since: Optional[datetime] = None,
         limit: int = MAX_BOARD_ROWS,
     ) -> tuple[list[Any], bool]:
         """The board's rollups in one statement: account buckets plus totals.
+
+        ``account_since`` (default ``since``) lets the account buckets start
+        earlier than the window, for the "now" rates of a very short window;
+        subject totals always cover exactly ``since`` onwards.
 
         Account rows come back per bucket (they draw the sparkline and the
         stats); person and agent rows come back summed per subject over the
@@ -297,11 +302,14 @@ class CRUDLiveActivity:
                     SELECT * FROM activity_rollup
                     WHERE account_id = :account_id
                       AND granularity = ANY(:granularities)
-                      AND (CAST(:since AS timestamptz) IS NULL
-                           OR bucket_start >= CAST(:since AS timestamptz))
+                      AND (CAST(:floor AS timestamptz) IS NULL
+                           OR bucket_start >= CAST(:floor AS timestamptz))
                       AND subject_type IN ('account', 'person', 'agent')
                 ), s AS (
-                    SELECT * FROM r WHERE subject_type <> 'account'
+                    SELECT * FROM r
+                    WHERE subject_type <> 'account'
+                      AND (CAST(:since AS timestamptz) IS NULL
+                           OR bucket_start >= CAST(:since AS timestamptz))
                 ), sums AS (
                     SELECT subject_type, subject_id,
                         SUM(requests)::int AS requests,
@@ -352,6 +360,13 @@ class CRUDLiveActivity:
                 "account_id": account_id,
                 "granularities": list(granularities),
                 "since": since,
+                "floor": (
+                    None
+                    if since is None
+                    else min(since, account_since)
+                    if account_since is not None
+                    else since
+                ),
                 "limit": max(1, min(limit, MAX_BOARD_ROWS)) + 1,
             },
         ).all()
