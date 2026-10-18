@@ -4,14 +4,21 @@ import {
   AnnounceThrottle,
   agentChipVariant,
   agentStateLabel,
+  FLIP_TTL_MS,
+  formatAgentRate,
   formatDuration,
+  formatLiveRelative,
   formatUsd,
   isStale,
   latencyCell,
+  liveFlips,
   loadActivityWindow,
+  personStateDurationLabel,
   saveActivityWindow,
   sortAgents,
   sortPeople,
+  sparklineSummary,
+  sparklineY,
   windowMinutes,
   windowRefreshMs,
 } from './live-activity';
@@ -74,27 +81,31 @@ describe('live activity helpers', () => {
     expect(agentChipVariant('waiting_reply')).to.equal('neutral');
   });
 
-  it('sorts by state precedence then recency', () => {
+  it('sorts by state precedence, then a stable key', () => {
     const agents = sortAgents([
       {
         managed_agent_id: 'a',
+        display_name: 'Codex',
         state: 'idle',
         last_activity_at: '2026-10-18T10:05:00Z',
       },
       {
         managed_agent_id: 'b',
+        display_name: 'Cursor',
         state: 'working',
-        last_activity_at: '2026-10-18T10:00:00Z',
+        last_activity_at: '2026-10-18T10:04:00Z',
       },
       {
         managed_agent_id: 'c',
+        display_name: 'OpenCode',
         state: 'waiting_approval',
         last_activity_at: null,
       },
       {
         managed_agent_id: 'd',
+        display_name: 'Claude Code',
         state: 'working',
-        last_activity_at: '2026-10-18T10:04:00Z',
+        last_activity_at: '2026-10-18T10:00:00Z',
       },
     ] as ActivityAgent[]);
     expect(agents.map((a) => a.managed_agent_id)).to.eql(['c', 'd', 'b', 'a']);
@@ -103,6 +114,136 @@ describe('live activity helpers', () => {
       { user_id: 'y', state: 'active', last_signal_at: null },
     ] as ActivityPerson[]);
     expect(people[0].user_id).to.equal('y');
+  });
+
+  it('keeps two people in place while their signals alternate', () => {
+    const at = (s: number) =>
+      new Date(Date.UTC(2026, 9, 18, 10, 0, s)).toISOString();
+    const person = (
+      id: string,
+      name: string,
+      signal: string,
+      state = 'active'
+    ) =>
+      ({
+        user_id: id,
+        display_name: name,
+        state,
+        last_signal_at: signal,
+      }) as ActivityPerson;
+    const order = (people: ActivityPerson[]) =>
+      sortPeople(people).map((p) => p.user_id);
+    // Bea prompts last, then Al does: the order must not change.
+    expect(
+      order([person('al', 'Al', at(1)), person('bea', 'Bea', at(2))])
+    ).to.eql(['al', 'bea']);
+    expect(
+      order([person('al', 'Al', at(3)), person('bea', 'Bea', at(2))])
+    ).to.eql(['al', 'bea']);
+    expect(
+      order([person('bea', 'Bea', at(4)), person('al', 'Al', at(3))])
+    ).to.eql(['al', 'bea']);
+    // A state change still moves the row.
+    expect(
+      order([person('al', 'Al', at(5), 'idle'), person('bea', 'Bea', at(4))])
+    ).to.eql(['bea', 'al']);
+  });
+
+  it('keeps identical agent names apart by owner then host, not recency', () => {
+    const agent = (id: string, owner: string, last: string) =>
+      ({
+        managed_agent_id: id,
+        display_name: 'Claude Code',
+        owner_display_name: owner,
+        state: 'working',
+        last_activity_at: last,
+      }) as ActivityAgent;
+    const ids = (list: ActivityAgent[]) =>
+      sortAgents(list).map((a) => a.managed_agent_id);
+    expect(
+      ids([
+        agent('2', 'Sana', '2026-10-18T10:00:09Z'),
+        agent('1', 'Maya', '2026-10-18T10:00:01Z'),
+      ])
+    ).to.eql(['1', '2']);
+    expect(
+      ids([
+        agent('1', 'Maya', '2026-10-18T10:00:10Z'),
+        agent('2', 'Sana', '2026-10-18T10:00:11Z'),
+      ])
+    ).to.eql(['1', '2']);
+  });
+
+  it('formats agent rates with one decimal up to 100 and blanks idle zeros', () => {
+    expect(formatAgentRate(0, false)).to.equal('');
+    expect(formatAgentRate(undefined, true)).to.equal('');
+    expect(formatAgentRate(0, true)).to.equal('0.0');
+    expect(formatAgentRate(9.3, true)).to.equal('9.3');
+    expect(formatAgentRate(10, true)).to.equal('10.0');
+    expect(formatAgentRate(99.94, true)).to.equal('99.9');
+    expect(formatAgentRate(140.4, true)).to.equal('140');
+  });
+
+  it('ticks relative times in seconds under a minute', () => {
+    const now = Date.parse('2026-10-18T10:10:00Z');
+    expect(formatLiveRelative('2026-10-18T10:09:58Z', now)).to.equal(
+      'just now'
+    );
+    expect(formatLiveRelative('2026-10-18T10:09:48Z', now)).to.equal('12s ago');
+    expect(formatLiveRelative('2026-10-18T10:09:47Z', now)).to.equal('13s ago');
+    expect(formatLiveRelative('2026-10-18T10:06:00Z', now)).to.equal('4m ago');
+    expect(formatLiveRelative('2026-10-18T07:10:00Z', now)).to.equal('3h ago');
+  });
+
+  it('gives idle and away people a duration', () => {
+    const now = Date.parse('2026-10-18T10:12:00Z');
+    expect(
+      personStateDurationLabel(
+        { state: 'idle', since: '2026-10-18T10:00:00Z' },
+        now
+      )
+    ).to.equal('Idle · 12m');
+    expect(
+      personStateDurationLabel(
+        { state: 'away', since: '2026-10-18T08:00:00Z' },
+        now
+      )
+    ).to.equal('Away · 2h');
+    expect(
+      personStateDurationLabel(
+        { state: 'active', since: '2026-10-18T10:00:00Z' },
+        now
+      )
+    ).to.equal('Active');
+    expect(
+      personStateDurationLabel({ state: 'idle', since: null }, now)
+    ).to.equal('Idle');
+  });
+
+  it('keeps client flips across a poll until they expire or a sweep supersedes them', () => {
+    const flippedAt = Date.parse('2026-10-18T10:00:00Z');
+    const flips = new Map([
+      ['a1', flippedAt],
+      ['a2', flippedAt],
+    ]);
+    const agents = [
+      { managed_agent_id: 'a1', since: '2026-10-18T09:50:00Z' },
+      { managed_agent_id: 'a2', since: '2026-10-18T10:00:05Z' },
+    ];
+    // A poll 10s later: a1's sweep is older than the flip, a2's is newer.
+    expect([...liveFlips(flips, agents, flippedAt + 10_000).keys()]).to.eql([
+      'a1',
+    ]);
+    // Past the TTL nothing survives.
+    expect(liveFlips(flips, agents, flippedAt + FLIP_TTL_MS).size).to.equal(0);
+  });
+
+  it('summarises the sparkline and places the reference line on its scale', () => {
+    expect(sparklineSummary([])).to.eql({ latest: null, peak: 0, avg: 0 });
+    expect(sparklineSummary([2, 8, 5])).to.eql({ latest: 5, peak: 8, avg: 5 });
+    expect(sparklineY(8, 8, 56)).to.equal(2);
+    expect(sparklineY(0, 8, 56)).to.equal(54);
+    expect(sparklineY(4, 8, 56)).to.equal(28);
   });
 
   it('calls a sweep older than 60s stale', () => {

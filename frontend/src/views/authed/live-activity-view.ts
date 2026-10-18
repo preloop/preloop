@@ -1,6 +1,7 @@
-import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
+import { LitElement, css, html, nothing, svg, unsafeCSS } from 'lit';
 import type { TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
+import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '../../components/time-range-select';
@@ -19,6 +20,7 @@ import {
 } from '../../services/unified-websocket-manager';
 import { attachFullscreen } from '../../utils/fullscreen-host';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import { getAgentKindPresentation } from '../../utils/agent-kinds';
 import type { FleetMapWindow } from '../../utils/fleet-map-activity';
 import {
   ACTIVITY_WINDOW_OPTIONS,
@@ -26,19 +28,24 @@ import {
   agentChipVariant,
   agentStateLabel,
   announcement,
+  formatAgentRate,
   formatCount,
-  formatDuration,
+  formatLiveRelative,
   formatRate,
   formatUsd,
   isStale,
   latencyCell,
   loadActivityWindow,
+  liveFlips,
   personChipVariant,
-  personStateLabel,
+  personStateDurationLabel,
   saveActivityWindow,
+  shortDuration,
   sortAgents,
   sortPeople,
   sparklinePoints,
+  sparklineSummary,
+  sparklineY,
   windowMinutes,
   windowRefreshMs,
   windowShortLabel,
@@ -70,10 +77,19 @@ export class LiveActivityView extends LitElement {
   @state() forbidden = false;
   @state() unavailable = false;
   @state() liveText = '';
-  /** Agents flipped to Working client-side between sweeps. */
-  @state() private flipped = new Set<string>();
+  /**
+   * Agents flipped to Working client-side between sweeps, with when. A flip
+   * lasts until it expires or a sweep reports a newer state (`liveFlips`).
+   */
+  @state() private flipped = new Map<string, number>();
+  /** The board's one clock: chip durations and relative times tick on it. */
+  @state() now = Date.now();
+  /** Rows hidden in full screen because the list ran out of room. */
+  @state() private overflow = { people: 0, agents: 0 };
 
   private refreshTimer?: ReturnType<typeof setInterval>;
+  private ticker?: ReturnType<typeof setInterval>;
+  private resizeObserver?: ResizeObserver;
   private unsubscribes: (() => void)[] = [];
   private releaseFullscreen?: () => void;
   private throttle = new AnnounceThrottle();
@@ -100,6 +116,13 @@ export class LiveActivityView extends LitElement {
     );
     void this.load();
     this.scheduleRefresh();
+    this.ticker = setInterval(() => {
+      this.now = Date.now();
+    }, 1000);
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => this.fitLists());
+      this.resizeObserver.observe(this);
+    }
   }
 
   disconnectedCallback(): void {
@@ -108,6 +131,10 @@ export class LiveActivityView extends LitElement {
     this.unsubscribes = [];
     if (this.refreshTimer !== undefined) clearInterval(this.refreshTimer);
     this.refreshTimer = undefined;
+    if (this.ticker !== undefined) clearInterval(this.ticker);
+    this.ticker = undefined;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = undefined;
     this.releaseFullscreen?.();
     this.releaseFullscreen = undefined;
   }
@@ -119,6 +146,41 @@ export class LiveActivityView extends LitElement {
         ? attachFullscreen(this, { onEscape: this.onEscape })
         : undefined;
     }
+    this.fitLists();
+  }
+
+  /**
+   * In full screen a list never scrolls and never clips a row: the rows that
+   * do not fit are hidden and a "+N more" footer says how many. Measured
+   * after each render, so it follows the viewport and the data.
+   */
+  private fitLists(): void {
+    const next = { people: 0, agents: 0 };
+    for (const key of ['people', 'agents'] as const) {
+      const section = this.renderRoot.querySelector<HTMLElement>(
+        `section.list[data-list="${key}"]`
+      );
+      const rows = section
+        ? [...section.querySelectorAll<HTMLElement>('.row')]
+        : [];
+      rows.forEach((row) => (row.hidden = false));
+      if (!this.fullscreen || !section || !rows.length) continue;
+      const bottom = section.getBoundingClientRect().bottom;
+      const fits = (row: HTMLElement, reserve: number) =>
+        row.getBoundingClientRect().bottom <= bottom - reserve + 0.5;
+      if (fits(rows[rows.length - 1], 0)) continue;
+      const footer = section.querySelector<HTMLElement>('.more-footer');
+      const reserve = Math.max(footer?.offsetHeight ?? 0, 28);
+      let shown = rows.findIndex((row) => !fits(row, reserve));
+      if (shown < 0) shown = rows.length;
+      rows.slice(shown).forEach((row) => (row.hidden = true));
+      next[key] = rows.length - shown;
+    }
+    if (
+      next.people !== this.overflow.people ||
+      next.agents !== this.overflow.agents
+    )
+      this.overflow = next;
   }
 
   private onEscape = (event: KeyboardEvent): void => {
@@ -143,7 +205,8 @@ export class LiveActivityView extends LitElement {
     this.loading = true;
     try {
       this.board = await getActivityBoard(windowMinutes(this.activityWindow));
-      this.flipped = new Set();
+      this.now = Date.now();
+      this.flipped = liveFlips(this.flipped, this.board.agents, this.now);
       this.error = null;
       this.forbidden = false;
       this.announce();
@@ -246,7 +309,7 @@ export class LiveActivityView extends LitElement {
     ) {
       const id = String(payload.managed_agent_id || '');
       if (id && this.board.agents.some((a) => a.managed_agent_id === id)) {
-        this.flipped = new Set([...this.flipped, id]);
+        this.flipped = new Map([...this.flipped, [id, Date.now()]]);
       }
     }
   }
@@ -309,6 +372,23 @@ export class LiveActivityView extends LitElement {
         font-size: var(--console-text-meta);
         gap: 6px;
       }
+      /* Full screen is read from across a room: the type follows the
+         viewport instead of the console's compact scale. */
+      :host([fullscreen]) {
+        --activity-body: clamp(14px, 0.95vw, 22px);
+        --activity-meta: clamp(13px, 0.82vw, 19px);
+        --activity-title: clamp(15px, 1.05vw, 24px);
+      }
+      :host([fullscreen]) h1 {
+        font-size: clamp(26px, 1.7vw, 40px);
+      }
+      :host([fullscreen]) .live {
+        font-size: var(--activity-meta);
+      }
+      :host([fullscreen]) .live-dot {
+        height: 0.6em;
+        width: 0.6em;
+      }
       .live-dot {
         background: var(--sl-color-success-600);
         border-radius: 50%;
@@ -320,7 +400,9 @@ export class LiveActivityView extends LitElement {
       }
       dl.stats {
         display: grid;
-        grid-template-columns: repeat(7, minmax(0, 1fr));
+        grid-template-columns:
+          repeat(4, minmax(0, 1fr)) minmax(0, 1.35fr)
+          repeat(2, minmax(0, 1fr));
         gap: var(--sl-spacing-medium);
         margin: 0 0 var(--sl-spacing-medium);
         min-height: 64px;
@@ -328,28 +410,54 @@ export class LiveActivityView extends LitElement {
       dl.stats.busy .stat {
         opacity: 0.6;
       }
+      /* Value, then its label, then the secondary line: the same order as
+         the console's other stat tiles (.stat-value, .stat-label). */
       .stat {
         display: flex;
-        flex-direction: column-reverse;
-        justify-content: flex-end;
+        flex-direction: column;
+        min-width: 0;
       }
       .stat dd {
+        display: contents;
         margin: 0;
       }
       .stat .value {
+        order: 1;
         font-size: var(--console-stat-value);
         font-weight: 600;
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .stat .value .unit {
+        color: var(--console-meta-color);
+        font-size: 0.5em;
+        font-weight: 500;
+        margin-left: 2px;
       }
       :host([fullscreen]) .stat .value {
-        font-size: clamp(22px, 2.2vw, 40px);
+        font-size: clamp(22px, 2.1vw, 44px);
+      }
+      .stat dt {
+        order: 2;
+      }
+      .stat .meta-line {
+        order: 3;
       }
       .stat dt,
       .stat .meta-line {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
         font-variant-numeric: tabular-nums;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      :host([fullscreen]) .stat dt,
+      :host([fullscreen]) .stat .meta-line {
+        font-size: var(--activity-meta);
       }
       .sparkline {
         border-top: 1px solid var(--console-hairline);
@@ -357,19 +465,54 @@ export class LiveActivityView extends LitElement {
         padding: var(--sl-spacing-x-small) 0;
         margin-bottom: var(--sl-spacing-medium);
       }
+      .sparkline .plot {
+        display: flex;
+        align-items: stretch;
+        gap: var(--sl-spacing-small);
+      }
       .sparkline svg {
         display: block;
+        flex: 1;
         height: 56px;
-        width: 100%;
+        min-width: 0;
       }
       .sparkline polyline {
         fill: none;
         stroke: var(--sl-color-primary-600);
         stroke-width: 1.5;
+        vector-effect: non-scaling-stroke;
       }
-      .sparkline .caption {
+      .sparkline line.ref {
+        stroke: var(--console-meta-color);
+        stroke-dasharray: 4 4;
+        stroke-width: 1;
+        opacity: 0.6;
+        vector-effect: non-scaling-stroke;
+      }
+      .sparkline .now {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-width: 6.5em;
+        text-align: right;
+      }
+      .sparkline .now-value {
+        font-size: var(--console-text-card-title);
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+      }
+      .sparkline .caption,
+      .sparkline .now-meta {
         color: var(--console-meta-color);
         font-size: var(--console-text-meta);
+        font-variant-numeric: tabular-nums;
+      }
+      :host([fullscreen]) .sparkline .caption,
+      :host([fullscreen]) .sparkline .now-meta {
+        font-size: var(--activity-meta);
+      }
+      :host([fullscreen]) .sparkline .now-value {
+        font-size: var(--activity-title);
       }
       .lists {
         display: grid;
@@ -381,8 +524,21 @@ export class LiveActivityView extends LitElement {
         min-height: 0;
       }
       :host([fullscreen]) .list {
-        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
         min-height: 0;
+      }
+      .more-footer {
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        padding-top: var(--sl-spacing-x-small);
+      }
+      :host([fullscreen]) .more-footer {
+        font-size: var(--activity-meta);
+      }
+      :host([fullscreen]) h2 {
+        font-size: var(--activity-title);
       }
       h2 {
         font-size: var(--console-text-card-title);
@@ -395,17 +551,44 @@ export class LiveActivityView extends LitElement {
         font-size: var(--console-text-meta);
         font-weight: 400;
       }
+      /* The state column has a fixed width and its chips are left-aligned,
+         so every chip, and the text after it, starts at the same x. */
       .row {
         display: grid;
-        grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 2fr) auto;
+        grid-template-columns:
+          minmax(0, 1.5fr) var(--activity-state-col)
+          minmax(0, 1.8fr) var(--activity-num-col);
         gap: var(--sl-spacing-small);
         align-items: center;
         border-bottom: 1px solid var(--console-hairline);
         padding: var(--sl-spacing-x-small) 0;
         font-size: var(--console-text-body);
+        min-height: 32px;
+      }
+      /* Every row is its own grid, so every track is fixed per list: an
+         'auto' column would size per row and shift the chips. */
+      section[data-list='agents'] {
+        --activity-state-col: 13em;
+        --activity-num-col: 7em;
+      }
+      section[data-list='people'],
+      section[data-testid='people-me'] {
+        --activity-state-col: 9em;
+        --activity-num-col: 9.5em;
+      }
+      .row[hidden] {
+        display: none;
       }
       :host([fullscreen]) .row {
-        min-height: 44px;
+        font-size: var(--activity-body);
+        padding: 0.4em 0;
+      }
+      :host([fullscreen]) .row .meta,
+      :host([fullscreen]) .row .host {
+        font-size: var(--activity-meta);
+      }
+      :host([fullscreen]) sl-badge.chip::part(base) {
+        font-size: clamp(12px, 0.75vw, 17px);
       }
       .row a {
         color: var(--console-link-color);
@@ -423,21 +606,61 @@ export class LiveActivityView extends LitElement {
         white-space: nowrap;
       }
       .name {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        min-width: 0;
         overflow: hidden;
-        text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .state {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
+      .name .label {
+        flex: 0 1 auto;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
+      .name .host {
+        flex: 1 1 0;
+        min-width: 3em;
+        color: var(--console-meta-color);
+        font-size: var(--console-text-meta);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .kind-icon {
+        flex: none;
+        height: 1.15em;
+        width: 1.15em;
+        object-fit: contain;
+        font-size: inherit;
+        color: var(--console-meta-color);
+      }
+      .state {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 6px;
+        min-width: 0;
+      }
+      /* The dot slot is always there, so a chip never shifts when a row
+         starts or stops working; only a working row paints it. */
       .pulse {
-        background: var(--sl-color-success-600);
         border-radius: 50%;
+        flex: none;
         height: 8px;
         width: 8px;
+      }
+      .pulse.on {
+        background: var(--sl-color-success-600);
         animation: pulse 1.6s ease-in-out infinite;
+      }
+      .waiting {
+        display: inline-flex;
+        gap: 6px;
+        margin-right: 6px;
+        vertical-align: middle;
+      }
+      .waiting a {
+        color: inherit;
       }
       @keyframes pulse {
         0%,
@@ -449,7 +672,7 @@ export class LiveActivityView extends LitElement {
         }
       }
       @media (prefers-reduced-motion: reduce) {
-        .pulse {
+        .pulse.on {
           animation: none;
         }
       }
@@ -503,7 +726,11 @@ export class LiveActivityView extends LitElement {
     return html`<div class="stat" data-testid=${testId}>
       <dt>${label}</dt>
       <dd>
-        <div class="value" title=${cell.title ?? nothing}>${cell.value}</div>
+        <div class="value" title=${cell.title ?? nothing}>
+          ${cell.value}${
+            cell.unit ? html`<span class="unit">${cell.unit}</span>` : nothing
+          }
+        </div>
         <div class="meta-line">${meta}</div>
       </dd>
     </div>`;
@@ -525,7 +752,10 @@ export class LiveActivityView extends LitElement {
       m.spend_rate_usd_per_hour === null ||
       m.spend_rate_usd_per_hour === undefined
         ? { value: '—', title: 'No priced requests in the last 5 minutes' }
-        : { value: `${formatUsd(m.spend_rate_usd_per_hour)}/h est.` };
+        : {
+            value: formatUsd(m.spend_rate_usd_per_hour),
+            unit: '/h est.',
+          };
     const presenceOff = !board.presence_enabled;
     return html`<dl class="stats ${this.loading ? 'busy' : ''}">
       ${this.stat(
@@ -589,13 +819,36 @@ export class LiveActivityView extends LitElement {
       board.window_minutes !== null && board.window_minutes <= 1440
         ? '1 min'
         : '1 h';
-    return html`<div class="sparkline">
-      <svg viewBox="0 0 600 56" preserveAspectRatio="none" aria-hidden="true">
-        <polyline points=${sparklinePoints(values, 600, 56)}></polyline>
-      </svg>
+    const unit = bucket === '1 min' ? 'req/min' : 'req/h';
+    const summary = sparklineSummary(values);
+    const avgY = sparklineY(summary.avg, summary.peak, 56).toFixed(1);
+    return html`<div class="sparkline" data-testid="sparkline">
+      <div class="plot">
+        <svg viewBox="0 0 600 56" preserveAspectRatio="none" aria-hidden="true">
+          ${
+            values.length > 1
+              ? svg`<line class="ref" x1="0" x2="600" y1=${avgY} y2=${avgY}></line>`
+              : nothing
+          }
+          <polyline points=${sparklinePoints(values, 600, 56)}></polyline>
+        </svg>
+        ${
+          summary.latest !== null
+            ? html`<div class="now" data-testid="sparkline-now">
+                <span class="now-value"
+                  >${formatCount(summary.latest)} ${unit}</span
+                >
+                <span class="now-meta"
+                  >peak ${formatCount(summary.peak)} · avg
+                  ${formatRate(summary.avg)}</span
+                >
+              </div>`
+            : nothing
+        }
+      </div>
       <div class="caption">
-        requests/min · ${windowShortLabel(this.activityWindow)} · ${bucket}
-        buckets
+        requests · ${windowShortLabel(this.activityWindow)} · ${bucket} buckets
+        · dashed line is the average
       </div>
     </div>`;
   }
@@ -603,8 +856,27 @@ export class LiveActivityView extends LitElement {
   private relative(at: string | null | undefined): TemplateResult | string {
     if (!at) return '—';
     return html`<span title=${formatLocalDateTime(at)}
-      >${formatRelativeTime(at)}</span
+      >${formatLiveRelative(at, this.now)}</span
     >`;
+  }
+
+  /** The kind's logo or icon, sized to the row's text. */
+  private kindIcon(kind: string | undefined): TemplateResult {
+    const look = getAgentKindPresentation(kind);
+    if (look?.logo)
+      return html`<img
+        class="kind-icon"
+        data-testid="agent-kind-icon"
+        src=${look.logo}
+        alt=""
+        aria-hidden="true"
+      />`;
+    return html`<sl-icon
+      class="kind-icon"
+      data-testid="agent-kind-icon"
+      name=${look?.icon || 'robot'}
+      aria-hidden="true"
+    ></sl-icon>`;
   }
 
   private personRow(person: ActivityPerson, now: number): TemplateResult {
@@ -624,29 +896,57 @@ export class LiveActivityView extends LitElement {
       'replies'
     );
     if (reply.value !== '—') meta.push(`${reply.value} reply`);
+    const waitingFor = person.awaiting_reply_since
+      ? `Waiting on them · ${shortDuration(
+          now - Date.parse(person.awaiting_reply_since)
+        )}`
+      : null;
+    const approvals = person.awaiting_approval_count || 0;
     return html`<div class="row" role="row" data-testid="person-row">
       <span class="name" role="cell" title=${ATTRIBUTION}>
-        ${person.href ? html`<a href=${person.href}>${name}</a>` : name}
+        <span class="label"
+          >${person.href ? html`<a href=${person.href}>${name}</a>` : name}</span
+        >
       </span>
-      <span role="cell">
+      <span class="state" role="cell">
+        <span class="pulse" aria-hidden="true" data-testid="pulse-slot"></span>
         <sl-badge pill class="chip" variant=${personChipVariant(person.state)}
-          >${personStateLabel(person.state)}</sl-badge
+          >${personStateDurationLabel(person, now)}</sl-badge
         >
       </span>
       <span class="meta" role="cell">
         ${
-          person.awaiting_reply_since
-            ? html`${
-                person.awaiting_reply_session_href
-                  ? html`<a href=${person.awaiting_reply_session_href}
-                      >Waiting on them</a
-                    >`
-                  : 'Waiting on them'
-              }
-              ·
-              ${formatDuration(
-                (now - Date.parse(person.awaiting_reply_since)) / 1000
-              )}${meta.length ? ' · ' : ''}`
+          waitingFor || approvals
+            ? html`<span class="waiting">
+                ${
+                  waitingFor
+                    ? html`<sl-badge
+                        pill
+                        class="chip"
+                        variant="warning"
+                        data-testid="waiting-on-them"
+                        >${
+                          person.awaiting_reply_session_href
+                            ? html`<a href=${person.awaiting_reply_session_href}
+                                >${waitingFor}</a
+                              >`
+                            : waitingFor
+                        }</sl-badge
+                      >`
+                    : nothing
+                }${
+                  approvals
+                    ? html`<sl-badge
+                        pill
+                        class="chip"
+                        variant="warning"
+                        data-testid="awaiting-approvals"
+                        >${approvals}
+                        ${approvals === 1 ? 'approval' : 'approvals'}</sl-badge
+                      >`
+                    : nothing
+                }
+              </span>`
             : nothing
         }${meta.join(' · ')}
       </span>
@@ -657,12 +957,16 @@ export class LiveActivityView extends LitElement {
   }
 
   private agentRow(agent: ActivityAgent, now: number): TemplateResult {
-    const shown: ActivityAgent = this.flipped.has(agent.managed_agent_id)
+    const working =
+      agent.state === 'working' || this.flipped.has(agent.managed_agent_id);
+    const shown: ActivityAgent = working
       ? { ...agent, state: 'working' }
       : agent;
     const subject = agent.session_title || agent.cwd_basename || '';
     const parts: (TemplateResult | string)[] = [];
-    if (agent.owner_display_name) parts.push(agent.owner_display_name);
+    const host = agent.device?.hostname;
+    if (agent.owner_display_name && agent.owner_display_name !== host)
+      parts.push(agent.owner_display_name);
     if (subject)
       parts.push(
         agent.session_href
@@ -677,18 +981,26 @@ export class LiveActivityView extends LitElement {
       );
     return html`<div class="row" role="row" data-testid="agent-row">
       <span class="name" role="cell">
+        ${this.kindIcon(agent.agent_kind)}
+        <span class="label"
+          >${
+            agent.href
+              ? html`<a href=${agent.href}>${agent.display_name}</a>`
+              : agent.display_name
+          }</span
+        >
         ${
-          agent.href
-            ? html`<a href=${agent.href}>${agent.display_name}</a>`
-            : agent.display_name
+          host
+            ? html`<span class="host" data-testid="agent-host">${host}</span>`
+            : nothing
         }
       </span>
       <span class="state" role="cell">
-        ${
-          shown.state === 'working'
-            ? html`<span class="pulse" aria-hidden="true"></span>`
-            : nothing
-        }
+        <span
+          class="pulse ${working ? 'on' : ''}"
+          aria-hidden="true"
+          data-testid="pulse-slot"
+        ></span>
         <sl-badge pill class="chip" variant=${agentChipVariant(shown.state)}
           >${agentStateLabel(shown, now)}</sl-badge
         >
@@ -697,11 +1009,10 @@ export class LiveActivityView extends LitElement {
         >${parts.map((part, i) => html`${i ? ' · ' : ''}${part}`)}</span
       >
       <span class="num meta" role="cell"
-        >${
-          agent.requests_per_min !== undefined
-            ? `${formatRate(agent.requests_per_min)} req/min`
-            : ''
-        }</span
+        >${(() => {
+          const rate = formatAgentRate(agent.requests_per_min, working);
+          return rate ? `${rate} req/min` : '';
+        })()}</span
       >
     </div>`;
   }
@@ -730,7 +1041,7 @@ export class LiveActivityView extends LitElement {
         </p>
       </section>`;
     const people = sortPeople(board.people);
-    return html`<section class="list" data-testid="people">
+    return html`<section class="list" data-testid="people" data-list="people">
       <h2>
         People (${board.metrics.people_in_window})
         <span class="muted">· ${w}</span>
@@ -738,7 +1049,11 @@ export class LiveActivityView extends LitElement {
       ${
         people.length
           ? html`<div role="table" aria-label="People">
-              ${people.map((person) => this.personRow(person, now))}
+              ${repeat(
+                people,
+                (person) => person.user_id,
+                (person) => this.personRow(person, now)
+              )}
             </div>`
           : html`<div class="empty">No one was active in this window.</div>`
       }
@@ -747,18 +1062,33 @@ export class LiveActivityView extends LitElement {
           ? html`<p class="muted">${board.more.people} more not shown</p>`
           : nothing
       }
+      ${this.moreFooter(this.overflow.people, 'people')}
     </section>`;
+  }
+
+  private moreFooter(
+    hidden: number,
+    noun: string
+  ): TemplateResult | typeof nothing {
+    if (!hidden) return nothing;
+    return html`<div class="more-footer" data-testid="more-${noun}">
+      +${hidden} more ${noun} · leave full screen to see all
+    </div>`;
   }
 
   private renderAgents(board: ActivityBoard, now: number): TemplateResult {
     const w = windowShortLabel(this.activityWindow);
     const agents = sortAgents(board.agents);
-    return html`<section class="list" data-testid="agents">
+    return html`<section class="list" data-testid="agents" data-list="agents">
       <h2>Agents (${agents.length}) <span class="muted">· ${w}</span></h2>
       ${
         agents.length
           ? html`<div role="table" aria-label="Agents">
-              ${agents.map((agent) => this.agentRow(agent, now))}
+              ${repeat(
+                agents,
+                (agent) => agent.managed_agent_id,
+                (agent) => this.agentRow(agent, now)
+              )}
             </div>`
           : html`<div class="empty">
               Connect your first agent:&nbsp;<code>preloop agents onboard</code>
@@ -769,6 +1099,7 @@ export class LiveActivityView extends LitElement {
           ? html`<p class="muted">${board.more.agents} more not shown</p>`
           : nothing
       }
+      ${this.moreFooter(this.overflow.agents, 'agents')}
     </section>`;
   }
 
@@ -781,7 +1112,7 @@ export class LiveActivityView extends LitElement {
         >
       </div>`;
     const board = this.board;
-    const now = Date.now();
+    const now = this.now;
     const stale = board ? isStale(board.generated_at, now) : false;
     return html`
       <header>
@@ -791,7 +1122,7 @@ export class LiveActivityView extends LitElement {
           ${
             stale && board
               ? html`Live data paused · last update
-                ${formatRelativeTime(board.generated_at)}`
+                ${formatRelativeTime(board.generated_at, new Date(now))}`
               : 'live'
           }
         </span>
