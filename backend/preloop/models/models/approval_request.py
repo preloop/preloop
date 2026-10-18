@@ -81,9 +81,8 @@ class ApprovalRequest(Base):
             "requested_at",
             postgresql_ops={"requested_at": "DESC"},
         ),
-        # The live activity worker reads approvals incrementally across
-        # every account by request time and by decision time (#1889).
-        Index("ix_approval_request_requested_at", "requested_at"),
+        # The live activity worker reads decided approvals incrementally
+        # across every account by decision time (#1889).
         Index(
             "ix_approval_request_resolved_at",
             "resolved_at",

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Integer, and_, case, cast, func, select, tuple_
+from sqlalchemy import Integer, and_, case, cast, func, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -649,6 +649,12 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if activity_type not in HOOK_TURN_ACTIVITY_TYPES:
             raise ValueError(f"Unsupported hook activity type: {activity_type}")
         activity_timestamp = timestamp or datetime.now(timezone.utc)
+        # Serialize the check and the insert per session and kind, so two
+        # hooks firing together cannot both pass the dedupe.
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"hook-turn-event:{runtime_session_id}:{activity_type}"},
+        )
         duplicate = (
             db.query(RuntimeSessionActivity.id)
             .filter(

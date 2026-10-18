@@ -19,6 +19,7 @@ from sqlalchemy import (
     literal_column,
     or_,
     tuple_,
+    update,
 )
 from sqlalchemy.orm import Session, aliased
 
@@ -405,8 +406,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
     ) -> tuple[Optional[RuntimeSession], bool]:
         """Stamp ``ended_at`` from a SessionEnd hook, at most once.
 
-        Idempotent and one-way: an ended session keeps its first ``ended_at``
-        and is never re-opened here.
+        One conditional ``UPDATE ... WHERE ended_at IS NULL``, so concurrent
+        SessionEnd hooks cannot both stamp it: an ended session keeps its
+        first ``ended_at`` and is never re-opened here.
 
         Args:
             db: Database session.
@@ -418,22 +420,27 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         Returns:
             The session (None when absent) and whether this call ended it.
         """
+        ended = db.execute(
+            update(self.model)
+            .where(
+                self.model.account_id == account_id,
+                self.model.id == runtime_session_id,
+                self.model.ended_at.is_(None),
+            )
+            .values(ended_at=ended_at, last_activity_at=ended_at)
+            .returning(self.model.id)
+            .execution_options(synchronize_session=False)
+        ).first()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db_obj = self.get_account_session(
             db, account_id=str(account_id), runtime_session_id=str(runtime_session_id)
         )
-        if db_obj is None:
-            return None, False
-        if db_obj.ended_at is not None:
-            return db_obj, False
-        db_obj.ended_at = ended_at
-        db_obj.last_activity_at = ended_at
-        db.add(db_obj)
-        if commit:
-            db.commit()
+        if db_obj is not None and ended is not None:
             db.refresh(db_obj)
-        else:
-            db.flush()
-        return db_obj, True
+        return db_obj, ended is not None
 
     def reopen_for_managed_agent(
         self,

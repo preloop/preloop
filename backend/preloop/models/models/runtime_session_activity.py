@@ -23,12 +23,12 @@ class RuntimeSessionActivity(Base):
     __tablename__ = "runtime_session_activity"
     __table_args__ = (
         # Prompt, turn-end and session-end timestamps (#1889), kept small
-        # next to the tool-call volume so the live activity worker reads
-        # them without scanning the table.
+        # next to the tool-call volume. Timestamp first: the live activity
+        # worker reads them across every account by time range.
         Index(
             "ix_rsa_account_turn_events",
+            "timestamp",
             "account_id",
-            text("timestamp DESC"),
             postgresql_where=text(
                 "activity_type IN ('user_prompt', 'turn_end', 'session_end')"
             ),

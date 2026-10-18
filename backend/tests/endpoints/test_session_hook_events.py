@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any, get_args
+from uuid import uuid4
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
@@ -195,7 +196,7 @@ def test_session_event_rejects_unknown_hook_names(client: Any, token: str) -> No
 
 
 def test_session_end_sets_ended_at_once_and_never_reopens(
-    client: Any, db_session: Session, token: str
+    client: Any, db_session: Session, token: str, emitted: list
 ) -> None:
     started = _start(client, token)
     response = client.post(
@@ -209,6 +210,8 @@ def test_session_end_sets_ended_at_once_and_never_reopens(
     first_end = session.ended_at
     assert first_end is not None
     assert len(_rows(db_session, session.id, "session_end")) == 1
+    assert [e["type"] for e in emitted] == ["runtime_session_hook_ended"]
+    assert emitted[0]["payload"]["runtime_session_id"] == str(session.id)
 
     # Pretend the second SessionEnd arrives later: ended_at stays.
     for row in _rows(db_session, session.id, "session_end"):
@@ -278,3 +281,40 @@ def test_request_schemas_carry_no_prompt_field_for_events() -> None:
         )
     )
     assert names == {"Stop", "SubagentStop", "SessionEnd", "stop", "sessionEnd"}
+
+
+def test_mark_ended_by_hook_stamps_only_an_open_session(
+    db_session: Session, test_user: Any
+) -> None:
+    from preloop.models.crud import crud_runtime_session
+
+    session = RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="end-once",
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(session)
+    db_session.flush()
+    first = datetime.now(UTC).replace(tzinfo=None)  # the column is naive UTC
+    row, ended = crud_runtime_session.mark_ended_by_hook(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        ended_at=first,
+    )
+    assert ended and row is not None and row.ended_at == first
+    row, ended = crud_runtime_session.mark_ended_by_hook(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=session.id,
+        ended_at=first + timedelta(minutes=1),
+    )
+    assert not ended and row is not None and row.ended_at == first
+    missing, ended = crud_runtime_session.mark_ended_by_hook(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=uuid4(),
+        ended_at=first,
+    )
+    assert missing is None and not ended

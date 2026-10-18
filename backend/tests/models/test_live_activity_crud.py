@@ -352,6 +352,9 @@ def test_source_readers_are_time_bounded(
     after = now - timedelta(minutes=1)
     crud_live_activity.read_gateway_usage(db_session, after=after, until=now)
     crud_live_activity.read_session_activity(db_session, after=after, until=now)
+    crud_live_activity.read_session_activity(
+        db_session, after=after, until=now, activity_types=["tool_call"]
+    )
     crud_live_activity.read_approvals(db_session, after=after, until=now)
     crud_live_activity.read_console_events(db_session, after=after, until=now)
     for sql in statements:
@@ -371,3 +374,23 @@ def test_all_current_states_spans_accounts(
     )
     rows = crud_live_activity.list_all_current_states(db_session)
     assert any(r.subject_id == "cold-start" and r.until is None for r in rows)
+
+
+def test_hook_event_reads_use_the_partial_timestamp_index(db_session: Session) -> None:
+    """The worker's cross-account hook read can be served by the index."""
+    from sqlalchemy import text
+
+    db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    plan = "\n".join(
+        row[0]
+        for row in db_session.execute(
+            text(
+                "EXPLAIN SELECT id FROM runtime_session_activity "
+                "WHERE timestamp > now() - interval '1 minute' "
+                "AND timestamp <= now() "
+                "AND activity_type IN ('user_prompt', 'turn_end', 'session_end') "
+                "ORDER BY timestamp LIMIT 5000"
+            )
+        )
+    )
+    assert "ix_rsa_account_turn_events" in plan, plan

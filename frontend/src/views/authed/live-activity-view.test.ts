@@ -1,7 +1,10 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import './live-activity-view';
-import type { LiveActivityView } from './live-activity-view';
+import {
+  APPROVAL_REFETCH_MS,
+  type LiveActivityView,
+} from './live-activity-view';
 import type { ActivityBoard } from '../../live-activity-api';
 import { mockApi, type MockApi } from '../../test-helpers/capability-api';
 import { ACTIVITY_WINDOW_KEY } from '../../utils/live-activity';
@@ -206,6 +209,61 @@ describe('live-activity-view', () => {
       await clock.tickAsync(30_000);
       await waitUntil(
         () => api!.callsTo('/api/v1/activity/board').length === 3
+      );
+    } finally {
+      clock.restore();
+    }
+  });
+
+  it('keeps the newest board when an older request resolves last', async () => {
+    const el = await render();
+    api!.restore();
+    const pending: ((body: ActivityBoard) => void)[] = [];
+    const stub = sinon.stub(window, 'fetch').callsFake(
+      () =>
+        new Promise<Response>((resolve) => {
+          pending.push((body) =>
+            resolve(
+              new Response(JSON.stringify(body), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              })
+            )
+          );
+        })
+    );
+    try {
+      el.activityWindow = '1h';
+      const older = el.load();
+      el.activityWindow = '5m';
+      const newer = el.load();
+      await waitUntil(() => pending.length === 2);
+      pending[1](board({ window_minutes: 5 }));
+      await newer;
+      pending[0](board({ window_minutes: 60 }));
+      await older;
+      expect(el.board?.window_minutes).to.equal(5);
+      expect(el.loading).to.equal(false);
+    } finally {
+      stub.restore();
+      api = undefined;
+    }
+  });
+
+  it('refetches once after a burst of approval events', async () => {
+    const clock = sinon.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const el = await render();
+      const before = api!.callsTo('/api/v1/activity/board').length;
+      el.onRealtime('approvals', { type: 'approval_created', payload: {} });
+      el.onRealtime('approvals', { type: 'approval_resolved', payload: {} });
+      await clock.tickAsync(APPROVAL_REFETCH_MS + 10);
+      await waitUntil(
+        () => api!.callsTo('/api/v1/activity/board').length === before + 1
+      );
+      await clock.tickAsync(APPROVAL_REFETCH_MS + 10);
+      expect(api!.callsTo('/api/v1/activity/board').length).to.equal(
+        before + 1
       );
     } finally {
       clock.restore();

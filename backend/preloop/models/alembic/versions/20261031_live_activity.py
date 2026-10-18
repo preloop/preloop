@@ -8,10 +8,11 @@ scanning raw tables:
 
 * ``ix_rsa_account_turn_events``: partial on ``runtime_session_activity``
   for the ``user_prompt``/``turn_end``/``session_end`` rows the hooks now
-  write; small next to the tool-call volume.
-* ``ix_approval_request_requested_at`` and the partial
-  ``ix_approval_request_resolved_at``: the worker reads approvals across all
-  accounts by request and by decision time.
+  write, keyed ``(timestamp, account_id)`` so the worker's cross-account
+  range read uses it; small next to the tool-call volume.
+* the partial ``ix_approval_request_resolved_at``: the worker reads decided
+  approvals by decision time (request time already has
+  ``ix_approval_request_requested_at`` from the initial schema).
 
 Phase 1 tables, written only by the extension plugin and empty in the
 open-source edition: ``activity_rollup``, ``presence_state``,
@@ -34,10 +35,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 CONCURRENT_INDEXES = {
     "ix_rsa_account_turn_events": (
-        "ON runtime_session_activity (account_id, timestamp DESC) "
+        "ON runtime_session_activity (timestamp, account_id) "
         "WHERE activity_type IN ('user_prompt', 'turn_end', 'session_end')"
     ),
-    "ix_approval_request_requested_at": "ON approval_request (requested_at)",
     "ix_approval_request_resolved_at": (
         "ON approval_request (resolved_at) WHERE resolved_at IS NOT NULL"
     ),

@@ -706,9 +706,16 @@ class CRUDLiveActivity:
         *,
         after: datetime,
         until: datetime,
+        activity_types: Sequence[str] = HOOK_TURN_TYPES,
         limit: int = MAX_SOURCE_ROWS,
     ) -> list[Any]:
-        """Tool calls and hook turn events in ``(after, until]``."""
+        """Session activity of the given kinds in ``(after, until]``.
+
+        The worker reads hook timestamps (``user_prompt``, ``turn_end``,
+        ``session_end``; served by the partial ``ix_rsa_account_turn_events``)
+        and tool calls (``ix_runtime_session_activity_timestamp``) as two
+        sources with their own watermarks.
+        """
         activity = models.RuntimeSessionActivity
         return list(
             db.execute(
@@ -730,7 +737,7 @@ class CRUDLiveActivity:
                 .where(
                     activity.timestamp > after,
                     activity.timestamp <= until,
-                    activity.activity_type.in_(("tool_call", *HOOK_TURN_TYPES)),
+                    activity.activity_type.in_(list(activity_types)),
                 )
                 .order_by(activity.timestamp)
                 .limit(limit)

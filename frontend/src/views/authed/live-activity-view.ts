@@ -46,6 +46,8 @@ import {
 } from '../../utils/live-activity';
 
 const ATTRIBUTION = 'Attributed through the onboarding credential';
+/** Debounce for refetching the board after approval events. */
+export const APPROVAL_REFETCH_MS = 1_000;
 const LIVE_TOPICS = [
   'activity_metrics',
   'presence',
@@ -74,6 +76,9 @@ export class LiveActivityView extends LitElement {
   @state() private flipped = new Set<string>();
 
   private refreshTimer?: ReturnType<typeof setInterval>;
+  private approvalTimer?: ReturnType<typeof setTimeout>;
+  /** Only the newest request may replace the board (window changes race). */
+  private loadRequest = 0;
   private unsubscribes: (() => void)[] = [];
   private releaseFullscreen?: () => void;
   private throttle = new AnnounceThrottle();
@@ -108,6 +113,8 @@ export class LiveActivityView extends LitElement {
     this.unsubscribes = [];
     if (this.refreshTimer !== undefined) clearInterval(this.refreshTimer);
     this.refreshTimer = undefined;
+    if (this.approvalTimer !== undefined) clearTimeout(this.approvalTimer);
+    this.approvalTimer = undefined;
     this.releaseFullscreen?.();
     this.releaseFullscreen = undefined;
   }
@@ -140,19 +147,24 @@ export class LiveActivityView extends LitElement {
 
   /** Fetch the board; the numbers stay on screen (dimmed) meanwhile. */
   async load(): Promise<void> {
+    const request = ++this.loadRequest;
     this.loading = true;
     try {
-      this.board = await getActivityBoard(windowMinutes(this.activityWindow));
+      const board = await getActivityBoard(windowMinutes(this.activityWindow));
+      // A slower request for an older window must not overwrite a newer one.
+      if (request !== this.loadRequest) return;
+      this.board = board;
       this.flipped = new Set();
       this.error = null;
       this.forbidden = false;
       this.announce();
     } catch (error) {
+      if (request !== this.loadRequest) return;
       if (isCapabilityOff(error)) this.unavailable = true;
       else if (error instanceof ActivityForbiddenError) this.forbidden = true;
       else this.error = 'Could not load activity.';
     } finally {
-      this.loading = false;
+      if (request === this.loadRequest) this.loading = false;
     }
   }
 
@@ -238,6 +250,16 @@ export class LiveActivityView extends LitElement {
           me: me && me.user_id === id ? (patch(me) as ActivityPerson) : me,
         };
       }
+      return;
+    }
+    if (topic === 'approvals') {
+      // An approval opened or decided changes an agent's waiting state;
+      // refetch once the burst settles rather than guess it client-side.
+      if (this.approvalTimer !== undefined) clearTimeout(this.approvalTimer);
+      this.approvalTimer = setTimeout(() => {
+        this.approvalTimer = undefined;
+        void this.load();
+      }, APPROVAL_REFETCH_MS);
       return;
     }
     if (

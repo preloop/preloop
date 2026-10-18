@@ -300,8 +300,10 @@ them empty and reports `live_activity: false` from `/features`:
 
 All access goes through `models/crud/live_activity.py`. Board reads touch only
 those tables plus `user`, `managed_agent` and `runtime_session`; the worker's
-source reads are incremental, time-bounded and row-limited, served by
-`ix_rsa_account_turn_events`, `ix_approval_request_requested_at` and
+source reads are incremental, time-bounded and row-limited: hook timestamps
+through the partial `ix_rsa_account_turn_events (timestamp, account_id)`, tool
+calls through `ix_runtime_session_activity_timestamp`, approvals through the
+existing `ix_approval_request_requested_at` and the new partial
 `ix_approval_request_resolved_at`. Two realtime topics carry the board:
 `activity_metrics` (account aggregates) and `presence`, whose person and device
 events reach only sockets holding `view_users`, plus the subject's own socket.
