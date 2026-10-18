@@ -33,6 +33,7 @@ from preloop.models.crud import (
     crud_audit_log,
     crud_managed_agent,
     crud_runtime_session,
+    crud_runtime_session_activity,
 )
 from preloop.models.db.session import get_db_session, get_session_factory
 from preloop.schemas.operator_notes import (
@@ -682,6 +683,24 @@ def _end_session(
             )
             if ended is not None:
                 emit_session_ended(db, ended, reason=reason)
+                # The live activity board's session-end timestamp (#1889);
+                # whichever SessionEnd route ends the session records it.
+                crud_runtime_session_activity.log_hook_turn_event(
+                    db,
+                    account_id=account_id,
+                    runtime_session_id=ended.id,
+                    activity_type="session_end",
+                    api_key_id=context.api_key.id,
+                    timestamp=ended.ended_at,
+                    metadata={
+                        "source": "session_end_route",
+                        "hook_event_name": "SessionEnd",
+                        "actor_user_id": str(context.api_key.user_id)
+                        if context.api_key.user_id
+                        else None,
+                    },
+                    commit=False,
+                )
                 db.commit()
         return OperatorSessionEndResponse(
             runtime_session_id=session.id,
