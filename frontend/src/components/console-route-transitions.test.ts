@@ -131,6 +131,11 @@ const MATRIX: Landing[] = [
   { path: '/console/settings/appearance', tag: 'appearance-view', params: {} },
   { path: '/console/settings/account', tag: 'account-view', params: {} },
   { path: '/console/settings/users', tag: 'user-management-view', params: {} },
+  {
+    path: '/console/settings/users/user-1',
+    tag: 'user-detail-view',
+    params: { userId: 'user-1' },
+  },
   { path: '/console/settings/teams', tag: 'team-management-view', params: {} },
   {
     path: '/console/settings/invitations',

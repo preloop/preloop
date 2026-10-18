@@ -47,6 +47,18 @@ export class FleetMap extends LitElement {
   @state() private owner = '';
   @state() private provider = '';
   @state() private focusGap: FleetMapGapCode | '' = '';
+
+  /** Whether a node or a gap is selected, which Esc would clear. */
+  hasSelection(): boolean {
+    return Boolean(this.selected || this.focusGap);
+  }
+
+  /** Clear the node and gap selection, as Esc inside the canvas does. */
+  clearSelection(): void {
+    this.selected = '';
+    this.focusGap = '';
+  }
+
   private scale = 1;
   private translateX = 24;
   private translateY = 24;
@@ -252,7 +264,7 @@ export class FleetMap extends LitElement {
         overflow: hidden;
         touch-action: none;
         cursor: grab;
-        height: max(480px, calc(100vh - 340px));
+        height: var(--fleet-map-stage-height, max(480px, calc(100vh - 340px)));
         background: var(--console-page);
         border: 1px solid var(--console-hairline);
         border-radius: var(--console-card-radius);

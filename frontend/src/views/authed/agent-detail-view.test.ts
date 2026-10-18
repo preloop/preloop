@@ -800,6 +800,29 @@ describe('AgentDetailView', () => {
     ]);
   });
 
+  it('names the owner in the summary strip, linked to their page', async () => {
+    const el = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => !(el as any).loading && !!(el as any).agent);
+    expect(el.shadowRoot!.querySelector('[data-testid="agent-owner"]')).to.not
+      .exist;
+    (el as any).agent = {
+      ...(el as any).agent,
+      owner_user_id: 'user-7',
+      owner_username: 'jane',
+      owner_email: 'jane@example.com',
+    };
+    await el.updateComplete;
+    const owner = el.shadowRoot!.querySelector('[data-testid="agent-owner"]')!;
+    expect(owner.textContent!.replace(/\s+/g, ' ')).to.include('Owner');
+    const link = owner.querySelector('a')!;
+    expect(link.getAttribute('href')).to.equal(
+      '/console/settings/users/user-7'
+    );
+    expect(link.textContent!.trim()).to.equal('jane');
+  });
+
   it('shows no device when none is known', async () => {
     const el = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`

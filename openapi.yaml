@@ -3515,6 +3515,19 @@ paths:
           title: Has Artifacts
         description: 'Only sessions holding an available artifact: ''any'', or an
           artifact kind such as transcript, screenshot, document or audio'
+      - name: owner_user_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          description: Only sessions of managed agents this user owns; a user who
+            owns no agent matches no session
+          title: Owner User Id
+        description: Only sessions of managed agents this user owns; a user who owns
+          no agent matches no session
       responses:
         '200':
           description: Successful Response

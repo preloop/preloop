@@ -35,6 +35,7 @@ export const consoleRouteLoaders = {
   'emergency-view': () => import('../views/authed/settings/emergency-view'),
   'user-management-view': () =>
     import('../views/authed/settings/user-management-view'),
+  'user-detail-view': () => import('../views/authed/settings/user-detail-view'),
   'team-management-view': () =>
     import('../views/authed/settings/team-management-view'),
   'invitation-management-view': () =>

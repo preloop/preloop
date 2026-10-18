@@ -1045,3 +1045,73 @@ def test_session_detail_links_its_managed_principal_and_flow(
     assert detail.session.agent_id == agent_id
     assert detail.session.agent_href == f"/console/agents/{agent_id}"
     assert detail.session.flow_href == f"/console/flows/{row['flow_id']}"
+
+
+# --- _resolve_agent_filters: owner ------------------------------------------
+
+
+def _managed_agent_row(owner_user_id, source_id, kind="codex"):
+    row = MagicMock()
+    row.id = uuid.uuid4()
+    row.owner_user_id = owner_user_id
+    row.session_source_type = "managed_agent"
+    row.session_source_id = source_id
+    row.display_name = source_id
+    row.agent_kind = kind
+    return row
+
+
+def test_resolve_agent_filters_keeps_only_the_owners_agents(service):
+    owner = uuid.uuid4()
+    agents = [
+        _managed_agent_row(owner, "mine"),
+        _managed_agent_row(uuid.uuid4(), "theirs"),
+        _managed_agent_row(None, "nobody"),
+    ]
+    with patch.object(service, "_account_managed_agents", return_value=agents):
+        principals, source_types = service._resolve_agent_filters(
+            account=_make_account(),
+            agent=None,
+            agent_kind=None,
+            owner_user_id=str(owner),
+        )
+
+    assert principals == [("managed_agent", "mine")]
+    assert source_types is None
+
+
+def test_resolve_agent_filters_owner_without_agents_is_empty_not_unfiltered(
+    service,
+):
+    agents = [_managed_agent_row(uuid.uuid4(), "theirs")]
+    with patch.object(service, "_account_managed_agents", return_value=agents):
+        principals, source_types = service._resolve_agent_filters(
+            account=_make_account(),
+            agent=None,
+            agent_kind=None,
+            owner_user_id=str(uuid.uuid4()),
+        )
+
+    assert principals == []
+    assert source_types is None
+
+
+def test_resolve_agent_filters_owner_with_kind_never_widens_to_source_type(
+    service,
+):
+    """A kind filter's source-type match must not undo the owner filter."""
+    owner = uuid.uuid4()
+    agents = [
+        _managed_agent_row(owner, "mine", kind="codex"),
+        _managed_agent_row(uuid.uuid4(), "theirs", kind="codex"),
+    ]
+    with patch.object(service, "_account_managed_agents", return_value=agents):
+        principals, source_types = service._resolve_agent_filters(
+            account=_make_account(),
+            agent=None,
+            agent_kind="codex",
+            owner_user_id=str(owner),
+        )
+
+    assert principals == [("managed_agent", "mine")]
+    assert source_types is None

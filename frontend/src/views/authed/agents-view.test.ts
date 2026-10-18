@@ -76,6 +76,7 @@ function makeRow(overrides: Partial<AgentListRow>): AgentListRow {
     statusVariant: 'neutral',
     statusOutline: false,
     owner: '',
+    ownerId: null,
     modelLabel: 'direct (not gated)',
     modelTitle: 'direct (not gated)',
     modelId: null,
@@ -541,6 +542,28 @@ describe('AgentsView', () => {
         el.shadowRoot!.querySelectorAll('table.agents-table thead th')
       ).map((th) => th.textContent?.trim())
     ).to.include('Owner');
+    el.agentTable.resetColumns();
+  });
+
+  it('links the owner column to the person page', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Owned agent', 'claude_code'),
+        owner_user_id: 'user-7',
+        owner_username: 'jane',
+      },
+      makeAgent('agent-2', 'Unowned agent', 'claude_code'),
+    ];
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    el.agentTable.setVisible('owner', true);
+    await el.updateComplete;
+
+    const owner = el.shadowRoot!.querySelector(
+      'table.agents-table tbody a[href="/console/settings/users/user-7"]'
+    );
+    expect(owner?.textContent?.trim()).to.equal('jane');
+    expect(el.shadowRoot!.textContent).to.contain('Unassigned');
     el.agentTable.resetColumns();
   });
 

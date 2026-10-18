@@ -3279,6 +3279,13 @@ async def list_account_runtime_sessions(
             "artifact kind such as transcript, screenshot, document or audio"
         ),
     ),
+    owner_user_id: Optional[UUID] = Query(
+        None,
+        description=(
+            "Only sessions of managed agents this user owns; a user who owns "
+            "no agent matches no session"
+        ),
+    ),
 ):
     """List runtime sessions for the current account."""
     if has_artifacts is not None and has_artifacts != "any":
@@ -3310,6 +3317,7 @@ async def list_account_runtime_sessions(
             flow_execution_id=str(flow_execution_id) if flow_execution_id else None,
             active_within_minutes=active_within_minutes,
             has_artifacts=has_artifacts,
+            owner_user_id=str(owner_user_id) if owner_user_id else None,
         )
     )
 

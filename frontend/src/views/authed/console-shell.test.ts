@@ -1625,6 +1625,24 @@ describe('ConsoleShell', () => {
       );
     });
 
+    it('gates a person page on the same permission as the people list', async () => {
+      window.history.replaceState({}, '', '/console/settings/users/user-1');
+      withPermissions(['view_agents']);
+      const el = await loaded();
+      const denied = el.shadowRoot!.querySelector('permission-denied');
+      expect(denied).to.exist;
+      expect(denied!.getAttribute('required-permission')).to.equal(
+        'view_users'
+      );
+    });
+
+    it('opens a person page for a reader who may view users', async () => {
+      window.history.replaceState({}, '', '/console/settings/users/user-1');
+      withPermissions(['view_users']);
+      const el = await loaded();
+      expect(el.shadowRoot!.querySelector('permission-denied')).to.not.exist;
+    });
+
     it('lets a decision-token link through to the approval page', async () => {
       // An escalation recipient may hold no view_approvals at all; the page
       // falls back to the token, which authorizes exactly this request.

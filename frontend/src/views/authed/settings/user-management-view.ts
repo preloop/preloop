@@ -36,6 +36,7 @@ import type { SubaccountAccessDialog } from '../hierarchy/subaccount-access-dial
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import { roleLabel } from '../../../utils/role-label';
+import { userHref } from '../../../utils/user-href';
 
 @customElement('user-management-view')
 export class UserManagementView extends LitElement {
@@ -506,7 +507,9 @@ export class UserManagementView extends LitElement {
                 </div>
                 <div class="user-details">
                   <h3 class="user-name">
-                    ${user.full_name || user.username || 'Identity unavailable'}
+                    <a href=${userHref(user.id)}
+                      >${user.full_name || user.username || 'Identity unavailable'}</a
+                    >
                   </h3>
                   ${user.identity_status === 'quarantined' ? html`<p>Identity requires migration conflict resolution by a platform administrator.</p>` : ''}
                   <p class="user-email">${user.email}</p>

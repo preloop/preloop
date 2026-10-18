@@ -8,6 +8,7 @@ import {
   ATTENTION_SUMMARY_EVENT,
   readAttentionSummary,
 } from '../../utils/attention-summary';
+import { invalidateApiCaches } from '../../api';
 import './dashboard-control-plane-view';
 import type { DashboardView } from './dashboard-control-plane-view';
 
@@ -59,6 +60,11 @@ describe('DashboardView', () => {
   let auditSecondaryGate: Promise<void> | null;
   /** null means RBAC is off, so every permission check passes. */
   let mePermissions: string[] | null;
+  /** URL prefix -> how many of its next requests answer 500. */
+  let failNext: Map<string, number>;
+  /** Merged into `GET /api/v1/features`. */
+  let extraFeatures: Record<string, boolean>;
+  let fleetResponse: any;
 
   beforeEach(() => {
     aiModelsGate = null;
@@ -73,6 +79,9 @@ describe('DashboardView', () => {
     auditCountGate = null;
     auditSecondaryGate = null;
     mePermissions = null;
+    failNext = new Map();
+    extraFeatures = {};
+    fleetResponse = null;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -303,6 +312,7 @@ describe('DashboardView', () => {
         is_enabled: true,
         approval_workflow_id: 'approval-1',
         has_approval_condition: true,
+        config_id: 'config-1',
       },
     ];
     flowsResponse = [{ id: 'flow-1', name: 'Refund Assistant' }];
@@ -435,6 +445,13 @@ describe('DashboardView', () => {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           });
+
+        for (const [prefix, left] of failNext) {
+          if (left > 0 && url.startsWith(prefix)) {
+            failNext.set(prefix, left - 1);
+            return new Response('', { status: 500 });
+          }
+        }
 
         if (url.startsWith('/api/v1/account/gateway-usage/summary')) {
           if (summaryGate) {
@@ -578,7 +595,11 @@ describe('DashboardView', () => {
         }
 
         if (url === '/api/v1/features') {
-          return json({ features: { billing: true } });
+          return json({ features: { billing: true, ...extraFeatures } });
+        }
+
+        if (url.startsWith('/api/v1/fleet/device-fleet') && fleetResponse) {
+          return json(fleetResponse);
         }
 
         return json({ detail: `Unhandled ${url}` });
@@ -1580,6 +1601,269 @@ describe('DashboardView', () => {
       expect(
         steps[2].querySelector('a.next-step-link')?.getAttribute('href')
       ).to.equal('/console/policies');
+    });
+
+    it('does not tick "Restrict a tool" for a builtin that ships disabled', async () => {
+      // A brand new account: builtins with default_enabled false report
+      // is_enabled false, but nobody configured them (no config_id).
+      toolsResponse = [
+        {
+          ...toolsResponse[0],
+          name: 'get_issue',
+          is_enabled: false,
+          approval_workflow_id: null,
+          has_approval_condition: false,
+          config_id: null,
+          access_rules: [],
+        },
+      ];
+
+      const element = await mountLoaded();
+
+      const steps =
+        element.shadowRoot?.querySelectorAll('.next-steps-card .next-step') ||
+        [];
+      expect(steps.length, 'the checklist is open').to.equal(3);
+      expect(steps[2].textContent).to.contain('Restrict a tool');
+      expect(steps[2].classList.contains('done'), 'restrict step open').to.be
+        .false;
+    });
+
+    it('ticks "Restrict a tool" once somebody disables a tool', async () => {
+      toolsResponse = [
+        {
+          ...toolsResponse[0],
+          is_enabled: false,
+          approval_workflow_id: null,
+          has_approval_condition: false,
+          config_id: 'config-2',
+          access_rules: [],
+        },
+      ];
+
+      const element = await mountLoaded();
+
+      // Agent, budget and the restriction are all in: nothing left to do.
+      expect(element['hasToolPolicy']).to.be.true;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+    });
+
+    for (const failing of [
+      '/api/v1/agents',
+      '/api/v1/runtime-sessions',
+      '/api/v1/flows/summary',
+      '/api/v1/flows/executions',
+      '/api/v1/budget/policies',
+      '/api/v1/tools/summary',
+    ]) {
+      it(`does not prompt onboarding when ${failing} fails on a set-up account`, async () => {
+        failNext.set(failing, 1);
+
+        const element = await mountDashboard();
+        await waitUntil(
+          () =>
+            !element['loading'] &&
+            !element['fetchingAgents'] &&
+            !element['fetchingBudget'] &&
+            !element['fetchingTools'] &&
+            !element['fetchingFlows'] &&
+            !element['fetchingRecentExecutions'] &&
+            element['featuresResolved'],
+          'dashboard did not finish loading'
+        );
+        await element.updateComplete;
+
+        // The read failed: the account is unknown, not empty.
+        expect(element['unansweredInputs'].size).to.equal(1);
+        expect(
+          element.shadowRoot?.querySelector('.connect-first'),
+          'no "Connect your first agent" on an unknown fleet'
+        ).to.not.exist;
+        expect(
+          element.shadowRoot?.querySelector('.next-steps-card'),
+          'no checklist on unknown inputs'
+        ).to.not.exist;
+        expect(element.shadowRoot?.querySelector('.welcome-container')).to.not
+          .exist;
+
+        // The next answer settles it, and a set-up account stays quiet.
+        await element['refreshFleet']();
+        await element['refreshFlowRuns']();
+        await element['fetchBudgetSummary']();
+        await element['fetchToolsList']();
+        await element.updateComplete;
+        expect(element['unansweredInputs'].size).to.equal(0);
+        expect(element['managedAgents'].length).to.be.greaterThan(0);
+        expect(element.shadowRoot?.querySelector('.connect-first')).to.not
+          .exist;
+        expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+          .exist;
+      });
+    }
+
+    it('treats a refused read as answered for a reader without the permission', async () => {
+      // The API helpers throw "Failed to fetch ..." with no status, so the
+      // refusal is recognised from the reader's permissions.
+      mePermissions = ['view_flows', 'view_tools'];
+      failNext.set('/api/v1/agents', 1);
+      failNext.set('/api/v1/budget/policies', 1);
+
+      const element = await mountDashboard();
+      await waitUntil(
+        () =>
+          !element['fetchingAgents'] &&
+          !element['fetchingBudget'] &&
+          element['profileResolved'] &&
+          element['unansweredInputs'].size === 0 &&
+          element['onboardingResolved'],
+        'a refused read never answered'
+      );
+    });
+
+    it('says Models and Users could not load instead of claiming zero', async () => {
+      const element = await mountLoaded();
+      const models = element['aiModels'].length;
+      failNext.set('/api/v1/ai-models', 1);
+      await element['fetchModelsList']();
+      await element.updateComplete;
+      expect(element['aiModels'].length, 'kept on a failed read').to.equal(
+        models
+      );
+      expect(element['unavailableInventoryTabs']).to.include('models');
+
+      await element['fetchModelsList']();
+      expect(element['unavailableInventoryTabs']).to.not.include('models');
+
+      // Users: the people already listed stay, and the tab says it failed.
+      element['userManagementEnabled'] = true;
+      element['permissions'] = null;
+      await element['fetchUsersList']();
+      const people = element['accountUsers'].length;
+      const enabled = element['enabledUsersCount'];
+      expect(people, 'fixture lists people').to.be.greaterThan(0);
+      failNext.set('/api/v1/users', 1);
+      await element['fetchUsersList']();
+      expect(element['accountUsers'].length).to.equal(people);
+      expect(element['enabledUsersCount']).to.equal(enabled);
+      expect(element['unavailableInventoryTabs']).to.include('users');
+      await element['fetchUsersList']();
+      expect(element['unavailableInventoryTabs']).to.not.include('users');
+    });
+
+    it('holds Next steps while the people list is unanswered', async () => {
+      // Budget is still open, so the card would show; the invite step reads
+      // the people list and must not be drawn from a failed read.
+      budgetPoliciesResponse = [];
+      const element = await mountLoaded();
+      element['userManagementEnabled'] = true;
+      failNext.set('/api/v1/users', 1);
+      await element['fetchUsersList']();
+      await element.updateComplete;
+      expect(element['nextStepsInputsResolved']).to.be.false;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.not
+        .exist;
+
+      await element['fetchUsersList']();
+      await element.updateComplete;
+      expect(element['nextStepsInputsResolved']).to.be.true;
+      expect(element.shadowRoot?.querySelector('.next-steps-card')).to.exist;
+    });
+
+    it('keeps the agents on screen when a refresh of them fails', async () => {
+      const element = await mountLoaded();
+      const before = element['managedAgents'].length;
+      expect(before).to.be.greaterThan(0);
+      failNext.set('/api/v1/agents', 1);
+
+      await element['refreshFleet']();
+      await element.updateComplete;
+
+      expect(element['managedAgents'].length).to.equal(before);
+      expect(element.shadowRoot?.querySelector('.connect-first')).to.not.exist;
+    });
+
+    it('fills the Devices tab from the fleet, only for a reader who may see it', async () => {
+      invalidateApiCaches();
+      const element = await mountLoaded();
+      await waitUntil(() => !element['fetchingDevices'], 'fleet never settled');
+      expect(element['canViewFleet'], 'no fleet feature, no tab').to.be.false;
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).startsWith('/api/v1/fleet')),
+        'no fleet request without the feature'
+      ).to.be.false;
+
+      extraFeatures = { fleet_coverage: true };
+      mePermissions = ['view_device_fleet'];
+      fleetResponse = {
+        items: [
+          {
+            device_key: 'fp:aaaa',
+            hostname: 'build-01',
+            os: 'linux',
+            runner_state: 'online',
+            collection_state: 'reporting',
+            inventory_state: 'complete',
+            roster_state: 'none',
+            verification: 'unverified',
+            last_seen_at: new Date().toISOString(),
+            agents_onboarded: 2,
+            agents_not_onboarded: 1,
+            users: [
+              { id: 'user-1', label: 'Jane Doe', source: 'runner_registrant' },
+              { id: 'user-1', label: 'Jane Doe', source: 'agent_owner' },
+            ],
+            runners: [],
+            agents: [],
+            sources: [],
+            possible_same_machine_as: [],
+            findings: [],
+          },
+        ],
+        total: 1,
+        truncated: false,
+        summary: {},
+        unassigned_agents: [],
+      };
+      invalidateApiCaches();
+      await element['fetchDevicesList']();
+      await element.updateComplete;
+
+      expect(element['canViewFleet']).to.be.true;
+      const rows = element['inventoryDeviceRows'];
+      expect(rows).to.have.length(1);
+      expect(rows[0]).to.include({
+        name: 'build-01',
+        os: 'Linux',
+        href: '/console/settings/device-fleet?device=fp%3Aaaaa',
+        runnerLabel: 'Runner online',
+        runnerLive: true,
+      });
+      // One person, listed once, linked to their page.
+      expect(rows[0].people).to.eql([
+        {
+          id: 'user-1',
+          label: 'Jane Doe',
+          href: '/console/settings/users/user-1',
+        },
+      ]);
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      expect(inventory.showDevices).to.be.true;
+      expect(inventory.devicesTotal).to.equal(1);
+
+      failNext.set('/api/v1/fleet/device-fleet', 1);
+      await element['fetchDevicesList']();
+      await element.updateComplete;
+      expect(
+        element['inventoryDeviceRows'],
+        'kept on a failed read'
+      ).to.have.length(1);
+      expect(inventory.unavailableTabs).to.include('devices');
+      invalidateApiCaches();
     });
 
     it('adds the invite step only when user management is on', async () => {

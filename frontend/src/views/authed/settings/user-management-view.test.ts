@@ -160,6 +160,29 @@ describe('UserManagementView', () => {
     expect(element.shadowRoot?.textContent).to.contain('alice@example.com');
   });
 
+  it('links each name to the person page and keeps the row actions', async () => {
+    fetchStub = createFetchStub({ users: [sampleUser] });
+    const element = (await fixture(
+      html`<user-management-view></user-management-view>`
+    )) as UserManagementView;
+    await waitUntil(
+      () => (element as any).users?.length === 1,
+      'users did not load'
+    );
+    await element.updateComplete;
+
+    const link = element.shadowRoot!.querySelector(
+      '.user-name a'
+    ) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).to.equal(
+      '/console/settings/users/user-1'
+    );
+    expect(link.textContent!.trim()).to.equal('Alice Example');
+    expect(
+      element.shadowRoot!.querySelectorAll('.user-actions sl-button').length
+    ).to.be.greaterThan(1);
+  });
+
   it('labels the sign-in source in words and keeps delete quiet', async () => {
     fetchStub = createFetchStub({
       users: [

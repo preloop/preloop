@@ -47,6 +47,7 @@ import type { SubaccountAccessDialog } from '../hierarchy/subaccount-access-dial
 import { consoleDialogStyles } from '../../../styles/console-dialog';
 import { confirmDialog } from '../../../components/confirm-dialog';
 import { roleLabel } from '../../../utils/role-label';
+import { userHref } from '../../../utils/user-href';
 
 @customElement('team-management-view')
 export class TeamManagementView extends LitElement {
@@ -841,7 +842,9 @@ export class TeamManagementView extends LitElement {
                     <div class="member-item">
                       <div class="member-info">
                         <span class="member-name">
-                          ${user?.full_name || user?.username || 'Identity unavailable'}
+                          <a href=${userHref(member.user_id)}
+                            >${user?.full_name || user?.username || 'Identity unavailable'}</a
+                          >
                         </span>
                         <span class="member-email">${user?.email || ''}</span>
                       </div>

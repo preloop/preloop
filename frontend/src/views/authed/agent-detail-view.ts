@@ -88,6 +88,7 @@ import type {
 } from '../../types';
 import type { AccessRuleSummary } from '../../components/governance-rule-set-editor';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { userHref } from '../../utils/user-href';
 import {
   deviceLabel,
   fleetHref,
@@ -1535,7 +1536,7 @@ export class AgentDetailView extends LitElement {
                   ${this.renderStripId(reference, 'Copy session reference')}`
               : nothing
           }
-          ${this.renderStripDevices()}
+          ${this.renderStripDevices()} ${this.renderStripOwner()}
           <span class="badge-row">${this.renderHeaderChips()}</span>
         </div>
         <div class="strip-spend">
@@ -1571,6 +1572,21 @@ export class AgentDetailView extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Who owns the agent, linked to their person page. An agent with no owner
+   * says nothing here; the actions menu is where an owner is assigned.
+   */
+  private renderStripOwner(): TemplateResult | typeof nothing {
+    const agent = this.agent;
+    if (!agent?.owner_user_id) return nothing;
+    const name = agent.owner_username || agent.owner_email || 'Unknown user';
+    return html`<span class="strip-sep" aria-hidden="true">·</span>
+      <span class="strip-devices" data-testid="agent-owner">
+        <span class="strip-label">Owner</span>
+        <a href=${userHref(agent.owner_user_id)}>${name}</a>
+      </span>`;
   }
 
   /**

@@ -192,6 +192,12 @@ describe('Device fleet', () => {
     const text = view.shadowRoot.textContent.replace(/\s+/g, ' ');
     expect(text).to.include('example-workstation');
     expect(text).to.include('Jane Doe');
+    // The person in the People column opens their own page.
+    expect(
+      view.shadowRoot.querySelector(
+        'td[data-label="People"] a[href="/console/settings/users/user-1"]'
+      )
+    ).to.exist;
     expect(text).to.include('1 governed');
     expect(text).to.include('1 not onboarded');
     expect(text).to.include('1 open');
@@ -205,7 +211,8 @@ describe('Device fleet', () => {
     expect(stat('stat-ungoverned')).to.equal('1');
     expect(stat('stat-runners-offline')).to.equal('0');
     expect(stat('stat-findings')).to.equal('1');
-    expect(view.shadowRoot.querySelector('a[href*="user=user-1"]')).to.exist;
+    expect(view.shadowRoot.querySelector('a[href*="user=user-1"]')).to.not
+      .exist;
   });
 
   it('says how to add the first device when the fleet is empty', async () => {
@@ -306,11 +313,14 @@ describe('Device fleet', () => {
     expect(api.callsTo('/api/v1/fleet/device-fleet')).to.have.length(0);
     expect(root.textContent).to.include('Unverified');
     expect(
-      root.querySelector('[data-testid="device-people"] a[href*="user=user-1"]')
-        .textContent
+      root.querySelector(
+        '[data-testid="device-people"] a[href="/console/settings/users/user-1"]'
+      ).textContent
     ).to.include('Jane Doe');
     const people = root.querySelector('[data-testid="device-people"]');
-    expect(people.querySelectorAll('a[href*="user=user-1"]')).to.have.length(1);
+    expect(
+      people.querySelectorAll('a[href="/console/settings/users/user-1"]')
+    ).to.have.length(1);
     expect(people.textContent.replace(/\s+/g, ' ')).to.include(
       'Registered the runner · Owns an agent here'
     );

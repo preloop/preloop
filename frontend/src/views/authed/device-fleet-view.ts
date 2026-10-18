@@ -12,6 +12,7 @@ import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { Router } from '../../router';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatLocalDateTime, formatRelativeTime } from '../../utils/date';
+import { userHref } from '../../utils/user-href';
 import {
   deviceLabel,
   fleetFindingTitle,
@@ -43,8 +44,6 @@ const VIEW_KEY = 'preloop.device_fleet.view_mode';
 
 const agentHref = (id: string): string =>
   `/console/agents/${encodeURIComponent(id)}`;
-const personHref = (id: string): string =>
-  `/console/settings/users?user=${encodeURIComponent(id)}`;
 const runnerHref = (id: string): string =>
   `/console/settings/runners?runner=${encodeURIComponent(id)}`;
 
@@ -631,7 +630,7 @@ export class DeviceFleetView extends LitElement {
   }
   private person(user: DeviceUser) {
     return user.id
-      ? html`<a href=${personHref(user.id)}>${user.label}</a>`
+      ? html`<a href=${userHref(user.id)}>${user.label}</a>`
       : html`<span>${user.label}</span>`;
   }
   private setSort(key: SortKey): void {

@@ -286,4 +286,17 @@ describe('fleet-map gesture performance', () => {
       release.restore();
     }
   });
+
+  it('exposes its selection so a host can clear it', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map .graph=${sampleFleetMap()}></fleet-map>`
+    );
+    expect(el.hasSelection()).to.be.false;
+    (el.shadowRoot!.querySelector('button[data-node]') as HTMLElement).click();
+    await el.updateComplete;
+    expect(el.hasSelection()).to.be.true;
+    el.clearSelection();
+    await el.updateComplete;
+    expect(el.hasSelection()).to.be.false;
+  });
 });

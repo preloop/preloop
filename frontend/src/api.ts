@@ -1232,6 +1232,8 @@ export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
   status?: 'all' | 'active' | 'ended';
   /** Only sessions holding an available artifact: `any` or one kind. */
   hasArtifacts?: string;
+  /** Only sessions of managed agents this user owns; none when they own none. */
+  ownerUserId?: string;
   /** Managed agent id: only that agent's sessions. */
   agent?: string;
   limit?: number;
@@ -1342,6 +1344,9 @@ function buildRuntimeSessionListQuery(
   }
   if (params.hasArtifacts) {
     queryParams.set('has_artifacts', params.hasArtifacts);
+  }
+  if (params.ownerUserId) {
+    queryParams.set('owner_user_id', params.ownerUserId);
   }
   if (params.agent) {
     queryParams.set('agent', params.agent);

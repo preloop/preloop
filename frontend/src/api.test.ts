@@ -36,6 +36,7 @@ import {
   getAccountGatewayUsageSearch,
   getAccountGatewayUsageSummary,
   getAccountRuntimeSessionActivityTimeline,
+  getAccountRuntimeSessions,
   getCostAnalyticsSummary,
   BILLING_SUBSCRIPTION_CHANGED,
   NO_USAGE_NUDGES,
@@ -70,6 +71,28 @@ describe('api', () => {
     fetchStub.restore();
     routerGoStub.restore();
     localStorage.clear();
+  });
+
+  describe('getAccountRuntimeSessions', () => {
+    it('sends the owner filter as owner_user_id', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ items: [] }), { status: 200 })
+      );
+      await getAccountRuntimeSessions({ ownerUserId: 'user-1', limit: 5 });
+      const url = new URL(fetchStub.firstCall.args[0], window.location.origin);
+      expect(url.pathname).to.equal('/api/v1/runtime-sessions');
+      expect(url.searchParams.get('owner_user_id')).to.equal('user-1');
+      expect(url.searchParams.get('limit')).to.equal('5');
+    });
+
+    it('omits the owner filter when none is given', async () => {
+      fetchStub.resolves(
+        new Response(JSON.stringify({ items: [] }), { status: 200 })
+      );
+      await getAccountRuntimeSessions({});
+      const url = new URL(fetchStub.firstCall.args[0], window.location.origin);
+      expect(url.searchParams.has('owner_user_id')).to.equal(false);
+    });
   });
 
   describe('tool catalogue projections', () => {

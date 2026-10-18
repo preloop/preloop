@@ -318,3 +318,39 @@ def test_agent_id_matches_in_any_case(
     response = client.get(f"/api/v1/runtime-sessions?agent={str(worker.id).upper()}")
 
     assert _ids(response) == {str(owned.id)}
+
+
+def test_owner_filter_returns_sessions_of_agents_the_user_owns(
+    client: Any, db_session: Session, account_id: Any, test_user: models.User
+) -> None:
+    mine = _agent(db_session, account_id, "Mine", "codex")
+    mine.owner_user_id = test_user.id
+    theirs = _agent(db_session, account_id, "Theirs", "codex")
+    db_session.flush()
+    base = _session(db_session, account_id, "mine-base", agent=mine)
+    per_run = _session(
+        db_session, account_id, "mine-run", agent=mine, principal_suffix=":run-2"
+    )
+    _session(db_session, account_id, "theirs", agent=theirs)
+    _session(db_session, account_id, "unowned")
+
+    response = client.get(f"/api/v1/runtime-sessions?owner_user_id={test_user.id}")
+
+    assert _ids(response) == {str(base.id), str(per_run.id)}
+
+
+def test_owner_filter_with_no_agents_matches_nothing_rather_than_all(
+    client: Any, db_session: Session, account_id: Any
+) -> None:
+    _session(db_session, account_id, "cc", source_type="claude_code")
+    _agent(db_session, account_id, "Unowned", "codex")
+
+    response = client.get(f"/api/v1/runtime-sessions?owner_user_id={uuid4()}")
+
+    assert _ids(response) == set()
+
+
+def test_owner_filter_rejects_malformed_ids(client: Any) -> None:
+    response = client.get("/api/v1/runtime-sessions?owner_user_id=nope")
+
+    assert response.status_code == 422

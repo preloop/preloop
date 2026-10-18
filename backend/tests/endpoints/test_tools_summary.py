@@ -128,3 +128,43 @@ def test_summary_has_typed_openapi_response() -> None:
     properties = schema["components"]["schemas"]["ToolSummaryResponse"]["properties"]
     assert "schema" not in properties
     assert "parameters" not in properties
+
+
+def test_new_account_default_disabled_builtins_carry_no_configuration(
+    mocker: Any,
+) -> None:
+    """A shipped default is not a restriction somebody made.
+
+    The Overview's "Restrict a tool" step counts a tool only when it has a
+    configuration (`config_id`). On a brand new account the builtins that
+    ship disabled report `is_enabled: False` with `config_id: None`, which is
+    what lets the console tell them apart from a tool a person turned off.
+    """
+    from preloop.api.endpoints.tools import BUILTIN_TOOLS
+
+    account = SimpleNamespace(id=uuid4())
+    for target in (
+        (tools.crud_tool_configuration, "get_multi_by_account"),
+        (tools.crud_tool_access_rule, "get_multi_by_account"),
+        (tools.crud_tracker, "get_for_account"),
+        (tools.crud_mcp_server, "get_active_by_account"),
+        (tools.crud_mcp_tool, "get_by_servers_for_account"),
+    ):
+        mocker.patch.object(*target, return_value=[])
+    summary = tools.list_tool_summaries(
+        account=account, current_user=MagicMock(), db=MagicMock()
+    )
+    shipped_off = {
+        tool["name"]
+        for tool in BUILTIN_TOOLS
+        if tool.get("default_enabled", True) is False
+    }
+    assert shipped_off, "the catalogue ships some builtins disabled"
+    rows = [row for row in summary if row.name in shipped_off]
+    assert rows
+    for row in rows:
+        assert row.is_enabled is False
+        assert row.config_id is None
+        assert row.approval_workflow_id is None
+        assert row.access_rules == []
+    assert all(row.config_id is None for row in summary)

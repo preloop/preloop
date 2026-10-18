@@ -7,6 +7,8 @@ import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
+import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
@@ -14,6 +16,11 @@ import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './user-avatar';
+import { userHref } from '../utils/user-href';
+// The map component and its API load on first use, not with the Overview:
+// most readers never open the map and many may not see the fleet at all.
+import type { FleetMapGraph } from '../fleet-map-api';
+import type { FleetMap } from './fleet-map';
 
 import consoleStyles from '../styles/console-styles.css?inline';
 import { parseUTCDate, formatRelativeTime } from '../utils/date';
@@ -30,9 +37,13 @@ import type { GatewayTokenUsage } from '../types';
 import './token-figures';
 
 /** Which inventory the box is showing. */
-export type InventoryTab = 'agents' | 'flows' | 'models' | 'tools' | 'users';
+export type InventoryTab =
+  'agents' | 'devices' | 'flows' | 'models' | 'tools' | 'users';
 
 export const INVENTORY_TAB_STORAGE_KEY = 'overview_inventory_tab';
+/** Table or Map, remembered like the tab. */
+export const INVENTORY_VIEW_STORAGE_KEY = 'overview_inventory_view';
+export type InventoryView = 'table' | 'map';
 
 /** The last run of a flow, as the executions list returns it. */
 export interface InventoryFlowRun extends ExecutionSubjectSource {
@@ -128,6 +139,22 @@ export interface InventoryUserRow {
   cost: number;
 }
 
+/** One machine from the device fleet, as the fleet page names it. */
+export interface InventoryDeviceRow {
+  key: string;
+  name: string;
+  /** Platform as people write it ("macOS"), from the fleet page's helper. */
+  os: string;
+  href: string;
+  people: { id: string | null; label: string; href: string | null }[];
+  runnerState: string;
+  runnerLabel: string;
+  runnerLive: boolean;
+  agentsGoverned: number;
+  agentsUngoverned: number;
+  lastSeenAt: string | null;
+}
+
 export interface InventoryToolRow {
   name: string;
   server: string;
@@ -165,10 +192,15 @@ const SORT_OPTIONS: Record<InventoryTab, SortOption[]> = {
     { value: 'last-login', label: 'Last login' },
     { value: 'spend', label: 'Spend' },
   ],
+  devices: [
+    { value: 'last-seen', label: 'Last seen' },
+    { value: 'agents', label: 'Agents' },
+  ],
 };
 
 const TAB_ORDER: InventoryTab[] = [
   'agents',
+  'devices',
   'flows',
   'models',
   'tools',
@@ -177,6 +209,7 @@ const TAB_ORDER: InventoryTab[] = [
 
 const TAB_LABELS: Record<InventoryTab, string> = {
   agents: 'Agents',
+  devices: 'Devices',
   flows: 'Flows',
   models: 'Models',
   tools: 'Tools',
@@ -195,6 +228,11 @@ const EMPTY_STATES: Record<
     text: 'No agents yet.',
     href: '/console/agents',
     linkText: 'Onboard an agent',
+  },
+  devices: {
+    text: 'No devices yet.',
+    href: '/console/settings/device-fleet',
+    linkText: 'Set up the device fleet',
   },
   flows: {
     text: 'No flows yet.',
@@ -220,6 +258,7 @@ const EMPTY_STATES: Record<
 
 const ALL_LINKS: Record<InventoryTab, { href: string; noun: string }> = {
   agents: { href: '/console/agents', noun: 'agents' },
+  devices: { href: '/console/settings/device-fleet', noun: 'devices' },
   flows: { href: '/console/flows', noun: 'flows' },
   models: { href: '/console/ai-models', noun: 'models' },
   tools: { href: '/console/tools', noun: 'tools' },
@@ -254,6 +293,7 @@ export class InventoryCard extends LitElement {
   @property({ type: Array }) modelRows: InventoryModelRow[] = [];
   @property({ type: Array }) toolRows: InventoryToolRow[] = [];
   @property({ type: Array }) userRows: InventoryUserRow[] = [];
+  @property({ type: Array }) deviceRows: InventoryDeviceRow[] = [];
 
   /** Totals for the tab labels and the footer link: everything, not the page. */
   @property({ type: Number }) agentsTotal = 0;
@@ -261,12 +301,26 @@ export class InventoryCard extends LitElement {
   @property({ type: Number }) modelsTotal = 0;
   @property({ type: Number }) toolsTotal = 0;
   @property({ type: Number }) usersTotal = 0;
+  @property({ type: Number }) devicesTotal = 0;
 
   /**
    * Off on OSS, where there is one account and no user management: a tab
    * listing one person, always, is furniture.
    */
   @property({ type: Boolean }) showUsers = false;
+  /** Only where the device fleet is licensed and this reader may view it. */
+  @property({ type: Boolean }) showDevices = false;
+  /**
+   * Offer the Fleet Map in place of the tables. Same gate as Devices: the
+   * map reads `GET /api/v1/fleet/map`, which needs view_device_fleet.
+   */
+  @property({ type: Boolean }) showMap = false;
+  /**
+   * Tabs whose list could not be read. Their count and body say so instead
+   * of "0" and "No agents yet", which would be a statement about the account
+   * when the truth is about one request.
+   */
+  @property({ type: Array }) unavailableTabs: InventoryTab[] = [];
 
   @property({ type: Boolean }) loading = false;
   /**
@@ -284,6 +338,7 @@ export class InventoryCard extends LitElement {
   @property({ type: Boolean }) loadingModels: boolean | null = null;
   @property({ type: Boolean }) loadingTools: boolean | null = null;
   @property({ type: Boolean }) loadingUsers: boolean | null = null;
+  @property({ type: Boolean }) loadingDevices: boolean | null = null;
   /**
    * The usage breakdown is a second, slower request than the lists it fills.
    * While it is in flight the identity of a row (who, which role, when they
@@ -325,8 +380,55 @@ export class InventoryCard extends LitElement {
     models: SORT_OPTIONS.models[0].value,
     tools: SORT_OPTIONS.tools[0].value,
     users: SORT_OPTIONS.users[0].value,
+    devices: SORT_OPTIONS.devices[0].value,
   };
   @state() private rowLimit = ROWS_DEFAULT;
+  @state() private view: InventoryView = 'table';
+  @state() private map: FleetMapGraph | null = null;
+  @state() private mapLoading = false;
+  @state() private mapError = '';
+  @state() private mapFullscreen = false;
+  private mapController?: AbortController;
+
+  /**
+   * Whether the map had a selection when this Esc was pressed. Read in the
+   * capture phase, before the map's own handler clears it, so the dialog's
+   * `cancel` (which fires after the keydown) knows what the key undid.
+   */
+  private escHadSelection = false;
+
+  private mapInOverlay(): FleetMap | null {
+    return this.shadowRoot?.querySelector('.map-overlay fleet-map') ?? null;
+  }
+
+  private onOverlayKeydown = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape') return;
+    this.escHadSelection = this.mapInOverlay()?.hasSelection() ?? false;
+  };
+
+  /**
+   * The browser may close the modal itself: after a cancelled `cancel`, the
+   * next Esc without user activation closes it without asking. Follow it.
+   */
+  private onOverlayClose = () => {
+    if (this.mapFullscreen) void this.setFullscreen(false);
+  };
+
+  /**
+   * Esc on the modal: one key press undoes one thing. With a map selection
+   * it clears the selection (wherever focus is, the map's own handler only
+   * hears keys from inside the canvas), and only without one does it leave
+   * full screen.
+   */
+  private onOverlayCancel = (event: Event) => {
+    event.preventDefault();
+    if (this.escHadSelection) {
+      this.escHadSelection = false;
+      this.mapInOverlay()?.clearSelection();
+      return;
+    }
+    void this.setFullscreen(false);
+  };
 
   private onResize = () => {
     const limit = window.innerHeight > TALL_VIEWPORT ? ROWS_TALL : ROWS_DEFAULT;
@@ -398,6 +500,79 @@ export class InventoryCard extends LitElement {
 
         /* The range is a fact about the numbers below, not a control: the one
          control lives on the Usage card. */
+        .view-switch {
+          border: 1px solid var(--console-button-border);
+          border-radius: var(--sl-border-radius-medium);
+          display: inline-flex;
+          overflow: hidden;
+        }
+
+        .view-switch button {
+          align-items: center;
+          background: var(--console-button-face);
+          border: 0;
+          color: var(--console-meta-color);
+          cursor: pointer;
+          display: inline-flex;
+          font: inherit;
+          font-size: var(--console-text-meta);
+          gap: 6px;
+          min-height: 32px;
+          padding: 4px 12px;
+        }
+
+        .view-switch button + button {
+          border-left: 1px solid var(--console-button-border);
+        }
+
+        .view-switch button[aria-pressed='true'] {
+          background: var(--console-selected-tint);
+          color: var(--console-body-color);
+          font-weight: 600;
+        }
+
+        .map-body {
+          --fleet-map-stage-height: 520px;
+          padding: var(--sl-spacing-medium);
+        }
+
+        /* A native modal dialog: the top layer, an inert page behind it and
+           a focus trap come with showModal(). */
+        .map-overlay {
+          --fleet-map-stage-height: calc(100dvh - 150px);
+          background: var(--console-page);
+          border: 0;
+          box-sizing: border-box;
+          color: inherit;
+          height: 100dvh;
+          margin: 0;
+          max-height: none;
+          max-width: none;
+          overflow: auto;
+          padding: var(--sl-spacing-medium) var(--sl-spacing-large);
+          width: 100vw;
+        }
+
+        .map-overlay-head {
+          align-items: center;
+          display: flex;
+          gap: var(--sl-spacing-small);
+          margin-bottom: var(--sl-spacing-small);
+        }
+
+        .map-overlay-head .title {
+          flex: 1;
+        }
+
+        .link-button {
+          background: none;
+          border: 0;
+          color: var(--console-link-color);
+          cursor: pointer;
+          font: inherit;
+          padding: 0 0 0 var(--sl-spacing-x-small);
+        }
+
         .range-label {
           color: var(--console-meta-color);
           font-size: var(--console-text-meta);
@@ -482,6 +657,18 @@ export class InventoryCard extends LitElement {
           display: flex;
           gap: var(--sl-spacing-x-small);
           min-width: 0;
+        }
+
+        .device-os {
+          flex: none;
+          font-size: var(--console-text-meta);
+        }
+
+        .device-people {
+          display: block;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
         }
 
         .identity sl-icon {
@@ -684,6 +871,9 @@ export class InventoryCard extends LitElement {
       if (stored && (TAB_ORDER as string[]).includes(stored)) {
         this.tab = stored as InventoryTab;
       }
+      if (localStorage.getItem(INVENTORY_VIEW_STORAGE_KEY) === 'map') {
+        this.view = 'map';
+      }
     } catch {
       // Private mode or a blocked storage partition: keep Agents.
     }
@@ -693,12 +883,107 @@ export class InventoryCard extends LitElement {
 
   disconnectedCallback(): void {
     window.removeEventListener('resize', this.onResize);
+    this.mapController?.abort();
+    this.lockPageScroll(false);
     super.disconnectedCallback();
   }
 
-  /** The Users tab exists only where user management does. */
+  protected updated(): void {
+    const overlay =
+      this.shadowRoot?.querySelector<HTMLDialogElement>('dialog.map-overlay');
+    if (overlay && !overlay.open) overlay.showModal();
+    // A remembered Map view loads once the host says the map is allowed.
+    if (
+      this.activeView === 'map' &&
+      !this.map &&
+      !this.mapLoading &&
+      !this.mapError
+    ) {
+      void this.loadMap();
+    }
+  }
+
+  /** The view on screen: never a map this reader may not see. */
+  private get activeView(): InventoryView {
+    return this.showMap ? this.view : 'table';
+  }
+
+  private setView(view: InventoryView): void {
+    if (view === this.view) return;
+    this.view = view;
+    if (view === 'table' && this.mapFullscreen) {
+      this.mapFullscreen = false;
+      this.lockPageScroll(false);
+      // Leaving the modal by its Table button lands on the same control in
+      // the card, not on the document.
+      void this.updateComplete.then(() =>
+        this.shadowRoot
+          ?.querySelector<HTMLElement>(
+            '.card-head .view-switch button[aria-pressed="true"]'
+          )
+          ?.focus()
+      );
+    }
+    try {
+      localStorage.setItem(INVENTORY_VIEW_STORAGE_KEY, view);
+    } catch {
+      // Non-fatal: the view still switches for this session.
+    }
+  }
+
+  /** One read for the whole canvas, and only when the map is asked for. */
+  private async loadMap(): Promise<void> {
+    this.mapController?.abort();
+    const controller = (this.mapController = new AbortController());
+    this.mapLoading = true;
+    this.mapError = '';
+    try {
+      const [{ getFleetMap }] = await Promise.all([
+        import('../fleet-map-api'),
+        import('./fleet-map'),
+      ]);
+      const map = await getFleetMap(controller.signal);
+      if (!controller.signal.aborted) this.map = map;
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        this.mapError =
+          error instanceof Error
+            ? error.message
+            : 'The fleet map could not be loaded. Retry to refresh it.';
+      }
+    } finally {
+      if (!controller.signal.aborted) this.mapLoading = false;
+    }
+  }
+
+  /** The page behind a full-screen map does not scroll under it. */
+  private lockPageScroll(lock: boolean): void {
+    document.documentElement.style.overflow = lock ? 'hidden' : '';
+  }
+
+  private async setFullscreen(open: boolean): Promise<void> {
+    this.mapFullscreen = open;
+    this.lockPageScroll(open);
+    await this.updateComplete;
+    // Focus follows the toggle, so a keyboard reader lands on the control
+    // that undoes it.
+    const target = this.shadowRoot?.querySelector<HTMLElement>(
+      open ? '.map-overlay .fullscreen-toggle' : '.card-head .fullscreen-toggle'
+    );
+    target?.focus();
+  }
+
+  /** Users and Devices exist only where their features do. */
   private get visibleTabs(): InventoryTab[] {
-    return TAB_ORDER.filter((tab) => tab !== 'users' || this.showUsers);
+    return TAB_ORDER.filter(
+      (tab) =>
+        (tab !== 'users' || this.showUsers) &&
+        (tab !== 'devices' || this.showDevices)
+    );
+  }
+
+  private isUnavailable(tab: InventoryTab): boolean {
+    return this.unavailableTabs.includes(tab);
   }
 
   /** The tab actually on screen, which is never a tab that is not there. */
@@ -717,7 +1002,9 @@ export class InventoryCard extends LitElement {
             ? this.loadingModels
             : tab === 'users'
               ? this.loadingUsers
-              : this.loadingTools;
+              : tab === 'devices'
+                ? this.loadingDevices
+                : this.loadingTools;
     return perTab === null || perTab === undefined ? this.loading : perTab;
   }
 
@@ -752,6 +1039,7 @@ export class InventoryCard extends LitElement {
     if (tab === 'flows') return this.flowsTotal;
     if (tab === 'models') return this.modelsTotal;
     if (tab === 'users') return this.usersTotal;
+    if (tab === 'devices') return this.devicesTotal;
     return this.toolsTotal;
   }
 
@@ -883,6 +1171,21 @@ export class InventoryCard extends LitElement {
     return rows;
   }
 
+  private get sortedDevices(): InventoryDeviceRow[] {
+    const rows = [...this.deviceRows];
+    if (this.sorts.devices === 'agents') {
+      rows.sort(
+        (a, b) =>
+          b.agentsGoverned +
+          b.agentsUngoverned -
+          (a.agentsGoverned + a.agentsUngoverned)
+      );
+    } else {
+      rows.sort((a, b) => timeValue(b.lastSeenAt) - timeValue(a.lastSeenAt));
+    }
+    return rows;
+  }
+
   private get sortedTools(): InventoryToolRow[] {
     const rows = [...this.toolRows];
     if (this.isUsageLoading('tools')) {
@@ -898,7 +1201,53 @@ export class InventoryCard extends LitElement {
     return rows;
   }
 
+  private renderViewSwitch() {
+    if (!this.showMap) return nothing;
+    return html`<div
+      class="view-switch"
+      role="group"
+      aria-label="Inventory view"
+    >
+      ${(
+        [
+          ['table', 'Table', 'table'],
+          ['map', 'Map', 'diagram-3'],
+        ] as const
+      ).map(
+        ([view, label, icon]) =>
+          html`<button
+            type="button"
+            aria-pressed=${this.activeView === view ? 'true' : 'false'}
+            @click=${() => this.setView(view)}
+          >
+            <sl-icon name=${icon} aria-hidden="true"></sl-icon>${label}
+          </button>`
+      )}
+    </div>`;
+  }
+
+  private renderFullscreenToggle() {
+    const open = this.mapFullscreen;
+    return html`<sl-icon-button
+      class="fullscreen-toggle"
+      name=${open ? 'fullscreen-exit' : 'arrows-fullscreen'}
+      label=${open ? 'Exit full screen' : 'Full screen'}
+      title=${open ? 'Exit full screen (Esc)' : 'Full screen'}
+      @click=${() => void this.setFullscreen(!open)}
+    ></sl-icon-button>`;
+  }
+
   private renderHeader() {
+    if (this.activeView === 'map') {
+      return html`
+        <div slot="header" class="card-head">
+          <span class="title">Inventory</span>
+          <div class="header-controls">
+            ${this.renderViewSwitch()} ${this.renderFullscreenToggle()}
+          </div>
+        </div>
+      `;
+    }
     const options = SORT_OPTIONS[this.activeTab];
     const sortHeld =
       this.activeTab === 'flows'
@@ -908,6 +1257,7 @@ export class InventoryCard extends LitElement {
       <div slot="header" class="card-head">
         <span class="title">Inventory</span>
         <div class="header-controls">
+          ${this.renderViewSwitch()}
           <sl-select
             class="sort-select"
             label="Sort ${TAB_LABELS[this.activeTab].toLowerCase()} by"
@@ -955,7 +1305,11 @@ export class InventoryCard extends LitElement {
             (tab) => html`
               <sl-tab slot="nav" panel=${tab} ?active=${this.activeTab === tab}>
                 ${TAB_LABELS[tab]}
-                <span class="tab-count">${this.countFor(tab)}</span>
+                ${
+                  this.isUnavailable(tab)
+                    ? nothing
+                    : html`<span class="tab-count">${this.countFor(tab)}</span>`
+                }
               </sl-tab>
             `
           )}
@@ -1406,7 +1760,9 @@ export class InventoryCard extends LitElement {
                                 .seed=${row.id}
                                 .size=${20}
                               ></user-avatar>
-                              <span class="row-name">${row.name}</span>
+                              <a class="row-name" href=${userHref(row.id)}
+                                >${row.name}</a
+                              >
                             </span>
                           </td>
                           <td class="secondary muted" title=${row.role || ''}>
@@ -1510,8 +1866,111 @@ export class InventoryCard extends LitElement {
     `;
   }
 
+  private renderDevices() {
+    const rows = this.sortedDevices.slice(0, this.rowLimit);
+    return html`
+      <div class="table-scroll">
+        <table class="inventory-table">
+          <colgroup>
+            <col style="width: 30%" />
+            <col style="width: 24%" />
+            <col style="width: 18%" />
+            <col style="width: 14%" />
+            <col style="width: 14%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Device</th>
+              <th>People</th>
+              <th>Runner</th>
+              <th class="num">Agents</th>
+              <th class="num">Last seen</th>
+            </tr>
+          </thead>
+          ${
+            this.isTabLoading('devices') && rows.length === 0
+              ? this.renderSkeleton(5)
+              : html`
+                  <tbody>
+                    ${repeat(
+                      rows,
+                      (row) => row.key,
+                      (row) => html`
+                        <tr>
+                          <td class="identity-cell">
+                            <span class="identity">
+                              <a class="row-name" href=${row.href}
+                                >${row.name}</a
+                              >
+                              <span class="muted device-os">${row.os}</span>
+                            </span>
+                          </td>
+                          <td class="secondary" data-label="People">
+                            ${this.renderDevicePeople(row)}
+                          </td>
+                          <td class="secondary" data-label="Runner">
+                            <sl-badge
+                              class="chip"
+                              pill
+                              variant=${row.runnerLive ? 'success' : 'neutral'}
+                              >${row.runnerLabel}</sl-badge
+                            >
+                          </td>
+                          <td
+                            class="num"
+                            data-label="Agents"
+                            title=${this.deviceAgentsTitle(row)}
+                          >
+                            ${row.agentsGoverned + row.agentsUngoverned}
+                          </td>
+                          <td
+                            class="num"
+                            data-label="Last seen"
+                            title=${this.absolute(row.lastSeenAt)}
+                          >
+                            ${this.relative(row.lastSeenAt)}
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                `
+          }
+        </table>
+      </div>
+    `;
+  }
+
+  /** First person named, then "+N" with the rest in the title. */
+  private renderDevicePeople(row: InventoryDeviceRow) {
+    if (row.people.length === 0) {
+      return html`<span class="muted">Unknown</span>`;
+    }
+    const [first, ...rest] = row.people;
+    return html`<span
+      class="device-people"
+      title=${row.people.map((person) => person.label).join(', ')}
+      >${
+        first.href
+          ? html`<a href=${first.href}>${first.label}</a>`
+          : html`<span>${first.label}</span>`
+      }${
+        rest.length
+          ? html`<span class="muted"> +${rest.length}</span>`
+          : nothing
+      }</span
+    >`;
+  }
+
+  private deviceAgentsTitle(row: InventoryDeviceRow): string {
+    return row.agentsUngoverned
+      ? `${row.agentsGoverned} governed, ${row.agentsUngoverned} not onboarded`
+      : `${row.agentsGoverned} governed`;
+  }
+
   private currentRowCount(): number {
     if (this.activeTab === 'agents') return this.agentRows.length;
+    if (this.activeTab === 'devices') return this.deviceRows.length;
     if (this.activeTab === 'flows') return this.flowRows.length;
     if (this.activeTab === 'models') return this.modelRows.length;
     if (this.activeTab === 'users') return this.userRows.length;
@@ -1519,6 +1978,14 @@ export class InventoryCard extends LitElement {
   }
 
   private renderBody() {
+    if (this.isUnavailable(this.activeTab) && this.currentRowCount() === 0) {
+      return html`
+        <div class="empty" role="status">
+          ${TAB_LABELS[this.activeTab]} could not be loaded. The next refresh
+          tries again.
+        </div>
+      `;
+    }
     if (!this.isTabLoading(this.activeTab) && this.currentRowCount() === 0) {
       return this.renderEmpty();
     }
@@ -1526,6 +1993,7 @@ export class InventoryCard extends LitElement {
     if (this.activeTab === 'flows') return this.renderFlows();
     if (this.activeTab === 'models') return this.renderModels();
     if (this.activeTab === 'users') return this.renderUsers();
+    if (this.activeTab === 'devices') return this.renderDevices();
     return this.renderTools();
   }
 
@@ -1533,7 +2001,7 @@ export class InventoryCard extends LitElement {
     const tab = this.activeTab;
     const link = ALL_LINKS[tab];
     const count = this.countFor(tab);
-    if (count === 0) {
+    if (count === 0 || this.isUnavailable(tab)) {
       return nothing;
     }
     // One person on the account is not a list worth opening; it is a hint
@@ -1553,7 +2021,66 @@ export class InventoryCard extends LitElement {
     `;
   }
 
+  private renderMapBody() {
+    if (this.mapLoading && !this.map) {
+      return html`<div class="empty" role="status">
+        <sl-spinner></sl-spinner> Mapping people, devices, agents and
+        providers...
+      </div>`;
+    }
+    if (this.mapError) {
+      return html`<div class="empty map-error" role="alert">
+        ${this.mapError}
+        <button
+          type="button"
+          class="link-button"
+          @click=${() => void this.loadMap()}
+        >
+          Retry
+        </button>
+      </div>`;
+    }
+    if (!this.map) return nothing;
+    return html`<fleet-map .graph=${this.map}></fleet-map>`;
+  }
+
+  private renderMapCard() {
+    return html`
+      <sl-card class="content-card">
+        ${this.renderHeader()}
+        ${
+          this.mapFullscreen
+            ? html`<div class="empty">
+                The fleet map is open in full screen.
+              </div>`
+            : html`<div class="map-body">${this.renderMapBody()}</div>`
+        }
+        <div class="footer">
+          <a href="/console/settings/device-fleet">Open the device fleet →</a>
+        </div>
+      </sl-card>
+      ${
+        this.mapFullscreen
+          ? html`<dialog
+              class="map-overlay"
+              aria-label="Fleet map"
+              @keydown=${{ handleEvent: this.onOverlayKeydown, capture: true }}
+              @cancel=${this.onOverlayCancel}
+              @close=${this.onOverlayClose}
+            >
+              <div class="map-overlay-head">
+                <span class="title">Fleet map</span>
+                ${this.renderViewSwitch()} ${this.renderFullscreenToggle()}
+              </div>
+              ${this.renderMapBody()}
+            </dialog>`
+          : nothing
+      }
+    `;
+  }
+
   render() {
+    if (this.activeView === 'map') return this.renderMapCard();
     return html`
       <sl-card class="content-card">
         ${this.renderHeader()} ${this.renderTabs()} ${this.renderBody()}

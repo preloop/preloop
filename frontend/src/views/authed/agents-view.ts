@@ -75,6 +75,7 @@ import type {
   GatewayTokenUsage,
 } from '../../types';
 import consoleStyles from '../../styles/console-styles.css?inline';
+import { userHref } from '../../utils/user-href';
 import { reducedMotionStyles } from '../../styles/reduced-motion';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
 import { getAgentControlState } from '../../utils/agent-control';
@@ -191,6 +192,8 @@ export interface AgentListRow {
   /** Why a neutral partial-onboarding chip is not a problem; '' otherwise. */
   statusTooltip: string;
   owner: string;
+  /** The owning account member, linked to their page; null when unknown. */
+  ownerId: string | null;
   modelLabel: string;
   /** Full model text for the `title` attribute, since the cell truncates. */
   modelTitle: string;
@@ -3438,6 +3441,7 @@ export class AgentsView extends LitElement {
               : ('neutral' as const),
           statusOutline: false,
           owner: item.owner_username || '',
+          ownerId: null,
           modelLabel: item.ai_model_id ? item.ai_model_id : '',
           modelTitle: item.ai_model_id ? item.ai_model_id : '',
           modelId: item.ai_model_id || null,
@@ -3468,6 +3472,7 @@ export class AgentsView extends LitElement {
         statusOutline: Boolean(chip.outline),
         statusTooltip: chip.tooltip || '',
         owner: agent.owner_username || agent.owner_email || '',
+        ownerId: agent.owner_user_id || null,
         modelLabel: model.label,
         modelTitle: model.title,
         modelId: model.modelId,
@@ -3559,7 +3564,12 @@ export class AgentsView extends LitElement {
         // Unassigned agents sort after every named owner.
         value: (row) => (row.owner ? byText(row.owner) : '\uffff'),
         cellTitle: (row) => row.owner || 'Unassigned',
-        cell: (row) => row.owner || 'Unassigned',
+        cell: (row) =>
+          row.owner && row.ownerId
+            ? html`<a class="row-link" href=${userHref(row.ownerId)}
+                >${row.owner}</a
+              >`
+            : row.owner || 'Unassigned',
       },
       {
         id: 'model',

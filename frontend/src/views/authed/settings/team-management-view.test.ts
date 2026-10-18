@@ -145,6 +145,38 @@ describe('TeamManagementView', () => {
     );
   });
 
+  it('links each team member to their person page', async () => {
+    fetchStub = createFetchStub({ teams: [sampleTeam] });
+    const element = (await fixture(
+      html`<team-management-view></team-management-view>`
+    )) as TeamManagementView;
+    await waitUntil(
+      () => (element as any).teams?.length === 1,
+      'teams did not load'
+    );
+    (element as any).users = [
+      {
+        id: 'user-1',
+        username: 'jane',
+        full_name: 'Jane Doe',
+        email: 'jane@example.com',
+      },
+    ];
+    (element as any).teamMembers = [
+      { id: 'member-1', team_id: 'team-1', user_id: 'user-1' },
+    ];
+    (element as any).isMembersModalOpen = true;
+    await element.updateComplete;
+
+    const link = element.shadowRoot!.querySelector(
+      '.member-name a'
+    ) as HTMLAnchorElement;
+    expect(link.getAttribute('href')).to.equal(
+      '/console/settings/users/user-1'
+    );
+    expect(link.textContent!.trim()).to.equal('Jane Doe');
+  });
+
   it('explains teams and offers to create one when there are none', async () => {
     fetchStub = createFetchStub({ teams: [] });
     const element = (await fixture(
