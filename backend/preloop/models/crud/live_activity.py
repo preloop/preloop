@@ -282,6 +282,11 @@ class CRUDLiveActivity:
         Account rows carry ``bucket_start`` and ``granularity``; subject
         totals carry the epoch and granularity 0.
 
+        Passing ``[60, 3600]`` is safe: :meth:`fold_minutes_into_hours`
+        deletes each minute row in the statement that adds it to its hour, so
+        minute and hour rows never hold the same event. Long windows read
+        both because the last 48 hours are still minutes.
+
         Returns:
             The rows, and whether the row limit cut the result.
         """

@@ -439,3 +439,29 @@ def test_board_rollups_keep_account_buckets_and_sum_subjects(
     )
     assert truncated
     assert [r.subject_type for r in rows][:3] == ["account"] * 3
+
+
+def test_board_rollups_across_granularities_count_each_event_once(
+    db_session: Session, account_id: uuid.UUID
+) -> None:
+    """Folding moves minutes into hours, so reading both never double counts."""
+    old_hour = utc_floor(datetime.now(UTC) - timedelta(days=3), 3600)
+    recent = _minute(5)
+    deltas = [
+        RollupDelta(
+            account_id, 60, old_hour + timedelta(minutes=m), "person", "p", prompts=1
+        )
+        for m in range(3)
+    ] + [RollupDelta(account_id, 60, recent, "person", "p", prompts=1)]
+    crud_live_activity.upsert_rollups(db_session, deltas=deltas, pass_id=uuid.uuid4())
+    crud_live_activity.fold_minutes_into_hours(
+        db_session, older_than=datetime.now(UTC) - timedelta(hours=48), batch=2
+    )  # a batch can split an hour: its rows stay disjoint
+    crud_live_activity.fold_minutes_into_hours(
+        db_session, older_than=datetime.now(UTC) - timedelta(hours=48)
+    )
+    rows, _ = crud_live_activity.read_board_rollups(
+        db_session, account_id=account_id, granularities=[60, 3600], since=None
+    )
+    person = [r for r in rows if r.subject_type == "person"]
+    assert [(r.subject_id, r.prompts) for r in person] == [("p", 4)]
