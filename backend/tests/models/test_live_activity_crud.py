@@ -112,7 +112,7 @@ def test_read_rollups_is_bounded_by_window_and_granularity(
     rows = crud_live_activity.read_rollups(
         db_session,
         account_id=account_id,
-        granularity=60,
+        granularities=[60],
         since=_minute(60),
         subject_types=["account"],
     )
@@ -120,7 +120,7 @@ def test_read_rollups_is_bounded_by_window_and_granularity(
     other = crud_live_activity.read_rollups(
         db_session,
         account_id=uuid.uuid4(),
-        granularity=60,
+        granularities=[60],
         since=None,
         subject_types=["account"],
     )
@@ -278,10 +278,12 @@ def test_presence_is_enabled_without_a_settings_row(
     db_session: Session, account_id: uuid.UUID, test_user: Any
 ) -> None:
     assert crud_live_activity.presence_enabled(db_session, account_id=account_id)
+    assert crud_live_activity.board_settings(db_session, account_id=account_id)[0]
     crud_live_activity.set_presence_enabled(
         db_session, account_id=account_id, enabled=False, user_id=test_user.id
     )
     assert not crud_live_activity.presence_enabled(db_session, account_id=account_id)
+    assert not crud_live_activity.board_settings(db_session, account_id=account_id)[0]
 
 
 def test_worker_lock_admits_one_holder(db_engine: Any) -> None:
@@ -321,7 +323,7 @@ def test_board_readers_touch_no_raw_event_table(
     crud_live_activity.read_rollups(
         db_session,
         account_id=account_id,
-        granularity=60,
+        granularities=[60, 3600],
         since=_minute(60),
         subject_types=["account", "person", "agent"],
     )
@@ -329,6 +331,7 @@ def test_board_readers_touch_no_raw_event_table(
         db_session, account_id=account_id, subject_types=["person", "agent"]
     )
     crud_live_activity.presence_enabled(db_session, account_id=account_id)
+    crud_live_activity.board_settings(db_session, account_id=account_id)
     crud_live_activity.get_install_floor(db_session)
     crud_live_activity.users_brief(db_session, account_id=account_id, user_ids=some)
     crud_live_activity.agents_brief(db_session, account_id=account_id, agent_ids=some)
@@ -354,3 +357,17 @@ def test_source_readers_are_time_bounded(
     for sql in statements:
         assert "LIMIT" in sql.upper(), sql
         assert re.search(r"timestamp|requested_at|resolved_at", sql), sql
+
+
+def test_all_current_states_spans_accounts(
+    db_session: Session, account_id: uuid.UUID
+) -> None:
+    now = datetime.now(UTC)
+    crud_live_activity.apply_state(
+        db_session,
+        account_id=account_id,
+        update_=PresenceUpdate("agent", "cold-start", "working", last_signal_at=now),
+        now=now,
+    )
+    rows = crud_live_activity.list_all_current_states(db_session)
+    assert any(r.subject_id == "cold-start" and r.until is None for r in rows)

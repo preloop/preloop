@@ -235,19 +235,19 @@ class CRUDLiveActivity:
         db: Session,
         *,
         account_id: Any,
-        granularity: int,
+        granularities: Iterable[int],
         since: Optional[datetime],
         subject_types: Iterable[str],
         limit: int = MAX_BOARD_ROWS,
     ) -> list[ActivityRollup]:
-        """Rollup rows of an account at one granularity from ``since`` on.
+        """Rollup rows of an account at the given granularities from ``since``.
 
         Served by ``ix_activity_rollup_account_bucket``; ``since`` None reads
-        the whole retention at that granularity.
+        the whole retention. Newest buckets first, capped at ``limit``.
         """
         query = select(ActivityRollup).where(
             ActivityRollup.account_id == account_id,
-            ActivityRollup.granularity == granularity,
+            ActivityRollup.granularity.in_(list(granularities)),
             ActivityRollup.subject_type.in_(list(subject_types)),
         )
         if since is not None:
@@ -407,6 +407,19 @@ class CRUDLiveActivity:
             )
         )
 
+    def list_all_current_states(
+        self, db: Session, *, limit: int = MAX_BOARD_ROWS
+    ) -> list[PresenceState]:
+        """Every account's current state rows, for a worker cold start."""
+        return list(
+            db.scalars(
+                select(PresenceState)
+                .where(PresenceState.until.is_(None))
+                .order_by(PresenceState.last_signal_at.desc().nullslast())
+                .limit(max(1, min(limit, MAX_BOARD_ROWS)))
+            )
+        )
+
     def apply_state(
         self,
         db: Session,
@@ -496,6 +509,24 @@ class CRUDLiveActivity:
             )
         )
         return True if value is None else bool(value)
+
+    def board_settings(
+        self, db: Session, *, account_id: Any
+    ) -> tuple[bool, Optional[datetime]]:
+        """Presence switch and history floor of the board, in one statement.
+
+        Returns:
+            Whether presence is on (no row means on) and when the worker's
+            history starts (None before the first pass).
+        """
+        enabled = (
+            select(ActivitySettings.presence_enabled)
+            .where(ActivitySettings.account_id == account_id)
+            .scalar_subquery()
+        )
+        floor = select(func.min(ActivityWorkerWatermark.created_at)).scalar_subquery()
+        row = db.execute(select(enabled, floor)).one()
+        return (True if row[0] is None else bool(row[0])), row[1]
 
     def set_presence_enabled(
         self, db: Session, *, account_id: Any, enabled: bool, user_id: Any
@@ -699,9 +730,7 @@ class CRUDLiveActivity:
                 .where(
                     activity.timestamp > after,
                     activity.timestamp <= until,
-                    activity.activity_type.in_(
-                        ("tool_call", "agent_control_message", *HOOK_TURN_TYPES)
-                    ),
+                    activity.activity_type.in_(("tool_call", *HOOK_TURN_TYPES)),
                 )
                 .order_by(activity.timestamp)
                 .limit(limit)
