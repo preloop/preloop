@@ -502,6 +502,42 @@ describe('live-activity-view', () => {
     }
   });
 
+  it('expires a client flip on the ticker even when nothing polls', async () => {
+    const el = await render();
+    el.onRealtime('gateway_activity', {
+      type: 'model_gateway_request_started',
+      payload: { managed_agent_id: 'a1' },
+    });
+    await el.updateComplete;
+    expect(text(el, '[data-testid="agent-row"]')).to.contain('Working');
+    el.now = Date.now() + 61_000;
+    await el.updateComplete;
+    expect(text(el, '[data-testid="agent-row"]')).to.contain('Idle');
+  });
+
+  it('runs one ticker while connected and stops it on removal', async () => {
+    const clock = sinon.useFakeTimers({
+      now: Date.parse('2026-10-18T10:00:00Z'),
+      shouldAdvanceTime: false,
+      toFake: ['setInterval', 'clearInterval', 'Date'],
+    });
+    try {
+      const el = await render();
+      const start = el.now;
+      clock.tick(1000);
+      expect(el.now - start).to.equal(1000);
+      el.remove();
+      clock.tick(5000);
+      expect(el.now - start).to.equal(1000);
+      document.body.appendChild(el);
+      clock.tick(1000);
+      expect(el.now - start).to.equal(7000);
+      el.remove();
+    } finally {
+      clock.restore();
+    }
+  });
+
   it('keeps a client flip across a poll that predates it', async () => {
     payload = board({
       agents: [

@@ -25,6 +25,7 @@ import type { FleetMapWindow } from '../../utils/fleet-map-activity';
 import {
   ACTIVITY_WINDOW_OPTIONS,
   AnnounceThrottle,
+  FLIP_TTL_MS,
   agentChipVariant,
   agentStateLabel,
   announcement,
@@ -120,7 +121,10 @@ export class LiveActivityView extends LitElement {
       this.now = Date.now();
     }, 1000);
     if (typeof ResizeObserver !== 'undefined') {
-      this.resizeObserver = new ResizeObserver(() => this.fitLists());
+      this.resizeObserver = new ResizeObserver(() => {
+        this.fitSignature = '';
+        this.fitLists();
+      });
       this.resizeObserver.observe(this);
     }
   }
@@ -154,7 +158,19 @@ export class LiveActivityView extends LitElement {
    * do not fit are hidden and a "+N more" footer says how many. Measured
    * after each render, so it follows the viewport and the data.
    */
+  private fitSignature = '';
+
   private fitLists(): void {
+    // Only the viewport, full screen and the row order change the fit; the
+    // 1 s ticker does not, so skip the layout reads when none of them moved.
+    const rowKeys = [
+      ...this.renderRoot.querySelectorAll<HTMLElement>('section.list .row'),
+    ]
+      .map((row) => row.dataset.key ?? '')
+      .join(',');
+    const signature = `${this.fullscreen}|${this.clientWidth}x${this.clientHeight}|${rowKeys}|${this.overflow.people},${this.overflow.agents}`;
+    if (signature === this.fitSignature) return;
+    this.fitSignature = signature;
     const next = { people: 0, agents: 0 };
     for (const key of ['people', 'agents'] as const) {
       const section = this.renderRoot.querySelector<HTMLElement>(
@@ -902,7 +918,12 @@ export class LiveActivityView extends LitElement {
         )}`
       : null;
     const approvals = person.awaiting_approval_count || 0;
-    return html`<div class="row" role="row" data-testid="person-row">
+    return html`<div
+      class="row"
+      role="row"
+      data-testid="person-row"
+      data-key=${person.user_id}
+    >
       <span class="name" role="cell" title=${ATTRIBUTION}>
         <span class="label"
           >${person.href ? html`<a href=${person.href}>${name}</a>` : name}</span
@@ -957,8 +978,12 @@ export class LiveActivityView extends LitElement {
   }
 
   private agentRow(agent: ActivityAgent, now: number): TemplateResult {
+    // The TTL is part of the read, so a flip expires on the ticker even when
+    // nothing polls (the "any time" window, or failing reads).
+    const flippedAt = this.flipped.get(agent.managed_agent_id);
     const working =
-      agent.state === 'working' || this.flipped.has(agent.managed_agent_id);
+      agent.state === 'working' ||
+      (flippedAt !== undefined && now - flippedAt < FLIP_TTL_MS);
     const shown: ActivityAgent = working
       ? { ...agent, state: 'working' }
       : agent;
@@ -979,7 +1004,12 @@ export class LiveActivityView extends LitElement {
           >approval</a
         >`
       );
-    return html`<div class="row" role="row" data-testid="agent-row">
+    return html`<div
+      class="row"
+      role="row"
+      data-testid="agent-row"
+      data-key=${agent.managed_agent_id}
+    >
       <span class="name" role="cell">
         ${this.kindIcon(agent.agent_kind)}
         <span class="label"
@@ -1025,7 +1055,11 @@ export class LiveActivityView extends LitElement {
         <div class="empty">Presence is turned off for this account.</div>
       </section>`;
     if (!board.viewer.can_see_people)
-      return html`<section class="list" data-testid="people-me">
+      return html`<section
+        class="list"
+        data-testid="people-me"
+        data-list="people"
+      >
         <h2>You</h2>
         ${
           board.me
@@ -1039,6 +1073,7 @@ export class LiveActivityView extends LitElement {
         <p class="muted">
           People on this account are visible to administrators.
         </p>
+        ${this.moreFooter(this.overflow.people, 'people')}
       </section>`;
     const people = sortPeople(board.people);
     return html`<section class="list" data-testid="people" data-list="people">
