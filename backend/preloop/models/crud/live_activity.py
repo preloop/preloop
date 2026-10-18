@@ -300,54 +300,51 @@ class CRUDLiveActivity:
                       AND (CAST(:since AS timestamptz) IS NULL
                            OR bucket_start >= CAST(:since AS timestamptz))
                       AND subject_type IN ('account', 'person', 'agent')
-                ), k AS (
-                    SELECT id, subject_type, subject_id,
-                        CASE WHEN subject_type = 'account' THEN bucket_start
-                             ELSE 'epoch'::timestamptz END AS bucket,
-                        CASE WHEN subject_type = 'account' THEN granularity
-                             ELSE 0 END AS gran
-                    FROM r
+                ), s AS (
+                    SELECT * FROM r WHERE subject_type <> 'account'
                 ), sums AS (
-                    SELECT k.subject_type, k.subject_id, k.bucket, k.gran,
-                        SUM(r.requests)::int AS requests,
-                        SUM(r.tool_calls)::int AS tool_calls,
-                        SUM(r.prompts)::int AS prompts,
-                        SUM(r.turn_ends)::int AS turn_ends,
-                        SUM(r.spend_usd) AS spend_usd
-                    FROM r JOIN k ON k.id = r.id
-                    GROUP BY 1, 2, 3, 4
+                    SELECT subject_type, subject_id,
+                        SUM(requests)::int AS requests,
+                        SUM(tool_calls)::int AS tool_calls,
+                        SUM(prompts)::int AS prompts,
+                        SUM(turn_ends)::int AS turn_ends,
+                        SUM(spend_usd) AS spend_usd
+                    FROM s GROUP BY 1, 2
                 ), rh AS (
-                    SELECT k.subject_type, k.subject_id, k.bucket, k.gran, h.i,
-                        SUM(h.v) AS v
-                    FROM r JOIN k ON k.id = r.id,
-                        unnest(r.reply_latency_hist) WITH ORDINALITY h(v, i)
-                    GROUP BY 1, 2, 3, 4, 5
+                    SELECT s.subject_type, s.subject_id, h.i, SUM(h.v) AS v
+                    FROM s, unnest(s.reply_latency_hist) WITH ORDINALITY h(v, i)
+                    GROUP BY 1, 2, 3
                 ), ah AS (
-                    SELECT k.subject_type, k.subject_id, k.bucket, k.gran, h.i,
-                        SUM(h.v) AS v
-                    FROM r JOIN k ON k.id = r.id,
-                        unnest(r.approval_latency_hist) WITH ORDINALITY h(v, i)
-                    GROUP BY 1, 2, 3, 4, 5
+                    SELECT s.subject_type, s.subject_id, h.i, SUM(h.v) AS v
+                    FROM s, unnest(s.approval_latency_hist) WITH ORDINALITY h(v, i)
+                    GROUP BY 1, 2, 3
                 ), rha AS (
-                    SELECT subject_type, subject_id, bucket, gran,
+                    SELECT subject_type, subject_id,
                         array_agg(v::int ORDER BY i) AS arr
-                    FROM rh GROUP BY 1, 2, 3, 4
+                    FROM rh GROUP BY 1, 2
                 ), aha AS (
-                    SELECT subject_type, subject_id, bucket, gran,
+                    SELECT subject_type, subject_id,
                         array_agg(v::int ORDER BY i) AS arr
-                    FROM ah GROUP BY 1, 2, 3, 4
+                    FROM ah GROUP BY 1, 2
                 )
-                SELECT sums.subject_type, sums.subject_id,
-                    sums.bucket AS bucket_start, sums.gran AS granularity,
-                    sums.requests, sums.tool_calls, sums.prompts,
-                    sums.turn_ends, sums.spend_usd,
-                    COALESCE(rha.arr, '{}') AS reply_latency_hist,
-                    COALESCE(aha.arr, '{}') AS approval_latency_hist
-                FROM sums
-                LEFT JOIN rha USING (subject_type, subject_id, bucket, gran)
-                LEFT JOIN aha USING (subject_type, subject_id, bucket, gran)
-                ORDER BY (sums.subject_type = 'account') DESC,
-                    sums.bucket DESC, sums.requests DESC
+                SELECT * FROM (
+                    SELECT subject_type, subject_id, bucket_start,
+                        granularity::int AS granularity, requests, tool_calls,
+                        prompts, turn_ends, spend_usd,
+                        reply_latency_hist::int[] AS reply_latency_hist,
+                        approval_latency_hist::int[] AS approval_latency_hist,
+                        0 AS rank
+                    FROM r WHERE subject_type = 'account'
+                    UNION ALL
+                    SELECT sums.subject_type, sums.subject_id,
+                        'epoch'::timestamptz, 0, sums.requests, sums.tool_calls,
+                        sums.prompts, sums.turn_ends, sums.spend_usd,
+                        COALESCE(rha.arr, '{}'), COALESCE(aha.arr, '{}'), 1
+                    FROM sums
+                    LEFT JOIN rha USING (subject_type, subject_id)
+                    LEFT JOIN aha USING (subject_type, subject_id)
+                ) board
+                ORDER BY rank, bucket_start DESC, requests DESC
                 LIMIT :limit
                 """
             ),
