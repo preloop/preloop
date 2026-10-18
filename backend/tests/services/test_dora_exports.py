@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -34,6 +35,20 @@ NAIVE_NOW = NOW.replace(tzinfo=None)
 
 def _naive(offset_hours: float) -> datetime:
     return NAIVE_NOW + timedelta(hours=offset_hours)
+
+
+@pytest.fixture(params=[("oss", False), ("enterprise", True), ("cloud", False)])
+def deployment_edition(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, bool]:
+    """Exercise core collection with explicit deployment discovery inputs."""
+    from preloop.services import instance_service
+
+    edition, audit_plugin = request.param
+    monkeypatch.setattr(instance_service, "instance_edition", lambda: edition)
+    manager = SimpleNamespace(_plugins={"audit": object()} if audit_plugin else {})
+    monkeypatch.setattr("preloop.plugins.get_plugin_manager", lambda: manager)
+    return edition, audit_plugin
 
 
 @pytest.fixture
@@ -363,7 +378,9 @@ class TestAssetRegister:
         assert runner["owner_user_id"] == str(test_user.id)
         assert runner["lifecycle_state"] == "online"
 
-    def test_audit_columns_are_collected_by_core(self, db_session, test_user, estate):
+    def test_audit_columns_are_collected_by_core(
+        self, db_session, test_user, estate, deployment_edition
+    ):
         """An empty history is not reported as an unavailable edition feature."""
         export = build_asset_register(
             db_session, account=test_user.account, generated_at=NOW
@@ -373,7 +390,8 @@ class TestAssetRegister:
         absent = {item["field"] for item in export.manifest["edition"]["fields_absent"]}
         assert absent == set()
         assert export.manifest["edition"]["audit_collection"] is True
-        assert export.manifest["edition"]["edition"] == "oss"
+        assert export.manifest["edition"]["edition"] == deployment_edition[0]
+        assert export.manifest["edition"]["audit_plugin"] is deployment_edition[1]
 
     def test_manifest_names_the_articles_and_the_scope(
         self, db_session, test_user, estate
@@ -526,16 +544,17 @@ class TestIncidentCandidates:
             )
         assert error.value.code == "invalid_period"
 
-    def test_oss_collects_policy_denies_without_an_enterprise_plugin(
-        self, db_session, test_user, estate
+    def test_core_collection_is_independent_of_deployment_edition(
+        self, db_session, test_user, estate, deployment_edition
     ):
         """An empty time window does not imply an edition collection gap."""
         export = self._export(db_session, test_user)
         edition = export.manifest["edition"]
-        assert edition["edition"] == "oss"
-        assert edition["audit_plugin"] is False
+        assert edition["edition"] == deployment_edition[0]
+        assert edition["audit_plugin"] is deployment_edition[1]
         assert edition["audit_collection"] is True
         assert edition.get("record_types_absent", []) == []
+        assert export.manifest["counts"]["policy_deny"] == 1
 
     def test_other_accounts_are_not_in_the_candidates(
         self, db_session, test_user, estate
