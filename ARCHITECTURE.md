@@ -747,6 +747,16 @@ retry). Gateway auto-registration and historical traffic remain observed usage,
 separate from configuration. Consumer reads stay in the current account and apply
 both resource visibility and the permission to view each consumer kind.
 
+`GET /api/v1/fleet/map` combines the optional device projection with bounded,
+tenant-owned agent, runner, model and user reads, plus the available hosted model
+when enabled. Hosted operator credentials and routing stay private. Each resource
+kind retains its read permission and account visibility checks. Credential references group model
+accounts without resolving secrets. Configured and observed edges stay distinct;
+explicit impact directions support dependency and affected-owner traversal without
+crossing into unrelated accounts at the same provider. Omitted visible nodes are
+summarized by type, and source/output truncation and unavailable projections remain
+explicit so a partial graph never claims complete blast-radius coverage.
+
 Provider callback adapters can reuse account-owned encrypted secret references and [durable callback receipts](docs/architecture/callback-receipts.md) to commit content-free verdicts and audit entries atomically across workers.
 
 ### Restricted external runtime authority

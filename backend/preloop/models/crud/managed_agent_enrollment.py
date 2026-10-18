@@ -23,6 +23,44 @@ def _utc_now() -> datetime:
 class CRUDManagedAgentEnrollment(CRUDBase[ManagedAgentEnrollment]):
     """CRUD helpers for managed-agent enrollment records."""
 
+    def list_latest_for_fleet_map(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_ids: list[str],
+        limit: int,
+    ) -> list[ManagedAgentEnrollment]:
+        """Read latest enrollment per agent/type with a bounded result window.
+
+        Args:
+            db: Active database session.
+            account_id: Owning tenant.
+            agent_ids: Visible legacy agents without binding rows.
+            limit: Source window including a truncation sentinel.
+
+        Returns:
+            Latest records, without loading historical enrollment rows.
+        """
+        if not agent_ids:
+            return []
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.managed_agent_id.in_(agent_ids),
+            )
+            .distinct(self.model.managed_agent_id, self.model.enrollment_type)
+            .order_by(
+                self.model.managed_agent_id,
+                self.model.enrollment_type,
+                self.model.created_at.desc(),
+                self.model.id.desc(),
+            )
+            .limit(limit)
+            .all()
+        )
+
     def get_latest_for_agent(
         self, db: Session, *, account_id: str, agent_id: str
     ) -> Optional[ManagedAgentEnrollment]:

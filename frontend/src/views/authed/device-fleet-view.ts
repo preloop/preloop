@@ -30,11 +30,16 @@ import {
   type FleetRule,
 } from '../../device-fleet-api';
 import '../../components/view-header';
+import '../../components/fleet-map';
+import { getFleetMap, type FleetMapGraph } from '../../fleet-map-api';
+import { loadViewMode, saveViewMode } from '../../utils/view-mode';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
 const RUNNER_STATES = ['online', 'busy', 'idle', 'asleep', 'offline', 'never'];
 const LIVE_RUNNER_STATES = new Set(['online', 'busy', 'idle']);
 type SortKey = 'device' | 'last_seen';
+type FleetView = 'list' | 'canvas';
+const VIEW_KEY = 'preloop.device_fleet.view_mode';
 
 const agentHref = (id: string): string =>
   `/console/agents/${encodeURIComponent(id)}`;
@@ -147,7 +152,15 @@ export class DeviceFleetView extends LitElement {
   @state() private saving = false;
   @state() private sortKey: SortKey = 'device';
   @state() private sortDescending = false;
+  @state() private view: FleetView = loadViewMode(VIEW_KEY, [
+    'list',
+    'canvas',
+  ]) as FleetView;
+  @state() private map: FleetMapGraph | null = null;
+  @state() private mapLoading = false;
+  @state() private mapError = '';
   private controller?: AbortController;
+  private mapController?: AbortController;
   private routeSearch = location.search;
   onBeforeEnter(context: { search: string }): void {
     this.routeSearch = context.search;
@@ -170,6 +183,34 @@ export class DeviceFleetView extends LitElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-large);
+      }
+      .view-switch {
+        display: inline-flex;
+        align-self: flex-end;
+        border: 1px solid var(--console-button-border);
+        border-radius: var(--sl-border-radius-medium);
+        overflow: hidden;
+        margin-bottom: calc(-1 * var(--sl-spacing-small));
+      }
+      .view-switch button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font: inherit;
+        font-size: var(--console-text-meta);
+        padding: 4px 12px;
+        border: 0;
+        background: var(--console-button-face);
+        color: var(--console-meta-color);
+        cursor: pointer;
+      }
+      .view-switch button + button {
+        border-left: 1px solid var(--console-button-border);
+      }
+      .view-switch button[aria-pressed='true'] {
+        background: var(--console-selected-tint);
+        color: var(--console-body-color);
+        font-weight: 600;
       }
       a {
         color: var(--console-link-color);
@@ -426,6 +467,7 @@ export class DeviceFleetView extends LitElement {
   }
   disconnectedCallback(): void {
     this.controller?.abort();
+    this.mapController?.abort();
     super.disconnectedCallback();
   }
 
@@ -446,6 +488,10 @@ export class DeviceFleetView extends LitElement {
       this.manage = access.manage;
       if (this.tab === 'settings' && !access.manage) this.tab = 'devices';
       const key = new URLSearchParams(this.routeSearch).get('device');
+      if (!key && this.tab !== 'settings' && this.view === 'canvas') {
+        await this.loadMap();
+        return;
+      }
       // The device page does not need the whole fleet, and a fleet that
       // fails to load must not take a readable device page down with it.
       const [page, device, rules] = await Promise.all([
@@ -461,6 +507,7 @@ export class DeviceFleetView extends LitElement {
       this.page = page;
       this.device = device;
       this.rules = rules?.items || [];
+      if (page && this.view === 'canvas') void this.loadMap();
     } catch (error) {
       if (!controller.signal.aborted)
         this.error =
@@ -471,6 +518,80 @@ export class DeviceFleetView extends LitElement {
       if (!controller.signal.aborted) this.loading = false;
     }
   }
+  /** The map is its own request, so a slow graph never holds the table. */
+  private async loadMap(): Promise<void> {
+    this.mapController?.abort();
+    const controller = (this.mapController = new AbortController());
+    this.mapLoading = true;
+    this.mapError = '';
+    try {
+      const map = await getFleetMap(controller.signal);
+      if (!controller.signal.aborted) this.map = map;
+    } catch (error) {
+      if (!controller.signal.aborted)
+        this.mapError =
+          error instanceof Error
+            ? error.message
+            : 'The fleet map could not be loaded. Retry to refresh it.';
+    } finally {
+      if (!controller.signal.aborted) this.mapLoading = false;
+    }
+  }
+
+  private setView(view: FleetView): void {
+    if (view === this.view) return;
+    this.view = view;
+    saveViewMode(VIEW_KEY, view);
+    if (view === 'canvas' && !this.map && !this.mapLoading) void this.loadMap();
+    if (view === 'list' && !this.page) void this.load();
+  }
+
+  private renderViewSwitch() {
+    return html`<div
+      class="view-switch"
+      role="group"
+      aria-label="Device fleet view"
+    >
+      ${(
+        [
+          ['list', 'Table', 'table'],
+          ['canvas', 'Map', 'diagram-3'],
+        ] as const
+      ).map(
+        ([view, label, icon]) =>
+          html`<button
+            type="button"
+            aria-pressed=${this.view === view ? 'true' : 'false'}
+            @click=${() => this.setView(view)}
+          >
+            <sl-icon name=${icon} aria-hidden="true"></sl-icon>${label}
+          </button>`
+      )}
+    </div>`;
+  }
+
+  private renderMap() {
+    if (this.mapLoading && !this.map)
+      return html`<div class="empty-state" role="status">
+        <sl-spinner></sl-spinner> Mapping people, devices, agents and
+        providers...
+      </div>`;
+    if (this.mapError)
+      return html`<sl-alert variant="danger" open>
+        <strong>Could not load the fleet map</strong><br />
+        ${this.mapError}
+        <div>
+          <sl-button size="small" @click=${() => void this.loadMap()}
+            >Retry</sl-button
+          >
+          <sl-button size="small" @click=${() => this.setView('list')}
+            >Back to the table</sl-button
+          >
+        </div>
+      </sl-alert>`;
+    return html`<fleet-map .graph=${this.map}></fleet-map>`;
+  }
+
   private async save(event: Event): Promise<void> {
     event.preventDefault();
     if (!this.manage || this.saving) return;
@@ -643,6 +764,8 @@ export class DeviceFleetView extends LitElement {
   }
 
   private renderDevices() {
+    if (this.view === 'canvas')
+      return html`${this.renderViewSwitch()} ${this.renderMap()}`;
     const page = this.page;
     if (!page) return nothing;
     const firstDevice = html`<span
@@ -656,15 +779,16 @@ export class DeviceFleetView extends LitElement {
     // No devices: say how to get the first one, even when agents have
     // already been seen in traffic. Filters over nothing would only mislead.
     if (!page.items.length)
-      return html`<sl-card class="table-card">
+      return html`${this.renderViewSwitch()}<sl-card class="table-card">
           <div class="empty-state" data-testid="fleet-empty">
             ${firstDevice}
           </div>
         </sl-card>
         ${this.renderUnassigned(page.unassigned_agents)}`;
+
     const devices = this.filteredDevices(page);
     const filtered = Boolean(this.search || this.runnerState);
-    return html`${this.renderStrip(page)}
+    return html`${this.renderStrip(page)} ${this.renderViewSwitch()}
       <div class="filters">
         <label
           >Search

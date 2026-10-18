@@ -23,6 +23,38 @@ def _utc_now() -> datetime:
 class CRUDManagedAgentAIModelBinding(CRUDBase[ManagedAgentAIModelBinding]):
     """CRUD helpers for explicit managed-agent model bindings."""
 
+    def list_for_fleet_map(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_ids: list[str],
+        limit: int,
+    ) -> list[ManagedAgentAIModelBinding]:
+        """Load a bounded binding window without fetching models or secrets.
+
+        Args:
+            db: Active database session.
+            account_id: Owning tenant.
+            agent_ids: Already visible agents in this tenant.
+            limit: Source window including a truncation sentinel.
+
+        Returns:
+            Bindings, including inactive slots to suppress legacy fallback.
+        """
+        if not agent_ids:
+            return []
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.managed_agent_id.in_(agent_ids),
+            )
+            .order_by(self.model.id)
+            .limit(limit)
+            .all()
+        )
+
     def list_for_agent(
         self,
         db: Session,

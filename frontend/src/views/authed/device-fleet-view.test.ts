@@ -3,6 +3,7 @@ import { mockApi, type MockApi } from '../../test-helpers/capability-api';
 import { invalidateApiCaches } from '../../api';
 import { capabilityRoutesFor } from '../../lazy-routes';
 import { hasFleetPermission } from '../../device-fleet-api';
+import { sampleFleetMap } from '../../test-helpers/fleet-map-graph';
 import './device-fleet-view';
 
 const device = {
@@ -391,5 +392,84 @@ describe('Device fleet', () => {
     expect(body.schema_version).to.equal(1);
     expect(body.rules.traffic_without_runner.enabled).to.equal(true);
     expect(body.rules.traffic_without_runner.channels.email).to.equal(false);
+  });
+
+  it('switches to the map, loads it once, and remembers the choice', async () => {
+    localStorage.removeItem('preloop.device_fleet.view_mode');
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet'] },
+      routes: [
+        {
+          path: '/api/v1/fleet/device-fleet',
+          body: {
+            items: [device],
+            total: 1,
+            truncated: false,
+            summary: {
+              devices: 1,
+              with_runner_online: 1,
+              with_ungoverned_agents: 1,
+              expected_missing: 0,
+              has_roster: false,
+            },
+            unassigned_agents: [],
+          },
+        },
+        { path: '/api/v1/fleet/map', body: sampleFleetMap() },
+      ],
+    });
+    const view = await mount();
+    expect(view.shadowRoot.querySelector('table')).to.exist;
+    expect(api.callsTo('/api/v1/fleet/map').length).to.equal(0);
+    const mapButton = [
+      ...view.shadowRoot.querySelectorAll('.view-switch button'),
+    ].find((b: Element) => b.textContent!.includes('Map')) as HTMLButtonElement;
+    mapButton.click();
+    await waitUntil(() => view.shadowRoot.querySelector('fleet-map')?.graph);
+    expect(view.shadowRoot.querySelector('table')).to.not.exist;
+    const pressed = view.shadowRoot.querySelector(
+      '.view-switch [aria-pressed="true"]'
+    );
+    expect(pressed.textContent).to.include('Map');
+    expect(localStorage.getItem('preloop.device_fleet.view_mode')).to.equal(
+      'canvas'
+    );
+    expect(api.callsTo('/api/v1/fleet/map').length).to.equal(1);
+    localStorage.removeItem('preloop.device_fleet.view_mode');
+  });
+
+  it('offers retry and the table when the map fails', async () => {
+    localStorage.setItem('preloop.device_fleet.view_mode', 'canvas');
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet'] },
+      routes: [
+        {
+          path: '/api/v1/fleet/device-fleet',
+          body: {
+            items: [device],
+            total: 1,
+            truncated: false,
+            summary: {
+              devices: 1,
+              with_runner_online: 1,
+              with_ungoverned_agents: 1,
+              expected_missing: 0,
+              has_roster: false,
+            },
+            unassigned_agents: [],
+          },
+        },
+        { path: '/api/v1/fleet/map', status: 500, body: {} },
+      ],
+    });
+    const view = await mount();
+    await waitUntil(() => !view.mapLoading);
+    await view.updateComplete;
+    const text = view.shadowRoot.textContent.replace(/\s+/g, ' ');
+    expect(text).to.include('Could not load the fleet map');
+    expect(text).to.include('Back to the table');
+    localStorage.removeItem('preloop.device_fleet.view_mode');
   });
 });

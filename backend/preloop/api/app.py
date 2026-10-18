@@ -920,6 +920,7 @@ def _register_control_plane_routes(
         agent_discovery,
         agent_permission,
         ai_models,
+        fleet_map,
         approval_bypass,
         approval_requests,
         anthropic_usage,
@@ -1122,6 +1123,7 @@ def _register_control_plane_routes(
     # level human dependency would run first and reject the machine token
     # with 401 (see tests/api/test_ci_subscription_app_wiring.py).
     app.include_router(event_webhooks.router, prefix="/api/v1")
+    app.include_router(fleet_map.router, prefix="/api/v1")
     app.include_router(
         retention.router,
         prefix="/api/v1",

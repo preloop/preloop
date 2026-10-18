@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Fleet Map** adds a Table | Map view to Device fleet and the bounded,
+permission-filtered `GET /api/v1/fleet/map` endpoint. Explore owners, devices,
+runners, agents, models and provider credentials, inspect downstream impact,
+and find governance gaps with links to existing management pages.
+
 Highlights: **Bitbucket Cloud on Copilot host flows** publishes a managed
 branch and pull request from a native Copilot host profile and continues
 review feedback on the originating runner, while **Bitbucket Data Center 10.2

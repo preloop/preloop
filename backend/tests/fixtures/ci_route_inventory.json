@@ -145,6 +145,7 @@
   "GET /api/v1/exports/asset-register": "deny",
   "GET /api/v1/exports/incident-candidates": "deny",
   "GET /api/v1/features": "deny",
+  "GET /api/v1/fleet/map": "deny",
   "GET /api/v1/flows": "deny",
   "GET /api/v1/flows/batches/{batch_id}/executions": "deny",
   "GET /api/v1/flows/executions": "execution:read",

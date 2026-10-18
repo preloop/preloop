@@ -8119,6 +8119,45 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/fleet/map:
+    get:
+      tags:
+      - Fleet
+      summary: Read Fleet Map
+      description: Read the selected organization's visible fleet and model dependencies.
+      operationId: read_fleet_map_api_v1_fleet_map_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 50
+          default: 500
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetMapResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/retention/settings:
     get:
       tags:
@@ -31815,6 +31854,210 @@ components:
       - opened_at
       title: ExtensionAttentionItem
       description: Neutral plugin item. Only local console destinations are accepted.
+    FleetMapAction:
+      properties:
+        label:
+          type: string
+          title: Label
+        href:
+          type: string
+          title: Href
+      type: object
+      required:
+      - label
+      - href
+      title: FleetMapAction
+      description: Navigation to an existing control, never a graph mutation.
+    FleetMapCluster:
+      properties:
+        type:
+          type: string
+          enum:
+          - user
+          - device
+          - runner
+          - agent
+          - model
+          - provider_account
+          - provider
+          title: Type
+        count:
+          type: integer
+          title: Count
+      type: object
+      required:
+      - type
+      - count
+      title: FleetMapCluster
+      description: Omitted visible nodes grouped by resource type, never hidden resources.
+    FleetMapEdge:
+      properties:
+        id:
+          type: string
+          title: Id
+        source:
+          type: string
+          title: Source
+        target:
+          type: string
+          title: Target
+        kind:
+          type: string
+          enum:
+          - owns
+          - hosts
+          - runs_on
+          - uses_model
+          - uses_account
+          - account_of_provider
+          - provided_by
+          title: Kind
+        provenance:
+          type: string
+          enum:
+          - configured
+          - observed
+          title: Provenance
+        impact_source:
+          type: string
+          title: Impact Source
+        impact_target:
+          type: string
+          title: Impact Target
+        gaps:
+          items:
+            type: string
+            enum:
+            - discovered_agent
+            - unknown_device
+            - offline_runner
+            - not_via_gateway
+            - open_finding
+          type: array
+          title: Gaps
+      type: object
+      required:
+      - id
+      - source
+      - target
+      - kind
+      - provenance
+      - impact_source
+      - impact_target
+      title: FleetMapEdge
+      description: Relationship direction and separate affected-resource direction.
+    FleetMapNode:
+      properties:
+        id:
+          type: string
+          title: Id
+        type:
+          type: string
+          enum:
+          - user
+          - device
+          - runner
+          - agent
+          - model
+          - provider_account
+          - provider
+          title: Type
+        resource_id:
+          type: string
+          title: Resource Id
+        label:
+          type: string
+          title: Label
+        detail:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Detail
+        href:
+          type: string
+          title: Href
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        owner_ids:
+          items:
+            type: string
+          type: array
+          title: Owner Ids
+        provider_ids:
+          items:
+            type: string
+          type: array
+          title: Provider Ids
+        gaps:
+          items:
+            type: string
+            enum:
+            - discovered_agent
+            - unknown_device
+            - offline_runner
+            - not_via_gateway
+            - open_finding
+          type: array
+          title: Gaps
+        finding_count:
+          type: integer
+          title: Finding Count
+          default: 0
+        actions:
+          items:
+            $ref: '#/components/schemas/FleetMapAction'
+          type: array
+          title: Actions
+      type: object
+      required:
+      - id
+      - type
+      - resource_id
+      - label
+      - href
+      title: FleetMapNode
+      description: Allowlisted resource metadata with stable graph identifiers.
+    FleetMapResponse:
+      properties:
+        schema_version:
+          type: integer
+          const: 1
+          title: Schema Version
+          default: 1
+        nodes:
+          items:
+            $ref: '#/components/schemas/FleetMapNode'
+          type: array
+          title: Nodes
+        edges:
+          items:
+            $ref: '#/components/schemas/FleetMapEdge'
+          type: array
+          title: Edges
+        truncated:
+          type: boolean
+          title: Truncated
+          default: false
+        limit:
+          type: integer
+          title: Limit
+          default: 500
+        clusters:
+          items:
+            $ref: '#/components/schemas/FleetMapCluster'
+          type: array
+          title: Clusters
+        unavailable:
+          items:
+            type: string
+          type: array
+          title: Unavailable
+      type: object
+      title: FleetMapResponse
+      description: Bounded partial graph; incompleteness must stay visible to consumers.
     FlowArtifactKindUsage:
       properties:
         bytes:
