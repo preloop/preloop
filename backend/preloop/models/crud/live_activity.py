@@ -36,6 +36,7 @@ ActivityWorkerWatermark = models.ActivityWorkerWatermark
 ActivitySettings = models.ActivitySettings
 
 WORKER_LOCK_KEY = "live_activity_worker"
+MAINTENANCE_LOCK_KEY = "live_activity_maintenance"
 HOOK_TURN_TYPES = ("user_prompt", "turn_end", "session_end")
 CONSOLE_EVENT_TYPES = ("session_start", "page_view")
 REPLAY_PURPOSE = "replay_validation"
@@ -122,11 +123,16 @@ class CRUDLiveActivity:
 
     # --- worker lock ------------------------------------------------------
 
-    def try_worker_lock(self, db: Session) -> bool:
-        """Take the transaction-scoped advisory lock that elects one worker.
+    def try_worker_lock(self, db: Session, *, key: str = WORKER_LOCK_KEY) -> bool:
+        """Take a transaction-scoped advisory lock that elects one worker.
 
         Released when the caller's transaction ends, so a pass holds it for
-        exactly as long as its writes.
+        exactly as long as its writes. Maintenance batches use their own key
+        (:data:`MAINTENANCE_LOCK_KEY`) so they never block passes.
+
+        Args:
+            db: Database session.
+            key: Lock name.
 
         Returns:
             True when this connection now holds the lock.
@@ -134,7 +140,7 @@ class CRUDLiveActivity:
         return bool(
             db.execute(
                 text("SELECT pg_try_advisory_xact_lock(hashtext(:key))"),
-                {"key": WORKER_LOCK_KEY},
+                {"key": key},
             ).scalar()
         )
 
@@ -256,6 +262,99 @@ class CRUDLiveActivity:
             max(1, min(limit, MAX_BOARD_ROWS))
         )
         return list(db.scalars(query))
+
+    def read_board_rollups(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        granularities: Iterable[int],
+        since: Optional[datetime],
+        limit: int = MAX_BOARD_ROWS,
+    ) -> tuple[list[Any], bool]:
+        """The board's rollups in one statement: account buckets plus totals.
+
+        Account rows come back per bucket (they draw the sparkline and the
+        stats); person and agent rows come back summed per subject over the
+        window, histograms summed element-wise. So an account with many
+        active subjects never pushes its own buckets past the row limit.
+
+        Account rows carry ``bucket_start`` and ``granularity``; subject
+        totals carry the epoch and granularity 0.
+
+        Returns:
+            The rows, and whether the row limit cut the result.
+        """
+        rows = db.execute(
+            text(
+                """
+                WITH r AS (
+                    SELECT * FROM activity_rollup
+                    WHERE account_id = :account_id
+                      AND granularity = ANY(:granularities)
+                      AND (CAST(:since AS timestamptz) IS NULL
+                           OR bucket_start >= CAST(:since AS timestamptz))
+                      AND subject_type IN ('account', 'person', 'agent')
+                ), k AS (
+                    SELECT id, subject_type, subject_id,
+                        CASE WHEN subject_type = 'account' THEN bucket_start
+                             ELSE 'epoch'::timestamptz END AS bucket,
+                        CASE WHEN subject_type = 'account' THEN granularity
+                             ELSE 0 END AS gran
+                    FROM r
+                ), sums AS (
+                    SELECT k.subject_type, k.subject_id, k.bucket, k.gran,
+                        SUM(r.requests)::int AS requests,
+                        SUM(r.tool_calls)::int AS tool_calls,
+                        SUM(r.prompts)::int AS prompts,
+                        SUM(r.turn_ends)::int AS turn_ends,
+                        SUM(r.spend_usd) AS spend_usd
+                    FROM r JOIN k ON k.id = r.id
+                    GROUP BY 1, 2, 3, 4
+                ), rh AS (
+                    SELECT k.subject_type, k.subject_id, k.bucket, k.gran, h.i,
+                        SUM(h.v) AS v
+                    FROM r JOIN k ON k.id = r.id,
+                        unnest(r.reply_latency_hist) WITH ORDINALITY h(v, i)
+                    GROUP BY 1, 2, 3, 4, 5
+                ), ah AS (
+                    SELECT k.subject_type, k.subject_id, k.bucket, k.gran, h.i,
+                        SUM(h.v) AS v
+                    FROM r JOIN k ON k.id = r.id,
+                        unnest(r.approval_latency_hist) WITH ORDINALITY h(v, i)
+                    GROUP BY 1, 2, 3, 4, 5
+                ), rha AS (
+                    SELECT subject_type, subject_id, bucket, gran,
+                        array_agg(v::int ORDER BY i) AS arr
+                    FROM rh GROUP BY 1, 2, 3, 4
+                ), aha AS (
+                    SELECT subject_type, subject_id, bucket, gran,
+                        array_agg(v::int ORDER BY i) AS arr
+                    FROM ah GROUP BY 1, 2, 3, 4
+                )
+                SELECT sums.subject_type, sums.subject_id,
+                    sums.bucket AS bucket_start, sums.gran AS granularity,
+                    sums.requests, sums.tool_calls, sums.prompts,
+                    sums.turn_ends, sums.spend_usd,
+                    COALESCE(rha.arr, '{}') AS reply_latency_hist,
+                    COALESCE(aha.arr, '{}') AS approval_latency_hist
+                FROM sums
+                LEFT JOIN rha USING (subject_type, subject_id, bucket, gran)
+                LEFT JOIN aha USING (subject_type, subject_id, bucket, gran)
+                ORDER BY (sums.subject_type = 'account') DESC,
+                    sums.bucket DESC, sums.requests DESC
+                LIMIT :limit
+                """
+            ),
+            {
+                "account_id": account_id,
+                "granularities": list(granularities),
+                "since": since,
+                "limit": max(1, min(limit, MAX_BOARD_ROWS)) + 1,
+            },
+        ).all()
+        cap = max(1, min(limit, MAX_BOARD_ROWS))
+        return list(rows[:cap]), len(rows) > cap
 
     def fold_minutes_into_hours(
         self, db: Session, *, older_than: datetime, batch: int = 5000

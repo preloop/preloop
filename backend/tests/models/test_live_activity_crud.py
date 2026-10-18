@@ -309,10 +309,12 @@ def statements(db_session: Session) -> Iterator[list[str]]:
 
 
 def _tables(sql: str) -> set[str]:
+    """Tables a statement reads, without its own CTE names."""
+    ctes = set(re.findall(r"(?:WITH|,)\s+([a-z_]+)\s+AS\s*\(", sql, re.IGNORECASE))
     return {
         name.strip('"')
         for name in re.findall(r'\b(?:FROM|JOIN)\s+("?[a-z_]+"?)', sql, re.IGNORECASE)
-    }
+    } - ctes
 
 
 def test_board_readers_touch_no_raw_event_table(
@@ -329,6 +331,9 @@ def test_board_readers_touch_no_raw_event_table(
     )
     crud_live_activity.list_current_states(
         db_session, account_id=account_id, subject_types=["person", "agent"]
+    )
+    crud_live_activity.read_board_rollups(
+        db_session, account_id=account_id, granularities=[60], since=_minute(60)
     )
     crud_live_activity.presence_enabled(db_session, account_id=account_id)
     crud_live_activity.board_settings(db_session, account_id=account_id)
@@ -394,3 +399,43 @@ def test_hook_event_reads_use_the_partial_timestamp_index(db_session: Session) -
         )
     )
     assert "ix_rsa_account_turn_events" in plan, plan
+
+
+def test_board_rollups_keep_account_buckets_and_sum_subjects(
+    db_session: Session, account_id: uuid.UUID
+) -> None:
+    deltas = []
+    for minute in range(3):
+        deltas.append(
+            RollupDelta(
+                account_id, 60, _minute(minute), "account", str(account_id), requests=1
+            )
+        )
+        for person in range(5):
+            delta = RollupDelta(
+                account_id, 60, _minute(minute), "person", f"p{person}", prompts=1
+            )
+            delta.reply_latency_hist[2] = 1
+            deltas.append(delta)
+    crud_live_activity.upsert_rollups(db_session, deltas=deltas, pass_id=uuid.uuid4())
+    rows, truncated = crud_live_activity.read_board_rollups(
+        db_session, account_id=account_id, granularities=[60], since=_minute(10)
+    )
+    assert not truncated
+    account = [r for r in rows if r.subject_type == "account"]
+    people = [r for r in rows if r.subject_type == "person"]
+    assert len(account) == 3 and all(r.granularity == 60 for r in account)
+    assert len(people) == 5
+    assert all(r.prompts == 3 and r.granularity == 0 for r in people)
+    assert people[0].reply_latency_hist[2] == 3
+    assert len(people[0].reply_latency_hist) == LATENCY_BUCKETS
+    # The row limit cuts subject totals before account buckets.
+    rows, truncated = crud_live_activity.read_board_rollups(
+        db_session,
+        account_id=account_id,
+        granularities=[60],
+        since=_minute(10),
+        limit=4,
+    )
+    assert truncated
+    assert [r.subject_type for r in rows][:3] == ["account"] * 3
