@@ -70,7 +70,9 @@ def create_invitation(
     # Seat cap: a pending invitation is a claim on a seat, so this is checked
     # before the row is written (and again on accept, since the cap can move
     # in between). No-ops without the billing plugin.
-    enforce_seat_available(db, current_user.account_id)
+    enforce_seat_available(
+        db, current_user.account_id, invitation_email=invitation_data.email
+    )
 
     # Check if user with this email already exists in the account. Scoped
     # so a shared address in another account can still be invited here.

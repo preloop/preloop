@@ -601,7 +601,9 @@ custom roles.
 `multiuser_advanced_roles`. Moved controllers import no proprietary packages.
 The RBAC and account hierarchy plugins in Preloop Cloud and Preloop Enterprise
 supply seat policies, subscription housekeeping, canonical membership linking
-and advanced role validation. They register only their additional routes,
+and advanced role validation. Invitation context includes the invitee email so
+the overlay can recognize an existing seat across its account tree. They
+register only their additional routes,
 including team role inheritance. Basic team CRUD is independent of advanced
 RBAC entitlements.
 

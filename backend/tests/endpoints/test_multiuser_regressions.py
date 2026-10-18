@@ -2,8 +2,8 @@
 
 import logging
 from typing import Any
-from unittest.mock import Mock
-from uuid import uuid4
+from unittest.mock import Mock, patch
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -356,3 +356,24 @@ def test_owner_cannot_deactivate_self_through_admin_update(
     response = client.patch(f"/api/v1/users/{test_user.id}", json={"is_active": False})
     assert response.status_code == 400, response.text
     assert crud_user.get(db_session, id=test_user.id).is_active
+
+
+def test_invitation_passes_email_to_optional_seat_policy(
+    client: TestClient, test_user: models.User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An overlay can recognize an existing colleague before reserving a seat."""
+    from preloop.plugins.base import get_plugin_manager
+
+    claims: list[str | None] = []
+
+    def gate(db: Session, account_id: UUID, **context: Any) -> None:
+        assert account_id == test_user.account_id
+        claims.append(context.get("invitation_email"))
+
+    monkeypatch.setitem(get_plugin_manager()._services, "multiuser_seat_gate", gate)
+    with patch("preloop.api.endpoints.invitations.send_invitation_email"):
+        response = client.post(
+            "/api/v1/invitations", json={"email": "colleague@example.com"}
+        )
+    assert response.status_code == 201, response.text
+    assert claims == ["colleague@example.com"]

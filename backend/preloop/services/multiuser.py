@@ -33,15 +33,22 @@ def enforce_seat_available(
     *,
     additional_seats: int = 1,
     include_details: bool = True,
+    invitation_email: str | None = None,
 ) -> None:
     """Apply a registered hosted seat policy before adding a colleague."""
     gate = get_plugin_manager().get_service("multiuser_seat_gate")
     if gate is not None:
+        invitation_context = (
+            {"invitation_email": invitation_email}
+            if invitation_email is not None
+            else {}
+        )
         gate(
             db,
             account_id,
             additional_seats=additional_seats,
             include_details=include_details,
+            **invitation_context,
         )
 
 
