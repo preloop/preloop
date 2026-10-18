@@ -18,8 +18,8 @@ requests, tool calls and approvals travel, and gives instance administrators a
 draggable spatial arrangement, also as a Map alternative to the Overview
 inventory table. The spatial map is now a live canvas: people, machines and agents
 gather in islands around the models they share, nodes fade in and out with the
-window, messages travel between agents, models, devices and people as traffic
-happens, and pull and merge requests opened, reviewed and merged show as
+window while the view follows the fleet's centre of gravity, live traffic lights
+the line it travels and the agent, flow, model or person it starts from, and pull and merge requests opened, reviewed and merged show as
 counters and live events on each agent, flow and person
 (`GET /api/v1/fleet/code-activity`, realtime topic `code_activity`).
 

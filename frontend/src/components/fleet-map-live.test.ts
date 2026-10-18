@@ -1,5 +1,5 @@
 import { expect, fixture, html } from '@open-wc/testing';
-import { stub } from 'sinon';
+import { stub, useFakeTimers } from 'sinon';
 import './fleet-map';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
 import type { FleetMap } from './fleet-map';
@@ -54,31 +54,51 @@ describe('fleet-map live canvas', () => {
       if (key.startsWith('preloop:fleet-map')) localStorage.removeItem(key);
   });
 
-  it('spawns a message travelling agent to model and back for a gateway call', async () => {
-    const el = await spatialMap();
-    el.recordActivity('gateway_activity', call);
-    await el.updateComplete;
-    expect(el.inFlight).to.equal(2);
-    const kinds = [
-      ...el.shadowRoot!.querySelectorAll<SVGGElement>('[data-particle]'),
-    ].map((p) => p.dataset.kind);
-    expect(kinds).to.deep.equal(['request', 'response']);
-    expect(
-      el.shadowRoot!.querySelector('[data-particle] text')!.textContent
-    ).to.equal('gpt-6.1');
+  it('lights the agent for a gateway call, then the model that answered', async () => {
+    const clock = useFakeTimers({ now: Date.now(), toFake: ['Date'] });
+    try {
+      const el = await spatialMap();
+      el.recordActivity('gateway_activity', call);
+      await el.updateComplete;
+      expect(el.litNodes).to.deep.equal(['agent:codex']);
+      const codex = el.shadowRoot!.querySelector('[data-node="agent:codex"]')!;
+      expect(codex.classList.contains('speaking')).to.equal(true);
+      expect(codex.classList.contains('speak-request')).to.equal(true);
+      clock.tick(1000);
+      expect(el.litNodes).to.include('model:gpt');
+      el.requestUpdate();
+      await el.updateComplete;
+      expect(
+        el
+          .shadowRoot!.querySelector('[data-node="model:gpt"]')!
+          .classList.contains('speak-response')
+      ).to.equal(true);
+      // Nothing travels along the line.
+      expect(el.shadowRoot!.querySelector('[data-particle]')).to.not.exist;
+    } finally {
+      clock.restore();
+    }
   });
 
-  it('keeps the line label once its message has landed', async () => {
+  it('lights the line without a label on the spatial canvas, with one in columns', async () => {
     const el = await spatialMap();
     el.recordActivity('gateway_activity', call);
     el.flushActivity();
     await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('path.edge.active')).to.exist;
     expect(el.shadowRoot!.querySelector('.activity-label')).to.not.exist;
-    (el as unknown as { particles: { clear(): void } }).particles.clear();
-    el.requestUpdate();
-    await el.updateComplete;
+    const columns = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        instance-admin
+        user-id="u-l"
+      ></fleet-map>`
+    );
+    columns.recordActivity('gateway_activity', call);
+    columns.flushActivity();
+    await columns.updateComplete;
     expect(
-      el.shadowRoot!.querySelector('.activity-label')!.textContent
+      columns.shadowRoot!.querySelector('.activity-label')!.textContent
     ).to.contain('model request');
   });
 
@@ -119,7 +139,7 @@ describe('fleet-map live canvas', () => {
     expect(el.shadowRoot!.querySelectorAll('[data-toast]').length).to.equal(1);
   });
 
-  it('sends messages in the columns arrangement too, for admins only', async () => {
+  it('lights nodes in the columns arrangement too, for admins only', async () => {
     const columns = await fixture<FleetMap>(
       html`<fleet-map
         .graph=${sampleFleetMap()}
@@ -130,13 +150,11 @@ describe('fleet-map live canvas', () => {
     expect(columns.shadowRoot!.querySelector('.column-title')).to.exist;
     columns.recordActivity('gateway_activity', call);
     await columns.updateComplete;
-    expect(columns.inFlight).to.equal(2);
-    // Drawn on the line, not parked off screen.
-    const request = columns.shadowRoot!.querySelector<SVGGElement>(
-      '[data-particle][data-kind="request"]'
-    )!;
-    expect(request.getAttribute('opacity')).to.not.equal('0');
-    expect(request.getAttribute('transform')).to.not.contain('-999');
+    expect(
+      columns
+        .shadowRoot!.querySelector('[data-node="agent:codex"]')!
+        .classList.contains('speaking')
+    ).to.equal(true);
     const viewer = await fixture<FleetMap>(
       html`<fleet-map
         .graph=${sampleFleetMap()}
@@ -146,11 +164,12 @@ describe('fleet-map live canvas', () => {
     viewer.recordActivity('gateway_activity', call);
     viewer.codeActivity = activity();
     await viewer.updateComplete;
-    expect(viewer.inFlight).to.equal(0);
+    expect(viewer.litNodes).to.deep.equal([]);
+    expect(viewer.shadowRoot!.querySelector('.speaking')).to.not.exist;
     expect(viewer.shadowRoot!.querySelector('[data-code]')).to.not.exist;
   });
 
-  it('sends nothing to a node folded past the column cap', async () => {
+  it('lights nothing for a node folded past the column cap', async () => {
     const base = sampleFleetMap();
     const extra = Array.from({ length: 14 }, (_, i) => ({
       ...base.nodes.find((n) => n.id === 'agent:codex')!,
@@ -195,7 +214,7 @@ describe('fleet-map live canvas', () => {
       type: 'model_gateway_call',
       payload: { managed_agent_id: hidden.resource_id, model_alias: 'gpt-6.1' },
     });
-    expect(el.inFlight).to.equal(0);
+    expect(el.litNodes).to.deep.equal([]);
   });
 
   it("listens to code activity only on an administrator's live map", async () => {
@@ -219,7 +238,7 @@ describe('fleet-map live canvas', () => {
     }
   });
 
-  it('respects the cap on messages in flight', async () => {
+  it('caps how many nodes are lit at once', async () => {
     const el = await spatialMap();
     for (let i = 0; i < 60; i++)
       el.recordActivity('approvals', {
@@ -227,23 +246,16 @@ describe('fleet-map live canvas', () => {
         managed_agent_id: i % 2 ? 'codex' : 'claude',
         tool_name: `T${i}`,
       });
-    // One per line per throttle window: two agents, two lines.
-    expect(el.inFlight).to.equal(2);
-    for (let i = 0; i < 60; i++)
-      el.recordActivity('gateway_activity', {
-        ...call,
-        payload: { ...call.payload, model_alias: `gpt-6.1` },
-      });
-    expect(el.inFlight).to.be.at.most(24);
+    expect(el.litNodes.sort()).to.deep.equal(['agent:claude', 'agent:codex']);
+    expect(el.litNodes.length).to.be.at.most(16);
   });
 
-  it('only lights the line under reduced motion', async () => {
+  it('lights the same under reduced motion, since nothing moves', async () => {
     const el = await spatialMap({ reducedMotion: true });
     el.recordActivity('gateway_activity', call);
     el.flushActivity();
     await el.updateComplete;
-    expect(el.inFlight).to.equal(0);
-    expect(el.shadowRoot!.querySelector('[data-particle]')).to.not.exist;
+    expect(el.litNodes).to.deep.equal(['agent:codex']);
     expect(el.shadowRoot!.querySelector('path.edge.active')).to.exist;
   });
 
@@ -271,6 +283,93 @@ describe('fleet-map live canvas', () => {
     expect(el.shadowRoot!.querySelector('[data-leaving="agent:codex"]')).to.not
       .exist;
     expect(entering.style.opacity).to.equal('');
+  });
+
+  it('glides to the new centre of gravity when a person joins or leaves', async () => {
+    const graph = sampleFleetMap();
+    // Ana joins with a laptop and an onboarded agent: a new island.
+    const by = (id: string) => graph.nodes.find((n) => n.id === id)!;
+    const edge = graph.edges[0];
+    const joined = {
+      ...graph,
+      nodes: [
+        ...graph.nodes,
+        { ...by('user:maya'), id: 'user:ana', label: 'Ana' },
+        { ...by('device:mbp'), id: 'device:ana', owner_ids: ['user:ana'] },
+        { ...by('agent:codex'), id: 'agent:ana', owner_ids: ['user:ana'] },
+      ],
+      edges: [
+        ...graph.edges,
+        {
+          ...edge,
+          id: 'o-ana',
+          source: 'user:ana',
+          target: 'device:ana',
+          kind: 'owns' as const,
+        },
+        {
+          ...edge,
+          id: 'h-ana',
+          source: 'device:ana',
+          target: 'agent:ana',
+          kind: 'hosts' as const,
+        },
+        {
+          ...edge,
+          id: 'm-ana',
+          source: 'agent:ana',
+          target: 'model:gpt',
+          kind: 'uses_model' as const,
+        },
+      ],
+    };
+    const withoutSam = graph;
+    const el = await spatialMap({ graph: withoutSam });
+    type Internals = {
+      camera?: unknown;
+      tween?: unknown;
+      gravityView(l: unknown): { x: number; y: number; s: number };
+      lastLayout: unknown;
+    };
+    const inside = el as unknown as Internals;
+    const plane = () =>
+      el.shadowRoot!.querySelector<HTMLElement>('.plane')!.style.transform;
+    el.graph = joined;
+    await el.updateComplete;
+    expect(inside.camera, 'the view starts gliding').to.exist;
+    const tween = inside.tween as {
+      from: Map<string, { x: number; y: number }>;
+      to: { positions: Map<string, { x: number; y: number }> };
+    };
+    expect(tween, 'nodes glide to their new places').to.exist;
+    const moved = [...tween.to.positions].filter(([id, to]) => {
+      const from = tween.from.get(id);
+      return from && (from.x !== to.x || from.y !== to.y);
+    });
+    expect(moved.length, 'the islands are dealt round again').to.be.greaterThan(
+      0
+    );
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const target = inside.gravityView(inside.lastLayout);
+    const scale = Number(/scale\(([\d.]+)\)/.exec(plane())![1]);
+    expect(scale).to.be.closeTo(target.s, 1e-4);
+    expect(inside.camera).to.equal(undefined);
+  });
+
+  it('stops following the fleet for a while after a pan by hand', async () => {
+    const graph = sampleFleetMap();
+    const el = await spatialMap({
+      graph: {
+        ...graph,
+        nodes: graph.nodes.filter((n) => n.id !== 'user:sam'),
+      },
+    });
+    el.shadowRoot!.querySelector('.stage')!.dispatchEvent(
+      new WheelEvent('wheel', { deltaY: 40, bubbles: true, cancelable: true })
+    );
+    el.graph = { ...graph };
+    await el.updateComplete;
+    expect((el as unknown as { camera?: unknown }).camera).to.equal(undefined);
   });
 
   it('keeps nodes where they are when the graph refreshes', async () => {

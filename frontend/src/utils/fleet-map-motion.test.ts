@@ -3,13 +3,12 @@ import { sampleFleetMap } from '../test-helpers/fleet-map-graph';
 import {
   ENTER_MS,
   EXIT_MS,
-  FleetParticles,
+  FleetLights,
   clusterOf,
   codeHitFromRealtime,
   countCode,
   messagesForRealtime,
   nextPresence,
-  particleProgress,
   presenceStyle,
 } from './fleet-map-motion';
 import { spatialLayout } from './fleet-map-spatial';
@@ -161,34 +160,32 @@ describe('fleet-map-motion', () => {
     );
   });
 
-  it('caps messages in flight and throttles each line', () => {
-    const particles = new FleetParticles({ max: 3, perLineMs: 400 });
-    const message = {
-      from: 'a',
-      to: 'b',
-      kind: 'request' as const,
-      label: 'x',
-    };
-    expect(particles.spawn(message, 0)).to.equal(true);
-    expect(particles.spawn(message, 100), 'same line too soon').to.equal(false);
-    expect(particles.spawn(message, 500)).to.equal(true);
-    expect(particles.spawn({ ...message, to: 'c' }, 500)).to.equal(true);
-    expect(particles.spawn({ ...message, to: 'd' }, 500), 'cap').to.equal(
-      false
+  it('lights the node a message starts from, after its delay, for a while', () => {
+    const lights = new FleetLights(1000, 2);
+    lights.light(
+      { from: 'agent:a', to: 'model:m', kind: 'request', label: '' },
+      0
     );
-    expect(particles.size).to.equal(3);
-    particles.prune(10_000);
-    expect(particles.size).to.equal(0);
-  });
-
-  it('moves a message as a function of the clock', () => {
-    const particles = new FleetParticles({ durationMs: 1000 });
-    particles.spawn({ from: 'a', to: 'b', kind: 'tool', label: '' }, 1000);
-    const [p] = particles.all;
-    expect(particleProgress(p, 999)).to.equal(null);
-    expect(particleProgress(p, 1000)).to.equal(0);
-    expect(particleProgress(p, 1500)).to.be.closeTo(0.5, 1e-9);
-    expect(particleProgress(p, 2000)).to.equal(null);
+    lights.light(
+      {
+        from: 'model:m',
+        to: 'agent:a',
+        kind: 'response',
+        label: '',
+        delay: 500,
+      },
+      0
+    );
+    expect(lights.active(100).map((l) => l.node)).to.deep.equal(['agent:a']);
+    expect(lights.at('model:m', 600)?.kind).to.equal('response');
+    expect(lights.at('agent:a', 1000)).to.equal(undefined);
+    // At most `max` lights; the stalest goes dark first.
+    lights.light({ from: 'agent:b', to: 'x', kind: 'tool', label: '' }, 700);
+    expect(lights.size).to.equal(2);
+    expect(lights.at('agent:a', 700)).to.equal(undefined);
+    lights.changed(700);
+    expect(lights.changed(5000)).to.equal(true);
+    expect(lights.size).to.equal(0);
   });
 
   it('enters new nodes and fades out the ones that left the window', () => {

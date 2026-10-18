@@ -54,18 +54,15 @@ import {
   type FleetMapPoints,
 } from '../utils/fleet-map-spatial';
 import {
-  FleetParticles,
+  FleetLights,
   PIP_MS,
   clusterOf,
   codeHitFromRealtime,
   codeLabel,
   countCode,
-  curveBetween,
   messagesForRealtime,
   nextPresence,
   ownerOf,
-  particleProgress,
-  pointOnCurve,
   presenceStyle,
   type FleetMessage,
   type FleetPip,
@@ -118,6 +115,13 @@ const EMPTY: FleetMapGraph = {
 const MIN_FIT_SCALE = 0.6;
 /** Spatial maps fit both ways, so they may shrink further. */
 const MIN_SPATIAL_FIT_SCALE = 0.35;
+/** Nodes and the view glide to a new arrangement in this long (medium). */
+const GLIDE_MS = 400;
+/** After a pan or zoom by hand the view stops following the fleet a while. */
+const HANDS_OFF_MS = 15_000;
+const glide = (t: number): number =>
+  t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+type View = { x: number; y: number; s: number };
 
 /** Counter order on a node: opened, reviewed, commented, merged. */
 const CODE_BADGES: readonly [FleetCodeAction, string, string][] = [
@@ -223,8 +227,11 @@ export class FleetMap extends LitElement {
     this.focusOnly = false;
   }
 
-  private readonly activity = new FleetActivityTracker(() =>
-    this.requestUpdate()
+  // A line stays lit 2.5 s after its last request: long enough to read,
+  // short enough that a busy fleet still shows which lines are live now.
+  private readonly activity = new FleetActivityTracker(
+    () => this.requestUpdate(),
+    { holdMs: 2500 }
   );
   private unsubscribes: (() => void)[] = [];
   private drag: {
@@ -268,7 +275,7 @@ export class FleetMap extends LitElement {
       this.requestRefresh(FLEET_MAP_STALE_DEBOUNCE_MS);
   }
 
-  private readonly particles = new FleetParticles();
+  private readonly lights = new FleetLights();
   private presence: FleetPresence = {
     entered: new Map(),
     leaving: new Map(),
@@ -288,9 +295,9 @@ export class FleetMap extends LitElement {
     );
   }
 
-  /** Messages in flight, for tests and the demo harness. */
-  get inFlight(): number {
-    return this.particles.size;
+  /** Nodes lit by live traffic right now, for tests and the demo harness. */
+  get litNodes(): string[] {
+    return this.lights.active(Date.now()).map((item) => item.node);
   }
 
   /** The graph as drawn: the server graph plus flows that did code work. */
@@ -299,20 +306,23 @@ export class FleetMap extends LitElement {
   }
 
   /**
-   * Send messages along the map. Under reduced motion nothing travels; the
-   * line lights through the activity tracker instead.
+   * Light the node each message starts from: the agent or flow sending a
+   * request, the model answering, the person deciding an approval. The line
+   * it travels lights through the activity tracker. Nothing moves, so this
+   * is the same with reduced motion. A node folded into a "+N more" row or
+   * hidden by a filter is not lit.
    */
   private send(messages: FleetMessage[]): void {
-    if (!messages.length || this.motionOff || !this.instanceAdmin) return;
+    if (!messages.length || !this.instanceAdmin) return;
     const now = Date.now();
-    let spawned = false;
-    // A message needs both ends on screen: nothing travels to a node folded
-    // into a "+N more" row or hidden by a filter.
-    for (const message of messages.filter(
-      (item) => this.positionOf(item.from) && this.positionOf(item.to)
-    ))
-      spawned = this.particles.spawn(message, now) || spawned;
-    if (spawned) {
+    let lit = false;
+    for (const message of messages)
+      if (this.positionOf(message.from)) {
+        this.lights.light(message, now);
+        lit = true;
+      }
+    if (lit) {
+      this.lights.changed(now);
       this.requestUpdate();
       this.startFrames();
     }
@@ -426,7 +436,14 @@ export class FleetMap extends LitElement {
   private tick = (): void => {
     this.frame = 0;
     const now = Date.now();
-    if (this.particles.prune(now)) this.requestUpdate();
+    if (this.lights.changed(now)) this.requestUpdate();
+    const camera = this.stepCamera(now);
+    const tweening = this.tween && now - this.tween.start < GLIDE_MS;
+    if (tweening) this.requestUpdate();
+    else if (this.tween) {
+      this.tween = undefined;
+      this.requestUpdate();
+    }
     const pips = this.pips.filter((pip) => now - pip.start < PIP_MS);
     if (pips.length !== this.pips.length) this.pips = pips;
     const toasts = this.toasts.filter((pip) => now - pip.start < PIP_MS * 2);
@@ -437,7 +454,9 @@ export class FleetMap extends LitElement {
       this.requestUpdate();
     this.paintFrame(now);
     if (
-      this.particles.size ||
+      this.lights.size ||
+      camera ||
+      tweening ||
       this.pips.length ||
       this.toasts.length ||
       this.presence.leaving.size ||
@@ -451,32 +470,6 @@ export class FleetMap extends LitElement {
     const root = this.shadowRoot;
     const layout = this.lastLayout;
     if (!root || !layout) return;
-    for (const el of root.querySelectorAll<SVGGElement>('[data-particle]')) {
-      const particle = this.particles.all.find(
-        (item) => String(item.id) === el.dataset.particle
-      );
-      const a = particle && this.positionOf(particle.from);
-      const b = particle && this.positionOf(particle.to);
-      const t = particle ? particleProgress(particle, now) : null;
-      if (!particle || !a || !b || t === null) {
-        el.setAttribute('opacity', '0');
-        continue;
-      }
-      const point = pointOnCurve(curveBetween(a, b), t);
-      // Fade in over the first tenth and out over the last.
-      const fade = Math.min(1, t / 0.1, (1 - t) / 0.1);
-      el.setAttribute(
-        'transform',
-        `translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})`
-      );
-      el.setAttribute('opacity', fade.toFixed(3));
-      // The label shows in mid-flight only, clear of the node it leaves and
-      // the one it reaches.
-      el.querySelector('text')?.setAttribute(
-        'opacity',
-        Math.max(0, Math.min(1, (t - 0.08) / 0.1, (0.72 - t) / 0.1)).toFixed(3)
-      );
-    }
     for (const el of root.querySelectorAll<HTMLElement>('[data-presence]')) {
       const style = presenceStyle(
         this.presence,
@@ -489,9 +482,7 @@ export class FleetMap extends LitElement {
     for (const el of root.querySelectorAll<HTMLElement>('[data-pip]')) {
       const start = Number(el.dataset.start);
       const t = Math.min(1, Math.max(0, (now - start) / PIP_MS));
-      // Slide 18px out from the node and hold, then fade over the last third.
-      const rise = 18 * (1 - Math.pow(1 - Math.min(1, t * 4), 3));
-      el.style.transform = `translate(${rise.toFixed(1)}px, 0)`;
+      // Shown beside the node, then faded over the last third.
       el.style.opacity = (t < 0.66 ? 1 : 1 - (t - 0.66) / 0.34).toFixed(3);
     }
   }
@@ -660,8 +651,12 @@ export class FleetMap extends LitElement {
       this.syncCodeSubscription();
     if (this.refit && this.lastLayout) {
       this.refit = false;
+      this.recenter = false;
       this.fit();
-    } else this.applyTransform();
+    } else if (this.recenter && this.spatial) {
+      this.recenter = false;
+      this.follow();
+    } else if (!this.camera) this.applyTransform();
   }
 
   disconnectedCallback(): void {
@@ -671,7 +666,7 @@ export class FleetMap extends LitElement {
     this.codeUnsubscribe?.();
     this.codeUnsubscribe = undefined;
     this.activity.stop();
-    this.particles.clear();
+    this.lights.clear();
     if (this.frame) cancelAnimationFrame(this.frame);
     this.frame = 0;
     this.codeController?.abort();
@@ -691,6 +686,8 @@ export class FleetMap extends LitElement {
       ?.querySelector('.stage')
       ?.getBoundingClientRect();
     if (!bounds) return;
+    this.userMovedAt = Date.now();
+    this.camera = undefined;
     const x = clientX === undefined ? bounds.width / 2 : clientX - bounds.left;
     const y = clientY === undefined ? bounds.height / 2 : clientY - bounds.top;
     const next = Math.max(0.2, Math.min(2, this.scale * factor));
@@ -717,21 +714,15 @@ export class FleetMap extends LitElement {
         ? 364
         : 0;
     const room = bounds.width - panel;
-    if (this.spatial && layout.height) {
-      // A spatial map has no column headers to pin: fit it whole and centre.
-      this.scale = Math.max(
-        MIN_SPATIAL_FIT_SCALE,
-        Math.min(
-          1,
-          (room - 48) / layout.width,
-          (bounds.height - 72) / layout.height
-        )
-      );
-      this.translateX = (room - layout.width * this.scale) / 2;
-      this.translateY = Math.max(
-        12,
-        (bounds.height - 40 - layout.height * this.scale) / 2
-      );
+    if (this.spatial) {
+      // A spatial map has no column headers to pin: centre it on its centre
+      // of gravity, with every node in view.
+      const view = this.gravityView(layout);
+      if (!view) return;
+      this.camera = undefined;
+      this.translateX = view.x;
+      this.translateY = view.y;
+      this.scale = view.s;
       this.applyTransform();
       return;
     }
@@ -743,6 +734,137 @@ export class FleetMap extends LitElement {
     this.translateX = width < room ? (room - width) / 2 : 24;
     this.translateY = 16;
     this.applyTransform();
+  }
+
+  private tween?: {
+    from: Map<string, FleetMapPosition>;
+    to: FleetMapLayout;
+    start: number;
+  };
+  private camera?: { from: View; to: View; start: number };
+  private shownLayout?: FleetMapLayout;
+  private recenter = false;
+  private userMovedAt = -Infinity;
+  private glidePoints?: FleetMapPoints;
+
+  /**
+   * The view that puts the nodes' centre of gravity (the mean of their
+   * centres) in the middle of the stage, at the largest scale up to 100%
+   * that keeps every node in view around it.
+   */
+  private gravityView(layout: FleetMapLayout): View | null {
+    const bounds = this.shadowRoot
+      ?.querySelector('.stage')
+      ?.getBoundingClientRect();
+    const boxes = [...layout.positions.values()];
+    if (!bounds?.width || !boxes.length) return null;
+    const panel =
+      this.selected && !window.matchMedia('(max-width: 900px)').matches
+        ? 364
+        : 0;
+    const room = bounds.width - panel;
+    const cx = boxes.reduce((sum, b) => sum + b.x + b.w / 2, 0) / boxes.length;
+    const cy = boxes.reduce((sum, b) => sum + b.y + b.h / 2, 0) / boxes.length;
+    let dx = 1;
+    let dy = 1;
+    for (const b of boxes) {
+      dx = Math.max(dx, Math.abs(b.x - cx), Math.abs(b.x + b.w - cx));
+      dy = Math.max(dy, Math.abs(b.y - cy), Math.abs(b.y + b.h - cy));
+    }
+    const s = Math.max(
+      MIN_SPATIAL_FIT_SCALE,
+      Math.min(1, (room / 2 - 24) / dx, (bounds.height / 2 - 36) / dy)
+    );
+    return { x: room / 2 - cx * s, y: bounds.height / 2 - cy * s, s };
+  }
+
+  /** Glide the view to the fleet's new centre of gravity. */
+  private follow(): void {
+    const layout = this.lastLayout;
+    if (!layout || Date.now() - this.userMovedAt < HANDS_OFF_MS) return;
+    const to = this.gravityView(layout);
+    if (!to) return;
+    if (this.motionOff) {
+      this.translateX = to.x;
+      this.translateY = to.y;
+      this.scale = to.s;
+      this.applyTransform();
+      return;
+    }
+    this.camera = {
+      from: { x: this.translateX, y: this.translateY, s: this.scale },
+      to,
+      start: Date.now(),
+    };
+    this.startFrames();
+  }
+
+  /** Advance the view glide; true while it is still moving. */
+  private stepCamera(now: number): boolean {
+    const camera = this.camera;
+    if (!camera) return false;
+    const t = Math.min(1, (now - camera.start) / GLIDE_MS);
+    const e = glide(t);
+    this.translateX = camera.from.x + (camera.to.x - camera.from.x) * e;
+    this.translateY = camera.from.y + (camera.to.y - camera.from.y) * e;
+    this.scale = camera.from.s + (camera.to.s - camera.from.s) * e;
+    this.applyTransform();
+    if (t >= 1) this.camera = undefined;
+    return !!this.camera;
+  }
+
+  /**
+   * The positions drawn this frame: when the arrangement changes (people,
+   * machines or agents joined or left), nodes glide from where they were.
+   */
+  private glideLayout(target: FleetMapLayout): FleetMapLayout {
+    const now = Date.now();
+    if (target !== this.shownLayout) {
+      const previous = this.shownLayout;
+      this.shownLayout = target;
+      // A node dragged by hand follows the pointer; nothing glides.
+      const dragged = this.points !== this.glidePoints;
+      this.glidePoints = this.points;
+      if (dragged) this.tween = undefined;
+      else if (previous) {
+        this.recenter = true;
+        if (!this.motionOff)
+          this.tween = {
+            from: this.tween
+              ? this.glidePositions(this.tween, now)
+              : previous.positions,
+            to: target,
+            start: now,
+          };
+      }
+    }
+    const tween = this.tween;
+    if (!tween || tween.to !== target || now - tween.start >= GLIDE_MS)
+      return target;
+    this.startFrames();
+    return { ...target, positions: this.glidePositions(tween, now) };
+  }
+
+  private glidePositions(
+    tween: NonNullable<FleetMap['tween']>,
+    now: number
+  ): Map<string, FleetMapPosition> {
+    const e = glide(Math.min(1, (now - tween.start) / GLIDE_MS));
+    const out = new Map<string, FleetMapPosition>();
+    for (const [id, to] of tween.to.positions) {
+      const from = tween.from.get(id);
+      out.set(
+        id,
+        from
+          ? {
+              ...to,
+              x: Math.round(from.x + (to.x - from.x) * e),
+              y: Math.round(from.y + (to.y - from.y) * e),
+            }
+          : to
+      );
+    }
+    return out;
   }
 
   private pointerDown(event: PointerEvent): void {
@@ -770,6 +892,8 @@ export class FleetMap extends LitElement {
       return;
     }
     if ((event.target as Element).closest('button')) return;
+    this.userMovedAt = Date.now();
+    this.camera = undefined;
     this.pan = {
       id: event.pointerId,
       x: event.clientX - this.translateX,
@@ -820,6 +944,8 @@ export class FleetMap extends LitElement {
   /** Scroll pans, as on a page; pinch or Ctrl/Cmd + scroll zooms. */
   private onWheel(event: WheelEvent): void {
     event.preventDefault();
+    this.userMovedAt = Date.now();
+    this.camera = undefined;
     if (event.ctrlKey || event.metaKey) {
       this.zoom(Math.exp(-event.deltaY * 0.01), event.clientX, event.clientY);
       return;
@@ -1045,10 +1171,6 @@ export class FleetMap extends LitElement {
         inset: 0;
         overflow: visible;
         pointer-events: none;
-      }
-      /* Messages travel above the nodes, so a label is never hidden. */
-      .plane svg.particles {
-        z-index: 2;
       }
       .edge {
         fill: none;
@@ -1537,37 +1659,55 @@ export class FleetMap extends LitElement {
         pointer-events: none;
         cursor: default;
       }
-      /* Messages in flight: a dot and a short label, travelling once. */
-      .particle circle {
-        stroke: var(--console-page);
-        stroke-width: 2;
-        fill: var(--sl-color-success-600);
+      /* Where live traffic starts: the node lights, a state change held
+         about a second and a half, never a movement. */
+      .node.speaking {
+        border-color: var(--sl-color-success-600);
+        box-shadow: 0 0 0 1px var(--sl-color-success-600);
       }
-      .particle.response circle {
-        fill: var(--sl-color-primary-500);
+      .node.speaking .glyph {
+        background: color-mix(
+          in srgb,
+          var(--sl-color-success-500) 22%,
+          transparent
+        );
+        color: var(--sl-color-success-600);
       }
-      .particle.tool circle {
-        fill: var(--sl-color-neutral-500);
+      .node.speaking.speak-response {
+        border-color: var(--sl-color-primary-600);
+        box-shadow: 0 0 0 1px var(--sl-color-primary-600);
       }
-      .particle.approval circle {
-        fill: var(--sl-color-warning-500);
+      .node.speaking.speak-response .glyph {
+        background: color-mix(
+          in srgb,
+          var(--sl-color-primary-500) 22%,
+          transparent
+        );
+        color: var(--sl-color-primary-600);
       }
-      .particle.decision circle,
-      .particle.code circle {
-        fill: var(--sl-color-success-500);
+      .node.speaking.speak-approval {
+        border-color: var(--sl-color-warning-600);
+        box-shadow: 0 0 0 1px var(--sl-color-warning-600);
       }
-      .particle text {
-        font-size: 12px;
-        font-weight: 500;
-        fill: var(--console-body-color);
-        paint-order: stroke;
-        stroke: var(--console-page);
-        stroke-width: 3px;
+      .node.speaking.speak-approval .glyph {
+        background: color-mix(
+          in srgb,
+          var(--sl-color-warning-500) 22%,
+          transparent
+        );
+        color: var(--sl-color-warning-600);
       }
-      /* With messages travelling, a lit line is context, not the news. */
-      .stage.travelling .edge.active {
-        stroke-width: 1.75;
-        opacity: 0.75;
+      .node.speaking.speak-tool {
+        border-color: var(--sl-color-neutral-400);
+        box-shadow: none;
+      }
+      .node.speaking.speak-tool .glyph {
+        background: color-mix(
+          in srgb,
+          var(--sl-color-neutral-500) 22%,
+          transparent
+        );
+        color: var(--console-body-color);
       }
       /* Above the zoom controls, clear of the column headers. */
       .toasts {
@@ -2053,6 +2193,9 @@ export class FleetMap extends LitElement {
       (lit && !lit.has(node.id)) ||
       (!lit && this.focusGap && !focused) ||
       (!lit && !this.focusGap && hits.size > 0 && !hits.has(node.id));
+    const speaking = this.instanceAdmin
+      ? this.lights.at(node.id, Date.now())
+      : undefined;
     const classes = [
       'node',
       node.type === 'cluster' ? 'cluster' : '',
@@ -2065,6 +2208,7 @@ export class FleetMap extends LitElement {
       hits.has(node.id) ? 'match' : '',
       node.id === this.selected ? 'selected' : '',
       focused ? 'focus' : '',
+      speaking ? `speaking speak-${speaking.kind}` : '',
       lit && lit.has(node.id) && node.id !== this.selected ? 'lit' : '',
       dim ? 'dim' : '',
     ].join(' ');
@@ -2186,21 +2330,7 @@ export class FleetMap extends LitElement {
     });
   }
 
-  /** Messages in flight, drawn at their position for this instant. */
-  private renderParticles() {
-    if (!this.particles.size) return nothing;
-    const now = Date.now();
-    return this.particles.all.map((particle) => {
-      const a = this.positionOf(particle.from);
-      const b = this.positionOf(particle.to);
-      const t = particleProgress(particle, now);
-      const point =
-        a && b && t !== null ? pointOnCurve(curveBetween(a, b), t) : null;
-      return svg`<g class="particle ${particle.kind}" data-particle=${particle.id} data-kind=${particle.kind} opacity=${point ? 1 : 0} transform=${point ? `translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})` : 'translate(-999 -999)'}><circle r="6"></circle>${particle.label ? svg`<text y="-11" text-anchor="middle">${particle.label}</text>` : nothing}</g>`;
-    });
-  }
-
-  /** Code events rising off the node that made them. */
+  /** Code events shown beside the node that made them. */
   private renderPips(positions: Map<string, FleetMapPosition>) {
     if (!this.pips.length) return nothing;
     return this.pips.map((pip) => {
@@ -2489,8 +2619,17 @@ export class FleetMap extends LitElement {
     if (cached && cached.key.every((value, index) => value === key[index]))
       return cached.layout;
     const seed = layoutGraph(view).positions;
-    // Nodes already on screen stay where they are when the graph refreshes;
-    // only arrivals are placed, beside what they link to.
+    const clusters = clusterOf(view);
+    // When a person (or a lone machine) joins or leaves, the islands are
+    // dealt round the ring again and every node glides to its new place, so
+    // the picture stays balanced around its centre of gravity. Otherwise
+    // nodes already on screen stay put and only arrivals are placed, beside
+    // what they link to.
+    const groups = [...new Set(clusters.values())].sort().join('|');
+    if (groups !== this.settledGroups) {
+      this.settledGroups = groups;
+      this.settled.clear();
+    }
     const settled: FleetMapPoints = {};
     for (const node of view.nodes) {
       const at = this.settled.get(node.id);
@@ -2500,7 +2639,7 @@ export class FleetMap extends LitElement {
       view,
       seed,
       { ...settled, ...this.points },
-      clusterOf(view)
+      clusters
     );
     for (const [id, position] of layout.positions)
       this.settled.set(id, { x: position.x, y: position.y });
@@ -2510,6 +2649,7 @@ export class FleetMap extends LitElement {
 
   /** Where each node was last placed this session, so refreshes keep it. */
   private settled = new Map<string, { x: number; y: number }>();
+  private settledGroups = '';
 
   /** Lit relationships by drawn line, with the label of what travelled. */
   private activityByLine(
@@ -2577,7 +2717,7 @@ export class FleetMap extends LitElement {
           }
         : filtered;
     const pinned = new Set([...hits, ...(lit ?? [])]);
-    const layout = this.spatial
+    const target = this.spatial
       ? this.spatialFor(view)
       : layoutGraph(view, {
           cap: FLEET_MAP_CAP,
@@ -2585,8 +2725,9 @@ export class FleetMap extends LitElement {
           collapsed: this.collapsed,
           pinned,
         });
-    this.lastLayout = layout;
-    for (const [id, position] of layout.positions)
+    this.lastLayout = target;
+    const layout = this.spatial ? this.glideLayout(target) : target;
+    for (const [id, position] of target.positions)
       this.lastPositions.set(id, position);
     if (this.lastPositions.size > 2000)
       this.lastPositions = new Map(layout.positions);
@@ -2604,10 +2745,9 @@ export class FleetMap extends LitElement {
     };
     const context = { view, layout, byId, lit, hits };
     const active = this.activityByLine(view, layout);
-    // Only while a message is actually in flight does it carry the label;
-    // a line still lit after it landed keeps its own.
-    const travelling =
-      this.instanceAdmin && !this.motionOff && this.particles.size > 0;
+    // On an administrator's spatial canvas the lit node says where traffic
+    // started; the line lights without a label, so a busy map stays legible.
+    const quiet = this.instanceAdmin && this.spatial;
     return html`${this.renderToolbar(graph, filtered, hits)}
       ${this.renderGaps(filtered)}
       ${
@@ -2638,7 +2778,7 @@ export class FleetMap extends LitElement {
           : nothing
       }
       <div
-        class="stage ${lit ? 'has-selection' : ''} ${travelling ? 'travelling' : ''}"
+        class="stage ${lit ? 'has-selection' : ''}"
         tabindex="0"
         role="region"
         aria-label="Fleet dependency map"
@@ -2733,8 +2873,7 @@ export class FleetMap extends LitElement {
                         .filter(Boolean)
                         .join(', ');
                       const path = svg`<path class=${cls} data-edge=${edge.kind} data-edge-id=${edge.id} data-activity=${live || nothing} d=${d}><title>${na.label} ${FLEET_MAP_EDGE_LABEL[edge.kind]} ${nb.label}${via ? ` via ${via}` : ''}${live ? ` · ${live}` : ''}</title></path>`;
-                      // Messages in flight carry their own labels.
-                      if (!live || travelling) return path;
+                      if (!live || quiet) return path;
                       const mx = (a.x + a.w / 2 + b.x + b.w / 2) / 2;
                       const my = (y1 + y2) / 2 - 6;
                       return svg`${path}<text class="activity-label" x=${mx} y=${my} text-anchor="middle">${live}</text>`;
@@ -2751,18 +2890,6 @@ export class FleetMap extends LitElement {
                   });
                 })}
                 ${this.renderLeaving(layout.positions)}
-                ${
-                  this.particles.size && travelling
-                    ? html`<svg
-                        class="particles"
-                        width=${layout.width}
-                        height=${layout.height}
-                        aria-hidden="true"
-                      >
-                        ${this.renderParticles()}
-                      </svg>`
-                    : nothing
-                }
                 ${this.renderPips(layout.positions)}
                 ${layout.more.map(
                   (row) =>

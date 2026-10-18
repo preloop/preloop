@@ -3,34 +3,23 @@ import type {
   FleetCodeCounts,
   FleetMapGraph,
   FleetMapNode,
-  FleetMapPosition,
 } from '../fleet-map-api';
 import { modelKey } from './fleet-map-activity';
 
 /**
- * Motion for the live Fleet Map: messages travelling between nodes, nodes
+ * Live state for the Fleet Map: nodes lit where traffic starts, nodes
  * entering and leaving the window, and code events surfacing on a node.
  *
  * Everything is a state change caused by real traffic, never ambient
  * (DESIGN.md, Console > Motion): it starts when an event arrives and ends a
- * second or two later. Positions are a pure function of the clock, so the
- * motion is the same at every frame rate and under a fake clock. With
- * prefers-reduced-motion nothing travels or fades; the line lights instead.
+ * second or two later, and is a pure function of the clock, so it is the
+ * same at every frame rate and under a fake clock. Nothing travels along a
+ * line: the line and the node where traffic started light up. With
+ * prefers-reduced-motion nodes also appear and leave without fading.
  */
 
 export type FleetMessageKind =
   'request' | 'response' | 'tool' | 'approval' | 'decision' | 'code';
-
-/** One message in flight from `from` to `to` (map node ids). */
-export interface FleetParticle {
-  id: number;
-  from: string;
-  to: string;
-  kind: FleetMessageKind;
-  label: string;
-  start: number;
-  duration: number;
-}
 
 /** What one realtime message sends where; `delay` staggers a reply. */
 export interface FleetMessage {
@@ -41,139 +30,84 @@ export interface FleetMessage {
   delay?: number;
 }
 
-export interface FleetParticleOptions {
-  /** At most this many messages in flight; extra ones are dropped. */
-  max?: number;
-  /** At most one message per line per this interval. */
-  perLineMs?: number;
-  /** Travel time of one message. */
-  durationMs?: number;
+/** A node lit because traffic just started there. */
+export interface FleetLight {
+  node: string;
+  kind: FleetMessageKind;
+  label: string;
+  start: number;
+  until: number;
 }
 
-/** Ease in and out, so a message leaves and lands gently. */
-const ease = (t: number): number =>
-  t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-
 /**
- * Messages in flight, capped and throttled so a busy fleet stays readable:
- * a line carries at most one message per `perLineMs`, and no more than `max`
- * travel at once.
+ * Nodes lit by live traffic. A message lights the node it starts from (the
+ * agent or flow that sent a request, the model that answered, the person
+ * who decided) for `holdMs`; the line it travels lights through the
+ * activity tracker. Nothing moves: a light is a state change. Capped, so a
+ * busy fleet keeps the stalest lights dark.
  */
-export class FleetParticles {
-  private items: FleetParticle[] = [];
-  private lastOnLine = new Map<string, number>();
-  private next = 1;
-  readonly max: number;
-  readonly perLineMs: number;
-  readonly durationMs: number;
+export class FleetLights {
+  private items = new Map<string, FleetLight>();
+  private shown = '';
 
-  constructor(options: FleetParticleOptions = {}) {
-    this.max = options.max ?? 24;
-    this.perLineMs = options.perLineMs ?? 400;
-    this.durationMs = options.durationMs ?? 1400;
-  }
+  constructor(
+    readonly holdMs = 1600,
+    readonly max = 16
+  ) {}
 
-  /** Queue one message; false when the cap or the line throttle drops it. */
-  spawn(message: FleetMessage, now: number): boolean {
+  /** Light the origin of `message`, after its delay. */
+  light(message: FleetMessage, now: number): void {
     const start = now + (message.delay ?? 0);
-    this.prune(now);
-    if (this.items.length >= this.max) return false;
-    const line = `${message.from}>${message.to}`;
-    const last = this.lastOnLine.get(line);
-    if (last !== undefined && start - last < this.perLineMs) return false;
-    this.lastOnLine.set(line, start);
-    this.items.push({
-      id: this.next++,
-      from: message.from,
-      to: message.to,
+    const current = this.items.get(message.from);
+    this.items.delete(message.from);
+    this.items.set(message.from, {
+      node: message.from,
       kind: message.kind,
       label: message.label,
-      start,
-      duration: this.durationMs,
+      start:
+        current && current.start <= start && current.until > start
+          ? current.start
+          : start,
+      until: start + this.holdMs,
     });
-    return true;
+    while (this.items.size > this.max)
+      this.items.delete(this.items.keys().next().value as string);
   }
 
-  /** Drop what has landed. True when anything changed. */
-  prune(now: number): boolean {
-    const before = this.items.length;
-    this.items = this.items.filter((item) => now < item.start + item.duration);
-    for (const [line, at] of this.lastOnLine)
-      if (now - at > this.perLineMs * 4) this.lastOnLine.delete(line);
-    return this.items.length !== before;
+  /** The light on `node` at `now`, if any. */
+  at(node: string, now: number): FleetLight | undefined {
+    const item = this.items.get(node);
+    return item && item.start <= now && now < item.until ? item : undefined;
   }
 
-  /** Everything queued, including messages whose delay has not run out. */
-  get all(): readonly FleetParticle[] {
-    return this.items;
+  /** Lit nodes at `now`. */
+  active(now: number): FleetLight[] {
+    return [...this.items.values()].filter(
+      (item) => item.start <= now && now < item.until
+    );
+  }
+
+  /** Drop expired lights; true when what is lit changed since last asked. */
+  changed(now: number): boolean {
+    for (const [id, item] of this.items)
+      if (item.until <= now) this.items.delete(id);
+    const key = this.active(now)
+      .map((item) => `${item.node}:${item.kind}`)
+      .sort()
+      .join('|');
+    const moved = key !== this.shown;
+    this.shown = key;
+    return moved;
   }
 
   get size(): number {
-    return this.items.length;
+    return this.items.size;
   }
 
   clear(): void {
-    this.items = [];
-    this.lastOnLine.clear();
+    this.items.clear();
+    this.shown = '';
   }
-}
-
-/** Progress 0..1 of a message at `now`, eased; null before it leaves. */
-export function particleProgress(
-  particle: FleetParticle,
-  now: number
-): number | null {
-  const t = (now - particle.start) / particle.duration;
-  if (t < 0 || t >= 1) return null;
-  return ease(t);
-}
-
-export interface Point {
-  x: number;
-  y: number;
-}
-
-/** The cubic between two node boxes, edge to edge, as the map draws lines. */
-export function curveBetween(
-  a: FleetMapPosition,
-  b: FleetMapPosition
-): [Point, Point, Point, Point] {
-  const ay = a.y + a.h / 2;
-  const by = b.y + b.h / 2;
-  if (Math.abs(a.x - b.x) < 40) {
-    const x = Math.max(a.x + a.w, b.x + b.w) + 36;
-    return [
-      { x: a.x + a.w, y: ay },
-      { x, y: ay },
-      { x, y: by },
-      { x: b.x + b.w, y: by },
-    ];
-  }
-  const leftToRight = a.x <= b.x;
-  const x1 = leftToRight ? a.x + a.w : a.x;
-  const x2 = leftToRight ? b.x : b.x + b.w;
-  const mid = (x1 + x2) / 2;
-  return [
-    { x: x1, y: ay },
-    { x: mid, y: ay },
-    { x: mid, y: by },
-    { x: x2, y: by },
-  ];
-}
-
-export function pointOnCurve(
-  [p0, p1, p2, p3]: [Point, Point, Point, Point],
-  t: number
-): Point {
-  const u = 1 - t;
-  const a = u * u * u;
-  const b = 3 * u * u * t;
-  const c = 3 * u * t * t;
-  const d = t * t * t;
-  return {
-    x: a * p0.x + b * p1.x + c * p2.x + d * p3.x,
-    y: a * p0.y + b * p1.y + c * p2.y + d * p3.y,
-  };
 }
 
 const text = (value: unknown): string =>
