@@ -89,14 +89,17 @@ func postSessionEvent(cred permissionHookCredential, sessionID, hookEventName st
 }
 
 // startSessionEvent posts the event in the background and returns a wait
-// function, so the event never adds to the note pull's latency.
+// function, so the event never adds to the note pull's latency. A failure is
+// logged by the wait function, on the caller's goroutine, so the hook's
+// stderr is never written from two goroutines at once.
 func startSessionEvent(cred permissionHookCredential, sessionID, hookEventName string, errOut io.Writer, label string) func() {
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
-		if err := postSessionEvent(cred, sessionID, hookEventName); err != nil {
+		done <- postSessionEvent(cred, sessionID, hookEventName)
+	}()
+	return func() {
+		if err := <-done; err != nil {
 			fmt.Fprintf(errOut, "preloop %s hook: could not record the event: %v\n", label, err)
 		}
-	}()
-	return func() { <-done }
+	}
 }
