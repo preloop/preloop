@@ -15,6 +15,7 @@ Preloop is one self-hostable service that sits between your AI agents and everyt
 - **MCP firewall.** Allow, deny, or require approval on any tool call. Optional [delegated grant introspection](docs/guide/grant-introspection.md) checks upstream bearer grants and required scopes before policy matching.
 - **AI model gateway.** OpenAI-, Anthropic- and Gemini-compatible ingress, with budgets, allowed-model lists, token accounting, and attribution.
 - **Policy-as-code with human approvals.** YAML plus CEL. Approve from mobile, watch, Slack, Mattermost, email, or the CLI.
+- **Users and teams.** Invite colleagues, assign admin/member roles, and organize teams in Preloop (OSS). Each user can connect devices, runners and agents.
 - **Runtime session observability.** One timeline per session: tool calls, model calls, policy, approvals, spend, outcomes.
 
 Onboard existing agents with one command. Talk to long-running ones from the console, phone, or watch. Deploy event-driven automations when GitHub, GitLab, Bitbucket Cloud, Jira, or a webhook fires. Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
@@ -219,15 +220,19 @@ Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop 
 
 Cloud is managed hosting. Cloud and Enterprise include support plans. Cloud billing owners can compare the available usage from the previous three completed months in Account settings before requesting a plan-change quote. Missing history is labeled explicitly; a change requires confirmation of its price, limits and effective date. Cloud plan limits do not apply to the open-source self-hosted edition.
 
-Governance itself is open source: every model provider, flows, private runners, session search, operator notes, single-approver workflows and budgets scoped to the account, a flow, an API key or a managed agent all ship in this repository. What is commercial is the organizational layer on top of them: more than one approver, quorum, escalations, budgets scoped to a user or a team, budget notification routing, and users, teams and RBAC on one account. Cloud usage allowances and hosted credits are a separate thing from governance budgets.
+Governance itself is open source: every model provider, flows, private runners, session search, operator notes, single-approver workflows and budgets scoped to the account, a flow, an API key or a managed agent all ship in this repository. What is commercial is the organizational layer on top of them: more than one approver, quorum, escalations, budgets scoped to a user or a team, budget notification routing, custom roles, fine-grained RBAC/ABAC, resource access rules and sharing, subaccounts and pooled billing, SSO/SAML/SCIM, fleet findings, governance reviews, advanced reporting and audit export/retention. Cloud usage allowances and hosted credits are a separate thing from governance budgets.
 
-| Feature | Open Source | Cloud / Enterprise |
+| Feature | Preloop (OSS) | Preloop Cloud / Preloop Enterprise |
 |---|:---:|:---:|
-| Users, teams, and RBAC on one account | No | Yes |
+| Multiple users, invitations, admin/member roles, teams and membership | Yes | Yes |
+| Per-user devices, runners and agents; basic approvals and usage views | Yes | Yes |
+| Custom roles, fine-grained RBAC/ABAC, resource access rules and sharing | No | Yes |
+| Subaccounts, pooled billing, SSO/SAML/SCIM, fleet findings | No | Yes |
+| Governance reviews, advanced reporting, audit export/retention | No | Yes |
 | Budgets scoped to a user or a team, budget notification routing | No | Yes |
 | Multi-approver routing, quorum, escalations | No | Yes |
 
-A self-hosted OSS instance is one operator per account. Public signup, if left on, creates a separate account, not a teammate. Invitations, users, teams, and permission roles ship with Cloud and Enterprise.
+Preloop (OSS) supports multiple users on one account. Admins invite colleagues and manage teams; members have basic operation and usage access without user, role or team administration. Public signup, if enabled, creates a separate account. Preloop Cloud and Preloop Enterprise add advanced organizational controls through plugins.
 
 Enterprise licensing: sales@preloop.ai.
 

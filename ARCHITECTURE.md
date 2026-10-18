@@ -575,10 +575,52 @@ the allowance when supported. Before adding a system alias, operators can run
 The lookup exposes no account identifiers and does not change model routing.
 
 
+### Users, teams and edition overlays
+
+Preloop (OSS) owns user, invitation and team CRUD in
+`preloop.api.endpoints.users`, `invitations` and `teams`. Models, schemas and
+CRUD remain in `preloop.models`. Core registers these routers once, including
+the unauthenticated invitation inspection/acceptance routes. Blocking CRUD
+handlers use FastAPI's synchronous thread-pool dispatch. User and team
+management and basic role capability flags are present without commercial
+plugins, including with `DISABLE_PROPRIETARY_PLUGINS=true`.
+
+The system `admin` and `member` roles are available in Preloop (OSS). Existing
+`owner` assignments retain account ownership and only owners can grant that
+role. Removing an owner or primary user also requires ownership; bulk operations
+report denied targets as skipped. New OSS colleagues default to member. The core permission decorator
+checks the seeded permission matrix when advanced RBAC is absent; member
+permissions exclude user, role and team administration and the administrative
+user directory. Invitation token lists require administrative user visibility.
+Controllers validate account ownership before reading or mutating users, teams, invitations or role assignments. The role
+selector includes only basic system roles in OSS and never another account's
+custom roles.
+
+`preloop.services.multiuser` resolves optional services through PluginManager:
+`multiuser_seat_gate`, `multiuser_billing_service`, `multiuser_membership` and
+`multiuser_advanced_roles`. Moved controllers import no proprietary packages.
+The RBAC and account hierarchy plugins in Preloop Cloud and Preloop Enterprise
+supply seat policies, subscription housekeeping, canonical membership linking
+and advanced role validation. Invitation context includes the invitee email so
+the overlay can recognize an existing seat across its account tree. They
+register only their additional routes,
+including team role inheritance. Basic team CRUD is independent of advanced
+RBAC entitlements.
+
+Preloop Cloud and Preloop Enterprise retain custom roles, fine-grained
+RBAC/ABAC, resource rules and sharing, team budgets, subaccount hierarchy,
+pooled billing, SSO/SAML/SCIM, fleet findings, multi-approver/escalation
+workflows, weekly governance review, advanced reporting and audit
+export/retention. The existing console capability and upgrade affordances
+continue to gate those features. Per-user devices/runners/agents, basic
+approvals and basic usage views remain in core.
+
+
 ### Console edit permissions
 
 Edit controls use the cached user profile with three distinct states: a null
-permission list preserves OSS behavior, an RBAC list grants only named actions,
+permission list represents explicitly disabled permission checks, a role
+permission list grants only named actions in every edition,
 and an unresolved or failed profile disables edits. Budget components also accept
 `readOnly` to display limits without add/edit/delete actions. Models use separate
 create/edit/delete grants; user actions use `manage_users`, invitations use

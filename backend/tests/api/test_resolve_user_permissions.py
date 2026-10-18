@@ -1,54 +1,48 @@
-"""Unit tests for optional RBAC permission resolution on /users/me."""
+"""Profile permissions enforce basic roles and preserve commercial overlays."""
 
-import sys
-from types import ModuleType
 from unittest.mock import MagicMock
+
+import pytest
 
 from preloop.api.auth import router as auth_router
 from preloop.config import settings
+from preloop.utils import permissions
 
-_RBAC_PERMS_MOD = "preloop.plugins.proprietary.rbac.permissions"
 
-
-def test_resolve_user_permissions_disable_rbac(monkeypatch):
+def test_resolve_user_permissions_disable_rbac(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "disable_rbac", True)
-    user = MagicMock()
-    db = MagicMock()
-
-    assert auth_router._resolve_user_permissions(user, db) is None
-
-
-def test_resolve_user_permissions_import_error(monkeypatch):
-    """Broken/missing RBAC deps must soft-fail (ImportError, not only ModuleNotFound)."""
-    monkeypatch.setattr(settings, "disable_rbac", False)
-    # None in sys.modules makes import raise ModuleNotFoundError (ImportError subclass).
-    monkeypatch.setitem(sys.modules, _RBAC_PERMS_MOD, None)
-
     assert auth_router._resolve_user_permissions(MagicMock(), MagicMock()) is None
 
 
-def test_resolve_user_permissions_db_failure_soft_fails(monkeypatch):
+def test_resolve_user_permissions_core(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "disable_rbac", False)
-
-    fake_module = ModuleType(_RBAC_PERMS_MOD)
-
-    def boom(user, db):
-        raise RuntimeError("db unavailable")
-
-    fake_module.get_user_permissions = boom  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, _RBAC_PERMS_MOD, fake_module)
-
-    assert auth_router._resolve_user_permissions(MagicMock(), MagicMock()) is None
-
-
-def test_resolve_user_permissions_success(monkeypatch):
-    monkeypatch.setattr(settings, "disable_rbac", False)
-
-    fake_module = ModuleType(_RBAC_PERMS_MOD)
-    fake_module.get_user_permissions = MagicMock(return_value=["view_issues"])  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, _RBAC_PERMS_MOD, fake_module)
-
-    user = MagicMock()
-    db = MagicMock()
+    resolver = MagicMock(return_value=["view_issues"])
+    monkeypatch.setattr(permissions, "user_permission_names", resolver)
+    user, db = MagicMock(), MagicMock()
     assert auth_router._resolve_user_permissions(user, db) == ["view_issues"]
-    fake_module.get_user_permissions.assert_called_once_with(user, db)
+    resolver.assert_called_once_with(db, user)
+
+
+def test_resolve_user_permissions_failure_denies_edits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "disable_rbac", False)
+    monkeypatch.setattr(
+        permissions,
+        "user_permission_names",
+        MagicMock(side_effect=RuntimeError("unavailable")),
+    )
+    assert auth_router._resolve_user_permissions(MagicMock(), MagicMock()) == []
+
+
+def test_resolve_user_permissions_overlay(monkeypatch: pytest.MonkeyPatch) -> None:
+    from preloop.plugins import base
+
+    monkeypatch.setattr(settings, "disable_rbac", False)
+    manager = MagicMock()
+    resolver = MagicMock(return_value=["view_issues"])
+    manager.get_service.return_value = resolver
+    monkeypatch.setattr(base, "get_plugin_manager", lambda: manager)
+    user, db = MagicMock(), MagicMock()
+    assert auth_router._resolve_user_permissions(user, db) == ["view_issues"]
+    resolver.assert_called_once_with(user, db)

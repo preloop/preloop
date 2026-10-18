@@ -220,7 +220,7 @@ rather than erase machine markers and turn a CI key into an owner key.
 - Plugin discovery via module paths or file system paths
 - Lifecycle hooks: `on_startup()` and `on_shutdown()`
 
-> **Enterprise Features**: Preloop Cloud and Preloop Enterprise add RBAC with 7 system roles, fine-grained permissions, team management, and comprehensive audit logging. Contact sales@preloop.ai for more information.
+> **Enterprise Features**: Preloop (OSS) includes users, invitations, admin/member roles and teams with enforced permissions. Preloop Cloud and Preloop Enterprise add custom roles, fine-grained RBAC/ABAC and comprehensive audit logging. Contact sales@preloop.ai for more information.
 
 - [x] All API requests authenticated via JWT tokens
 - [x] Multi-tenant data isolation (all queries scoped by account_id)
@@ -235,7 +235,7 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] Per-login CLI session revocation (`cli_session`, JWT `sid`/`jti`)
 - [ ] Regular security audits and dependency updates
 
-> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add RBAC and comprehensive audit logging. Contact sales@preloop.ai for more information.
+> **Enterprise Security**: Preloop Cloud and Preloop Enterprise add fine-grained RBAC/ABAC, audit export/retention and comprehensive audit logging. Contact sales@preloop.ai for more information.
 
 ## Redaction Policy
 

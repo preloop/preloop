@@ -35,8 +35,12 @@ async def list_roles(
     """
 
     def _query() -> dict:
-        # Get all roles (roles are global, not account-specific)
-        roles = crud_role.get_multi(db=db, limit=100)
+        # Keep custom role metadata within its owning account.
+        from preloop.services.multiuser import advanced_roles_enabled
+
+        roles = crud_role.get_available_roles(
+            db, account_id=current_user.account_id, advanced=advanced_roles_enabled()
+        )
 
         result = []
         for role in roles:

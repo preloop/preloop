@@ -1,9 +1,9 @@
-"""Permission utilities with OSS fallback.
+"""Permission utilities with basic OSS enforcement.
 
-When the proprietary RBAC plugin is unavailable, this module exposes a no-op
-decorator. When it is available, the exported decorator preserves the wrapped
-function's sync/async nature so FastAPI can keep dispatching sync handlers via
-its threadpool.
+When the proprietary RBAC plugin is unavailable, this module enforces the
+seeded account role permissions. When it is available, the exported decorator
+preserves the wrapped function's sync/async nature so FastAPI can dispatch
+sync handlers via its threadpool.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
+import os
 import threading
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -24,6 +25,12 @@ if TYPE_CHECKING:
     from preloop.models.models.user import User
 
 try:
+    if os.getenv("DISABLE_PROPRIETARY_PLUGINS", "false").lower() in {
+        "true",
+        "1",
+        "yes",
+    }:
+        raise ImportError("Proprietary plugins disabled")
     from preloop.plugins.proprietary.rbac.permissions import (
         require_permission as _plugin_require_permission,
     )
@@ -138,17 +145,55 @@ def _with_authorizer(func, permission_name: str):
     return authorized_sync
 
 
+def _with_core_permission(
+    func: Callable[..., Any], permission_name: str
+) -> Callable[..., Any]:
+    """Enforce basic account permissions when the advanced RBAC overlay is absent."""
+    signature = inspect.signature(func)
+
+    def check(args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        if not _rbac_checks_enabled():
+            return
+        bound = signature.bind_partial(*args, **kwargs)
+        dependencies = dict(bound.arguments)
+        _ensure_permission_dependencies(**dependencies)
+        user = dependencies["current_user"]
+        if not getattr(user, "is_active", False):
+            raise HTTPException(403, "Inactive membership")
+        ensure_permission_in_oss(dependencies["db"], user, permission_name)
+
+    if inspect.iscoroutinefunction(func):
+
+        @functools.wraps(func)
+        async def asynchronous(*args: Any, **kwargs: Any) -> Any:
+            from preloop.api.loop_safety import run_db_off_loop
+
+            await run_db_off_loop(lambda: check(args, kwargs))
+            return await func(*args, **kwargs)
+
+        return asynchronous
+
+    @functools.wraps(func)
+    def synchronous(*args: Any, **kwargs: Any) -> Any:
+        check(args, kwargs)
+        return func(*args, **kwargs)
+
+    return synchronous
+
+
 def _require_human_permission(permission_name: str):
     """Return a decorator that preserves sync/async behavior.
 
-    Without the RBAC plugin the endpoint is only wrapped for the account
-    authorizer (H4). With it, RBAC runs first as the ceiling, then the
-    authorizer, then the endpoint.
+    Core role checks run before the account authorizer (H4). With the RBAC
+    overlay, its advanced checks replace the core check before the authorizer
+    and endpoint run.
     """
 
     def decorator(func):
         if _plugin_require_permission is None:
-            return _with_authorizer(func, permission_name)
+            return _with_core_permission(
+                _with_authorizer(func, permission_name), permission_name
+            )
 
         plugin_wrapped = _plugin_require_permission(permission_name)(
             _with_authorizer(func, permission_name)
@@ -387,10 +432,9 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
 def ensure_permission_in_oss(db, current_user, permission_name: str) -> None:
     """Enforce ``permission_name`` on builds where the RBAC plugin is absent.
 
-    :func:`require_permission` is a no-op in OSS builds, which is fine for
-    reads but not for the handful of controls that steer or stop a running
-    agent. This is the OSS half of those: EE returns immediately because the
-    decorator already enforced the permission, and OSS falls back to the
+    The core decorator and controls that steer or stop a running agent use
+    this fallback. EE returns immediately because its decorator already
+    enforced the permission, and OSS falls back to the
     seeded role matrix, with the superuser and the account's primary user
     always allowed so nobody can be locked out of their own account.
 
