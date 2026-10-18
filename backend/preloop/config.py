@@ -415,8 +415,8 @@ class Settings(BaseSettings):
     disable_rbac: bool = Field(
         False,
         description=(
-            "Disable proprietary RBAC permission checks and plugin loading. "
-            "Set via DISABLE_RBAC=true for OSS / unrestricted access."
+            "Disable core and advanced RBAC permission checks and RBAC plugin loading. "
+            "Set via DISABLE_RBAC=true only for unrestricted administrative access."
         ),
     )
     api_key_scope_enforcement: Literal["enforce", "audit", "off"] = Field(

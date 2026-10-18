@@ -317,7 +317,14 @@ class PluginManager:
         only provides internal functionality (argument evaluator) and is not
         a user-facing enterprise plugin.
         """
-        features = {"plugins": [], "features": {}}
+        features = {
+            "plugins": [],
+            "features": {
+                "user_management": True,
+                "team_management": True,
+                "basic_roles": True,
+            },
+        }
 
         for _plugin_name, plugin in self._plugins.items():
             # Skip builtin plugin from the list - it's not an enterprise plugin

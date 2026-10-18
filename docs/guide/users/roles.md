@@ -1,11 +1,11 @@
 # Roles & Permissions
 
-Editions: Cloud, Enterprise. OSS enforces roles; managing them is Cloud and Enterprise only.
+Editions: Preloop (OSS), Preloop Cloud, Preloop Enterprise.
 
-Assign roles to users and teams to control what they can do in your Preloop account. This page documents the 7 system roles, what each one permits, and how permissions combine.
+Assign roles to users and teams to control what they can do in your Preloop account. Preloop (OSS) includes admin/member assignments and preserves existing account ownership. The additional system roles and permission composition below are advanced controls in Preloop Cloud and Preloop Enterprise.
 
 !!! info "Editions"
-    The open-source core **enforces** permissions and seeds the 7 system roles; it exposes `GET /api/v1/roles` to list them. The user, team, and role **management** UI and APIs (inviting users, assigning roles, managing teams) are part of the Enterprise RBAC plugin, available in Preloop Cloud and Preloop Enterprise.
+    Preloop (OSS) includes users, invitations, admin/member roles and team membership. Members can operate their agents, use basic approvals and view usage; they cannot administer users, roles or teams. New colleagues default to member. Custom roles, fine-grained permissions and team role inheritance require Preloop Cloud or Preloop Enterprise.
 
 ---
 
@@ -31,7 +31,7 @@ Assign roles to users and teams to control what they can do in your Preloop acco
 
 ## System Roles
 
-Preloop provides **7 system roles** that cover common access patterns. These roles are available to all accounts and cannot be modified.
+Preloop (OSS) exposes **admin** and **member**, together with the existing **owner** role for account ownership. Members have basic operation and usage access without administrative user visibility or user/role/team management. Preloop Cloud and Preloop Enterprise additionally expose the advanced system roles below and account-specific custom roles.
 
 ### 1. Owner
 

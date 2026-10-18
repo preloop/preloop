@@ -29,6 +29,7 @@ describe('TeamManagementView', () => {
       featureEnabled?: boolean;
       teams?: unknown[];
       teamsFail?: boolean;
+      advancedRoles?: boolean;
     } = {}
   ) {
     const featureEnabled = opts.featureEnabled !== false;
@@ -47,7 +48,10 @@ describe('TeamManagementView', () => {
         if (url.includes('/api/v1/features')) {
           return json({
             plugins: [],
-            features: { user_management: featureEnabled },
+            features: {
+              user_management: featureEnabled,
+              rbac: opts.advancedRoles === true,
+            },
           });
         }
 
@@ -158,6 +162,45 @@ describe('TeamManagementView', () => {
     create.click();
     await element.updateComplete;
     expect((element as any).isCreateModalOpen).to.equal(true);
+  });
+
+  it('offers an upgrade for team role inheritance while basic teams work in OSS', async () => {
+    fetchStub = createFetchStub({ teams: [sampleTeam] });
+    const element = await fixture<TeamManagementView>(
+      html`<team-management-view></team-management-view>`
+    );
+    await waitUntil(() => (element as any).teams?.length === 1);
+    await waitUntil(() =>
+      (element as any).editPermissions.allows('manage_teams')
+    );
+    const upgrade = sinon.spy();
+    window.addEventListener('show-upgrade-modal', upgrade);
+    try {
+      await element.openRoleModal(sampleTeam as any);
+      expect(upgrade).to.have.been.calledOnce;
+      expect(upgrade.firstCall.args[0].detail.feature).to.equal('rbac');
+      expect((element as any).isRoleModalOpen).to.equal(false);
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/teams/team-1/roles'))
+      ).to.equal(false);
+    } finally {
+      window.removeEventListener('show-upgrade-modal', upgrade);
+    }
+  });
+
+  it('opens team role inheritance when the advanced capability is enabled', async () => {
+    fetchStub = createFetchStub({ teams: [sampleTeam], advancedRoles: true });
+    const element = await fixture<TeamManagementView>(
+      html`<team-management-view></team-management-view>`
+    );
+    await waitUntil(() => (element as any).teams?.length === 1);
+    await waitUntil(() =>
+      (element as any).editPermissions.allows('manage_teams')
+    );
+    await element.openRoleModal(sampleTeam as any);
+    expect((element as any).isRoleModalOpen).to.equal(true);
   });
 
   it('shows an error when team loading fails', async () => {

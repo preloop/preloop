@@ -1,6 +1,6 @@
 # Teams In Approval Workflows
 
-Editions: Cloud, Enterprise.
+Editions: Preloop (OSS) for team membership; Preloop Cloud and Preloop Enterprise for team approval routing.
 
 Teams in Preloop are reusable groups of users. They matter in three places:
 
@@ -8,7 +8,7 @@ Teams in Preloop are reusable groups of users. They matter in three places:
 - **inherited RBAC roles** for users
 - **approval workflow routing** when a workflow should notify a group instead of a single person
 
-Teams, team-based workflows and multi-user quorum behavior need Cloud or Enterprise. RBAC and team management ship as a plugin; the open-source server enforces the resulting permissions. In OSS a workflow has one approver and **Approvals Required** stays at 1.
+Preloop (OSS) includes teams and membership management. Team role inheritance, team-based approval routing, multi-approver quorum and escalations require Preloop Cloud or Preloop Enterprise. In Preloop (OSS), a basic workflow has one approver and **Approvals Required** stays at 1.
 
 
 ## How The Data Model Fits Together

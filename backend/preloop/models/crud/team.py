@@ -52,6 +52,19 @@ class CRUDTeam(CRUDBase[Team]):
             .all()
         )
 
+    def count_by_account(self, db: Session, *, account_id: uuid.UUID) -> int:
+        """Count teams belonging to one account."""
+        return db.query(Team).filter(Team.account_id == account_id).count()
+
+    def update_member(
+        self, db: Session, *, membership: TeamMembership, role: Optional[str]
+    ) -> TeamMembership:
+        """Update a team member's label without changing account privileges."""
+        membership.role = role
+        db.commit()
+        db.refresh(membership)
+        return membership
+
     def get_members(
         self, db: Session, *, team_id: uuid.UUID, skip: int = 0, limit: int = 100
     ) -> List[User]:

@@ -21,8 +21,7 @@ Rules this page follows:
   under **Polarity**.
 - Preloop is not a certification, a conformity assessment, or legal advice.
 
-Edition labels used below: **OSS** is the Apache-2.0 repository. **Cloud** and **Enterprise** add users,
-teams, RBAC, multi-approver workflows and AI-driven approvals. Unless stated
+Edition labels used below: **Preloop (OSS)** is the Apache-2.0 repository, including users, invitations, basic roles and teams. **Preloop Cloud** and **Preloop Enterprise** add custom roles, fine-grained RBAC/ABAC, multi-approver workflows and AI-driven approvals. Unless stated
 otherwise, a control below ships in OSS.
 
 <!-- MAINTAINERS: do not reword the "Mechanism" paragraphs casually. External graders
@@ -74,7 +73,7 @@ model cannot be used by another agent. Standard MCP clients authenticate with OA
 2.1 and PKCE.
 
 Default posture: account-level catalogue applies until a subject is scoped. Edition:
-OSS; RBAC for humans is Cloud/Enterprise. Code:
+Preloop (OSS) includes basic admin/member enforcement; fine-grained human RBAC is available in Preloop Cloud and Preloop Enterprise. Code:
 `backend/preloop/services/subject_governance.py`, `backend/preloop/services/model_gateway_auth.py`,
 `backend/preloop/services/secret_service.py`. Docs: [Subject-Scoped Governance](../guide/concepts/subject-scoped-governance.md),
 [AI Model Gateway](../guide/concepts/model-gateway.md).

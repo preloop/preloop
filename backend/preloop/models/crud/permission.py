@@ -75,6 +75,20 @@ class CRUDPermission(CRUDBase[models.Permission]):
 class CRUDRole(CRUDBase[models.Role]):
     """CRUD operations for Role model."""
 
+    def get_available_roles(
+        self, db: Session, *, account_id: uuid.UUID, advanced: bool = False
+    ) -> List[models.Role]:
+        """List system/basic roles and, with an overlay, this account's roles."""
+        system = and_(
+            models.Role.account_id.is_(None), models.Role.is_system_role.is_(True)
+        )
+        if not advanced:
+            system = and_(system, models.Role.name.in_(["owner", "admin", "member"]))
+        scope = (
+            or_(system, models.Role.account_id == account_id) if advanced else system
+        )
+        return db.query(models.Role).filter(scope).order_by(models.Role.name).all()
+
     def get_effective_permissions(
         self, db: Session, *, user_id: uuid.UUID, account_id: uuid.UUID
     ) -> set[str]:
