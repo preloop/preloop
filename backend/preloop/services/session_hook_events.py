@@ -148,7 +148,8 @@ def record_session_event(
 ) -> Optional[RuntimeSessionActivity]:
     """Write a ``turn_end`` or ``session_end`` row for a resolved session.
 
-    ``SessionEnd`` also stamps ``ended_at`` once; it never re-opens a session.
+    ``SessionEnd`` stamps ``ended_at`` once and records ``session_end`` only
+    on the call that ended the session; it never re-opens one.
 
     Args:
         db: Database session.
@@ -187,6 +188,18 @@ def record_session_event(
         return activity
     if hook_event_name not in SESSION_END_HOOK_EVENTS:
         raise ValueError(f"Unsupported hook event: {hook_event_name}")
+    # End first: only the call that actually ends the session records it,
+    # so a repeated SessionEnd writes and announces nothing.
+    _, ended = crud_runtime_session.mark_ended_by_hook(
+        db,
+        account_id=session.account_id,
+        runtime_session_id=session.id,
+        ended_at=now,
+        commit=False,
+    )
+    if not ended:
+        db.commit()
+        return None
     activity = crud_runtime_session_activity.log_hook_turn_event(
         db,
         account_id=session.account_id,
@@ -202,17 +215,9 @@ def record_session_event(
         ),
         commit=False,
     )
-    _, ended = crud_runtime_session.mark_ended_by_hook(
-        db,
-        account_id=session.account_id,
-        runtime_session_id=session.id,
-        ended_at=now,
-        commit=False,
-    )
-    if ended:
-        from preloop.services.event_webhooks.emitters import emit_session_ended
+    from preloop.services.event_webhooks.emitters import emit_session_ended
 
-        emit_session_ended(db, session, reason="session_end")
+    emit_session_ended(db, session, reason="session_end")
     db.commit()
     if activity is not None:
         db.refresh(activity)

@@ -225,6 +225,8 @@ def test_session_end_sets_ended_at_once_and_never_reopens(
     db_session.expire_all()
     session = db_session.get(RuntimeSession, started["runtime_session_id"])
     assert session.ended_at == first_end
+    assert len(_rows(db_session, session.id, "session_end")) == 1
+    assert [e["type"] for e in emitted] == ["runtime_session_hook_ended"]
 
 
 def test_crud_dedupe_is_per_kind_and_window(
