@@ -188,8 +188,41 @@ def record_session_event(
         return activity
     if hook_event_name not in SESSION_END_HOOK_EVENTS:
         raise ValueError(f"Unsupported hook event: {hook_event_name}")
-    # End first: only the call that actually ends the session records it,
-    # so a repeated SessionEnd writes and announces nothing.
+    activity, _ = end_session_by_hook(
+        db,
+        session=session,
+        api_key_id=api_key_id,
+        actor_user_id=actor_user_id,
+        source=source,
+        hook_event_name=hook_event_name,
+        managed_agent_id=managed_agent_id,
+    )
+    return activity
+
+
+def end_session_by_hook(
+    db: Session,
+    *,
+    session: RuntimeSession,
+    api_key_id: Any,
+    actor_user_id: Any,
+    source: Optional[str],
+    hook_event_name: str = "SessionEnd",
+    managed_agent_id: Any = None,
+    reason: str = "session_end",
+) -> tuple[Optional[RuntimeSessionActivity], bool]:
+    """End a session from a SessionEnd hook, exactly once across routes.
+
+    Both ``/agents/session-event`` and the notes ``/agents/session-end``
+    route call this; the CLI posts them together. The end is one conditional
+    UPDATE, and only the call that ended the session writes ``session_end``,
+    enqueues ``session.ended`` and emits ``runtime_session_hook_ended``.
+
+    Returns:
+        The ``session_end`` row (None when another call ended the session)
+        and whether this call ended it.
+    """
+    now = datetime.now(timezone.utc)
     _, ended = crud_runtime_session.mark_ended_by_hook(
         db,
         account_id=session.account_id,
@@ -199,7 +232,7 @@ def record_session_event(
     )
     if not ended:
         db.commit()
-        return None
+        return None, False
     activity = crud_runtime_session_activity.log_hook_turn_event(
         db,
         account_id=session.account_id,
@@ -217,9 +250,10 @@ def record_session_event(
     )
     from preloop.services.event_webhooks.emitters import emit_session_ended
 
-    emit_session_ended(db, session, reason="session_end")
+    db.refresh(session)
+    emit_session_ended(db, session, reason=reason)
     db.commit()
     if activity is not None:
         db.refresh(activity)
         _emit(activity, session, EVENT_SESSION_ENDED, actor_user_id)
-    return activity
+    return activity, True

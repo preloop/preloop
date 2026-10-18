@@ -33,10 +33,11 @@ def worker_sessions(db_session: Session, monkeypatch: pytest.MonkeyPatch) -> Non
     factory = sessionmaker(
         bind=db_session.connection(), join_transaction_mode="create_savepoint"
     )
-    monkeypatch.setattr(
-        "preloop.api.endpoints.agent_permission.get_session_factory",
-        lambda: factory,
-    )
+    for module in (
+        "preloop.api.endpoints.agent_permission",
+        "preloop.api.endpoints.operator_notes",
+    ):
+        monkeypatch.setattr(f"{module}.get_session_factory", lambda: factory)
 
 
 @pytest.fixture
@@ -320,3 +321,22 @@ def test_mark_ended_by_hook_stamps_only_an_open_session(
         ended_at=first,
     )
     assert missing is None and not ended
+
+
+def test_both_session_end_routes_end_and_record_once(
+    client: Any, db_session: Session, token: str, emitted: list
+) -> None:
+    """The CLI posts /session-end and /session-event together."""
+    started = _start(client, token)
+    for url, body in (
+        ("/api/v1/agents/session-end", {"external_session_id": "ext-1"}),
+        (EVENT_URL, {"session_id": "ext-1", "hook_event_name": "SessionEnd"}),
+        ("/api/v1/agents/session-end", {"external_session_id": "ext-1"}),
+    ):
+        response = client.post(url, json=body, headers=_auth(token))
+        assert response.status_code in (200, 204), response.text
+    db_session.expire_all()
+    session = db_session.get(RuntimeSession, started["runtime_session_id"])
+    assert session.ended_at is not None
+    assert len(_rows(db_session, session.id, "session_end")) == 1
+    assert [e["type"] for e in emitted] == ["runtime_session_hook_ended"]
