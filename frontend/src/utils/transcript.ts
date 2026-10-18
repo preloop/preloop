@@ -66,6 +66,16 @@ export interface TranscriptMessageItem {
   truncated?: boolean;
   failed?: boolean;
   queued?: boolean;
+  /** Set when the operator message is a delivered note. */
+  note?: TranscriptNoteDelivery | null;
+}
+
+/** Who sent a delivered note, and where in the session it landed. */
+export interface TranscriptNoteDelivery {
+  noteId: string | null;
+  authorDisplay: string | null;
+  authorAuthMethod: string | null;
+  turnIndex: number | null;
 }
 
 export interface TranscriptStepGroupItem {
@@ -639,6 +649,7 @@ export function buildConversation(
           timestamp: item.timestamp || null,
           event: null,
           queued: status === 'queued' || status === 'pending',
+          note: noteDelivery(metadata),
         },
       });
       continue;
@@ -734,4 +745,25 @@ export function buildConversation(
   closeSteps();
 
   return { items, stats };
+}
+
+/**
+ * The note behind an operator message row, when it is one.
+ *
+ * Delivery writes `kind: operator_note` with the note id, author and turn on
+ * the timeline row; a command or a talk message has none of them.
+ */
+function noteDelivery(
+  metadata: Record<string, unknown>
+): TranscriptNoteDelivery | null {
+  if (metadata.kind !== 'operator_note') return null;
+  const text = (value: unknown): string | null =>
+    typeof value === 'string' && value.trim() ? value : null;
+  return {
+    noteId: text(metadata.operator_note_id) ?? text(metadata.note_id),
+    authorDisplay: text(metadata.author_display),
+    authorAuthMethod: text(metadata.author_auth_method),
+    turnIndex:
+      typeof metadata.turn_index === 'number' ? metadata.turn_index : null,
+  };
 }

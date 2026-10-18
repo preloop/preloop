@@ -94,6 +94,8 @@ class CRUDFleetFinding:
         if now < row.last_evaluated_at:
             return row, False
         changed = inserted is not None or row.state != state
+        previous_state = None if inserted is not None else row.state
+        evidence_changed = inserted is not None or row.evidence != evidence
         if row.state == "resolved" and state == "open":
             row.opened_at = now
         row.state = state
@@ -101,6 +103,27 @@ class CRUDFleetFinding:
         row.last_evaluated_at = now
         row.evidence, row.limitation = evidence, limitation
         row.device_key, row.user_id = device_key, user_id
+        if changed or evidence_changed:
+            from preloop.models.crud import crud_audit_log
+
+            crud_audit_log.log_action(
+                db,
+                account_id=account_id,
+                action="configuration_change",
+                resource_type="fleet_finding",
+                resource_id=str(row.id),
+                status="success",
+                details={
+                    "rule": rule,
+                    "subject_key": subject_key,
+                    "previous_state": previous_state,
+                    "state": state,
+                    "evidence": evidence,
+                    "limitation": limitation,
+                    "evaluated_at": now.isoformat(),
+                },
+                commit=False,
+            )
         db.flush()
         return row, changed
 
@@ -116,13 +139,20 @@ class CRUDFleetFinding:
         )
 
     def recent_agent_traffic(
-        self, db: Session, *, account_id: UUID, since: datetime
+        self,
+        db: Session,
+        *,
+        account_id: UUID,
+        since: datetime,
+        until: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Return governed gateway/MCP usage, excluding imports and replay."""
         from .api_usage import exclude_replay_usage_condition
 
         # Core usage and audit timestamps are stored as naive UTC.
         since = since.astimezone(UTC).replace(tzinfo=None) if since.tzinfo else since
+        until = until or datetime.now(UTC)
+        until = until.astimezone(UTC).replace(tzinfo=None) if until.tzinfo else until
         usage, agent = models.ApiUsage, models.ManagedAgent
         identity = or_(
             and_(
@@ -141,6 +171,7 @@ class CRUDFleetFinding:
                 agent.account_id == account_id,
                 agent.lifecycle_state != "decommissioned",
                 usage.timestamp >= since,
+                usage.timestamp <= until,
                 usage.action_type == "model_gateway",
                 or_(usage.usage_source.is_(None), usage.usage_source != "imported"),
                 exclude_replay_usage_condition(),
@@ -169,6 +200,7 @@ class CRUDFleetFinding:
                 agent.lifecycle_state != "decommissioned",
                 audit.action == "tool_call",
                 audit.timestamp >= since,
+                audit.timestamp <= until,
                 or_(
                     audit.details["purpose"].astext.is_(None),
                     audit.details["purpose"].astext != "replay_validation",

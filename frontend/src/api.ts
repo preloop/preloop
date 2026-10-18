@@ -37,6 +37,7 @@ import type {
   OperatorNote,
   OperatorNoteCreateRequest,
   OperatorNoteList,
+  OperatorNoteSessionTargets,
   AgentControlVoiceTranscriptRequest,
   ManagedAgentDetailResponse,
   ManagedAgentSummary,
@@ -1231,6 +1232,8 @@ export interface RuntimeSessionListParams extends GatewayUsageSummaryParams {
   status?: 'all' | 'active' | 'ended';
   /** Only sessions holding an available artifact: `any` or one kind. */
   hasArtifacts?: string;
+  /** Managed agent id: only that agent's sessions. */
+  agent?: string;
   limit?: number;
   offset?: number;
 }
@@ -1339,6 +1342,9 @@ function buildRuntimeSessionListQuery(
   }
   if (params.hasArtifacts) {
     queryParams.set('has_artifacts', params.hasArtifacts);
+  }
+  if (params.agent) {
+    queryParams.set('agent', params.agent);
   }
   if (typeof params.limit === 'number') {
     queryParams.set('limit', String(params.limit));
@@ -2713,6 +2719,53 @@ export async function listOperatorNotesPage(params: {
   return { notes, total: payload.total ?? notes.length };
 }
 
+/** Live sessions per page of note targets: the server's upper bound. */
+const NOTE_TARGETS_PAGE = 100;
+/** Pages read before giving up: an agent with 500 live sessions is a bug. */
+const NOTE_TARGETS_MAX_PAGES = 5;
+
+/** Every live session a note can be aimed at, across pages. */
+export async function listAllOperatorNoteSessionTargets(
+  agentId: string
+): Promise<OperatorNoteSessionTargets['sessions']> {
+  const sessions: OperatorNoteSessionTargets['sessions'] = [];
+  for (let page = 0; page < NOTE_TARGETS_MAX_PAGES; page += 1) {
+    const result = await listOperatorNoteSessionTargets(
+      agentId,
+      sessions.length
+    );
+    const rows = result.sessions || [];
+    sessions.push(...rows);
+    if (!rows.length || sessions.length >= (result.total ?? 0)) break;
+  }
+  return sessions;
+}
+
+/**
+ * The agent's live conversations a note can be aimed at, without the
+ * enrollment placeholders the session list also carries.
+ */
+export async function listOperatorNoteSessionTargets(
+  agentId: string,
+  offset = 0
+): Promise<OperatorNoteSessionTargets> {
+  const query = new URLSearchParams({
+    agent_id: agentId,
+    limit: String(NOTE_TARGETS_PAGE),
+    offset: String(offset),
+  });
+  const response = await fetchWithAuth(
+    `/api/v1/operator-notes/session-targets?${query.toString()}`
+  );
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(errorData, 'Failed to load the live sessions')
+    );
+  }
+  return response.json();
+}
+
 /** Withdraw a note that has not been delivered yet. */
 export async function cancelOperatorNote(
   noteId: string
@@ -2949,11 +3002,17 @@ export const SESSION_ACTIVITY_TURNS = 50;
 
 export async function getAccountRuntimeSessionActivityTimeline(
   runtimeSessionId: string,
-  options: { limit?: number } = {}
+  options: { limit?: number; operatorNoteId?: string | null } = {}
 ): Promise<RuntimeSessionActivityListResponse> {
-  const limit = options.limit ?? SESSION_ACTIVITY_TURNS;
+  const query = new URLSearchParams({
+    limit: String(options.limit ?? SESSION_ACTIVITY_TURNS),
+  });
+  // A linked note older than the recent page rides along, so the link lands.
+  if (options.operatorNoteId) {
+    query.set('operator_note_id', options.operatorNoteId);
+  }
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${runtimeSessionId}/activity?limit=${limit}`
+    `/api/v1/runtime-sessions/${runtimeSessionId}/activity?${query.toString()}`
   );
   if (!response.ok) {
     // This is the call that refuses when a session's whole activity sits

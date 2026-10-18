@@ -8,7 +8,10 @@ condition evaluators, and workflow orchestrators.
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from preloop.plugins.attention import AttentionSource
 
 from fastapi import APIRouter
 
@@ -110,6 +113,10 @@ class Plugin(ABC):
             }
         """
         return {}
+
+    def get_attention_sources(self) -> list["AttentionSource"]:
+        """Return permission-scoped async providers for the console inbox."""
+        return []
 
     def get_tasks(self) -> List[Dict[str, Any]]:
         """Return background tasks to register."""
@@ -309,6 +316,14 @@ class PluginManager:
     def list_workflow_orchestrators(self) -> List[str]:
         """List all registered workflow orchestrator types."""
         return list(self._workflow_orchestrators.keys())
+
+    def attention_sources(self) -> list[tuple[str, "AttentionSource"]]:
+        """Return contributions from registered plugins with their namespace."""
+        return [
+            (plugin.metadata.name, source)
+            for plugin in self._plugins.values()
+            for source in plugin.get_attention_sources()
+        ]
 
     def get_enabled_features(self) -> Dict[str, Any]:
         """Get list of enabled features/plugins for frontend consumption.

@@ -47,6 +47,10 @@ class OperatorNoteCreate(BaseModel):
     agent_id: Optional[UUID] = Field(
         None, description="Managed agent to steer, current or next session."
     )
+    next_session: bool = Field(
+        False,
+        description="With agent_id, wait for a session started after this note was sent.",
+    )
     runtime_session_id: Optional[UUID] = Field(
         None, description="One runtime session, and only that session."
     )
@@ -91,6 +95,8 @@ class OperatorNoteCreate(BaseModel):
             raise ValueError("children requires parent_session_id")
         if self.parent_session_id and not self.children:
             raise ValueError("parent_session_id is only valid with children")
+        if self.next_session and self.agent_id is None:
+            raise ValueError("next_session requires agent_id")
         return self
 
 
@@ -118,6 +124,7 @@ class OperatorNoteResponse(BaseModel):
     text: str
     managed_agent_id: Optional[UUID] = None
     runtime_session_id: Optional[UUID] = None
+    next_session: bool = False
     author: OperatorNoteAuthor
     created_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
@@ -138,6 +145,23 @@ class OperatorNoteList(BaseModel):
 
     notes: list[OperatorNoteResponse] = Field(default_factory=list)
     #: Every note matching the filter, across pages.
+    total: int = 0
+
+
+class OperatorNoteSessionTarget(BaseModel):
+    """One live conversation available in the console's note target picker."""
+
+    id: UUID
+    alias: Optional[str] = None
+    session_source_type: str
+    started_at: datetime
+    session_reference: Optional[str] = None
+
+
+class OperatorNoteSessionTargets(BaseModel):
+    """Paged live conversations, excluding enrollment identity placeholders."""
+
+    sessions: list[OperatorNoteSessionTarget] = Field(default_factory=list)
     total: int = 0
 
 

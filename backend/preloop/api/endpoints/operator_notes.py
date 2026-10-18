@@ -31,6 +31,7 @@ from preloop.models import models
 from preloop.models.crud import (
     crud_agent_control_command,
     crud_audit_log,
+    crud_managed_agent,
     crud_runtime_session,
 )
 from preloop.models.db.session import get_db_session, get_session_factory
@@ -44,6 +45,8 @@ from preloop.schemas.operator_notes import (
     OperatorNotePendingRequest,
     OperatorNotePendingResponse,
     OperatorNoteResponse,
+    OperatorNoteSessionTarget,
+    OperatorNoteSessionTargets,
     OperatorSessionEndRequest,
     OperatorSessionEndResponse,
 )
@@ -74,6 +77,8 @@ def _to_response(note: Any) -> OperatorNoteResponse:
         text=note.body or "",
         managed_agent_id=note.managed_agent_id,
         runtime_session_id=note.runtime_session_id,
+        next_session=(note.envelope or {}).get("metadata", {}).get("next_session")
+        is True,
         author=OperatorNoteAuthor(
             user_id=note.created_by_user_id,
             agent_id=getattr(note, "created_by_managed_agent_id", None),
@@ -131,13 +136,14 @@ def _resolve_target(
                     detail="target_ambiguous: name a runtime_session_id",
                 )
             session_id = matches[0].id
-        return operator_notes.resolve_note_target(
+        target_agent_id, target_session_id = operator_notes.resolve_note_target(
             db,
             account_id=account_id,
             agent_id=payload.agent_id,
             runtime_session_id=session_id,
             execution_id=payload.execution_id,
         )
+        return target_agent_id, None if payload.next_session else target_session_id
     except operator_notes.NoteTargetError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=exc.detail
@@ -206,6 +212,8 @@ def _create_note(
         created_at=now,
         expires_at=expires_at,
     )
+    if payload.next_session:
+        envelope.setdefault("metadata", {})["next_session"] = True
     note = crud_agent_control_command.create_note(
         db,
         account_id=account_id,
@@ -235,6 +243,7 @@ def _create_note(
         user_agent=request.headers.get("user-agent"),
         details={
             "source": payload.source,
+            "next_session": payload.next_session,
             "correlation_id": str(payload.correlation_id)
             if payload.correlation_id
             else None,
@@ -382,6 +391,49 @@ def list_operator_notes(
 
     notes, total = _load()
     return OperatorNoteList(notes=[_to_response(note) for note in notes], total=total)
+
+
+@router.get(
+    "/operator-notes/session-targets",
+    response_model=OperatorNoteSessionTargets,
+    tags=["Operator Notes"],
+)
+@require_permission(CONTROL_PERMISSION)
+def list_operator_note_session_targets(
+    agent_id: UUID = Query(...),
+    limit: int = Query(100, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: models.User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> OperatorNoteSessionTargets:
+    """List the agent's live conversations that an operator can explicitly steer."""
+    ensure_permission_in_oss(db, current_user, CONTROL_PERMISSION)
+    account_id = str(current_user.account_id)
+    agent = crud_managed_agent.get_for_account(
+        db, account_id=account_id, agent_id=str(agent_id)
+    )
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Managed agent not found")
+    sessions, total = crud_runtime_session.list_note_targets(
+        db, account_id=account_id, agent=agent, limit=limit, offset=offset
+    )
+    return OperatorNoteSessionTargets(
+        sessions=[
+            OperatorNoteSessionTarget(
+                id=session.id,
+                alias=session.alias,
+                session_source_type=session.session_source_type,
+                started_at=(
+                    session.started_at
+                    if session.started_at.tzinfo is not None
+                    else session.started_at.replace(tzinfo=timezone.utc)
+                ),
+                session_reference=session.session_reference,
+            )
+            for session in sessions
+        ],
+        total=total,
+    )
 
 
 @router.get(

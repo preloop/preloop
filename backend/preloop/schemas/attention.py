@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 #: Maximum snooze, so "remind me later" can never become "never again".
 MAX_SNOOZE_DAYS = 90
@@ -57,3 +57,17 @@ class AttentionDismissalListResponse(BaseModel):
 
     items: List[AttentionDismissalResponse] = Field(default_factory=list)
     total: int = 0
+
+
+class ExtensionAttentionItem(BaseModel):
+    """Neutral plugin item. Only local console destinations are accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=255)
+    source: str = Field(min_length=1, max_length=255)
+    title: str = Field(min_length=1, max_length=500)
+    detail: str = Field(max_length=4000)
+    href: str = Field(pattern=r"^/console(?:[/?#][^\\\x00-\x20]*)?$")
+    severity: Literal["info", "action"]
+    opened_at: AwareDatetime

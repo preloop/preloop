@@ -637,6 +637,25 @@ class CRUDAgentControlCommand(CRUDBase[AgentControlCommand]):
             | (AgentControlCommand.expires_at > now),
         )
         query = query.filter(targets[0] if len(targets) == 1 else or_(*targets))
+        # Explicit next-session notes must not be consumed by an already
+        # running conversation. Keep this predicate before LIMIT so blocked
+        # advice cannot starve ordinary notes behind it.
+        session_start = (
+            select(models.RuntimeSession.started_at)
+            .where(
+                models.RuntimeSession.account_id == account_id,
+                models.RuntimeSession.id == runtime_session_id,
+            )
+            .scalar_subquery()
+        )
+        query = query.filter(
+            or_(
+                AgentControlCommand.envelope["metadata"]["next_session"]
+                .as_boolean()
+                .is_not(True),
+                session_start > AgentControlCommand.created_at,
+            )
+        )
         return (
             query.order_by(AgentControlCommand.created_at, AgentControlCommand.id)
             .limit(max(1, limit))

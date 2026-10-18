@@ -514,6 +514,10 @@ describe('DashboardView', () => {
           return json(apiKeysResponse);
         }
 
+        if (url === '/api/v1/attention/extension-items') {
+          return json([]);
+        }
+
         if (url === '/api/v1/auth/users/me') {
           return json({
             username: 'tester',
@@ -2361,7 +2365,7 @@ describe('DashboardView', () => {
       expect(card?.textContent).to.contain('Onboard an agent');
     });
 
-    it('keeps the first-paint request count at or below today', async () => {
+    it('keeps the first-paint budget with one shared extension read', async () => {
       const element = await mountDashboard();
       await waitUntil(
         () =>
@@ -2382,7 +2386,8 @@ describe('DashboardView', () => {
       // an onboarded account. The Attention inputs also read
       // /policies/notices/summary once (#959) and spend outlier
       // findings once (#960), so the set is 29. The Usage card's chart
-      // reads /cost/timeseries once (#1610): 30.
+      // reads /cost/timeseries once (#1610): 30. Generic plugin Attention
+      // adds one shared /attention/extension-items read (#1821): 31.
       const pageUrls = fetchStub
         .getCalls()
         .map((call) => String(call.args[0]))
@@ -2393,7 +2398,11 @@ describe('DashboardView', () => {
             !url.startsWith('/api/v1/roles') &&
             !url.startsWith('/api/v1/users')
         );
-      expect(pageUrls.length, pageUrls.join('\n')).to.equal(30);
+      expect(pageUrls.length, pageUrls.join('\n')).to.equal(31);
+      expect(
+        pageUrls.filter((url) => url === '/api/v1/attention/extension-items')
+          .length
+      ).to.equal(1);
       expect(
         pageUrls.filter((url) => url.startsWith('/api/v1/cost/timeseries'))
           .length

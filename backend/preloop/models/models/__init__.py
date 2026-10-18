@@ -184,6 +184,7 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "ObservationVerification",
     "ChatSetupDraft",
     "ChatListener",
     "SupportConversation",
@@ -414,3 +415,5 @@ from .support import (
     SupportQuota,
     ServiceCursor,
 )
+
+from .observation_verification import ObservationVerification

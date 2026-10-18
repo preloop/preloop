@@ -341,6 +341,8 @@ export class PreloopSessionObserver extends LitElement {
 
   @state()
   private loadedActivity: Record<string, RuntimeSessionActivityItem[]> = {};
+  /** Latest activity re-read; an older answer that lands late is dropped. */
+  private activityReadSeq = 0;
 
   /**
    * Approval rows per session, scoped by `runtime_session_id`.
@@ -1025,11 +1027,19 @@ export class PreloopSessionObserver extends LitElement {
   /** Re-read one loaded session's activity timeline in place. */
   private async refreshActivity(sessionId: string): Promise<void> {
     if (!this.loadedActivity[sessionId]) return;
+    const seq = ++this.activityReadSeq;
     try {
-      const activity =
-        await getAccountRuntimeSessionActivityTimeline(sessionId);
-      // The selection may have moved while the read was in flight.
-      if (!this.loadedActivity[sessionId]) return;
+      const activity = await getAccountRuntimeSessionActivityTimeline(
+        sessionId,
+        {
+          operatorNoteId: this.focusTurnId,
+        }
+      );
+      // The selection may have moved while the read was in flight, or a
+      // newer read (another linked note) may have started after this one.
+      if (!this.loadedActivity[sessionId] || seq !== this.activityReadSeq) {
+        return;
+      }
       this.loadedActivity = {
         ...this.loadedActivity,
         [sessionId]: activity.items || [],
@@ -1301,6 +1311,7 @@ export class PreloopSessionObserver extends LitElement {
     // otherwise renders, with one exception: a session whose whole activity
     // predates the plan's analytics window. That is the plan speaking, and
     // it is the only thing this catch keeps.
+    const focusRequested = this.focusTurnId;
     try {
       const [events, activity] = await Promise.all([
         getRuntimeSessionGatewayEvents(sessionId, {
@@ -1310,11 +1321,12 @@ export class PreloopSessionObserver extends LitElement {
           // message once (1.7 MB -> about 150 KB on a long session, #1586).
           history: 'delta',
         }),
-        getAccountRuntimeSessionActivityTimeline(sessionId).catch(
-          (error: unknown) =>
-            isHistoryUnavailable(error)
-              ? error
-              : { items: [] as RuntimeSessionActivityItem[] }
+        getAccountRuntimeSessionActivityTimeline(sessionId, {
+          operatorNoteId: focusRequested,
+        }).catch((error: unknown) =>
+          isHistoryUnavailable(error)
+            ? error
+            : { items: [] as RuntimeSessionActivityItem[] }
         ),
       ]);
       if (isHistoryUnavailable(activity)) {
@@ -1348,6 +1360,10 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedActivity,
         [sessionId]: activity.items || [],
       };
+      // A different note was linked while this read was in flight.
+      if (this.focusTurnId && this.focusTurnId !== focusRequested) {
+        void this.refreshActivity(sessionId);
+      }
       void this.loadArtifacts(sessionId);
     } catch (error) {
       console.error('Failed to load selected session:', error);
@@ -2363,6 +2379,16 @@ export class PreloopSessionObserver extends LitElement {
       // The conversation view has no per turn anchor and the transcript does,
       // so a link to a turn lands where that turn can actually be shown.
       this.setReplayMode('timeline');
+    }
+    if (
+      changed.has('focusTurnId') &&
+      this.focusTurnId &&
+      this.activeSessionId &&
+      this.loadedActivity[this.activeSessionId]
+    ) {
+      // Another note linked in a session already on screen: the activity
+      // read only carries an older note when it is named, so read again.
+      void this.refreshActivity(this.activeSessionId);
     }
   }
 

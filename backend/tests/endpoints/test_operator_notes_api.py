@@ -1404,3 +1404,354 @@ def test_enrollment_agent_note_waits_for_next_run_after_native_end(
     receipt = client.get(f"{NOTES_URL}/{note_id}").json()
     assert receipt["state"] == "delivered"
     assert receipt["runtime_session_id"] == next_run_id
+
+
+@pytest.mark.parametrize("channel", ["hook", "gateway"])
+def test_explicit_next_session_excludes_existing_runs(
+    client, db_session, test_user, agent, runtime_session, channel: str
+) -> None:
+    """Next-session advice waits even while the current run is carrying notes."""
+    created = client.post(
+        NOTES_URL,
+        json={
+            "agent_id": str(agent.id),
+            "next_session": True,
+            "text": "Next run only.",
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["next_session"] is True
+    assert body["runtime_session_id"] is None
+    assert (
+        operator_notes.claim_pending_notes(
+            db_session,
+            account_id=str(test_user.account_id),
+            managed_agent_id=str(agent.id),
+            runtime_session_id=str(runtime_session.id),
+            channel=channel,
+        )
+        == []
+    )
+    ordinary = client.post(
+        NOTES_URL, json={"agent_id": str(agent.id), "text": "Current run advice."}
+    ).json()
+    available = operator_notes.claim_pending_notes(
+        db_session,
+        account_id=str(test_user.account_id),
+        managed_agent_id=str(agent.id),
+        runtime_session_id=str(runtime_session.id),
+        channel=channel,
+        limit=1,
+    )
+    assert [note.command_id for note in available] == [ordinary["note_id"]]
+    next_run = RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="next-run",
+        started_at=datetime.now(UTC) + timedelta(seconds=1),
+    )
+    db_session.add(next_run)
+    db_session.flush()
+    delivered = operator_notes.claim_pending_notes(
+        db_session,
+        account_id=str(test_user.account_id),
+        managed_agent_id=str(agent.id),
+        runtime_session_id=str(next_run.id),
+        channel=channel,
+        turn_index=3,
+    )
+    assert [note.command_id for note in delivered] == [body["note_id"]]
+    db_session.commit()
+    receipt = client.get(f"{NOTES_URL}/{body['note_id']}").json()
+    assert receipt["runtime_session_id"] == str(next_run.id)
+    assert receipt["state"] == "delivered"
+    assert receipt["next_session"] is True
+
+
+@pytest.mark.parametrize("identity", ["exact", "per_run", "managed_agent"])
+def test_session_note_is_in_its_agents_history_and_filter(
+    client, db_session, test_user, agent, runtime_session, identity: str
+) -> None:
+    """A native run's durable principal preserves its agent history association."""
+    native = RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="native-history-run",
+        runtime_principal_type=(
+            "managed_agent"
+            if identity == "managed_agent"
+            else agent.session_source_type
+        ),
+        runtime_principal_id=(
+            str(agent.id)
+            if identity == "managed_agent"
+            else agent.session_source_id
+            + (":native-history-run" if identity == "per_run" else "")
+        ),
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(native)
+    db_session.flush()
+    sent = client.post(
+        NOTES_URL, json={"runtime_session_id": str(native.id), "text": "Native note."}
+    )
+    assert sent.status_code == 201, sent.text
+    assert sent.json()["managed_agent_id"] == str(agent.id)
+    client.post(NOTES_URL, json={"agent_id": str(agent.id), "text": "Other session."})
+    page = client.get(
+        NOTES_URL,
+        params={
+            "agent_id": str(agent.id),
+            "runtime_session_id": str(native.id),
+            "limit": 1,
+        },
+    ).json()
+    assert page["total"] == 1
+    assert [note["note_id"] for note in page["notes"]] == [sent.json()["note_id"]]
+    assert (
+        len(client.get(NOTES_URL, params={"agent_id": str(agent.id)}).json()["notes"])
+        == 2
+    )
+
+
+@pytest.mark.parametrize("target", ["runtime_session_id", "execution_id", "alias"])
+def test_next_session_requires_an_agent(client, target: str) -> None:
+    """Next-session is an agent addressing mode, never an ignored modifier."""
+    value = "worker" if target == "alias" else str(uuid4())
+    response = client.post(
+        NOTES_URL, json={target: value, "next_session": True, "text": "hi"}
+    )
+    assert response.status_code == 422
+
+
+def test_hook_note_enters_session_activity_only_after_delivery_ack(
+    client, db_session, test_user
+) -> None:
+    """The transcript records delivery once, with its author and boundary."""
+    token = _issue_runtime_token(client)
+    run_id = _start_run(client, token, "inline-note-run")
+    created = client.post(
+        NOTES_URL,
+        json={"runtime_session_id": run_id, "text": "Verify before continuing."},
+    )
+    assert created.status_code == 201, created.text
+    note_id = created.json()["note_id"]
+    headers = {"Authorization": f"Bearer {token}"}
+    pulled = client.post(
+        PENDING_URL,
+        json={
+            "session_id": "inline-note-run",
+            "defer_delivery": True,
+            "event": "pre_tool_use",
+        },
+        headers=headers,
+    )
+    assert pulled.status_code == 200, pulled.text
+    assert [note["note_id"] for note in pulled.json()["notes"]] == [note_id]
+    activity_url = f"/api/v1/runtime-sessions/{run_id}/activity"
+    before = client.get(activity_url)
+    assert before.status_code == 200, before.text
+    assert not [
+        item
+        for item in before.json()["items"]
+        if item["metadata"].get("note_id") == note_id
+    ]
+    for _ in range(2):
+        acknowledged = client.post(
+            "/api/v1/agents/notes/ack",
+            json={"session_id": "inline-note-run", "note_ids": [note_id]},
+            headers=headers,
+        )
+        assert acknowledged.status_code == 200, acknowledged.text
+    activity = client.get(activity_url)
+    assert activity.status_code == 200, activity.text
+    notes = [
+        item
+        for item in activity.json()["items"]
+        if item["metadata"].get("note_id") == note_id
+    ]
+    assert len(notes) == 1
+    assert notes[0]["activity_type"] == "agent_control_message"
+    assert notes[0]["summary"] == "Verify before continuing."
+    assert notes[0]["metadata"]["author_display"] == "Test User"
+    assert notes[0]["metadata"]["author_auth_method"] == "session"
+    assert notes[0]["metadata"]["delivery_event"] == "pre_tool_use"
+    receipt = client.get(f"{NOTES_URL}/{note_id}").json()
+    assert receipt["author"]["display"] == "Test User"
+    assert receipt["state"] == "delivered"
+    assert receipt["delivered_at"] is not None
+    assert receipt["runtime_session_id"] == run_id
+
+
+@pytest.mark.parametrize("identity", ["source", "managed_agent"])
+def test_session_principal_cannot_attach_a_foreign_agent(
+    client, db_session, test_user, identity: str
+) -> None:
+    """An in-account run never associates a note with another account's agent."""
+    foreign_account = crud_account.create(
+        db_session, obj_in={"organization_name": "Other Org", "is_active": True}
+    )
+    foreign = crud_managed_agent.create_custom_agent(
+        db_session,
+        account_id=foreign_account.id,
+        display_name="Other Worker",
+        commit=True,
+    )
+    run = RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="foreign-principal-run",
+        runtime_principal_type="managed_agent"
+        if identity == "managed_agent"
+        else foreign.session_source_type,
+        runtime_principal_id=str(foreign.id)
+        if identity == "managed_agent"
+        else foreign.session_source_id,
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(run)
+    db_session.flush()
+    response = client.post(
+        NOTES_URL, json={"runtime_session_id": str(run.id), "text": "Own session only."}
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["runtime_session_id"] == str(run.id)
+    assert response.json()["managed_agent_id"] is None
+    assert (
+        client.post(
+            NOTES_URL,
+            json={
+                "agent_id": str(foreign.id),
+                "next_session": True,
+                "text": "Foreign.",
+            },
+        ).status_code
+        == 404
+    )
+
+
+def test_note_targets_exclude_identity_and_page_live_conversations(
+    client, db_session, test_user
+) -> None:
+    """An enrollment identity is never the picker's only live session."""
+    token = _issue_runtime_token(client)
+    agent = _runtime_agent(db_session, test_user)
+    target_url = f"{NOTES_URL}/session-targets"
+    empty = client.get(target_url, params={"agent_id": str(agent.id)})
+    assert empty.status_code == 200, empty.text
+    assert empty.json() == {"sessions": [], "total": 0}
+    first_id = _start_run(client, token, "target-first")
+    second_id = _start_run(client, token, "target-second")
+    first_run = db_session.get(RuntimeSession, first_id)
+    first_run.alias = "test-worker"
+    db_session.commit()
+    first = client.get(target_url, params={"agent_id": str(agent.id), "limit": 1})
+    older = client.get(
+        target_url, params={"agent_id": str(agent.id), "limit": 1, "offset": 1}
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["total"] == 2
+    assert first.json()["sessions"][0]["id"] == second_id
+    assert older.json()["sessions"][0]["id"] == first_id
+    assert older.json()["sessions"][0]["alias"] == "test-worker"
+    assert older.json()["sessions"][0]["session_source_type"] == "claude_code"
+    assert older.json()["sessions"][0]["started_at"]
+    assert older.json()["sessions"][0]["started_at"].endswith("Z")
+    first_run.ended_at = datetime.now(UTC)
+    db_session.commit()
+    live = client.get(target_url, params={"agent_id": str(agent.id)}).json()
+    assert live["total"] == 1
+    assert [run["id"] for run in live["sessions"]] == [second_id]
+
+
+def test_note_targets_unknown_and_foreign_agents_are_404(client, db_session) -> None:
+    """Target discovery has the same account boundary as sending."""
+    foreign_account = crud_account.create(
+        db_session, obj_in={"organization_name": "Other Org", "is_active": True}
+    )
+    foreign = crud_managed_agent.create_custom_agent(
+        db_session,
+        account_id=foreign_account.id,
+        display_name="Other Worker",
+        commit=True,
+    )
+    for agent_id in (foreign.id, uuid4()):
+        response = client.get(
+            f"{NOTES_URL}/session-targets", params={"agent_id": str(agent_id)}
+        )
+        assert response.status_code == 404
+
+
+def test_focused_note_is_included_beyond_recent_activity_page(
+    client, db_session, test_user, agent, runtime_session
+) -> None:
+    """An older note link can retrieve its inline row without unbounded history."""
+    from preloop.models import models
+
+    created = client.post(
+        NOTES_URL,
+        json={
+            "runtime_session_id": str(runtime_session.id),
+            "text": "Earlier instruction.",
+        },
+    ).json()
+    operator_notes.claim_pending_notes(
+        db_session,
+        account_id=str(test_user.account_id),
+        managed_agent_id=str(agent.id),
+        runtime_session_id=str(runtime_session.id),
+        channel="hook",
+    )
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            models.RuntimeSessionActivity(
+                account_id=test_user.account_id,
+                runtime_session_id=runtime_session.id,
+                activity_type="tool_call",
+                summary=f"Later tool {index}",
+                status="success",
+                timestamp=now + timedelta(seconds=index + 1),
+                metadata_={},
+            )
+            for index in range(100)
+        ]
+    )
+    db_session.commit()
+    activity_url = f"/api/v1/runtime-sessions/{runtime_session.id}/activity"
+    recent = client.get(activity_url)
+    assert recent.status_code == 200, recent.text
+    assert not [
+        item
+        for item in recent.json()["items"]
+        if item["metadata"].get("note_id") == created["note_id"]
+    ]
+    focused = client.get(activity_url, params={"operator_note_id": created["note_id"]})
+    assert focused.status_code == 200, focused.text
+    notes = [
+        item
+        for item in focused.json()["items"]
+        if item["metadata"].get("note_id") == created["note_id"]
+    ]
+    assert len(notes) == 1
+    assert notes[0]["summary"] == "Earlier instruction."
+    assert len(focused.json()["items"]) == len(recent.json()["items"]) + 1
+    other_session = RuntimeSession(
+        account_id=test_user.account_id,
+        session_source_type="claude_code",
+        session_source_id="unrelated-focus-session",
+        started_at=now,
+    )
+    db_session.add(other_session)
+    db_session.commit()
+    unrelated = client.get(
+        f"/api/v1/runtime-sessions/{other_session.id}/activity",
+        params={"operator_note_id": created["note_id"]},
+    )
+    assert unrelated.status_code == 200, unrelated.text
+    assert not [
+        item
+        for item in unrelated.json()["items"]
+        if item["metadata"].get("note_id") == created["note_id"]
+    ]

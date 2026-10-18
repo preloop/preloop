@@ -1360,6 +1360,53 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             return None
         return [session_id for _, session_id in ranked[offset:needed]]
 
+    def list_note_targets(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent: models.ManagedAgent,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[list[models.RuntimeSession], int]:
+        """Page live conversations for an account's agent, without bootstrap rows."""
+        enrollment = models.ManagedAgentEnrollment
+        identity = (
+            db.query(enrollment.id)
+            .filter(
+                enrollment.account_id == account_id,
+                enrollment.managed_agent_id == agent.id,
+                enrollment.enrollment_type == "runtime_session_bootstrap",
+                enrollment.managed_config["runtime_session_id"].astext
+                == cast(self.model.id, String),
+                self.model.session_source_type != "flow_execution",
+                self.model.session_source_type == agent.session_source_type,
+                self.model.session_source_id == agent.session_source_id,
+                self.model.runtime_principal_id == agent.session_source_id,
+            )
+            .exists()
+        )
+        query = db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.ended_at.is_(None),
+            or_(
+                self.model.id == agent.runtime_session_id,
+                self._principal_condition(
+                    agent.session_source_type, agent.session_source_id
+                ),
+                self._principal_condition("managed_agent", str(agent.id)),
+            ),
+            ~identity,
+        )
+        total = query.count()
+        sessions = (
+            query.order_by(self.model.started_at.desc(), self.model.id.desc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+        return sessions, total
+
     def _principal_id_condition(self, runtime_principal_id: str) -> Any:
         """Match a principal id exactly or any per-run variant of it.
 

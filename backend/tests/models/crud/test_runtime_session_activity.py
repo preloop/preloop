@@ -166,3 +166,47 @@ def test_tool_call_aggregates_accept_mixed_outcome_vocabulary(
         "failed",
         "refused",
     }
+
+
+def test_control_message_preserves_only_explicit_author_attribution(
+    db_session, create_account
+) -> None:
+    """Trusted public labels survive while arbitrary auth metadata stays masked."""
+    account = create_account()
+    run = RuntimeSession(
+        account_id=account.id,
+        session_source_type="claude_code",
+        session_source_id="note-author",
+        started_at=datetime.now(UTC),
+    )
+    db_session.add(run)
+    db_session.flush()
+    metadata = {
+        "author_display": "Untrusted label",
+        "authorization": "Bearer sensitive-value",
+        "nested": {"api_key": "sensitive-value"},
+    }
+    untrusted = crud_runtime_session_activity.log_agent_control_message(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=run.id,
+        message="Ordinary message.",
+        status="delivered",
+        metadata=metadata,
+    )
+    assert untrusted.metadata_["author_display"] == "***REDACTED***"
+    trusted = crud_runtime_session_activity.log_agent_control_message(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=run.id,
+        message="Stamped note.",
+        status="delivered",
+        metadata=metadata,
+        author_display="Jane Doe",
+        author_auth_method="agent",
+    )
+    assert trusted.metadata_["author_display"] == "Jane Doe"
+    assert trusted.metadata_["author_auth_method"] == "agent"
+    assert trusted.metadata_["authorization"] == "***REDACTED***"
+    assert trusted.metadata_["nested"]["api_key"] == "***REDACTED***"
+    assert metadata["author_display"] == "Untrusted label"

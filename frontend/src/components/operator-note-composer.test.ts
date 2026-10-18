@@ -105,6 +105,30 @@ describe('operator-note-composer', () => {
     });
   });
 
+  it('holds a note for the next session when asked', async () => {
+    const el = await mount();
+    el.nextSession = true;
+    await el.updateComplete;
+    fetchStub.resolves(jsonResponse(note()));
+
+    input(el).value = 'Start from main.';
+    input(el).dispatchEvent(new CustomEvent('sl-input'));
+    await el.updateComplete;
+    sendButton(el).click();
+    await waitUntil(() =>
+      noteCalls(fetchStub).some((call) => call.args[1]?.method === 'POST')
+    );
+
+    const post = noteCalls(fetchStub).find(
+      (call) => call.args[1]?.method === 'POST'
+    )!;
+    expect(JSON.parse(String(post.args[1]?.body))).to.deep.equal({
+      text: 'Start from main.',
+      agent_id: 'agent-1',
+      next_session: true,
+    });
+  });
+
   it('sends on Enter and keeps the box for the next line on Shift+Enter', async () => {
     const el = await mount();
     fetchStub.resolves(jsonResponse(note()));

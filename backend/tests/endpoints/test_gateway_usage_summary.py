@@ -1665,10 +1665,18 @@ def test_session_activity_passes_the_turn_limit(client, monkeypatch):
     """The console opens a session with its latest 50 turns (#1586)."""
     from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 
-    seen: dict = {}
+    seen: dict[str, object] = {}
 
-    def fake_timeline(self, *, account, runtime_session_id, interaction_limit=100):
+    def fake_timeline(
+        self: object,
+        *,
+        account: object,
+        runtime_session_id: str,
+        interaction_limit: int = 100,
+        operator_note_id: str | None = None,
+    ) -> dict[str, list[object]]:
         seen["limit"] = interaction_limit
+        seen["operator_note_id"] = operator_note_id
         return {"items": []}
 
     monkeypatch.setattr(
@@ -1685,10 +1693,20 @@ def test_session_activity_passes_the_turn_limit(client, monkeypatch):
         == 200
     )
     assert seen["limit"] == 50
+    assert seen["operator_note_id"] is None
     assert (
         client.get(f"/api/v1/runtime-sessions/{session_id}/activity").status_code == 200
     )
     assert seen["limit"] == 100
+    assert (
+        client.get(
+            f"/api/v1/runtime-sessions/{session_id}/activity"
+            "?limit=50&operator_note_id=note-focus"
+        ).status_code
+        == 200
+    )
+    assert seen["limit"] == 50
+    assert seen["operator_note_id"] == "note-focus"
     assert (
         client.get(
             f"/api/v1/runtime-sessions/{session_id}/activity?limit=500"

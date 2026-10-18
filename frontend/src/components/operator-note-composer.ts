@@ -96,6 +96,13 @@ export class OperatorNoteComposer extends LitElement {
   sessionId: string | null = null;
 
   /**
+   * With ``agentId``: hold the note for a session the agent has not started
+   * yet, so none of its live sessions picks it up.
+   */
+  @property({ type: Boolean, attribute: 'next-session' })
+  nextSession = false;
+
+  /**
    * Command mode: the runner session a typed line starts a turn on.
    *
    * Set only from a validated control ``send_path``. When null the box sends
@@ -314,9 +321,13 @@ export class OperatorNoteComposer extends LitElement {
     agent_id?: string;
     execution_id?: string;
     runtime_session_id?: string;
+    next_session?: boolean;
   } {
     if (this.executionId) return { execution_id: this.executionId };
     if (this.sessionId) return { runtime_session_id: this.sessionId };
+    if (this.nextSession) {
+      return { agent_id: this.agentId || '', next_session: true };
+    }
     return { agent_id: this.agentId || '' };
   }
 

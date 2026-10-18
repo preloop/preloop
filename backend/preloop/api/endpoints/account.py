@@ -1,8 +1,10 @@
 """Account-related endpoints."""
 
 import html
+import asyncio
 import logging
 import secrets
+import anyio.from_thread
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 from typing import Annotated, Any, Literal, Optional
@@ -57,6 +59,7 @@ from preloop.plugins.account_hooks import (
     filter_viewable,
 )
 from preloop.schemas.attention import (
+    ExtensionAttentionItem,
     AttentionDismissalListResponse,
     AttentionDismissalResponse,
     AttentionDismissalUpsertRequest,
@@ -3384,6 +3387,12 @@ async def get_account_session_activity_timeline(
             "console asks for the latest 50 when a session opens."
         ),
     ),
+    operator_note_id: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=64,
+        description="Include this delivered note even beyond the recent activity page.",
+    ),
 ):
     """Activity timeline overview for this session.
 
@@ -3399,6 +3408,7 @@ async def get_account_session_activity_timeline(
             account=account,
             runtime_session_id=runtime_session_id,
             interaction_limit=limit,
+            operator_note_id=operator_note_id,
         )
     )
 
@@ -4221,6 +4231,77 @@ def _resolve_dismissal_usernames(
         str(row.id): (row.full_name or row.username or row.email or str(row.id))
         for row in rows
     }
+
+
+@router.get("/attention/extension-items", response_model=list[ExtensionAttentionItem])
+@heavy_route
+def list_extension_attention_items(
+    current_user: UserModel = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> list[ExtensionAttentionItem]:
+    """Bound contribution fan-out while async providers run on the API loop."""
+    return anyio.from_thread.run(_list_extension_attention_items, current_user, db)
+
+
+async def _list_extension_attention_items(
+    current_user: UserModel, db: Session
+) -> list[ExtensionAttentionItem]:
+    """Merge enabled plugin sources authorized for the selected membership."""
+    from preloop.api.auth.key_scopes import (
+        is_mcp_only_api_key,
+        is_single_purpose_api_key,
+    )
+    from preloop.api.auth.permissions import has_permission
+    from preloop.plugins.base import get_plugin_manager
+    from preloop.plugins.attention import ATTENTION_SOURCE_TIMEOUT_SECONDS
+
+    def restricted() -> bool:
+        key = getattr(current_user, "_auth_api_key", None)
+        context = getattr(key, "context_data", None)
+        return (
+            is_mcp_only_api_key(key)
+            or is_single_purpose_api_key(key)
+            or (isinstance(context, dict) and "device_report" in context)
+        )
+
+    if await run_db_off_loop(restricted):
+        raise HTTPException(403, "Restricted credentials cannot read attention items")
+    sources = get_plugin_manager().attention_sources()
+    if not sources:
+        return []
+
+    def permitted(permission: str) -> bool:
+        account = crud_account.get(db, id=current_user.account_id)
+        return bool(permission) and (
+            current_user.is_superuser
+            or (account is not None and account.primary_user_id == current_user.id)
+            or has_permission(current_user, permission, db)
+        )
+
+    items: dict[tuple[str, str], ExtensionAttentionItem] = {}
+    for plugin_name, source in sources:
+        if not await run_db_off_loop(
+            lambda permission=source.permission: permitted(permission)
+        ):
+            continue
+        try:
+            async with asyncio.timeout(ATTENTION_SOURCE_TIMEOUT_SECONDS):
+                contributions = await source.provider(db, current_user)
+            namespace = f"{plugin_name}:{source.id}"
+            for value in contributions[:500]:
+                item = ExtensionAttentionItem.model_validate(value)
+                item = ExtensionAttentionItem.model_validate(
+                    {**item.model_dump(), "source": namespace}
+                )
+                items.setdefault((namespace, item.id), item)
+        except Exception:
+            await run_db_off_loop(db.rollback)
+            logger.exception("Attention source failed: %s:%s", plugin_name, source.id)
+    return sorted(
+        items.values(),
+        key=lambda item: (item.opened_at, item.source, item.id),
+        reverse=True,
+    )
 
 
 @router.get(

@@ -67,6 +67,7 @@ CONSOLE_HOT_PATHS: tuple[tuple[str, str], ...] = (
     ("GET", "/api/v1/account/gateway-usage/summary"),
     ("GET", "/api/v1/account/telemetry/dashboard"),
     ("GET", "/api/v1/attention/dismissals"),
+    ("GET", "/api/v1/attention/extension-items"),
     ("GET", "/api/v1/roles"),
     ("GET", "/api/v1/runtime-sessions"),
     ("GET", "/api/v1/runtime-sessions/{runtime_session_id}"),
@@ -312,9 +313,28 @@ class _LoopHeartbeat:
 
 
 @pytest.mark.asyncio
-async def test_pool_timeout_on_a_burst_path_does_not_stall_ping(app: FastAPI) -> None:
+@pytest.mark.parametrize(
+    "path", ["/api/v1/runtime-sessions", "/api/v1/attention/extension-items"]
+)
+async def test_pool_timeout_on_a_burst_path_does_not_stall_ping(
+    app: FastAPI, path: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A saturated pool must fail one request, not the liveness probe."""
     user = _stub_user()
+    from types import SimpleNamespace
+    from preloop.plugins.attention import AttentionSource
+
+    async def provider(db: Session, caller: User) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(
+        "preloop.plugins.base.get_plugin_manager",
+        lambda: SimpleNamespace(
+            attention_sources=lambda: [
+                ("example", AttentionSource("test", "view_example", provider))
+            ]
+        ),
+    )
     account = Account(id=user.account_id, organization_name="Example Org")
     loop = asyncio.get_running_loop()
     loop_thread = threading.get_ident()
@@ -348,10 +368,7 @@ async def test_pool_timeout_on_a_burst_path_does_not_stall_ping(app: FastAPI) ->
             # The invariant starts only once every checkout is held off-loop;
             # a wall-clock reading before dispatch conflates the two on CI.
             assert (await client.get("/api/v1/ping")).status_code == 200
-            requests = [
-                asyncio.create_task(client.get("/api/v1/runtime-sessions"))
-                for _ in range(4)
-            ]
+            requests = [asyncio.create_task(client.get(path)) for _ in range(4)]
             burst = asyncio.gather(*requests, return_exceptions=True)
             try:
                 await asyncio.wait_for(all_checkouts_held.wait(), timeout=5)

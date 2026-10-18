@@ -145,10 +145,18 @@ agent-scoped until an actual conversation claims them. Use `runtime_session_id`
 overrides the 24 hour default; a note nobody delivered in a day is stale advice,
 and expiring visibly beats rotting silently.
 
+To brief a future run while other sessions are still open, send
+`{"agent_id": "<agent UUID>", "next_session": true, "text": "Run the checks."}`.
+Only a session started after the note was sent can claim it. `next_session`
+requires `agent_id`; omitting it preserves current-or-next delivery. The receipt
+keeps `next_session: true` after delivery and names the session that claimed it.
+
 - `GET /api/v1/operator-notes?agent_id=...` (or `runtime_session_id`,
   `execution_id`) lists notes newest first with their delivery state and receipt
   timestamps. Add `state=pending` (or another public state) to filter before
   the result limit is applied.
+  Combine `agent_id` and `runtime_session_id` to filter an agent's history to
+  one conversation; `limit` and `offset` page the results with a matching `total`.
 - `GET /api/v1/operator-notes/{note_id}` reads one receipt with the same account
   and permission checks; foreign and missing ids both return 404.
 - `POST /api/v1/operator-notes/{note_id}/cancel` withdraws one that has not
@@ -654,3 +662,11 @@ agent was doing when it arrived.
 
 For spawn-time aliases, parent lineage, and session id handoffs, see
 [Spawning workers](spawning-workers.md).
+
+The console discovers live note targets with
+`GET /api/v1/operator-notes/session-targets?agent_id=<agent UUID>`. The response
+contains `sessions` and `total`, paged with `limit` and `offset`. Each target
+includes its ID, alias, harness (`session_source_type`) and start time.
+Enrollment identity placeholders and ended sessions are excluded. Sending a
+note still resolves its target again with the same account and permission
+checks as `send_note`.

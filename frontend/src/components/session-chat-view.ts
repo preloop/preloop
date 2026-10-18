@@ -38,10 +38,17 @@ import type {
   TranscriptBuildResult,
   TranscriptItem,
   TranscriptMessageItem,
+  TranscriptNoteDelivery,
   TranscriptStep,
   TranscriptStepGroupItem,
 } from '../utils/transcript';
 import { buildConversation } from '../utils/transcript';
+import { noteAuthorLabel } from '../utils/note-author';
+
+/** "Note from <author> (<credential>)": a note is not an anonymous operator. */
+function noteRoleLabel(note: TranscriptNoteDelivery): string {
+  return `Note from ${noteAuthorLabel(note.authorDisplay, note.authorAuthMethod)}`;
+}
 import type { LiveSessionState } from '../utils/live-session';
 import { deriveLiveSessionState } from '../utils/live-session';
 import { getApprovalRepository } from '../utils/approval-identity';
@@ -983,12 +990,21 @@ export class SessionChatView extends LitElement {
             ${
               item.kind === 'user_prompt'
                 ? 'You'
-                : item.kind === 'operator'
-                  ? 'Operator'
-                  : 'Agent'
+                : item.note
+                  ? noteRoleLabel(item.note)
+                  : item.kind === 'operator'
+                    ? 'Operator'
+                    : 'Agent'
             }
           </span>
           <span>${this.formatTime(item.timestamp)}</span>
+          ${
+            typeof item.note?.turnIndex === 'number'
+              ? html`<span data-testid="note-turn"
+                  >Delivered at turn ${item.note.turnIndex}</span
+                >`
+              : nothing
+          }
           ${
             item.queued ? html`<span class="queue-chip">Queued</span>` : nothing
           }

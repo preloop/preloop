@@ -6,7 +6,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "20261029_basic_member_role"
-down_revision = "20261028_chat_admin_merge"
+down_revision = "20261028_obs_verification"
 branch_labels = None
 depends_on = None
 

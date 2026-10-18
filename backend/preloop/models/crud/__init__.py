@@ -1,5 +1,7 @@
 """CRUD operation implementations."""
 
+from .observation_verification import crud_observation_verification
+
 # Create CRUD instances for each model
 from .callback_receipt import crud_callback_key_binding, crud_callback_receipt
 from .mcp_inventory import crud_mcp_inventory
@@ -307,6 +309,7 @@ crud_tool_access_rule = CRUDToolAccessRule()  # Instantiate CRUDToolAccessRule
 
 
 __all__ = [
+    "crud_observation_verification",
     "crud_support",
     "crud_mcp_inventory",
     "crud_fleet_finding",

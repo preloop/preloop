@@ -339,6 +339,7 @@ nav:
       - Cost analytics and budgeting: architecture/cost.md
       - Flows: architecture/flows.md
       - Frontend: architecture/frontend.md
+      - Plugin attention sources: plugin-attention.md
       - Model gateway: architecture/gateway.md
       - Subject-scoped governance: architecture/governance.md
       - Real-time communication: architecture/realtime.md

@@ -738,6 +738,7 @@ class RuntimeSessionExplorerService:
         account: Account,
         runtime_session_id: str,
         interaction_limit: int = 100,
+        operator_note_id: Optional[str] = None,
     ) -> RuntimeSessionActivityListResponse:
         history_window = resolve_history_window(self.db, account=account)
         summary_row = crud_runtime_session.get_account_session_summary(
@@ -785,6 +786,7 @@ class RuntimeSessionExplorerService:
         items = self._build_activity_timeline(
             summary_row=summary_row,
             interactions=interaction_items,
+            operator_note_id=operator_note_id,
         )
         cutoff = history_window.cutoff
         if cutoff is not None:
@@ -1218,6 +1220,7 @@ class RuntimeSessionExplorerService:
         *,
         summary_row: dict,
         interactions,
+        operator_note_id: Optional[str] = None,
     ) -> list[RuntimeSessionActivityItem]:
         items: list[RuntimeSessionActivityItem] = []
         interaction_api_usage_ids = {
@@ -1273,6 +1276,7 @@ class RuntimeSessionExplorerService:
                 account_id=summary_row["account_id"],
                 runtime_session_id=summary_row["id"],
                 limit=100,
+                operator_note_id=operator_note_id,
             )
         )
         if activity_rows:

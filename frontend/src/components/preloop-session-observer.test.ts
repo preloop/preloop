@@ -1127,6 +1127,115 @@ describe('PreloopSessionObserver', () => {
       expect(panel.focusEventId).to.equal('event-1');
     });
 
+    it('asks for a linked note with the session activity', async () => {
+      // A note older than the recent activity page is only on the page
+      // when the read names it, and the link has to land on it.
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .focusTurnId=${'note-7'}
+          .selectedSessionId=${session.id}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await waitUntil(
+        () =>
+          fetchStub
+            .getCalls()
+            .some((call) => String(call.args[0]).includes('/activity')),
+        'Activity was never read',
+        { timeout: 3000 }
+      );
+      const activityUrl = fetchStub
+        .getCalls()
+        .map((call) => String(call.args[0]))
+        .find((url) => url.includes('/activity'))!;
+      expect(activityUrl).to.contain('operator_note_id=note-7');
+      expect(el).to.exist;
+    });
+
+    it('reads activity again for another note in a loaded session', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .focusTurnId=${'note-1'}
+          .selectedSessionId=${session.id}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      const activityUrls = () =>
+        fetchStub
+          .getCalls()
+          .map((call) => String(call.args[0]))
+          .filter((url) => url.includes('/activity'));
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        'Session did not load',
+        { timeout: 3000 }
+      );
+      el.focusTurnId = 'note-2';
+      await waitUntil(
+        () =>
+          activityUrls().some((url) => url.includes('operator_note_id=note-2')),
+        'Opening another note did not read activity again',
+        { timeout: 3000 }
+      );
+      expect(activityUrls()[0]).to.contain('operator_note_id=note-1');
+    });
+
+    it('drops a stale activity answer for an earlier linked note', async () => {
+      const el = (await fixture(
+        html`<preloop-session-observer
+          .sessions=${[session]}
+          .selectedSessionId=${session.id}
+        ></preloop-session-observer>`
+      )) as PreloopSessionObserver;
+      await waitUntil(
+        () => deepText(el.shadowRoot).includes('Build a widget'),
+        'Session did not load',
+        { timeout: 3000 }
+      );
+      let releaseOld: () => void = () => {};
+      const oldGate = new Promise<void>((resolve) => {
+        releaseOld = resolve;
+      });
+      const noteRow = (id: string) => ({
+        activity_type: 'agent_control_message',
+        timestamp: '2026-03-09T19:00:00Z',
+        title: 'Operator message',
+        summary: `note ${id}`,
+        status: 'delivered',
+        metadata: { kind: 'operator_note', note_id: id },
+      });
+      const json = (body: unknown) =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      fetchStub
+        .withArgs(sinon.match(/operator_note_id=note-a/))
+        .callsFake(async () => {
+          await oldGate;
+          return json({ items: [noteRow('note-a')] });
+        });
+      fetchStub
+        .withArgs(sinon.match(/operator_note_id=note-b/))
+        .callsFake(async () => json({ items: [noteRow('note-b')] }));
+      el.focusTurnId = 'note-a';
+      await el.updateComplete;
+      el.focusTurnId = 'note-b';
+      const loaded = () =>
+        ((el as any).loadedActivity[session.id] || []) as Array<{
+          summary?: string;
+        }>;
+      await waitUntil(
+        () => loaded().some((row) => row.summary === 'note note-b'),
+        'The newer note never loaded',
+        { timeout: 3000 }
+      );
+      releaseOld();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(loaded().map((row) => row.summary)).to.deep.equal(['note note-b']);
+    });
+
     it('ignores an invalid replay param', async () => {
       window.history.replaceState(
         {},

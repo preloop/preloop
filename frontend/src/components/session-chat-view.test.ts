@@ -313,6 +313,37 @@ describe('session-chat-view', () => {
     expect(operator!.textContent).to.contain('please also run lint');
   });
 
+  it('names the author and the turn of a delivered note', async () => {
+    const activity = [
+      activityItem({
+        activity_type: 'agent_control_message',
+        timestamp: '2026-08-06T10:02:00Z',
+        title: 'Operator message',
+        summary: 'rebase first',
+        status: 'delivered',
+        metadata: {
+          kind: 'operator_note',
+          note_id: 'note-7',
+          author_display: 'dimitris',
+          author_auth_method: 'jwt',
+          turn_index: 4,
+        },
+      }),
+    ];
+    const el = await fixture<SessionChatView>(
+      html`<session-chat-view .activity=${activity}></session-chat-view>`
+    );
+    const bubble = el.shadowRoot!.querySelector(
+      '.bubble[data-kind="operator"]'
+    )!;
+    expect(bubble.querySelector('.bubble-role')!.textContent).to.contain(
+      'Note from dimitris'
+    );
+    expect(
+      bubble.querySelector('[data-testid="note-turn"]')!.textContent
+    ).to.contain('Delivered at turn 4');
+  });
+
   it('renders a queue chip on pending operator messages', async () => {
     const activity = [
       activityItem({

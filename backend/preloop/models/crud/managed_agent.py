@@ -5,6 +5,7 @@ from __future__ import annotations
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
+from uuid import UUID
 
 from sqlalchemy import DateTime, and_, case, cast, func, or_, tuple_
 from sqlalchemy.orm import Session
@@ -392,6 +393,47 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             resource_type="managed_agent",
             resource_id=agent_id,
         )
+
+    def get_for_note_session(
+        self, db: Session, *, account_id: str, runtime_session: models.RuntimeSession
+    ) -> Optional[ManagedAgent]:
+        """Resolve a note session's agent using its durable runtime identity.
+
+        Native runs have their own session rows while the managed agent
+        pointer names only its latest run. Resolve older and concurrent runs
+        by principal too, always within the target account.
+        """
+        if str(runtime_session.account_id) != str(account_id):
+            return None
+        agent = getattr(runtime_session, "managed_agent", None)
+        if agent is not None and str(agent.account_id) == str(account_id):
+            return agent
+        principal_type = runtime_session.runtime_principal_type
+        principal_id = runtime_session.runtime_principal_id
+        if not principal_type or not principal_id:
+            return None
+        if principal_type == "managed_agent":
+            try:
+                UUID(principal_id)
+            except (ValueError, TypeError, AttributeError):
+                return None
+            return self.get_for_account(
+                db, account_id=account_id, agent_id=principal_id
+            )
+        agent = self.get_by_source(
+            db,
+            account_id=account_id,
+            session_source_type=principal_type,
+            session_source_id=principal_id,
+        )
+        if agent is None and ":" in principal_id:
+            agent = self.get_by_source(
+                db,
+                account_id=account_id,
+                session_source_type=principal_type,
+                session_source_id=principal_id.split(":", 1)[0],
+            )
+        return agent
 
     def get_by_source(
         self,

@@ -1,3 +1,4 @@
+import type { PreparedExtensionAttentionItem } from './attention-extension';
 import type { MCPFinding } from '../mcp-findings-api';
 import type { BudgetPolicy } from '../api';
 import type {
@@ -51,7 +52,8 @@ export type AttentionKind =
   | 'spend'
   | 'pricing'
   | 'mcp'
-  | 'policy';
+  | 'policy'
+  | 'extension';
 
 /**
  * `low` is for things that are worth naming once and are usually fine: a model
@@ -296,6 +298,7 @@ export interface AttentionInputs {
   /** Notify rule hits of the last seven days, one row per rule. */
   policyNotices?: AttentionPolicyNotice[];
   mcpFindings?: MCPFinding[];
+  extensionItems?: PreparedExtensionAttentionItem[];
   /**
    * Active dismissals. `undefined` (an older backend without the endpoint)
    * hides nothing and is not an error.
@@ -356,6 +359,12 @@ export const ATTENTION_KIND_META: Record<
     icon: 'hdd-network',
     sectionHref: '/console/tools',
   },
+  extension: {
+    label: 'Extension',
+    plural: 'Extensions',
+    icon: 'puzzle',
+    sectionHref: '/console/attention',
+  },
   policy: {
     label: 'Policy notice',
     plural: 'Policy notices',
@@ -375,6 +384,7 @@ export const ATTENTION_KIND_ORDER: AttentionKind[] = [
   'pricing',
   'policy',
   'mcp',
+  'extension',
 ];
 
 /** The Cost page reads `panel` and scrolls its pricing card into view. */
@@ -1432,6 +1442,19 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
         evidence: { mcpFinding: finding },
       })),
     ...policyNoticeItems(inputs.policyNotices || []),
+    ...(inputs.extensionItems || [])
+      .filter((item) => /^\/console(?:[/?#][^\\\x00-\x20]*)?$/.test(item.href))
+      .map((item): AttentionItem => ({
+        id: item.dismissalId,
+        kind: 'extension',
+        severity: item.severity === 'action' ? 'warning' : 'low',
+        title: item.title,
+        detail: item.detail,
+        href: item.href,
+        at: item.opened_at,
+        fingerprint: item.fingerprint,
+        dismissable: true,
+      })),
   ];
 
   const byItemId = new Map<string, AttentionDismissalRecord>();

@@ -871,6 +871,8 @@ export interface OperatorNote {
   /** Which harness lifecycle point pulled it: session_start, stop, pre_tool_use. */
   delivery_event?: string | null;
   delivered_turn_index?: number | null;
+  /** Sent with "Next session": no session that existed then may claim it. */
+  next_session?: boolean | null;
   acknowledged_turn_id?: string | null;
   cancelled_at?: string | null;
 }
@@ -881,7 +883,23 @@ export interface OperatorNoteCreateRequest {
   agent_id?: string;
   runtime_session_id?: string;
   execution_id?: string;
+  /** With `agent_id` only: hold the note for a session not yet started. */
+  next_session?: boolean;
   expires_in_seconds?: number;
+}
+
+/** A live conversation a note can be aimed at. */
+export interface OperatorNoteSessionTarget {
+  id: string;
+  alias?: string | null;
+  session_source_type: string;
+  started_at: string;
+  session_reference?: string | null;
+}
+
+export interface OperatorNoteSessionTargets {
+  sessions: OperatorNoteSessionTarget[];
+  total: number;
 }
 
 export interface OperatorNoteList {

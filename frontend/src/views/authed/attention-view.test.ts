@@ -1,7 +1,3 @@
-import {
-  readAttentionSummary,
-  formatAttentionSummary,
-} from '../../utils/attention-summary';
 import { aTimeout, expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
@@ -36,12 +32,74 @@ describe('AttentionView', () => {
   let dismissalWrites: { url: string; method: string; body: any }[];
   let policyNoticesResponse: any[] = [];
   let spendOutliersResponse: any[];
+  let extensionItemsResponse: any[];
 
   const json = (data: unknown) =>
     new Response(JSON.stringify(data), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+
+  it('renders plugin items with severity, links and the existing dismissal flow', async () => {
+    extensionItemsResponse = [
+      {
+        id: 'one',
+        source: 'example:configuration',
+        title: 'Review example',
+        detail: 'Configuration changed',
+        href: '/console/settings/example',
+        severity: 'action',
+        opened_at: '2026-10-17T00:00:00Z',
+      },
+      {
+        id: 'two',
+        source: 'example:configuration',
+        title: 'Example information',
+        detail: 'For information',
+        href: '/console/settings/example',
+        severity: 'info',
+        opened_at: '2026-10-17T00:00:00Z',
+      },
+    ];
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    await waitUntil(
+      () => !!el.shadowRoot?.textContent?.includes('Review example')
+    );
+    const root = el.shadowRoot!;
+    expect(root.querySelector('a[href="/console/settings/example"]')).to.exist;
+    const rows = [...root.querySelectorAll('.attention-row')];
+    const action = rows.find((row) =>
+      row.textContent?.includes('Review example')
+    )!;
+    const info = rows.find((row) =>
+      row.textContent?.includes('Example information')
+    )!;
+    expect(action.querySelector('.severity-dot.warning')).to.exist;
+    expect(info.querySelector('.severity-dot.low')).to.exist;
+    const menu = action.querySelector(
+      'sl-menu-item[value="expected"]'
+    ) as HTMLElement;
+    expect(menu).to.exist;
+    menu
+      .closest('sl-menu')!
+      .dispatchEvent(
+        new CustomEvent('sl-select', { detail: { item: menu }, bubbles: true })
+      );
+    await waitUntil(() =>
+      dismissalWrites.some((write) => write.body?.reason === 'expected')
+    );
+    expect(dismissalWrites[0].url).to.include('extension');
+  });
+
+  it('does not render an empty extension section', async () => {
+    const el = await fixture<AttentionView>(
+      html`<attention-view></attention-view>`
+    );
+    await waitUntil(() => !el.shadowRoot?.querySelector('sl-spinner'));
+    expect(el.shadowRoot?.querySelector('#extensions')).not.to.exist;
+  });
 
   beforeEach(() => {
     localStorage.setItem('accessToken', 'test-access-token');
@@ -57,6 +115,7 @@ describe('AttentionView', () => {
     usageByModel = [];
     agentDeletes = [];
     spendOutliersResponse = [];
+    extensionItemsResponse = [];
     window.location.hash = '';
 
     approvalsResponse = [
@@ -98,6 +157,8 @@ describe('AttentionView', () => {
           await pendingGatewaySummary;
         }
 
+        if (url.startsWith('/api/v1/attention/extension-items'))
+          return json(extensionItemsResponse);
         if (url.startsWith('/api/v1/attention/dismissals')) {
           if (!dismissalsSupported) {
             return new Response('{"detail":"Not Found"}', { status: 404 });
@@ -234,73 +295,6 @@ describe('AttentionView', () => {
     connectStub.restore();
     subscribeStub.restore();
     localStorage.clear();
-  });
-
-  it('shows only enabled fleet Attention findings and hides the all-clear state', async () => {
-    permissions = ['view_device_fleet'];
-    approvalsResponse = [];
-    executionsResponse = [];
-    policiesResponse = [];
-    fetchStub
-      .withArgs('/api/v1/features')
-      .resolves(json({ features: { fleet_coverage: true } }));
-    fetchStub.withArgs('/api/v1/fleet/findings').resolves(
-      json({
-        items: [
-          {
-            id: 'finding-1',
-            rule: 'traffic_without_runner',
-            state: 'open',
-            opened_at: new Date().toISOString(),
-            device_key: 'fp:example',
-            evidence: { runner_state: 'offline', attention_enabled: true },
-            limitation: 'This is not proof of bypass.',
-          },
-          {
-            id: 'finding-2',
-            rule: 'discovered_not_onboarded',
-            state: 'open',
-            opened_at: new Date().toISOString(),
-            evidence: { attention_enabled: false },
-            limitation: 'Self reported.',
-          },
-        ],
-      })
-    );
-    const view = await fixture<AttentionView>(
-      html`<attention-view></attention-view>`
-    );
-    await waitUntil(() => !(view as any).loading);
-    await view.updateComplete;
-    expect(view.shadowRoot!.textContent).to.include('Agent traffic continued');
-    expect(view.shadowRoot!.textContent).not.to.include(
-      'Discovered agents have not'
-    );
-    expect(view.shadowRoot!.textContent).not.to.include(
-      'Nothing needs you right now'
-    );
-    expect(view.shadowRoot!.querySelector('a[href*="device=fp%3Aexample"]')).to
-      .exist;
-    expect(formatAttentionSummary(readAttentionSummary())).to.equal(
-      '1 item needs attention: 1 fleet finding'
-    );
-    expect(
-      fetchStub
-        .getCalls()
-        .filter((call) => String(call.args[0]).includes('/fleet/settings'))
-    ).to.have.length(0);
-  });
-
-  it('does not read fleet endpoints without the capability', async () => {
-    const view = await fixture<AttentionView>(
-      html`<attention-view></attention-view>`
-    );
-    await waitUntil(() => !(view as any).loading);
-    expect(
-      fetchStub
-        .getCalls()
-        .filter((call) => String(call.args[0]).includes('/fleet/'))
-    ).to.have.length(0);
   });
 
   it('explains a permissions failure and retries decisions independently of pending analytics', async () => {

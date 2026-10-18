@@ -1,7 +1,7 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import './session-replay-panel';
 import type { SessionReplayPanel } from './session-replay-panel';
-import type { FlowGatewayEvent } from '../types';
+import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
 
 const SESSION = {
   id: 'session-1',
@@ -1228,6 +1228,130 @@ describe('SessionReplayPanel', () => {
       '.chat-turn.jump-highlight'
     )!;
     expect(highlighted.getAttribute('data-event-id')).to.equal('e2');
+  });
+
+  it('jumps to a delivered note named by its note id', async () => {
+    // A note is a timeline row with no gateway twin: the Notes tab links
+    // to it by note id, and the activity row carries that id.
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'FIRST_TURN' },
+      ]),
+    ];
+    const activity = [
+      {
+        activity_type: 'agent_control_message',
+        timestamp: '2026-06-07T12:00:30Z',
+        title: 'Operator message',
+        summary: 'rebase first',
+        status: 'delivered',
+        metadata: { kind: 'operator_note', note_id: 'note-7', role: 'user' },
+      },
+    ] as unknown as RuntimeSessionActivityItem[];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${events}
+        .activity=${activity}
+        .focusEventId=${'note-7'}
+      ></session-replay-panel>
+    `);
+    await waitUntil(
+      () =>
+        Boolean(element.shadowRoot?.querySelector('.chat-turn.jump-highlight')),
+      'The linked note was never jumped to'
+    );
+    const highlighted = element.shadowRoot!.querySelector(
+      '.chat-turn.jump-highlight'
+    )!;
+    expect(highlighted.getAttribute('data-note-id')).to.equal('note-7');
+    expect(highlighted.textContent).to.contain('rebase first');
+  });
+
+  it('jumps to a linked note whose activity arrives after the focus', async () => {
+    // A second note linked in a loaded session: the focus moves first, the
+    // events search gives up, and the note arrives with the next read.
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'FIRST_TURN' },
+      ]),
+    ];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${events}
+        .hasMoreEvents=${false}
+        .focusEventId=${'note-9'}
+      ></session-replay-panel>
+    `);
+    await element.updateComplete;
+    await element.updateComplete;
+    expect(element.shadowRoot!.querySelector('.chat-turn.jump-highlight')).to.be
+      .null;
+    element.activity = [
+      {
+        activity_type: 'agent_control_message',
+        timestamp: '2026-06-07T12:00:30Z',
+        title: 'Operator message',
+        summary: 'late note',
+        status: 'delivered',
+        metadata: { kind: 'operator_note', note_id: 'note-9', role: 'user' },
+      },
+    ] as unknown as RuntimeSessionActivityItem[];
+    await waitUntil(
+      () =>
+        Boolean(element.shadowRoot?.querySelector('.chat-turn.jump-highlight')),
+      'The late note was never jumped to'
+    );
+    expect(
+      element
+        .shadowRoot!.querySelector('.chat-turn.jump-highlight')!
+        .getAttribute('data-note-id')
+    ).to.equal('note-9');
+  });
+
+  it('lands on a note again after the focus moved away and back', async () => {
+    const events: FlowGatewayEvent[] = [
+      previewEvent('e1', '2026-06-07T12:00:00Z', [
+        { role: 'user', text: 'FIRST_TURN' },
+      ]),
+    ];
+    const activity = [
+      {
+        activity_type: 'agent_control_message',
+        timestamp: '2026-06-07T12:00:30Z',
+        title: 'Operator message',
+        summary: 'rebase first',
+        status: 'delivered',
+        metadata: { kind: 'operator_note', note_id: 'note-7', role: 'user' },
+      },
+    ] as unknown as RuntimeSessionActivityItem[];
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${events}
+        .activity=${activity}
+        .focusEventId=${'note-7'}
+      ></session-replay-panel>
+    `);
+    const highlighted = () =>
+      element.shadowRoot?.querySelector('.chat-turn.jump-highlight') || null;
+    await waitUntil(() => highlighted(), 'first jump');
+    highlighted()!.classList.remove('jump-highlight');
+    element.focusEventId = 'e1';
+    await waitUntil(
+      () => highlighted()?.getAttribute('data-event-id') === 'e1',
+      'jump to the event'
+    );
+    highlighted()!.classList.remove('jump-highlight');
+    element.focusEventId = 'note-7';
+    await waitUntil(
+      () => highlighted()?.getAttribute('data-note-id') === 'note-7',
+      'Returning to the note did not land again'
+    );
   });
 
   it('jumps to a deep linked turn named by its event id', async () => {

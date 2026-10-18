@@ -1,4 +1,8 @@
 import { expect } from '@open-wc/testing';
+import {
+  prepareExtensionAttentionItem,
+  type ExtensionAttentionItem,
+} from './attention-extension';
 
 import {
   ATTENTION_KIND_META,
@@ -73,6 +77,103 @@ function derive(inputs: AttentionInputs) {
 }
 
 describe('deriveAttentionItems', () => {
+  describe('plugin extensions', () => {
+    const extension: ExtensionAttentionItem = {
+      id: 'example',
+      source: 'example:configuration',
+      title: 'Review example',
+      detail: 'Configuration changed',
+      href: '/console/settings/example',
+      severity: 'action',
+      opened_at: minutesAgo(10),
+    };
+
+    it('bounds stable namespaced identities and fingerprints at contract limits', async () => {
+      const raw = {
+        ...extension,
+        id: 'é'.repeat(255),
+        source: '界'.repeat(255),
+        title: 't'.repeat(500),
+        detail: 'd'.repeat(4000),
+      };
+      const prepared = await prepareExtensionAttentionItem(raw);
+      const item = derive({ extensionItems: [prepared] })[0];
+      expect(item.id.length).to.be.at.most(255);
+      expect(item.fingerprint.length).to.be.at.most(4096);
+      expect(await prepareExtensionAttentionItem(raw)).to.deep.equal(prepared);
+      const other = await prepareExtensionAttentionItem({
+        ...raw,
+        source: 'other',
+      });
+      expect(other.dismissalId).not.to.equal(item.id);
+    });
+
+    it('allows only local console destinations', async () => {
+      for (const href of [
+        'https://example.com',
+        '//example.com',
+        '/console\\evil',
+        '/console/\ninvalid',
+        '/console-other',
+      ]) {
+        expect(
+          derive({
+            extensionItems: [
+              await prepareExtensionAttentionItem({ ...extension, href }),
+            ],
+          })
+        ).to.have.length(0);
+      }
+      expect(
+        derive({
+          extensionItems: [await prepareExtensionAttentionItem(extension)],
+        })[0].href
+      ).to.equal(extension.href);
+    });
+
+    it('maps action to warning and info to neutral low', async () => {
+      for (const [severity, expected] of [
+        ['action', 'warning'],
+        ['info', 'low'],
+      ] as const) {
+        const item = await prepareExtensionAttentionItem({
+          ...extension,
+          severity,
+        });
+        expect(derive({ extensionItems: [item] })[0].severity).to.equal(
+          expected
+        );
+      }
+    });
+
+    it('keeps dismissals until displayed evidence or the incident changes', async () => {
+      const prepared = await prepareExtensionAttentionItem(extension);
+      const dismissals = [
+        {
+          item_id: prepared.dismissalId,
+          fingerprint: prepared.fingerprint,
+          reason: 'expected',
+        },
+      ];
+      expect(derive({ extensionItems: [prepared], dismissals })).to.have.length(
+        0
+      );
+      for (const change of [
+        { detail: 'New evidence' },
+        { opened_at: minutesAgo(1) },
+      ]) {
+        const changed = await prepareExtensionAttentionItem({
+          ...extension,
+          ...change,
+        });
+        const items = derive({ extensionItems: [changed], dismissals });
+        expect(items).to.have.length(1);
+        expect(items[0].id).to.equal(prepared.dismissalId);
+        expect(items[0].fingerprint).not.to.equal(prepared.fingerprint);
+      }
+    });
+  });
+
   describe('approvals', () => {
     it('emits a critical item per pending request with agent and relative time', () => {
       const items = derive({
