@@ -7012,11 +7012,12 @@ paths:
       description: "Open a time-boxed bypass for the calling user.\n\nThe bypass always\
         \ targets ``current_user``; there is no parameter to target\nsomebody else.\
         \ Duration is validated by the schema against the hard cap, so\nan unbounded\
-        \ bypass cannot be constructed.\n\nArgs:\n    payload: Mode, duration, optional\
-        \ agent scope and reason.\n    current_user: Current authenticated user (the\
-        \ bypass subject).\n    db: Database session.\n\nReturns:\n    The created\
-        \ bypass.\n\nRaises:\n    HTTPException: If the duration is outside the permitted\
-        \ range."
+        \ bypass cannot be constructed. Opening a bypass is a decision\nabout approvals,\
+        \ so it requires ``decide_approvals``.\n\nArgs:\n    payload: Mode, duration,\
+        \ optional agent scope and reason.\n    current_user: Current authenticated\
+        \ user (the bypass subject).\n    db: Database session.\n\nReturns:\n    The\
+        \ created bypass.\n\nRaises:\n    HTTPException: If the duration is outside\
+        \ the permitted range, or 403\n        when the user lacks ``decide_approvals``."
       operationId: create_bypass_api_v1_approval_bypasses_post
       requestBody:
         content:

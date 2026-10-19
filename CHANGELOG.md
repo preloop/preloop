@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Opening an approval bypass requires `decide_approvals`, and the
+  approval-bypass endpoints enforce their permissions on builds without the
+  RBAC plugin, matching the other agent-control endpoints
+  ([#1918](https://github.com/preloop/preloop/pull/1918)).
+
 ## [0.17.0] - 2026-10-19
 
 **Fleet Map** adds a Table | Map view to Device fleet and the bounded,

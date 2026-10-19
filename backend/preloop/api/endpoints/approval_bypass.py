@@ -35,7 +35,7 @@ from preloop.schemas.approval_bypass import (
     ApprovalBypassResponse,
     ApprovalBypassStatus,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -99,13 +99,14 @@ def list_bypasses(
     Returns:
         Active bypasses, soonest-expiring last.
     """
+    ensure_permission_in_oss(db, current_user, "view_approvals")
     return crud_approval_bypass.list_active_for_account(
         db, account_id=current_user.account_id
     )
 
 
 @router.post("", response_model=ApprovalBypassResponse, status_code=201)
-@require_permission("view_approvals")
+@require_permission("decide_approvals")
 def create_bypass(
     payload: ApprovalBypassCreate,
     current_user: User = Depends(get_current_active_user),
@@ -115,7 +116,8 @@ def create_bypass(
 
     The bypass always targets ``current_user``; there is no parameter to target
     somebody else. Duration is validated by the schema against the hard cap, so
-    an unbounded bypass cannot be constructed.
+    an unbounded bypass cannot be constructed. Opening a bypass is a decision
+    about approvals, so it requires ``decide_approvals``.
 
     Args:
         payload: Mode, duration, optional agent scope and reason.
@@ -126,8 +128,10 @@ def create_bypass(
         The created bypass.
 
     Raises:
-        HTTPException: If the duration is outside the permitted range.
+        HTTPException: If the duration is outside the permitted range, or 403
+            when the user lacks ``decide_approvals``.
     """
+    ensure_permission_in_oss(db, current_user, "decide_approvals")
     expires_at = datetime.utcnow() + timedelta(minutes=payload.duration_minutes)
 
     bypass = ApprovalBypass(
@@ -186,6 +190,7 @@ def revoke_bypass(
     Raises:
         HTTPException: If the bypass is not found in this account.
     """
+    ensure_permission_in_oss(db, current_user, "view_approvals")
     existing = crud_approval_bypass.get(
         db, id=str(bypass_id), account_id=str(current_user.account_id)
     )
@@ -226,6 +231,7 @@ def revoke_all_bypasses(
     Returns:
         The bypasses that were revoked.
     """
+    ensure_permission_in_oss(db, current_user, "view_approvals")
     active = crud_approval_bypass.list_active_for_account(
         db, account_id=current_user.account_id
     )
