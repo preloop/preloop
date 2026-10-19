@@ -114,3 +114,82 @@ that today's signer endorsed those bytes, but cannot establish how or where the
 old binary was built. Do not label that endorsement as original build provenance
 or silently replace historical assets. Historical provenance should only be
 published when its actual build evidence is available and verifiable.
+
+## Historical artifact endorsements
+
+The manual [Historical release signing workflow](https://github.com/preloop/preloop/blob/main/.github/workflows/historical-release-signing.yml)
+is limited to the existing v0.16.0, v0.14.0, v0.13.1 and v0.13.0 releases. It
+downloads every original attached asset by API object ID, independently hashes
+the bytes, and compares them with the reviewed
+`security/historical-release-inventory-2026-10-19.json`. Original asset IDs,
+sizes, timestamps, digests and tag commits must remain unchanged. The workflow
+does not rebuild packages, move tags, replace assets, publish new releases or
+modify release notes.
+
+The new `preloop-<tag>-historical-endorsement.json` names all original assets and
+their SHA-256 hashes, including the original checksum manifest when present.
+The v0.14.0 and v0.13.1 manifests omit installers and Compose configuration;
+v0.13.0 has no manifest. The new endorsement covers these files too. Its signed
+statement explicitly describes a **current endorsement of historical bytes**,
+not original build provenance or proof that those bytes came from the tag's
+source commit. This does not add Windows Authenticode or macOS notarization.
+
+Cosign signs this document using the current main workflow's GitHub OIDC
+identity. The detached `preloop-<tag>-historical-endorsement.sigstore` contains the
+signature, certificate and transparency evidence. It is not a SLSA attestation.
+Scorecard recognizes this detached signature suffix, but that filename check
+does not cryptographically verify the signature or the payload hashes.
+
+After the workflow change is reviewed and merged, run its read-only mode first:
+
+```bash
+gh workflow run historical-release-signing.yml --repo preloop/preloop \
+  --ref main -f publish=false
+```
+
+This mode has only `contents: read` and does not request OIDC or create a
+signature. Review its inventory and the committed manifest digest before the
+signing dispatch. The reviewed inventory for these four releases is:
+
+```text
+7abf282bd5805b6dd407eaed2757d77100d72350ca3c3920ebe19d204efcfe1e
+```
+
+To sign and attach exactly that inventory:
+
+```bash
+gh workflow run historical-release-signing.yml --repo preloop/preloop \
+  --ref main -f publish=true \
+  -f reviewed_inventory_sha256=7abf282bd5805b6dd407eaed2757d77100d72350ca3c3920ebe19d204efcfe1e
+```
+
+The signing job verifies exact issuer, workflow identity and workflow commit
+before uploading. It downloads and verifies the two new attachments afterward,
+and rechecks that every original asset and tag reference is unchanged. Uploads
+never use `--clobber`. If publication is interrupted, the job retains its exact
+endorsement documents and bundles in the `historical-release-endorsements`
+workflow artifact. Existing or partial endorsement attachments stop a rerun
+before signing. Report the partial result; do not delete, replace or silently
+re-sign an existing attachment. Recovery requires verifying the retained bytes
+against the reviewed inventory and trusted signing commit, comparing any
+already attached bytes, and attaching only a missing name.
+
+Verify the published signatures and all original bytes independently, with
+cosign v3.1.3 and a trusted copy of the reviewed source:
+
+```bash
+SIGNING_COMMIT='<reviewed full main commit used by the signing workflow>'
+PRELOOP_DISABLE_TELEMETRY=true python scripts/historical_release_signing.py verify \
+  --directory /tmp/preloop-historical-verification \
+  --manifest security/historical-release-inventory-2026-10-19.json \
+  --manifest-sha256 7abf282bd5805b6dd407eaed2757d77100d72350ca3c3920ebe19d204efcfe1e \
+  --signing-sha "$SIGNING_COMMIT"
+```
+
+The signing commit must come from the reviewed workflow run or another trusted
+record, not from the downloaded endorsement itself. Verification pins
+`https://github.com/preloop/preloop/.github/workflows/historical-release-signing.yml@refs/heads/main`
+and issuer `https://token.actions.githubusercontent.com`, checks the signing
+commit claim, and requires the signed release entry to match the reviewed
+inventory. The helper rejects changes, unsafe names, symlinks, incomplete
+endorsement pairs and signature failures.

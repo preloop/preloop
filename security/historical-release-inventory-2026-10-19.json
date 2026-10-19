@@ -1,0 +1,631 @@
+{
+  "releases": [
+    {
+      "assets": [
+        {
+          "api_digest": "sha256:956139b2422d26a9873976f272b1a9801bf7020b7e3d788f588929942944db60",
+          "created_at": "2026-09-21T03:30:41Z",
+          "id": 578137605,
+          "name": "SHA256SUMS",
+          "sha256": "956139b2422d26a9873976f272b1a9801bf7020b7e3d788f588929942944db60",
+          "size": 1445,
+          "updated_at": "2026-09-21T03:30:41Z"
+        },
+        {
+          "api_digest": "sha256:7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "created_at": "2026-09-21T03:30:41Z",
+          "id": 578137607,
+          "name": "docker-compose.release.yaml",
+          "sha256": "7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "size": 7668,
+          "updated_at": "2026-09-21T03:30:41Z"
+        },
+        {
+          "api_digest": "sha256:d9f3bf4f97cadf9a566b4d6c88c47d25dccb1e3fad21a2256d2506f9599c1894",
+          "created_at": "2026-09-21T03:30:41Z",
+          "id": 578137603,
+          "name": "install-cli.ps1",
+          "sha256": "d9f3bf4f97cadf9a566b4d6c88c47d25dccb1e3fad21a2256d2506f9599c1894",
+          "size": 7786,
+          "updated_at": "2026-09-21T03:30:41Z"
+        },
+        {
+          "api_digest": "sha256:7d63286126e7f9f574b7cdde262b8b80f6e0858bba1ba109112a679d09a10555",
+          "created_at": "2026-09-21T03:30:41Z",
+          "id": 578137606,
+          "name": "install-cli.sh",
+          "sha256": "7d63286126e7f9f574b7cdde262b8b80f6e0858bba1ba109112a679d09a10555",
+          "size": 12643,
+          "updated_at": "2026-09-21T03:30:41Z"
+        },
+        {
+          "api_digest": "sha256:4c271b85c4274c7e4c72cba9d43a0df76a537e5003b63c61209479f1784b1f6c",
+          "created_at": "2026-09-21T03:30:41Z",
+          "id": 578137601,
+          "name": "install-oss.sh",
+          "sha256": "4c271b85c4274c7e4c72cba9d43a0df76a537e5003b63c61209479f1784b1f6c",
+          "size": 46143,
+          "updated_at": "2026-09-21T03:30:41Z"
+        },
+        {
+          "api_digest": "sha256:972e711105e140a5af5b7825bce697f6cd6956417384cbca9a5f797152f49c49",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137618,
+          "name": "preloop-0.16.0-py3-none-any.whl",
+          "sha256": "972e711105e140a5af5b7825bce697f6cd6956417384cbca9a5f797152f49c49",
+          "size": 3001356,
+          "updated_at": "2026-09-21T03:30:42Z"
+        },
+        {
+          "api_digest": "sha256:dafd91523474151473bbabffc7292f9e8ba74ce9241a57720d91fda2fd26e752",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137623,
+          "name": "preloop-0.16.0.tar.gz",
+          "sha256": "dafd91523474151473bbabffc7292f9e8ba74ce9241a57720d91fda2fd26e752",
+          "size": 2542148,
+          "updated_at": "2026-09-21T03:30:42Z"
+        },
+        {
+          "api_digest": "sha256:a11a46e13fe1bd8195d7e60c4833f22915df10755ecaa9bd1cbe39a69fc56e13",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137626,
+          "name": "preloop-0.16.0.tgz",
+          "sha256": "a11a46e13fe1bd8195d7e60c4833f22915df10755ecaa9bd1cbe39a69fc56e13",
+          "size": 80578,
+          "updated_at": "2026-09-21T03:30:42Z"
+        },
+        {
+          "api_digest": "sha256:77d1b0019bf668870765995e481fe18af661a452979e3f9d9191c12d22ac6b7f",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137625,
+          "name": "preloop-darwin-amd64",
+          "sha256": "77d1b0019bf668870765995e481fe18af661a452979e3f9d9191c12d22ac6b7f",
+          "size": 12066112,
+          "updated_at": "2026-09-21T03:30:43Z"
+        },
+        {
+          "api_digest": "sha256:6b07026a0e5a4c6bed6dcb07220fa990f2969d75a09b34eb4668645045eef167",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137627,
+          "name": "preloop-darwin-arm64",
+          "sha256": "6b07026a0e5a4c6bed6dcb07220fa990f2969d75a09b34eb4668645045eef167",
+          "size": 11115618,
+          "updated_at": "2026-09-21T03:30:43Z"
+        },
+        {
+          "api_digest": "sha256:c8723e6e1c73eb587216dc01671284514404dfaed92ef4179134ffb1976610be",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137640,
+          "name": "preloop-linux-amd64",
+          "sha256": "c8723e6e1c73eb587216dc01671284514404dfaed92ef4179134ffb1976610be",
+          "size": 12226825,
+          "updated_at": "2026-09-21T03:30:43Z"
+        },
+        {
+          "api_digest": "sha256:e6d2d3f9782b0d1bd0ea6b04c600873c43b5c5c6919233b531a3703414279c7e",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137635,
+          "name": "preloop-linux-arm64",
+          "sha256": "e6d2d3f9782b0d1bd0ea6b04c600873c43b5c5c6919233b531a3703414279c7e",
+          "size": 11206818,
+          "updated_at": "2026-09-21T03:30:43Z"
+        },
+        {
+          "api_digest": "sha256:76312f05054b001cdd7316962037f1ae3d94c4b8554ed4a3fcf4b9c7afa34599",
+          "created_at": "2026-09-21T03:30:42Z",
+          "id": 578137642,
+          "name": "preloop-sbom-backend-0.16.0.cdx.json",
+          "sha256": "76312f05054b001cdd7316962037f1ae3d94c4b8554ed4a3fcf4b9c7afa34599",
+          "size": 223379,
+          "updated_at": "2026-09-21T03:30:43Z"
+        },
+        {
+          "api_digest": "sha256:6fe6e8b2aa11806fff99cb9ebc5d746c686cf81c38c5c5335e0e015697b4a249",
+          "created_at": "2026-09-21T03:30:43Z",
+          "id": 578137656,
+          "name": "preloop-sbom-cli-0.16.0.cdx.json",
+          "sha256": "6fe6e8b2aa11806fff99cb9ebc5d746c686cf81c38c5c5335e0e015697b4a249",
+          "size": 25042,
+          "updated_at": "2026-09-21T03:30:43Z"
+        },
+        {
+          "api_digest": "sha256:c3fe53156584a1c369cee25b3f745075e89a4ec2607f64fd6f2058a5126e55b7",
+          "created_at": "2026-09-21T03:30:43Z",
+          "id": 578137658,
+          "name": "preloop-sbom-frontend-0.16.0.cdx.json",
+          "sha256": "c3fe53156584a1c369cee25b3f745075e89a4ec2607f64fd6f2058a5126e55b7",
+          "size": 596075,
+          "updated_at": "2026-09-21T03:30:43Z"
+        },
+        {
+          "api_digest": "sha256:0e6174d3d46274a545a51d55221d05afd853b352c5ae98f92ae4813cb2998418",
+          "created_at": "2026-09-21T03:30:43Z",
+          "id": 578137660,
+          "name": "preloop-windows-amd64.exe",
+          "sha256": "0e6174d3d46274a545a51d55221d05afd853b352c5ae98f92ae4813cb2998418",
+          "size": 12263936,
+          "updated_at": "2026-09-21T03:30:45Z"
+        },
+        {
+          "api_digest": "sha256:81cdf568786f72a746706ff3a265931d383018beb0a47e841ee221999f1d65f1",
+          "created_at": "2026-09-21T03:30:44Z",
+          "id": 578137666,
+          "name": "preloop-windows-arm64.exe",
+          "sha256": "81cdf568786f72a746706ff3a265931d383018beb0a47e841ee221999f1d65f1",
+          "size": 11078144,
+          "updated_at": "2026-09-21T03:30:45Z"
+        }
+      ],
+      "checksum_coverage": {
+        "covered": [
+          "docker-compose.release.yaml",
+          "install-cli.ps1",
+          "install-cli.sh",
+          "install-oss.sh",
+          "preloop-0.16.0-py3-none-any.whl",
+          "preloop-0.16.0.tar.gz",
+          "preloop-0.16.0.tgz",
+          "preloop-darwin-amd64",
+          "preloop-darwin-arm64",
+          "preloop-linux-amd64",
+          "preloop-linux-arm64",
+          "preloop-sbom-backend-0.16.0.cdx.json",
+          "preloop-sbom-cli-0.16.0.cdx.json",
+          "preloop-sbom-frontend-0.16.0.cdx.json",
+          "preloop-windows-amd64.exe",
+          "preloop-windows-arm64.exe"
+        ],
+        "uncovered": []
+      },
+      "id": 392678101,
+      "immutable": false,
+      "published_at": "2026-09-21T03:30:45Z",
+      "tag": "v0.16.0",
+      "tag_commit": "af6bd2b3b2ac88aeabef17d17d137b47c52dc3ee"
+    },
+    {
+      "assets": [
+        {
+          "api_digest": "sha256:9418f905cbe771aa86afc437d7b613281ef64424cb3ed2178d994679da6b82dd",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060051,
+          "name": "SHA256SUMS",
+          "sha256": "9418f905cbe771aa86afc437d7b613281ef64424cb3ed2178d994679da6b82dd",
+          "size": 801,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060047,
+          "name": "docker-compose.release.yaml",
+          "sha256": "7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "size": 7668,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:7cd54755d9e2bde13c157961b9cfb9e0e94691a45afbf59c6f239a4376d66e71",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060049,
+          "name": "install-cli.ps1",
+          "sha256": "7cd54755d9e2bde13c157961b9cfb9e0e94691a45afbf59c6f239a4376d66e71",
+          "size": 8101,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:860b03fa19866dccd98eb404834e39b2750bf49997f2f331bdc93cccccf47d2e",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060048,
+          "name": "install-cli.sh",
+          "sha256": "860b03fa19866dccd98eb404834e39b2750bf49997f2f331bdc93cccccf47d2e",
+          "size": 11246,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:4e498b2e59cc294a84dbd3ae7b132db55cee05d241f106dcd1c4a367c06a08be",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060059,
+          "name": "install-oss.sh",
+          "sha256": "4e498b2e59cc294a84dbd3ae7b132db55cee05d241f106dcd1c4a367c06a08be",
+          "size": 42749,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:415a4b494a0ee3e6562bf0db0436479c27006871e40f7ba693f687e683d79ab7",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060055,
+          "name": "preloop-0.14.0-py3-none-any.whl",
+          "sha256": "415a4b494a0ee3e6562bf0db0436479c27006871e40f7ba693f687e683d79ab7",
+          "size": 1416641,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:09b9899290df8cb012bc8cd580de596670a4777041c8b462826327e2b9bce92c",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060052,
+          "name": "preloop-0.14.0.tar.gz",
+          "sha256": "09b9899290df8cb012bc8cd580de596670a4777041c8b462826327e2b9bce92c",
+          "size": 1160427,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:ecd0cfe027fb275fe1cbf42d82c99c62db4e9daeb3cd563e301cd4294de3aaed",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060060,
+          "name": "preloop-0.14.0.tgz",
+          "sha256": "ecd0cfe027fb275fe1cbf42d82c99c62db4e9daeb3cd563e301cd4294de3aaed",
+          "size": 49509,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:d6f45daa1a7df17c970fc00f7fd9c1f85f105716b2449cc028b524fc30c91d22",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060050,
+          "name": "preloop-darwin-amd64",
+          "sha256": "d6f45daa1a7df17c970fc00f7fd9c1f85f105716b2449cc028b524fc30c91d22",
+          "size": 12702464,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:221fabf627f2c8d7a9522e844b5935dd80049d9d9a846b856f7b699f5546d43f",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060058,
+          "name": "preloop-darwin-arm64",
+          "sha256": "221fabf627f2c8d7a9522e844b5935dd80049d9d9a846b856f7b699f5546d43f",
+          "size": 11748722,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:814280d8c21ebf20e65ffe5047390a83cddbe90e67248e5148bfffe427584d58",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060053,
+          "name": "preloop-linux-amd64",
+          "sha256": "814280d8c21ebf20e65ffe5047390a83cddbe90e67248e5148bfffe427584d58",
+          "size": 12910857,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:842905aa74a7157c2471caf422d9de9b4c8d4f45604552544b3d255f80d88c16",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060057,
+          "name": "preloop-linux-arm64",
+          "sha256": "842905aa74a7157c2471caf422d9de9b4c8d4f45604552544b3d255f80d88c16",
+          "size": 11862178,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:81823b55676f66df21cb3019fb5ea255682ab79ff3d399a5df3510ec0e3acbcc",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060054,
+          "name": "preloop-windows-amd64.exe",
+          "sha256": "81823b55676f66df21cb3019fb5ea255682ab79ff3d399a5df3510ec0e3acbcc",
+          "size": 12919808,
+          "updated_at": "2026-08-07T11:18:17Z"
+        },
+        {
+          "api_digest": "sha256:75d3cfea81e1cef73ae0c2ebc0819ac583eb0341942a674ef050f408db7579b6",
+          "created_at": "2026-08-07T11:18:16Z",
+          "id": 505060056,
+          "name": "preloop-windows-arm64.exe",
+          "sha256": "75d3cfea81e1cef73ae0c2ebc0819ac583eb0341942a674ef050f408db7579b6",
+          "size": 11727360,
+          "updated_at": "2026-08-07T11:18:17Z"
+        }
+      ],
+      "checksum_coverage": {
+        "covered": [
+          "preloop-0.14.0-py3-none-any.whl",
+          "preloop-0.14.0.tar.gz",
+          "preloop-0.14.0.tgz",
+          "preloop-darwin-amd64",
+          "preloop-darwin-arm64",
+          "preloop-linux-amd64",
+          "preloop-linux-arm64",
+          "preloop-windows-amd64.exe",
+          "preloop-windows-arm64.exe"
+        ],
+        "uncovered": [
+          "docker-compose.release.yaml",
+          "install-cli.ps1",
+          "install-cli.sh",
+          "install-oss.sh"
+        ]
+      },
+      "id": 366698662,
+      "immutable": false,
+      "published_at": "2026-08-07T11:18:18Z",
+      "tag": "v0.14.0",
+      "tag_commit": "346112533b1430abef950cb6344eed1eda70a60f"
+    },
+    {
+      "assets": [
+        {
+          "api_digest": "sha256:34347b0d0252aa9dd1a3fa0c788aaa14ce3d138e3cfc1869aa2ca76af22cfe48",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631840,
+          "name": "SHA256SUMS",
+          "sha256": "34347b0d0252aa9dd1a3fa0c788aaa14ce3d138e3cfc1869aa2ca76af22cfe48",
+          "size": 801,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631839,
+          "name": "docker-compose.release.yaml",
+          "sha256": "7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "size": 7668,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:7cd54755d9e2bde13c157961b9cfb9e0e94691a45afbf59c6f239a4376d66e71",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631843,
+          "name": "install-cli.ps1",
+          "sha256": "7cd54755d9e2bde13c157961b9cfb9e0e94691a45afbf59c6f239a4376d66e71",
+          "size": 8101,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:860b03fa19866dccd98eb404834e39b2750bf49997f2f331bdc93cccccf47d2e",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631837,
+          "name": "install-cli.sh",
+          "sha256": "860b03fa19866dccd98eb404834e39b2750bf49997f2f331bdc93cccccf47d2e",
+          "size": 11246,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:4e498b2e59cc294a84dbd3ae7b132db55cee05d241f106dcd1c4a367c06a08be",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631847,
+          "name": "install-oss.sh",
+          "sha256": "4e498b2e59cc294a84dbd3ae7b132db55cee05d241f106dcd1c4a367c06a08be",
+          "size": 42749,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:472099daa5a57313d994fcd7e2c6f82fe5016fd809b8aaf2fde7458b8db158d2",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631842,
+          "name": "preloop-0.13.1-py3-none-any.whl",
+          "sha256": "472099daa5a57313d994fcd7e2c6f82fe5016fd809b8aaf2fde7458b8db158d2",
+          "size": 1274824,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:0ddc81fb8816d81a3547861ac079f187afa1ba163481754d21aa51d8941cf59a",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631845,
+          "name": "preloop-0.13.1.tar.gz",
+          "sha256": "0ddc81fb8816d81a3547861ac079f187afa1ba163481754d21aa51d8941cf59a",
+          "size": 1036907,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:8807ac37e1564c56d4885b2e3d654c897b5e6ff3a5df267d333b554104976af5",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631844,
+          "name": "preloop-0.13.1.tgz",
+          "sha256": "8807ac37e1564c56d4885b2e3d654c897b5e6ff3a5df267d333b554104976af5",
+          "size": 47988,
+          "updated_at": "2026-07-28T11:23:12Z"
+        },
+        {
+          "api_digest": "sha256:e2e4ce12e6a52c2cf5e9f071702e4e349cf951590ab374ef2d83c6542ddebffc",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631836,
+          "name": "preloop-darwin-amd64",
+          "sha256": "e2e4ce12e6a52c2cf5e9f071702e4e349cf951590ab374ef2d83c6542ddebffc",
+          "size": 12205456,
+          "updated_at": "2026-07-28T11:23:13Z"
+        },
+        {
+          "api_digest": "sha256:74df1c34b491f7f7184ec9704425d582a4847cc871d91ceed646b46b5980dca1",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631835,
+          "name": "preloop-darwin-arm64",
+          "sha256": "74df1c34b491f7f7184ec9704425d582a4847cc871d91ceed646b46b5980dca1",
+          "size": 11392530,
+          "updated_at": "2026-07-28T11:23:13Z"
+        },
+        {
+          "api_digest": "sha256:63c5782f23d80367c47af954b1527eac86e8f7cc80ef95c4c50a5e801a1c7dd2",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631838,
+          "name": "preloop-linux-amd64",
+          "sha256": "63c5782f23d80367c47af954b1527eac86e8f7cc80ef95c4c50a5e801a1c7dd2",
+          "size": 12427556,
+          "updated_at": "2026-07-28T11:23:13Z"
+        },
+        {
+          "api_digest": "sha256:74d0eb3b852b37169f20f36e3ccea806f14032ee15cd906d63436d07cf9466ce",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631841,
+          "name": "preloop-linux-arm64",
+          "sha256": "74d0eb3b852b37169f20f36e3ccea806f14032ee15cd906d63436d07cf9466ce",
+          "size": 11534520,
+          "updated_at": "2026-07-28T11:23:13Z"
+        },
+        {
+          "api_digest": "sha256:90319d9ae8c7c849f7787bb4abea1cdd336c8a8d2d2bcbab10395fccef87edbf",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631834,
+          "name": "preloop-windows-amd64.exe",
+          "sha256": "90319d9ae8c7c849f7787bb4abea1cdd336c8a8d2d2bcbab10395fccef87edbf",
+          "size": 12418048,
+          "updated_at": "2026-07-28T11:23:13Z"
+        },
+        {
+          "api_digest": "sha256:1ecbe36e7d42201261f299db11d77c5e0bef6cd4597c19efea027776e577b4e3",
+          "created_at": "2026-07-28T11:23:12Z",
+          "id": 492631848,
+          "name": "preloop-windows-arm64.exe",
+          "sha256": "1ecbe36e7d42201261f299db11d77c5e0bef6cd4597c19efea027776e577b4e3",
+          "size": 11345920,
+          "updated_at": "2026-07-28T11:23:13Z"
+        }
+      ],
+      "checksum_coverage": {
+        "covered": [
+          "preloop-0.13.1-py3-none-any.whl",
+          "preloop-0.13.1.tar.gz",
+          "preloop-0.13.1.tgz",
+          "preloop-darwin-amd64",
+          "preloop-darwin-arm64",
+          "preloop-linux-amd64",
+          "preloop-linux-arm64",
+          "preloop-windows-amd64.exe",
+          "preloop-windows-arm64.exe"
+        ],
+        "uncovered": [
+          "docker-compose.release.yaml",
+          "install-cli.ps1",
+          "install-cli.sh",
+          "install-oss.sh"
+        ]
+      },
+      "id": 361033319,
+      "immutable": false,
+      "published_at": "2026-07-28T11:23:14Z",
+      "tag": "v0.13.1",
+      "tag_commit": "3eb734173b490d6bf03e10573d532880e7bbc913"
+    },
+    {
+      "assets": [
+        {
+          "api_digest": "sha256:7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244714,
+          "name": "docker-compose.release.yaml",
+          "sha256": "7aeaf507b5a5012e49f096c620d4f063a0a883e796ebd02bb71fff3bc344651c",
+          "size": 7668,
+          "updated_at": "2026-07-26T09:59:54Z"
+        },
+        {
+          "api_digest": "sha256:1d00a4d0838290347dd2b601d83bd6b67c3590048a29595fc9d19a02af733fe1",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244711,
+          "name": "install-cli.sh",
+          "sha256": "1d00a4d0838290347dd2b601d83bd6b67c3590048a29595fc9d19a02af733fe1",
+          "size": 8195,
+          "updated_at": "2026-07-26T09:59:54Z"
+        },
+        {
+          "api_digest": "sha256:4e498b2e59cc294a84dbd3ae7b132db55cee05d241f106dcd1c4a367c06a08be",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244713,
+          "name": "install-oss.sh",
+          "sha256": "4e498b2e59cc294a84dbd3ae7b132db55cee05d241f106dcd1c4a367c06a08be",
+          "size": 42749,
+          "updated_at": "2026-07-26T09:59:54Z"
+        },
+        {
+          "api_digest": "sha256:c81eb5a6fc77ec24e13cde9612f29251d03110aba0ddbb97c71ca9fe1502f78b",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244719,
+          "name": "preloop-0.13.0-py3-none-any.whl",
+          "sha256": "c81eb5a6fc77ec24e13cde9612f29251d03110aba0ddbb97c71ca9fe1502f78b",
+          "size": 1274539,
+          "updated_at": "2026-07-26T09:59:54Z"
+        },
+        {
+          "api_digest": "sha256:6687d555516cc8cbaf43cdaf16cd066183accc0637d6b337ad4bf41b32fe784b",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244716,
+          "name": "preloop-0.13.0.tar.gz",
+          "sha256": "6687d555516cc8cbaf43cdaf16cd066183accc0637d6b337ad4bf41b32fe784b",
+          "size": 1036233,
+          "updated_at": "2026-07-26T09:59:54Z"
+        },
+        {
+          "api_digest": "sha256:6c56271ef2b3c184ffc214935e4bc7ed2f98ec4eb2b24a48e80e3cbf7297b5b6",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244712,
+          "name": "preloop-0.13.0.tgz",
+          "sha256": "6c56271ef2b3c184ffc214935e4bc7ed2f98ec4eb2b24a48e80e3cbf7297b5b6",
+          "size": 47989,
+          "updated_at": "2026-07-26T09:59:54Z"
+        },
+        {
+          "api_digest": "sha256:558c74d0cf35f42f6029f9b94f386693767234b205a7a952cd0a322063a8ba7a",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244722,
+          "name": "preloop-darwin-amd64",
+          "sha256": "558c74d0cf35f42f6029f9b94f386693767234b205a7a952cd0a322063a8ba7a",
+          "size": 17397552,
+          "updated_at": "2026-07-26T09:59:55Z"
+        },
+        {
+          "api_digest": "sha256:f477073db5b9223635301698c23fbc3561126516cfe50bf94aeed65d26b6e2a8",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244718,
+          "name": "preloop-darwin-arm64",
+          "sha256": "f477073db5b9223635301698c23fbc3561126516cfe50bf94aeed65d26b6e2a8",
+          "size": 16369410,
+          "updated_at": "2026-07-26T09:59:55Z"
+        },
+        {
+          "api_digest": "sha256:a73f0fee55c599665f3bad0ba14ac7f73a875608c8a7449ed170dbaecc43306f",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244721,
+          "name": "preloop-linux-amd64",
+          "sha256": "a73f0fee55c599665f3bad0ba14ac7f73a875608c8a7449ed170dbaecc43306f",
+          "size": 17708589,
+          "updated_at": "2026-07-26T09:59:55Z"
+        },
+        {
+          "api_digest": "sha256:5be73cf46b85633e9d39c546a1a6d21107d20605cabbbc1a088c25a3ca608545",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244715,
+          "name": "preloop-linux-arm64",
+          "sha256": "5be73cf46b85633e9d39c546a1a6d21107d20605cabbbc1a088c25a3ca608545",
+          "size": 16462579,
+          "updated_at": "2026-07-26T09:59:55Z"
+        },
+        {
+          "api_digest": "sha256:bfc78656c81fae554350ce800662d6d2209404d50f665b0b4c905c070493b767",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244720,
+          "name": "preloop-windows-amd64.exe",
+          "sha256": "bfc78656c81fae554350ce800662d6d2209404d50f665b0b4c905c070493b767",
+          "size": 17500672,
+          "updated_at": "2026-07-26T09:59:55Z"
+        },
+        {
+          "api_digest": "sha256:32fd7240f111282c368675840552da4c093b79fdf580a93509ef3c496329c4f8",
+          "created_at": "2026-07-26T09:59:54Z",
+          "id": 490244717,
+          "name": "preloop-windows-arm64.exe",
+          "sha256": "32fd7240f111282c368675840552da4c093b79fdf580a93509ef3c496329c4f8",
+          "size": 16122368,
+          "updated_at": "2026-07-26T09:59:55Z"
+        }
+      ],
+      "checksum_coverage": {
+        "covered": [],
+        "uncovered": [
+          "docker-compose.release.yaml",
+          "install-cli.sh",
+          "install-oss.sh",
+          "preloop-0.13.0-py3-none-any.whl",
+          "preloop-0.13.0.tar.gz",
+          "preloop-0.13.0.tgz",
+          "preloop-darwin-amd64",
+          "preloop-darwin-arm64",
+          "preloop-linux-amd64",
+          "preloop-linux-arm64",
+          "preloop-windows-amd64.exe",
+          "preloop-windows-arm64.exe"
+        ]
+      },
+      "id": 359977947,
+      "immutable": false,
+      "published_at": "2026-07-26T09:59:56Z",
+      "tag": "v0.13.0",
+      "tag_commit": "58545cc10ea73d0d789862dd6d94c674ef3d7334"
+    }
+  ],
+  "repository": "preloop/preloop",
+  "schema_version": 1
+}
