@@ -135,3 +135,20 @@ def test_decorator_declares_permission(handler: str, permission: str) -> None:
     captured = closure_strings(getattr(approval_bypass, handler))
     assert permission in captured
     assert captured & {"decide_approvals", "view_approvals"} == {permission}
+
+
+@pytest.mark.parametrize("handler", ["list_bypasses", "revoke_all_bypasses"])
+def test_list_and_revoke_all_denied_before_any_crud_call(
+    handler: str, mocker: MockerFixture
+) -> None:
+    """A denied list or revoke-all never reaches the CRUD layer or commits."""
+    mocker.patch(f"{MODULE}.ensure_permission_in_oss", side_effect=deny)
+    listed = mocker.patch(f"{MODULE}.crud_approval_bypass.list_active_for_account")
+    revoke = mocker.patch(f"{MODULE}.crud_approval_bypass.revoke")
+    db = MagicMock()
+    with pytest.raises(HTTPException) as exc:
+        getattr(approval_bypass, handler)(current_user=make_user(), db=db)
+    assert exc.value.status_code == 403
+    listed.assert_not_called()
+    revoke.assert_not_called()
+    db.commit.assert_not_called()
