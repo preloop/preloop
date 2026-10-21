@@ -26,8 +26,9 @@ when something joins. Drag a machine to move its contents. Your first drag saves
 the visible arrangement for your user and map scope. Refreshes preserve it; new
 resources join beside their links. Inactive positions are retained for seven days.
 
-More > Arrange packs the current nodes again, clearing manual positions while
-keeping filters and folded groups. In Columns, Arrange fits the view. More > Reset
+The Arrange button beside Columns and Spatial (also in More, and in Filters on
+small screens) packs the current nodes again, clearing manual positions while
+keeping filters and folded groups. In a narrow card it shows only its icon. In Columns, Arrange fits the view. More > Reset
 layout also forgets folded groups and expanded columns. Both spatial actions offer
 Undo for six seconds. Fit changes the camera without moving your nodes. Layout
 changes use the existing glide and happen immediately with reduced motion.

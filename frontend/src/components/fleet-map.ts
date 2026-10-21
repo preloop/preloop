@@ -156,6 +156,8 @@ const EMPTY: FleetMapGraph = {
 const MIN_FIT_SCALE = 0.6;
 /** Spatial maps fit both ways, so they may shrink further. */
 const MIN_SPATIAL_FIT_SCALE = 0.85;
+/** Below this stage width the toolbar's Arrange button drops its label. */
+const ARRANGE_LABEL_MIN_WIDTH = 1100;
 /** Nodes and the view glide to a new arrangement in this long (medium). */
 const GLIDE_MS = 400;
 /** Label tags drawn on a work chip; the rest are a +N count and in the title. */
@@ -3217,6 +3219,26 @@ export class FleetMap extends LitElement {
               )}<span slot="count">${count}</span>`
       }
       <div slot="actions" class="map-actions">
+        ${
+          this.instanceAdmin && this.spatial && !narrow
+            ? this.viewport.width >= ARRANGE_LABEL_MIN_WIDTH
+              ? html`<sl-button
+                  size="small"
+                  data-testid="fleet-map-arrange-button"
+                  title="Repack the map; Undo restores it"
+                  @click=${this.arrange}
+                  ><sl-icon slot="prefix" name="grid-1x2"></sl-icon
+                  >Arrange</sl-button
+                >`
+              : html`<sl-icon-button
+                  name="grid-1x2"
+                  label="Arrange"
+                  title="Arrange: repack the map; Undo restores it"
+                  data-testid="fleet-map-arrange-button"
+                  @click=${this.arrange}
+                ></sl-icon-button>`
+            : nothing
+        }
         ${
           this.instanceAdmin && !this.spatialOnly
             ? html`<sl-button-group
