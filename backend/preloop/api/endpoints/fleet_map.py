@@ -15,6 +15,7 @@ from preloop.schemas.fleet_map import (
 )
 from preloop.services.fleet_code_activity import build_code_activity
 from preloop.services.fleet_map import build_fleet_map
+from preloop.services.fleet_scope import parse_users
 from preloop.services.fleet_usage import build_fleet_usage
 from preloop.utils.permissions import require_permission
 
@@ -41,6 +42,16 @@ def read_fleet_map(
         False,
         description="With a window, also return configured idle resources (idle=true).",
     ),
+    users: str | None = Query(
+        None,
+        max_length=2000,
+        description=(
+            "Comma separated user ids (at most 50): scope the response to those "
+            "people, their devices, the agents and runners they own or that run "
+            "on those devices, the models, provider accounts and providers those "
+            "agents use, and the work those agents touched. Flows are omitted."
+        ),
+    ),
     db: Session = Depends(get_db_session),
 ) -> FleetMapResponse:
     """Read the selected organization's visible fleet and model dependencies."""
@@ -50,6 +61,7 @@ def read_fleet_map(
         limit=limit,
         active_within_minutes=active_within_minutes,
         include_idle=include_idle,
+        user_ids=parse_users(users),
     )
 
 
@@ -67,11 +79,24 @@ def read_fleet_code_activity(
         le=60 * 24 * 366,
         description="Window in minutes; omitted reads the last 90 days.",
     ),
+    users: str | None = Query(
+        None,
+        max_length=2000,
+        description=(
+            "Comma separated user ids (at most 50): scope the response to those "
+            "people, their devices, the agents and runners they own or that run "
+            "on those devices, the models, provider accounts and providers those "
+            "agents use, and the work those agents touched. Flows are omitted."
+        ),
+    ),
     db: Session = Depends(get_db_session),
 ) -> FleetCodeActivityResponse:
     """Pull and merge requests opened, commented, reviewed and merged per node."""
     return build_code_activity(
-        db, user=current_user, active_within_minutes=active_within_minutes
+        db,
+        user=current_user,
+        active_within_minutes=active_within_minutes,
+        user_ids=parse_users(users),
     )
 
 
@@ -85,9 +110,22 @@ def read_fleet_usage(
         le=60 * 24 * 366,
         description="Window in minutes; omitted or above 90 days reads the last 90 days.",
     ),
+    users: str | None = Query(
+        None,
+        max_length=2000,
+        description=(
+            "Comma separated user ids (at most 50): scope the response to those "
+            "people, their devices, the agents and runners they own or that run "
+            "on those devices, the models, provider accounts and providers those "
+            "agents use, and the work those agents touched. Flows are omitted."
+        ),
+    ),
     db: Session = Depends(get_db_session),
 ) -> FleetUsageResponse:
     """Gateway request, token and estimated cost totals per model and provider node."""
     return build_fleet_usage(
-        db, user=current_user, active_within_minutes=active_within_minutes
+        db,
+        user=current_user,
+        active_within_minutes=active_within_minutes,
+        user_ids=parse_users(users),
     )

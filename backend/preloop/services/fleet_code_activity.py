@@ -37,6 +37,8 @@ from preloop.schemas.fleet_map import (
     FleetCodeFlow,
 )
 from preloop.services.fleet_map import _allowed, _reject_report_key, canonical_model
+from preloop.services.fleet_principals import agent_index, resolve_principal
+from preloop.services.fleet_scope import FleetScope, resolve_scope
 from preloop.services.fleet_work import build_work_items
 
 logger = logging.getLogger(__name__)
@@ -168,6 +170,8 @@ def build_code_activity(
     user: models.User,
     active_within_minutes: int | None = None,
     now: datetime | None = None,
+    user_ids: list[str] | None = None,
+    scope: FleetScope | None = None,
 ) -> FleetCodeActivityResponse:
     """Count pull and merge request actions per map node in the window.
 
@@ -176,6 +180,8 @@ def build_code_activity(
         user: Authenticated user in the selected account.
         active_within_minutes: Window; None reads the last 90 days.
         now: Clock override for tests.
+        user_ids: Scope to these people and their agents (``users=``).
+        scope: An already resolved scope (wins over ``user_ids``).
 
     Returns:
         Counts per agent, flow and person node, the flows to place, and the
@@ -230,20 +236,23 @@ def build_code_activity(
             flow_rows[str(flow_id)] = (name, model_id)
     agents_by_principal: dict[tuple[str, str], models.ManagedAgent] = {}
     if see_agents:
-        for agent in fleet_crud.agents_for_principals(
-            db,
-            account_id=account_id,
-            principals={
-                (c.runtime_principal_type, c.runtime_principal_id)
-                for c in calls
-                if not c.flow_execution_id
-                and c.runtime_principal_type
-                and c.runtime_principal_id
-            },
-        ):
-            agents_by_principal[
-                (agent.session_source_type, agent.session_source_id)
-            ] = agent
+        principals = {
+            (c.runtime_principal_type, c.runtime_principal_id)
+            for c in calls
+            if not c.flow_execution_id
+            and c.runtime_principal_type
+            and c.runtime_principal_id
+        }
+        loaded = fleet_crud.agents_for_principals(
+            db, account_id=account_id, principals=principals
+        )
+        index = agent_index(loaded)
+        by_id = {str(agent.id): agent for agent in loaded}
+        # Key every principal seen, so per-conversation ids reach their agent.
+        for principal_type, principal_id in principals:
+            found = resolve_principal(index, principal_type, principal_id, by_id=by_id)
+            if found is not None:
+                agents_by_principal[(principal_type, principal_id)] = found
 
     counts: dict[str, FleetCodeCounts] = defaultdict(FleetCodeCounts)
     flow_tool_merges: dict[str, list[FleetCodeEvent]] = defaultdict(list)
@@ -481,8 +490,45 @@ def build_code_activity(
     # Drop hidden flows before the cap, so visible events backfill it.
     result.events = events
     _drop_hidden_flows(db, user, result)
+    if scope is None and user_ids is not None:
+        scope = resolve_scope(db, user=user, user_ids=user_ids, now=current)
+    if scope is not None:
+        apply_scope(result, scope)
     result.events = result.events[:EVENT_LIMIT]
     return result
+
+
+def apply_scope(result: FleetCodeActivityResponse, scope: FleetScope) -> None:
+    """Keep only the selected people's agents, their actions and their work.
+
+    Flows are dropped: a run stores no triggering user. A work item stays when
+    an in-scope agent (or person) acted on it; its ``node_ids`` and relations
+    keep only in-scope actors.
+    """
+    actors = {node for node in scope.node_ids if node.startswith(("agent:", "user:"))}
+    result.users = list(scope.users)
+    result.flows = []
+    result.counts = {node: c for node, c in result.counts.items() if node in actors}
+    result.events = [event for event in result.events if event.node_id in actors]
+    acted = {
+        relation.target
+        for relation in result.relations
+        if relation.kind == "touched" and relation.source in actors
+    }
+    kept = []
+    for item in result.work:
+        node_ids = [node for node in item.node_ids if node in actors]
+        if node_ids or item.id in acted:
+            item.node_ids = node_ids
+            kept.append(item)
+    result.work = kept
+    shown = {item.id for item in kept}
+    result.relations = [
+        relation
+        for relation in result.relations
+        if relation.target in shown
+        and (relation.source in actors or relation.source in shown)
+    ]
 
 
 def visible_flow_ids(db: Session, user: models.User, flow_ids: set[str]) -> set[str]:

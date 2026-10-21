@@ -228,6 +228,7 @@ def build_fleet_map(
     active_within_minutes: int | None = None,
     include_idle: bool = False,
     now: datetime | None = None,
+    user_ids: list[str] | None = None,
 ) -> FleetMapResponse:
     """Load each source once, filter before linking, and cap the final graph.
 
@@ -240,6 +241,9 @@ def build_fleet_map(
         include_idle: With a window, also keep configured resources without
             activity, flagged ``idle``.
         now: Optional UTC clock override for deterministic tests.
+        user_ids: Scope the graph to these people, their devices, agents,
+            runners and the models, accounts and providers their agents use
+            (see ``fleet_scope``); None keeps everyone.
 
     Returns:
         Allowlisted graph with explicit source and output truncation.
@@ -778,6 +782,17 @@ def build_fleet_map(
             holder.last_active_at is None or held.last_active_at > holder.last_active_at
         ):
             holder.last_active_at = held.last_active_at
+    if user_ids is not None:
+        from preloop.services.fleet_scope import scope_nodes
+
+        # Ownership is not windowed: scope on the full graph, then window it.
+        scope, result.users = scope_nodes(nodes, edges.values(), user_ids)
+        nodes = {key: item for key, item in nodes.items() if key in scope}
+        edges = {
+            key: relation
+            for key, relation in edges.items()
+            if relation.source in scope and relation.target in scope
+        }
     if active_within_minutes is not None and not include_idle:
         nodes = {key: item for key, item in nodes.items() if key in keep}
         edges = {
@@ -812,6 +827,7 @@ def build_fleet_map(
     for item in result.nodes:
         item.owner_ids = [uid for uid in item.owner_ids if uid in visible]
         item.provider_ids = [pid for pid in item.provider_ids if pid in visible]
+    _contain(result.nodes, visible, model_rows, model_nodes, model_accounts)
     visible_edges = [
         edge
         for _, edge in sorted(edges.items())
@@ -820,6 +836,59 @@ def build_fleet_map(
     result.truncated |= len(visible_edges) > EDGE_LIMIT
     result.edges = visible_edges[:EDGE_LIMIT]
     return result
+
+
+def _contain(
+    returned: list[FleetMapNode],
+    visible: set[str],
+    model_rows: dict[str, list[Any]],
+    model_nodes: dict[str, str],
+    model_accounts: dict[str, str],
+) -> None:
+    """Fill provider > account > model containment ids on returned nodes.
+
+    A canonical model merges configurations, so it can sit under several
+    accounts and even several providers; ``provider_id`` names the provider
+    of most of its configurations (ties by id), ``provider_ids`` keeps all.
+    Only returned node ids are listed.
+
+    Args:
+        returned: Nodes in the response, updated in place.
+        visible: Ids of the returned nodes.
+        model_rows: Model configuration rows per model node id.
+        model_nodes: Model node id per configuration id.
+        model_accounts: Provider account node id per configuration id.
+    """
+    accounts_of: dict[str, set[str]] = {}
+    for config_id, account in model_accounts.items():
+        model = model_nodes.get(config_id)
+        if model and model in visible and account in visible:
+            accounts_of.setdefault(model, set()).add(account)
+    by_id = {item.id: item for item in returned}
+    for item in returned:
+        if item.type == "provider_account":
+            item.provider_id = item.parent_id if item.parent_id in visible else None
+        elif item.type == "model":
+            votes = Counter(
+                f"provider:{row.provider_name}" for row in model_rows.get(item.id, [])
+            )
+            ranked = sorted(
+                (pid for pid in votes if pid in visible),
+                key=lambda pid: (-votes[pid], pid),
+            )
+            item.provider_id = ranked[0] if ranked else None
+            item.provider_account_ids = sorted(accounts_of.get(item.id, set()))
+    for item in returned:
+        if item.type == "model":
+            if item.provider_id in by_id:
+                by_id[item.provider_id].model_ids.append(item.id)
+            for account in item.provider_account_ids:
+                by_id[account].model_ids.append(item.id)
+        elif item.type == "provider_account" and item.provider_id in by_id:
+            by_id[item.provider_id].account_ids.append(item.id)
+    for item in returned:
+        item.model_ids = sorted(set(item.model_ids))
+        item.account_ids = sorted(set(item.account_ids))
 
 
 def _activity_evidence(
@@ -852,11 +921,16 @@ def _activity_evidence(
         if node_id and node_id in nodes and stamp is not None:
             evidence[node_id] = max(evidence.get(node_id, stamp), stamp)
 
-    by_principal = {
-        (row.session_source_type, row.session_source_id): f"agent:{row.id}"
-        for row in agents
-        if getattr(row, "session_source_type", None)
-    }
+    from preloop.services.fleet_principals import agent_index, resolve_principal
+
+    principal_index = agent_index(agents, lambda row: f"agent:{row.id}")
+    agent_by_id = {str(row.id): f"agent:{row.id}" for row in agents}
+
+    def agent_of(principal_type: Any, principal_id: Any) -> str | None:
+        return resolve_principal(
+            principal_index, principal_type, principal_id, by_id=agent_by_id
+        )
+
     providers = {str(row.id): f"provider:{row.provider_name}" for row in model_rows}
     rows = fleet_activity.gateway_edges(
         db, account_id=account_id, since=since, until=until, limit=ACTIVITY_LIMIT + 1
@@ -867,7 +941,7 @@ def _activity_evidence(
         mark(model_nodes.get(model_id), row.last_at)
         mark(model_accounts.get(model_id), row.last_at)
         mark(providers.get(model_id), row.last_at)
-        agent_id = by_principal.get((row.principal_type, row.principal_id))
+        agent_id = agent_of(row.principal_type, row.principal_id)
         if agent_id and not row.flow_id:
             mark(agent_id, row.last_at)
             if model_id:
@@ -879,5 +953,5 @@ def _activity_evidence(
     )
     result.truncated |= len(sessions) > ACTIVITY_LIMIT
     for row in sessions[:ACTIVITY_LIMIT]:
-        mark(by_principal.get((row.principal_type, row.principal_id)), row.last_at)
+        mark(agent_of(row.principal_type, row.principal_id), row.last_at)
     return evidence

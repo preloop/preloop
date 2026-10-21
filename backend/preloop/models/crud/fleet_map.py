@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
 from sqlalchemy import Row, and_, or_, select, tuple_
 from sqlalchemy.orm import Session
@@ -194,12 +195,29 @@ def agents_for_principals(
     if not principals:
         return []
     m = models.ManagedAgent
+    # Per-conversation principals (``<base>:<run>``) belong to the base agent;
+    # a ``managed_agent`` principal is the agent id itself.
+    pairs: set[tuple[str, str]] = set()
+    agent_ids: set[UUID] = set()
+    for principal_type, principal_id in principals:
+        if not principal_type or not principal_id:
+            continue
+        pairs.add((principal_type, principal_id))
+        pairs.add((principal_type, principal_id.split(":", 1)[0]))
+        if principal_type == "managed_agent":
+            try:
+                agent_ids.add(UUID(principal_id))
+            except ValueError:
+                pass
+    matches = [tuple_(m.session_source_type, m.session_source_id).in_(sorted(pairs))]
+    if agent_ids:
+        matches.append(m.id.in_(sorted(agent_ids)))
     return (
         db.query(m)
         .filter(
             m.account_id == account_id,
             m.lifecycle_state != "decommissioned",
-            tuple_(m.session_source_type, m.session_source_id).in_(sorted(principals)),
+            or_(*matches),
         )
         .all()
     )

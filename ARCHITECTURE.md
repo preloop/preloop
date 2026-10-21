@@ -930,6 +930,27 @@ and `work` totals keyed by node id: gateway tokens and estimated cost with the
 same honesty rules, tool calls, approvals, PR actions, review comments and
 distinct issues and PRs touched, one grouped, account-scoped query per source.
 
+Every fleet reader resolves a runtime principal to its managed agent the way the
+session explorer does (`services/fleet_principals.py`): a `managed_agent` principal
+by id, the exact source pair, then the base before the first `:` of a
+per-conversation id (`claude-code-<install>:<conversation>[:<subagent>]`,
+`codex-<id>:<thread>`), so hook calls, approvals and gateway rows of every
+conversation count for their agent. GitHub issues store the forge's own update
+time in `last_updated_external` and Jira issues keep Jira's `created`/`updated`
+(read from `fields` in REST results), so a sync never makes an untouched issue
+look active. All three endpoints accept `users=<id,...>` (at most 50,
+`services/fleet_scope.py`): the scope is computed once on the unwindowed graph
+(selected people, the devices they own, the agents and runners they own or that
+run on those devices, the models and provider accounts those agents use and
+their providers) and then intersected with the window. Code activity keeps the
+in-scope agents' work, counts, events and relations; usage keeps in-scope node
+totals and counts model/provider totals only from those agents' principals and
+the people's direct requests. Flows are outside a person's scope because a run
+stores no triggering user. Model nodes carry `provider_id` (the provider of most
+of their configurations) and `provider_account_ids`; provider nodes carry
+`model_ids` and `account_ids`, provider accounts `provider_id` and `model_ids`, so
+the console can draw provider > account > model containment without a lookup.
+
 Spatial layout packs measured owner/machine islands beside the model/provider core,
 with attached issue/PR rows in the work lane. The first drag stores the complete
 visible arrangement per user and scope. Membership updates preserve those positions

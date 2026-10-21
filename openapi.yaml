@@ -8335,6 +8335,23 @@ paths:
           default: false
           title: Include Idle
         description: With a window, also return configured idle resources (idle=true).
+      - name: users
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          description: 'Comma separated user ids (at most 50): scope the response
+            to those people, their devices, the agents and runners they own or that
+            run on those devices, the models, provider accounts and providers those
+            agents use, and the work those agents touched. Flows are omitted.'
+          title: Users
+        description: 'Comma separated user ids (at most 50): scope the response to
+          those people, their devices, the agents and runners they own or that run
+          on those devices, the models, provider accounts and providers those agents
+          use, and the work those agents touched. Flows are omitted.'
       responses:
         '200':
           description: Successful Response
@@ -8378,6 +8395,23 @@ paths:
           description: Window in minutes; omitted reads the last 90 days.
           title: Active Within Minutes
         description: Window in minutes; omitted reads the last 90 days.
+      - name: users
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          description: 'Comma separated user ids (at most 50): scope the response
+            to those people, their devices, the agents and runners they own or that
+            run on those devices, the models, provider accounts and providers those
+            agents use, and the work those agents touched. Flows are omitted.'
+          title: Users
+        description: 'Comma separated user ids (at most 50): scope the response to
+          those people, their devices, the agents and runners they own or that run
+          on those devices, the models, provider accounts and providers those agents
+          use, and the work those agents touched. Flows are omitted.'
       responses:
         '200':
           description: Successful Response
@@ -8423,6 +8457,23 @@ paths:
           title: Active Within Minutes
         description: Window in minutes; omitted or above 90 days reads the last 90
           days.
+      - name: users
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          description: 'Comma separated user ids (at most 50): scope the response
+            to those people, their devices, the agents and runners they own or that
+            run on those devices, the models, provider accounts and providers those
+            agents use, and the work those agents touched. Flows are omitted.'
+          title: Users
+        description: 'Comma separated user ids (at most 50): scope the response to
+          those people, their devices, the agents and runners they own or that run
+          on those devices, the models, provider accounts and providers those agents
+          use, and the work those agents touched. Flows are omitted.'
       responses:
         '200':
           description: Successful Response
@@ -31829,6 +31880,15 @@ components:
           type: boolean
           title: Relations Truncated
           default: false
+        users:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Users
+          description: The user node ids the response was scoped to (users= parameter),
+            unknown ids dropped; null when not scoped.
       type: object
       required:
       - since
@@ -32190,6 +32250,34 @@ components:
           - type: 'null'
           title: Last Active At
           description: Latest activity evidence inside the window.
+        provider_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Id
+          description: 'Model and provider account nodes: the provider node that contains
+            it. A model reachable through several providers is placed in the provider
+            of most of its configurations (ties by id). Null when that provider node
+            is not returned.'
+        provider_account_ids:
+          items:
+            type: string
+          type: array
+          title: Provider Account Ids
+          description: 'Model nodes: returned provider accounts that serve the model.'
+        model_ids:
+          items:
+            type: string
+          type: array
+          title: Model Ids
+          description: 'Provider and provider account nodes: returned models they
+            contain.'
+        account_ids:
+          items:
+            type: string
+          type: array
+          title: Account Ids
+          description: 'Provider nodes: returned provider accounts they contain.'
       type: object
       required:
       - id
@@ -32245,6 +32333,15 @@ components:
           title: Decommissioned Agents
           description: Decommissioned agents left out of the map, counted for context.
           default: 0
+        users:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Users
+          description: The user node ids the graph was scoped to (users= parameter),
+            unknown ids dropped; null when not scoped.
       type: object
       title: FleetMapResponse
       description: Bounded partial graph; incompleteness must stay visible to consumers.
@@ -32404,6 +32501,15 @@ components:
           type: object
           title: Work
           description: Gateway usage of linked flow runs plus tool calls on the item.
+        users:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Users
+          description: The user node ids the response was scoped to (users= parameter),
+            unknown ids dropped; null when not scoped.
       type: object
       required:
       - since
@@ -49425,7 +49531,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
