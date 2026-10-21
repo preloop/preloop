@@ -49,3 +49,12 @@ Do not manually publish a GitHub release to work around a failed tag workflow.
 Fix a release failure without moving an already published tag; use a new patch
 version when released source must change. Enterprise Edition has a separate
 private release process that pins the published OSS release.
+
+## Recovery
+
+Preparation reuses an existing local release branch, or tracks an existing remote
+release branch, and reuses an open PR. It never resets that branch. If pre-commit
+reformats files or preparation stops with local changes, inspect `git diff`, run
+`pre-commit run --files <changed files>`, and commit the reviewed release changes
+on the release branch. Then rerun the same `--yes --open-pr` command. Stash
+unrelated local changes first. A push/network failure can be retried the same way.

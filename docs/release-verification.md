@@ -24,14 +24,16 @@ when SignPath is configured. See [the code signing policy](code-signing-policy.m
 
 ## Publishing through release.sh
 
-Use the existing interactive release command from the repository root:
+Follow the [protected-branch release process](releasing.md). Start from a clean
+checkout and prepare a release PR:
 
 ```bash
-./scripts/release.sh 0.16.0
+./scripts/release.sh 0.17.1 --yes --open-pr
 ```
 
-Review the version/changelog changes, run release validation, and use the helper's
-commit, tag, and push prompts when ready to publish. Pushing the `v*` tag
+Review the version/changelog changes, run release validation, and merge the PR.
+Check out its exact merge commit and run `--finalize --target-commit SHA --push-tag`
+with the same version. Pushing the `v*` tag
 starts the release workflow, including automatic attestation. The helper
 refuses to push unless `create-release` in this checkout attests
 `release-assets/*`, stages `preloop-v<version>.intoto.jsonl`, and passes

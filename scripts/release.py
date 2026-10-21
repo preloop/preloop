@@ -372,8 +372,17 @@ def select_release_remote(explicit: str | None) -> str:
         url = run_command(
             ["git", "remote", "get-url", remote], capture_output=True
         ).stdout.strip()
-        if re.fullmatch(
-            r"(?:https://github\.com/|git@github\.com:)preloop/preloop(?:\.git)?", url
+        push_urls = run_command(
+            ["git", "remote", "get-url", "--push", "--all", remote],
+            capture_output=True,
+        ).stdout.splitlines()
+        urls = [url, *push_urls]
+        if push_urls and all(
+            re.fullmatch(
+                r"(?:https://github\.com/|git@github\.com:)preloop/preloop(?:\.git)?",
+                value,
+            )
+            for value in urls
         ):
             return remote
     raise SystemExit("Release remote must point to github.com/preloop/preloop")
@@ -423,11 +432,33 @@ def ensure_clean_checkout() -> None:
 
 def prepare_release_branch(plan: ReleasePlan) -> None:
     """Create a release branch from fetched main, never commit directly on main."""
-    ensure_clean_checkout()
-    run_command(["git", "fetch", RELEASE_REMOTE, "main"])
-    run_command(
-        ["git", "switch", "-c", f"release/{plan.tag}", f"{RELEASE_REMOTE}/main"]
+    branch = f"release/{plan.tag}"
+    status = run_command(["git", "status", "--porcelain"], capture_output=True)
+    if status.stdout.strip():
+        raise SystemExit(
+            "Preparation has local changes. Review them, run pre-commit, then "
+            "commit or stash before retrying. See docs/releasing.md#recovery."
+        )
+    run_command(["git", "fetch", RELEASE_REMOTE])
+    existing = run_command(
+        ["git", "show-ref", "--verify", f"refs/heads/{branch}"],
+        capture_output=True,
+        check=False,
     )
+    if existing.returncode == 0:
+        run_command(["git", "switch", branch])
+        return
+    remote_branch = run_command(
+        ["git", "show-ref", "--verify", f"refs/remotes/{RELEASE_REMOTE}/{branch}"],
+        capture_output=True,
+        check=False,
+    )
+    if remote_branch.returncode == 0:
+        run_command(
+            ["git", "switch", "-c", branch, "--track", f"{RELEASE_REMOTE}/{branch}"]
+        )
+    else:
+        run_command(["git", "switch", "-c", branch, f"{RELEASE_REMOTE}/main"])
 
 
 def finalize_release(
@@ -478,6 +509,28 @@ def finalize_release(
 def open_release_pr(plan: ReleasePlan) -> None:
     """Push a release branch and open its reviewable pull request."""
     push_current_branch()
+    existing = run_command(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            "preloop/preloop",
+            "--head",
+            get_current_branch(),
+            "--base",
+            "main",
+            "--state",
+            "open",
+            "--json",
+            "url",
+        ],
+        capture_output=True,
+    )
+    prs = json.loads(existing.stdout)
+    if prs:
+        print(prs[0]["url"])
+        return
     run_command(
         [
             "gh",
@@ -1083,7 +1136,9 @@ def main() -> int:
         open_release_pr(plan)
     elif args.push_branch:
         push_current_branch()
-    print("Review the release diff and merge its PR after checks pass.")
+    if not args.open_pr:
+        print("Review the diff, commit it, then rerun with --yes --open-pr.")
+    print("Once the release PR exists, merge it after checks and review pass.")
     print("Then check out merged main and run:")
     print(f"  ./scripts/release.sh {plan.version} --finalize --push-tag")
 

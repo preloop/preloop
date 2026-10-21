@@ -342,3 +342,138 @@ def test_release_metadata_checks_all_versions(monkeypatch) -> None:
     monkeypatch.setattr(release_script, "read_text", read)
     with pytest.raises(SystemExit, match="frontend/package.json"):
         release_script.ensure_version_metadata(plan)
+
+
+def test_release_remote_rejects_any_mismatched_push_url(monkeypatch) -> None:
+    """Every configured push destination must be the public repository."""
+    import subprocess
+
+    import pytest
+
+    def run(args, **kwargs):
+        output = "origin"
+        if "get-url" in args:
+            output = "git@github.com:preloop/preloop.git"
+            if "--push" in args:
+                output += "\ngit@gitlab.example.com:team/preloop.git"
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    monkeypatch.setattr(release_script, "run_command", run)
+    with pytest.raises(SystemExit, match="github.com/preloop/preloop"):
+        release_script.select_release_remote(None)
+
+
+def test_prepare_reuses_existing_branch(monkeypatch) -> None:
+    """Retry after commit/push failure preserves the existing release branch."""
+    import subprocess
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(release_script, "RELEASE_REMOTE", "github")
+    monkeypatch.setattr(release_script, "run_command", run)
+    release_script.prepare_release_branch(release_script.ReleasePlan("1.2.3", "today"))
+    assert ["git", "fetch", "github"] in calls
+    assert ["git", "switch", "release/v1.2.3"] in calls
+    assert not any("-c" in args for args in calls)
+
+
+def test_prepare_new_branch_uses_selected_remote(monkeypatch) -> None:
+    """Fresh preparation starts at fetched public main, never a private mirror."""
+    import subprocess
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, int("show-ref" in args), "", "")
+
+    monkeypatch.setattr(release_script, "RELEASE_REMOTE", "github")
+    monkeypatch.setattr(release_script, "run_command", run)
+    release_script.prepare_release_branch(release_script.ReleasePlan("1.2.3", "today"))
+    assert ["git", "switch", "-c", "release/v1.2.3", "github/main"] in calls
+
+
+def test_prepare_dirty_checkout_explains_recovery(monkeypatch) -> None:
+    """A formatting hook failure gives an actionable recovery path."""
+    import subprocess
+
+    import pytest
+
+    monkeypatch.setattr(
+        release_script,
+        "run_command",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, " M VERSION", ""),
+    )
+    with pytest.raises(SystemExit, match="docs/releasing.md#recovery"):
+        release_script.prepare_release_branch(
+            release_script.ReleasePlan("1.2.3", "today")
+        )
+
+
+def test_monitor_dispatch_never_prepares_files(monkeypatch) -> None:
+    """Monitoring an existing tag must not edit the checkout."""
+    from types import SimpleNamespace
+
+    monitored = []
+    monkeypatch.setattr(
+        release_script,
+        "parse_args",
+        lambda: SimpleNamespace(
+            remote=None,
+            version="1.2.3",
+            release_date="today",
+            monitor_release=True,
+        ),
+    )
+    monkeypatch.setattr(release_script, "select_release_remote", lambda value: "origin")
+    monkeypatch.setattr(release_script, "monitor_release_workflow", monitored.append)
+    monkeypatch.setattr(release_script, "prepare_release_branch", lambda plan: 1 / 0)
+    assert release_script.main() == 0
+    assert monitored[0].version == "1.2.3"
+
+
+def test_legacy_tag_flags_rejected_before_preparation(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import pytest
+
+    monkeypatch.setattr(
+        release_script,
+        "parse_args",
+        lambda: SimpleNamespace(
+            remote=None,
+            version="1.2.3",
+            release_date="today",
+            monitor_release=False,
+            finalize=False,
+            tag=True,
+            push_tag=True,
+        ),
+    )
+    monkeypatch.setattr(release_script, "select_release_remote", lambda value: "origin")
+    monkeypatch.setattr(release_script, "prepare_release_branch", lambda plan: 1 / 0)
+    with pytest.raises(SystemExit, match="Tagging requires --finalize"):
+        release_script.main()
+
+
+def test_open_pr_reuses_existing_pull_request(monkeypatch, capsys) -> None:
+    """Retry after a successful PR creation must not fail with already-exists."""
+    import subprocess
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args, 0, '[{"url":"https://example.com/pr"}]', ""
+        )
+
+    monkeypatch.setattr(release_script, "run_command", run)
+    monkeypatch.setattr(release_script, "get_current_branch", lambda: "release/v1.2.3")
+    release_script.open_release_pr(release_script.ReleasePlan("1.2.3", "today"))
+    assert "https://example.com/pr" in capsys.readouterr().out
+    assert not any(args[:3] == ["gh", "pr", "create"] for args in calls)
