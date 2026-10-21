@@ -1494,7 +1494,8 @@ def get_account_gateway_usage_summary(
     include_breakdown: bool = Query(
         True,
         description=(
-            "When true, include per-model/flow/session/tool/day breakdowns. "
+            "When true, include per-model/flow/session/tool/day breakdowns "
+            "(and per-agent totals when breakdown=agents is selected). "
             "Default true preserves the historical response shape for API "
             "clients; lightweight card callers (Overview/Agents) should pass "
             "false. Prefer /cost/summary for full cost analytics."
@@ -1504,7 +1505,10 @@ def get_account_gateway_usage_summary(
         None,
         description=(
             "Selected breakdowns, repeated for multiple sections. Omitted "
-            "preserves all sections; ignored when include_breakdown=false."
+            "preserves the historical sections (models, flows, sessions, "
+            "tools, days); 'agents' is opt-in and returns usage_by_agent, "
+            "account-wide only (empty when runtime_principal_id is set). "
+            "Ignored when include_breakdown=false."
         ),
     ),
     session_limit: Optional[int] = Query(

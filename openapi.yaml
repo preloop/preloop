@@ -2005,16 +2005,18 @@ paths:
         required: false
         schema:
           type: boolean
-          description: When true, include per-model/flow/session/tool/day breakdowns.
-            Default true preserves the historical response shape for API clients;
-            lightweight card callers (Overview/Agents) should pass false. Prefer /cost/summary
-            for full cost analytics.
+          description: When true, include per-model/flow/session/tool/day breakdowns
+            (and per-agent totals when breakdown=agents is selected). Default true
+            preserves the historical response shape for API clients; lightweight card
+            callers (Overview/Agents) should pass false. Prefer /cost/summary for
+            full cost analytics.
           default: true
           title: Include Breakdown
-        description: When true, include per-model/flow/session/tool/day breakdowns.
-          Default true preserves the historical response shape for API clients; lightweight
-          card callers (Overview/Agents) should pass false. Prefer /cost/summary for
-          full cost analytics.
+        description: When true, include per-model/flow/session/tool/day breakdowns
+          (and per-agent totals when breakdown=agents is selected). Default true preserves
+          the historical response shape for API clients; lightweight card callers
+          (Overview/Agents) should pass false. Prefer /cost/summary for full cost
+          analytics.
       - name: breakdown
         in: query
         required: false
@@ -2032,10 +2034,14 @@ paths:
               type: string
           - type: 'null'
           description: Selected breakdowns, repeated for multiple sections. Omitted
-            preserves all sections; ignored when include_breakdown=false.
+            preserves the historical sections (models, flows, sessions, tools, days);
+            'agents' is opt-in and returns usage_by_agent, account-wide only (empty
+            when runtime_principal_id is set). Ignored when include_breakdown=false.
           title: Breakdown
         description: Selected breakdowns, repeated for multiple sections. Omitted
-          preserves all sections; ignored when include_breakdown=false.
+          preserves the historical sections (models, flows, sessions, tools, days);
+          'agents' is opt-in and returns usage_by_agent, account-wide only (empty
+          when runtime_principal_id is set). Ignored when include_breakdown=false.
       - name: session_limit
         in: query
         required: false

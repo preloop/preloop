@@ -521,8 +521,11 @@ constraints and scalar session association prevent cross-account labels and
 join fan-out. Console exact-period links preserve UTC microseconds and use
 normal authenticated account scoping; URL account context grants no access.
 
-Console agent spend (Agents list, Agent detail, and the Overview Inventory via
-the opt-in `breakdown=agents` summary section) reads one CRUD aggregate. A
+Console agent spend (Agents list, Agent detail, the Overview Inventory and the
+user page, the last two via the opt-in `breakdown=agents` section of
+`GET /api/v1/account/gateway-usage/summary`, which returns `usage_by_agent`
+for the whole account and is empty when `runtime_principal_id` is set) reads
+one CRUD aggregate. A
 gateway row belongs to an agent when its runtime principal is the agent's base
 source id, or when it ran in a session the agent owns: the bound session, a
 session whose runtime principal is `managed_agent:<id>`, or a per-run session
