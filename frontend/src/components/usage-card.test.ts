@@ -794,8 +794,8 @@ describe('usage-card', () => {
   });
 });
 
-describe('usage-card under cache-exclusive input (B-04 review)', () => {
-  it('headlines a total that the in and out beneath it add up to', async () => {
+describe('usage-card states the server total (#1955)', () => {
+  it('headlines the reported total even when rounding leaves cache above input', async () => {
     const summary = summaryFixture({
       token_usage: {
         prompt_tokens: 1200,
@@ -803,16 +803,15 @@ describe('usage-card under cache-exclusive input (B-04 review)', () => {
         total_tokens: 1500,
         input_tokens: 1200,
         output_tokens: 300,
-        cache_read_tokens: 16000,
-        cache_write_tokens: 800,
+        cache_read_tokens: 1000,
+        cache_write_tokens: 250,
         uncached_input_tokens: 0,
         cache_hit_ratio: 1,
       },
     });
     const el = await renderCard({ summary });
     const content = (el.shadowRoot!.textContent || '').replace(/\s+/g, ' ');
-    // 1.2K reported input + 16K read + 800 written = 18K in; plus 300 out.
-    expect(content).to.contain('18.3K');
-    expect(content).to.not.contain('1.5K tokens');
+    expect(content).to.contain('1.5K');
+    expect(content).to.not.contain('2.8K');
   });
 });

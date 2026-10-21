@@ -1,4 +1,4 @@
-import { displayTotalTokensOf } from './token-figures';
+import { totalTokensOf } from './token-figures';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, css, html, nothing, svg } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -600,7 +600,7 @@ export class UsageCard extends LitElement {
       `;
     }
 
-    const tokens = displayTotalTokensOf(this.summary?.token_usage);
+    const tokens = totalTokensOf(this.summary?.token_usage);
     const cost = this.summary?.estimated_cost || 0;
 
     if (this.unit === 'dollars') {
@@ -663,7 +663,7 @@ export class UsageCard extends LitElement {
     if (!summary) return 0;
     return this.unit === 'dollars'
       ? Number(summary.estimated_cost || 0)
-      : displayTotalTokensOf(summary.token_usage);
+      : totalTokensOf(summary.token_usage);
   }
 
   /**
@@ -684,7 +684,7 @@ export class UsageCard extends LitElement {
     const usage = this.summary?.token_usage;
     const reported = Number(usage?.total_tokens || 0);
     if (!usage || reported <= 0) return 1;
-    return displayTotalTokensOf(usage) / reported;
+    return totalTokensOf(usage) / reported;
   }
 
   /**
@@ -733,7 +733,7 @@ export class UsageCard extends LitElement {
     const requests = this.summary?.total_requests || 0;
     const parts =
       this.unit === 'dollars'
-        ? [`${this.formatCompactNumber(displayTotalTokensOf(usage))} tokens`]
+        ? [`${this.formatCompactNumber(totalTokensOf(usage))} tokens`]
         : [];
     parts.push(`${this.formatCompactNumber(requests)} requests`);
     if (this.toolCallsCount > 0) {

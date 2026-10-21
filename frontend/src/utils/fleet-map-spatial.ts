@@ -113,6 +113,11 @@ export interface FleetMapViewport {
 }
 
 const GUTTER = 24;
+/**
+ * The smallest spatial scale that keeps 13px meta text at 11px, the console's
+ * smallest size. Fit never goes below it; a narrow stage stacks shelves instead.
+ */
+export const LEGIBLE_SPATIAL_SCALE = 0.85;
 const TYPE_ORDER = [
   'user',
   'device',
@@ -160,8 +165,10 @@ export function clusterSeed(
   const shelfHeight = (shelf: Shelf) =>
     shelf.reduce((sum, block) => sum + blockHeight(block), 0) +
     Math.max(0, shelf.length - 1) * GUTTER;
+  /** Which part of the picture a shelf belongs to: core, people or work. */
+  const sections: string[] = [];
   /** Blocks in order, a new shelf when the stage height is used up. */
-  const fill = (blocks: string[][]) => {
+  const fill = (blocks: string[][], section: string) => {
     let shelf: Shelf = [];
     for (const block of blocks) {
       if (
@@ -169,11 +176,15 @@ export function clusterSeed(
         shelfHeight(shelf) + GUTTER + blockHeight(block) > roomHeight
       ) {
         shelves.push(shelf);
+        sections.push(section);
         shelf = [];
       }
       shelf.push(block);
     }
-    if (shelf.length) shelves.push(shelf);
+    if (shelf.length) {
+      shelves.push(shelf);
+      sections.push(section);
+    }
   };
   // Core: one column per provider.
   const shared = members.get('shared') ?? [];
@@ -200,7 +211,10 @@ export function clusterSeed(
   for (const [, column] of [...core].sort(
     ([a], [b]) => Number(!a) - Number(!b) || a.localeCompare(b)
   ))
-    fill(column.map((id) => [id]));
+    fill(
+      column.map((id) => [id]),
+      'core'
+    );
   // People islands, then anything without a person.
   const rank = (id: string) => TYPE_ORDER.indexOf(typeOf(id));
   const islandOrder = (key: string, list: string[]) =>
@@ -214,12 +228,43 @@ export function clusterSeed(
     .map(([, list]) =>
       [...list].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
     );
-  fill(islands);
+  fill(islands, 'people');
   // Work cluster: the flows beside the issues and pull requests they act on.
   const flows = (members.get('flows') ?? []).sort();
-  fill(flows.map((id) => [id]));
+  fill(
+    flows.map((id) => [id]),
+    'flows'
+  );
   const work = (members.get('work') ?? []).sort();
-  fill(work.map((id) => [id]));
+  fill(
+    work.map((id) => [id]),
+    'work'
+  );
+  // A narrow stage (an Overview card) stacks neighbouring shelves while they
+  // fit its height, so the work cluster is not pushed past the right edge at
+  // a legible scale. Shelves of one section stack first (flows stay left of
+  // their work while they can), the flattest pair first; order is kept.
+  const widthOf = (count: number) => count * (nodeWidth + GUTTER) + GUTTER;
+  for (const sameSection of [true, false])
+    while (
+      shelves.length > 1 &&
+      widthOf(shelves.length) > viewport.width / LEGIBLE_SPATIAL_SCALE
+    ) {
+      let best = -1;
+      let bestHeight = Infinity;
+      for (let i = 0; i + 1 < shelves.length; i++) {
+        if (sameSection && sections[i] !== sections[i + 1]) continue;
+        const height =
+          shelfHeight(shelves[i]) + GUTTER + shelfHeight(shelves[i + 1]);
+        if (height <= roomHeight && height < bestHeight) {
+          best = i;
+          bestHeight = height;
+        }
+      }
+      if (best < 0) break;
+      shelves.splice(best, 2, [...shelves[best], ...shelves[best + 1]]);
+      sections.splice(best, 2, sections[best]);
+    }
   shelves.forEach((shelf, index) => {
     const natural = shelfHeight(shelf) - Math.max(0, shelf.length - 1) * GUTTER;
     const gap =

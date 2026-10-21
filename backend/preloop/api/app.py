@@ -444,6 +444,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         runner_session_sweeper = get_runner_session_sweeper()
         await runner_session_sweeper.start()
 
+    # Convert Anthropic usage rows that pods on the previous release wrote
+    # while migration 20261106_anthropic_cache_input was rolling out (#1955).
+    # One idempotent pass, a delay after startup, on every API replica.
+    anthropic_cache_input_repair = None
+    if not is_testing and is_api_role:
+        from preloop.services.anthropic_cache_input_repair import (
+            AnthropicCacheInputRepair,
+        )
+
+        anthropic_cache_input_repair = AnthropicCacheInputRepair()
+        await anthropic_cache_input_repair.start()
+
     readiness_sweeper = None
     if not is_testing and is_api_role and settings.ticket_readiness_enabled:
         from preloop.services.readiness.scheduler import ReadinessSweeper
@@ -795,6 +807,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     if readiness_sweeper:
         await readiness_sweeper.stop()
+
+    if anthropic_cache_input_repair:
+        try:
+            await anthropic_cache_input_repair.stop()
+        except Exception:
+            logger.error("Error stopping Anthropic cache input repair", exc_info=True)
 
     if not is_testing and runner_session_sweeper:
         try:

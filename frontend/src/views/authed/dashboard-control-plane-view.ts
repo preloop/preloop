@@ -1216,6 +1216,46 @@ export class DashboardView extends AuthedElement {
       .side-column {
         gap: var(--sl-spacing-medium);
       }
+      /* Keep Inventory mounted while its view changes. Reparenting it
+         dropped its map, requests, selection and fullscreen host. */
+      .column-layout.dashboard {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .dashboard > .main-column {
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .dashboard > .inventory-stack {
+        grid-column: 1;
+        grid-row: 2;
+        min-width: 0;
+      }
+      .dashboard > .side-column {
+        grid-column: 1;
+        grid-row: 3;
+      }
+      .dashboard.map-inventory > .side-column {
+        grid-row: 2;
+      }
+      .dashboard.map-inventory > .inventory-stack {
+        grid-row: 3;
+      }
+      @media (min-width: 1200px) {
+        .column-layout.dashboard {
+          grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+        }
+        .dashboard > .side-column {
+          grid-column: 2;
+          grid-row: 1 / span 2;
+        }
+        .dashboard.map-inventory > .side-column {
+          grid-row: 1;
+        }
+        .dashboard.map-inventory > .inventory-stack {
+          grid-column: 1 / -1;
+          grid-row: 2;
+        }
+      }
 
       /* Usage and Activity sit beside the main column and scroll with it.
          The shell's .main-content is the only page scroller. A sticky
@@ -1497,11 +1537,6 @@ export class DashboardView extends AuthedElement {
       /* One centered line in a 72px box. An empty card used to take as much
          vertical space as a full one, so a quiet account looked like a broken
          one. */
-      @media (max-width: 1200px) {
-        .column-layout.dashboard {
-          grid-template-columns: 1fr;
-        }
-      }
       @media (max-width: 800px) {
         .card-header,
         .card-header-with-action,
@@ -4997,16 +5032,22 @@ export class DashboardView extends AuthedElement {
         ${this.renderAttentionStrip()} ${this.renderWelcomeCard()}
       </div>
 
-      <div class="column-layout dashboard extra-wide">
+      <div
+        class="column-layout dashboard extra-wide ${this.inventoryMapMode ? 'map-inventory' : ''}"
+      >
         <div class="main-column">
           <div class="dashboard-stack">
             ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
-            ${this.inventoryMapMode ? nothing : this.renderInventoryStack()}
           </div>
         </div>
 
         <div class="side-column">
           ${this.renderUsageCard()} ${this.renderActivityFeed()}
+        </div>
+        <div
+          class="dashboard-stack inventory-stack ${this.inventoryMapMode ? 'inventory-full-row' : ''}"
+        >
+          ${this.renderInventoryStack()}
         </div>
         <mcp-setup-dialog
           ?open=${this.showSetupDialog}
@@ -5025,16 +5066,6 @@ export class DashboardView extends AuthedElement {
           }}
         ></preloop-invite-dialog>
       </div>
-      ${
-        this.inventoryMapMode
-          ? html`<div
-              class="dashboard-stack inventory-full-row extra-wide"
-              style="margin-top: var(--sl-spacing-medium);"
-            >
-              ${this.renderInventoryStack()}
-            </div>`
-          : nothing
-      }
     `;
   }
 

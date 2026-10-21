@@ -165,7 +165,7 @@ export function codeHitFromRealtime(message: unknown): FleetCodeHit | null {
   if (text(record.type) !== 'code_activity') return null;
   const payload = (record.payload || {}) as Record<string, unknown>;
   const action = text(payload.action) as FleetCodeAction;
-  if (!(action in CODE_LABEL)) return null;
+  if (payload.kind === 'issue' || !(action in CODE_LABEL)) return null;
   const nodes: string[] = [];
   const flow = text(payload.flow_id);
   const agent = text(payload.managed_agent_id);

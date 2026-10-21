@@ -24,7 +24,8 @@ export type FleetMapEdgeType =
   | 'uses_account'
   | 'account_of_provider'
   | 'provided_by'
-  | 'caused';
+  | 'caused'
+  | FleetWorkRelationKind;
 export type FleetMapGapCode =
   | 'discovered_agent'
   | 'unknown_device'
@@ -65,6 +66,12 @@ export interface FleetMapNode {
   review_state?: string | null;
   /** Tracker labels on a work object, as reported by its events. */
   labels?: string[];
+  /** Optional pass 3 metadata. Missing activity evidence stays unknown. */
+  avatar_url?: string | null;
+  idle?: boolean;
+  last_active_at?: string | null;
+  work_title?: string | null;
+  work_reference?: string;
 }
 export type FleetMapAgentState = 'onboarded' | 'discovered' | 'inactive';
 export interface FleetMapEdge {
@@ -78,6 +85,9 @@ export interface FleetMapEdge {
   gaps: FleetMapGapCode[];
   /** uses_model only: the provider account node the agent goes through. */
   account_id?: string | null;
+  actions?: string[];
+  count?: number;
+  last_active_at?: string;
 }
 export interface FleetMapGraph {
   schema_version: 1;
@@ -161,6 +171,11 @@ export const FLEET_MAP_EDGE_LABEL: Record<FleetMapEdgeType, string> = {
   account_of_provider: 'account of provider',
   provided_by: 'provided by',
   caused: 'observed activity with',
+  resolves: 'resolves',
+  mentions: 'mentions',
+  triggered: 'triggered by',
+  produced: 'produced',
+  touched: 'touched',
 };
 
 const COLUMN_OF: Record<FleetMapResourceType, FleetMapColumn> = {
@@ -341,6 +356,9 @@ export function filterGraph(
     nodes = nodes.filter(
       (node) =>
         !['model', 'provider_account', 'provider'].includes(node.type) ||
+        // New servers supply activity evidence, including direct person
+        // requests and configured idle resources explicitly opted into.
+        node.idle !== undefined ||
         reached.has(node.id)
     );
   }
@@ -641,11 +659,14 @@ export function layoutGraph(
 
 export async function getFleetMap(
   signal?: AbortSignal,
-  activeWithinMinutes: number | null = null
+  activeWithinMinutes: number | null = null,
+  includeIdle = false
 ): Promise<FleetMapGraph> {
-  const url = activeWithinMinutes
-    ? `/api/v1/fleet/map?active_within_minutes=${activeWithinMinutes}`
-    : '/api/v1/fleet/map';
+  const params = new URLSearchParams();
+  if (activeWithinMinutes)
+    params.set('active_within_minutes', String(activeWithinMinutes));
+  if (includeIdle) params.set('include_idle', 'true');
+  const url = `/api/v1/fleet/map${params.size ? `?${params}` : ''}`;
   const response = await fetchWithAuth(url, { signal });
   if (!response.ok)
     throw new Error(
@@ -657,7 +678,11 @@ export async function getFleetMap(
 }
 
 export type FleetCodeAction = 'opened' | 'commented' | 'reviewed' | 'merged';
-export type FleetCodeCounts = Record<FleetCodeAction, number>;
+export type FleetCodeCounts = Record<FleetCodeAction, number> & {
+  issues_opened?: number;
+  issues_updated?: number;
+  issues_commented?: number;
+};
 
 /** A flow with code activity in the window; the map places it. */
 export interface FleetCodeFlow {
@@ -667,6 +692,8 @@ export interface FleetCodeFlow {
   href: string;
   model_node_id: string | null;
   last_active_at: string | null;
+  model_node_ids?: string[];
+  run_count?: number;
 }
 
 export interface FleetCodeEvent {
@@ -677,6 +704,8 @@ export interface FleetCodeEvent {
   owner_id?: string | null;
   pr?: string | null;
   url?: string | null;
+  work_id?: string | null;
+  source?: 'builtin' | 'cli' | 'github_mcp' | 'gitlab_mcp' | 'webhook';
 }
 
 /**
@@ -685,6 +714,8 @@ export interface FleetCodeEvent {
  * sends it.
  */
 export interface FleetWorkItem {
+  id?: string;
+  href?: string | null;
   key: string;
   kind: 'issue' | 'pull_request';
   reference: string;
@@ -711,6 +742,21 @@ export interface FleetCodeActivity {
   /** Distinct work items in the window, so history shows on load. */
   work?: FleetWorkItem[];
   work_truncated?: boolean;
+  relations?: FleetWorkRelation[];
+  relations_truncated?: boolean;
+}
+
+export type FleetWorkRelationKind =
+  'resolves' | 'mentions' | 'triggered' | 'produced' | 'touched';
+export interface FleetWorkRelation {
+  id: string;
+  kind: FleetWorkRelationKind;
+  source: string;
+  target: string;
+  actions?: string[];
+  count?: number;
+  at: string;
+  provenance: 'tracker' | 'flow_run' | 'tool_call' | 'cli' | 'mcp';
 }
 
 /** Gateway totals for one model or provider node in the window. */
@@ -726,6 +772,20 @@ export interface FleetUsageTotals {
   partial: boolean;
 }
 
+/** Optional so a partial response never turns an unmeasured metric into zero. */
+export interface FleetNodeTotals extends FleetUsageTotals {
+  tool_calls?: number;
+  approvals_requested?: number;
+  approvals_approved?: number;
+  approvals_declined?: number;
+  prs_opened?: number;
+  prs_reviewed?: number;
+  prs_merged?: number;
+  review_comments?: number;
+  issues_touched?: number;
+  prs_touched?: number;
+}
+
 /** `GET /fleet/usage`: totals keyed by the fleet graph's own node ids. */
 export interface FleetUsageResponse {
   active_within_minutes: number | null;
@@ -735,6 +795,11 @@ export interface FleetUsageResponse {
   partial: boolean;
   models: Record<string, FleetUsageTotals>;
   providers: Record<string, FleetUsageTotals>;
+  agents?: Record<string, FleetNodeTotals>;
+  people?: Record<string, FleetNodeTotals>;
+  flows?: Record<string, FleetNodeTotals>;
+  devices?: Record<string, FleetNodeTotals>;
+  work?: Record<string, FleetNodeTotals>;
 }
 
 export async function getFleetUsage(
@@ -775,34 +840,48 @@ export function withCodeFlows(
   const nodes = [...graph.nodes];
   const edges = [...graph.edges];
   for (const flow of activity.flows) {
-    if (ids.has(flow.id)) continue;
+    if (!ids.has(flow.id))
+      nodes.push({
+        id: flow.id,
+        type: 'flow',
+        resource_id: flow.resource_id,
+        label: flow.label,
+        detail: 'Flow',
+        href: flow.href,
+        status: null,
+        owner_ids: [],
+        provider_ids: [],
+        gaps: [],
+        finding_count: 0,
+        actions: [],
+        last_seen_at: flow.last_active_at,
+        last_active_at: flow.last_active_at,
+      });
     ids.add(flow.id);
-    nodes.push({
-      id: flow.id,
-      type: 'flow',
-      resource_id: flow.resource_id,
-      label: flow.label,
-      detail: 'Flow',
-      href: flow.href,
-      status: null,
-      owner_ids: [],
-      provider_ids: [],
-      gaps: [],
-      finding_count: 0,
-      actions: [],
-      last_seen_at: flow.last_active_at,
-    });
-    if (flow.model_node_id && ids.has(flow.model_node_id))
+    const models =
+      flow.model_node_ids ?? (flow.model_node_id ? [flow.model_node_id] : []);
+    for (const model of new Set(models)) {
+      if (
+        !ids.has(model) ||
+        edges.some(
+          (edge) =>
+            edge.kind === 'uses_model' &&
+            edge.source === flow.id &&
+            edge.target === model
+        )
+      )
+        continue;
       edges.push({
-        id: `${flow.id}>uses_model>${flow.model_node_id}`,
+        id: `${flow.id}>uses_model>${model}`,
         source: flow.id,
-        target: flow.model_node_id,
+        target: model,
         kind: 'uses_model',
         provenance: 'observed',
-        impact_source: flow.model_node_id,
+        impact_source: model,
         impact_target: flow.id,
         gaps: [],
       });
+    }
   }
   return { ...graph, nodes, edges };
 }

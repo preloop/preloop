@@ -1976,8 +1976,11 @@ describe('DashboardView', () => {
       const element = await mountLoaded();
       const inventory = () =>
         element.shadowRoot!.querySelector('inventory-card') as HTMLElement;
-      expect(inventory().closest('.main-column'), 'table: main column').to
-        .exist;
+      const original = inventory();
+      expect(
+        inventory().closest('.inventory-stack'),
+        'table: stable inventory area'
+      ).to.exist;
       inventory().dispatchEvent(
         new CustomEvent('inventory-view-change', {
           detail: { view: 'map' },
@@ -1990,6 +1993,7 @@ describe('DashboardView', () => {
         .not.exist;
       expect(inventory().closest('.inventory-full-row'), 'map: its own row').to
         .exist;
+      expect(inventory(), 'the card was not recreated').to.equal(original);
       inventory().dispatchEvent(
         new CustomEvent('inventory-view-change', {
           detail: { view: 'table' },
@@ -1998,7 +2002,8 @@ describe('DashboardView', () => {
         })
       );
       await element.updateComplete;
-      expect(inventory().closest('.main-column')).to.exist;
+      expect(inventory()).to.equal(original);
+      expect(inventory().closest('.inventory-full-row')).not.to.exist;
     });
 
     it('states a capped audit count as a floor, not an exact figure (B-15)', async () => {
@@ -2068,7 +2073,7 @@ describe('DashboardView', () => {
       const inventory = element.shadowRoot?.querySelector(
         'inventory-card'
       ) as HTMLElement;
-      expect(strip.closest('.main-column'), 'main column').to.exist;
+      expect(strip.closest('.inventory-stack'), 'inventory area').to.exist;
       expect(strip.getBoundingClientRect().top).to.be.greaterThan(
         inventory.getBoundingClientRect().top
       );
@@ -2213,7 +2218,7 @@ describe('DashboardView', () => {
         'usage-card'
       ) as HTMLElement;
 
-      expect(inventory.closest('.main-column'), 'Inventory column').to.exist;
+      expect(inventory.closest('.inventory-stack'), 'Inventory area').to.exist;
       expect(feed.closest('.side-column'), 'Activity column').to.exist;
       expect(gateway.getBoundingClientRect().top).to.be.lessThan(
         inventory.getBoundingClientRect().top

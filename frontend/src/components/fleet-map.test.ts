@@ -9,14 +9,12 @@ const node = (el: FleetMap, id: string) =>
 
 /** The default view is onboarded agents; include discovered and inactive. */
 async function allAgents(el: FleetMap): Promise<void> {
-  const states = el.shadowRoot!.querySelector(
-    '[data-testid="fleet-map-states"]'
-  ) as unknown as { value: string[]; dispatchEvent(e: Event): boolean };
-  states.value = ['onboarded', 'discovered', 'inactive'];
-  states.dispatchEvent(new Event('sl-change'));
-  el.shadowRoot!.querySelector('[data-type="provider_account"]')!.dispatchEvent(
-    new Event('sl-change')
-  );
+  el.shadowRoot!.querySelector<HTMLElement>(
+    '[data-state="discovered"]'
+  )!.click();
+  el.shadowRoot!.querySelector<HTMLElement>(
+    '[data-type="provider_account"]'
+  )!.click();
   await el.updateComplete;
 }
 
@@ -89,10 +87,9 @@ describe('fleet-map', () => {
       html`<fleet-map .graph=${sampleFleetMap()}></fleet-map>`
     );
     await allAgents(el);
-    const select =
-      el.shadowRoot!.querySelector<HTMLSelectElement>('.owner-select')!;
-    select.value = 'user:sam';
-    select.dispatchEvent(new Event('sl-change'));
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-owner="user:sam"]'
+    )!.click();
     await el.updateComplete;
     expect(node(el, 'user:maya')).to.not.exist;
     expect(
@@ -100,7 +97,7 @@ describe('fleet-map', () => {
         .shadowRoot!.querySelector('.count')!
         .textContent!.replace(/\s+/g, ' ')
         .trim()
-    ).to.equal('6 of 15 nodes');
+    ).to.equal('6 active in this window');
   });
 });
 
@@ -113,13 +110,16 @@ describe('fleet-map gap filter', () => {
     const chip = el.shadowRoot!.querySelector<HTMLButtonElement>(
       '[data-testid="fleet-map-gap-select"]'
     )!;
-    expect(chip.textContent).to.contain('1 Not onboarded');
-    (chip as unknown as { value: string }).value = 'discovered_agent';
-    chip.dispatchEvent(new Event('sl-change'));
+    expect(chip.parentElement!.textContent).to.contain('1 Not onboarded');
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-gap="discovered_agent"]'
+    )!.click();
     await el.updateComplete;
-    expect((chip as unknown as { value: string }).value).to.equal(
-      'discovered_agent'
-    );
+    expect(
+      el.shadowRoot!.querySelector<HTMLElement & { checked: boolean }>(
+        '[data-gap="discovered_agent"]'
+      )!.checked
+    ).to.equal(true);
     expect(node(el, 'agent:cursor').classList.contains('focus')).to.equal(true);
     expect(node(el, 'agent:claude').classList.contains('dim')).to.equal(true);
     expect(
@@ -149,13 +149,13 @@ describe('fleet-map completeness and navigation', () => {
     );
     await allAgents(el);
     el.shadowRoot!.querySelector('[data-type="model"]')!.dispatchEvent(
-      new Event('sl-change')
+      new MouseEvent('click')
     );
     await el.updateComplete;
     if (!node(el, 'account:prod')) {
       el.shadowRoot!.querySelector(
         '[data-type="provider_account"]'
-      )!.dispatchEvent(new Event('sl-change'));
+      )!.dispatchEvent(new MouseEvent('click'));
       await el.updateComplete;
     }
     node(el, 'account:prod').click();
@@ -177,7 +177,7 @@ describe('fleet-map completeness and navigation', () => {
     if (!node(el, 'account:prod')) {
       el.shadowRoot!.querySelector(
         '[data-type="provider_account"]'
-      )!.dispatchEvent(new Event('sl-change'));
+      )!.dispatchEvent(new MouseEvent('click'));
       await el.updateComplete;
     }
     node(el, 'account:prod').click();
@@ -227,7 +227,7 @@ describe('fleet-map capped and narrow views', () => {
       .shadowRoot!.querySelector('.count')!
       .textContent!.replace(/\s+/g, ' ')
       .trim();
-    expect(count).to.equal('15 nodes');
+    expect(count).to.equal('15 active in this window');
     expect(
       el.shadowRoot!.querySelector('.count')!.getAttribute('title')
     ).to.contain('1 summary groups');
@@ -243,7 +243,7 @@ describe('fleet-map capped and narrow views', () => {
       if (!node(el, 'account:prod')) {
         el.shadowRoot!.querySelector(
           '[data-type="provider_account"]'
-        )!.dispatchEvent(new Event('sl-change'));
+        )!.dispatchEvent(new MouseEvent('click'));
         await el.updateComplete;
       }
       node(el, 'account:prod').click();
@@ -269,19 +269,15 @@ describe('fleet-map capped and narrow views', () => {
       html`<fleet-map .graph=${sampleFleetMap()}></fleet-map>`
     );
     await allAgents(el);
-    const gap = el.shadowRoot!.querySelector(
-      '[data-testid="fleet-map-gap-select"]'
-    ) as HTMLSelectElement;
-    gap.value = 'discovered_agent';
-    gap.dispatchEvent(new Event('sl-change'));
-    const owner = el.shadowRoot!.querySelector(
-      '.owner-select'
-    ) as HTMLSelectElement;
-    owner.value = 'user:maya';
-    owner.dispatchEvent(new Event('sl-change'));
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-gap="discovered_agent"]'
+    )!.click();
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-owner="user:maya"]'
+    )!.click();
     await el.updateComplete;
-    expect(el.shadowRoot!.querySelector('sl-option[value="discovered_agent"]'))
-      .to.not.exist;
+    expect(el.shadowRoot!.querySelector('[data-gap="discovered_agent"]')).to.not
+      .exist;
     expect(node(el, 'agent:claude').classList.contains('dim')).to.equal(false);
   });
 });
@@ -369,11 +365,7 @@ describe('fleet-map v2 readability', () => {
     expect(
       el.shadowRoot!.querySelector('.count')!.getAttribute('title')
     ).to.contain('4 decommissioned agents not shown');
-    const states = el.shadowRoot!.querySelector(
-      '[data-testid="fleet-map-states"]'
-    ) as unknown as { value: string[]; dispatchEvent(e: Event): void };
-    states.value = ['onboarded', 'discovered'];
-    states.dispatchEvent(new Event('sl-change'));
+    discovered.click();
     await el.updateComplete;
     expect(node(el, 'agent:cursor')).to.exist;
   });
@@ -384,7 +376,7 @@ describe('fleet-map v2 readability', () => {
     );
     el.shadowRoot!.querySelector(
       '[data-type="provider_account"]'
-    )!.dispatchEvent(new Event('sl-change'));
+    )!.dispatchEvent(new MouseEvent('click'));
     await el.updateComplete;
     const provider = node(el, 'provider:openai').getBoundingClientRect();
     const account = node(el, 'account:prod').getBoundingClientRect();
@@ -486,11 +478,7 @@ describe('fleet-map v2 readability', () => {
     const el = await fixture<FleetMap>(
       html`<fleet-map .graph=${sampleFleetMap()}></fleet-map>`
     );
-    const gap = el.shadowRoot!.querySelector(
-      '[data-testid="fleet-map-gap-select"]'
-    ) as HTMLSelectElement;
-    gap.value = 'all';
-    gap.dispatchEvent(new Event('sl-change'));
+    el.shadowRoot!.querySelector<HTMLElement>('[data-gap="all"]')!.click();
     await el.updateComplete;
     expect(node(el, 'runner:r2')).to.exist;
     expect(node(el, 'agent:codex')).to.not.exist;
@@ -548,11 +536,7 @@ describe('fleet-map labels', () => {
       expect(node(el, 'user:sam')).to.not.exist;
       const changed = spy();
       el.addEventListener('fleet-map-window-change', changed);
-      const select = el.shadowRoot!.querySelector<HTMLSelectElement>(
-        '[data-testid="fleet-map-window"]'
-      )!;
-      select.value = 'any';
-      select.dispatchEvent(new Event('sl-change'));
+      el.shadowRoot!.querySelector<HTMLElement>('[data-window="any"]')!.click();
       await el.updateComplete;
       expect(changed.firstCall.args[0].detail).to.deep.equal({
         window: 'any',
@@ -565,7 +549,7 @@ describe('fleet-map labels', () => {
     it('keeps the window reachable when nothing is active in it', async () => {
       const el = await fixture<FleetMap>(
         html`<fleet-map
-          .graph=${{ ...sampleFleetMap(), nodes: [], edges: [], active_within_minutes: 24 }}
+          .graph=${{ ...sampleFleetMap(), nodes: [], edges: [], active_within_minutes: 1440 }}
           .activityWindow=${'24h'}
         ></fleet-map>`
       );
@@ -577,11 +561,7 @@ describe('fleet-map labels', () => {
       );
       const changed = spy();
       el.addEventListener('fleet-map-window-change', changed);
-      const select = el.shadowRoot!.querySelector<HTMLSelectElement>(
-        '[data-testid="fleet-map-window"]'
-      )!;
-      select.value = 'any';
-      select.dispatchEvent(new Event('sl-change'));
+      el.shadowRoot!.querySelector<HTMLElement>('[data-window="any"]')!.click();
       expect(changed.firstCall.args[0].detail.minutes).to.equal(null);
     });
 
@@ -604,7 +584,7 @@ describe('fleet-map labels', () => {
     it('trusts a graph the server already filtered', async () => {
       const el = await fixture<FleetMap>(
         html`<fleet-map
-          .graph=${{ ...sampleFleetMap(), active_within_minutes: 24 }}
+          .graph=${{ ...sampleFleetMap(), active_within_minutes: 1440 }}
           .activityWindow=${'24h'}
         ></fleet-map>`
       );
