@@ -109,6 +109,31 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Docker Hub description, synced from docker/dockerhub/ so the listing
+      # cannot drift from the repo. Stable tags only. DOCKERHUB_TOKEN must be
+      # a personal access token with Read, Write, Delete scope: Docker Hub
+      # refuses description edits from narrower tokens.
+      - name: Read Docker Hub short description
+        id: dockerhub-short
+        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        run: |
+          short="$(head -n 1 docker/dockerhub/preloop.short.txt)"
+          if [ "${#short}" -gt 100 ]; then
+            echo "::error::docker/dockerhub/preloop.short.txt exceeds Docker Hub's 100 characters"
+            exit 1
+          fi
+          echo "text=${short}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Docker Hub description
+        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ format('{0}/preloop', vars.DOCKERHUB_ORG) }}
+          short-description: ${{ steps.dockerhub-short.outputs.text }}
+          readme-filepath: ./docker/dockerhub/preloop.md
+
   # ==========================================================================
   # Build and Push Frontend Image
   # ==========================================================================
@@ -172,6 +197,31 @@ jobs:
             BRAND=preloop
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Docker Hub description, synced from docker/dockerhub/ so the listing
+      # cannot drift from the repo. Stable tags only. DOCKERHUB_TOKEN must be
+      # a personal access token with Read, Write, Delete scope: Docker Hub
+      # refuses description edits from narrower tokens.
+      - name: Read Docker Hub short description
+        id: dockerhub-short
+        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        run: |
+          short="$(head -n 1 docker/dockerhub/console.short.txt)"
+          if [ "${#short}" -gt 100 ]; then
+            echo "::error::docker/dockerhub/console.short.txt exceeds Docker Hub's 100 characters"
+            exit 1
+          fi
+          echo "text=${short}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Docker Hub description
+        if: vars.PUSH_TO_DOCKERHUB == 'true' && !contains(github.ref_name, '-')
+        uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ format('{0}/console', vars.DOCKERHUB_ORG) }}
+          short-description: ${{ steps.dockerhub-short.outputs.text }}
+          readme-filepath: ./docker/dockerhub/console.md
 
   # ==========================================================================
   # SBOM (CycloneDX, one per shipped component)
@@ -661,6 +711,8 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
+      # Push the Helm chart to oci://ghcr.io/preloop/charts (Artifact Hub).
+      packages: write
       # Required by actions/attest-build-provenance to mint a Sigstore
       # signing certificate from the workflow's OIDC identity.
       id-token: write
@@ -905,6 +957,29 @@ jobs:
             exit 1
           fi
           gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      # Artifact Hub indexes oci://ghcr.io/preloop/charts/preloop. The chart
+      # pushed here is the same .tgz attached to the release, and the
+      # artifacthub.io tag carries the repository metadata (ownership claim).
+      # The ghcr.io package must be public once (org package settings).
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+
+      - name: Push Helm chart to GHCR (OCI)
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+          PACKAGE_VERSION: ${{ steps.version.outputs.package_version }}
+        run: |
+          set -euo pipefail
+          chart="release-assets/preloop-${PACKAGE_VERSION}.tgz"
+          test -f "$chart"
+          printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io -u "$GHCR_USER" --password-stdin
+          helm push "$chart" oci://ghcr.io/preloop/charts
+          printf '%s' "$GHCR_TOKEN" | oras login ghcr.io -u "$GHCR_USER" --password-stdin
+          oras push ghcr.io/preloop/charts/preloop:artifacthub.io \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            helm/artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
 
       - name: Trigger charts index update
         if: success()

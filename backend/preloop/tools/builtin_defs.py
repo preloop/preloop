@@ -1053,3 +1053,104 @@ TOOL_NAME_ALIASES: Dict[str, str] = {
     "search": "search_issues",
     "search_issues": "search",
 }
+
+
+def _annotations(
+    title: str,
+    *,
+    read_only: bool,
+    open_world: bool,
+    idempotent: bool = False,
+    destructive: bool = False,
+) -> Dict[str, Any]:
+    """Build one MCP ``ToolAnnotations`` payload.
+
+    Args:
+        title: Human-readable tool title shown by MCP clients.
+        read_only: True when the tool never modifies its environment.
+        open_world: True when the tool reaches systems outside Preloop
+            (issue trackers, code hosts, public registries, humans).
+        idempotent: True when repeating a call with the same arguments has
+            no additional effect. Always True for read-only tools.
+        destructive: True when the tool may delete or irreversibly
+            overwrite data. Always False for read-only tools.
+
+    Returns:
+        A dict with the MCP annotation keys (camelCase, as on the wire).
+    """
+    return {
+        "title": title,
+        "readOnlyHint": read_only,
+        "destructiveHint": False if read_only else destructive,
+        "idempotentHint": True if read_only else idempotent,
+        "openWorldHint": open_world,
+    }
+
+
+#: MCP tool annotations for every builtin tool, keyed by tool name. These are
+#: hints for clients (and catalog reviewers); policy enforcement never relies
+#: on them. Proxied tools keep their upstream annotations instead.
+BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
+    # Issue trackers (external systems).
+    "get_issue": _annotations("Get issue", read_only=True, open_world=True),
+    "search_issues": _annotations("Search issues", read_only=True, open_world=True),
+    "search": _annotations("Search issues", read_only=True, open_world=True),
+    "create_issue": _annotations("Create issue", read_only=False, open_world=True),
+    "update_issue": _annotations("Update issue", read_only=False, open_world=True),
+    "estimate_compliance": _annotations(
+        "Estimate issue compliance", read_only=True, open_world=True
+    ),
+    "improve_compliance": _annotations(
+        "Suggest issue compliance improvements", read_only=True, open_world=True
+    ),
+    # Code hosts (external systems).
+    "add_comment": _annotations("Add comment", read_only=False, open_world=True),
+    "update_comment": _annotations(
+        "Update or resolve comment",
+        read_only=False,
+        open_world=True,
+        idempotent=True,
+    ),
+    "get_pull_request": _annotations(
+        "Get pull request", read_only=True, open_world=True
+    ),
+    "update_pull_request": _annotations(
+        "Update pull request", read_only=False, open_world=True
+    ),
+    "create_pull_request": _annotations(
+        "Create pull request", read_only=False, open_world=True
+    ),
+    # Humans in the loop (notifications leave Preloop).
+    "request_approval": _annotations(
+        "Request human approval", read_only=False, open_world=True
+    ),
+    "ask_user": _annotations("Ask a human", read_only=False, open_world=True),
+    "permission_prompt": _annotations(
+        "Permission prompt", read_only=False, open_world=True
+    ),
+    "get_approval_status": _annotations(
+        "Get approval status", read_only=True, open_world=False
+    ),
+    # Public package registries.
+    "resolve_sbom_upstreams": _annotations(
+        "Resolve SBOM upstreams", read_only=True, open_world=True
+    ),
+    # Agents, flows and sessions inside Preloop.
+    "send_note": _annotations("Send note to agent", read_only=False, open_world=False),
+    "run_flow": _annotations("Run flow", read_only=False, open_world=True),
+    "get_execution": _annotations(
+        "Get flow execution", read_only=True, open_world=False
+    ),
+    "list_sessions": _annotations("List sessions", read_only=True, open_world=False),
+    "search_sessions": _annotations(
+        "Search sessions", read_only=True, open_world=False
+    ),
+    # Artifacts stored by Preloop.
+    "deposit_artifact": _annotations(
+        "Deposit artifact", read_only=False, open_world=False
+    ),
+    "search_artifacts": _annotations(
+        "Search artifacts", read_only=True, open_world=False
+    ),
+    "get_artifact": _annotations("Get artifact", read_only=True, open_world=False),
+}
