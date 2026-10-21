@@ -13,8 +13,6 @@ export const consoleRouteLoaders = {
     import('../views/authed/issues-compliance-view'),
   'issues-dependencies-view': () =>
     import('../views/authed/issues-dependencies-view'),
-  'duplicates-view': () => import('../views/authed/issues/duplicates-view'),
-  'assignments-view': () => import('../views/authed/issues/assignments-view'),
   'api-usage-view': () => import('../views/authed/api-usage-view'),
   'cost-view': () => import('../views/authed/cost-view'),
   'issue-cost-view': () => import('../views/authed/issue-cost-view'),

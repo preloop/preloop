@@ -4,6 +4,7 @@ import { router, Router, LOCATION_CHANGED } from '../router';
 import { CapabilityRouteGate } from '../lazy-routes';
 
 import type { LitApp } from './lit-app';
+import { consoleRouteLoaders } from './console-route-loaders';
 import './lit-app';
 
 // Tag names rather than the element classes: a failing assertion on a class
@@ -418,6 +419,11 @@ describe('LitApp routing', () => {
         `Expected /console/issues/${legacy} to redirect`,
         { timeout: 5000 }
       );
+      // The stub views were deleted (#1957); the redirect is all that is
+      // left, so no element or lazy chunk exists for the old route.
+      expect(document.querySelector(`${legacy}-view`)).to.equal(null);
+      expect(customElements.get(`${legacy}-view`)).to.equal(undefined);
+      expect(Object.keys(consoleRouteLoaders)).to.not.include(`${legacy}-view`);
     });
   }
 
