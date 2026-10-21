@@ -45,6 +45,60 @@ afterEach(() => {
 });
 
 describe('Fleet Map pass 3', () => {
+  for (const serverWindow of [undefined, 60]) {
+    it(`keeps the selected window when idle is enabled and the server window is ${serverWindow}`, async () => {
+      const graph = sampleFleetMap();
+      graph.active_within_minutes = serverWindow;
+      graph.nodes = graph.nodes.map((n) => ({
+        ...n,
+        idle: n.id === 'model:sonnet' ? true : serverWindow ? false : undefined,
+        last_seen_at: new Date(
+          Date.now() - (n.id === 'agent:codex' ? 1 : 30) * 60_000
+        ).toISOString(),
+        last_active_at: serverWindow
+          ? new Date(
+              Date.now() - (n.id === 'agent:codex' ? 1 : 30) * 60_000
+            ).toISOString()
+          : undefined,
+      }));
+      const el = await mount({
+        graph,
+        activityWindow: '5m',
+        includeIdle: true,
+      });
+      expect(root(el).querySelector('[data-node="agent:claude"]')).toBeNull();
+      expect(
+        root(el).querySelector('[data-node="agent:codex"]')
+      ).not.toBeNull();
+      expect(
+        root(el).querySelector('[data-node="model:sonnet"]')
+      ).not.toBeNull();
+      if (serverWindow)
+        expect(root(el).querySelector('[data-node="model:gpt"]')).toBeNull();
+    });
+  }
+
+  for (const action of [
+    'arrange',
+    'reset-layout',
+    'reset-filters',
+    'fullscreen-menu',
+  ]) {
+    it(`dismisses narrow Filters after ${action}`, async () => {
+      await page.viewport(390, 900);
+      const el = await mount({ query: 'e' });
+      const trigger = root(el).querySelector(
+        '[data-testid="fleet-map-filters"]'
+      )!;
+      const dropdown: any = trigger.closest('sl-dropdown');
+      await page.getByTestId('fleet-map-filters').click();
+      expect(dropdown.open).toBe(true);
+      await page.getByTestId(`fleet-map-${action}`).click();
+      expect(dropdown.open).toBe(false);
+      if (action === 'fullscreen-menu') expect(el.fullscreen).toBe(true);
+    });
+  }
+
   it('keeps the count separate from Window when searching a desktop Inventory-width map', async () => {
     await page.viewport(1280, 900);
     const el = await mount({
@@ -130,11 +184,11 @@ describe('Fleet Map pass 3', () => {
           impact_source: 'agent:codex',
           impact_target: issue.id,
           gaps: [],
-          actions: ['issue_opened'],
+          actions: ['issue_opened', 'issue_labeled', 'issue_unlabeled'],
         },
         issue
       )
-    ).toBe('opened #7');
+    ).toBe('opened, labelled, unlabelled #7');
     expect(
       workRelationLabel(
         {
@@ -594,6 +648,9 @@ for (const arrangement of ['columns', 'spatial']) {
       );
       await el.updateComplete;
       const panel = root(el).querySelector('.panel')!;
+      expect(
+        normalizedText(panel).split('Add keyboard navigation')
+      ).toHaveLength(2);
       expect(normalizedText(panel)).toContain('Add keyboard navigation');
       expect(normalizedText(panel)).toContain('Open');
       expect(normalizedText(panel)).toContain('Repository: example/widgets');

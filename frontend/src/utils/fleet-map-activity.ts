@@ -84,7 +84,8 @@ const UPSTREAM: FleetMapEdge['kind'][] = ['hosts', 'owns'];
  */
 export function activeGraph(
   graph: FleetMapGraph,
-  sinceMs: number
+  sinceMs: number,
+  keepIdle = false
 ): FleetMapGraph {
   const active = new Set(
     graph.nodes
@@ -127,6 +128,9 @@ export function activeGraph(
         !idle.has(edge.source)
       )
         active.add(edge.source);
+  // Opted-in configured resources stay visible, but cannot make neighbours
+  // active merely through a binding or ownership relationship.
+  if (keepIdle) for (const id of idle) active.add(id);
   return {
     ...graph,
     nodes: graph.nodes.filter((node) => active.has(node.id)),

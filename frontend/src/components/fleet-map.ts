@@ -2779,11 +2779,12 @@ export class FleetMap extends LitElement {
     const minutes = windowMinutes(this.activityWindow);
     // A server that applied the window says so; otherwise apply it here.
     const source =
-      this.graph &&
-      minutes &&
-      !this.includeIdle &&
-      this.graph.active_within_minutes !== minutes
-        ? activeGraph(this.graph, Date.now() - minutes * 60_000)
+      this.graph && minutes && this.graph.active_within_minutes !== minutes
+        ? activeGraph(
+            this.graph,
+            Date.now() - minutes * 60_000,
+            this.includeIdle
+          )
         : (this.graph ?? EMPTY);
     const activeSource = this.includeIdle
       ? source
@@ -2907,6 +2908,12 @@ export class FleetMap extends LitElement {
         composed: true,
       })
     );
+  }
+
+  private runMapAction(event: Event, action: () => void): void {
+    // Dismiss before the action can rerender or disable its menu item.
+    void (event.currentTarget as HTMLElement).closest('sl-dropdown')?.hide();
+    action.call(this);
   }
 
   /**
@@ -3129,12 +3136,12 @@ export class FleetMap extends LitElement {
               >
               <sl-menu-item
                 data-testid="fleet-map-arrange"
-                @click=${this.arrange}
+                @click=${(event: Event) => this.runMapAction(event, this.arrange)}
                 >Arrange</sl-menu-item
               >
               <sl-menu-item
                 data-testid="fleet-map-reset-layout"
-                @click=${this.resetLayout}
+                @click=${(event: Event) => this.runMapAction(event, this.resetLayout)}
                 >Reset layout</sl-menu-item
               >`
           : nothing
@@ -3142,12 +3149,12 @@ export class FleetMap extends LitElement {
       <sl-menu-item
         ?disabled=${!changed}
         data-testid="fleet-map-reset-filters"
-        @click=${this.resetFilters}
+        @click=${(event: Event) => this.runMapAction(event, this.resetFilters)}
         >Reset filters</sl-menu-item
       >
       <sl-menu-item
         data-testid="fleet-map-fullscreen-menu"
-        @click=${this.toggleFullscreen}
+        @click=${(event: Event) => this.runMapAction(event, this.toggleFullscreen)}
         >${this.fullscreen ? 'Exit full screen' : 'Full screen'}</sl-menu-item
       >
       ${this.instanceAdmin ? html`<div class="privacy-note">Shows tool names, approval commands, PR titles and token counts. Never prompts or replies.</div>` : nothing}`;
