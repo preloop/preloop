@@ -1,4 +1,5 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import sinon from 'sinon';
 import { mockApi, type MockApi } from '../../test-helpers/capability-api';
 import { invalidateApiCaches } from '../../api';
 import { capabilityRoutesFor } from '../../lazy-routes';
@@ -153,6 +154,41 @@ describe('Device fleet', () => {
     await view.updateComplete;
     return view;
   }
+  it('defers observer layout writes and cancels them on disconnect', async () => {
+    setup();
+    let notify!: ResizeObserverCallback;
+    const observer = { observe() {}, unobserve() {}, disconnect() {} };
+    const stub = sinon
+      .stub(window, 'ResizeObserver')
+      .callsFake(function (callback) {
+        notify = callback;
+        return observer;
+      });
+    try {
+      const view = await mount();
+      const content = document.createElement('div');
+      content.className = 'map-content';
+      view.shadowRoot.append(content);
+      notify([], observer);
+      notify([], observer);
+      expect(content.style.getPropertyValue('--fleet-content-height')).to.equal(
+        ''
+      );
+      await new Promise(requestAnimationFrame);
+      expect(content.style.getPropertyValue('--fleet-content-height')).to.match(
+        /^\d+(\.\d+)?px$/
+      );
+      content.style.removeProperty('--fleet-content-height');
+      notify([], observer);
+      view.remove();
+      await new Promise(requestAnimationFrame);
+      expect(content.style.getPropertyValue('--fleet-content-height')).to.equal(
+        ''
+      );
+    } finally {
+      stub.restore();
+    }
+  });
   it('registers only with the fleet capability', () => {
     expect(
       capabilityRoutesFor(new Set()).some(

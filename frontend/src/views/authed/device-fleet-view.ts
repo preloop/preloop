@@ -484,6 +484,16 @@ export class DeviceFleetView extends LitElement {
     `,
   ];
   private hostObserver?: ResizeObserver;
+  private sizeFrame?: number;
+  // Resizing a descendant during observer delivery can resize this host again.
+  // Defer layout writes until the next frame and coalesce repeated notifications.
+  private scheduleSizeMap = (): void => {
+    if (this.sizeFrame !== undefined) return;
+    this.sizeFrame = requestAnimationFrame(() => {
+      this.sizeFrame = undefined;
+      if (this.isConnected) this.sizeMap();
+    });
+  };
   private sizeMap = (): void => {
     const content = this.shadowRoot?.querySelector<HTMLElement>('.map-content');
     if (!content) return;
@@ -495,20 +505,22 @@ export class DeviceFleetView extends LitElement {
     );
   };
   protected updated(): void {
-    this.sizeMap();
+    this.scheduleSizeMap();
   }
   connectedCallback(): void {
     super.connectedCallback();
-    this.hostObserver = new ResizeObserver(this.sizeMap);
+    this.hostObserver = new ResizeObserver(this.scheduleSizeMap);
     this.hostObserver.observe(this);
-    window.addEventListener('resize', this.sizeMap);
+    window.addEventListener('resize', this.scheduleSizeMap);
     void this.load();
   }
   disconnectedCallback(): void {
     this.controller?.abort();
     this.mapController?.abort();
     this.hostObserver?.disconnect();
-    window.removeEventListener('resize', this.sizeMap);
+    window.removeEventListener('resize', this.scheduleSizeMap);
+    if (this.sizeFrame !== undefined) cancelAnimationFrame(this.sizeFrame);
+    this.sizeFrame = undefined;
     super.disconnectedCallback();
   }
 
