@@ -532,6 +532,7 @@ def build_work_items(
     pull_requests_truncated = (
         len(active_prs) > pull_request_limit or len(merged_prs) > pull_request_limit
     )
+    pr_opened: dict[tuple[Kind, str], datetime] = {}
     for row in active_prs[:pull_request_limit]:
         action = (
             "opened"
@@ -553,6 +554,9 @@ def build_work_items(
             related=row.issue_key if not row.ambiguous else None,
         )
         pr_slot = slot_of(row.pr_key, "pull_request")
+        if pr_slot and row.opened_at:
+            # The forge opening, kept apart from the item's latest action.
+            pr_opened[pr_slot] = _aware(row.opened_at)
         issue_slot = slot_of(row.issue_key, "issue") if not row.ambiguous else None
         if pr_slot and issue_slot:
             # The issue-cost rollup pairs a PR with the issue it closes.
@@ -570,12 +574,11 @@ def build_work_items(
         pr_slot = slot_of(later[0][1], "pull_request") if later else None
         if pr_slot is None:
             openings = [
-                (item.kind, item.key)
-                for item in items.values()
-                if item.kind == "pull_request"
+                slot
+                for slot, opened in pr_opened.items()
+                if (item := items.get(slot)) is not None
                 and item.repo == repo
-                and item.last_action == "opened"
-                and at <= item.last_at <= at + timedelta(minutes=10)
+                and at <= opened <= at + timedelta(minutes=10)
             ]
             pr_slot = openings[0] if len(openings) == 1 else None  # type: ignore[assignment]
         if pr_slot is None:

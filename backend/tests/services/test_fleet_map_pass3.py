@@ -1102,3 +1102,35 @@ def test_cli_pr_create_links_the_agent_to_the_resolved_pr(
         if r.kind == "touched" and r.target == "work:pull_request:acme/api#42"
     )
     assert "opened" in touched.actions
+
+
+def test_pr_create_resolves_by_opening_even_after_a_later_review(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    ref = classify_shell_command("gh pr create -t T -b 'Fixes #7'", remote=REMOTE)
+    _call(
+        db_session,
+        fleet["session"],
+        "Bash",
+        5,
+        status="allowed",
+        metadata={"work_ref": ref},
+    )
+    db_session.add(
+        models.IssueCostPullRequest(
+            account_id=fleet["user"].account_id,
+            pr_key="https://github.com/acme/api/pull/62",
+            opened_at=NOW - timedelta(minutes=4),
+            approved_at=NOW - timedelta(minutes=1),
+        )
+    )
+    db_session.flush()
+    out = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    kinds = {(r.kind, r.source, r.target) for r in out.relations}
+    assert (
+        "resolves",
+        "work:pull_request:acme/api#62",
+        "work:issue:acme/api#7",
+    ) in kinds
