@@ -1,9 +1,11 @@
 """Bound durable Agent Control result lookups by account and command ID."""
 
+from contextlib import contextmanager
+from collections.abc import Iterator
+
 import sqlalchemy as sa
 from alembic import op
 
-from preloop.models.concurrent_index_ddl import concurrent_index_ddl
 
 revision = "20261106_control_command_idx"
 down_revision = "20261105_fleet_work_tools"
@@ -18,9 +20,33 @@ DEFINITION = (
 )
 
 
+@contextmanager
+def _index_ddl() -> Iterator[None]:
+    # Extracting command IDs can read toasted historical payloads. Keep this
+    # build's finite scan budget longer than the general concurrent-index
+    # helper, without changing other migrations or the session defaults.
+    with op.get_context().autocommit_block():
+        bind = op.get_bind()
+        previous_lock, previous_statement = bind.execute(
+            sa.text(
+                "SELECT current_setting('lock_timeout'), current_setting('statement_timeout')"
+            )
+        ).one()
+        settings = sa.text(
+            "SELECT set_config('lock_timeout', :lock, false), set_config('statement_timeout', :statement, false)"
+        )
+        try:
+            bind.execute(settings, {"lock": "5s", "statement": "30min"})
+            yield
+        finally:
+            bind.execute(
+                settings, {"lock": previous_lock, "statement": previous_statement}
+            )
+
+
 def upgrade() -> None:
     """Build without blocking writes, including after an interrupted attempt."""
-    with concurrent_index_ddl(op.get_context()):
+    with _index_ddl():
         valid = (
             op.get_bind()
             .execute(
@@ -42,5 +68,5 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove only the command correlation lookup index."""
-    with concurrent_index_ddl(op.get_context()):
+    with _index_ddl():
         op.execute(sa.text(f"DROP INDEX CONCURRENTLY IF EXISTS {INDEX}"))

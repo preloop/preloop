@@ -10,6 +10,7 @@ import os
 import threading
 from collections.abc import Coroutine
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 from urllib import parse, request
@@ -252,6 +253,8 @@ class HermesPreloopPlugin:
                 supports_interrupt=callable(getattr(hermes_runtime, "interrupt", None)),
             )
         )
+        desktop, desktop_display = read_desktop_capability()
+        caps = replace(caps, desktop=desktop, desktop_display=desktop_display)
         self.client = create_hermes_agent_control_client(
             config_path,
             send_message=send_message,

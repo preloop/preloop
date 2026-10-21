@@ -244,8 +244,9 @@ explicit central require-approval rule.
 
 ## Manual Test Without Preloop CLI
 
-The plugin does not need the Preloop CLI at runtime. To check an install by
-hand:
+The plugin does not need the Preloop CLI at runtime. Install it into the same
+Python environment as a supported Hermes runtime; `run` imports Hermes's native
+agent, provider, and session APIs. To check that environment by hand:
 
 ```bash
 pip install preloop-hermes-plugin
@@ -254,12 +255,12 @@ preloop-hermes-plugin verify
 preloop-hermes-plugin run
 ```
 
-`run` opens the Agent Control WebSocket and advertises capabilities without
-Hermes attached. In Preloop the agent should show as online, and Talk controls
-should appear in the console and mobile apps. To test message delivery end to
-end, run the plugin inside Hermes itself (not via `run`, which has no session
-attached), then pick the Hermes agent in the console, click Talk, and send a
-short message.
+`run` opens the Agent Control WebSocket and creates isolated native Hermes
+sessions for new text commands. Select **New session** for each test message;
+continuation in an existing Talk thread is unsupported by this standalone
+adapter. A successful command records acknowledgement and its terminal reply.
+See [Standalone control sessions](#standalone-control-sessions) for supported
+controls and limits. `verify` checks plugin configuration, not a model call.
 
 ## What the plugin actually does
 
@@ -268,10 +269,10 @@ Scoped honestly, so you know what you are installing:
 - Maintains a WebSocket to Preloop's Agent Control endpoint, with reconnect
   backoff and heartbeat, so the channel survives laptop sleep and network
   changes.
-- Advertises capabilities: new and existing sessions, text, voice transcripts,
-  interrupt, tool approval.
-- Delivers operator messages and voice transcripts into the running Hermes
-  session, and relays interrupts.
+- Advertises the capabilities of the attached runtime. The standalone adapter
+  supports new text sessions; other controls require a runtime that exposes them.
+- Delivers operator messages into the runtime and returns correlated replies
+  and errors; unsupported session or input modes fail explicitly.
 - Gates every native tool call through `pre_tool_call`, fail-closed, bridging
   Hermes' synchronous hook onto its own event loop so the decision is a plain
   dict by the time Hermes reads it.

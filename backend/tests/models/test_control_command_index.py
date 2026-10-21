@@ -51,11 +51,25 @@ def test_control_lookup_index_plans_and_repairs_interrupted_build(db_engine):
                 {"account": account_id, "command": command_id},
             )
 
+            original_timeouts = connection.execute(
+                text(
+                    "SELECT current_setting('lock_timeout'), current_setting('statement_timeout')"
+                )
+            ).one()
+
             def run_migration(action):
                 connection.commit()
                 context = MigrationContext.configure(connection)
                 with context.begin_transaction(), Operations.context(context):
                     action()
+                assert (
+                    connection.execute(
+                        text(
+                            "SELECT current_setting('lock_timeout'), current_setting('statement_timeout')"
+                        )
+                    ).one()
+                    == original_timeouts
+                )
 
             run_migration(migration.upgrade)
             connection.execute(text("ANALYZE runtime_session_activity"))
