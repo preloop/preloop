@@ -15,11 +15,12 @@ from sqlalchemy import (
     case,
     cast,
     func,
-    literal,
+    null,
     or_,
     select,
 )
 from sqlalchemy.engine import Row, RowMapping
+from sqlalchemy.sql.elements import Null
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -243,10 +244,10 @@ def usage_totals(
         statement = statement.outerjoin(
             execution, execution.id == usage.flow_execution_id
         )
-        keys = [flow_id, literal(None, String)]
+        keys = [flow_id, null()]
         conditions.append(flow_id.is_not(None))
     elif grouping == "user":
-        keys = [usage.user_id, literal(None, String)]
+        keys = [usage.user_id, null()]
         conditions += [
             usage.user_id.is_not(None),
             usage.runtime_principal_id.is_(None),
@@ -261,7 +262,7 @@ def usage_totals(
             & x.link.in_(ASSIGNED_LINKS),
         )
         if grouping == "pull_request":
-            keys = [x.pr_key, literal(None, String)]
+            keys = [x.pr_key, null()]
             conditions.append(x.pr_key.is_not(None))
         else:
             statement = statement.join(
@@ -275,7 +276,9 @@ def usage_totals(
             *_totals(usage),
         )
         .where(*conditions, *_gateway_window(since, until))
-        .group_by(*keys)
+        # Only real columns: a NULL literal in GROUP BY is a syntax error
+        # once inlined (psycopg2).
+        .group_by(*(key for key in keys if not isinstance(key, Null)))
         .order_by(func.count().desc())
         .limit(limit)
     )
