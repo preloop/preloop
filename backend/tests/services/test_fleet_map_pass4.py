@@ -658,7 +658,7 @@ def test_a_resync_heals_a_sync_stamped_jira_row(
     # A local edit after the bad sync keeps its own updated_at.
     edited = datetime(2026, 10, 21, 20, 40)
     stored.updated_at = edited
-    assert "updated_at" not in (stamped_times_to_heal(stored, values) or {})
+    assert (stamped_times_to_heal(stored, values) or {})["updated_at"] == edited
     stored.updated_at = datetime.fromisoformat(row["updated_at"])
     # A row already holding the provider time needs nothing.
     stored.last_updated_external = healed["last_updated_external"]

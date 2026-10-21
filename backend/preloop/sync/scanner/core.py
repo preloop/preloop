@@ -86,6 +86,9 @@ def stamped_times_to_heal(
     if local is not None and abs(local - stored) <= datetime.timedelta(seconds=1):
         # ``updated_at`` still carries the stamp; a later local edit keeps its time.
         healed["updated_at"] = provider
+    elif local is not None:
+        # Written explicitly, or the column's onupdate would stamp the heal time.
+        healed["updated_at"] = local
     created = _naive_utc(incoming.get("created_at"))
     if created is not None:
         healed["created_at"] = created
