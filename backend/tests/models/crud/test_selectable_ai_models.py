@@ -134,12 +134,15 @@ def test_builtin_usage_is_scoped_to_the_requesting_account(
     overview = client.get("/api/v1/ai-models/overview")
     assert overview.status_code == 200
     assert overview.json()["models"][0]["total_requests"] == 1
+    original_name = built_in.name
+    built_in_id = built_in.id
     # Permission middleware may refuse before the ownership-hiding 404.
     assert client.delete(f"/api/v1/ai-models/{built_in.id}").status_code in {403, 404}
     assert client.put(
         f"/api/v1/ai-models/{built_in.id}", json={"name": "Changed"}
     ).status_code in {403, 404}
-    assert crud_ai_model.get(db_session, id=built_in.id).name == built_in.name
+    db_session.expire_all()
+    assert crud_ai_model.get(db_session, id=built_in_id).name == original_name
 
 
 @pytest.mark.parametrize("own_default", [None, False, True])

@@ -219,3 +219,35 @@ async def test_discovery_transport_dials_real_allowed_local_http(
     finally:
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_discovery_pagination_cannot_forward_credentials_to_another_origin(
+    allow_local: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ai_model_provider,
+        "_resolve_endpoint_host_uncached",
+        lambda host: [ipaddress.ip_address("192.168.50.5")],
+    )
+    sent = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"data": []})
+
+    transport = DiscoveryTransport()
+    await transport.transport.aclose()
+    transport.transport = httpx.MockTransport(upstream)
+    async with httpx.AsyncClient(transport=transport) as client:
+        await client.get(
+            "https://model.example.test/models",
+            headers={"Authorization": "Bearer example"},
+        )
+        with pytest.raises(ValueError, match="same origin"):
+            await client.get(
+                "https://other.example.test/models",
+                headers={"Authorization": "Bearer example"},
+            )
+    assert len(sent) == 1

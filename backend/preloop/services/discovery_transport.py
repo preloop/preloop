@@ -8,6 +8,7 @@ class DiscoveryTransport(httpx.AsyncBaseTransport):
 
     def __init__(self, *, verify: bool | str = True) -> None:
         self.transport = httpx.AsyncHTTPTransport(verify=verify, trust_env=False)
+        self.origin: tuple[str, str, int | None] | None = None
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         from preloop.services.ai_model_provider import (
@@ -20,6 +21,12 @@ class DiscoveryTransport(httpx.AsyncBaseTransport):
 
         if request.url.scheme not in {"http", "https"}:
             raise ProviderValidationError("api_endpoint must be an http(s) URL")
+        origin = (request.url.scheme, request.url.host, request.url.port)
+        if self.origin is not None and origin != self.origin:
+            raise ProviderValidationError(
+                "Model discovery pagination must keep the same origin"
+            )
+        self.origin = origin
         host = request.url.host
         literal = _parse_ip_literal(host)
         addresses = (
