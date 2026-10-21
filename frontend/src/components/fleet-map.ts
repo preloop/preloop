@@ -26,6 +26,7 @@ import {
   FLEET_MAP_TYPES,
   FLEET_MAP_TYPE_LABEL,
   laneTitle,
+  FLEET_MAP_MAX_USERS,
   agentState,
   blastRadius,
   dependencies,
@@ -78,6 +79,7 @@ import {
   ARRANGEMENTS,
   ARRANGEMENT_ICON,
   ARRANGEMENT_LABEL,
+  parseArrangement,
 } from '../utils/fleet-map-words';
 import {
   LEGIBLE_SPATIAL_SCALE,
@@ -1146,7 +1148,7 @@ export class FleetMap extends LitElement {
       this.arrangement = loadArrangement(
         this.userId,
         this.positionsScope,
-        this.defaultArrangement
+        parseArrangement(this.defaultArrangement) ?? 'columns'
       );
       this.points = loadPositions(this.userId, this.positionsScope);
       this.types = loadTypes(this.userId, this.positionsScope);
@@ -2913,6 +2915,8 @@ export class FleetMap extends LitElement {
   }
 
   private setUsers(users: string[]): void {
+    // The server scopes at most this many people; never drop one silently.
+    if (new Set(users).size > FLEET_MAP_MAX_USERS) return;
     const next = [...new Set(users)].sort();
     if (next.join(',') === [...this.users].sort().join(',')) return;
     this.users = next;
@@ -3054,6 +3058,19 @@ export class FleetMap extends LitElement {
     });
   }
 
+  /** Folds an expanded lane or sub-group back to its first rows. */
+  private renderShowFewer(type: FleetMapColumn, count: number) {
+    if (!this.expanded.has(type) || count <= FLEET_MAP_CAP) return nothing;
+    return html`<button
+      type="button"
+      class="reset"
+      data-show-fewer=${type}
+      @click=${() => (this.expanded = this.toggle(this.expanded, type))}
+    >
+      Show fewer
+    </button>`;
+  }
+
   /** The Show select's value: every kind, one or two by name, or a count. */
   private showValue(): string {
     const shown = FLEET_MAP_TYPES.filter((type) => this.types.has(type));
@@ -3169,12 +3186,20 @@ export class FleetMap extends LitElement {
         @click=${() => this.setUsers([])}
         >All users</sl-menu-item
       >
+      ${
+        chosen.size >= FLEET_MAP_MAX_USERS
+          ? html`<sl-menu-label data-testid="fleet-map-users-limit"
+              >Up to ${FLEET_MAP_MAX_USERS} users at a time</sl-menu-label
+            >`
+          : nothing
+      }
       ${listed.map(
         (node) =>
           html`<sl-menu-item
             type="checkbox"
             data-user=${node.id}
             .checked=${chosen.has(node.id)}
+            ?disabled=${!chosen.has(node.id) && chosen.size >= FLEET_MAP_MAX_USERS}
             @click=${() =>
               this.setUsers(
                 chosen.has(node.id)
@@ -4725,22 +4750,10 @@ export class FleetMap extends LitElement {
                                   >${column.count}</span
                                 >`
                         }
-                        ${
-                          this.expanded.has(column.type) &&
-                          column.count > FLEET_MAP_CAP
-                            ? html`<button
-                                type="button"
-                                class="reset"
-                                @click=${() =>
-                                  (this.expanded = this.toggle(
-                                    this.expanded,
-                                    column.type
-                                  ))}
-                              >
-                                Show fewer
-                              </button>`
-                            : nothing
-                        }
+                        ${this.renderShowFewer(
+                          column.type,
+                          column.groups?.[0]?.count ?? column.count
+                        )}
                       </div>
                       ${(column.groups ?? [])
                         .slice(1)
@@ -4754,7 +4767,7 @@ export class FleetMap extends LitElement {
                               ${FLEET_MAP_COLUMN_LABEL[group.type]}<span
                                 class="n"
                                 >${group.count}</span
-                              >
+                              >${this.renderShowFewer(group.type, group.count)}
                             </div>`
                         )}`
                 )}
@@ -4985,14 +4998,15 @@ export class FleetMap extends LitElement {
   }
 }
 
+/** Icons are Shoelace names, or an image path such as the flow mark. */
+const iconSrc = (icon?: string) => (icon?.startsWith('/') ? icon : nothing);
+const iconName = (icon: string) => (icon.startsWith('/') ? nothing : icon);
+
 /**
  * Where a lit line's label goes: on the line between the two boxes, at the
  * middle or a third of the way along, wherever it covers no node and no
  * label already placed. Null when no spot is free.
  */
-/** Icons are Shoelace names, or an image path such as the flow mark. */
-const iconSrc = (icon?: string) => (icon?.startsWith('/') ? icon : nothing);
-const iconName = (icon: string) => (icon.startsWith('/') ? nothing : icon);
 
 export function labelSpot(
   text: string,

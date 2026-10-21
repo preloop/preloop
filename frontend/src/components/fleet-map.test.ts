@@ -1250,3 +1250,98 @@ describe('fleet-map pass 3 leftovers', () => {
     await setViewport({ width: 1280, height: 800 });
   });
 });
+
+describe('fleet-map pass 4 review fixes', () => {
+  afterEach(() => {
+    for (const key of Object.keys(localStorage))
+      if (key.startsWith('preloop:fleet-map:')) localStorage.removeItem(key);
+  });
+
+  it('caps Users at the server limit of 50 and says so, never dropping one', async () => {
+    const base = sampleFleetMap();
+    const people = Array.from({ length: 51 }, (_, i) => ({
+      ...base.nodes[0],
+      id: `user:p${String(i).padStart(2, '0')}`,
+      resource_id: `p${i}`,
+      label: `Person ${String(i).padStart(2, '0')}`,
+    }));
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${{ ...base, nodes: [...base.nodes, ...people] }}
+      ></fleet-map>`
+    );
+    const events: CustomEvent[] = [];
+    el.addEventListener('fleet-map-users-change', (e) =>
+      events.push(e as CustomEvent)
+    );
+    for (let i = 0; i < 50; i++) {
+      el.shadowRoot!.querySelector<HTMLElement>(
+        `[data-user="${people[i].id}"]`
+      )!.click();
+      await el.updateComplete;
+    }
+    expect(el.users.length).to.equal(50);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="fleet-map-users-limit"]')
+    ).to.exist;
+    const last = el.shadowRoot!.querySelector<
+      HTMLElement & { disabled: boolean }
+    >(`[data-user="${people[50].id}"]`)!;
+    expect(last.disabled).to.equal(true);
+    last.click();
+    await el.updateComplete;
+    expect(el.users.length).to.equal(50);
+    expect(events.at(-1)!.detail.userIds.length).to.equal(50);
+  });
+
+  it('folds expanded flows back from their sub-header', async () => {
+    const graph = sampleFleetMap();
+    for (let i = 0; i < 15; i++)
+      graph.nodes.push({
+        ...graph.nodes[0],
+        id: `flow:f${i}`,
+        type: 'flow',
+        label: `Flow ${i}`,
+      });
+    const el = await fixture<FleetMap>(
+      html`<fleet-map .graph=${graph}></fleet-map>`
+    );
+    const root = el.shadowRoot!;
+    root.querySelector<HTMLElement>('[data-more="flow"]')!.click();
+    await el.updateComplete;
+    expect(root.querySelector('[data-more="flow"]')).to.equal(null);
+    const fewer = root.querySelector<HTMLElement>(
+      '[data-lane-group="flow"] [data-show-fewer="flow"]'
+    )!;
+    expect(fewer).to.exist;
+    fewer.click();
+    await el.updateComplete;
+    expect(root.querySelector('[data-more="flow"]')).to.exist;
+  });
+
+  it('reads a lanes or canvas default and stored arrangement', async () => {
+    localStorage.setItem('preloop:fleet-map:arrangement:fleet:w1', 'canvas');
+    const stored = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        instance-admin
+        user-id="w1"
+      ></fleet-map>`
+    );
+    expect(stored.shadowRoot!.querySelector('.column-title')).to.equal(null);
+    const byDefault = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        instance-admin
+        user-id="w2"
+        default-arrangement="canvas"
+      ></fleet-map>`
+    );
+    expect(byDefault.shadowRoot!.querySelector('.column-title')).to.equal(null);
+    expect(
+      byDefault
+        .shadowRoot!.querySelector('[data-arrangement="spatial"]')!
+        .getAttribute('aria-pressed')
+    ).to.equal('true');
+  });
+});

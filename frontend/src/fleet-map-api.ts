@@ -132,21 +132,6 @@ export const FLEET_MAP_TYPES: readonly FleetMapResourceType[] = [
 export type FleetMapColumn =
   'user' | 'device' | 'agent' | 'model' | 'provider' | 'flow' | 'work';
 
-/**
- * Columns left to right: a person, the machines they own (runners sit inside
- * their machine), the agents on them, the models those agents call, and the
- * providers (provider accounts sit inside their provider).
- */
-export const FLEET_MAP_COLUMNS: readonly FleetMapColumn[] = [
-  'user',
-  'device',
-  'agent',
-  'model',
-  'provider',
-  'flow',
-  'work',
-];
-
 export const FLEET_MAP_COLUMN_LABEL: Record<
   Exclude<FleetMapNodeType, 'cluster'>,
   string
@@ -854,9 +839,11 @@ export function layoutGraph(
 export function usersParam(users: readonly string[]): string {
   return [...new Set(users.map((id) => id.replace(/^user:/, '')))]
     .filter(Boolean)
-    .slice(0, 50)
     .join(',');
 }
+
+/** The most people one `users=` scope takes (the server's limit). */
+export const FLEET_MAP_MAX_USERS = 50;
 
 function fleetQuery(
   activeWithinMinutes: number | null,

@@ -9,6 +9,7 @@ import {
   type FleetMapLayout,
   type FleetMapPosition,
 } from '../fleet-map-api';
+import { parseArrangement } from './fleet-map-words';
 
 /**
  * Spatial layout for the Fleet Map: every resource is a free node placed by
@@ -36,7 +37,7 @@ export function loadArrangement(
 ): FleetMapArrangement {
   try {
     const saved = localStorage.getItem(keyFor(ARRANGEMENT_KEY, user, scope));
-    return saved === 'spatial' || saved === 'columns' ? saved : fallback;
+    return parseArrangement(saved) ?? fallback;
   } catch {
     return fallback;
   }
