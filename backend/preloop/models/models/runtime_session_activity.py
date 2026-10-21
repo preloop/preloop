@@ -22,6 +22,14 @@ class RuntimeSessionActivity(Base):
 
     __tablename__ = "runtime_session_activity"
     __table_args__ = (
+        # Command/result deduplication must not scan unrelated activity payloads.
+        Index(
+            "ix_rsa_account_command_lookup",
+            "account_id",
+            text("(metadata ->> 'command_id')"),
+            text("timestamp DESC"),
+            postgresql_where=text("(metadata ->> 'command_id') IS NOT NULL"),
+        ),
         # Superset of the PR-only index for bounded Fleet Map work history.
         Index(
             "ix_runtime_session_activity_work_tools",
