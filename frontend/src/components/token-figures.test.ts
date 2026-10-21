@@ -257,38 +257,38 @@ describe('token-figures', () => {
   });
 });
 
-describe('token figures when input excludes cache reads', () => {
-  // Anthropic-shaped usage reports `input_tokens` without the cached part,
-  // so the aggregate's cache reads can exceed its input and the server's
-  // uncached remainder clamps to zero. "12.5B in · 16.9B hit · 0 miss" is
-  // impossible on its face; the reported input is the uncached part.
-  const EXCLUSIVE: GatewayTokenUsage = {
-    prompt_tokens: 1200,
-    completion_tokens: 300,
-    total_tokens: 1500,
-    input_tokens: 1200,
-    output_tokens: 300,
-    cache_read_tokens: 16000,
-    cache_write_tokens: 800,
+describe('token figures state the server figures as reported (#1955)', () => {
+  // The ledger stores input cache inclusive for every provider, so the
+  // figures are stated as the server sends them. Provider rounding can leave
+  // read + write a little above input; the server clamps the miss at zero and
+  // the figures must not rebuild a larger input from the cache counts.
+  const ROUNDED: GatewayTokenUsage = {
+    prompt_tokens: 100,
+    completion_tokens: 50,
+    total_tokens: 150,
+    input_tokens: 100,
+    output_tokens: 50,
+    cache_read_tokens: 90,
+    cache_write_tokens: 30,
     uncached_input_tokens: 0,
     cache_hit_ratio: 1,
   };
 
-  it('never shows more cache hits than input, or zero misses over uncached input', async () => {
+  it('does not inflate input from the cache counts', async () => {
     const el = await fixture<TokenFigures>(
-      html`<token-figures .usage=${EXCLUSIVE} expanded></token-figures>`
+      html`<token-figures .usage=${ROUNDED} expanded></token-figures>`
     );
-    expect(text(el)).to.equal('18K in · 300 out 16K hit · 1.2K miss');
+    expect(text(el)).to.equal('100 in · 50 out 90 hit · 0 miss');
   });
 
-  it('recomputes the hit rate from the derived miss', () => {
-    const split = cacheSplitOf(EXCLUSIVE);
-    expect(split?.miss).to.equal(1200);
-    expect(split?.ratio).to.be.closeTo(16000 / 17200, 0.0001);
-    expect(tokenFiguresTitle(EXCLUSIVE)).to.contain('18,000 input tokens');
-    expect(tokenFiguresTitle(EXCLUSIVE)).to.contain(
-      '1,200 not cached (93% hit)'
+  it('keeps the server miss, rate and total', async () => {
+    expect(cacheSplitOf(ROUNDED)).to.deep.equal({ hit: 90, miss: 0, ratio: 1 });
+    expect(tokenFiguresTitle(ROUNDED)).to.contain('100 input tokens');
+    expect(tokenFiguresTitle(ROUNDED)).to.contain('150 total');
+    const el = await fixture<TokenFigures>(
+      html`<token-figures .usage=${ROUNDED} total-only></token-figures>`
     );
+    expect(text(el)).to.equal('150');
   });
 
   it('leaves cache-inclusive usage untouched', () => {
@@ -323,27 +323,5 @@ describe('token figures that wrap (B-17)', () => {
     await el.updateComplete;
     const figures = el.shadowRoot!.querySelector('.figures') as HTMLElement;
     expect(figures.scrollWidth).to.be.at.most(host.clientWidth);
-  });
-});
-
-describe('token figure totals under cache-exclusive input (B-04 review)', () => {
-  it('states a total that input plus output reconciles with', async () => {
-    const usage: GatewayTokenUsage = {
-      prompt_tokens: 1200,
-      completion_tokens: 300,
-      total_tokens: 1500,
-      input_tokens: 1200,
-      output_tokens: 300,
-      cache_read_tokens: 16000,
-      cache_write_tokens: 800,
-      uncached_input_tokens: 0,
-      cache_hit_ratio: 1,
-    };
-    expect(tokenFiguresTitle(usage)).to.contain('18,000 input tokens');
-    expect(tokenFiguresTitle(usage)).to.contain('18,300 total');
-    const el = await fixture<TokenFigures>(
-      html`<token-figures .usage=${usage} total-only></token-figures>`
-    );
-    expect(text(el)).to.equal('18.3K');
   });
 });

@@ -627,6 +627,37 @@ the allowance when supported. Before adding a system alias, operators can run
 The lookup exposes no account identifiers and does not change model routing.
 
 
+### Cache-inclusive input tokens
+
+`ApiUsage.prompt_tokens` is cache inclusive for every provider: it counts the
+input read from and written to the prompt cache as well as the uncached part,
+so `uncached = prompt - cache_read - cache_creation` holds per row and in every
+aggregate. Anthropic reports `input_tokens` without the cache, so the gateway
+adds `cache_read_input_tokens` and `cache_creation_input_tokens` back when it
+records a raw Anthropic payload (`usage_token_details.anthropic_cache_input_tokens`);
+litellm's OpenAI-shaped usage is already inclusive and is left alone. The raw
+provider usage stays in `meta_data.usage_details`, and cost is priced from it,
+so cached input keeps the cache rate. The remaining clamp at zero only absorbs
+provider rounding.
+
+Existing rows were backfilled rather than guarded at read time
+(`20261106_anthropic_cache_input`): aggregates sum `prompt_tokens` from
+covering indexes that never read `meta_data`, so a read-time guard could only
+be a heuristic over sums, which a mix of Anthropic and other traffic defeats.
+The backfill touches only rows whose raw usage is the Anthropic shape and whose
+`prompt_tokens` still equals the raw `input_tokens`, and records what it added
+in `meta_data.input_cache_backfill` for an exact downgrade. Because the
+migration runs before the new pods while the previous release keeps serving,
+each API replica runs the same conversion once more over the last day of rows
+15 minutes after startup (`services/anthropic_cache_input_repair.py`); an
+advisory lock lets one pass run at a time and the update re-checks each row,
+so concurrent replicas never convert a row twice.
+`estimated_cost` is not repriced: catalog-priced rows were already priced from
+the raw usage, while rows priced by a configured price or the DeepSeek native
+tariff keep the old undercount of their uncached input. Activity rollup
+buckets and budget windows written before the change keep their original
+token counts.
+
 ### Console edit permissions
 
 Edit controls use the cached user profile with three distinct states: a null
