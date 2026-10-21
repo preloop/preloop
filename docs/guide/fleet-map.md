@@ -36,8 +36,8 @@ Device fleet and full screen pan on plain wheel. In the Overview card, plain whe
 scrolls the page; drag empty canvas to pan. Ctrl/Cmd+wheel zooms around the pointer.
 The bottom-right controls provide zoom, 100%, Fit and full screen. A crowded spatial
 map keeps a minimum readable scale and allows panning. The Overview Map occupies a
-bounded, full-width grid row and the same canvas remains mounted when its card
-changes view or enters full screen.
+bounded, full-width grid row. Its Inventory component stays mounted when switching
+views, and entering full screen uses the existing canvas.
 
 ## Resource details
 
