@@ -167,7 +167,20 @@ Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/R
 
 Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
 
-Compare: [AWS Bedrock AgentCore](https://preloop.ai/vs/aws-agentcore), [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloop.ai/vs/portkey), [Helicone](https://preloop.ai/vs/helicone), [MintMCP](https://preloop.ai/vs/mintmcp), [Lunar](https://preloop.ai/vs/lunar), [Runlayer](https://preloop.ai/vs/runlayer), [Zenity](https://preloop.ai/vs/zenity).
+## Open-source alternative to AWS Bedrock AgentCore
+
+Same core jobs (runtime, gateway, identity, observability, policy), vendor-neutral and self-hostable. Full comparison: [preloop.ai/vs/aws-agentcore](https://preloop.ai/vs/aws-agentcore).
+
+| | Preloop | AWS Bedrock AgentCore |
+|---|:---:|:---:|
+| Open source (Apache 2.0) | Yes | No |
+| Self-hostable (VPC / on-prem) | Yes | No |
+| Policy-as-code (YAML + CEL) | Yes | Limited |
+| MCP-native tool governance | Yes | Partial |
+| Human approvals (mobile, Slack, webhook) | Yes | Limited |
+| Onboard existing local agents (`preloop agents discover`) | Yes | No |
+
+Also compare: [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloop.ai/vs/portkey), [Helicone](https://preloop.ai/vs/helicone), [MintMCP](https://preloop.ai/vs/mintmcp), [Lunar](https://preloop.ai/vs/lunar), [Runlayer](https://preloop.ai/vs/runlayer), [Zenity](https://preloop.ai/vs/zenity).
 
 ## Editions
 
