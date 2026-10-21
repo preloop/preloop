@@ -2975,9 +2975,8 @@ export class FleetMap extends LitElement {
     const count = html`<span
       class="count"
       aria-live="polite"
-      title="${idle} idle configured resources shown separately. ${graph.decommissioned_agents ?? 0} decommissioned agents not shown. ${graph.clusters.length} summary groups. Counts describe the loaded graph."
-      >${this.query ? `${hits.size} matches · ` : ''}${active} active in this
-      window</span
+      title="${this.query ? `${hits.size} search matches. ` : ''}${idle} idle configured resources shown separately. ${graph.decommissioned_agents ?? 0} decommissioned agents not shown. ${graph.clusters.length} summary groups. Counts describe the loaded graph."
+      >${active} active in this window</span
     >`;
     const show = html`${FLEET_MAP_TYPES.map(
         (type) =>

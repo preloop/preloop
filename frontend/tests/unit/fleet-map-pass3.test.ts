@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
 import '@shoelace-style/shoelace/dist/themes/light.css';
+import '../../src/main.css';
 import '../../src/components/fleet-map';
 import '../../src/components/inventory-card';
 import '../../src/views/authed/dashboard-control-plane-view';
@@ -44,6 +45,27 @@ afterEach(() => {
 });
 
 describe('Fleet Map pass 3', () => {
+  it('keeps the count separate from Window when searching a desktop Inventory-width map', async () => {
+    await page.viewport(1280, 900);
+    const el = await mount({
+      codeActivity: activity(),
+      defaultArrangement: 'spatial',
+    });
+    el.style.width = '984px';
+    el.query = 'e';
+    await el.updateComplete;
+    await new Promise(requestAnimationFrame);
+    await el.updateComplete;
+    const window = root(el)
+      .querySelector('[data-testid="fleet-map-window"]')!
+      .getBoundingClientRect();
+    const count = root(el).querySelector('.count')!.getBoundingClientRect();
+    expect(window.right).toBeLessThan(count.left);
+    expect(normalizedText(root(el).querySelector('.count'))).toMatch(
+      /^\d+ active in this window$/
+    );
+  });
+
   it('does not carry model activity from the previous window while the host refetches', async () => {
     const graph = sampleFleetMap();
     graph.active_within_minutes = 60;
