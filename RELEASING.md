@@ -24,6 +24,7 @@ by moving an existing tag.
 
 - [ ] `./scripts/release.sh <version>` was run for the target version.
 - [ ] `VERSION`, Python package version, frontend version, and Helm chart version all match.
+- [ ] `server.json`, `CITATION.cff` and `codemeta.json` carry the same version (`scripts/release.py` bumps them; the MCP registry refuses to re-publish a version).
 - [ ] Docker, Helm, and GitHub release docs point to the same canonical image names and install paths.
 - [ ] GitHub release notes do not advertise artifacts or commands that are not actually published.
 - [ ] Release assets include the CLI binaries, Python packages, Helm chart, `docker-compose.release.yaml`, and installer scripts.
@@ -53,6 +54,12 @@ by moving an existing tag.
       If `Create Release` fails before the attest step, do not publish the
       assets without the bundle.
 - [ ] PyPI prereleases are expected to use PEP 440 normalization, so `0.8.0-beta.1` is published as `0.8.0b1`.
+
+### Catalog listings
+
+- [ ] The Helm chart is at `oci://ghcr.io/preloop/charts/preloop:<version>` and the `artifacthub.io` tag carries `helm/artifacthub-repo.yml` (Artifact Hub reindexes on its own).
+- [ ] On a stable tag with `PUSH_TO_DOCKERHUB=true`, the Docker Hub descriptions match `docker/dockerhub/`.
+- [ ] Publish the new `server.json` to the official MCP registry: `mcp-publisher login github` then `mcp-publisher publish` from the repo root (an Owner of the `preloop` GitHub org runs it).
 
 ### SBOM
 

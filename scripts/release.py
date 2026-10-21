@@ -446,6 +446,14 @@ def ensure_version_metadata(plan: ReleasePlan) -> None:
     checks["chart appVersion"] = re.search(
         r'^appVersion: "([^\"]+)"$', chart, re.M
     ).group(1)
+    checks["server.json"] = json.loads(read_text(ROOT_DIR / "server.json"))["version"]
+    checks["codemeta.json"] = json.loads(read_text(ROOT_DIR / "codemeta.json"))[
+        "version"
+    ]
+    citation = re.search(
+        r'^version: "([^\"]+)"$', read_text(ROOT_DIR / "CITATION.cff"), re.M
+    )
+    checks["CITATION.cff"] = citation.group(1) if citation else ""
     wrong = [name for name, value in checks.items() if value != plan.version]
     if wrong:
         raise SystemExit("Release version mismatch: " + ", ".join(wrong))

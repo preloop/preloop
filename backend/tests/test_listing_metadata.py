@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load(name: str) -> ModuleType:
@@ -102,6 +102,39 @@ def test_release_bumps_server_json_and_citation(
     assert json.loads((tmp_path / "codemeta.json").read_text())["version"] == "9.8.7"
     citation = yaml.safe_load((tmp_path / "CITATION.cff").read_text())
     assert citation["version"] == "9.8.7"
+
+
+def test_release_guard_checks_listing_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ensure_version_metadata refuses a tag when a listing file is stale."""
+    monkeypatch.setattr(release, "ROOT_DIR", REPO_ROOT)
+    plan = release.ReleasePlan(version=VERSION, release_date="2030-01-01")
+    release.ensure_version_metadata(plan)
+
+    stale = tmp_path / "root"
+    for name in (
+        "VERSION",
+        "pyproject.toml",
+        "openapi.yaml",
+        "cli/internal/version/check.go",
+        "frontend/package.json",
+        "frontend/package-lock.json",
+        "helm/preloop/Chart.yaml",
+        "server.json",
+        "codemeta.json",
+        "CITATION.cff",
+    ):
+        (stale / name).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(REPO_ROOT / name, stale / name)
+    for name in ("server.json", "codemeta.json"):
+        data = json.loads((stale / name).read_text())
+        data["version"] = "0.0.1"
+        (stale / name).write_text(json.dumps(data))
+    monkeypatch.setattr(release, "ROOT_DIR", stale)
+
+    with pytest.raises(SystemExit, match="server.json, codemeta.json"):
+        release.ensure_version_metadata(plan)
 
 
 def test_citation_and_codemeta_track_the_release() -> None:
