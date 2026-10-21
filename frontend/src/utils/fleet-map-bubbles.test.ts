@@ -1,5 +1,9 @@
 import { expect } from '@open-wc/testing';
-import { placeBubbles, type BubbleRect } from './fleet-map-bubbles';
+import {
+  placeBubbles,
+  placeCornerNotes,
+  type BubbleRect,
+} from './fleet-map-bubbles';
 
 const overlaps = (a: BubbleRect, b: BubbleRect) =>
   a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
@@ -110,5 +114,54 @@ describe('fleet-map bubble placement', () => {
       sides: ['below', 'right'],
     });
     expect(placed).to.have.length(0);
+  });
+});
+
+describe('fleet-map corner notes', () => {
+  const bounds: BubbleRect = { x: 12, y: 12, w: 600, h: 400 };
+  const hit = (a: BubbleRect, b: BubbleRect) =>
+    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+
+  it('stacks notes in the top right corner when it is free', () => {
+    const [first, second] = placeCornerNotes(
+      [
+        { w: 200, h: 26 },
+        { w: 160, h: 26 },
+      ],
+      { nodes: [], bounds }
+    );
+    expect(first).to.deep.equal({ x: 412, y: 12, w: 200, h: 26 });
+    expect(second!.x + second!.w).to.equal(612);
+    expect(second!.y).to.be.at.least(first!.y + first!.h);
+  });
+
+  // B-08: a provider node drawn in the corner was covered by the toasts.
+  it('never covers a node in the corner, and stays on the stage', () => {
+    const provider = { x: 420, y: 20, w: 190, h: 40 };
+    const spots = placeCornerNotes(
+      [
+        { w: 260, h: 26 },
+        { w: 260, h: 26 },
+        { w: 260, h: 26 },
+      ],
+      { nodes: [provider], bounds }
+    );
+    for (const spot of spots) {
+      expect(spot).to.not.equal(null);
+      expect(hit(spot!, provider)).to.equal(false);
+      expect(spot!.x).to.be.at.least(bounds.x);
+      expect(spot!.x + spot!.w).to.be.at.most(bounds.x + bounds.w);
+      expect(spot!.y + spot!.h).to.be.at.most(bounds.y + bounds.h);
+    }
+    expect(hit(spots[0]!, spots[1]!)).to.equal(false);
+    expect(hit(spots[1]!, spots[2]!)).to.equal(false);
+  });
+
+  it('drops a note when the stage has no free spot for it', () => {
+    const spots = placeCornerNotes([{ w: 200, h: 26 }], {
+      nodes: [bounds],
+      bounds,
+    });
+    expect(spots).to.deep.equal([null]);
   });
 });

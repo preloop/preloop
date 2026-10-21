@@ -147,3 +147,36 @@ export function placeBubbles(
   }
   return placed;
 }
+
+/**
+ * Where the corner notes go (the code activity toasts): stacked down from
+ * the top right of the stage, each in the spot nearest that corner that
+ * covers no node and no other note. A note with no such spot is not drawn
+ * (null); the event stays in the node's Recent list.
+ */
+export function placeCornerNotes(
+  sizes: readonly { w: number; h: number }[],
+  options: { nodes: Iterable<BubbleRect>; bounds: BubbleRect }
+): (BubbleRect | null)[] {
+  const { bounds } = options;
+  const nodes = [...options.nodes];
+  const placed: BubbleRect[] = [];
+  const corner = { x: bounds.x + bounds.w, y: bounds.y };
+  return sizes.map(({ w: width, h }) => {
+    const w = Math.min(width, bounds.w);
+    let best: { rect: BubbleRect; d: number } | null = null;
+    for (let y = bounds.y; y + h <= bounds.y + bounds.h; y += GAP)
+      for (let x = bounds.x + bounds.w - w; x >= bounds.x; x -= SCAN) {
+        const rect = { x, y, w, h };
+        // Distance from the corner to the note's own top-right corner.
+        const d = Math.hypot(corner.x - (x + w), y - corner.y);
+        if (best && d >= best.d) continue;
+        if (nodes.some((box) => overlap(rect, box) > 0)) continue;
+        if (placed.some((other) => overlap(rect, other) > 0)) continue;
+        best = { rect, d };
+      }
+    if (!best) return null;
+    placed.push(best.rect);
+    return best.rect;
+  });
+}

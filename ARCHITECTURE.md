@@ -825,8 +825,11 @@ issue comments and operator notes never count. "Any time" reads 90 days. Live, t
 tool call and each first merge. The collection toolbar shares
 `list-toolbar` with the other console collections; accounts are an optional layer.
 The hosts give the canvas its height. Device fleet and full screen pan on wheel,
-while the Overview card lets plain wheel scroll the page. Fit keeps spatial scale
-at least 0.85 and leaves overflow reachable by panning.
+while the Overview card lets plain wheel scroll the page. Where the wheel pans
+(Device fleet, full screen), Fit keeps spatial scale at least 0.85 and leaves
+overflow reachable by panning; on the Overview card, where it does not, Fit
+contains every node (down to the 0.2 zoom-out limit). Code activity toasts sit
+in the free spot nearest the stage's top right that covers no node.
 
 The optional `work` and `work_truncated` fields seed history with at most 200
 distinct issues and pull requests, newest activity first, in that same bounded
