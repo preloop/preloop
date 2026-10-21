@@ -1212,7 +1212,6 @@ export class InventoryCard extends LitElement {
                 >`
             )}
           </sl-select>
-
           <time-range-select
             class="range-select"
             ariaLabel="Inventory time range"

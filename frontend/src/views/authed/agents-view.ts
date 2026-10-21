@@ -4795,7 +4795,6 @@ export class AgentsView extends LitElement {
               <sl-option value="last_24_hours">Last 24 hours</sl-option>
               <sl-option value="last_7_days">Last 7 days</sl-option>
             </sl-select>
-
             <span slot="count">${this.resultsLabel}</span>
             ${this.renderBulkBar()}
           </list-toolbar>
