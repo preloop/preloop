@@ -3523,9 +3523,19 @@ export class FleetMap extends LitElement {
         .filter(Boolean)
         .join(' · ');
     }
-    const kids = groups.get(node.id)?.length;
-    if (node.type === 'provider')
-      return kids ? `${kids} account${kids === 1 ? '' : 's'}` : 'Provider';
+    if (node.type === 'provider') {
+      // The box holds accounts and, since pass 4, models: name each kind.
+      const held = groups.get(node.id) ?? [];
+      const count = (type: string, word: string) => {
+        const n = held.filter((id) => byId.get(id)?.type === type).length;
+        return n ? `${n} ${word}${n === 1 ? '' : 's'}` : '';
+      };
+      return (
+        [count('model', 'model'), count('provider_account', 'account')]
+          .filter(Boolean)
+          .join(' · ') || 'Provider'
+      );
+    }
     if (node.type === 'device') {
       // A machine holds runners (both arrangements) and, on the spatial
       // canvas, agents too: count each kind by its own name.
