@@ -91,7 +91,7 @@ export function activeGraph(
       .filter(
         (node) =>
           node.type === 'cluster' ||
-          node.idle === false ||
+          (node.idle === false && !node.last_active_at) ||
           (node.idle !== true &&
             (node.last_active_at ||
               (['agent', 'device', 'runner'].includes(node.type) &&
@@ -104,12 +104,19 @@ export function activeGraph(
   const idle = new Set(
     graph.nodes.filter((node) => node.idle === true).map((node) => node.id)
   );
+  // When a host is still fetching a newly narrowed window, the previous
+  // response's flags describe its old window. Dated model evidence must
+  // pass the new bound; an agent binding cannot revive that model.
+  const explicit = new Set(
+    graph.nodes.filter((node) => node.idle !== undefined).map((node) => node.id)
+  );
   for (const kind of DOWNSTREAM)
     for (const edge of graph.edges)
       if (
         edge.kind === kind &&
         active.has(edge.source) &&
-        !idle.has(edge.target)
+        !idle.has(edge.target) &&
+        (!explicit.has(edge.target) || active.has(edge.target))
       )
         active.add(edge.target);
   for (const kind of UPSTREAM)

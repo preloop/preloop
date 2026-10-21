@@ -44,6 +44,24 @@ afterEach(() => {
 });
 
 describe('Fleet Map pass 3', () => {
+  it('does not carry model activity from the previous window while the host refetches', async () => {
+    const graph = sampleFleetMap();
+    graph.active_within_minutes = 60;
+    graph.nodes = graph.nodes.map((n) => ({
+      ...n,
+      idle: false,
+      last_active_at: new Date(
+        Date.now() - (n.type === 'model' ? 30 : 1) * 60_000
+      ).toISOString(),
+    }));
+    const el = await mount({ graph, activityWindow: '1h' });
+    expect(root(el).querySelector('[data-node="model:gpt"]')).not.toBeNull();
+    el.activityWindow = '5m';
+    await el.updateComplete;
+    expect(root(el).querySelector('[data-node="model:gpt"]')).toBeNull();
+    expect(root(el).querySelector('[data-node="agent:codex"]')).not.toBeNull();
+  });
+
   it('keeps narrow filter pages inside the viewport and closes search before fullscreen', async () => {
     await page.viewport(390, 900);
     const el = await mount();
@@ -573,13 +591,11 @@ for (const arrangement of ['columns', 'spatial']) {
 describe('pass 3 usage and hosts', () => {
   it('requests configured idle resources only when the caller opts in', async () => {
     localStorage.setItem('accessToken', 'synthetic-test-token');
-    const fetch = vi
-      .spyOn(window, 'fetch')
-      .mockResolvedValue(
-        new Response(JSON.stringify(sampleFleetMap()), {
-          headers: { 'Content-Type': 'application/json' },
-        })
-      );
+    const fetch = vi.spyOn(window, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(sampleFleetMap()), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
     await getFleetMap(undefined, 60, true);
     expect(String(fetch.mock.calls[0][0])).toContain(
       'active_within_minutes=60&include_idle=true'
