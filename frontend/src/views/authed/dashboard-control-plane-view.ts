@@ -1237,8 +1237,9 @@ export class DashboardView extends AuthedElement {
         grid-row: 3;
       }
       @media (min-width: 1200px) {
-        /* Inventory sits under the Gateway in Table and Map alike. Row 1
-           is sized by the Gateway alone and row 2 takes what the spanning
+        /* Inventory sits under the main column (Gateway, and Next steps
+           when shown) in Table and Map alike. Row 1 is sized by that
+           column alone and row 2 takes what the spanning
            side column needs beyond it. With two auto rows the long Activity
            feed stretched row 1 (a gap above Inventory), and a full-width
            Map row pushed Inventory below the whole side column. */
@@ -4945,10 +4946,8 @@ export class DashboardView extends AuthedElement {
   }
 
   /**
-   * The Inventory, the audit trail line and the two exception cards. In
-   * the main column beside Usage and Activity while the Inventory is a
-   * table; under both columns, at the full width, while it is the Fleet
-   * Map, whose topology does not fit a 2fr column (F-04).
+   * The Inventory, the audit trail line and the two exception cards, under
+   * the main column and beside Usage and Activity in Table and Map alike.
    */
   private renderInventoryStack() {
     return html`

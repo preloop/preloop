@@ -65,6 +65,8 @@ describe('DashboardView', () => {
   /** Merged into `GET /api/v1/features`. */
   let extraFeatures: Record<string, boolean>;
   let fleetResponse: any;
+  /** `is_superuser` on the profile: instance admins get the Map toggle. */
+  let meSuperuser: boolean;
 
   beforeEach(() => {
     aiModelsGate = null;
@@ -82,6 +84,7 @@ describe('DashboardView', () => {
     failNext = new Map();
     extraFeatures = {};
     fleetResponse = null;
+    meSuperuser = false;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -561,7 +564,7 @@ describe('DashboardView', () => {
             username: 'tester',
             email: 'tester@example.com',
             email_verified: true,
-            is_superuser: false,
+            is_superuser: meSuperuser,
             permissions: mePermissions,
           });
         }
@@ -1992,6 +1995,8 @@ describe('DashboardView', () => {
       it(`keeps the Inventory under the Gateway in both views at ${width}px`, async () => {
         await setViewport({ width, height: 900 });
         try {
+          // The Map toggle is for instance admins.
+          meSuperuser = true;
           const element = await mountLoaded();
           const root = element.shadowRoot!;
           const inventory = () =>
@@ -2005,14 +2010,18 @@ describe('DashboardView', () => {
           const gateway = root.querySelector('.main-column')!
             .firstElementChild as HTMLElement;
           const check = async (view: 'table' | 'map') => {
-            inventory().dispatchEvent(
-              new CustomEvent('inventory-view-change', {
-                detail: { view },
-                bubbles: true,
-                composed: true,
-              })
-            );
+            const toggle = inventory().shadowRoot!.querySelector(
+              `[data-inventory-view="${view}"]`
+            ) as HTMLElement;
+            toggle.click();
+            await (inventory() as any).updateComplete;
             await element.updateComplete;
+            expect(
+              inventory()
+                .shadowRoot!.querySelector(`[data-inventory-view="${view}"]`)!
+                .getAttribute('aria-pressed'),
+              `${view}: the toggle switched the card`
+            ).to.equal('true');
             await new Promise((r) => requestAnimationFrame(r));
             const g = gateway.getBoundingClientRect();
             const inv = inventory().getBoundingClientRect();
@@ -2033,6 +2042,9 @@ describe('DashboardView', () => {
           await check('map');
           await check('table');
         } finally {
+          for (const key of Object.keys(localStorage))
+            if (key.startsWith('preloop:inventory:view:'))
+              localStorage.removeItem(key);
           await setViewport({ width: 800, height: 600 });
         }
       });

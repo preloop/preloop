@@ -1097,23 +1097,6 @@ export class InventoryCard extends LitElement {
     }
   }
 
-  /**
-   * Say which view is showing, for a host that lays out around it. The
-   * Overview keeps the card under the Gateway in both views.
-   */
-  protected updated(changed: Map<string, unknown>): void {
-    super.updated?.(changed);
-    if (changed.has('inventoryView')) {
-      this.dispatchEvent(
-        new CustomEvent('inventory-view-change', {
-          detail: { view: this.inventoryView },
-          bubbles: true,
-          composed: true,
-        })
-      );
-    }
-  }
-
   private setInventoryView(view: 'table' | 'map'): void {
     if (!this.instanceAdmin || view === this.inventoryView) return;
     this.inventoryView = view;
