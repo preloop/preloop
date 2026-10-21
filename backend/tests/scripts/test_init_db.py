@@ -245,3 +245,33 @@ def test_reconcile_does_not_enable_models_without_credentials(db_session, api_ke
     reconcile_ai_model_gateway_settings(db_session)
     db_session.expire_all()
     assert crud_ai_model.get(db_session, id=row.id).meta_data == {"label": "unchanged"}
+
+
+def test_bootstrap_preserves_legacy_duplicate_aliases(db_session):
+    account = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "Legacy duplicate models", "is_active": True},
+    )
+    rows = [
+        crud_ai_model.create_with_account(
+            db=db_session,
+            obj_in={
+                "name": f"Legacy model {index}",
+                "provider_name": "openai",
+                "model_identifier": "same-legacy-model",
+                "api_key": "test-key",
+            },
+            account_id=account.id,
+        )
+        for index in range(2)
+    ]
+    for _ in range(2):
+        reconcile_ai_model_gateway_settings(db_session)
+        db_session.expire_all()
+        for row in rows:
+            current = crud_ai_model.get(db_session, id=row.id)
+            assert current.meta_data["gateway"]["enabled"] is True
+            assert (
+                current.meta_data["gateway"]["model_alias"]
+                == "openai/same-legacy-model"
+            )

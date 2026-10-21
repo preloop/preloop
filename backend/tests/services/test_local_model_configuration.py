@@ -251,3 +251,65 @@ async def test_discovery_pagination_cannot_forward_credentials_to_another_origin
                 headers={"Authorization": "Bearer example"},
             )
     assert len(sent) == 1
+
+
+def test_runner_local_model_is_free_without_server_cidr_allowlist(monkeypatch):
+    monkeypatch.setattr(settings, "model_endpoint_allowed_cidrs", "")
+    row = model(
+        provider_name="openai",
+        endpoint_type="runner",
+        api_endpoint="http://localhost:11434/v1",
+        meta_data={},
+    )
+    assert estimate(row).cost == 0.0
+    assert ai_model_pricing._pricing_response(row, None).price.input_per_1m == 0.0
+    assert estimate(row, pricing_override={"request_price": 0.25}).cost == 0.25
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["qwen", "openai-compatible"])
+async def test_discovery_validation_offloads_dns_and_catalog_blocks_redirects(
+    monkeypatch, provider
+):
+    import threading
+
+    main_thread = threading.get_ident()
+    dns_threads = []
+
+    def resolve(host):
+        dns_threads.append(threading.get_ident())
+        return [ipaddress.ip_address("8.8.8.8")]
+
+    monkeypatch.setattr(ai_model_provider, "_resolve_endpoint_host", resolve)
+    monkeypatch.setattr(ai_model_provider, "_resolve_endpoint_host_uncached", resolve)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    requests = []
+    clients = []
+    factory = ai_model_provider._discovery_http_client
+
+    async def upstream(request):
+        requests.append(request)
+        return httpx.Response(302, headers={"location": "http://169.254.169.254/"})
+
+    def client_factory(*args, **kwargs):
+        client = factory(*args, **kwargs)
+        assert isinstance(client._transport, DiscoveryTransport)
+        assert client.follow_redirects is False and client._trust_env is False
+        client._transport.transport = httpx.MockTransport(upstream)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(ai_model_provider, "_discovery_http_client", client_factory)
+    endpoint = "https://workspace.maas.aliyuncs.com/v1"
+    if provider == "qwen":
+        result = await ai_model_provider._get_qwen_models("test-key", endpoint)
+    else:
+        result = await ai_model_provider._get_openai_compatible_models(
+            endpoint, "test-key"
+        )
+    assert result.source != "live"
+    assert clients and all(client.is_closed for client in clients)
+    assert len(requests) == 1
+    assert requests[0].url.host == "8.8.8.8"
+    assert requests[0].headers["host"] == "workspace.maas.aliyuncs.com"
+    assert dns_threads and main_thread not in dns_threads

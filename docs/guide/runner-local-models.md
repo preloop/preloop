@@ -73,7 +73,9 @@ still take precedence, for example to account for hardware costs. This default
 applies to local-provider defaults (Ollama or LM Studio), explicitly allowed
 private literal endpoints, and models explicitly marked
 `meta_data.local_inference=true`. Use the explicit mark for local hostname
-endpoints; pricing does not resolve DNS. An unknown remote OpenAI-compatible
+endpoints; pricing does not resolve DNS. Models registered through a personal
+runner also default to $0 without requiring a backend CIDR allowlist; explicit
+prices and account overrides still take precedence. An unknown remote OpenAI-compatible
 endpoint remains unpriced unless a price is supplied. The local default is
 reported as model configuration, not a fetched provider tariff.
 
@@ -81,4 +83,6 @@ reported as model configuration, not a fetched provider tariff.
 Database initialization during upgrades preserves configured gateway aliases,
 explicit URLs, disabled models and retired models. An omitted gateway URL stays
 omitted, allowing runtime environment settings to select the internal service
-address. The initializer does not copy the public `PRELOOP_URL` into model routes.
+address. The initializer does not copy the public `PRELOOP_URL` into model routes. Legacy
+duplicate aliases do not block upgrades; normal model edits still enforce alias
+uniqueness.

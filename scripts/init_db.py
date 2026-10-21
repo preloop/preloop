@@ -85,8 +85,8 @@ def reconcile_ai_model_gateway_settings(
             provider_adapter=provider_adapter,
         )
         if updated_meta != (ai_model.meta_data or {}):
-            crud_ai_model.update(
-                db_session, db_obj=ai_model, obj_in={"meta_data": updated_meta}
+            crud_ai_model.update_gateway_bootstrap_metadata(
+                db_session, db_obj=ai_model, meta_data=updated_meta
             )
             updated_count += 1
     return updated_count

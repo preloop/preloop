@@ -44,6 +44,17 @@ def _effective_gateway_alias_from_fields(
 class CRUDAIModel(CRUDBase[AIModel]):
     """CRUD class for AIModel operations."""
 
+    def update_gateway_bootstrap_metadata(
+        self, db: Session, *, db_obj: models.AIModel, meta_data: dict
+    ) -> models.AIModel:
+        """Persist bootstrap defaults without rejecting legacy duplicate aliases.
+
+        Only deployment bootstrap uses this metadata-only path. Existing aliases
+        retain their deterministic runtime resolution; normal model mutations
+        still enforce uniqueness through ``update``.
+        """
+        return super().update(db, db_obj=db_obj, obj_in={"meta_data": meta_data})
+
     def get_gateway_bootstrap_candidates(self, db: Session) -> list[models.AIModel]:
         """Return credentialed models for deployment-wide bootstrap defaults."""
         return (

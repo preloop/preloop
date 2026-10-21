@@ -18,6 +18,8 @@ def uses_local_inference(model: Any) -> bool:
     just like configuring a zero-dollar price. Public custom endpoints remain
     unpriced unless the operator supplies prices or explicitly opts in.
     """
+    if getattr(model, "endpoint_type", None) == "runner":
+        return True
     metadata = getattr(model, "meta_data", None)
     if isinstance(metadata, dict) and metadata.get("local_inference") is True:
         return True

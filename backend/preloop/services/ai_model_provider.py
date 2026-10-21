@@ -592,7 +592,9 @@ async def _get_openai_compatible_models(
         logger.warning("OpenAI package not installed, cannot list models")
         return _fallback([], ERROR_SDK_MISSING)
 
-    base_url = validate_discovery_endpoint(api_endpoint).rstrip("/")
+    base_url = (
+        await asyncio.to_thread(validate_discovery_endpoint, api_endpoint)
+    ).rstrip("/")
     http_client = _discovery_http_client(protect_endpoint=True)
     try:
         client_kwargs: Dict[str, Any] = {
@@ -1024,12 +1026,14 @@ async def _get_catalog_provider_models(
         )
         return _fallback([], ERROR_SDK_MISSING)
 
+    http_client = _discovery_http_client(protect_endpoint=True)
     try:
         client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             max_retries=1,
             timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+            http_client=http_client,
         )
         # The SDK's __aenter__ returns the client itself; the context manager
         # closes the underlying HTTP connection pool on exit.
@@ -1049,6 +1053,9 @@ async def _get_catalog_provider_models(
             type(e).__name__,
         )
         return _fallback([], _classify_fetch_error(e))
+    finally:
+        if http_client is not None:
+            await http_client.aclose()
 
     if not live_models:
         logger.info("%s returned no models", provider_label)
@@ -1219,7 +1226,7 @@ async def _get_qwen_models(
     """
     raw = (api_endpoint or "").strip()
     if raw:
-        base_url = validate_qwen_endpoint(raw).rstrip("/")
+        base_url = (await asyncio.to_thread(validate_qwen_endpoint, raw)).rstrip("/")
     else:
         base_url = QWEN_DEFAULT_BASE_URL
 
