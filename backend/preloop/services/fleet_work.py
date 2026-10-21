@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -335,7 +335,9 @@ def build_work_items(
     # A create call has no number yet. Its parsed closing/plain references
     # attach to the first pull request the same caller names afterwards in the
     # same repository (typically its own follow-up on the PR it opened).
-    unnumbered: list[tuple[tuple[str, str, str], str, datetime, dict[str, Any]]] = []
+    unnumbered: list[
+        tuple[tuple[str, str, str], str, datetime, dict[str, Any], str | None]
+    ] = []
     named: list[tuple[tuple[str, str, str], str, datetime, str]] = []
     for call in calls:
         metadata = call.metadata_ if isinstance(call.metadata_, dict) else {}
@@ -353,8 +355,22 @@ def build_work_items(
             and isinstance(work_ref.get("repo"), str)
             and (work_ref.get("closes") or work_ref.get("mentions"))
         ):
+            pending_flow = flow_of_execution.get(str(call.flow_execution_id or ""))
+            pending_actor: str | None = f"flow:{pending_flow}" if pending_flow else None
+            if not call.flow_execution_id:
+                owner_agent = agents_by_principal.get(
+                    (call.runtime_principal_type or "", call.runtime_principal_id or "")
+                )
+                if owner_agent:
+                    pending_actor = f"agent:{owner_agent.id}"
             unnumbered.append(
-                (caller, work_ref["repo"], _aware(call.timestamp), work_ref)
+                (
+                    caller,
+                    work_ref["repo"],
+                    _aware(call.timestamp),
+                    work_ref,
+                    pending_actor,
+                )
             )
             continue
         if isinstance(work_ref, dict) and (named_key := work_key(work_ref)):
@@ -471,30 +487,6 @@ def build_work_items(
                 node_id=node_id,
             )
 
-    for caller, repo, at, work_ref in unnumbered:
-        later = sorted(
-            (when, key)
-            for who, where, when, key in named
-            if who == caller and where == repo and when >= at
-        )
-        if not later:
-            continue
-        pr_slot = slot_of(later[0][1], "pull_request")
-        if pr_slot is None:
-            continue
-        for relation_kind, name in (("resolves", "closes"), ("mentions", "mentions")):
-            for issue_key in (work_ref.get(name) or [])[:5]:
-                if issue := slot_of(issue_key, "issue"):
-                    # The referenced issue joins the work list: the PR names it.
-                    add(issue_key, "issue", at, "issue_updated")
-                    relate(
-                        relation_kind,
-                        work_id(*pr_slot),
-                        issue,
-                        at,
-                        _PROVENANCE.get(str(work_ref.get("via")), "tool_call"),
-                    )
-
     # Reuse the bounded references as an in-query join, so even an old tracker
     # snapshot enriches a recent tool/run target without a lookup per object.
     def targets(kind: Kind) -> work_crud.Targets:
@@ -566,6 +558,41 @@ def build_work_items(
             # The issue-cost rollup pairs a PR with the issue it closes.
             relate("resolves", work_id(*pr_slot), issue_slot, row.at, "tracker")
     truncated |= pull_requests_truncated or len(issues) > WORK_LIMIT
+    # Resolve pending create references: first the same caller's next call
+    # naming a PR in the repo, else a unique forge-reported opening in that
+    # repo within ten minutes. Unresolved creates keep no relation.
+    for caller, repo, at, work_ref, creator in unnumbered:
+        later = sorted(
+            (when, key)
+            for who, where, when, key in named
+            if who == caller and where == repo and when >= at
+        )
+        pr_slot = slot_of(later[0][1], "pull_request") if later else None
+        if pr_slot is None:
+            openings = [
+                (item.kind, item.key)
+                for item in items.values()
+                if item.kind == "pull_request"
+                and item.repo == repo
+                and item.last_action == "opened"
+                and at <= item.last_at <= at + timedelta(minutes=10)
+            ]
+            pr_slot = openings[0] if len(openings) == 1 else None  # type: ignore[assignment]
+        if pr_slot is None:
+            continue
+        provenance = _PROVENANCE.get(str(work_ref.get("via")), "tool_call")
+        if creator:
+            relate("touched", creator, pr_slot, at, provenance, "opened")
+            actors.setdefault(pr_slot, {})[creator] = max(
+                actors.get(pr_slot, {}).get(creator, at), at
+            )
+        for relation_kind, name in (("resolves", "closes"), ("mentions", "mentions")):
+            for issue_key in (work_ref.get(name) or [])[:5]:
+                if issue := slot_of(issue_key, "issue"):
+                    # The referenced issue joins the work list: the PR names it.
+                    add(issue_key, "issue", at, "issue_updated")
+                    relate(relation_kind, work_id(*pr_slot), issue, at, provenance)
+
     for slot, item in items.items():
         item.id = work_id(slot[0], slot[1])
         item.href = item.url

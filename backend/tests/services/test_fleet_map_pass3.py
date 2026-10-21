@@ -1040,3 +1040,65 @@ def test_an_owner_is_as_recent_as_their_active_agent(
     person = nodes[f"user:{fleet['user'].id}"]
     assert agent.last_active_at is not None
     assert person.last_active_at == agent.last_active_at
+
+
+def test_pr_create_resolves_by_forge_opening_and_links_the_agent(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    ref = classify_shell_command("gh pr create -t T -b 'Fixes #7'", remote=REMOTE)
+    _call(
+        db_session,
+        fleet["session"],
+        "Bash",
+        5,
+        status="allowed",
+        metadata={"work_ref": ref},
+    )
+    db_session.add(
+        models.IssueCostPullRequest(
+            account_id=fleet["user"].account_id,
+            pr_key="https://github.com/acme/api/pull/61",
+            opened_at=NOW - timedelta(minutes=4),
+        )
+    )
+    db_session.flush()
+    out = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    kinds = {(r.kind, r.source, r.target) for r in out.relations}
+    pr = "work:pull_request:acme/api#61"
+    assert ("resolves", pr, "work:issue:acme/api#7") in kinds
+    assert ("touched", f"agent:{fleet['agent'].id}", pr) in kinds
+
+
+def test_cli_pr_create_links_the_agent_to_the_resolved_pr(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    ref = classify_shell_command("gh pr create -t T -b 'Closes #7'", remote=REMOTE)
+    _call(
+        db_session,
+        fleet["session"],
+        "Bash",
+        1,
+        status="allowed",
+        metadata={"work_ref": ref},
+    )
+    follow = classify_shell_command("gh pr comment 42 -b x", remote=REMOTE)
+    _call(
+        db_session,
+        fleet["session"],
+        "Bash",
+        0.5,
+        status="allowed",
+        metadata={"work_ref": follow},
+    )
+    db_session.flush()
+    out = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    touched = next(
+        r
+        for r in out.relations
+        if r.kind == "touched" and r.target == "work:pull_request:acme/api#42"
+    )
+    assert "opened" in touched.actions
