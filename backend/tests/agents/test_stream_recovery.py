@@ -199,7 +199,24 @@ def test_generated_launch_refuses_unsafe_recovery(
         "auth": {"message": "invalid API key"},
         "missing_session": {"missing_session": True},
         "cancelled": {"initial_exit": 130},
-        "completed": {"message": "FLOW_EXECUTION_SUCCESS\nupstream_disconnect"},
+        "completed": {
+            "message": (
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "agent_message",
+                            "text": "FLOW_EXECUTION_SUCCESS",
+                        },
+                    }
+                )
+                + "\n"
+                + json.dumps({"type": "turn.completed"})
+                + "\nupstream_disconnect"
+                if harness == "codex"
+                else "FLOW_EXECUTION_SUCCESS\nupstream_disconnect"
+            )
+        },
         # A hosted model the deployment never priced. It arrives dressed as a
         # 503, which is why the container used to resume against it; the
         # refusal sentence is terminal and wins over the transient shape.

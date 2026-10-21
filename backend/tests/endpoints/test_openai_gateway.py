@@ -413,6 +413,13 @@ def test_chat_completions_endpoint_rejects_omitted_model_without_gateway_default
     app, client, db_session, test_user
 ):
     """Omitted model should not silently use a non-gateway default."""
+    # The deployment bootstrap may provide a legitimate global gateway default.
+    # This negative case explicitly requires that no such default exists.
+    for model in crud_ai_model.get_all_for_account(
+        db_session, account_id=test_user.account_id, include_retired=True
+    ):
+        if model.account_id is None and model.is_default:
+            crud_ai_model.update(db_session, db_obj=model, obj_in={"is_default": False})
     crud_ai_model.create_with_account(
         db=db_session,
         obj_in={

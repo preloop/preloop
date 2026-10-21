@@ -9303,6 +9303,12 @@ class OpenAIGatewayService:
                 continue
 
             item_type = item.get("type")
+            if item_type == "reasoning":
+                # Responses reasoning is opaque protocol state, not a chat
+                # message or a tool result. Codex may replay it anywhere in a
+                # tool turn. DeepSeek's authenticated bridge restores its own
+                # reasoning separately from the original unfiltered input.
+                continue
             if item_type in ("function_call", "custom_tool_call"):
                 if pending_tool_call_ids:
                     raise tool_response_error(
