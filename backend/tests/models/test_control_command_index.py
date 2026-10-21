@@ -1,6 +1,7 @@
 """Durable control results must avoid scanning unrelated JSON activity."""
 
 import importlib.util
+import re
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,7 +16,7 @@ from preloop.models.models.runtime_session_activity import RuntimeSessionActivit
 INDEX = "ix_rsa_account_command_lookup"
 
 
-def test_control_lookup_index_plans_and_repairs_interrupted_build(db_engine):
+def _load_migration():
     path = (
         Path(__file__).resolve().parents[2]
         / "preloop/models/alembic/versions/20261106_control_command_idx.py"
@@ -23,6 +24,11 @@ def test_control_lookup_index_plans_and_repairs_interrupted_build(db_engine):
     spec = importlib.util.spec_from_file_location("control_command_idx", path)
     migration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(migration)
+    return migration
+
+
+def test_control_lookup_index_plans_and_repairs_interrupted_build(db_engine):
+    migration = _load_migration()
     schema = f"control_index_{uuid4().hex}"
     account_id, command_id = str(uuid4()), str(uuid4())
     with db_engine.connect().execution_options(
@@ -122,5 +128,10 @@ def test_control_lookup_index_plans_and_repairs_interrupted_build(db_engine):
 def test_model_declares_the_same_partial_expression_index():
     index = next(i for i in RuntimeSessionActivity.__table__.indexes if i.name == INDEX)
     ddl = str(CreateIndex(index).compile(dialect=postgresql.dialect()))
-    assert "account_id, (metadata ->> 'command_id'), timestamp DESC" in ddl
-    assert "WHERE (metadata ->> 'command_id') IS NOT NULL" in ddl
+    migration = _load_migration()
+    expected = f"CREATE INDEX {migration.INDEX} {migration.DEFINITION}"
+
+    def normalize(statement):
+        return re.sub(r"\s+", "", statement).replace("((", "(").replace("))", ")")
+
+    assert normalize(ddl) == normalize(expected)

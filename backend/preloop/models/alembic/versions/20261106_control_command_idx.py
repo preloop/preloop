@@ -36,7 +36,7 @@ def _index_ddl() -> Iterator[None]:
             "SELECT set_config('lock_timeout', :lock, false), set_config('statement_timeout', :statement, false)"
         )
         try:
-            bind.execute(settings, {"lock": "5s", "statement": "30min"})
+            bind.execute(settings, {"lock": "60s", "statement": "30min"})
             yield
         finally:
             bind.execute(
