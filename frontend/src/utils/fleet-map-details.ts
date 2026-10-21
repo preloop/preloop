@@ -147,7 +147,7 @@ export function workActionWords(actions: Iterable<string>): string[] {
     const word = action
       .replace(/^(issue|pull_request)_/, '')
       .replace(/_/g, ' ')
-      .replace(/^labeled$/, 'labelled');
+      .replace(/^(un)?labeled$/, '$1labelled');
     if (word && !words.includes(word)) words.push(word);
   }
   return words;
@@ -160,24 +160,19 @@ export function workRelationLabel(
   if (!isWorkRelation(edge)) return '';
   const reference =
     target?.work_reference || target?.resource_id.match(/[#!]\d+$/)?.[0] || '';
-  const actions = (edge.actions ?? [])
-    .map((action) =>
-      action.replace(/^(issue|pull_request)_(opened|updated)$/, '$2')
-    )
-    .filter((action) =>
-      [
-        'opened',
-        'commented',
-        'reviewed',
-        'merged',
-        'labelled',
-        'labeled',
-        'updated',
-        'closed',
-        'reopened',
-      ].includes(action)
-    )
-    .map((action) => (action === 'labeled' ? 'labelled' : action));
+  const actions = workActionWords(edge.actions ?? []).filter((action) =>
+    [
+      'opened',
+      'commented',
+      'reviewed',
+      'merged',
+      'labelled',
+      'unlabelled',
+      'updated',
+      'closed',
+      'reopened',
+    ].includes(action)
+  );
   const verb =
     edge.kind === 'touched' && actions.length
       ? actions.slice(0, 3).join(', ')

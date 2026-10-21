@@ -3,7 +3,10 @@ import { page } from 'vitest/browser';
 import '@shoelace-style/shoelace/dist/themes/light.css';
 import '../../src/components/fleet-map';
 import { sampleFleetMap } from '../../src/test-helpers/fleet-map-graph';
-import { workActionWords } from '../../src/utils/fleet-map-details';
+import {
+  workActionWords,
+  workRelationLabel,
+} from '../../src/utils/fleet-map-details';
 
 const mounted: HTMLElement[] = [];
 async function mount(
@@ -199,6 +202,8 @@ describe('Fleet Map review fixes', () => {
       .textContent!.replace(/\s+/g, ' ');
     expect(who).toContain('1 action · updated');
     expect(who).not.toContain('issue_updated');
+    const panel = root(el).querySelector('.panel')!.textContent!;
+    expect(panel.split('Document export limits').length - 1).toBe(1);
   });
 
   it('stacks spatial shelves so a narrow card shows every node at a legible scale', async () => {
@@ -255,5 +260,22 @@ describe('Fleet Map review fixes', () => {
       .map((node) => node.getAttribute('data-node'));
     expect(el.scale).toBeGreaterThanOrEqual(0.85);
     expect(outside).toEqual([]);
+  });
+
+  it('labels label and unlabel actions on a touched relation', () => {
+    const edge: any = {
+      id: 'touched:agent:a:work:issue:x#7',
+      source: 'agent:a',
+      target: 'work:issue:x#7',
+      kind: 'touched',
+      provenance: 'observed',
+      impact_source: 'work:issue:x#7',
+      impact_target: 'agent:a',
+      gaps: [],
+      actions: ['issue_labeled', 'issue_unlabeled'],
+    };
+    expect(workRelationLabel(edge, { work_reference: '#7' } as any)).toBe(
+      'labelled, unlabelled #7'
+    );
   });
 });

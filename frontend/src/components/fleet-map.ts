@@ -880,7 +880,12 @@ export class FleetMap extends LitElement {
           >`
         : displayLabel(other);
     return html`<section data-testid="fleet-map-work-details">
-      ${node.work_title ? html`<p class="work-title">${node.work_title}</p>` : nothing}
+      ${
+        // The heading already carries the title when the label embeds it.
+        node.work_title && !displayLabel(node).includes(node.work_title)
+          ? html`<p class="work-title">${node.work_title}</p>`
+          : nothing
+      }
       ${node.detail ? html`<p class="meta">Repository: ${node.detail}</p>` : nothing}
       <h4>Who touched it</h4>
       ${
