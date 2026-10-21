@@ -4,7 +4,6 @@ import type { RowData } from '@tanstack/table-core';
 
 import '../components/list-toolbar';
 import '../components/list-selection';
-import './column-picker';
 import type {
   BulkAction,
   ListSelectionController,
@@ -24,14 +23,11 @@ export interface DataTableToolbarOptions<TRow extends RowData> {
   bulkActions?: BulkAction[];
   bulkLabel?: string;
   onBulkAction?: (actionId: string) => void;
-  /** Hide the column picker on lists with nothing to hide. */
-  columnPicker?: boolean;
 }
 
 /**
  * The shared toolbar for a `<data-table>`: `list-toolbar` with its search
- * wired to the model's global filter, the page's own filters, the column
- * picker (with density), the count, and the bulk bar that takes the row
+ * wired to the model's global filter, the page's own filters, the count, and the bulk bar that takes the row
  * over while something is selected.
  *
  * It is a function rather than another element so the filters a page passes
@@ -53,20 +49,6 @@ export function renderDataTableToolbar<TRow extends RowData>(
         table.setSearch(event.detail.value)}
     >
       ${options.filters ?? nothing}
-      ${
-        options.columnPicker === false
-          ? nothing
-          : html`<column-picker
-              .columns=${table.pickerColumns}
-              ?can-reset=${table.hasColumnChanges}
-              density=${table.density}
-              @column-toggle=${(event: CustomEvent) =>
-                table.setVisible(event.detail.id, event.detail.visible)}
-              @columns-reset=${() => table.resetColumns()}
-              @density-change=${(event: CustomEvent) =>
-                table.setDensity(event.detail.density)}
-            ></column-picker>`
-      }
       ${
         options.count
           ? html`<span slot="count">${options.count}</span>`

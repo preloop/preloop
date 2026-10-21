@@ -23,9 +23,7 @@ export interface ColumnPickerItem {
 /**
  * Which columns a list shows.
  *
- * A dropdown of checkboxes, in the filter bar beside the list's own filters,
- * because choosing columns is choosing what the table says and belongs in the
- * bar that already decides which rows it says it about. It is a `sl-dropdown`
+ * A dropdown of checkboxes at the right of the table header. It is a `sl-dropdown`
  * of `sl-menu-item type="checkbox"`, which is the console's one menu recipe,
  * so it inherits the raised surface, the focus ring and the keyboard model
  * from Shoelace rather than inventing a popover.
@@ -61,8 +59,6 @@ export class ColumnPicker extends LitElement {
     :host {
       display: inline-block;
     }
-    /* The bar aligns its controls on their bottom edge, and a bare button is
-       shorter than a labelled select. */
     sl-dropdown {
       display: block;
     }

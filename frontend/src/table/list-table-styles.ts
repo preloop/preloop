@@ -10,6 +10,22 @@ import { css } from 'lit';
  * business, what a header does is the table layer's.
  */
 export const listTableStyles = css`
+  .table-header-content {
+    display: flex;
+    align-items: center;
+    gap: var(--sl-spacing-small, 8px);
+  }
+  th.numeric .table-header-content {
+    justify-content: flex-end;
+  }
+  .table-header-content > column-picker {
+    flex: 0 0 auto;
+    margin-left: auto;
+    padding: 4px 8px;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
   /* The button is the whole cell, so the hit area is the label, not the six
      pixels of the caret. */
   th.sortable {

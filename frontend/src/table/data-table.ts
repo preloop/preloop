@@ -13,7 +13,11 @@ import '../components/resource-actions';
 import type { ListSelectionController } from '../components/list-selection';
 import type { ResourceAction } from '../components/resource-actions';
 import type { ListTable } from './list-table';
-import { renderListCells, renderListHeaders } from './list-table-render';
+import {
+  renderHeaderColumnPicker,
+  renderListCells,
+  renderListHeaders,
+} from './list-table-render';
 import './table-pagination';
 import './table-state';
 
@@ -41,7 +45,7 @@ export interface DataTableEmpty {
  * and that repaints the table. Selection works the same way through the
  * view's `ListSelectionController`.
  *
- * Search, filters, the column picker and the bulk bar sit in the shared
+ * Search, filters and the bulk bar sit in the shared
  * `list-toolbar` above (see `renderDataTableToolbar`), not here: the toolbar
  * is shared with lists that render cards or a timeline instead of a table.
  *
@@ -209,11 +213,14 @@ export class DataTable<TRow extends RowData = RowData> extends LitElement {
             </th>`
           : nothing
       }
-      ${renderListHeaders(this.table)}
+      ${renderListHeaders(this.table, !this.hasActions)}
       ${
         this.hasActions
           ? html`<th class="actions-cell" scope="col">
-              <span class="visually-hidden">Actions</span>
+              <div class="table-header-content">
+                <span class="visually-hidden">Actions</span>
+                ${renderHeaderColumnPicker(this.table)}
+              </div>
             </th>`
           : nothing
       }

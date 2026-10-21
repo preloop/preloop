@@ -1276,7 +1276,10 @@ describe('FlowExecutionsView', () => {
     it('turns the token parts on from the column picker, each sortable', async () => {
       const el = await renderRows([TOKEN_EXECUTION]);
       const picker = el.shadowRoot?.querySelector('column-picker');
-      expect(picker, 'the toolbar offers the columns').to.exist;
+      expect(picker?.closest('thead tr'), 'the header offers the columns').to
+        .exist;
+      expect(el.shadowRoot?.querySelector('list-toolbar column-picker')).to.be
+        .null;
 
       const items = Array.from(
         picker?.shadowRoot?.querySelectorAll('sl-menu-item') || []

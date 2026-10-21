@@ -1,6 +1,7 @@
 import { html, nothing } from 'lit';
 import type { TemplateResult } from 'lit';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
+import './column-picker';
 import type { RowData } from '@tanstack/table-core';
 import {
   DEFAULT_COLUMN_WIDTH,
@@ -27,14 +28,22 @@ const KEYBOARD_RESIZE_STEP = 16;
  * column) after these.
  */
 export function renderListHeaders<TRow extends RowData>(
-  table: ListTable<TRow>
+  table: ListTable<TRow>,
+  picker = false
 ): TemplateResult[] {
-  return table.headers.map((header) => renderListHeader(table, header));
+  return table.headers.map((header, index) =>
+    renderListHeader(
+      table,
+      header,
+      picker && index === table.headers.length - 1
+    )
+  );
 }
 
 function renderListHeader<TRow extends RowData>(
   table: ListTable<TRow>,
-  header: ListHeader<TRow>
+  header: ListHeader<TRow>,
+  picker: boolean
 ): TemplateResult {
   const column = header.column;
   const classes = [
@@ -61,38 +70,41 @@ function renderListHeader<TRow extends RowData>(
       aria-sort=${header.ariaSort}
       scope="col"
     >
-      ${
-        header.sortable
-          ? html`
-              <button
-                type="button"
-                class="sort-button"
-                data-sort-key=${column.id}
-                title=${column.headerTitle || 'Sorts the rows on this page'}
-                aria-label=${column.headerLabel || nothing}
-                @click=${(event: MouseEvent) =>
-                  table.toggleSort(column.id, event.shiftKey)}
-              >
-                <span>${column.header}</span>
-                <sl-icon
-                  class="sort-caret"
-                  name=${
-                    header.sorted
-                      ? header.sorted === 'asc'
-                        ? 'caret-up-fill'
-                        : 'caret-down-fill'
-                      : 'chevron-expand'
+      <div class="table-header-content">
+        ${
+          header.sortable
+            ? html`
+                <button
+                  type="button"
+                  class="sort-button"
+                  data-sort-key=${column.id}
+                  title=${column.headerTitle || 'Sorts the rows on this page'}
+                  aria-label=${column.headerLabel || nothing}
+                  @click=${(event: MouseEvent) =>
+                    table.toggleSort(column.id, event.shiftKey)}
+                >
+                  <span>${column.header}</span>
+                  <sl-icon
+                    class="sort-caret"
+                    name=${
+                      header.sorted
+                        ? header.sorted === 'asc'
+                          ? 'caret-up-fill'
+                          : 'caret-down-fill'
+                        : 'chevron-expand'
+                    }
+                  ></sl-icon>
+                  ${
+                    header.sortRank
+                      ? html`<span class="sort-rank">${header.sortRank}</span>`
+                      : nothing
                   }
-                ></sl-icon>
-                ${
-                  header.sortRank
-                    ? html`<span class="sort-rank">${header.sortRank}</span>`
-                    : nothing
-                }
-              </button>
-            `
-          : html`<span class="header-label">${column.header}</span>`
-      }
+                </button>
+              `
+            : html`<span class="header-label">${column.header}</span>`
+        }
+        ${picker ? renderHeaderColumnPicker(table) : nothing}
+      </div>
       ${
         header.resizable
           ? html`<span
@@ -178,4 +190,21 @@ export function renderListCells<TRow extends RowData>(
       ${column.cell(row)}
     </td>`;
   });
+}
+
+/** Column controls share the final header cell, without adding a column. */
+export function renderHeaderColumnPicker<TRow extends RowData>(
+  table: ListTable<TRow>,
+  density = true
+): TemplateResult {
+  return html`<column-picker
+    .columns=${table.pickerColumns}
+    ?can-reset=${table.hasColumnChanges}
+    density=${density ? table.density : ''}
+    @column-toggle=${(event: CustomEvent) =>
+      table.setVisible(event.detail.id, event.detail.visible)}
+    @columns-reset=${() => table.resetColumns()}
+    @density-change=${(event: CustomEvent) =>
+      table.setDensity(event.detail.density)}
+  ></column-picker>`;
 }

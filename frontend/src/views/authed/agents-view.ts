@@ -32,7 +32,6 @@ import {
   type ListColumn,
 } from '../../table';
 import '../../table/data-table';
-import '../../table/column-picker';
 import '../../components/view-header.ts';
 import '../../components/preloop-agent-deployer.ts';
 import '../../components/preloop-deploy-wizard.ts';
@@ -4796,23 +4795,7 @@ export class AgentsView extends LitElement {
               <sl-option value="last_24_hours">Last 24 hours</sl-option>
               <sl-option value="last_7_days">Last 7 days</sl-option>
             </sl-select>
-            ${
-              this.effectiveView === 'list'
-                ? html`<column-picker
-                    .columns=${this.agentTable.pickerColumns}
-                    ?can-reset=${this.agentTable.hasColumnChanges}
-                    density=${this.agentTable.density}
-                    @column-toggle=${(event: CustomEvent) =>
-                      this.agentTable.setVisible(
-                        event.detail.id,
-                        event.detail.visible
-                      )}
-                    @columns-reset=${() => this.agentTable.resetColumns()}
-                    @density-change=${(event: CustomEvent) =>
-                      this.agentTable.setDensity(event.detail.density)}
-                  ></column-picker>`
-                : null
-            }
+
             <span slot="count">${this.resultsLabel}</span>
             ${this.renderBulkBar()}
           </list-toolbar>

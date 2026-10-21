@@ -1151,11 +1151,16 @@ describe('inventory-card Agents columns', () => {
     const el = await card({ agentRows: [agentRow()] });
     expect(headers(el)).to.include('Tokens');
     const picker = el.shadowRoot!.querySelector(
-      'column-picker'
+      'thead tr th:last-child column-picker'
     ) as HTMLElement & {
       columns: Array<{ id: string; hideable?: boolean }>;
     };
     expect(picker).to.exist;
+    expect(
+      el.shadowRoot!.querySelector(
+        'list-toolbar column-picker, .toolbar column-picker'
+      )
+    ).to.be.null;
     // The name identifies the row; the picker may not take it away.
     expect(picker.columns.find((c) => c.id === 'name')?.hideable).to.be.false;
     picker.dispatchEvent(

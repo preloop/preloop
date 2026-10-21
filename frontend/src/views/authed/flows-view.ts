@@ -7,7 +7,6 @@ import { repeat } from 'lit/directives/repeat.js';
 import { ListTable, dataTableStyles, listTableStyles } from '../../table';
 import type { ListColumn } from '../../table';
 import '../../table/data-table';
-import '../../table/column-picker';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -1844,20 +1843,7 @@ export class FlowsView extends LitElement {
             void this.loadRangeStats();
           }}
         ></time-range-select>
-        ${
-          this.currentView === 'list'
-            ? html`<column-picker
-                .columns=${this.table.pickerColumns}
-                ?can-reset=${this.table.hasColumnChanges}
-                density=${this.table.density}
-                @column-toggle=${(event: CustomEvent) =>
-                  this.table.setVisible(event.detail.id, event.detail.visible)}
-                @columns-reset=${() => this.table.resetColumns()}
-                @density-change=${(event: CustomEvent) =>
-                  this.table.setDensity(event.detail.density)}
-              ></column-picker>`
-            : nothing
-        }
+
         <span slot="count">${this.resultsLabel}</span>
         ${this.renderBulkBar()}
       </list-toolbar>

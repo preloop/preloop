@@ -77,7 +77,7 @@ import {
   renderListHeaders,
 } from '../../table';
 import type { ListColumn } from '../../table';
-import '../../table/column-picker';
+import { renderHeaderColumnPicker } from '../../table/list-table-render';
 import {
   cacheSplitOf,
   formatCacheHitRate,
@@ -194,14 +194,14 @@ export class FlowExecutionsView extends AuthedElement {
          widths are declared per column in EXECUTION_COLUMNS and set on the
          cell, so a drag can change them; Subject declares none and takes
          whatever is left.
-         The 1080px min-width is the fixed columns (954px) plus a ~120px
+         The 1122px min-width reserves room for the header picker and a ~120px
          floor for Subject, so the flexible column that names a run stays
          readable at the narrowest layout. Below that the wrapper scrolls
          horizontally rather than squeezing Subject to a sliver. */
         table {
           width: 100%;
           border-collapse: collapse;
-          min-width: 1080px;
+          min-width: 1122px;
           table-layout: fixed;
           font-size: var(--console-text-body);
         }
@@ -331,7 +331,7 @@ export class FlowExecutionsView extends AuthedElement {
           white-space: nowrap;
         }
         .actions-cell {
-          width: 72px;
+          width: 120px;
         }
         .row-actions {
           display: flex;
@@ -1364,13 +1364,7 @@ export class FlowExecutionsView extends AuthedElement {
              which rows it shows, not in a header cell: the header row is the
              table's own vocabulary and a control in it would be read as a
              tenth column. -->
-        <column-picker
-          .columns=${this.table.pickerColumns}
-          ?can-reset=${this.table.hasColumnChanges}
-          @column-toggle=${(event: CustomEvent) =>
-            this.table.setVisible(event.detail.id, event.detail.visible)}
-          @columns-reset=${() => this.table.resetColumns()}
-        ></column-picker>
+
         <span slot="count">${this.resultsLabel}</span>
       </list-toolbar>
     `;
@@ -1446,7 +1440,11 @@ export class FlowExecutionsView extends AuthedElement {
                         <thead>
                           <tr>
                             ${renderListHeaders(this.table)}
-                            <th class="actions-cell"></th>
+                            <th class="actions-cell">
+                              <div class="table-header-content">
+                                ${renderHeaderColumnPicker(this.table, false)}
+                              </div>
+                            </th>
                           </tr>
                         </thead>
                         <tbody>

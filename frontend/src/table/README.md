@@ -11,8 +11,8 @@ grids) look and behave the same.
 | Piece | What it is |
 |---|---|
 | `ListTable` (`list-table.ts`) | Reactive controller. Columns, sort, global search, per-column filters, pagination, visibility, order, widths, density. Client or server mode. Optional URL state. |
-| `<data-table>` (`data-table.ts`) | Renders a `ListTable`: select column, sortable and resizable headers, cells, row actions menu, skeleton, empty / no-results / error states, pagination footer, sticky header, row keyboard navigation. Light DOM, so the view's styles reach the cells. |
-| `renderDataTableToolbar()` (`data-table-toolbar.ts`) | The shared `list-toolbar` wired to the model: search, the page's filters, column picker with density, count, and the bulk bar docked in the toolbar while rows are selected. |
+| `<data-table>` (`data-table.ts`) | Renders a `ListTable`: select column, sortable and resizable headers with a column picker in the final header cell, cells, row actions menu, skeleton, empty / no-results / error states, pagination footer, sticky header, row keyboard navigation. Light DOM, so the view's styles reach the cells. |
+| `renderDataTableToolbar()` (`data-table-toolbar.ts`) | The shared `list-toolbar` wired to the model: search, the page's filters, count, and the bulk bar docked in the toolbar while rows are selected. |
 | `<table-pagination>` | The one pagination footer: "26-50 of 1,412 runs", rows per page, Previous / Next. Offset (`total`) or cursor (`total = null` plus `has-next`). |
 | `<table-state>` | The one empty / no-results / error panel, with a slot for the action. |
 | `<column-picker>` | Column visibility (grouped), reset, and density. |
