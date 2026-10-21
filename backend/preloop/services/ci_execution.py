@@ -181,6 +181,8 @@ def _accepted_binding(source: _ProviderRead, pr: Any) -> CiReviewBinding:
                 ),
                 "review_author": _bounded_provider_text(author, 255),
             }
+            if pr.get("source_branch") is not None:
+                review_metadata["review_source_branch"] = pr["source_branch"]
         return CiReviewBinding(
             **values,
             version=1,
@@ -382,7 +384,16 @@ async def ensure_ci_dispatch_admission(
         return
     expected, source = loaded
     current = await _read_provider(source)
-    if current != expected:
+    presentation_fields = {
+        "review_url",
+        "review_title",
+        "review_description",
+        "review_author",
+        "review_source_branch",
+    }
+    if current.model_dump(exclude=presentation_fields) != expected.model_dump(
+        exclude=presentation_fields
+    ):
         raise CiReviewDeniedError(
             "Restricted CI accepted review changed before dispatch"
         )

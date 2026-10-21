@@ -66,6 +66,13 @@ class CiReviewBinding(CiReviewRequest):
     review_title: str | None = Field(default=None, max_length=1024)
     review_description: str | None = Field(default=None, max_length=16384)
     review_author: str | None = Field(default=None, max_length=255)
+    review_source_branch: str | None = Field(
+        default=None,
+        strict=True,
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$",
+    )
 
     @model_validator(mode="after")
     def bound_review_url(self) -> "CiReviewBinding":
@@ -76,6 +83,7 @@ class CiReviewBinding(CiReviewRequest):
                 self.review_title,
                 self.review_description,
                 self.review_author,
+                self.review_source_branch,
             )
         ):
             raise ValueError("Restricted CI review metadata requires a bound URL")
@@ -95,10 +103,12 @@ class CiReviewBinding(CiReviewRequest):
             raise ValueError("CI review version must be an integer")
         return version
 
-    @field_validator("base_branch")
+    @field_validator("base_branch", "review_source_branch")
     @classmethod
-    def safe_base_branch(cls, branch: str) -> str:
+    def safe_review_branch(cls, branch: str | None) -> str | None:
         """Use a provider-confirmed conventional Git ref, never shell syntax."""
+        if branch is None:
+            return None
         if (
             ".." in branch
             or "//" in branch
@@ -140,7 +150,7 @@ def ci_review_event(binding: CiReviewBinding) -> dict[str, Any]:
             "title": binding.review_title or f"MR !{binding.pr_number}",
             "sha": binding.head_sha,
             "last_commit": {"id": binding.head_sha},
-            "source_branch": binding.head_sha,
+            "source_branch": binding.review_source_branch or binding.head_sha,
             "target_branch": binding.base_branch,
             "source_project_id": binding.repository_identifier,
             "target_project_id": binding.repository_identifier,
