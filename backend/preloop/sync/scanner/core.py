@@ -43,6 +43,53 @@ POLLING_THRESHOLD = timedelta(seconds=int(os.getenv("POLLING_THRESHOLD", 3600)))
 RECHECK_PROJECT_WEBHOOK_INTERVAL = POLLING_THRESHOLD * 10
 
 
+def _naive_utc(value: Any) -> Optional[datetime.datetime]:
+    if isinstance(value, str):
+        try:
+            value = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime.datetime):
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def stamped_times_to_heal(
+    current: Any, incoming: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Timestamp fields to rewrite when a stored provider time is impossible.
+
+    A provider's update time never moves backwards. A stored
+    ``last_updated_external`` later than the provider's own value is the sync
+    clock an older transform wrote (the Jira sync did, 2026-10-21), so the
+    provider's ``created_at``/``updated_at``/``last_updated_external`` replace
+    it. Returns None when nothing needs healing.
+
+    Args:
+        current: Stored issue row.
+        incoming: Transformed provider values.
+
+    Returns:
+        The timestamp values to write, or None.
+    """
+    provider = _naive_utc(incoming.get("last_updated_external"))
+    stored = _naive_utc(getattr(current, "last_updated_external", None))
+    if provider is None or stored is None:
+        return None
+    if stored <= provider + datetime.timedelta(seconds=1):
+        return None
+    healed: Dict[str, Any] = {
+        "last_updated_external": provider,
+        "updated_at": provider,
+    }
+    created = _naive_utc(incoming.get("created_at"))
+    if created is not None:
+        healed["created_at"] = created
+    return healed
+
+
 class TrackerClient:
     """Client for interacting with trackers."""
 
@@ -471,6 +518,14 @@ class TrackerClient:
                     issue_changed = True
                     current_issue_model = crud_issue.update(
                         db, db_obj=current_issue_model, obj_in=xformed_issue_data
+                    )
+                elif healed := stamped_times_to_heal(
+                    current_issue_model, xformed_issue_data
+                ):
+                    # An older sync stamped its own clock as the provider time;
+                    # the provider's earlier time replaces it (no content change).
+                    current_issue_model = crud_issue.update(
+                        db, db_obj=current_issue_model, obj_in=healed
                     )
             else:
                 issue_changed = True

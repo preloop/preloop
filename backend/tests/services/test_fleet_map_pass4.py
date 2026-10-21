@@ -628,3 +628,33 @@ def test_direct_only_usage_keeps_scoped_usage_keyed_like_the_map(
     ids = {node.id for node in graph.nodes}
     assert set(usage.models) <= ids and set(usage.providers) <= ids
     assert usage.people[f"user:{person.id}"].request_count == 1
+
+
+def test_a_resync_heals_a_sync_stamped_jira_row(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Review B1: the stored sync stamp is later than Jira's own time."""
+    from preloop.sync.scanner.core import stamped_times_to_heal
+
+    project = _tracker(db_session, test_user, "jira")
+    values = _jira(project).transform_issue(PROD["jira_search_issue"], project)
+    row = PROD["jira_prod_row_before_fix"]
+    stored = models.Issue(
+        project_id=project.id,
+        tracker_id=project.organization.tracker_id,
+        key="SUBA-1",
+        external_id="10001",
+        title="t",
+        created_at=datetime.fromisoformat(row["created_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+        last_updated_external=datetime.fromisoformat(row["updated_at"]),
+    )
+    healed = stamped_times_to_heal(stored, values)
+    assert healed == {
+        "last_updated_external": datetime(2026, 10, 18, 9, 15, 2, 871000),
+        "updated_at": datetime(2026, 10, 18, 9, 15, 2, 871000),
+        "created_at": datetime(2026, 10, 18, 9, 12, 44, 120000),
+    }
+    # A row already holding the provider time needs nothing.
+    stored.last_updated_external = healed["last_updated_external"]
+    assert stamped_times_to_heal(stored, values) is None
