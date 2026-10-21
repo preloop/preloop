@@ -308,11 +308,22 @@ def _node_totals(
         item.prs_merged += counts.merged
         item.review_comments += counts.commented
     touched: dict[str, set[str]] = defaultdict(set)
+    produced: dict[str, set[str]] = defaultdict(set)
     for relation in activity.relations:
+        if relation.kind in {"triggered", "produced"}:
+            # A flow run's subject and publication are work it touched.
+            touched[relation.source].add(relation.target)
+            if relation.kind == "produced":
+                produced[relation.source].add(relation.target)
+            continue
         if relation.kind != "touched":
             continue
         touched[relation.source].add(relation.target)
         totals[relation.target].tool_calls += relation.count
+    for node, targets in produced.items():
+        # A published PR is an opening; the flow's own create call for the
+        # same PR is the same opening, so take the larger count, not the sum.
+        totals[node].prs_opened = max(totals[node].prs_opened, len(targets))
     for node, targets in touched.items():
         totals[node].issues_touched = sum(t.startswith("work:issue:") for t in targets)
         totals[node].prs_touched = sum(

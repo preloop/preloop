@@ -954,3 +954,89 @@ def test_hidden_flow_events_do_not_crowd_out_visible_ones(
         )
     agent = f"agent:{fleet['agent'].id}"
     assert [event.node_id for event in result.events] == [agent, agent]
+
+
+def test_cli_pr_create_keeps_its_issue_links(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    ref = classify_shell_command(
+        "gh pr create -t T -b 'Closes #7, see #8'", remote=REMOTE
+    )
+    _call(
+        db_session,
+        fleet["session"],
+        "Bash",
+        1,
+        status="allowed",
+        metadata={"work_ref": ref},
+    )
+    follow = classify_shell_command("gh pr comment 42 -b x", remote=REMOTE)
+    _call(
+        db_session,
+        fleet["session"],
+        "Bash",
+        0.5,
+        status="allowed",
+        metadata={"work_ref": follow},
+    )
+    db_session.flush()
+    out = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    kinds = {(r.kind, r.source, r.target) for r in out.relations}
+    assert (
+        "resolves",
+        "work:pull_request:acme/api#42",
+        "work:issue:acme/api#7",
+    ) in kinds
+    assert (
+        "mentions",
+        "work:pull_request:acme/api#42",
+        "work:issue:acme/api#8",
+    ) in kinds
+
+
+def test_github_mcp_items_have_a_forge_url() -> None:
+    found = classify_tool_call(
+        "github", "add_issue_comment", {"owner": "a", "repo": "b", "issue_number": 3}
+    )
+    assert work_url(found) == "https://github.com/a/b/issues/3"
+
+
+def test_a_flow_that_produced_a_pr_counts_it_as_opened(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    flow = fleet["flow"]
+    db_session.add(
+        models.FlowExecution(
+            flow_id=flow.id,
+            status="SUCCEEDED",
+            start_time=(NOW - timedelta(minutes=7)).replace(tzinfo=None),
+            trigger_event_details={
+                "type": "issue_opened",
+                "_subject": {
+                    "reference": "#12",
+                    "repo": "example/widgets",
+                    "url": "https://github.com/example/widgets/issues/12",
+                },
+            },
+            result={"pr_url": "https://github.com/example/widgets/pull/77"},
+        )
+    )
+    db_session.flush()
+    usage = build_fleet_usage(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    totals = usage.flows[f"flow:{flow.id}"]
+    assert totals.prs_opened >= 1
+    assert totals.issues_touched >= 1 and totals.prs_touched >= 1
+
+
+def test_an_owner_is_as_recent_as_their_active_agent(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    nodes = _map(db_session, fleet["user"], active_within_minutes=5)
+    agent = nodes[f"agent:{fleet['agent'].id}"]
+    person = nodes[f"user:{fleet['user'].id}"]
+    assert agent.last_active_at is not None
+    assert person.last_active_at == agent.last_active_at

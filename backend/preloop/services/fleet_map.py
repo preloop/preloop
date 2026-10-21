@@ -769,6 +769,15 @@ def build_fleet_map(
         ]
         item.last_active_at = max(stamps) if stamps else None
         item.idle = key not in keep
+    # A person kept for what they hold is as recent as the latest of it.
+    for relation in edges.values():
+        if relation.kind != "owns":
+            continue
+        holder, held = nodes[relation.source], nodes[relation.target]
+        if held.last_active_at and (
+            holder.last_active_at is None or held.last_active_at > holder.last_active_at
+        ):
+            holder.last_active_at = held.last_active_at
     if active_within_minutes is not None and not include_idle:
         nodes = {key: item for key, item in nodes.items() if key in keep}
         edges = {

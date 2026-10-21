@@ -332,9 +332,36 @@ def build_work_items(
                     node_id=node_id,
                 )
         add(row.pr_url, "pull_request", row.at, "pull_request_updated", node_id=node_id)
+    # A create call has no number yet. Its parsed closing/plain references
+    # attach to the first pull request the same caller names afterwards in the
+    # same repository (typically its own follow-up on the PR it opened).
+    unnumbered: list[tuple[tuple[str, str, str], str, datetime, dict[str, Any]]] = []
+    named: list[tuple[tuple[str, str, str], str, datetime, str]] = []
     for call in calls:
         metadata = call.metadata_ if isinstance(call.metadata_, dict) else {}
         work_ref = metadata.get("work_ref")
+        caller = (
+            call.runtime_principal_type or "",
+            call.runtime_principal_id or "",
+            str(call.flow_execution_id or ""),
+        )
+        if (
+            isinstance(work_ref, dict)
+            and work_key(work_ref) is None
+            and work_ref.get("kind") == "pull_request"
+            and work_ref.get("action") == "opened"
+            and isinstance(work_ref.get("repo"), str)
+            and (work_ref.get("closes") or work_ref.get("mentions"))
+        ):
+            unnumbered.append(
+                (caller, work_ref["repo"], _aware(call.timestamp), work_ref)
+            )
+            continue
+        if isinstance(work_ref, dict) and (named_key := work_key(work_ref)):
+            if named_key[0] == "pull_request" and isinstance(work_ref.get("repo"), str):
+                named.append(
+                    (caller, work_ref["repo"], _aware(call.timestamp), named_key[1])
+                )
         # A classified call is authoritative once its object is known; an
         # unresolved one (e.g. a tracker key) falls through to the summary.
         if isinstance(work_ref, dict) and work_key(work_ref) is not None:
@@ -443,6 +470,30 @@ def build_work_items(
                 repo=summary.get("repo"),
                 node_id=node_id,
             )
+
+    for caller, repo, at, work_ref in unnumbered:
+        later = sorted(
+            (when, key)
+            for who, where, when, key in named
+            if who == caller and where == repo and when >= at
+        )
+        if not later:
+            continue
+        pr_slot = slot_of(later[0][1], "pull_request")
+        if pr_slot is None:
+            continue
+        for relation_kind, name in (("resolves", "closes"), ("mentions", "mentions")):
+            for issue_key in (work_ref.get(name) or [])[:5]:
+                if issue := slot_of(issue_key, "issue"):
+                    # The referenced issue joins the work list: the PR names it.
+                    add(issue_key, "issue", at, "issue_updated")
+                    relate(
+                        relation_kind,
+                        work_id(*pr_slot),
+                        issue,
+                        at,
+                        _PROVENANCE.get(str(work_ref.get("via")), "tool_call"),
+                    )
 
     # Reuse the bounded references as an in-query join, so even an old tracker
     # snapshot enriches a recent tool/run target without a lookup per object.

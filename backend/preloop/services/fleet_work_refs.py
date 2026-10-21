@@ -321,6 +321,9 @@ def _github(tool: str, args: dict[str, Any]) -> dict[str, Any] | None:
         review_state = _REVIEW_STATES.get(event)
     if action == "issue_updated" and (args.get("state") == "closed"):
         action = "issue_updated"
+    if ref is not None:
+        # github/github-mcp-server talks to github.com unless set up for GHES.
+        ref["host"] = "github.com"
     return _result(
         "github_mcp",
         kind,
