@@ -404,7 +404,7 @@ async def test_fetch_provider_models_validation_error_is_400():
 
     http_exc = exc_info.value
     assert http_exc.status_code == 400
-    assert "private address" in http_exc.detail
+    assert "link-local" in http_exc.detail
     assert "sk-SUPERSECRET-KEY" not in http_exc.detail
 
 
@@ -1154,7 +1154,6 @@ def test_put_ai_model_rejects_codex_ws_override_on_non_codex_model(
 @pytest.fixture
 def built_in_model() -> models.AIModel:
     """A system model with private operator routing metadata."""
-    from preloop.services.built_in_models import BUILT_IN_MODEL_ALIAS
 
     return models.AIModel(
         endpoint_type="direct",
@@ -1169,7 +1168,7 @@ def built_in_model() -> models.AIModel:
         api_endpoint="https://operator.example.com/v1",
         credentials_secret_id=uuid.uuid4(),
         meta_data={
-            "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS},
+            "gateway": {"enabled": True, "model_alias": "example/operator-model"},
             "provider_runtime": {"private_key": "private-routing-data"},
         },
     )
@@ -1253,7 +1252,6 @@ async def test_builtin_read_does_not_allow_mutations(
     [
         (False, False, "qwen/deepseek-v4.1-flash-hosted"),
         (True, True, "qwen/deepseek-v4.1-flash-hosted"),
-        (True, False, "openai/legacy-hosted"),
     ],
 )
 async def test_unavailable_builtin_cannot_be_read(

@@ -51,3 +51,28 @@ embeddings, audio and provider-specific APIs are outside this release.
 
 See the [transport design](../architecture/runner-local-models.md) for routing,
 security and failure handling.
+
+## Instance-provided models and local prices
+
+An operator-provisioned global model (`account_id=None`) becomes a built-in
+when its gateway is enabled and it is not retired. Its configured gateway alias
+is preserved; without one, the provider/model identifier is used. Any provider
+can supply a built-in. Set `meta_data.retired=true` or disable the gateway to
+retain a historical model without offering it for new work. Public model
+responses expose the model name and alias, not its upstream endpoint or secrets.
+
+For directly reachable private model servers, add only their required CIDRs to
+`MODEL_ENDPOINT_ALLOWED_CIDRS` on each backend process. Discovery uses the same
+operator policy as inference. Discovery checks all DNS answers, pins its
+connection to a checked address, preserves the original TLS hostname, and
+refuses redirects. Link-local metadata, unspecified and multicast destinations
+remain blocked even if a broad CIDR is configured.
+
+Local inference defaults to $0 provider cost. Explicit account or model prices
+still take precedence, for example to account for hardware costs. This default
+applies to local-provider defaults (Ollama or LM Studio), explicitly allowed
+private literal endpoints, and models explicitly marked
+`meta_data.local_inference=true`. Use the explicit mark for local hostname
+endpoints; pricing does not resolve DNS. An unknown remote OpenAI-compatible
+endpoint remains unpriced unless a price is supplied. The local default is
+reported as model configuration, not a fetched provider tariff.

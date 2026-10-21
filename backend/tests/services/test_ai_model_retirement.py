@@ -109,18 +109,17 @@ def test_selectable_catalog_and_built_in_availability_share_retirement(
     retirement: dict[str, object],
 ) -> None:
     from preloop.services.built_in_models import (
-        BUILT_IN_MODEL_ALIAS,
         is_available_built_in_model,
     )
 
     retired = _model()
     retired.meta_data = {
-        "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS},
+        "gateway": {"enabled": True, "model_alias": "example/operator-model"},
         **retirement,
     }
     active = _model()
     active.meta_data = {
-        "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS}
+        "gateway": {"enabled": True, "model_alias": "example/operator-model"}
     }
     own = _model(owned=True, retired=True)
     selected = crud_ai_model.get_selectable_for_account(

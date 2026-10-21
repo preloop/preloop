@@ -989,7 +989,7 @@ class TestGetQwenModels:
     @pytest.mark.asyncio
     async def test_get_qwen_models_rejects_private_endpoint(self):
         """User-supplied discovery URLs are an SSRF sink and must be validated."""
-        with pytest.raises(ValueError, match="private address"):
+        with pytest.raises(ValueError, match="localhost"):
             await _get_qwen_models("valid_key", "http://127.0.0.1/v1")
 
     @pytest.mark.asyncio
@@ -1619,6 +1619,7 @@ class TestOpenAICompatibleModels:
         response = self._models_response("llama-3")
         with (
             patch("httpx.AsyncClient") as mock_httpx,
+            patch("httpx.AsyncHTTPTransport") as mock_transport,
             patch("openai.AsyncOpenAI") as mock_client,
         ):
             mock_instance = MagicMock()
@@ -1635,13 +1636,12 @@ class TestOpenAICompatibleModels:
         assert result.models == ["llama-3"]
         assert result.source == "live"
         assert mock_httpx.call_args.kwargs["verify"] == str(ca)
+        assert mock_transport.call_args.kwargs["verify"] == str(ca)
         assert mock_client.call_args.kwargs["http_client"] is mock_httpx.return_value
         mock_httpx.return_value.aclose.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_openai_compatible_default_has_no_custom_http_client(
-        self, monkeypatch
-    ):
+    async def test_openai_compatible_default_uses_safe_http_client(self, monkeypatch):
         monkeypatch.delenv("PRELOOP_SSL_VERIFY", raising=False)
         monkeypatch.delenv("SSL_CERT_FILE", raising=False)
         monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
@@ -1658,7 +1658,7 @@ class TestOpenAICompatibleModels:
                 api_endpoint="https://gateway.internal/v1",
             )
 
-        assert "http_client" not in mock_client.call_args.kwargs
+        assert mock_client.call_args.kwargs["http_client"].follow_redirects is False
 
 
 class TestCatalogProviderSdkMissing:

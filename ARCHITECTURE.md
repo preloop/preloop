@@ -1023,8 +1023,9 @@ the Person across membership changes, never a mutable membership `user_source`
 flag, and does not itself mark the canonical email as verified. Local identities
 without a provider credential still require explicit email verification.
 
-Cloud's hosted-model capability adds the active built-in
-`qwen/deepseek-v4.1-flash-hosted` to the account model catalog and flow selectors.
+The hosted-model capability adds enabled, non-retired global models to the
+account model catalog and flow selectors, using each model's configured alias
+or provider/model identifier. No provider or model name defines built-in status.
 The model is read-only, and retired system rows remain available only for
 historical references. The catalog lists built-ins first; their Default badge
 appears only when the system row is default and the account has no configured
@@ -1166,3 +1167,10 @@ core keeps the capability off by default. Presence realtime events require
 `view_users` for another person or device, with an own-subject exception.
 The Fleet Map remains the console visualization; this foundation adds no
 Activity page, navigation entry or frontend component.
+
+Instance-provided built-in models are enabled, non-retired global model rows;
+selection and Fleet discovery use ownership/configuration rather than a fixed
+provider alias. Custom model discovery applies the operator endpoint CIDR policy
+and pins each request to a checked IP while preserving Host/TLS identity.
+Local inference pricing defaults to zero after explicit prices; unknown remote
+models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).

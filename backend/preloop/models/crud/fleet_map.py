@@ -42,15 +42,9 @@ def list_resources(
     }[source]
     visible = model.account_id == account_id
     if source == "models" and include_built_in:
-        from preloop.services.built_in_models import BUILT_IN_MODEL_ALIAS
-
         built_in = (
             models.AIModel.account_id.is_(None)
             & (models.AIModel.meta_data["gateway"]["enabled"].astext == "true")
-            & (
-                models.AIModel.meta_data["gateway"]["model_alias"].astext
-                == BUILT_IN_MODEL_ALIAS
-            )
             & models.AIModel.meta_data["retired"].astext.is_distinct_from("true")
         )
         visible = or_(visible, built_in)

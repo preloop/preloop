@@ -137,8 +137,6 @@ def test_binding_and_latest_enrollment_windows_stay_in_tenant(
 def test_model_window_includes_only_available_built_ins_when_enabled(
     db_session: Session,
 ) -> None:
-    from preloop.services.built_in_models import BUILT_IN_MODEL_ALIAS
-
     accounts = [
         crud.crud_account.create(
             db_session, obj_in={"organization_name": f"Example models {i}"}
@@ -167,10 +165,18 @@ def test_model_window_includes_only_available_built_ins_when_enabled(
         )
         for i, metadata in enumerate(
             [
-                {"gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS}},
-                {"gateway": {"enabled": False, "model_alias": BUILT_IN_MODEL_ALIAS}},
+                {"gateway": {"enabled": True, "model_alias": "example/operator-model"}},
                 {
-                    "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS},
+                    "gateway": {
+                        "enabled": False,
+                        "model_alias": "example/operator-model",
+                    }
+                },
+                {
+                    "gateway": {
+                        "enabled": True,
+                        "model_alias": "example/operator-model",
+                    },
                     "retired": True,
                 },
                 {"gateway": {"enabled": True, "model_alias": "legacy"}},
@@ -195,8 +201,8 @@ def test_model_window_includes_only_available_built_ins_when_enabled(
     )
     # The synthetic local stack can also contain unrelated active system rows.
     ids = {r.id for r in rows}
-    assert {own.id, globals_[0].id} <= ids
-    assert not ids.intersection({other.id, *(r.id for r in globals_[1:])})
+    assert {own.id, globals_[0].id, globals_[3].id} <= ids
+    assert not ids.intersection({other.id, *(r.id for r in globals_[1:3])})
     assert [r.id for r in rows] == sorted(r.id for r in rows)
     bounded = list_resources(
         db_session,

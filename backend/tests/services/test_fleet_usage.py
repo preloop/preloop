@@ -312,12 +312,10 @@ def test_without_model_read_permission_totals_are_empty(
 def test_built_in_models_match_graph_visibility_and_tenant_usage(
     db_session: Session, fleet: dict[str, Any]
 ) -> None:
-    from preloop.services.built_in_models import BUILT_IN_MODEL_ALIAS
-
     hosted = _model(db_session, None, "example-hosted-model", "hosted")
     hosted.api_key = "example-operator-secret"
     hosted.meta_data = {
-        "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS}
+        "gateway": {"enabled": True, "model_alias": "example/operator-model"}
     }
     _usage(db_session, fleet["user"].account_id, hosted)
     with patch.object(fleet_usage, "built_in_models_enabled", return_value=False):

@@ -1,10 +1,10 @@
-"""Cloud built-in model discovery and safe public presentation."""
+"""Deployment-provided built-in model discovery and safe public presentation."""
 
 from preloop.models import models
 from preloop.plugins.base import get_plugin_manager
 from preloop.schemas.ai_model import AIModelRead
 
-BUILT_IN_MODEL_ALIAS = "qwen/deepseek-v4.1-flash-hosted"
+from preloop.services.model_runtime_resolver import effective_gateway_alias
 
 
 def built_in_models_enabled() -> bool:
@@ -26,7 +26,7 @@ def is_retired_system_model(model: models.AIModel) -> bool:
 
 
 def is_available_built_in_model(model: models.AIModel) -> bool:
-    """Exclude retired and legacy system models from new work."""
+    """Accept every enabled, non-retired deployment-owned model."""
     metadata = model.meta_data if isinstance(model.meta_data, dict) else {}
     gateway = metadata.get("gateway")
     return (
@@ -34,7 +34,6 @@ def is_available_built_in_model(model: models.AIModel) -> bool:
         and not is_retired_system_model(model)
         and isinstance(gateway, dict)
         and gateway.get("enabled") is True
-        and gateway.get("model_alias") == BUILT_IN_MODEL_ALIAS
     )
 
 
@@ -56,6 +55,6 @@ def public_built_in_model(
         supports_server_side_generation=model.supports_server_side_generation,
         updated_at=model.updated_at,
         meta_data={
-            "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS},
+            "gateway": {"enabled": True, "model_alias": effective_gateway_alias(model)},
         },
     )

@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_ai_model
-from preloop.services.built_in_models import BUILT_IN_MODEL_ALIAS
 
 
 @pytest.mark.parametrize("include_built_in", [True, False])
@@ -52,8 +51,8 @@ def test_selectable_catalog_filters_system_models(
             meta_data={"gateway": {"enabled": enabled, "model_alias": alias}},
         )
 
-    active = system(BUILT_IN_MODEL_ALIAS, True)
-    retired = system(BUILT_IN_MODEL_ALIAS, False)
+    active = system("example/operator-model", True)
+    retired = system("example/operator-model", False)
     legacy = system("openai/legacy-hosted", True)
     db_session.add_all([own, foreign, active, retired, legacy])
     db_session.flush()
@@ -63,7 +62,8 @@ def test_selectable_catalog_filters_system_models(
     selected_ids = {row.id for row in selected}
     assert own.id in selected_ids
     assert (active.id in selected_ids) is include_built_in
-    assert not {foreign.id, retired.id, legacy.id} & selected_ids
+    assert (legacy.id in selected_ids) is include_built_in
+    assert not {foreign.id, retired.id} & selected_ids
     assert crud_ai_model.get(db_session, id=retired.id) is not None
 
 
@@ -95,7 +95,9 @@ def test_builtin_usage_is_scoped_to_the_requesting_account(
         account_id=None,
         api_key="operator-private-key",
         is_default=True,
-        meta_data={"gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS}},
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "example/operator-model"}
+        },
     )
     db_session.add(built_in)
     db_session.flush()
@@ -111,7 +113,7 @@ def test_builtin_usage_is_scoped_to_the_requesting_account(
                 duration=0.1,
                 action_type="model_gateway",
                 ai_model_id=built_in.id,
-                model_alias=BUILT_IN_MODEL_ALIAS,
+                model_alias="example/operator-model",
                 estimated_cost=cost,
                 timestamp=datetime.now(UTC) - timedelta(minutes=5),
             )
@@ -132,13 +134,12 @@ def test_builtin_usage_is_scoped_to_the_requesting_account(
     overview = client.get("/api/v1/ai-models/overview")
     assert overview.status_code == 200
     assert overview.json()["models"][0]["total_requests"] == 1
-    assert client.delete(f"/api/v1/ai-models/{built_in.id}").status_code == 404
-    assert (
-        client.put(
-            f"/api/v1/ai-models/{built_in.id}", json={"name": "Changed"}
-        ).status_code
-        == 404
-    )
+    # Permission middleware may refuse before the ownership-hiding 404.
+    assert client.delete(f"/api/v1/ai-models/{built_in.id}").status_code in {403, 404}
+    assert client.put(
+        f"/api/v1/ai-models/{built_in.id}", json={"name": "Changed"}
+    ).status_code in {403, 404}
+    assert crud_ai_model.get(db_session, id=built_in.id).name == built_in.name
 
 
 @pytest.mark.parametrize("own_default", [None, False, True])
@@ -208,7 +209,9 @@ def test_builtin_default_and_order_follow_account_configuration(
         model_identifier="deepseek-v4.1-flash",
         account_id=None,
         is_default=built_in_default,
-        meta_data={"gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS}},
+        meta_data={
+            "gateway": {"enabled": True, "model_alias": "example/operator-model"}
+        },
     )
     db_session.add(built_in)
     db_session.commit()

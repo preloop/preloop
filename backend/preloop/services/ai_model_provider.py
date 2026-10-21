@@ -253,7 +253,9 @@ async def get_available_models_for_provider(
         return _fallback([], ERROR_UNSUPPORTED)
 
 
-def _discovery_http_client(*, required: bool = False) -> Optional[Any]:
+def _discovery_http_client(
+    *, required: bool = False, protect_endpoint: bool = False
+) -> Optional[Any]:
     """Return an httpx client that trusts a mounted private CA, if configured.
 
     The OpenAI SDK uses certifi by default and ignores SSL_CERT_FILE.
@@ -266,13 +268,21 @@ def _discovery_http_client(*, required: bool = False) -> Optional[Any]:
     get a client, with the private CA applied when one is configured.
     """
     verify = ssl_verify_setting()
-    if verify is None and not required:
+    if verify is None and not required and not protect_endpoint:
         return None
     import httpx
 
     client_kwargs: Dict[str, Any] = {"timeout": MODEL_DISCOVERY_TIMEOUT_SECONDS}
     if verify is not None:
         client_kwargs["verify"] = verify
+    if protect_endpoint:
+        from preloop.services.discovery_transport import DiscoveryTransport
+
+        client_kwargs["transport"] = DiscoveryTransport(
+            verify=verify if verify is not None else True
+        )
+        client_kwargs["follow_redirects"] = False
+        client_kwargs["trust_env"] = False
     return httpx.AsyncClient(**client_kwargs)
 
 
@@ -507,48 +517,10 @@ def validate_gateway_api_endpoint(
 
 
 def validate_discovery_endpoint(api_endpoint: str) -> str:
-    """Validate a user-supplied model-discovery endpoint, or raise ValueError.
-
-    This endpoint makes the server fetch a URL chosen by the caller, so it is
-    an SSRF sink. Restrict it to http(s) on a non-literal-private host. DNS
-    names that resolve to private space are not caught here (that needs a
-    resolving/pinning transport); this blocks the trivial direct attempts at
-    link-local metadata and loopback services.
-    """
-    raw = (api_endpoint or "").strip()
-    if not raw:
+    """Apply the operator's model endpoint policy to discovery as well as calls."""
+    if not (api_endpoint or "").strip():
         raise ProviderValidationError("api_endpoint is required for this provider")
-
-    parts = urlsplit(raw)
-    if parts.scheme not in {"http", "https"}:
-        raise ProviderValidationError("api_endpoint must be an http(s) URL")
-    host = (parts.hostname or "").strip()
-    if not host:
-        raise ProviderValidationError("api_endpoint must include a host")
-
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        # A DNS name. Block the obvious loopback aliases; anything else is
-        # allowed, matching how api_endpoint is treated elsewhere.
-        if host.lower() in {"localhost", "localhost.localdomain"}:
-            raise ProviderValidationError(
-                "api_endpoint must not point at a private address"
-            )
-        return raw
-
-    if (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_reserved
-        or ip.is_multicast
-        or ip.is_unspecified
-    ):
-        raise ProviderValidationError(
-            "api_endpoint must not point at a private address"
-        )
-    return raw
+    return validate_gateway_api_endpoint(api_endpoint) or ""
 
 
 # Regional DashScope hosts shown in the add-provider UI, plus workspace
@@ -621,7 +593,7 @@ async def _get_openai_compatible_models(
         return _fallback([], ERROR_SDK_MISSING)
 
     base_url = validate_discovery_endpoint(api_endpoint).rstrip("/")
-    http_client = _discovery_http_client()
+    http_client = _discovery_http_client(protect_endpoint=True)
     try:
         client_kwargs: Dict[str, Any] = {
             "api_key": api_key or "placeholder",

@@ -355,6 +355,40 @@ def estimate_ai_model_usage_cost_detailed(
                 source="override" if pricing_override else "model_config",
             )
 
+    from preloop.services.local_model_pricing import uses_local_inference
+
+    if uses_local_inference(ai_model):
+        # An adjustment-only account override must not erase explicit model
+        # rates. Apply it to the model's configured cost before the zero default.
+        model_rates = _get_configured_pricing(ai_model)
+        if pricing_override and model_rates:
+            base_cost = _estimate_cost_from_pricing(
+                model_rates,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                usage_details=usage_details,
+            )
+            if base_cost is not None:
+                return CostEstimate(
+                    cost=_apply_pricing_adjustments(
+                        base_cost, pricing_override, total_tokens=total_tokens
+                    ),
+                    source="override",
+                )
+        # Local inference has no provider bill. Explicit prices above still
+        # account for hardware/amortization; adjustment-only overrides apply
+        # to the zero base as they do to a catalog price.
+        return CostEstimate(
+            cost=_apply_pricing_adjustments(
+                0.0, configured_pricing, total_tokens=total_tokens
+            )
+            if configured_pricing
+            else 0.0,
+            source="override" if pricing_override else "model_config",
+            pricing_snapshot={"local_inference": True, "default_price_usd": 0.0},
+        )
+
     # Alibaba documents token usage, not a per-request USD charge. A future
     # arbitrary `cost` field must not bypass region/currency safeguards.
     reported_cost = (

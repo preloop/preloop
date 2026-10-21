@@ -602,23 +602,16 @@ class CRUDAIModel(CRUDBase[AIModel]):
         account_id: uuid.UUID | str,
         include_built_in: bool = False,
     ) -> list[AIModel]:
-        """List account models plus the active Cloud built-in, when enabled.
+        """List account models plus the enabled deployment built-ins, when enabled.
 
         Retired system rows remain stored for historical references, but cannot
         be selected for new work. OSS callers opt out by default.
         """
-        from preloop.services.built_in_models import BUILT_IN_MODEL_ALIAS
-
         own = self.model.account_id == account_id
         visible = own
         if include_built_in:
-            built_in = (
-                self.model.account_id.is_(None)
-                & (self.model.meta_data["gateway"]["enabled"].astext == "true")
-                & (
-                    self.model.meta_data["gateway"]["model_alias"].astext
-                    == BUILT_IN_MODEL_ALIAS
-                )
+            built_in = self.model.account_id.is_(None) & (
+                self.model.meta_data["gateway"]["enabled"].astext == "true"
             )
             visible = or_(own, built_in)
         candidates = (
