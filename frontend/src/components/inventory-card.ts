@@ -1097,23 +1097,6 @@ export class InventoryCard extends LitElement {
     }
   }
 
-  /**
-   * Say which view is showing, so the page can give the Map the full row: a
-   * topology does not fit the 2fr column a table does (F-04).
-   */
-  protected updated(changed: Map<string, unknown>): void {
-    super.updated?.(changed);
-    if (changed.has('inventoryView')) {
-      this.dispatchEvent(
-        new CustomEvent('inventory-view-change', {
-          detail: { view: this.inventoryView },
-          bubbles: true,
-          composed: true,
-        })
-      );
-    }
-  }
-
   private setInventoryView(view: 'table' | 'map'): void {
     if (!this.instanceAdmin || view === this.inventoryView) return;
     this.inventoryView = view;

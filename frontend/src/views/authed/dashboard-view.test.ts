@@ -65,6 +65,8 @@ describe('DashboardView', () => {
   /** Merged into `GET /api/v1/features`. */
   let extraFeatures: Record<string, boolean>;
   let fleetResponse: any;
+  /** `is_superuser` on the profile: instance admins get the Map toggle. */
+  let meSuperuser: boolean;
 
   beforeEach(() => {
     aiModelsGate = null;
@@ -82,6 +84,7 @@ describe('DashboardView', () => {
     failNext = new Map();
     extraFeatures = {};
     fleetResponse = null;
+    meSuperuser = false;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -561,7 +564,7 @@ describe('DashboardView', () => {
             username: 'tester',
             email: 'tester@example.com',
             email_verified: true,
-            is_superuser: false,
+            is_superuser: meSuperuser,
             permissions: mePermissions,
           });
         }
@@ -1988,39 +1991,64 @@ describe('DashboardView', () => {
       ).to.equal(0);
     });
 
-    it('gives the Inventory the full row while it shows the Map (F-04)', async () => {
-      const element = await mountLoaded();
-      const inventory = () =>
-        element.shadowRoot!.querySelector('inventory-card') as HTMLElement;
-      const original = inventory();
-      expect(
-        inventory().closest('.inventory-stack'),
-        'table: stable inventory area'
-      ).to.exist;
-      inventory().dispatchEvent(
-        new CustomEvent('inventory-view-change', {
-          detail: { view: 'map' },
-          bubbles: true,
-          composed: true,
-        })
-      );
-      await element.updateComplete;
-      expect(inventory().closest('.main-column'), 'map: not in the column').to
-        .not.exist;
-      expect(inventory().closest('.inventory-full-row'), 'map: its own row').to
-        .exist;
-      expect(inventory(), 'the card was not recreated').to.equal(original);
-      inventory().dispatchEvent(
-        new CustomEvent('inventory-view-change', {
-          detail: { view: 'table' },
-          bubbles: true,
-          composed: true,
-        })
-      );
-      await element.updateComplete;
-      expect(inventory()).to.equal(original);
-      expect(inventory().closest('.inventory-full-row')).not.to.exist;
-    });
+    for (const width of [1280, 1440, 1920]) {
+      it(`keeps the Inventory under the Gateway in both views at ${width}px`, async () => {
+        await setViewport({ width, height: 900 });
+        try {
+          // The Map toggle is for instance admins.
+          meSuperuser = true;
+          const element = await mountLoaded();
+          const root = element.shadowRoot!;
+          const inventory = () =>
+            root.querySelector('inventory-card') as HTMLElement;
+          const original = inventory();
+          const side = root.querySelector('.side-column') as HTMLElement;
+          // Prod's Activity feed is far taller than the Gateway card. A
+          // spanning column that tall stretched row 1 and opened a gap
+          // above the Inventory, then pushed it below the column in Map.
+          side.style.minHeight = '2400px';
+          const gateway = root.querySelector('.main-column')!
+            .firstElementChild as HTMLElement;
+          const check = async (view: 'table' | 'map') => {
+            const toggle = inventory().shadowRoot!.querySelector(
+              `[data-inventory-view="${view}"]`
+            ) as HTMLElement;
+            toggle.click();
+            await (inventory() as any).updateComplete;
+            await element.updateComplete;
+            expect(
+              inventory()
+                .shadowRoot!.querySelector(`[data-inventory-view="${view}"]`)!
+                .getAttribute('aria-pressed'),
+              `${view}: the toggle switched the card`
+            ).to.equal('true');
+            await new Promise((r) => requestAnimationFrame(r));
+            const g = gateway.getBoundingClientRect();
+            const inv = inventory().getBoundingClientRect();
+            const s = side.getBoundingClientRect();
+            const gap = inv.top - g.bottom;
+            expect(gap, `${view}: gap under Gateway`).to.be.within(0, 32);
+            expect(inv.right, `${view}: left of the side column`).to.be.at.most(
+              s.left
+            );
+            expect(inv.top, `${view}: beside the side column`).to.be.below(
+              s.bottom
+            );
+            expect(inventory(), 'the card was not recreated').to.equal(
+              original
+            );
+          };
+          await check('table');
+          await check('map');
+          await check('table');
+        } finally {
+          for (const key of Object.keys(localStorage))
+            if (key.startsWith('preloop:inventory:view:'))
+              localStorage.removeItem(key);
+          await setViewport({ width: 800, height: 600 });
+        }
+      });
+    }
 
     it('states a capped audit count as a floor, not an exact figure (B-15)', async () => {
       auditResponse = { ...auditResponse, total: 10000, total_capped: true };

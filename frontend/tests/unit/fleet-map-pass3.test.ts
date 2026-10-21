@@ -703,7 +703,7 @@ describe('pass 3 usage and hosts', () => {
     expect(String(fetch.mock.calls[1][0])).not.toContain('include_idle');
   });
 
-  it('keeps the same Inventory instance in a full-width Overview grid row when Map is selected', async () => {
+  it('keeps the same Inventory instance under the Gateway when Map is selected', async () => {
     await page.viewport(1440, 900);
     const dashboard: any = document.createElement('dashboard-view');
     dashboard.fetchDashboardData = async () => {};
@@ -731,15 +731,23 @@ describe('pass 3 usage and hosts', () => {
     await inventory.updateComplete;
     await dashboard.updateComplete;
     expect(root(dashboard).querySelector('inventory-card')).toBe(inventory);
-    const grid = root(dashboard)
-      .querySelector('.dashboard')!
+    const gateway = root(dashboard)
+      .querySelector('.main-column')!
+      .getBoundingClientRect();
+    const side = root(dashboard)
+      .querySelector('.side-column')!
       .getBoundingClientRect();
     const bounds = inventory.getBoundingClientRect();
-    expect(bounds.width).toBeGreaterThan(grid.width - 2);
-    expect(bounds.right).toBeLessThanOrEqual(1440);
+    // Under the Gateway, beside Usage and Activity: not a full-width row
+    // after the side column (founder, pass 4 item 1).
+    expect(bounds.top - gateway.bottom).toBeLessThanOrEqual(32);
+    expect(bounds.right).toBeLessThanOrEqual(side.left);
+    expect(bounds.top).toBeLessThan(side.bottom);
     const map: any = root(inventory).querySelector('fleet-map');
     map.live = false;
-    expect(map.getBoundingClientRect().height).toBeLessThanOrEqual(720);
+    const height = map.getBoundingClientRect().height;
+    expect(height).toBeGreaterThanOrEqual(360);
+    expect(height).toBeLessThanOrEqual(720);
   });
 
   it('shows measured usage on people, agents, flows, devices, models, providers and work with unknowns and estimated sub-cent cost', async () => {

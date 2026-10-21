@@ -1390,27 +1390,3 @@ describe('inventory-card agents table at 1440 (B-07)', () => {
     expect(model.getBoundingClientRect().width).to.be.at.least(56);
   });
 });
-
-describe('inventory-card view announcements (F-04)', () => {
-  it('announces the Map and Table views so the page can lay them out', async () => {
-    const el = await fixture<InventoryCard>(
-      html`<inventory-card
-        instanceAdmin
-        .userId=${'user-f04'}
-        .agentRows=${[agentRow()]}
-        rangeLabel="30d"
-      ></inventory-card>`
-    );
-    const seen: string[] = [];
-    el.addEventListener('inventory-view-change', (event) =>
-      seen.push((event as CustomEvent).detail.view)
-    );
-    const button = el.shadowRoot!.querySelector(
-      'button[data-inventory-view="map"]'
-    ) as HTMLButtonElement;
-    button.click();
-    await el.updateComplete;
-    expect(seen).to.deep.equal(['map']);
-    localStorage.removeItem('preloop:inventory:view:user-f04');
-  });
-});
