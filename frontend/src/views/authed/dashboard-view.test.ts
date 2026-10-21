@@ -2298,6 +2298,46 @@ describe('DashboardView', () => {
       ).to.be.true;
     });
 
+    // D-05: the Agents tab carries the without-subscriptions estimate from
+    // the same per-agent breakdown as the spend.
+    it('carries the without-subscriptions estimate from usage_by_agent', async () => {
+      gatewaySummaryResponse = {
+        ...gatewaySummaryResponse,
+        usage_by_agent: [
+          {
+            ...gatewaySummaryResponse.usage_by_agent[0],
+            estimated_cost: 0.34,
+            subscription_usage: {
+              request_count: 10,
+              prompt_tokens: 1000,
+              completion_tokens: 100,
+              total_tokens: 1100,
+              api_equivalent_cost: 2,
+              api_equivalent_cost_is_estimate: true,
+              covered_requests: 10,
+              coverage: 1,
+              billed: null,
+              billed_available: false,
+            },
+          },
+        ],
+      };
+      const element = await mountLoaded();
+      const [agent] = element['inventoryAgentRows'];
+      expect(agent.cost).to.equal(0.34);
+      expect(agent.withoutSubscriptions.text).to.equal('$2.34');
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      await inventory.updateComplete;
+      const line = inventory.shadowRoot.querySelector(
+        '[data-testid="without-subscriptions"]'
+      );
+      expect(line.textContent.replace(/\s+/g, ' ').trim()).to.equal(
+        '$2.34 w/o subs.'
+      );
+    });
+
     it('reads each tab from a fetch the page already made', async () => {
       const element = await mountLoaded();
 

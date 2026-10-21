@@ -34756,6 +34756,12 @@ components:
             format: date-time
           - type: 'null'
           title: Last Request At
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
+          description: 'Subscription-routed requests in the period: $0 spend, with
+            an API-equivalent estimate and its coverage. Null without any.'
       type: object
       required:
       - agent_id
@@ -38754,6 +38760,12 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
+          description: 'Subscription-routed requests: $0 spend, with an API-equivalent
+            estimate and its coverage. Null without any.'
         configured_model_alias:
           anyOf:
           - type: string
@@ -39022,6 +39034,10 @@ components:
             format: date-time
           - type: 'null'
           title: Last Request At
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
       type: object
       required:
       - token_usage
@@ -49108,6 +49124,7 @@ components:
           - type: number
             minimum: 0.0
           - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

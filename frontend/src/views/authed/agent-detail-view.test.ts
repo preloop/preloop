@@ -543,6 +543,39 @@ describe('AgentDetailView', () => {
     });
   });
 
+  // D-05: the strip states the without-subscriptions estimate beside spend.
+  it('states what the spend would have been without subscriptions', async () => {
+    const el = await fixture<any>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => el.agent, 'agent loaded');
+    el.aggregate = {
+      ...el.aggregate,
+      estimated_cost: 0.16,
+      subscription_usage: {
+        request_count: 3,
+        prompt_tokens: 3000,
+        completion_tokens: 300,
+        total_tokens: 3300,
+        api_equivalent_cost: 1.75,
+        api_equivalent_cost_is_estimate: true,
+        covered_requests: 3,
+        coverage: 1,
+        billed: null,
+        billed_available: false,
+      },
+    };
+    el.requestUpdate();
+    await el.updateComplete;
+    const line = el.shadowRoot.querySelector(
+      '[data-testid="agent-without-subscriptions"]'
+    );
+    expect(line.textContent.replace(/\s+/g, ' ').trim()).to.equal(
+      'Without subscriptions: $1.91 (estimate)'
+    );
+    expect(line.getAttribute('title')).to.contain('Estimate, not a bill');
+  });
+
   it('defers all editor catalogs on the sessions tab and shares a single load across editors', async () => {
     const el = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`

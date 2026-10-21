@@ -484,6 +484,47 @@ class AccountRuntimeSessionListResponse(BaseModel):
     items: List[RuntimeSessionSummary] = Field(default_factory=list)
 
 
+class SubscriptionUsageSummary(BaseModel):
+    """Subscription-covered gateway workload, kept apart from marginal spend.
+
+    Subscription rows record $0 marginal API spend. ``api_equivalent_cost``
+    is an ESTIMATE of what the same calls would cost at pay-per-use API
+    prices; it is not a bill. Billed subscription dollars and provider
+    credits are not tracked, so ``billed`` is always null and
+    ``billed_available`` false until an authoritative reconciliation source
+    exists. They are never derived from token totals (#1401).
+    """
+
+    request_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    api_equivalent_cost: float = Field(
+        0.0,
+        description=(
+            "Estimate: sum of the API-equivalent cost over covered rows. "
+            "Not a billed amount."
+        ),
+    )
+    api_equivalent_cost_is_estimate: Literal[True] = True
+    covered_requests: int = Field(
+        0, description="Subscription requests that carry an API-equivalent estimate."
+    )
+    coverage: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of subscription requests with an API-equivalent "
+            "estimate; null when there are none."
+        ),
+    )
+    billed: None = Field(
+        None, description="Billed subscription dollars: not tracked, always null."
+    )
+    billed_available: Literal[False] = False
+
+
 class ManagedAgentSummary(BaseModel):
     """Read-only summary for one enrolled external agent."""
 
@@ -519,6 +560,13 @@ class ManagedAgentSummary(BaseModel):
     #: aggregate instead of cost alone.
     token_usage: GatewayTokenUsage = Field(default_factory=GatewayTokenUsage)
     estimated_cost: float = 0.0
+    subscription_usage: Optional[SubscriptionUsageSummary] = Field(
+        None,
+        description=(
+            "Subscription-routed requests: $0 spend, with an API-equivalent "
+            "estimate and its coverage. Null without any."
+        ),
+    )
     configured_model_alias: Optional[str] = None
     configured_model_id: Optional[str] = None
     configured_models: List[ManagedAgentModelBindingSummary] = Field(
@@ -583,6 +631,13 @@ class GatewayUsageByAgent(BaseModel):
     token_usage: GatewayTokenUsage
     estimated_cost: float = 0.0
     last_request_at: Optional[datetime] = None
+    subscription_usage: Optional[SubscriptionUsageSummary] = Field(
+        None,
+        description=(
+            "Subscription-routed requests in the period: $0 spend, with an "
+            "API-equivalent estimate and its coverage. Null without any."
+        ),
+    )
 
 
 class ManagedAgentUsageAggregate(BaseModel):
@@ -597,6 +652,7 @@ class ManagedAgentUsageAggregate(BaseModel):
     latest_model_alias: Optional[str] = None
     latest_provider_name: Optional[str] = None
     last_request_at: Optional[datetime] = None
+    subscription_usage: Optional[SubscriptionUsageSummary] = None
 
 
 class ManagedAgentServerActivitySummary(BaseModel):

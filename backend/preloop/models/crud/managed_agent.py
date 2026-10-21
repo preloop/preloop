@@ -10,6 +10,7 @@ from uuid import UUID
 
 from sqlalchemy import (
     DateTime,
+    Float,
     String,
     and_,
     case,
@@ -34,6 +35,7 @@ from .api_usage import (
     cache_split_from_row,
     gateway_action_condition,
 )
+from sqlalchemy import literal_column
 from .base import CRUDBase
 
 ApiUsage = models.ApiUsage
@@ -185,6 +187,7 @@ def _empty_usage_aggregate() -> dict[str, Any]:
         "latest_model_alias": None,
         "latest_provider_name": None,
         "last_request_at": None,
+        "subscription_usage": None,
     }
 
 
@@ -423,6 +426,56 @@ def _session_usage_filter(
     return conditions
 
 
+def _subscription_columns() -> list[Any]:
+    """Sums of subscription-routed rows, as the Cost page computes them.
+
+    Subscription rows (``cost_source='subscription'``) record $0 marginal
+    spend and carry ``meta_data.api_equivalent_cost``, an ESTIMATE of the
+    pay-per-use price (#1401). Rows without a numeric estimate are counted
+    but not covered, so coverage says how much of the workload the sum
+    describes instead of reading a missing estimate as $0.
+    """
+    equivalent = ApiUsage.meta_data["api_equivalent_cost"]
+    is_covered = func.jsonb_typeof(equivalent) == "number"
+    return [
+        func.count(ApiUsage.id).label("sub_requests"),
+        func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label("sub_prompt"),
+        func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label("sub_completion"),
+        func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("sub_total"),
+        func.coalesce(func.sum(case((is_covered, 1), else_=0)), 0).label("sub_covered"),
+        func.coalesce(
+            func.sum(case((is_covered, cast(equivalent.astext, Float)), else_=None)),
+            0.0,
+        ).label("sub_equivalent"),
+    ]
+
+
+def _add_subscription(aggregate: dict[str, Any], row: Any) -> None:
+    """Add one row of :func:`_subscription_columns` sums into an aggregate."""
+    if not int(row.sub_requests or 0):
+        return
+    block = aggregate.get("subscription_usage") or {
+        "request_count": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
+        "api_equivalent_cost": 0.0,
+        "api_equivalent_cost_is_estimate": True,
+        "covered_requests": 0,
+        "coverage": None,
+        "billed": None,
+        "billed_available": False,
+    }
+    block["request_count"] += int(row.sub_requests or 0)
+    block["prompt_tokens"] += int(row.sub_prompt or 0)
+    block["completion_tokens"] += int(row.sub_completion or 0)
+    block["total_tokens"] += int(row.sub_total or 0)
+    block["covered_requests"] += int(row.sub_covered or 0)
+    block["api_equivalent_cost"] += float(row.sub_equivalent or 0.0)
+    block["coverage"] = block["covered_requests"] / block["request_count"]
+    aggregate["subscription_usage"] = block
+
+
 def _usage_aggregates_for_principals(
     db: Session,
     *,
@@ -509,13 +562,30 @@ def _usage_aggregates_for_principals(
         .limit(1)
         .lateral("principal_latest_usage")
     )
+    # Subscription-routed rows (D-05): part of the agent's usage and tokens,
+    # $0 of its spend, with an API-equivalent estimate reported beside it.
+    # A third LATERAL in the same statement, so the list still reads each
+    # principal's own index range and never sorts the account's rows.
+    subscription = (
+        select(*_subscription_columns())
+        .where(
+            *_principal_usage_filter(),
+            ApiUsage.cost_source == literal_column("'subscription'"),
+        )
+        .lateral("principal_subscription_totals")
+    )
     usage_rows = db.execute(
         select(
             principal_rows.c.principal_type,
             principal_rows.c.principal_id,
             totals,
             latest,
-        ).select_from(principal_rows.join(totals, true()).outerjoin(latest, true()))
+            subscription,
+        ).select_from(
+            principal_rows.join(totals, true())
+            .outerjoin(latest, true())
+            .join(subscription, true())
+        )
     ).all()
     for row in usage_rows:
         key = (row.principal_type, row.principal_id)
@@ -526,6 +596,7 @@ def _usage_aggregates_for_principals(
         results[key]["latest_model_alias"] = row.latest_model_alias
         results[key]["latest_provider_name"] = row.latest_provider_name
         results[key]["last_request_at"] = row.last_request_at
+        _add_subscription(results[key], row)
 
     # Rows in the agent's own sessions written under another principal (a
     # per-run ``<base>:<run>`` id, or none): the same rows the Overview maps
@@ -590,6 +661,27 @@ def _usage_aggregates_for_principals(
                 if latest_row is not None:
                     results[key]["latest_model_alias"] = latest_row.model_alias
                     results[key]["latest_provider_name"] = latest_row.provider_name
+        for row in db.execute(
+            select(owned.c.owner_type, owned.c.owner_id, *_subscription_columns())
+            .select_from(
+                owned.join(
+                    ApiUsage, ApiUsage.runtime_session_id == owned.c.owned_session_id
+                )
+            )
+            .where(
+                *_session_usage_filter(
+                    account_id=account_id,
+                    known_principals=ownership.known_principals,
+                    start_date=start_date,
+                    end_date=end_date,
+                ),
+                ApiUsage.cost_source == literal_column("'subscription'"),
+            )
+            .group_by(owned.c.owner_type, owned.c.owner_id)
+        ).all():
+            key = (row.owner_type, row.owner_id)
+            if key in results:
+                _add_subscription(results[key], row)
 
     return results
 
@@ -1424,6 +1516,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             summary["failed_requests"] = aggregate["failed_requests"]
             summary["token_usage"] = _token_usage_from_aggregate(aggregate)
             summary["estimated_cost"] = aggregate["estimated_cost"]
+            summary["subscription_usage"] = aggregate["subscription_usage"]
             summary["latest_model_alias"] = aggregate["latest_model_alias"]
             summary["latest_provider_name"] = aggregate["latest_provider_name"]
             summary["last_request_at"] = aggregate["last_request_at"]
@@ -1526,6 +1619,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         summary["failed_requests"] = aggregate["failed_requests"]
         summary["token_usage"] = _token_usage_from_aggregate(aggregate)
         summary["estimated_cost"] = aggregate["estimated_cost"]
+        summary["subscription_usage"] = aggregate["subscription_usage"]
         summary["latest_model_alias"] = aggregate["latest_model_alias"]
         summary["latest_provider_name"] = aggregate["latest_provider_name"]
         summary["last_request_at"] = aggregate["last_request_at"]

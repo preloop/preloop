@@ -504,6 +504,7 @@ export interface GatewayUsageByAgent {
   token_usage: GatewayTokenUsage;
   estimated_cost: number;
   last_request_at?: string | null;
+  subscription_usage?: SubscriptionUsageSummary | null;
 }
 
 export interface GatewayUsageByTool {
@@ -729,6 +730,8 @@ export interface ManagedAgentSummary {
   read_only?: boolean;
   owner_name?: string;
 
+  /** Subscription-routed requests: $0 spend, an API-equivalent estimate. */
+  subscription_usage?: SubscriptionUsageSummary | null;
   id: string;
   runtime_session_id: string | null;
   owner_user_id: string | null;
@@ -945,6 +948,8 @@ export interface ManagedAgentUsageAggregate {
   latest_model_alias: string | null;
   latest_provider_name: string | null;
   last_request_at: string | null;
+  /** Subscription-routed requests: $0 spend, an API-equivalent estimate. */
+  subscription_usage?: SubscriptionUsageSummary | null;
 }
 
 export interface ManagedAgentServerActivitySummary {

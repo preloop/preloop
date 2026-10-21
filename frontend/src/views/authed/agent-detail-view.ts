@@ -3,6 +3,7 @@ import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
+import { subscriptionEstimate } from '../../utils/subscription-estimate';
 import {
   LitElement,
   css,
@@ -573,6 +574,10 @@ export class AgentDetailView extends LitElement {
 
       .strip-spend .strip-value {
         font-weight: var(--sl-font-weight-semibold);
+      }
+
+      .strip-spend .strip-estimate {
+        color: var(--sl-color-neutral-600);
       }
 
       /* The identity trail is rare (only a re-keyed agent has one) and does
@@ -1556,6 +1561,7 @@ export class AgentDetailView extends LitElement {
           <span class="strip-value"
             >${html`<span title=${formatUsdExact(aggregate?.estimated_cost)}>${formatUsd(aggregate?.estimated_cost)}</span>`}</span
           >
+          ${this.renderWithoutSubscriptions(aggregate)}
           <span
             class="strip-requests"
             title=${`${formatCountExact(requests)} request${requests === 1 ? '' : 's'}`}
@@ -1576,6 +1582,27 @@ export class AgentDetailView extends LitElement {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * D-05: subscription requests are $0 spend, so the strip also says what the
+   * spend would have been at pay-per-use prices, as an estimate with the
+   * coverage the Cost page uses. Nothing for an agent with no subscription use.
+   */
+  private renderWithoutSubscriptions(
+    aggregate: ManagedAgentUsageAggregate | null
+  ): TemplateResult | typeof nothing {
+    if (!aggregate?.subscription_usage?.request_count) return nothing;
+    const estimate = subscriptionEstimate(
+      aggregate.estimated_cost,
+      aggregate.subscription_usage
+    );
+    return html`<span
+      class="strip-estimate"
+      data-testid="agent-without-subscriptions"
+      title=${estimate.title}
+      >Without subscriptions: ${estimate.text} (estimate)</span
+    >`;
   }
 
   /**

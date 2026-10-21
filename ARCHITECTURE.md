@@ -529,7 +529,13 @@ session whose runtime principal is `managed_agent:<id>`, or a per-run session
 whose source or principal id is `<base>:<run>` or `<base>-<run>` (longest base
 wins). A row whose principal names another agent's base id stays with that
 agent, so no row counts twice. Only the window differs between surfaces (all
-time, the detail range, the Overview range).
+time, the detail range, the Overview range). Subscription-routed rows
+(`cost_source='subscription'`) count in an agent's requests and tokens and add
+$0 to its spend; each surface also reports the agent's subscription block
+(the Cost page's `SubscriptionUsageSummary`: requests, tokens, the summed
+`meta_data.api_equivalent_cost` estimate and its coverage) and shows "without
+subscriptions" as spend plus that estimate, a lower bound when coverage is
+partial and no figure when nothing is covered.
 
 Managed tracker OAuth persistence uses the [provider-neutral storage contract](docs/architecture/managed-oauth-storage.md),
 with tenant-bound connection transactions and serialized token-pair rotation.

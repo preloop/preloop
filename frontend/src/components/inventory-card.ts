@@ -1,5 +1,9 @@
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../utils/money';
+import {
+  renderWithoutSubscriptionsLine,
+  type SubscriptionEstimate,
+} from '../utils/subscription-estimate';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -75,6 +79,10 @@ export interface InventoryAgentRow {
   /** The in/out/cache split behind `tokens`, or null when unmeasured. */
   tokenUsage?: GatewayTokenUsage | null;
   cost: number;
+  /** Spend plus the API-equivalent cost of subscription requests (D-05). */
+  withoutSubscriptions?: SubscriptionEstimate | null;
+  /** Subscription-routed requests behind that estimate; 0 without any. */
+  subscriptionRequests?: number;
   lastSeenAt: string | null;
 }
 
@@ -1321,7 +1329,9 @@ export class InventoryCard extends LitElement {
         // 735px card at 1440, clipping Last seen and leaving Model at 0px.
         // 240 keeps a name and its status chip on one line and leaves Model
         // about 60px, enough for "No model" and an ellipsised alias.
-        width: 240,
+        // 212, not 240: the spend column took 28px for the line under it
+        // that says what the spend would be without subscriptions (D-05).
+        width: 212,
         minWidth: 160,
         truncate: true,
         cellClass: 'identity-cell',
@@ -1386,12 +1396,12 @@ export class InventoryCard extends LitElement {
         headerLabel: 'Estimated spend',
         pickerLabel: 'Estimated spend',
         numeric: true,
-        width: 72,
+        width: 100,
         cell: (row) =>
           this.renderUsageCell(
             html`<span title=${formatUsdExact(row.cost)}
-              >${formatUsd(row.cost)}</span
-            >`
+                >${formatUsd(row.cost)}</span
+              >${renderWithoutSubscriptionsLine(row.withoutSubscriptions, row.subscriptionRequests)}`
           ),
       },
       {

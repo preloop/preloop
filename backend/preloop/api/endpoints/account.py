@@ -1110,6 +1110,9 @@ def _build_managed_agent_detail_response(
                 aggregate["latest_provider_name"] if aggregate else None
             ),
             last_request_at=aggregate["last_request_at"] if aggregate else None,
+            subscription_usage=(
+                aggregate.get("subscription_usage") if aggregate else None
+            ),
         ),
         usage_by_model=[
             ModelGatewayUsageService._model_row_to_schema(row) for row in usage_by_model

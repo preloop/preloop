@@ -374,3 +374,181 @@ def test_summary_usage_by_agent_reads_the_same_rule(
         assert row.estimated_cost == pytest.approx(aggregate["estimated_cost"])
         assert row.request_count == aggregate["total_requests"]
         assert row.token_usage.total_tokens == aggregate["total_tokens"]
+
+
+# D-05: subscription-routed usage counts in an agent's figures, but not as
+# spend. Spend stays the metered amount; the API-equivalent cost of the
+# subscription rows is an estimate reported next to it, with its coverage.
+
+
+def _subscription_usage(
+    db: Session,
+    user: Any,
+    *,
+    session: models.RuntimeSession,
+    principal_id: Optional[str],
+    api_equivalent: Optional[float],
+    days_ago: float = 1,
+) -> None:
+    row = crud_api_usage.log_gateway_request(
+        db,
+        endpoint="/anthropic/v1/messages",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        account_id=str(user.account_id),
+        runtime_session_id=str(session.id),
+        model_alias="anthropic/sub-model",
+        provider_name="anthropic",
+        prompt_tokens=1000,
+        completion_tokens=100,
+        total_tokens=1100,
+        estimated_cost=0.0,
+        cost_source="subscription",
+        runtime_principal_type="claude_code" if principal_id else None,
+        runtime_principal_id=principal_id,
+        meta_data=(
+            {"api_equivalent_cost": api_equivalent}
+            if api_equivalent is not None
+            else {}
+        ),
+    )
+    row.timestamp = NOW - timedelta(days=days_ago)
+    db.flush()
+
+
+def _surfaces(
+    db: Session, account: models.Account, agent: models.ManagedAgent, start: datetime
+) -> list[tuple[float, Any]]:
+    """Spend and the subscription block as the list, detail and Overview read them."""
+    account_id = str(account.id)
+    end = NOW + timedelta(minutes=1)
+    detail = crud_managed_agent.get_usage_aggregate_for_account(
+        db, account_id=account_id, agent_id=str(agent.id), start_date=start
+    )
+    summary = ModelGatewayUsageService(db).get_account_summary(
+        account=account, start_date=start, end_date=end, breakdowns={"agents"}
+    )
+    overview = next(
+        row for row in summary.usage_by_agent if row.agent_id == str(agent.id)
+    )
+    return [
+        (detail["estimated_cost"], detail["subscription_usage"]),
+        (overview.estimated_cost, overview.subscription_usage),
+    ]
+
+
+def test_spend_is_metered_and_the_estimate_adds_the_api_equivalent(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    agent = fleet["a"]
+    base = agent.session_source_id
+    bound = db_session.get(models.RuntimeSession, agent.runtime_session_id)
+    # Two subscription rows under the base principal, one in a per-run
+    # session under the per-run principal: all three are the agent's.
+    _subscription_usage(
+        db_session, test_user, session=bound, principal_id=base, api_equivalent=0.5
+    )
+    _subscription_usage(
+        db_session, test_user, session=bound, principal_id=base, api_equivalent=0.25
+    )
+    _subscription_usage(
+        db_session,
+        test_user,
+        session=fleet["run_colon"],
+        principal_id=f"{base}:run-1",
+        api_equivalent=1.0,
+    )
+    account = db_session.get(models.Account, test_user.account_id)
+    start = NOW - timedelta(days=30)
+    for spend, block in _surfaces(db_session, account, agent, start):
+        # Metered only: the fixture's priced rows in 30 days, no subscription.
+        assert spend == pytest.approx(0.16)
+        assert block is not None
+        block = block if isinstance(block, dict) else block.model_dump()
+        assert block["request_count"] == 3
+        assert block["covered_requests"] == 3
+        assert block["coverage"] == pytest.approx(1.0)
+        assert block["api_equivalent_cost"] == pytest.approx(1.75)
+        assert block["api_equivalent_cost_is_estimate"] is True
+        assert block["total_tokens"] == 3300
+    listed = next(
+        item
+        for item in crud_managed_agent.list_for_account(
+            db_session, account_id=str(account.id), status="all", limit=100
+        )["items"]
+        if item["id"] == str(agent.id)
+    )
+    # All time: the 60-day-old priced run too; tokens include subscription use.
+    assert listed["estimated_cost"] == pytest.approx(0.46)
+    assert listed["subscription_usage"]["api_equivalent_cost"] == pytest.approx(1.75)
+    assert listed["subscription_usage"]["request_count"] == 3
+
+
+def test_a_subscription_row_without_an_estimate_is_reported_not_zeroed(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    agent = fleet["a"]
+    bound = db_session.get(models.RuntimeSession, agent.runtime_session_id)
+    _subscription_usage(
+        db_session,
+        test_user,
+        session=bound,
+        principal_id=agent.session_source_id,
+        api_equivalent=0.5,
+    )
+    _subscription_usage(
+        db_session,
+        test_user,
+        session=bound,
+        principal_id=agent.session_source_id,
+        api_equivalent=None,
+    )
+    account = db_session.get(models.Account, test_user.account_id)
+    for _, block in _surfaces(db_session, account, agent, NOW - timedelta(days=30)):
+        block = block if isinstance(block, dict) else block.model_dump()
+        # The estimate covers one of two requests: coverage says so, and the
+        # sum is over covered rows only, as on the Cost page.
+        assert block["request_count"] == 2
+        assert block["covered_requests"] == 1
+        assert block["coverage"] == pytest.approx(0.5)
+        assert block["api_equivalent_cost"] == pytest.approx(0.5)
+
+
+def test_an_agent_without_subscription_use_has_no_subscription_block(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    account = db_session.get(models.Account, test_user.account_id)
+    for _, block in _surfaces(
+        db_session, account, fleet["b"], NOW - timedelta(days=30)
+    ):
+        assert block is None
+
+
+def test_the_agent_detail_response_carries_the_subscription_block(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    from preloop.api.endpoints.account import _build_managed_agent_detail_response
+
+    agent = fleet["a"]
+    bound = db_session.get(models.RuntimeSession, agent.runtime_session_id)
+    _subscription_usage(
+        db_session,
+        test_user,
+        session=bound,
+        principal_id=agent.session_source_id,
+        api_equivalent=0.5,
+    )
+    response = _build_managed_agent_detail_response(
+        db_session,
+        account_id=fleet["account_id"],
+        agent_id=str(agent.id),
+        start_date=NOW - timedelta(days=30),
+        sections=frozenset(),
+    )
+    block = response.aggregate.subscription_usage
+    assert block is not None
+    assert block.request_count == 1
+    assert block.api_equivalent_cost == pytest.approx(0.5)
+    assert response.aggregate.estimated_cost == pytest.approx(0.16)
+    assert response.agent.subscription_usage is not None

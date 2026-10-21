@@ -1195,7 +1195,7 @@ describe('inventory-card Agents columns', () => {
       };
     };
     const table = el.agentTable;
-    expect(table.widthOfColumn('name')).to.equal(240);
+    expect(table.widthOfColumn('name')).to.equal(212);
     table.resizeBy('name', -1000);
     await el.updateComplete;
     expect(table.widthOfColumn('name')).to.equal(160);
@@ -1215,12 +1215,12 @@ describe('inventory-card Agents columns', () => {
       new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
     );
     await el.updateComplete;
-    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(256);
+    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(228);
 
     const again = (await card({ agentRows: [agentRow()] })) as HTMLElement & {
       agentTable: { widthOfColumn(id: string): number };
     };
-    expect(again.agentTable.widthOfColumn('name')).to.equal(256);
+    expect(again.agentTable.widthOfColumn('name')).to.equal(228);
   });
 });
 

@@ -2,6 +2,10 @@ import type {
   AccountGatewayUsageSummaryResponse,
   GatewayTokenUsage,
 } from '../types';
+import {
+  subscriptionEstimate,
+  type SubscriptionEstimate,
+} from './subscription-estimate';
 
 /**
  * Reading one gateway summary two ways.
@@ -62,6 +66,10 @@ export interface AgentPeriodUsage {
   tokens: number;
   tokenUsage: GatewayTokenUsage | null;
   cost: number;
+  /** Spend plus the API-equivalent cost of subscription requests (D-05). */
+  withoutSubscriptions: SubscriptionEstimate;
+  /** Subscription-routed requests behind that estimate; 0 without any. */
+  subscriptionRequests: number;
 }
 
 /**
@@ -84,6 +92,11 @@ export function agentUsageById(
       tokens: row.token_usage?.total_tokens || 0,
       tokenUsage: row.token_usage ?? null,
       cost: row.estimated_cost || 0,
+      withoutSubscriptions: subscriptionEstimate(
+        row.estimated_cost,
+        row.subscription_usage
+      ),
+      subscriptionRequests: row.subscription_usage?.request_count ?? 0,
     });
   }
   return usage;

@@ -4401,6 +4401,8 @@ export class DashboardView extends AuthedElement {
         tokens: usage?.tokens ?? 0,
         tokenUsage: usage?.tokenUsage ?? null,
         cost: usage?.cost ?? 0,
+        withoutSubscriptions: usage?.withoutSubscriptions ?? null,
+        subscriptionRequests: usage?.subscriptionRequests ?? 0,
         lastSeenAt: agent.last_seen_at || agent.last_activity_at || null,
       };
     });

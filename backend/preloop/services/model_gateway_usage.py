@@ -319,6 +319,7 @@ class ModelGatewayUsageService:
                     token_usage=GatewayTokenUsage.from_row(row),
                     estimated_cost=row["estimated_cost"],
                     last_request_at=row["last_request_at"],
+                    subscription_usage=row["subscription_usage"],
                 )
                 for row in crud_managed_agent.get_usage_by_agent_for_account(
                     self.db,
