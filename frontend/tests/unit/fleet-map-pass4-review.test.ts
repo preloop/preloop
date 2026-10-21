@@ -75,6 +75,33 @@ function activity(work: FleetWorkItem[], users?: string[]): FleetCodeActivity {
 }
 
 describe('Fleet Map pass 4 review fixes', () => {
+  it('drops work seeded before a Users scope was chosen', async () => {
+    await page.viewport(1440, 900);
+    const el = await mount({
+      activityWindow: '1h',
+      codeActivity: activity([
+        item('example/widgets#1', ['agent:claude']),
+        item('example/widgets#2', ['agent:codex']),
+      ]),
+    });
+    expect(nodeIds(el).filter((id) => id!.startsWith('work:'))).toHaveLength(
+      2
+    );
+    // The server answers the scoped request: only Sam's work, and a map it
+    // already scoped. The older, unscoped history must not linger.
+    el.users = ['user:sam'];
+    await settle(el);
+    el.graph = { ...sampleFleetMap(), users: ['user:sam'] };
+    el.codeActivity = activity(
+      [item('example/widgets#2', ['agent:codex'])],
+      ['user:sam']
+    );
+    await settle(el);
+    const work = nodeIds(el).filter((id) => id!.startsWith('work:'));
+    expect(work.some((id) => id!.includes('#1'))).toBe(false);
+    expect(work.some((id) => id!.includes('#2'))).toBe(true);
+  });
+
   it('names models and accounts inside a provider box by their kind', async () => {
     await page.viewport(1440, 900);
     const el = await mount();

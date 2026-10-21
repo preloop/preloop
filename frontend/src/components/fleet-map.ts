@@ -1177,7 +1177,13 @@ export class FleetMap extends LitElement {
       for (const node of this.graph?.nodes ?? [])
         if (node.type === 'user') this.knownPeople.set(node.id, node);
     if (changed.has('users') && changed.get('users') !== undefined) {
+      // Like a window change: the seeded history and totals belong to the
+      // old scope. Kept, they showed other people's work in a scoped map.
       this.codeController?.abort();
+      this.usage = null;
+      this.codeActivity = null;
+      this.story.clear();
+      this.flowModels.clear();
       this.filterCache = undefined;
     }
     this.dropHiddenSelection();
