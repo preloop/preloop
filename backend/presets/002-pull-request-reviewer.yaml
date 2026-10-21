@@ -141,8 +141,9 @@ prompt_template: |
      and Step 2.5.1) on the diff hunks, then proceed to Phase 4 onward as
      normal. Phase 3 is trivially empty.
 
-  2. **INCREMENTAL** — the trigger type is `pull_request_updated` (see the
-     Trigger field above) AND a previous Preloop review exists AND its summary
+  2. **INCREMENTAL** — the trigger type is `pull_request_updated` or
+     `merge_request_updated` (see the Trigger field above) AND a previous
+     Preloop review exists AND its summary
      contains a `<!-- preloop-review:reviewed-sha:... -->` marker.
      Workspace mode for this run: {{workspace.mode}}
 

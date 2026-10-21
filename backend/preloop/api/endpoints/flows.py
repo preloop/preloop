@@ -300,6 +300,7 @@ def create_flow(
 ):
     """Create new flow."""
     ensure_permission_in_oss(db, current_user, "create_flows")
+    webhook_config_omitted = "webhook_config" not in flow_in.model_fields_set
     # Check for name uniqueness within account
     # Note: We intentionally allow flows to have the same name as global presets,
     # as users should be able to customize presets and keep the original name
@@ -398,6 +399,24 @@ def create_flow(
                 status_code=403,
                 detail="Cannot create flow from a preset belonging to another account",
             )
+
+        # Inherit only when the caller omitted the field. An explicit empty
+        # config or false flag is an operator choice and must win. The webhook
+        # branch above may already have generated a secret; retain that secret
+        # without copying any secret stored on the preset.
+        if webhook_config_omitted and preset.webhook_config:
+            inherited_config = schemas.WebhookConfig.model_validate(
+                {
+                    key: value
+                    for key, value in preset.webhook_config.items()
+                    if key in {"supersede_on_update", "dedupe_path"}
+                }
+            )
+            if flow_in.webhook_config and flow_in.webhook_config.webhook_secret:
+                inherited_config = inherited_config.model_copy(
+                    update={"webhook_secret": flow_in.webhook_config.webhook_secret}
+                )
+            flow_in.webhook_config = inherited_config
 
         # Compute hashes of the preset's current prompt and tools
         flow_in.source_prompt_hash = compute_content_hash(preset.prompt_template)

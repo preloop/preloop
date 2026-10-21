@@ -20,6 +20,7 @@ from preloop.schemas.ci_execution import (
     CiReviewBinding,
     CiReviewRequest,
     ci_review_event,
+    gitlab_review_url,
 )
 from preloop.schemas.ci_principal import CiAction
 from preloop.services.flow_feedback import feedback_policy
@@ -164,6 +165,22 @@ def _accepted_binding(source: _ProviderRead, pr: Any) -> CiReviewBinding:
     values.pop("actions")
     values.pop("credential_version")
     try:
+        review_metadata: dict[str, str] = {}
+        if context.tracker_type == "gitlab":
+            author = pr.get("author")
+            if isinstance(author, dict):
+                author = author.get("username") or author.get("name")
+            review_metadata = {
+                "review_url": gitlab_review_url(
+                    context.tracker_url, context.repository_slug, request.pr_number
+                ),
+                "review_title": _bounded_provider_text(pr.get("title"), 1024)
+                or f"MR !{request.pr_number}",
+                "review_description": _bounded_provider_text(
+                    pr.get("description"), 16384
+                ),
+                "review_author": _bounded_provider_text(author, 255),
+            }
         return CiReviewBinding(
             **values,
             version=1,
@@ -171,11 +188,17 @@ def _accepted_binding(source: _ProviderRead, pr: Any) -> CiReviewBinding:
             head_sha=request.head_sha,
             provider_pr_id=str(provider_id),
             base_branch=branch,
+            **review_metadata,
         )
     except ValueError:
         raise CiReviewDeniedError(
             "Restricted CI pull request verification denied"
         ) from None
+
+
+def _bounded_provider_text(value: Any, limit: int) -> str:
+    """Keep only bounded text from the verified provider response."""
+    return value[:limit] if isinstance(value, str) else ""
 
 
 class _ReviewGitHubTracker(GitHubTracker):

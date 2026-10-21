@@ -1,7 +1,9 @@
 """Trusted provider admission and immutable CI dispatch correlation."""
 
+import asyncio
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -9,17 +11,25 @@ from uuid import uuid4
 import gitlab
 import httpx
 import pytest
+import yaml
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from preloop.models import crud
+from preloop.models.crud.ci_execution import _valid_event
 from preloop.models.crud.ci_principal import CiAuthorizationContext
-from preloop.schemas.ci_execution import CiReviewRequest, ci_review_event
+from preloop.schemas.ci_execution import (
+    CiReviewBinding,
+    CiReviewRequest,
+    ci_review_event,
+)
 from preloop.schemas.ci_principal import CiAction
 from preloop.services import ci_execution as service
 from preloop.sync.exceptions import TrackerError, TrackerResponseError
 from tests.api.test_ci_execution import ci_resources as create_ci_resources
 from tests.api.test_ci_execution import review_binding
 from tests.api.test_ci_principal import provision
+from tests.test_pull_request_reviewer_preset import _render_preset_prompt
 
 
 @pytest.fixture
@@ -133,6 +143,72 @@ async def test_immutable_provider_routes_preserve_non_main_target(
     assert binding.head_sha == source.request.head_sha
     assert binding.base_branch == branch
     assert source.tracker_key not in repr(source)
+
+
+@pytest.mark.asyncio
+async def test_gitlab_ci_review_renders_verified_mr_metadata_from_bound_host(
+    monkeypatch: pytest.MonkeyPatch, context: CiAuthorizationContext
+) -> None:
+    """The stock reviewer can use a restricted CI event without a caller URL."""
+    context = replace(
+        context, tracker_type="gitlab", tracker_url="https://gitlab.example.com/api/v4"
+    )
+    payload = provider_payload(context)
+    payload.update(
+        {
+            "title": "Review the widget change",
+            "description": "The widget now saves its selection.",
+            "author": {"username": "jane"},
+            "web_url": "https://hostile.example.com/other/repo/-/merge_requests/7",
+        }
+    )
+    mock_provider(monkeypatch, context, payload=payload)
+    binding = await service._read_provider(source_for(context))
+    event = ci_review_event(binding)
+    template = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[2]
+            / "presets/002-pull-request-reviewer.yaml"
+        ).read_text()
+    )["prompt_template"]
+    rendered = await asyncio.to_thread(_render_preset_prompt, template, event)
+    expected_url = "https://gitlab.example.com/example/repository/-/merge_requests/7"
+
+    assert event["payload"]["object_attributes"]["url"] == expected_url
+    assert f"- URL: {expected_url}" in rendered
+    assert "- Title: Review the widget change" in rendered
+    assert (
+        "- Description (capped at 16 KiB; Step 1.1 fetches the full body): The widget now saves its selection."
+        in rendered
+    )
+    assert "- Author: jane" in rendered
+    assert f"`pull_request`: {expected_url}" in rendered
+    assert "hostile.example.com" not in repr(event)
+    with pytest.raises(ValidationError):
+        type(binding).model_validate(
+            {**binding.model_dump(), "review_url": payload["web_url"]}
+        )
+    for field, other_value in (("target_project_id", "other-project"), ("iid", 8)):
+        mismatched = {**payload, field: other_value}
+        with pytest.raises(service.CiReviewDeniedError):
+            service._accepted_binding(source_for(context), mismatched)
+
+
+def test_old_gitlab_ci_binding_keeps_its_original_canonical_event(
+    context: CiAuthorizationContext,
+) -> None:
+    """Stored v1 executions without review metadata still validate on dispatch."""
+    context = replace(context, tracker_type="gitlab")
+    binding = review_binding(context)
+    legacy_snapshot = binding.model_dump(
+        exclude={"review_url", "review_title", "review_description", "review_author"}
+    )
+    restored = CiReviewBinding.model_validate(legacy_snapshot)
+    old_event = ci_review_event(binding)
+
+    assert restored == binding
+    assert "url" not in old_event["payload"]["object_attributes"]
+    assert _valid_event(restored, old_event)
 
 
 @pytest.mark.asyncio

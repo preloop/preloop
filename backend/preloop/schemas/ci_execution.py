@@ -2,9 +2,32 @@
 
 from datetime import datetime
 from typing import Any, Literal
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+def gitlab_review_url(tracker_url: str | None, slug: str, iid: int) -> str:
+    """Derive an MR URL from the trusted integration host and bound repository."""
+    base = (tracker_url or "https://gitlab.com").rstrip("/")
+    if base.endswith("/api/v4"):
+        base = base[:-7]
+    parsed = urlsplit(base)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Unsupported GitLab review URL host")
+    parts = slug.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise ValueError("Unsupported GitLab repository path")
+    path = "/".join(quote(part, safe="") for part in parts)
+    return f"{base}/{path}/-/merge_requests/{iid}"
 
 
 class CiReviewRequest(BaseModel):
@@ -39,6 +62,30 @@ class CiReviewBinding(CiReviewRequest):
         max_length=255,
         pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]*$",
     )
+    review_url: str | None = Field(default=None, max_length=2048)
+    review_title: str | None = Field(default=None, max_length=1024)
+    review_description: str | None = Field(default=None, max_length=16384)
+    review_author: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def bound_review_url(self) -> "CiReviewBinding":
+        """An accepted URL cannot point outside its immutable GitLab binding."""
+        if self.review_url is None and any(
+            value is not None
+            for value in (
+                self.review_title,
+                self.review_description,
+                self.review_author,
+            )
+        ):
+            raise ValueError("Restricted CI review metadata requires a bound URL")
+        if self.review_url is not None and (
+            self.tracker_type != "gitlab"
+            or self.review_url
+            != gitlab_review_url(self.tracker_url, self.repository_slug, self.pr_number)
+        ):
+            raise ValueError("Restricted CI review URL is outside the bound repository")
+        return self
 
     @field_validator("version", mode="before")
     @classmethod
@@ -87,23 +134,32 @@ def ci_review_event(binding: CiReviewBinding) -> dict[str, Any]:
         }
         event_type = "pull_request_updated"
     else:
+        attributes = {
+            "id": binding.provider_pr_id,
+            "iid": binding.pr_number,
+            "title": binding.review_title or f"MR !{binding.pr_number}",
+            "sha": binding.head_sha,
+            "last_commit": {"id": binding.head_sha},
+            "source_branch": binding.head_sha,
+            "target_branch": binding.base_branch,
+            "source_project_id": binding.repository_identifier,
+            "target_project_id": binding.repository_identifier,
+        }
+        if binding.review_url is not None:
+            attributes.update(
+                {
+                    "url": binding.review_url,
+                    "description": binding.review_description or "",
+                    "author": binding.review_author or "",
+                }
+            )
         payload = {
             "project": {
                 "id": binding.repository_identifier,
                 "path_with_namespace": binding.repository_slug,
                 "default_branch": binding.base_branch,
             },
-            "object_attributes": {
-                "id": binding.provider_pr_id,
-                "iid": binding.pr_number,
-                "title": f"MR !{binding.pr_number}",
-                "sha": binding.head_sha,
-                "last_commit": {"id": binding.head_sha},
-                "source_branch": binding.head_sha,
-                "target_branch": binding.base_branch,
-                "source_project_id": binding.repository_identifier,
-                "target_project_id": binding.repository_identifier,
-            },
+            "object_attributes": attributes,
         }
         event_type = "merge_request_updated"
     return {

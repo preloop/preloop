@@ -2022,6 +2022,13 @@ export class PreloopFlowForm extends LitElement {
         ...(this.flow.trigger_config !== undefined
           ? { trigger_config: this.flow.trigger_config }
           : {}),
+        ...(this.flow.webhook_config !== undefined
+          ? {
+              webhook_config: this.supportedWebhookConfig(
+                this.flow.webhook_config
+              ),
+            }
+          : {}),
         // The delegation allowlist is sent only when this form edits it: the
         // section is hidden while the delegation tool is off, and an update
         // that does not mention the field leaves the stored list alone. That
@@ -3477,6 +3484,20 @@ export class PreloopFlowForm extends LitElement {
     });
   }
 
+  /** Keep only editable webhook settings; secrets belong to the server. */
+  private supportedWebhookConfig(
+    config: unknown
+  ): Record<string, unknown> | null | undefined {
+    if (config === null || config === undefined) return config;
+    if (typeof config !== 'object' || Array.isArray(config)) return undefined;
+    const source = config as Record<string, unknown>;
+    const supported: Record<string, unknown> = {};
+    for (const key of ['supersede_on_update', 'dedupe_path']) {
+      if (key in source) supported[key] = source[key];
+    }
+    return supported;
+  }
+
   private capturePresetSnapshot() {
     this.presetSnapshot = {
       prompt_template: this.flow.prompt_template || '',
@@ -3641,6 +3662,7 @@ export class PreloopFlowForm extends LitElement {
         ? [...preset.trigger_event_types]
         : undefined,
       trigger_config: preset.trigger_config ?? undefined,
+      webhook_config: this.supportedWebhookConfig(preset.webhook_config),
       allowed_mcp_servers: servers,
       allowed_mcp_tools: this.mapPresetTools(preset.allowed_mcp_tools),
       agent_type: preset.agent_type,

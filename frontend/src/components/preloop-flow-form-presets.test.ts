@@ -40,6 +40,7 @@ const PR_REVIEWER = {
   agent_type: 'codex',
   agent_config: {},
   git_clone_config: { enabled: true, create_pull_request: false },
+  webhook_config: { supersede_on_update: true },
 };
 
 const OBSERVE_EVAL = {
@@ -127,6 +128,42 @@ describe('PreloopFlowForm presets', () => {
         ?.textContent
     ).to.include('saved disabled');
     expect(payload).to.not.have.property('id');
+    expect(payload.webhook_config).to.deep.equal({ supersede_on_update: true });
+  });
+
+  it('keeps the saved webhook settings when a preset flow is reopened and edited', async () => {
+    const element = await mount({
+      id: 'reviewer-flow',
+      name: 'Configured reviewer',
+      prompt_template: 'Review',
+      trigger_event_source: GITHUB_TRACKER.id,
+      webhook_config: {
+        supersede_on_update: true,
+        dedupe_path: 'data.id',
+        webhook_secret: 'server-managed-secret',
+      },
+    });
+
+    expect((element as any).triggerType).to.equal('tracker');
+    expect((await submit(element)).webhook_config).to.deep.equal({
+      supersede_on_update: true,
+      dedupe_path: 'data.id',
+    });
+  });
+
+  it('keeps an explicitly disabled supersession setting while editing', async () => {
+    const element = await mount({
+      id: 'reviewer-flow',
+      name: 'Configured reviewer',
+      prompt_template: 'Review',
+      trigger_event_source: GITHUB_TRACKER.id,
+      source_preset_id: PR_REVIEWER.id,
+      webhook_config: { supersede_on_update: false },
+    });
+
+    expect((await submit(element)).webhook_config).to.deep.equal({
+      supersede_on_update: false,
+    });
   });
 
   it('preserves explicitly enabled and disabled existing flows', async () => {

@@ -3307,6 +3307,66 @@ async def test_create_webhook_flow_keeps_supersede_flag(
     assert flow_in.webhook_config.dedupe_path == "data.id"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("supplied_config", "trigger_source", "expected_supersede"),
+    [
+        (None, "github", True),
+        (None, "webhook", True),
+        ({}, "github", False),
+        ({"supersede_on_update": False}, "github", False),
+    ],
+)
+async def test_create_from_preset_inherits_only_omitted_webhook_config(
+    mock_account: Account,
+    mocker: MockerFixture,
+    supplied_config: dict | None,
+    trigger_source: str,
+    expected_supersede: bool,
+):
+    """Preset defaults apply only when the caller leaves the config unspecified."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    preset_id = uuid.uuid4()
+    mock_crud_flow.get.return_value = MagicMock(
+        id=preset_id,
+        is_preset=True,
+        account_id=None,
+        name="Pull Request Reviewer",
+        prompt_template="Review this pull request.",
+        allowed_mcp_tools=[],
+        webhook_config={
+            "supersede_on_update": True,
+            "webhook_secret": "preset-secret-must-not-be-copied",
+        },
+    )
+    payload = {
+        "name": "Reviewer from preset",
+        "prompt_template": "Review this pull request.",
+        "agent_type": "codex",
+        "agent_config": {},
+        "trigger_event_source": trigger_source,
+        "trigger_event_types": ["pull_request_opened"],
+        "source_preset_id": preset_id,
+    }
+    if supplied_config is not None:
+        payload["webhook_config"] = supplied_config
+    flow_in = schemas.FlowCreate(**payload)
+
+    await maybe_await(
+        flows.create_flow(db=MagicMock(), flow_in=flow_in, current_user=mock_account)
+    )
+
+    assert flow_in.webhook_config is not None
+    assert flow_in.webhook_config.supersede_on_update is expected_supersede
+    if trigger_source == "webhook":
+        assert flow_in.webhook_config.webhook_secret
+        assert (
+            flow_in.webhook_config.webhook_secret != "preset-secret-must-not-be-copied"
+        )
+    else:
+        assert flow_in.webhook_config.webhook_secret is None
+
+
 def test_webhook_config_defaults_to_no_supersede():
     """Off unless a flow opts in (#1032); a secret is no longer required."""
     config = schemas.WebhookConfig()
