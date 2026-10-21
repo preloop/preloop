@@ -224,7 +224,7 @@ async def test_client_dispatches_send_message_and_reports_result() -> None:
     statuses = [
         sent
         for sent in websocket.sent
-        if sent["type"] == "status" and sent["name"] == "command_status"
+        if sent["type"] == "status" and sent["name"] == "command_result"
     ]
     assert [status["payload"]["status"] for status in statuses] == [
         "completed",
@@ -363,3 +363,43 @@ async def test_client_reconnects_normally_without_eviction_code() -> None:
     # Two attempts, two sleeps (reconnect happened).
     assert len(sleeps) == 2
     assert len(sessions_created) == 2
+
+
+async def test_ack_precedes_native_runtime_and_result_uses_backend_contract() -> None:
+    websocket = FakeWebSocket()
+
+    async def send(command: OperatorCommand) -> AgentControlResult:
+        assert websocket.sent == [
+            {
+                "type": "status",
+                "name": "command_ack",
+                "message_id": "example-command",
+                "payload": {"command_id": "example-command"},
+            }
+        ]
+        return AgentControlResult(
+            reply_text="example response", session_reference="example-session"
+        )
+
+    client = AgentControlClient(
+        AgentControlConfig(
+            control_ws_url="wss://example.com/control",
+            bearer_token="example",
+            runtime_principal_id="example",
+        ),
+        HookedAgentControlAdapter.with_hooks(send_message=send),
+    )
+    await client._handle_text_message(
+        websocket,
+        {
+            "type": "command",
+            "name": "send_message",
+            "message_id": "example-command",
+            "payload": {"text": "hello"},
+        },
+    )
+    result = websocket.sent[1]
+    assert result["type"] == "status" and result["name"] == "command_result"
+    assert result["payload"]["command_id"] == "example-command"
+    assert result["payload"]["reply_text"] == "example response"
+    assert result["payload"]["session_reference"] == "example-session"

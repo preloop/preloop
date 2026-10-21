@@ -378,3 +378,23 @@ new conversations; running and queued callbacks pin their entries. Native
 finalization remains authoritative after eviction. A process restart or a missing
 matching end event can leave them claimed until expiry. Session finalization
 that cannot reach Preloop likewise does not imply the server observed the end.
+
+### Standalone control sessions
+
+`preloop-hermes-plugin run` uses Hermes's native `AIAgent` API in its own
+process, with a fresh session per new text command. It does not attach to or
+restart gateway chats. Existing sessions, voice, interruption from the console,
+and native tools are not supported by this adapter; its capability advertisement
+reflects that. Native toolsets, workspace context files, and memory are disabled
+for these text sessions. The installed Preloop approval hooks remain registered.
+
+The adapter preserves the configured provider and model without enabling Hermes
+oneshot approval bypasses. It passes `max_turns` to Hermes's iteration limit and
+requests a native interrupt on deadline. Deadline interruption is cooperative;
+the command becomes terminal after the native conversation returns, and the
+adapter does not claim that a Python thread has been forcibly cancelled.
+Execution gateway overrides and explicit USD/token limits are rejected before a
+model call because this adapter cannot enforce them. Keep investigative flows
+that require tools or these controls disabled until an appropriate adapter is
+available. Results and errors carry the original command ID so Preloop can
+record acknowledgement and terminal completion.

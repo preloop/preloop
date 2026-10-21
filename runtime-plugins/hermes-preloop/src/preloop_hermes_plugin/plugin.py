@@ -181,14 +181,14 @@ class HermesPreloopPlugin:
             raise ValueError(_control_config_error(str(exc), path)) from exc
 
     def capabilities(self) -> AgentControlCapabilities:
-        """Advertise the Hermes control surface exposed by this plugin."""
+        """Report connected runtime support, or no runnable surface before start."""
+        if self.client is not None:
+            return self.client.hooks.capabilities()
         desktop, desktop_display = read_desktop_capability()
         return AgentControlCapabilities(
-            supports_new_session=True,
-            supports_existing_session=True,
-            supports_text=True,
-            supports_voice=True,
-            supports_interrupt=True,
+            supports_new_session=False,
+            supports_existing_session=False,
+            supports_text=False,
             supports_tool_approval=True,
             desktop=desktop,
             desktop_display=desktop_display,
@@ -197,8 +197,14 @@ class HermesPreloopPlugin:
     async def start(self, hermes_runtime: Any | None = None) -> AgentControlClient:
         """Create and connect the Preloop WebSocket client."""
         config_path = _discover_config_path(self.config_path)
+        if hermes_runtime is None:
+            from .runtime import NativeHermesRuntime
+
+            hermes_runtime = NativeHermesRuntime(self)
 
         async def send_message(command: OperatorCommand) -> AgentControlResult:
+            if hasattr(hermes_runtime, "send_command"):
+                return await hermes_runtime.send_command(command)
             metadata = dict(command.metadata)
             if command.input_mode in {"voice", "voice_transcript"}:
                 if hermes_runtime and hasattr(hermes_runtime, "send_voice_transcript"):
@@ -231,7 +237,21 @@ class HermesPreloopPlugin:
         if hermes_runtime is not None and hasattr(hermes_runtime, "register_hook"):
             self.register(hermes_runtime)
 
-        caps = self.capabilities()
+        caps = (
+            hermes_runtime.capabilities()
+            if hasattr(hermes_runtime, "capabilities")
+            else AgentControlCapabilities(
+                supports_new_session=callable(
+                    getattr(hermes_runtime, "send_prompt", None)
+                ),
+                supports_existing_session=False,
+                supports_text=callable(getattr(hermes_runtime, "send_prompt", None)),
+                supports_voice=callable(
+                    getattr(hermes_runtime, "send_voice_transcript", None)
+                ),
+                supports_interrupt=callable(getattr(hermes_runtime, "interrupt", None)),
+            )
+        )
         self.client = create_hermes_agent_control_client(
             config_path,
             send_message=send_message,
@@ -240,6 +260,7 @@ class HermesPreloopPlugin:
             supports_voice=caps.supports_voice,
             supports_tool_approval=caps.supports_tool_approval,
         )
+        self.client.hooks.capabilities_value = caps
         await self.client.run_forever()
         return self.client
 
