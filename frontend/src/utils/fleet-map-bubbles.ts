@@ -164,9 +164,14 @@ const CORNER_REACH = 2 / 3;
  */
 export function placeCornerNotes(
   sizes: readonly { w: number; h: number }[],
-  options: { nodes: Iterable<BubbleRect>; bounds: BubbleRect }
+  options: {
+    nodes: Iterable<BubbleRect>;
+    bounds: BubbleRect;
+    /** Test seam: counts the rows the scan examined. */
+    probe?: { rows: number };
+  }
 ): (BubbleRect | null)[] {
-  const { bounds } = options;
+  const { bounds, probe } = options;
   const nodes = [...options.nodes];
   const placed: BubbleRect[] = [];
   const corner = { x: bounds.x + bounds.w, y: bounds.y };
@@ -181,6 +186,7 @@ export function placeCornerNotes(
     ) {
       // Every spot on this row and below is at least this far away.
       if (best && y - corner.y >= best.d) break;
+      if (probe) probe.rows += 1;
       for (let x = bounds.x + bounds.w - w; x >= bounds.x; x -= SCAN) {
         const rect = { x, y, w, h };
         // Distance from the corner to the note's own top-right corner.

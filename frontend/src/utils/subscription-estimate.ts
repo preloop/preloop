@@ -88,3 +88,33 @@ export function renderWithoutSubscriptionsLine(
     >${text}</span
   >`;
 }
+
+/**
+ * Several agents' subscription blocks as one, for a person's agents: the
+ * request, token and covered counts and the covered API-equivalent cost add
+ * up, and coverage is recomputed over the sum. Null when none has any.
+ */
+export function combineSubscriptionUsage(
+  blocks: readonly (SubscriptionUsageSummary | null | undefined)[]
+): SubscriptionUsageSummary | null {
+  const present = blocks.filter((block): block is SubscriptionUsageSummary =>
+    Boolean(block?.request_count)
+  );
+  if (!present.length) return null;
+  const sum = (pick: (block: SubscriptionUsageSummary) => number) =>
+    present.reduce((total, block) => total + (pick(block) || 0), 0);
+  const requests = sum((block) => block.request_count);
+  const covered = sum((block) => block.covered_requests);
+  return {
+    request_count: requests,
+    prompt_tokens: sum((block) => block.prompt_tokens),
+    completion_tokens: sum((block) => block.completion_tokens),
+    total_tokens: sum((block) => block.total_tokens),
+    api_equivalent_cost: sum((block) => block.api_equivalent_cost),
+    api_equivalent_cost_is_estimate: true,
+    covered_requests: covered,
+    coverage: covered / requests,
+    billed: null,
+    billed_available: false,
+  };
+}

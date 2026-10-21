@@ -99,6 +99,7 @@ import { parseUTCDate } from '../../utils/date';
 import { formatRelativeTime } from '../../components/relative-time-label';
 import { sumTokenUsage } from '../../components/token-figures';
 import { executionSubjectCss } from '../../utils/execution-subject';
+import { usageForOwner } from '../../utils/user-usage';
 import {
   agentUsageById,
   mergeGatewaySummaryPreservingBreakdown,
@@ -4612,39 +4613,10 @@ export class DashboardView extends AuthedElement {
   }
 
   private get inventoryUserRows(): InventoryUserRow[] {
-    const perAgent = agentUsageById(this.gatewaySummary);
-
-    const byOwner = new Map<
-      string,
-      {
-        agents: number;
-        tokens: number;
-        tokenUsage: GatewayTokenUsage | null;
-        cost: number;
-      }
-    >();
-    for (const agent of this.managedAgents) {
-      const ownerId = agent.owner_user_id;
-      if (!ownerId) continue;
-      const running = byOwner.get(ownerId) || {
-        agents: 0,
-        tokens: 0,
-        tokenUsage: null,
-        cost: 0,
-      };
-      running.agents += 1;
-      const usage = perAgent.get(agent.id);
-      running.tokens += usage?.tokens || 0;
-      running.tokenUsage = sumTokenUsage([
-        running.tokenUsage,
-        usage?.tokenUsage ?? null,
-      ]);
-      running.cost += usage?.cost || 0;
-      byOwner.set(ownerId, running);
-    }
-
+    // The same per-person sum as the user page (B-02, D-05).
+    const usage = this.gatewaySummary?.usage_by_agent || [];
     return this.accountUsers.map((user) => {
-      const owned = byOwner.get(user.id);
+      const owned = usageForOwner(user.id, usage, this.managedAgents);
       const roles = [...(user.roles || []), ...(user.inherited_roles || [])]
         .map((role) => role?.name)
         .filter((name): name is string => Boolean(name));
@@ -4653,10 +4625,12 @@ export class DashboardView extends AuthedElement {
         name: user.full_name || user.username || user.email || 'Unknown',
         role: [...new Set(roles)].join(', '),
         lastLoginAt: user.last_login || null,
-        agentsOwned: owned?.agents ?? 0,
-        tokens: owned?.tokens ?? 0,
-        tokenUsage: owned?.tokenUsage ?? null,
-        cost: owned?.cost ?? 0,
+        agentsOwned: owned.agents,
+        tokens: owned.tokens,
+        tokenUsage: owned.tokenUsage,
+        cost: owned.cost,
+        withoutSubscriptions: owned.withoutSubscriptions,
+        subscriptionRequests: owned.subscription?.request_count ?? 0,
       };
     });
   }

@@ -45,6 +45,7 @@ import {
   resolveTimeRange,
   timeRangeShortLabel,
 } from '../../../utils/time-range';
+import { renderWithoutSubscriptionsLine } from '../../../utils/subscription-estimate';
 import { usageForOwner, type UsageTotals } from '../../../utils/user-usage';
 
 /** A role as GET /users/{id} returns it; inherited ones name their team. */
@@ -634,7 +635,7 @@ export class UserDetailView extends LitElement {
         `Tokens · ${range}`,
         'stat-tokens'
       )}
-      ${stat(ready ? this.money(ready.cost) : loading, `$ est. · ${range}`, 'stat-spend')}
+      ${stat(ready ? html`${this.money(ready.cost)}${renderWithoutSubscriptionsLine(ready.withoutSubscriptions, ready.subscription)}` : loading, `$ est. · ${range}`, 'stat-spend')}
     </div>`;
   }
 

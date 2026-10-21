@@ -197,6 +197,18 @@ function stubFetch(options: Options = {}): sinon.SinonStub {
                   total_tokens: 1500,
                 },
                 estimated_cost: 1.25,
+                subscription_usage: {
+                  request_count: 2,
+                  prompt_tokens: 100,
+                  completion_tokens: 10,
+                  total_tokens: 110,
+                  api_equivalent_cost: 1,
+                  api_equivalent_cost_is_estimate: true,
+                  covered_requests: 1,
+                  coverage: 0.5,
+                  billed: null,
+                  billed_available: false,
+                },
               },
               {
                 agent_id: 'agent-2',
@@ -322,6 +334,10 @@ describe('user-detail-view', () => {
     const spend = root(el).querySelector('[data-testid="stat-spend"]')!;
     expect(spend.textContent).to.contain('$1.25');
     expect(spend.textContent).to.contain('$ est.');
+    // D-05: agent-1 has subscription traffic, partly priced.
+    const line = spend.querySelector('[data-testid="without-subscriptions"]');
+    expect(line?.textContent?.trim()).to.equal('≥ $2.25 w/o subs.');
+    expect(line?.getAttribute('title')).to.contain('1 of 2');
     expect(
       root(el).querySelector('[data-testid="stat-agents"]')!.textContent
     ).to.contain('1');

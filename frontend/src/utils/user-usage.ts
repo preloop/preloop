@@ -3,7 +3,13 @@ import type {
   GatewayTokenUsage,
   GatewayUsageByAgent,
   ManagedAgentSummary,
+  SubscriptionUsageSummary,
 } from '../types';
+import {
+  combineSubscriptionUsage,
+  subscriptionEstimate,
+  type SubscriptionEstimate,
+} from './subscription-estimate';
 
 /** The fields of a managed agent that tie usage to its owner. */
 export type UsageAgent = Pick<ManagedAgentSummary, 'id' | 'owner_user_id'>;
@@ -13,6 +19,10 @@ export interface UsageTotals {
   tokens: number;
   tokenUsage: GatewayTokenUsage | null;
   cost: number;
+  /** The agents' subscription traffic as one block (D-05); null: none. */
+  subscription: SubscriptionUsageSummary | null;
+  /** Spend plus the API-equivalent cost of that traffic, an estimate. */
+  withoutSubscriptions: SubscriptionEstimate;
 }
 
 /**
@@ -43,12 +53,22 @@ export function usageForOwner(
   let tokens = 0;
   let cost = 0;
   let tokenUsage: GatewayTokenUsage | null = null;
+  const blocks: (SubscriptionUsageSummary | null | undefined)[] = [];
   for (const agent of owned) {
     const row = perAgent.get(agent.id);
     if (!row) continue;
     tokens += row.token_usage?.total_tokens || 0;
     cost += row.estimated_cost || 0;
     tokenUsage = sumTokenUsage([tokenUsage, row.token_usage]);
+    blocks.push(row.subscription_usage);
   }
-  return { agents: owned.length, tokens, tokenUsage, cost };
+  const subscription = combineSubscriptionUsage(blocks);
+  return {
+    agents: owned.length,
+    tokens,
+    tokenUsage,
+    cost,
+    subscription,
+    withoutSubscriptions: subscriptionEstimate(cost, subscription),
+  };
 }

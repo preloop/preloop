@@ -153,6 +153,9 @@ export interface InventoryUserRow {
   tokens: number;
   tokenUsage?: GatewayTokenUsage | null;
   cost: number;
+  /** Spend plus the API-equivalent cost of their agents' subscription use. */
+  withoutSubscriptions?: SubscriptionEstimate | null;
+  subscriptionRequests?: number;
 }
 
 /** One machine from the device fleet, as the fleet page names it. */
@@ -1771,7 +1774,7 @@ export class InventoryCard extends LitElement {
                             )}
                           </td>
                           <td class="num" data-label="Spend">
-                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>`)}
+                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>${renderWithoutSubscriptionsLine(row.withoutSubscriptions, row.subscriptionRequests)}`)}
                           </td>
                         </tr>
                       `

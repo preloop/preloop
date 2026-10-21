@@ -180,8 +180,28 @@ describe('fleet-map corner notes', () => {
     const start = performance.now();
     for (let frame = 0; frame < 60; frame++)
       placeCornerNotes(sizes, { nodes, bounds: wide });
-    // 60 frames of a fully covered stage well inside one second.
-    expect(performance.now() - start).to.be.below(500);
+    // A smoke budget only; the bound itself is asserted by row count below.
+    expect(performance.now() - start).to.be.below(2000);
+  });
+
+  it('stops scanning once no lower row can beat the spot it found', () => {
+    // A free corner: the first row holds the best spot, so one row is read.
+    const free = { rows: 0 };
+    placeCornerNotes([{ w: 200, h: 26 }], { nodes: [], bounds, probe: free });
+    expect(free.rows).to.equal(1);
+    // The corner taken down to y=100: the scan reads down to the first free
+    // row and no further than the distance of the spot it found there.
+    const taken = { rows: 0 };
+    const [spot] = placeCornerNotes([{ w: 200, h: 26 }], {
+      nodes: [{ x: 300, y: 12, w: 312, h: 88 }],
+      bounds,
+      probe: taken,
+    });
+    expect(spot).to.not.equal(null);
+    const rowsToTheSpot = Math.round((spot!.y - bounds.y) / 6) + 1;
+    expect(taken.rows).to.be.at.most(rowsToTheSpot + 1);
+    // The whole reach would be about 45 rows.
+    expect(taken.rows).to.be.below(45);
   });
 
   it('drops a note when the stage has no free spot for it', () => {
