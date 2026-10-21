@@ -345,3 +345,20 @@ def client(app: fastapi.FastAPI) -> Generator[TestClient, None, None]:
     """Create a test client for the FastAPI app."""
     with TestClient(app) as client:
         yield client
+
+
+@pytest.fixture(scope="function")
+def isolate_system_ai_models(db_session: Session) -> None:
+    """Retire deployment-seeded global AI models for the current test.
+
+    ``scripts/init_db.py`` seeds a gateway-enabled global default model when an
+    API key is configured (as in CI). Every enabled global model is a
+    deployment built-in, so tests that pin exact gateway model listings must
+    not see it. The change is rolled back with the test transaction.
+    """
+    from preloop.models.models.ai_model import AIModel
+
+    for model in db_session.query(AIModel).filter(AIModel.account_id.is_(None)):
+        model.meta_data = {**(model.meta_data or {}), "retired": True}
+        db_session.add(model)
+    db_session.flush()

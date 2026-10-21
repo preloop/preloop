@@ -36,6 +36,8 @@ from preloop.services.secret_service import (
     ANTHROPIC_CLAUDE_CODE_OAUTH_CREDENTIAL_TYPE,
 )
 
+pytestmark = pytest.mark.usefixtures("isolate_system_ai_models")
+
 BYOK_ALIAS = "openai/gpt-5"
 BOUND_ALIAS_A = "anthropic/claude-sonnet-4-5-agent-a"
 BOUND_ALIAS_B = "anthropic/claude-sonnet-4-5-agent-b"

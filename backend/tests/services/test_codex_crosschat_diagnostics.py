@@ -193,15 +193,15 @@ def test_mismatched_output_while_another_call_is_pending():
     assert "does not match a pending tool call" in message
 
 
-def test_reasoning_between_call_and_output_is_named():
-    message = _rejection(
+def test_reasoning_between_call_and_output_is_accepted():
+    """Opaque reasoning may sit inside a tool turn without breaking pairing."""
+    _normalize(
         [
             {"type": "function_call", "call_id": "c1", "name": "read"},
             {"type": "reasoning", "summary": [{"text": SECRET}]},
             {"type": "function_call_output", "call_id": "c1", "output": "ok"},
         ]
     )
-    assert "index=1 type='reasoning'" in message
 
 
 def test_unanswered_call_at_end_of_input():
