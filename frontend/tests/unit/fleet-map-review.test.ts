@@ -43,17 +43,23 @@ afterEach(() => {
 });
 
 describe('Fleet Map review fixes', () => {
-  it('shows an Arrange button in the Spatial toolbar that arranges with Undo', async () => {
+  it('puts an icon-only Arrange beside Fit that arranges with Undo (pass 4)', async () => {
     await page.viewport(1440, 900);
     const el = await mount({ defaultArrangement: 'spatial' });
     el.points = { 'user:maya': { x: 1200, y: 900 } };
     await el.updateComplete;
+    expect(
+      root(el).querySelector(
+        '.map-actions [data-testid="fleet-map-arrange-button"]'
+      )
+    ).toBeNull();
     const button = root(el).querySelector<HTMLElement>(
-      '.map-actions [data-testid="fleet-map-arrange-button"]'
+      '.canvas-tools [data-testid="fleet-map-arrange-button"]'
     )!;
     expect(button).not.toBeNull();
     expect(button.getBoundingClientRect().width).toBeGreaterThan(0);
-    expect(button.textContent).toContain('Arrange');
+    expect(button.getAttribute('aria-label')).toBe('Arrange');
+    expect(button.textContent!.trim()).toBe('');
     button.click();
     await el.updateComplete;
     expect(el.points).toEqual({});
@@ -62,7 +68,7 @@ describe('Fleet Map review fixes', () => {
     );
   });
 
-  it('keeps the Arrange button out of Columns and drops its label in a narrow stage', async () => {
+  it('keeps Arrange out of Columns and icon-only on a narrow stage', async () => {
     await page.viewport(1440, 900);
     const columns = await mount({ defaultArrangement: 'columns' });
     expect(
@@ -70,17 +76,19 @@ describe('Fleet Map review fixes', () => {
     ).toBeNull();
     const narrow = await mount({ defaultArrangement: 'spatial' }, '1000px');
     const icon = root(narrow).querySelector(
-      'sl-icon-button[data-testid="fleet-map-arrange-button"]'
+      '.canvas-tools [data-testid="fleet-map-arrange-button"]'
     );
     expect(icon).not.toBeNull();
-    expect(icon!.getAttribute('label')).toBe('Arrange');
+    expect(icon!.getAttribute('aria-label')).toBe('Arrange');
   });
 
   it('folds the legend behind its button where it would run under the zoom controls', async () => {
     await page.viewport(1024, 900);
     const el = await mount({ defaultArrangement: 'spatial' }, '752px', '800px');
     const legend = root(el).querySelector<HTMLElement>('.legend')!;
-    const tools = root(el).querySelector('.canvas-tools')!.getBoundingClientRect();
+    const tools = root(el)
+      .querySelector('.canvas-tools')!
+      .getBoundingClientRect();
     const shown = !legend.hidden && legend.getBoundingClientRect().width > 0;
     const box = legend.getBoundingClientRect();
     const overlaps =
@@ -101,7 +109,11 @@ describe('Fleet Map review fixes', () => {
 
   it('keeps the legend inline on a wide stage', async () => {
     await page.viewport(1440, 900);
-    const el = await mount({ defaultArrangement: 'spatial' }, '1168px', '800px');
+    const el = await mount(
+      { defaultArrangement: 'spatial' },
+      '1168px',
+      '800px'
+    );
     expect(root(el).querySelector<HTMLElement>('.legend')!.hidden).toBe(false);
     expect(root(el).querySelector('.legend-toggle')).toBeNull();
   });

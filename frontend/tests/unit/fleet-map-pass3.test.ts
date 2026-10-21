@@ -78,12 +78,8 @@ describe('Fleet Map pass 3', () => {
     });
   }
 
-  for (const action of [
-    'arrange',
-    'reset-layout',
-    'reset-filters',
-    'fullscreen-menu',
-  ]) {
+  // Arrange left the menus for the canvas tools in pass 4.
+  for (const action of ['reset-layout', 'reset-filters', 'fullscreen-menu']) {
     it(`dismisses narrow Filters after ${action}`, async () => {
       await page.viewport(390, 900);
       const el = await mount({ query: 'e' });
