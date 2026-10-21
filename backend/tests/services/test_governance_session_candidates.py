@@ -164,6 +164,8 @@ def test_retry_reader_limits_orders_and_excludes_completed_or_live_claims(
             "summarizing",
             "retry_exhausted",
             "parse_failed",
+            "capture_incomplete",
+            "capture_incomplete",
         ]
     ):
         row = crud_governance_session_digest.upsert(
@@ -175,11 +177,11 @@ def test_retry_reader_limits_orders_and_excludes_completed_or_live_claims(
             window_end=now - timedelta(hours=index),
             digest={"summary_status": status},
         )
-        if index == 4:
+        if index in (4, 7):
             crud_governance_session_digest.update(
                 db_session, db_obj=row, obj_in={"updated_at": now - timedelta(hours=1)}
             )
-        if index in (1, 2, 4, 6):
+        if index in (1, 2, 4, 6, 7):
             expected.insert(0, row.id)
     assert (
         list_session_digest_retries(
@@ -229,6 +231,7 @@ def test_retry_query_uses_partial_queue_index(db_session: Session) -> None:
         )
     )
     assert gov.SESSION_DIGEST_RETRY_PREDICATE in sql
+    assert gov.SESSION_DIGEST_CAPTURE_RETRY_PREDICATE in sql
     # Prove predicate/index eligibility independently of tiny-fixture cost estimates.
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
     plan = "\n".join(db_session.execute(text("EXPLAIN (COSTS OFF) " + sql)).scalars())
@@ -236,12 +239,13 @@ def test_retry_query_uses_partial_queue_index(db_session: Session) -> None:
     # Check each UNION branch separately: one indexed branch must not hide a
     # scan of all the account's completed segments in the other branch.
     branches = statement.get_final_froms()[0].element.selects
-    assert len(branches) == 2
+    assert len(branches) == 3
     for branch, index_name in zip(
         branches,
         (
             "ix_governance_session_digest_retry_queue",
             "ix_governance_session_digest_parse_retry",
+            "ix_governance_session_digest_capture_retry",
         ),
         strict=True,
     ):

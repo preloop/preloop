@@ -103,14 +103,22 @@ def list_session_digest_retries(
         digest.account_id == account_id,
         text(gov.SESSION_DIGEST_PARSE_RETRY_PREDICATE),
     )
+    incomplete_captures = select(*columns).where(
+        digest.account_id == account_id,
+        text(gov.SESSION_DIGEST_CAPTURE_RETRY_PREDICATE),
+        digest.updated_at <= stale_before,
+    )
     if runtime_session_id is not None:
         statement = statement.where(digest.runtime_session_id == runtime_session_id)
         parse_failures = parse_failures.where(
             digest.runtime_session_id == runtime_session_id
         )
+        incomplete_captures = incomplete_captures.where(
+            digest.runtime_session_id == runtime_session_id
+        )
     # Each branch has its own partial index. An OR would defeat the existing
     # queue predicate and scan completed history on every sweep.
-    candidates = statement.union_all(parse_failures).subquery()
+    candidates = statement.union_all(parse_failures, incomplete_captures).subquery()
     return list(
         db.scalars(
             select(candidates.c.id)
