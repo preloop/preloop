@@ -1072,8 +1072,9 @@ def _annotations(
             (issue trackers, code hosts, public registries, humans).
         idempotent: True when repeating a call with the same arguments has
             no additional effect. Always True for read-only tools.
-        destructive: True when the tool may delete or irreversibly
-            overwrite data. Always False for read-only tools.
+        destructive: True when the tool may perform updates that are not
+            purely additive (overwrite or delete existing data), per the MCP
+            spec. Always False for read-only tools.
 
     Returns:
         A dict with the MCP annotation keys (camelCase, as on the wire).
@@ -1096,7 +1097,11 @@ BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
     "search_issues": _annotations("Search issues", read_only=True, open_world=True),
     "search": _annotations("Search issues", read_only=True, open_world=True),
     "create_issue": _annotations("Create issue", read_only=False, open_world=True),
-    "update_issue": _annotations("Update issue", read_only=False, open_world=True),
+    # Updates overwrite existing fields, so they are not additive-only and
+    # carry destructiveHint per the MCP spec.
+    "update_issue": _annotations(
+        "Update issue", read_only=False, open_world=True, destructive=True
+    ),
     "estimate_compliance": _annotations(
         "Estimate issue compliance", read_only=True, open_world=True
     ),
@@ -1110,12 +1115,13 @@ BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
         read_only=False,
         open_world=True,
         idempotent=True,
+        destructive=True,
     ),
     "get_pull_request": _annotations(
         "Get pull request", read_only=True, open_world=True
     ),
     "update_pull_request": _annotations(
-        "Update pull request", read_only=False, open_world=True
+        "Update pull request", read_only=False, open_world=True, destructive=True
     ),
     "create_pull_request": _annotations(
         "Create pull request", read_only=False, open_world=True
@@ -1128,8 +1134,13 @@ BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
     "permission_prompt": _annotations(
         "Permission prompt", read_only=False, open_world=True
     ),
+    # Once the request is approved, this call executes the approved tool,
+    # which may be any builtin or proxied tool, so it inherits the worst case.
     "get_approval_status": _annotations(
-        "Get approval status", read_only=True, open_world=False
+        "Get approval status",
+        read_only=False,
+        open_world=True,
+        destructive=True,
     ),
     # Public package registries.
     "resolve_sbom_upstreams": _annotations(
@@ -1137,7 +1148,10 @@ BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
     ),
     # Agents, flows and sessions inside Preloop.
     "send_note": _annotations("Send note to agent", read_only=False, open_world=False),
-    "run_flow": _annotations("Run flow", read_only=False, open_world=True),
+    # A flow runs an agent whose own tools may overwrite or delete data.
+    "run_flow": _annotations(
+        "Run flow", read_only=False, open_world=True, destructive=True
+    ),
     "get_execution": _annotations(
         "Get flow execution", read_only=True, open_world=False
     ),

@@ -17,6 +17,104 @@ from preloop.models.models.tool_configuration import ToolConfiguration
 pytestmark = pytest.mark.asyncio
 
 
+def _annotation_scan_db(server_id, existing):
+    """Mock a DB holding one active server and the given cached tools.
+
+    Args:
+        server_id: The server's id.
+        existing: Cached MCPTool rows for the server.
+
+    Returns:
+        (db, server, added): the mock session, the server, and the list
+        that collects rows passed to ``db.add``.
+    """
+    server = MagicMock(spec=MCPServer)
+    server.id = server_id
+    server.name = "Upstream"
+    server.url = "http://upstream.test"
+    server.auth_type = "none"
+    server.auth_config = {}
+    server.transport = "http"
+    added = []
+    db = MagicMock()
+    db.add.side_effect = added.append
+
+    def query(model, *args):
+        q = MagicMock()
+        if model == MCPServer:
+            q.filter.return_value.first.return_value = server
+        else:
+            q.filter.return_value.all.return_value = list(existing) + added
+        return q
+
+    db.query.side_effect = query
+    return db, server, added
+
+
+class TestScanStoresUpstreamAnnotations:
+    """Discovery writes upstream ToolAnnotations into MCPTool.annotations."""
+
+    async def _scan(self, mocker, upstream_tools, existing=()):
+        from preloop.services.mcp_tool_discovery import scan_mcp_server_tools
+
+        server_id = uuid.uuid4()
+        db, _, added = _annotation_scan_db(server_id, existing)
+        client = AsyncMock()
+        client.list_tools.return_value = upstream_tools
+        pool = MagicMock()
+        pool.get_client = AsyncMock(return_value=client)
+        mocker.patch(
+            "preloop.services.mcp_tool_discovery.get_mcp_client_pool",
+            return_value=pool,
+        )
+        await scan_mcp_server_tools(server_id, db)
+        return added
+
+    async def test_insert_path_stores_annotations(self, mocker):
+        from mcp.types import Tool, ToolAnnotations
+
+        upstream = [
+            Tool(
+                name="delete_repo",
+                inputSchema={"type": "object"},
+                annotations=ToolAnnotations(title="Delete", destructiveHint=True),
+            ),
+            Tool(name="plain", inputSchema={"type": "object"}),
+        ]
+
+        added = await self._scan(mocker, upstream)
+
+        by_name = {t.name: t for t in added}
+        assert by_name["delete_repo"].annotations == {
+            "title": "Delete",
+            "destructiveHint": True,
+        }
+        assert by_name["plain"].annotations is None
+
+    async def test_update_path_replaces_and_clears_annotations(self, mocker):
+        from mcp.types import Tool, ToolAnnotations
+
+        changed = MagicMock(spec=MCPTool)
+        changed.name = "changed"
+        changed.annotations = {"readOnlyHint": True}
+        dropped = MagicMock(spec=MCPTool)
+        dropped.name = "dropped"
+        dropped.annotations = {"readOnlyHint": True}
+        upstream = [
+            Tool(
+                name="changed",
+                inputSchema={"type": "object"},
+                annotations=ToolAnnotations(readOnlyHint=False),
+            ),
+            Tool(name="dropped", inputSchema={"type": "object"}),
+        ]
+
+        await self._scan(mocker, upstream, existing=[changed, dropped])
+
+        assert changed.annotations == {"readOnlyHint": False}
+        assert dropped.annotations is None
+
+
 class TestScanMCPServerTools:
     """Test scan_mcp_server_tools function."""
 

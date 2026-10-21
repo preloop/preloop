@@ -132,17 +132,28 @@ async def test_hint_values_match_tool_behaviour() -> None:
     hints = BUILTIN_TOOL_ANNOTATIONS
     for name in ("get_issue", "search_issues", "get_pull_request", "get_artifact"):
         assert hints[name]["readOnlyHint"] is True, name
+    # Additive writes: they create, never overwrite.
     for name in (
         "create_issue",
-        "update_issue",
         "add_comment",
         "create_pull_request",
-        "update_pull_request",
-        "run_flow",
         "deposit_artifact",
+        "request_approval",
     ):
         assert hints[name]["readOnlyHint"] is False, name
         assert hints[name]["destructiveHint"] is False, name
+    # Overwrites, and calls that run other tools, are destructive per the spec.
+    for name in (
+        "update_issue",
+        "update_comment",
+        "update_pull_request",
+        "run_flow",
+        "get_approval_status",
+    ):
+        assert hints[name]["readOnlyHint"] is False, name
+        assert hints[name]["destructiveHint"] is True, name
+    # get_approval_status executes the approved tool once approved.
+    assert hints["get_approval_status"]["openWorldHint"] is True
     assert hints["request_approval"]["openWorldHint"] is True
     assert hints["list_sessions"]["openWorldHint"] is False
 
