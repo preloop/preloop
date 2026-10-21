@@ -5,7 +5,11 @@ import '../../src/components/fleet-map';
 import { sampleFleetMap } from '../../src/test-helpers/fleet-map-graph';
 
 const mounted: HTMLElement[] = [];
-async function mount(extra: Record<string, unknown> = {}, width = '100%') {
+async function mount(
+  extra: Record<string, unknown> = {},
+  width = '100%',
+  height = '600px'
+) {
   const el: any = document.createElement('fleet-map');
   Object.assign(el, {
     graph: sampleFleetMap(),
@@ -15,7 +19,7 @@ async function mount(extra: Record<string, unknown> = {}, width = '100%') {
     positionsScope: 'review',
     ...extra,
   });
-  el.style.cssText = `height:600px;width:${width};min-width:0`;
+  el.style.cssText = `height:${height};width:${width};min-width:0`;
   document.body.style.margin = '0';
   document.body.append(el);
   mounted.push(el);
@@ -66,5 +70,35 @@ describe('Fleet Map review fixes', () => {
     );
     expect(icon).not.toBeNull();
     expect(icon!.getAttribute('label')).toBe('Arrange');
+  });
+
+  it('folds the legend behind its button where it would run under the zoom controls', async () => {
+    await page.viewport(1024, 900);
+    const el = await mount({ defaultArrangement: 'spatial' }, '752px', '800px');
+    const legend = root(el).querySelector<HTMLElement>('.legend')!;
+    const tools = root(el).querySelector('.canvas-tools')!.getBoundingClientRect();
+    const shown = !legend.hidden && legend.getBoundingClientRect().width > 0;
+    const box = legend.getBoundingClientRect();
+    const overlaps =
+      shown &&
+      box.left < tools.right &&
+      tools.left < box.right &&
+      box.top < tools.bottom &&
+      tools.top < box.bottom;
+    expect(overlaps).toBe(false);
+    const toggle = root(el).querySelector<HTMLElement>('.legend-toggle')!;
+    expect(toggle).not.toBeNull();
+    toggle.click();
+    await el.updateComplete;
+    const open = legend.getBoundingClientRect();
+    expect(legend.hidden).toBe(false);
+    expect(open.bottom).toBeLessThanOrEqual(tools.top);
+  });
+
+  it('keeps the legend inline on a wide stage', async () => {
+    await page.viewport(1440, 900);
+    const el = await mount({ defaultArrangement: 'spatial' }, '1168px', '800px');
+    expect(root(el).querySelector<HTMLElement>('.legend')!.hidden).toBe(false);
+    expect(root(el).querySelector('.legend-toggle')).toBeNull();
   });
 });

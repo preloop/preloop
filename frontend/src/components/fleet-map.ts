@@ -158,6 +158,8 @@ const MIN_FIT_SCALE = 0.6;
 const MIN_SPATIAL_FIT_SCALE = 0.85;
 /** Below this stage width the toolbar's Arrange button drops its label. */
 const ARRANGE_LABEL_MIN_WIDTH = 1100;
+/** Narrower stages fold the legend behind its ? button. */
+const LEGEND_INLINE_MIN_WIDTH = 1000;
 /** Nodes and the view glide to a new arrangement in this long (medium). */
 const GLIDE_MS = 400;
 /** Label tags drawn on a work chip; the rest are a +N count and in the title. */
@@ -2277,6 +2279,12 @@ export class FleetMap extends LitElement {
         padding: 2px 6px;
         border-radius: var(--sl-border-radius-medium);
       }
+      .legend.raised {
+        bottom: 48px;
+        right: 12px;
+        flex-wrap: wrap;
+        row-gap: 4px;
+      }
       .legend span {
         display: inline-flex;
         align-items: center;
@@ -2882,6 +2890,17 @@ export class FleetMap extends LitElement {
         bubbles: true,
         composed: true,
       })
+    );
+  }
+
+  /**
+   * A short or narrow stage folds the legend behind its ? button: inline it
+   * would run under the zoom controls (it needs about 1000px beside them).
+   */
+  private get compactLegend(): boolean {
+    return (
+      this.viewport.height < 600 ||
+      this.viewport.width < LEGEND_INLINE_MIN_WIDTH
     );
   }
 
@@ -4593,7 +4612,7 @@ export class FleetMap extends LitElement {
           </button>
         </div>
         ${
-          !this.bare && this.viewport.height < 600
+          !this.bare && this.compactLegend
             ? html`<button
                 class="overlay legend-toggle"
                 aria-label="Map legend"
@@ -4607,8 +4626,8 @@ export class FleetMap extends LitElement {
             : nothing
         }
         <div
-          class="overlay legend"
-          ?hidden=${this.bare || (this.viewport.height < 600 && !this.legendOpen)}
+          class="overlay legend ${this.compactLegend ? 'raised' : ''}"
+          ?hidden=${this.bare || (this.compactLegend && !this.legendOpen)}
         >
           <span
             ><svg viewBox="0 0 24 8" aria-hidden="true">
