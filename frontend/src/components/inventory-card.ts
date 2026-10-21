@@ -1098,8 +1098,8 @@ export class InventoryCard extends LitElement {
   }
 
   /**
-   * Say which view is showing, so the page can give the Map the full row: a
-   * topology does not fit the 2fr column a table does (F-04).
+   * Say which view is showing, for a host that lays out around it. The
+   * Overview keeps the card under the Gateway in both views.
    */
   protected updated(changed: Map<string, unknown>): void {
     super.updated?.(changed);

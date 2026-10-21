@@ -560,8 +560,6 @@ export class DashboardView extends AuthedElement {
    */
   @state() private auditEventCount: number | null = null;
   @state() private auditEventCountCapped = false;
-  /** The Inventory shows the Fleet Map, which gets a full-width row. */
-  @state() private inventoryMapMode = false;
   /**
    * True while the figures on the Audit trail line are being measured for
    * the range on screen. It covers a range change too, which keeps the
@@ -1238,26 +1236,20 @@ export class DashboardView extends AuthedElement {
         grid-column: 1;
         grid-row: 3;
       }
-      .dashboard.map-inventory > .side-column {
-        grid-row: 2;
-      }
-      .dashboard.map-inventory > .inventory-stack {
-        grid-row: 3;
-      }
       @media (min-width: 1200px) {
+        /* Inventory sits under the Gateway in Table and Map alike. Row 1
+           is sized by the Gateway alone and row 2 takes what the spanning
+           side column needs beyond it. With two auto rows the long Activity
+           feed stretched row 1 (a gap above Inventory), and a full-width
+           Map row pushed Inventory below the whole side column. */
         .column-layout.dashboard {
           grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+          grid-template-rows: auto 1fr;
+          align-items: start;
         }
         .dashboard > .side-column {
           grid-column: 2;
           grid-row: 1 / span 2;
-        }
-        .dashboard.map-inventory > .side-column {
-          grid-row: 1;
-        }
-        .dashboard.map-inventory > .inventory-stack {
-          grid-column: 1 / -1;
-          grid-row: 2;
         }
       }
 
@@ -4742,9 +4734,6 @@ export class DashboardView extends AuthedElement {
         .rangeLabel=${this.gatewayRangeLabel}
         .timeRange=${this.gatewayTimeRange}
         @range-change=${this.onRangeChange}
-        @inventory-view-change=${(event: CustomEvent<{ view: string }>) => {
-          this.inventoryMapMode = event.detail?.view === 'map';
-        }}
         .flowRunsCapped=${this.flowRunsCapped}
         ?loading=${this.loading}
         .loadingAgents=${this.fetchingAgents}
@@ -4922,9 +4911,7 @@ export class DashboardView extends AuthedElement {
         ${this.renderAttentionStrip()} ${this.renderWelcomeCard()}
       </div>
 
-      <div
-        class="column-layout dashboard extra-wide ${this.inventoryMapMode ? 'map-inventory' : ''}"
-      >
+      <div class="column-layout dashboard extra-wide">
         <div class="main-column">
           <div class="dashboard-stack">
             ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
@@ -4934,9 +4921,7 @@ export class DashboardView extends AuthedElement {
         <div class="side-column">
           ${this.renderUsageCard()} ${this.renderActivityFeed()}
         </div>
-        <div
-          class="dashboard-stack inventory-stack ${this.inventoryMapMode ? 'inventory-full-row' : ''}"
-        >
+        <div class="dashboard-stack inventory-stack">
           ${this.renderInventoryStack()}
         </div>
         <mcp-setup-dialog
