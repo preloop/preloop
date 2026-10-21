@@ -78,3 +78,32 @@ Contributing flow IDs on a merge do not identify the person who merged it.
 Richer tracker titles, label changes, confirmed review verdicts and verified human
 actors require normalized publisher metadata. Missing fields remain unknown. The
 live view does not backfill a complete issue/review history after refresh.
+
+## What the window counts
+
+With a window selected, a resource appears only with its own activity inside it.
+Models, provider accounts and providers need gateway requests in the window; being
+configured on an active agent is not enough. Agents count by sessions, gateway
+requests or last seen; devices and runners by heartbeats; people when something
+they own is active or they called the gateway directly. Flows count by runs, gateway
+requests or code activity, and connect to the models their runs actually called
+(the configured model is the fallback). Issues count by forge updates, creation or
+work by a flow or agent, not by Preloop re-syncing them. Servers that support it
+return configured idle resources with `include_idle=true`, marked idle.
+
+People show their profile picture (from single sign-on or an uploaded image) when
+one is stored.
+
+Agents and flows are linked to the issues, pull requests and merge requests they
+touched through Preloop's built-in tools (`create_issue`, `update_issue`,
+`add_comment`, `update_pull_request`, ...), `gh` and `glab` commands seen by the
+native permission hook, and the GitHub and GitLab MCP servers. Only the action,
+the object reference and the repository are kept, never the arguments, bodies or
+command lines. Native commands are recorded when they are allowed, before they run.
+Pull requests are linked to the issues they resolve or mention, and flows to the
+issue or PR that triggered a run and the PR it produced.
+
+Selecting a node shows its totals for the window on servers that provide them:
+requests, tokens and estimated cost, tool calls, approvals, PRs opened, reviewed
+and merged, review comments, and issues and PRs touched. Each node links to its own
+page; issues and PRs open on the forge.
