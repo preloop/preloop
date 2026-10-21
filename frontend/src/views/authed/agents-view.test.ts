@@ -1392,6 +1392,20 @@ describe('AgentsView', () => {
     ).to.equal('2 agents');
   });
 
+  // B-02: the list's numbers are lifetime totals and the page says so next
+  // to the count, not only in the column tooltips.
+  it('states that the list totals cover all time', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const window = el.shadowRoot!.querySelector(
+      '[data-testid="agents-usage-window"]'
+    );
+    expect(window?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      '· all time'
+    );
+    expect(window?.getAttribute('slot')).to.equal('count');
+  });
+
   it('labels the header actions by what they do', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
     await waitForAgents(el);

@@ -1413,7 +1413,9 @@ function appendSessionPage(query: URLSearchParams, page?: SessionPage) {
 
 export async function getAccountGatewayUsageSummary(
   params: GatewayUsageSummaryParams & {
-    breakdowns?: ('models' | 'flows' | 'sessions' | 'tools' | 'days')[];
+    breakdowns?: (
+      'models' | 'flows' | 'sessions' | 'tools' | 'days' | 'agents'
+    )[];
     sessionPage?: SessionPage;
   } = {}
 ): Promise<AccountGatewayUsageSummaryResponse> {

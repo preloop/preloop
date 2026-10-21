@@ -99,7 +99,10 @@ import { parseUTCDate } from '../../utils/date';
 import { formatRelativeTime } from '../../components/relative-time-label';
 import { sumTokenUsage } from '../../components/token-figures';
 import { executionSubjectCss } from '../../utils/execution-subject';
-import { mergeGatewaySummaryPreservingBreakdown } from '../../utils/gateway-summary';
+import {
+  agentUsageById,
+  mergeGatewaySummaryPreservingBreakdown,
+} from '../../utils/gateway-summary';
 import {
   pickDefaultModel,
   selectableModels,
@@ -3253,6 +3256,16 @@ export class DashboardView extends AuthedElement {
         getAccountGatewayUsageSummary({
           startDate: gatewayStartDate,
           includeBreakdown: true,
+          // Every historical section plus the per-agent totals the
+          // Inventory's Agents and Users tabs read.
+          breakdowns: [
+            'models',
+            'flows',
+            'sessions',
+            'tools',
+            'days',
+            'agents',
+          ],
         }),
         null
       );
@@ -3715,60 +3728,6 @@ export class DashboardView extends AuthedElement {
 
   private get enabledToolsCount(): number {
     return this.tools.filter((tool) => tool.is_enabled).length;
-  }
-
-  private getManagedAgentBySourceId(
-    sourceId: string | null | undefined
-  ): ManagedAgentSummary | undefined {
-    if (!sourceId) {
-      return undefined;
-    }
-    const agents = [...this.managedAgents, ...this.budgetAgents];
-    const exact = agents.find(
-      (agent) =>
-        agent.id === sourceId ||
-        agent.session_source_id === sourceId ||
-        agent.runtime_session_id === sourceId
-    );
-    if (exact) {
-      return exact;
-    }
-    // Per-run sessions append a suffix to the agent's base source id, e.g.
-    // "custom_ABC:demo-123" (custom) or "hermes-0161afa5e616-<timestamp|uuid>"
-    // (runtime-token agents). Match the agent whose base source id the session
-    // id starts with (delimited by ':' or '-'); prefer the longest match so a
-    // more specific agent wins over a shorter prefix.
-    return agents
-      .filter(
-        (agent) =>
-          Boolean(agent.session_source_id) &&
-          (sourceId.startsWith(`${agent.session_source_id}:`) ||
-            sourceId.startsWith(`${agent.session_source_id}-`))
-      )
-      .sort(
-        (a, b) =>
-          (b.session_source_id?.length ?? 0) -
-          (a.session_source_id?.length ?? 0)
-      )[0];
-  }
-
-  private getManagedAgentForUsageSession(
-    session: GatewayUsageBySession
-  ): ManagedAgentSummary | undefined {
-    const lookupIds = [
-      session.agent_id,
-      session.runtime_session_id,
-      session.session_source_id,
-      session.runtime_principal_id,
-    ].filter((value): value is string => Boolean(value));
-
-    for (const sourceId of lookupIds) {
-      const agent = this.getManagedAgentBySourceId(sourceId);
-      if (agent) {
-        return agent;
-      }
-    }
-    return undefined;
   }
 
   private handleDeployAgentSuccess(event: CustomEvent): void {
@@ -4422,40 +4381,14 @@ export class DashboardView extends AuthedElement {
    * tools) that paints the row, then a usage request that fills the number
    * cells. None of them adds a request the page did not already make. Agents
    * come from the agents list, their numbers from the gateway summary's
-   * per-session breakdown (the agents list totals are lifetime, the Inventory
-   * shows the page range). Flows come from the flows list joined to the
+   * per-agent breakdown (`usage_by_agent`, the page range, by the same
+   * attribution as the agents list and the agent page). Flows come from the flows list joined to the
    * executions the page already fetches. Models come from the AI models list
    * joined to `ai-models/overview`. Tools come from the tool catalogue joined
    * to `usage_by_tool`.
    */
   private get inventoryAgentRows(): InventoryAgentRow[] {
-    const totals = new Map<
-      string,
-      {
-        requests: number;
-        tokens: number;
-        tokenUsage: GatewayTokenUsage | null;
-        cost: number;
-      }
-    >();
-    for (const session of this.gatewaySummary?.usage_by_session || []) {
-      const agent = this.getManagedAgentForUsageSession(session);
-      if (!agent) continue;
-      const running = totals.get(agent.id) || {
-        requests: 0,
-        tokens: 0,
-        tokenUsage: null,
-        cost: 0,
-      };
-      running.requests += session.request_count || 0;
-      running.tokens += session.token_usage?.total_tokens || 0;
-      running.tokenUsage = sumTokenUsage([
-        running.tokenUsage,
-        session.token_usage,
-      ]);
-      running.cost += session.estimated_cost || 0;
-      totals.set(agent.id, running);
-    }
+    const totals = agentUsageById(this.gatewaySummary);
     return this.managedAgents.map((agent) => {
       const usage = totals.get(agent.id);
       return {
@@ -4677,26 +4610,7 @@ export class DashboardView extends AuthedElement {
   }
 
   private get inventoryUserRows(): InventoryUserRow[] {
-    const perAgent = new Map<
-      string,
-      { tokens: number; tokenUsage: GatewayTokenUsage | null; cost: number }
-    >();
-    for (const session of this.gatewaySummary?.usage_by_session || []) {
-      const agent = this.getManagedAgentForUsageSession(session);
-      if (!agent) continue;
-      const running = perAgent.get(agent.id) || {
-        tokens: 0,
-        tokenUsage: null,
-        cost: 0,
-      };
-      running.tokens += session.token_usage?.total_tokens || 0;
-      running.tokenUsage = sumTokenUsage([
-        running.tokenUsage,
-        session.token_usage,
-      ]);
-      running.cost += session.estimated_cost || 0;
-      perAgent.set(agent.id, running);
-    }
+    const perAgent = agentUsageById(this.gatewaySummary);
 
     const byOwner = new Map<
       string,

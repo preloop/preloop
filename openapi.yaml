@@ -2028,6 +2028,7 @@ paths:
               - sessions
               - tools
               - days
+              - agents
               type: string
           - type: 'null'
           description: Selected breakdowns, repeated for multiple sections. Omitted
@@ -23676,6 +23677,13 @@ components:
             $ref: '#/components/schemas/GatewayUsageByTool'
           type: array
           title: Usage By Tool
+        usage_by_agent:
+          items:
+            $ref: '#/components/schemas/GatewayUsageByAgent'
+          type: array
+          title: Usage By Agent
+          description: Per-agent totals in the period, by the same attribution as
+            the agents list and agent detail. Only with breakdown=agents.
       type: object
       required:
       - period_start
@@ -34715,6 +34723,52 @@ components:
       type: object
       title: GatewayToolUsageByAgent
       description: Tool activity attributed to one runtime principal (managed agent).
+    GatewayUsageByAgent:
+      properties:
+        agent_id:
+          type: string
+          title: Agent Id
+        session_count:
+          type: integer
+          title: Session Count
+          default: 0
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        successful_requests:
+          type: integer
+          title: Successful Requests
+          default: 0
+        failed_requests:
+          type: integer
+          title: Failed Requests
+          default: 0
+        token_usage:
+          $ref: '#/components/schemas/GatewayTokenUsage'
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        last_request_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Request At
+      type: object
+      required:
+      - agent_id
+      - token_usage
+      title: GatewayUsageByAgent
+      description: 'One managed agent''s gateway usage in a window.
+
+
+        A row counts for an agent when its runtime principal is the agent''s base
+
+        source id, or when it ran in a session the agent owns (the bound session,
+
+        or a per-run ``<base>:<run>`` / ``<base>-<run>`` session).'
     GatewayUsageByDay:
       properties:
         date:
@@ -49054,7 +49108,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

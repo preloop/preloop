@@ -17,7 +17,10 @@ from preloop.utils.agent_kind import (
 )
 
 UsageBreakdown = Literal["models", "flows", "sessions", "tools", "days", "imported"]
-GatewayUsageBreakdown = Literal["models", "flows", "sessions", "tools", "days"]
+#: ``agents`` is opt-in: an omitted selection keeps the historical sections.
+GatewayUsageBreakdown = Literal[
+    "models", "flows", "sessions", "tools", "days", "agents"
+]
 
 
 def _agree_direction_pair(
@@ -562,6 +565,24 @@ class ManagedAgentSummary(BaseModel):
         if value is None or value == "":
             return "offline"
         return value
+
+
+class GatewayUsageByAgent(BaseModel):
+    """One managed agent's gateway usage in a window.
+
+    A row counts for an agent when its runtime principal is the agent's base
+    source id, or when it ran in a session the agent owns (the bound session,
+    or a per-run ``<base>:<run>`` / ``<base>-<run>`` session).
+    """
+
+    agent_id: str
+    session_count: int = 0
+    request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    token_usage: GatewayTokenUsage
+    estimated_cost: float = 0.0
+    last_request_at: Optional[datetime] = None
 
 
 class ManagedAgentUsageAggregate(BaseModel):
@@ -1271,6 +1292,13 @@ class AccountGatewayUsageSummaryResponse(BaseModel):
         ),
     )
     usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)
+    usage_by_agent: List[GatewayUsageByAgent] = Field(
+        default_factory=list,
+        description=(
+            "Per-agent totals in the period, by the same attribution as the "
+            "agents list and agent detail. Only with breakdown=agents."
+        ),
+    )
 
 
 class ApiKeyGatewayUsageSummaryResponse(BaseModel):

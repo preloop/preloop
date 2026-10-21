@@ -419,6 +419,9 @@ export class AgentsView extends LitElement {
         :host {
           display: block;
         }
+        .usage-window {
+          color: var(--sl-color-neutral-600);
+        }
         /* The canvas fills the window the shell hands it. List and cards
            grow, and the shell content area is what scrolls. */
         :host(.canvas-fill) {
@@ -4814,6 +4817,20 @@ export class AgentsView extends LitElement {
                 : null
             }
             <span slot="count">${this.resultsLabel}</span>
+            ${
+              // The numbers are lifetime totals; the Last seen filter picks
+              // which agents are listed, not the window they cover (B-02).
+              this.effectiveView === 'list' && this.resultsLabel
+                ? html`<span
+                    slot="count"
+                    class="usage-window"
+                    data-testid="agents-usage-window"
+                    title="Requests, tokens and spend are totals over all time"
+                  >
+                    · all time</span
+                  >`
+                : nothing
+            }
             ${this.renderBulkBar()}
           </list-toolbar>
           ${
