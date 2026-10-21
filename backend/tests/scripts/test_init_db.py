@@ -6,18 +6,10 @@ from preloop.models import models
 
 from preloop.models.crud import crud_account, crud_ai_model
 from scripts.init_db import (
-    _build_gateway_url,
     _merge_gateway_meta,
     reconcile_ai_model_gateway_settings,
     seed_plan_catalog,
 )
-
-
-def test_build_gateway_url_uses_public_preloop_base_url():
-    assert (
-        _build_gateway_url("https://review.preloop.ai/")
-        == "https://review.preloop.ai/openai/v1"
-    )
 
 
 def test_merge_gateway_meta_preserves_existing_metadata():
@@ -32,12 +24,11 @@ def test_merge_gateway_meta_preserves_existing_metadata():
         meta_data,
         provider_name="openai",
         model_identifier="gpt-5.4",
-        gateway_url="https://review.preloop.ai/openai/v1",
     )
 
     assert merged["label"] == "review"
     assert merged["gateway"]["enabled"] is True
-    assert merged["gateway"]["url"] == "https://review.preloop.ai/openai/v1"
+    assert "url" not in merged["gateway"]
     assert merged["gateway"]["provider_adapter"] == "preloop"
     assert merged["gateway"]["model_alias"] == "custom/openai-gpt5"
 
@@ -78,7 +69,6 @@ def test_reconcile_ai_model_gateway_settings_updates_credentialed_models(
 
     updated_count = reconcile_ai_model_gateway_settings(
         db_session,
-        gateway_url="https://review.preloop.ai/openai/v1",
     )
 
     db_session.refresh(system_model)
@@ -86,17 +76,11 @@ def test_reconcile_ai_model_gateway_settings_updates_credentialed_models(
 
     assert updated_count >= 2
     assert system_model.meta_data["gateway"]["enabled"] is True
-    assert (
-        system_model.meta_data["gateway"]["url"]
-        == "https://review.preloop.ai/openai/v1"
-    )
+    assert "url" not in system_model.meta_data["gateway"]
     assert system_model.meta_data["gateway"]["model_alias"] == "openai/gpt-5.4"
     assert account_model.meta_data["owner"] == "review"
     assert account_model.meta_data["gateway"]["enabled"] is True
-    assert (
-        account_model.meta_data["gateway"]["url"]
-        == "https://review.preloop.ai/openai/v1"
-    )
+    assert "url" not in account_model.meta_data["gateway"]
 
 
 @pytest.mark.parametrize("retention_days", [730, -1])
@@ -194,3 +178,70 @@ def test_upgrade_plan_seed_updates_current_catalog_and_active_flag(
     assert row.price_monthly == 12
     assert row.features == {"retention_days": 730}
     assert row.is_active is True
+
+
+@pytest.mark.parametrize(
+    "gateway",
+    [
+        {"enabled": True, "model_alias": "local/check", "provider_adapter": "custom"},
+        {
+            "enabled": True,
+            "model_alias": "local/check",
+            "url": "http://gateway:8000/openai/v1",
+        },
+        {"enabled": False, "model_alias": "local/check"},
+    ],
+)
+@pytest.mark.parametrize("retired", [False, True])
+def test_repeated_upgrade_preserves_configured_gateway(db_session, gateway, retired):
+    original = {"gateway": gateway, "local_inference": True, "retired": retired}
+    row = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "Configured local model",
+            "provider_name": "openai",
+            "model_identifier": "local-check",
+            "api_key": "synthetic-test-key",
+            "meta_data": original,
+        },
+        account_id=None,
+    )
+    # A configured adapter may be omitted intentionally; bootstrap fills only
+    # defaults for enabled rows, never route or alias replacements.
+    expected = dict(original)
+    if not retired and gateway["enabled"]:
+        expected["gateway"] = {"provider_adapter": "preloop", **gateway}
+    for _ in range(2):
+        reconcile_ai_model_gateway_settings(db_session)
+        db_session.expire_all()
+        refreshed = crud_ai_model.get(db_session, id=row.id)
+        assert refreshed.meta_data == expected
+
+
+def test_new_gateway_metadata_uses_runtime_environment_route():
+    merged = _merge_gateway_meta(None, provider_name="openai", model_identifier="local")
+    assert merged == {
+        "gateway": {
+            "enabled": True,
+            "provider_adapter": "preloop",
+            "model_alias": "openai/local",
+        }
+    }
+
+
+@pytest.mark.parametrize("api_key", [None, ""])
+def test_reconcile_does_not_enable_models_without_credentials(db_session, api_key):
+    row = crud_ai_model.create_with_account(
+        db=db_session,
+        obj_in={
+            "name": "No credential",
+            "provider_name": "openai",
+            "model_identifier": "no-credential",
+            "api_key": api_key,
+            "meta_data": {"label": "unchanged"},
+        },
+        account_id=None,
+    )
+    reconcile_ai_model_gateway_settings(db_session)
+    db_session.expire_all()
+    assert crud_ai_model.get(db_session, id=row.id).meta_data == {"label": "unchanged"}

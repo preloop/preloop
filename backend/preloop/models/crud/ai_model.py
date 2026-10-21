@@ -44,6 +44,20 @@ def _effective_gateway_alias_from_fields(
 class CRUDAIModel(CRUDBase[AIModel]):
     """CRUD class for AIModel operations."""
 
+    def get_gateway_bootstrap_candidates(self, db: Session) -> list[models.AIModel]:
+        """Return credentialed models for deployment-wide bootstrap defaults."""
+        return (
+            db.query(models.AIModel)
+            .filter(
+                or_(
+                    models.AIModel.api_key.isnot(None),
+                    models.AIModel.credentials_secret_id.isnot(None),
+                )
+            )
+            .order_by(models.AIModel.id)
+            .all()
+        )
+
     @staticmethod
     def _is_retired_system_model(ai_model: AIModel) -> bool:
         """Retain historical global rows without selecting them for new work."""

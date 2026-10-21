@@ -76,3 +76,9 @@ private literal endpoints, and models explicitly marked
 endpoints; pricing does not resolve DNS. An unknown remote OpenAI-compatible
 endpoint remains unpriced unless a price is supplied. The local default is
 reported as model configuration, not a fetched provider tariff.
+
+
+Database initialization during upgrades preserves configured gateway aliases,
+explicit URLs, disabled models and retired models. An omitted gateway URL stays
+omitted, allowing runtime environment settings to select the internal service
+address. The initializer does not copy the public `PRELOOP_URL` into model routes.
