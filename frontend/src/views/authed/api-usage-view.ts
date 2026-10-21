@@ -1338,6 +1338,7 @@ export class ApiUsageView extends LitElement {
       .table=${this.modelTable}
       .rows=${this.modelTable.rows}
       .stickyHeader=${false}
+      .columnPicker=${false}
       label="Usage by model"
       noun="models"
     ></data-table>`;

@@ -1431,7 +1431,9 @@ export class InventoryCard extends LitElement {
         cellLabel: 'Seen',
         header: 'Last seen',
         numeric: true,
-        width: 64,
+        // The last column also hosts the column picker in its header, so it
+        // is sized for the heading plus the icon trigger, not the value alone.
+        width: 112,
         cellTitle: (row) => this.absolute(row.lastSeenAt),
         cell: (row) => this.relative(row.lastSeenAt),
       },

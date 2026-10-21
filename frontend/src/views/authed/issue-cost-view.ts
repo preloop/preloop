@@ -747,6 +747,7 @@ export class IssueCostView extends AuthedElement {
       .rowDetail=${(row: IssueCostRow) => this.renderExecutions(row)}
       .loading=${this.loading}
       .stickyHeader=${false}
+      .columnPicker=${false}
       label="Cost per issue"
       noun="issues"
     ></data-table>`;
@@ -766,6 +767,7 @@ export class IssueCostView extends AuthedElement {
               .table=${table}
               .rows=${table.rows}
               .stickyHeader=${false}
+              .columnPicker=${false}
               label=${label}
               noun=${label === 'By flow' ? 'flows' : 'projects'}
             ></data-table>`

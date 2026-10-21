@@ -90,6 +90,11 @@ export class DataTable<TRow extends RowData = RowData> extends LitElement {
   @property({ type: Boolean, attribute: 'sticky-header' }) stickyHeader = true;
   /** Placeholder rows while the first page loads. */
   @property({ type: Number, attribute: 'skeleton-rows' }) skeletonRows = 5;
+  /**
+   * The column picker in the last header cell. Off for a table whose columns
+   * are not the reader's to choose, such as a fixed summary.
+   */
+  @property({ attribute: false }) columnPicker = true;
 
   createRenderRoot() {
     return this;
@@ -213,13 +218,13 @@ export class DataTable<TRow extends RowData = RowData> extends LitElement {
             </th>`
           : nothing
       }
-      ${renderListHeaders(this.table, !this.hasActions)}
+      ${renderListHeaders(this.table, this.columnPicker && !this.hasActions)}
       ${
         this.hasActions
           ? html`<th class="actions-cell" scope="col">
               <div class="table-header-content">
                 <span class="visually-hidden">Actions</span>
-                ${renderHeaderColumnPicker(this.table)}
+                ${this.columnPicker ? renderHeaderColumnPicker(this.table) : nothing}
               </div>
             </th>`
           : nothing

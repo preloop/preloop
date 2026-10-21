@@ -27,8 +27,8 @@ export interface DataTableToolbarOptions<TRow extends RowData> {
 
 /**
  * The shared toolbar for a `<data-table>`: `list-toolbar` with its search
- * wired to the model's global filter, the page's own filters, the count, and the bulk bar that takes the row
- * over while something is selected.
+ * wired to the model's global filter, the page's own filters, the count, and
+ * the bulk bar that takes the row over while something is selected.
  *
  * It is a function rather than another element so the filters a page passes
  * stay in the page's shadow root and keep its styles.

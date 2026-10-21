@@ -1176,7 +1176,6 @@ export class AIModelsView extends LitElement {
             <sl-option value="enabled">Enabled</sl-option>
             <sl-option value="disabled">Disabled</sl-option>
           </sl-select>
-
           <span slot="count">${this.resultsLabel}</span>
           ${this.renderBulkBar()}
         </list-toolbar>

@@ -1843,7 +1843,6 @@ export class FlowsView extends LitElement {
             void this.loadRangeStats();
           }}
         ></time-range-select>
-
         <span slot="count">${this.resultsLabel}</span>
         ${this.renderBulkBar()}
       </list-toolbar>

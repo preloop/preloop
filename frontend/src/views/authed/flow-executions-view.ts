@@ -194,14 +194,14 @@ export class FlowExecutionsView extends AuthedElement {
          widths are declared per column in EXECUTION_COLUMNS and set on the
          cell, so a drag can change them; Subject declares none and takes
          whatever is left.
-         The 1122px min-width reserves room for the header picker and a ~120px
+         The 1080px min-width is the fixed columns (954px) plus a ~120px
          floor for Subject, so the flexible column that names a run stays
          readable at the narrowest layout. Below that the wrapper scrolls
          horizontally rather than squeezing Subject to a sliver. */
         table {
           width: 100%;
           border-collapse: collapse;
-          min-width: 1122px;
+          min-width: 1080px;
           table-layout: fixed;
           font-size: var(--console-text-body);
         }
@@ -331,7 +331,7 @@ export class FlowExecutionsView extends AuthedElement {
           white-space: nowrap;
         }
         .actions-cell {
-          width: 120px;
+          width: 72px;
         }
         .row-actions {
           display: flex;

@@ -1177,6 +1177,26 @@ describe('inventory-card Agents columns', () => {
     );
   });
 
+  it('keeps the last heading readable beside the column picker', async () => {
+    const el = await card({ agentRows: [agentRow()] });
+    const cell = el.shadowRoot!.querySelector(
+      'table thead th:last-child'
+    ) as HTMLElement;
+    const label = cell.querySelector('.header-label') as HTMLElement;
+    const picker = cell.querySelector('column-picker') as HTMLElement;
+    const trigger = picker.shadowRoot!.querySelector(
+      'sl-button[slot="trigger"]'
+    ) as HTMLElement;
+    expect(label.textContent!.trim()).to.equal('Last seen');
+    expect(label.scrollWidth).to.be.at.most(label.clientWidth + 1);
+    const cellBox = cell.getBoundingClientRect();
+    const labelBox = label.getBoundingClientRect();
+    const triggerBox = trigger.getBoundingClientRect();
+    expect(labelBox.left).to.be.at.least(cellBox.left - 0.5);
+    expect(labelBox.right).to.be.at.most(triggerBox.left + 0.5);
+    expect(triggerBox.right).to.be.at.most(cellBox.right + 0.5);
+  });
+
   it('gives a numeric header the same narrow gutter as its numbers', async () => {
     const el = await card({ agentRows: [agentRow()] });
     const header = el.shadowRoot!.querySelector(

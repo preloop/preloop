@@ -364,6 +364,23 @@ describe('<data-table>', () => {
     expect(qa(host, 'thead th')).to.have.length(5);
   });
 
+  it('leaves the picker out of a table that does not offer one', async () => {
+    const host = await mount();
+    await settle(host);
+    const table = q(
+      host,
+      'data-table'
+    ) as import('./data-table').DataTable<Key>;
+    table.columnPicker = false;
+    await settle(host);
+    expect(qa(host, 'column-picker')).to.have.length(0);
+    expect(qa(host, 'thead th')).to.have.length(5);
+    table.rowActions = undefined;
+    await settle(host);
+    expect(qa(host, 'column-picker')).to.have.length(0);
+    expect(qa(host, 'thead th')).to.have.length(4);
+  });
+
   it('renders headers, a select column, rows and an actions column', async () => {
     const host = await mount();
     await settle(host);
