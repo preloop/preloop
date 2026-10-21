@@ -3944,14 +3944,15 @@ ${execution.resolved_input_prompt}</pre>
       <ul>
         ${publications.map((item) => {
           const url = new URL(item.url);
+          const path = url.pathname.replace(/^\//, '');
+          const separator = [
+            '/-/merge_requests/',
+            '/merge_requests/',
+            '/pull/',
+            '/pull-requests/',
+          ].find((part) => path.includes(part));
           const repository =
-            item.repository ||
-            url.pathname
-              .replace(
-                /\/(?:-\/)?(?:merge_requests|pull|pull-requests)\/\d+.*$/,
-                ''
-              )
-              .replace(/^\//, '');
+            item.repository || (separator ? path.split(separator, 1)[0] : path);
           return html`<li>
             <a href=${item.url} target="_blank" rel="noopener noreferrer"
               >${repository || url.host} ·

@@ -458,11 +458,16 @@ def record_published_pr(
     try:
         if execution_id and publication.get("url"):
             parsed_url = urlparse(publication["url"])
-            repository_path = re.sub(
-                r"/(?:-/)?(?:pull|pull-requests|merge_requests)/\d+.*$",
-                "",
-                parsed_url.path,
-            )
+            repository_path = parsed_url.path
+            for separator in (
+                "/-/merge_requests/",
+                "/merge_requests/",
+                "/pull/",
+                "/pull-requests/",
+            ):
+                if separator in repository_path:
+                    repository_path = repository_path.split(separator, 1)[0]
+                    break
             output = {
                 **publication,
                 "repository": f"{parsed_url.netloc}{repository_path}",

@@ -16,6 +16,7 @@ from preloop.services.flow_pr_binding import (
     normalize_pr_url,
     record_cli_session,
     record_opened_pr,
+    record_published_pr,
     record_runner_handoff_markers,
 )
 
@@ -181,6 +182,29 @@ def test_runner_handoff_records_second_pr_without_rebinding_primary():
     primary.assert_not_called()
     assert outputs.call_args.args[1] == execution.id
     assert outputs.call_args.args[2]["url"].endswith("/merge_requests/2")
+
+
+@pytest.mark.parametrize(
+    ("url", "repository"),
+    [
+        (
+            "https://gitlab.example.com/team/app/-/merge_requests/2",
+            "gitlab.example.com/team/app",
+        ),
+        (
+            "https://github.com/team/app/pull/" + "0" * 4096 + "/files",
+            "github.com/team/app",
+        ),
+        (
+            "https://bitbucket.org/team/app/pull-requests/2",
+            "bitbucket.org/team/app",
+        ),
+    ],
+)
+def test_published_pr_repository_uses_fixed_path_separator(url, repository):
+    with patch.object(crud_flow_execution, "add_published_pr") as save:
+        record_published_pr(MagicMock(), uuid4(), {"url": url})
+    assert save.call_args.kwargs["publication"]["repository"] == repository
 
     def test_none_incoming_keeps_existing(self):
         existing = {"pr_url": "https://github.com/a/b/pull/1"}
