@@ -39,6 +39,19 @@ class RuntimeSessionActivity(Base):
                 "'create_issue', 'update_issue', 'update_merge_request')"
             ),
         ),
+        # Classified work calls (metadata ``work_ref``: built-in tools, GitHub
+        # and GitLab MCP, gh/glab via native hooks). Migration
+        # 20261106_fleet_work_ref_idx; statuses match WORK_REF_STATUSES.
+        Index(
+            "ix_runtime_session_activity_work_ref",
+            "account_id",
+            text("timestamp DESC"),
+            postgresql_include=["tool_name", "flow_execution_id", "runtime_session_id"],
+            postgresql_where=text(
+                "activity_type = 'tool_call' AND metadata ? 'work_ref' AND "
+                "status IN ('succeeded', 'allowed', 'approved')"
+            ),
+        ),
         # Prompt, turn-end and session-end timestamps (#1889), kept small
         # next to the tool-call volume. Timestamp first: the live activity
         # worker reads them across every account by time range.

@@ -8310,9 +8310,24 @@ paths:
             maximum: 527040
             minimum: 1
           - type: 'null'
-          description: Show only resources active in this many minutes.
+          description: 'Show only resources with activity in this many minutes: gateway
+            requests for models, provider accounts and providers; sessions, requests
+            or last-seen for agents; heartbeats for devices and runners; an active
+            holding for people.'
           title: Active Within Minutes
-        description: Show only resources active in this many minutes.
+        description: 'Show only resources with activity in this many minutes: gateway
+          requests for models, provider accounts and providers; sessions, requests
+          or last-seen for agents; heartbeats for devices and runners; an active holding
+          for people.'
+      - name: include_idle
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: With a window, also return configured idle resources (idle=true).
+          default: false
+          title: Include Idle
+        description: With a window, also return configured idle resources (idle=true).
       responses:
         '200':
           description: Successful Response
@@ -31788,6 +31803,18 @@ components:
           title: Work Truncated
           description: More work items exist, or a bounded source read was capped.
           default: false
+        relations:
+          items:
+            $ref: '#/components/schemas/FleetWorkRelation'
+          type: array
+          maxItems: 500
+          title: Relations
+          description: Typed relations among visible work items, flows and agents
+            in the window, deduplicated by id, newest first, at most 500.
+        relations_truncated:
+          type: boolean
+          title: Relations Truncated
+          default: false
       type: object
       required:
       - since
@@ -31810,6 +31837,19 @@ components:
         merged:
           type: integer
           title: Merged
+          default: 0
+        issues_opened:
+          type: integer
+          title: Issues Opened
+          default: 0
+        issues_updated:
+          type: integer
+          title: Issues Updated
+          description: Issue edits, labels, closes.
+          default: 0
+        issues_commented:
+          type: integer
+          title: Issues Commented
           default: 0
       type: object
       title: FleetCodeCounts
@@ -31852,6 +31892,23 @@ components:
           - type: string
           - type: 'null'
           title: Url
+        work_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Work Id
+          description: Work item id when the reference is known.
+        source:
+          anyOf:
+          - type: string
+            enum:
+            - builtin
+            - cli
+            - github_mcp
+            - gitlab_mcp
+            - webhook
+          - type: 'null'
+          title: Source
       type: object
       required:
       - id
@@ -31880,7 +31937,22 @@ components:
           - type: string
           - type: 'null'
           title: Model Node Id
-          description: Map node id of the flow's model, when it is configured.
+          description: 'Map node id of the flow''s main model: the most used model
+            in the window''s gateway ledger, else the configured model.'
+        model_node_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 5
+          title: Model Node Ids
+          description: Model nodes the flow's runs called through the gateway in the
+            window (api_usage flow_id or flow_execution_id), most requests first;
+            the configured model when no ledger row exists.
+        run_count:
+          type: integer
+          title: Run Count
+          description: Runs started in the window.
+          default: 0
         last_active_at:
           anyOf:
           - type: string
@@ -32083,6 +32155,27 @@ components:
             format: date-time
           - type: 'null'
           title: Last Seen At
+        avatar_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Url
+          description: 'People only: the stored profile image (SSO picture or manual
+            upload, an https URL or image data URI), null when none.'
+        idle:
+          type: boolean
+          title: Idle
+          description: Configured but without activity in the window (gateway requests
+            for models and providers, sessions or calls for agents). Idle nodes are
+            returned only without a window or with include_idle.
+          default: false
+        last_active_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Active At
+          description: Latest activity evidence inside the window.
       type: object
       required:
       - id
@@ -32141,6 +32234,101 @@ components:
       type: object
       title: FleetMapResponse
       description: Bounded partial graph; incompleteness must stay visible to consumers.
+    FleetNodeTotals:
+      properties:
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        input_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Input Tokens
+        output_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Output Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Read Tokens
+        cache_write_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Write Tokens
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+        cost_is_estimate:
+          type: boolean
+          const: true
+          title: Cost Is Estimate
+          default: true
+        currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Currency
+          description: Ledger currency (legacy null is USD); null for mixed currencies.
+        partial:
+          type: boolean
+          title: Partial
+          description: A source cap, missing token/cost data or mixed currencies makes
+            totals incomplete. Optional cache fields sum known values only.
+          default: false
+        tool_calls:
+          type: integer
+          title: Tool Calls
+          default: 0
+        approvals_requested:
+          type: integer
+          title: Approvals Requested
+          default: 0
+        approvals_approved:
+          type: integer
+          title: Approvals Approved
+          default: 0
+        approvals_declined:
+          type: integer
+          title: Approvals Declined
+          description: Declined or expired approval requests.
+          default: 0
+        prs_opened:
+          type: integer
+          title: Prs Opened
+          default: 0
+        prs_reviewed:
+          type: integer
+          title: Prs Reviewed
+          default: 0
+        prs_merged:
+          type: integer
+          title: Prs Merged
+          default: 0
+        review_comments:
+          type: integer
+          title: Review Comments
+          description: Comments on a PR or MR.
+          default: 0
+        issues_touched:
+          type: integer
+          title: Issues Touched
+          description: Distinct issues touched.
+          default: 0
+        prs_touched:
+          type: integer
+          title: Prs Touched
+          description: Distinct PRs/MRs touched.
+          default: 0
+      type: object
+      title: FleetNodeTotals
+      description: Window totals for an agent, person, flow, device or work item node.
     FleetUsageResponse:
       properties:
         active_within_minutes:
@@ -32174,6 +32362,34 @@ components:
             $ref: '#/components/schemas/FleetUsageTotals'
           type: object
           title: Providers
+        agents:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Agents
+        people:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: People
+          description: Owned agents' totals plus the person's direct gateway requests.
+        flows:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Flows
+        devices:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Devices
+          description: Totals of the managed agents hosted.
+        work:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Work
+          description: Gateway usage of linked flow runs plus tool calls on the item.
       type: object
       required:
       - since
@@ -32234,6 +32450,17 @@ components:
       description: Known ledger totals for one canonical model or provider node.
     FleetWorkItem:
       properties:
+        id:
+          type: string
+          title: Id
+          description: '``work:<kind>:<key>``.'
+          default: ''
+        href:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Href
+          description: Forge URL of the object (same as ``url``).
         key:
           type: string
           title: Key
@@ -32325,6 +32552,74 @@ components:
       - last_at
       title: FleetWorkItem
       description: One distinct issue or pull request active in the selected window.
+    FleetWorkRelation:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: '``<kind>:<source>:<target>``, unique.'
+        kind:
+          type: string
+          enum:
+          - resolves
+          - mentions
+          - triggered
+          - produced
+          - touched
+          title: Kind
+        source:
+          type: string
+          title: Source
+          description: 'resolves/mentions: a pull request work id; triggered/produced:
+            a flow; touched: an agent or flow.'
+        target:
+          type: string
+          title: Target
+          description: An issue or pull request work id.
+        actions:
+          items:
+            type: string
+            enum:
+            - issue_opened
+            - issue_labeled
+            - issue_unlabeled
+            - issue_updated
+            - opened
+            - commented
+            - reviewed
+            - pull_request_updated
+            - merged
+          type: array
+          title: Actions
+          description: 'touched: distinct actions taken.'
+        count:
+          type: integer
+          title: Count
+          description: 'touched: tool calls in the window.'
+          default: 0
+        at:
+          type: string
+          format: date-time
+          title: At
+        provenance:
+          type: string
+          enum:
+          - tracker
+          - flow_run
+          - tool_call
+          - cli
+          - mcp
+          title: Provenance
+      type: object
+      required:
+      - id
+      - kind
+      - source
+      - target
+      - at
+      - provenance
+      title: FleetWorkRelation
+      description: A typed, window-bounded relation between a node and a work item.
     FlowArtifactKindUsage:
       properties:
         bytes:
@@ -49054,7 +49349,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

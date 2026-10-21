@@ -198,7 +198,13 @@ def fleet(db_session: Session, test_user: Any) -> dict[str, Any]:
         metadata={"arguments_summary": {"review_action": 9, "review_body": 300}},
     )
     db_session.flush()
-    return {"agent": agent, "flow": flow, "user": test_user}
+    return {
+        "agent": agent,
+        "flow": flow,
+        "user": test_user,
+        "session": session,
+        "execution": execution,
+    }
 
 
 def test_counts_per_agent_flow_and_owner_in_the_window(
@@ -215,6 +221,9 @@ def test_counts_per_agent_flow_and_owner_in_the_window(
         "commented": 1,
         "reviewed": 0,
         "merged": 0,
+        "issues_opened": 0,
+        "issues_updated": 0,
+        "issues_commented": 0,
     }
     # The owner's counts are their agents' counts.
     assert result.counts[owner] == result.counts[agent]

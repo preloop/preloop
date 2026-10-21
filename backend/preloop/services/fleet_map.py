@@ -160,17 +160,21 @@ def active_node_ids(
     nodes: dict[str, FleetMapNode],
     edges: dict[str, FleetMapEdge],
     since: datetime,
+    evidence: dict[str, datetime] | None = None,
 ) -> set[str]:
-    """Return the nodes taking part in activity since ``since``.
+    """Return the nodes with their own activity since ``since``.
 
-    Agents, devices and runners carry their own last-seen evidence. Models,
-    provider accounts and providers are active when an active agent reaches
-    them, and people and devices are active when something they hold is.
+    Agents, devices and runners carry their own last-seen evidence; every
+    node may also have direct ``evidence`` (gateway requests, sessions).
+    Models, provider accounts and providers need their own gateway evidence:
+    being configured on, or bound to, an active agent is not activity. People
+    and devices are active when something they hold is.
 
     Args:
         nodes: Graph nodes keyed by id.
         edges: Graph edges keyed by id.
         since: Oldest activity that still counts.
+        evidence: Latest direct activity per node id inside the window.
 
     Returns:
         Ids of every node to keep.
@@ -182,15 +186,38 @@ def active_node_ids(
         and item.last_seen_at is not None
         and item.last_seen_at >= since
     }
-    for kind in _DOWNSTREAM:
-        for relation in edges.values():
-            if relation.kind == kind and relation.source in active:
-                active.add(relation.target)
+    active.update(
+        identifier
+        for identifier, at in (evidence or {}).items()
+        if identifier in nodes and at >= since
+    )
     for kind in _UPSTREAM:
         for relation in edges.values():
             if relation.kind == kind and relation.target in active:
                 active.add(relation.source)
     return active
+
+
+#: Largest stored avatar the map passes through (manual uploads are data URIs).
+AVATAR_LIMIT = 200_000
+#: Grouped gateway/session reads per map build.
+ACTIVITY_LIMIT = 5000
+#: Observed-usage lookback when no window is selected.
+ANY_WINDOW = timedelta(days=90)
+
+
+def _avatar(value: Any) -> str | None:
+    """Pass through the stored profile image: an http(s) URL or image data URI."""
+    if not isinstance(value, str) or not value or len(value) > AVATAR_LIMIT:
+        return None
+    if value.startswith(("https://", "http://", "data:image/")):
+        return value
+    return None
+
+
+def _naive_utc(value: Any) -> datetime | None:
+    """Aware UTC for a naive-UTC column value."""
+    return _aware(value)
 
 
 def build_fleet_map(
@@ -199,6 +226,8 @@ def build_fleet_map(
     user: models.User,
     limit: int = 500,
     active_within_minutes: int | None = None,
+    include_idle: bool = False,
+    now: datetime | None = None,
 ) -> FleetMapResponse:
     """Load each source once, filter before linking, and cap the final graph.
 
@@ -206,8 +235,11 @@ def build_fleet_map(
         db: Request database session.
         user: Authenticated user in the selected account.
         limit: Maximum visible resource nodes, between 50 and 1000.
-        active_within_minutes: Keep only resources active in this many minutes;
-            None keeps every resource.
+        active_within_minutes: Keep only resources with activity in this many
+            minutes; None keeps every resource.
+        include_idle: With a window, also keep configured resources without
+            activity, flagged ``idle``.
+        now: Optional UTC clock override for deterministic tests.
 
     Returns:
         Allowlisted graph with explicit source and output truncation.
@@ -335,8 +367,9 @@ def build_fleet_map(
             row.id,
             row.full_name or row.username,
             f"/console/settings/users/{quote(str(row.id), safe='')}",
+            avatar_url=_avatar(getattr(row, "avatar_url", None)),
         )
-    now = datetime.now(UTC)
+    now = (now or datetime.now(UTC)).astimezone(UTC)
     if permissions["view_agents"]:
         # Count only what the caller could see, as the agent source does.
         retired = list_decommissioned_agents(
@@ -399,7 +432,12 @@ def build_fleet_map(
     model_nodes: dict[str, str] = {}
     model_rows: dict[str, list[Any]] = {}
     for row in ai_models:
-        provider = node("provider", row.provider_name, row.provider_name, MODELS_HREF)
+        provider = node(
+            "provider",
+            row.provider_name,
+            row.provider_name,
+            f"{MODELS_HREF}?provider={quote(str(row.provider_name), safe='')}",
+        )
         provider.provider_ids = [provider.id]
         model_href = f"{MODELS_HREF}/{quote(str(row.id), safe='')}"
         key, label = canonical_model(
@@ -687,6 +725,25 @@ def build_fleet_map(
                     set(item.provider_ids + nodes[aid].provider_ids)
                 )
 
+    since = now - (
+        timedelta(minutes=active_within_minutes)
+        if active_within_minutes is not None
+        else ANY_WINDOW
+    )
+    evidence = _activity_evidence(
+        db,
+        account_id=account_id,
+        since=since,
+        until=now,
+        agents=agents,
+        model_rows=source_rows.get("models", []),
+        model_nodes=model_nodes,
+        model_accounts=model_accounts,
+        nodes=nodes,
+        result=result,
+        link=model_link,
+    )
+
     # Propagate facets in dependency order. Do not spread owner identity back
     # through a shared provider into other accounts using that provider.
     for kind in ("uses_model", "uses_account", "account_of_provider", "provided_by"):
@@ -703,10 +760,16 @@ def build_fleet_map(
                 )
             )
 
-    if active_within_minutes is not None:
-        keep = active_node_ids(
-            nodes, edges, now - timedelta(minutes=active_within_minutes)
-        )
+    keep = active_node_ids(nodes, edges, since, evidence)
+    for key, item in nodes.items():
+        stamps: list[datetime] = [
+            at
+            for at in (evidence.get(key), item.last_seen_at)
+            if at is not None and at >= since
+        ]
+        item.last_active_at = max(stamps) if stamps else None
+        item.idle = key not in keep
+    if active_within_minutes is not None and not include_idle:
         nodes = {key: item for key, item in nodes.items() if key in keep}
         edges = {
             key: relation
@@ -748,3 +811,64 @@ def build_fleet_map(
     result.truncated |= len(visible_edges) > EDGE_LIMIT
     result.edges = visible_edges[:EDGE_LIMIT]
     return result
+
+
+def _activity_evidence(
+    db: Session,
+    *,
+    account_id: str,
+    since: datetime,
+    until: datetime,
+    agents: list[Any],
+    model_rows: list[Any],
+    model_nodes: dict[str, str],
+    model_accounts: dict[str, str],
+    nodes: dict[str, FleetMapNode],
+    result: FleetMapResponse,
+    link: Any,
+) -> dict[str, datetime]:
+    """Direct activity per node in the window, and observed model edges.
+
+    Two grouped reads: gateway ledger rows by model, principal, flow and user,
+    and runtime sessions by principal. A ledger row marks its model, the
+    provider account and the provider active, and draws an observed
+    ``uses_model`` edge from the agent whose runtime principal made it.
+    """
+    from preloop.models.crud import fleet_activity
+
+    evidence: dict[str, datetime] = {}
+
+    def mark(node_id: str | None, at: Any) -> None:
+        stamp = _aware(at)
+        if node_id and node_id in nodes and stamp is not None:
+            evidence[node_id] = max(evidence.get(node_id, stamp), stamp)
+
+    by_principal = {
+        (row.session_source_type, row.session_source_id): f"agent:{row.id}"
+        for row in agents
+        if getattr(row, "session_source_type", None)
+    }
+    providers = {str(row.id): f"provider:{row.provider_name}" for row in model_rows}
+    rows = fleet_activity.gateway_edges(
+        db, account_id=account_id, since=since, until=until, limit=ACTIVITY_LIMIT + 1
+    )
+    result.truncated |= len(rows) > ACTIVITY_LIMIT
+    for row in rows[:ACTIVITY_LIMIT]:
+        model_id = str(row.ai_model_id) if row.ai_model_id else ""
+        mark(model_nodes.get(model_id), row.last_at)
+        mark(model_accounts.get(model_id), row.last_at)
+        mark(providers.get(model_id), row.last_at)
+        agent_id = by_principal.get((row.principal_type, row.principal_id))
+        if agent_id and not row.flow_id:
+            mark(agent_id, row.last_at)
+            if model_id:
+                link(agent_id.removeprefix("agent:"), model_id, "observed", [])
+        elif row.user_id and not row.principal_id and not row.flow_id:
+            mark(f"user:{row.user_id}", row.last_at)
+    sessions = fleet_activity.principal_sessions(
+        db, account_id=account_id, since=since, until=until, limit=ACTIVITY_LIMIT + 1
+    )
+    result.truncated |= len(sessions) > ACTIVITY_LIMIT
+    for row in sessions[:ACTIVITY_LIMIT]:
+        mark(by_principal.get((row.principal_type, row.principal_id)), row.last_at)
+    return evidence

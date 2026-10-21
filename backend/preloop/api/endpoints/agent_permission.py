@@ -314,6 +314,9 @@ def _record_native_tool_call(
     }
     if approval_request_id:
         metadata["approval_request_id"] = approval_request_id
+    work_ref = _native_work_ref(payload)
+    if work_ref is not None:
+        metadata["work_ref"] = work_ref
     try:
         with get_session_factory()() as db:
             activity = crud_runtime_session_activity.log_tool_call(
@@ -358,6 +361,55 @@ def _record_native_tool_call(
             runtime_session_id=str(runtime_session_id),
         )
     )
+    if work_ref is not None and status_label in {"allowed", "approved"}:
+        from preloop.services.fleet_code_activity import emit_code_tool_event
+
+        # Recorded at PreToolUse: the command was allowed, not yet observed
+        # to succeed (no PostToolUse hook reaches this endpoint).
+        emit_code_tool_event(
+            account_id=identity.account_id,
+            tool_name=payload.tool_name,
+            metadata=metadata,
+            managed_agent_id=identity.managed_agent_id,
+            flow_id=identity.flow_id,
+            runtime_session_id=runtime_session_id,
+            timestamp=timestamp,
+        )
+
+
+#: Native tools whose input is a shell command line.
+SHELL_TOOL_NAMES = frozenset(
+    {
+        "bash",
+        "shell",
+        "run_shell_command",
+        "run_terminal_cmd",
+        "execute_command",
+        "exec_command",
+        "terminal",
+        "local_shell",
+    }
+)
+
+
+def _native_work_ref(
+    payload: "AgentPermissionCheckRequest",
+) -> Optional[dict[str, Any]]:
+    """Classify a ``gh``/``glab`` command in a native shell tool call.
+
+    Only the parsed verb, object reference and repository are returned; the
+    command line itself is never kept. Never raises.
+    """
+    if (payload.tool_name or "").strip().lower() not in SHELL_TOOL_NAMES:
+        return None
+    tool_input = payload.tool_input or {}
+    command = tool_input.get("command") or tool_input.get("cmd")
+    if isinstance(command, list):
+        command = " ".join(str(part) for part in command)
+    from preloop.services.fleet_work_refs import classify_shell_command
+
+    remote = payload.repository.remote if payload.repository is not None else None
+    return classify_shell_command(command, remote=remote)
 
 
 #: Longest working directory stored on a session; matches the column.

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from sqlalchemy import Row, or_, select, tuple_
+from sqlalchemy import Row, and_, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -113,6 +113,11 @@ WORK_ACTIVITY_TOOLS = (
 )
 
 
+#: A classified call that was allowed to run. Native hook rows are recorded at
+#: PreToolUse, with the decision's status; the partial index uses this list.
+WORK_REF_STATUSES = ("succeeded", "allowed", "approved")
+
+
 def list_code_tool_calls(
     db: Session,
     *,
@@ -155,13 +160,23 @@ def list_code_tool_calls(
             .where(
                 a.account_id == account_id,
                 a.activity_type == "tool_call",
-                a.tool_name.in_(
-                    WORK_ACTIVITY_TOOLS if include_work else CODE_ACTIVITY_TOOLS
+                or_(
+                    and_(
+                        a.tool_name.in_(
+                            WORK_ACTIVITY_TOOLS if include_work else CODE_ACTIVITY_TOOLS
+                        ),
+                        a.status == "succeeded",
+                    ),
+                    # Classified calls (built-in, GitHub/GitLab MCP, gh/glab
+                    # through a native hook), served by the work_ref index.
+                    and_(
+                        a.metadata_.has_key("work_ref"),
+                        a.status.in_(WORK_REF_STATUSES),
+                    ),
                 ),
                 a.timestamp >= since,
                 *([a.timestamp <= until] if until is not None else []),
                 s.account_id == account_id,
-                a.status == "succeeded",
             )
             .order_by(a.timestamp.desc(), a.id)
             .limit(limit)

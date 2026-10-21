@@ -221,7 +221,7 @@ def test_one_sql_aggregate_per_grouping(
     def record(
         conn: Any, cursor: Any, sql: str, params: Any, ctx: Any, many: bool
     ) -> None:
-        if "api_usage" in sql:
+        if "api_usage" in sql and "visible_models" in sql:
             statements.append(sql)
 
     connection = db_session.connection()

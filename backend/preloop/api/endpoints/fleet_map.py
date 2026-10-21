@@ -30,7 +30,16 @@ def read_fleet_map(
         None,
         ge=1,
         le=60 * 24 * 366,
-        description="Show only resources active in this many minutes.",
+        description=(
+            "Show only resources with activity in this many minutes: gateway "
+            "requests for models, provider accounts and providers; sessions, "
+            "requests or last-seen for agents; heartbeats for devices and "
+            "runners; an active holding for people."
+        ),
+    ),
+    include_idle: bool = Query(
+        False,
+        description="With a window, also return configured idle resources (idle=true).",
     ),
     db: Session = Depends(get_db_session),
 ) -> FleetMapResponse:
@@ -40,6 +49,7 @@ def read_fleet_map(
         user=current_user,
         limit=limit,
         active_within_minutes=active_within_minutes,
+        include_idle=include_idle,
     )
 
 

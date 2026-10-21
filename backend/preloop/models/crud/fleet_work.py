@@ -181,9 +181,10 @@ def list_issues(
         .group_by(l.issue_id)
         .subquery()
     )
+    # ``updated_at`` is local bookkeeping (every sync or embedding write bumps
+    # it), not activity on the issue, so it never puts an issue in a window.
     at = _window_time(
         func.timezone("UTC", i.created_at),
-        func.timezone("UTC", i.updated_at),
         func.timezone("UTC", i.last_updated_external),
         revisions.c.at,
         since=since,
@@ -249,6 +250,7 @@ def list_run_links(
             r.issue_url.label("url"),
             x.flow_id.label("flow_id"),
             at.label("at"),
+            x.link.label("link"),
         )
         .select_from(x)
         .join(e, (e.id == x.execution_id) & (e.flow_id == x.flow_id))
@@ -276,6 +278,7 @@ def list_run_links(
             i.external_url.label("url"),
             e.flow_id.label("flow_id"),
             lifecycle_at.label("at"),
+            cast(null(), x.link.type).label("link"),
         )
         .select_from(l)
         .join(i, i.id == l.issue_id)

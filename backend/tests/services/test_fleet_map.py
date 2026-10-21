@@ -931,9 +931,33 @@ def test_activity_window_keeps_only_active_dependencies(
     assert "agent:agent-b" in {n.id for n in everything.nodes}
     assert everything.active_within_minutes is None
 
-    graph = build_fleet_map(
-        MagicMock(), user=viewer(), active_within_minutes=60 * 24 * 30
-    )
+    # Configured on an active agent is not activity: no gateway row, no model.
+    idle = build_fleet_map(MagicMock(), user=viewer(), active_within_minutes=43200)
+    idle_ids = {n.id for n in idle.nodes}
+    assert {"agent:agent-a", "user:owner-a"} <= idle_ids
+    assert not [n for n in idle.nodes if n.type in {"model", "provider"}]
+
+    usage = [
+        Row(
+            ai_model_id="model-a",
+            principal_type=None,
+            principal_id=None,
+            flow_id=None,
+            user_id=None,
+            requests=1,
+            last_at=(now - timedelta(minutes=5)).replace(tzinfo=None),
+        )
+    ]
+    with patch("preloop.models.crud.fleet_activity.gateway_edges", return_value=usage):
+        graph = build_fleet_map(
+            MagicMock(), user=viewer(), active_within_minutes=60 * 24 * 30
+        )
+        padded = build_fleet_map(
+            MagicMock(),
+            user=viewer(),
+            active_within_minutes=60 * 24 * 30,
+            include_idle=True,
+        )
     ids = {n.id for n in graph.nodes}
     assert graph.active_within_minutes == 43200
     assert {"agent:agent-a", "user:owner-a", "provider:openai"} <= ids
@@ -944,7 +968,11 @@ def test_activity_window_keeps_only_active_dependencies(
         "provider:mistral",
     }
     assert [n for n in graph.nodes if n.type == "model"]
+    assert not any(n.idle for n in graph.nodes)
     assert all(e.source in ids and e.target in ids for e in graph.edges)
+    flagged = {n.id: n.idle for n in padded.nodes}
+    assert flagged["provider:mistral"] is True and flagged["agent:agent-b"] is True
+    assert flagged["provider:openai"] is False
 
 
 def test_activity_window_reads_device_and_runner_evidence(

@@ -3205,6 +3205,12 @@ async def {internal_name}({params_str}):
             # A boolean, not the target: lets the Fleet Map count PR comments.
             if pull_request_target(arguments):
                 metadata["code_target"] = "pull_request"
+        from preloop.services.fleet_work_refs import classify_tool_call
+
+        # Verb, object reference and repository only, never the arguments.
+        work_ref = classify_tool_call(server_name, client_tool_name, arguments)
+        if work_ref is not None:
+            metadata["work_ref"] = work_ref
         if elapsed_ms is not None:
             # Parsed "detected" markers are stamped at call start; this row
             # is stamped at call end. started_at lets the timeline match

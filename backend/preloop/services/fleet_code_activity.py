@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlparse
@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 CALL_LIMIT = 5000
 MERGE_LIMIT = 500
 EVENT_LIMIT = 40
+FLOW_LIMIT = 200
+GATEWAY_LIMIT = 5000
 #: "Any time" still reads a bounded window.
 MAX_WINDOW = timedelta(days=90)
 
@@ -82,6 +84,16 @@ def code_action(tool_name: str | None, metadata: Any = None) -> CodeAction | Non
     Returns:
         The action, or None for anything that is not one.
     """
+    work_ref = metadata.get("work_ref") if isinstance(metadata, dict) else None
+    if isinstance(work_ref, dict):
+        # A classified call (built-in, GitHub/GitLab MCP, gh/glab) is
+        # authoritative: only pull/merge request actions count here.
+        if work_ref.get("kind") != "pull_request":
+            return None
+        action = work_ref.get("action")
+        return (
+            action if action in {"opened", "commented", "reviewed", "merged"} else None
+        )
     name = (tool_name or "").strip()
     if name in _OPENED:
         return "opened"
@@ -104,6 +116,18 @@ def code_action(tool_name: str | None, metadata: Any = None) -> CodeAction | Non
 
 
 _PR_URL = re.compile(r"/(?:pull|pulls|merge_requests|pull-requests)/\d+")
+
+
+def issue_count(metadata: Any) -> str | None:
+    """The ``FleetCodeCounts`` issue field a classified call increments."""
+    work_ref = metadata.get("work_ref") if isinstance(metadata, dict) else None
+    if not isinstance(work_ref, dict) or work_ref.get("kind") != "issue":
+        return None
+    return {
+        "issue_opened": "issues_opened",
+        "issue_updated": "issues_updated",
+        "commented": "issues_commented",
+    }.get(str(work_ref.get("action")))
 
 
 def pull_request_target(arguments: Any) -> bool:
@@ -238,6 +262,8 @@ def build_code_activity(
         pull_request_limit=MERGE_LIMIT,
     )
     result.work, result.work_truncated = work.work, work.truncated
+    result.relations = work.relations or []
+    result.relations_truncated = work.relations_truncated
     last_flow, pull_requests = work.flow_activity, work.merged_pull_requests
     result.truncated |= work.pull_requests_truncated
 
@@ -245,7 +271,36 @@ def build_code_activity(
         item = counts[node_id]
         setattr(item, action, getattr(item, action) + 1)
 
+    from preloop.services.fleet_work_refs import work_key, work_url
+
     for call in calls:
+        issue_field = issue_count(call.metadata_)
+        if issue_field is not None:
+            flow_id = flow_of_execution.get(str(call.flow_execution_id or ""))
+            actor = (
+                None
+                if flow_id or call.flow_execution_id
+                else agents_by_principal.get(
+                    (call.runtime_principal_type or "", call.runtime_principal_id or "")
+                )
+            )
+            target = (
+                f"flow:{flow_id}"
+                if flow_id
+                else (f"agent:{actor.id}" if actor is not None else None)
+            )
+            if target:
+                item = counts[target]
+                setattr(item, issue_field, getattr(item, issue_field) + 1)
+                if see_users and actor is not None and actor.owner_user_id:
+                    owner_item = counts[f"user:{actor.owner_user_id}"]
+                    setattr(
+                        owner_item, issue_field, getattr(owner_item, issue_field) + 1
+                    )
+                if flow_id:
+                    at = _aware(call.timestamp)
+                    last_flow[flow_id] = max(last_flow.get(flow_id, at), at)
+            continue
         action = code_action(call.tool_name, call.metadata_)
         if action is None:
             continue
@@ -265,8 +320,20 @@ def build_code_activity(
             if see_users and actor.owner_user_id:
                 owner_id = f"user:{actor.owner_user_id}"
                 count(owner_id, action)
+        work_ref = (
+            call.metadata_.get("work_ref") if isinstance(call.metadata_, dict) else None
+        )
+        found = work_key(work_ref)
         event = FleetCodeEvent(
-            id=str(call.id), at=at, action=action, node_id=node_id, owner_id=owner_id
+            id=str(call.id),
+            at=at,
+            action=action,
+            node_id=node_id,
+            owner_id=owner_id,
+            pr=found[1] if found else None,
+            url=work_url(work_ref),
+            work_id=f"work:{found[0]}:{found[1]}" if found else None,
+            source=work_ref.get("via") if isinstance(work_ref, dict) else "builtin",
         )
         if flow_id and action == "merged":
             # The forge reports the same merge; settled after the webhooks.
@@ -306,6 +373,10 @@ def build_code_activity(
                     node_id=f"flow:{flow_id}",
                     pr=short_pr(row.pr_key),
                     url=row.pr_key if row.pr_key.startswith("https://") else None,
+                    work_id=f"work:pull_request:{key}"
+                    if (key := (short_pr(row.pr_key) or "").lower())
+                    else None,
+                    source="webhook",
                 )
             )
 
@@ -316,11 +387,53 @@ def build_code_activity(
             count(event.node_id, "merged")
             events.append(event)
 
+    run_counts: dict[str, int] = {}
+    used_models: dict[str, Counter[str]] = defaultdict(Counter)
+    if see_flows:
+        from preloop.models.crud import fleet_activity
+
+        runs = fleet_activity.flow_runs(
+            db,
+            account_id=account_id,
+            since=since,
+            until=current,
+            limit=FLOW_LIMIT + 1,
+        )
+        result.truncated |= len(runs) > FLOW_LIMIT
+        for run in runs[:FLOW_LIMIT]:
+            flow_id = str(run.flow_id)
+            flow_rows.setdefault(flow_id, (run.name, run.ai_model_id))
+            run_counts[flow_id] = int(run.runs)
+            at = _aware(run.last_at)
+            last_flow[flow_id] = max(last_flow.get(flow_id, at), at)
+        gateway = fleet_activity.gateway_edges(
+            db,
+            account_id=account_id,
+            since=since,
+            until=current,
+            limit=GATEWAY_LIMIT + 1,
+        )
+        result.truncated |= len(gateway) > GATEWAY_LIMIT
+        unseen = set()
+        for row in gateway[:GATEWAY_LIMIT]:
+            if not row.flow_id or not row.ai_model_id:
+                continue
+            flow_id = str(row.flow_id)
+            used_models[flow_id][str(row.ai_model_id)] += int(row.requests)
+            at = _aware(row.last_at)
+            last_flow[flow_id] = max(last_flow.get(flow_id, at), at)
+            if flow_id not in flow_rows:
+                unseen.add(flow_id)
+        for flow_id, name, model_id in fleet_crud.flows_by_id(
+            db, account_id=account_id, flow_ids=unseen
+        ):
+            flow_rows[str(flow_id)] = (name, model_id)
     model_nodes: dict[str, str] = {}
     for model_row in fleet_crud.models_by_id(
         db,
         account_id=account_id,
-        model_ids={model_id for _, model_id in flow_rows.values() if model_id},
+        model_ids={model_id for _, model_id in flow_rows.values() if model_id}
+        | {model_id for used in used_models.values() for model_id in used},
     ):
         key, _ = canonical_model(
             getattr(model_row, "model_identifier", None)
@@ -328,18 +441,35 @@ def build_code_activity(
             or str(model_row.id)
         )
         model_nodes[str(model_row.id)] = f"model:{key}"
+
+    def flow_models(flow_id: str, model_id: Any) -> list[str]:
+        """Observed ledger models, most requests first; else the configured one."""
+        ranked: Counter[str] = Counter()
+        for used, requests in used_models.get(flow_id, Counter()).items():
+            if used in model_nodes:
+                ranked[model_nodes[used]] += requests
+        ordered = [
+            node for node, _ in sorted(ranked.items(), key=lambda i: (-i[1], i[0]))
+        ]
+        if not ordered and model_id and str(model_id) in model_nodes:
+            ordered = [model_nodes[str(model_id)]]
+        return ordered[:5]
+
     result.flows = [
         FleetCodeFlow(
             id=f"flow:{flow_id}",
             resource_id=flow_id,
             label=name,
             href=f"/console/flows/{flow_id}",
-            model_node_id=model_nodes.get(str(model_id)) if model_id else None,
+            model_node_id=(observed[0] if observed else None),
+            model_node_ids=observed,
+            run_count=run_counts.get(flow_id, 0),
             last_active_at=last_flow.get(flow_id),
         )
         for flow_id, (name, model_id) in sorted(flow_rows.items())
         if flow_id in last_flow
-    ]
+        for observed in [flow_models(flow_id, model_id)]
+    ][:FLOW_LIMIT]
     result.counts = dict(counts)
     events.sort(key=lambda item: item.at, reverse=True)
     result.events = events[:EVENT_LIMIT]
@@ -362,12 +492,20 @@ def emit_code_tool_event(
     Silent for any other tool, and never raises: a live map light must not
     fail the tool call that caused it.
     """
-    action = code_action(tool_name, metadata)
+    action: str | None = code_action(tool_name, metadata)
     # A merge inside a flow run is announced by the forge's merge webhook,
     # which names the pull request; announcing the tool call too would show
     # one merge twice.
-    if action is None or (action == "merged" and flow_id):
+    if action == "merged" and flow_id:
         return
+    work_ref = metadata.get("work_ref") if isinstance(metadata, dict) else None
+    if action is None and isinstance(work_ref, dict):
+        action = str(work_ref.get("action") or "") or None
+    if action is None:
+        return
+    from preloop.services.fleet_work_refs import work_key, work_url
+
+    key = work_key(work_ref)
     try:
         from preloop.services.account_realtime import (
             ACCOUNT_TOPIC_CODE_ACTIVITY,
@@ -383,6 +521,14 @@ def emit_code_tool_event(
                 payload={
                     "action": action,
                     "tool_name": tool_name,
+                    "work_id": f"work:{key[0]}:{key[1]}" if key else None,
+                    "kind": work_ref.get("kind")
+                    if isinstance(work_ref, dict)
+                    else None,
+                    "url": work_url(work_ref),
+                    "source": work_ref.get("via")
+                    if isinstance(work_ref, dict)
+                    else None,
                     "managed_agent_id": str(managed_agent_id)
                     if managed_agent_id
                     else None,

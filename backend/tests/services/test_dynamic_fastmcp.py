@@ -2976,6 +2976,46 @@ class TestToolCallUsageOutcome:
         assert "arguments" not in metadata
         assert "which project should I review?" not in str(metadata)
 
+    def test_work_tool_call_records_a_parsed_reference_only(self):
+        from preloop.models.crud import crud_runtime_session_activity
+        from preloop.services.dynamic_fastmcp import DynamicFastMCP
+
+        mcp = DynamicFastMCP("test-mcp")
+        activity = MagicMock()
+        activity.timestamp = None
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch.object(
+                crud_runtime_session_activity, "log_tool_call", return_value=activity
+            ) as log_call,
+            patch("preloop.services.account_realtime.emit_account_event"),
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            mcp._persist_tool_call_activity(
+                self._context(),
+                tool_name="update_pull_request",
+                client_tool_name="update_pull_request",
+                status="succeeded",
+                summary=None,
+                arguments={
+                    "pull_request": "https://github.com/acme/api/pull/9",
+                    "review_action": "approve",
+                    "review_body": "a private review body",
+                },
+                correlation_id="corr-work",
+            )
+        metadata = log_call.call_args.kwargs["metadata"]
+        assert metadata["work_ref"] == {
+            "via": "builtin",
+            "kind": "pull_request",
+            "action": "reviewed",
+            "ref": "#9",
+            "repo": "acme/api",
+            "host": "github.com",
+            "review_state": "approved",
+        }
+        assert "a private review body" not in str(metadata)
+
     def test_refused_call_records_the_refusal_string(self):
         refusal = "Unsupported item key 'severity'; allowed keys are id, label."
         kwargs = self._persist("refused", refusal, {"items": [{"severity": "high"}]})

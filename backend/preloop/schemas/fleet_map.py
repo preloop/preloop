@@ -52,6 +52,24 @@ class FleetMapNode(BaseModel):
         ),
     )
     last_seen_at: datetime | None = None
+    avatar_url: str | None = Field(
+        default=None,
+        description=(
+            "People only: the stored profile image (SSO picture or manual "
+            "upload, an https URL or image data URI), null when none."
+        ),
+    )
+    idle: bool = Field(
+        default=False,
+        description=(
+            "Configured but without activity in the window (gateway requests "
+            "for models and providers, sessions or calls for agents). Idle "
+            "nodes are returned only without a window or with include_idle."
+        ),
+    )
+    last_active_at: datetime | None = Field(
+        default=None, description="Latest activity evidence inside the window."
+    )
 
 
 class FleetMapEdge(BaseModel):
@@ -116,6 +134,9 @@ class FleetCodeCounts(BaseModel):
     commented: int = 0
     reviewed: int = 0
     merged: int = 0
+    issues_opened: int = 0
+    issues_updated: int = Field(default=0, description="Issue edits, labels, closes.")
+    issues_commented: int = 0
 
 
 class FleetCodeFlow(BaseModel):
@@ -127,8 +148,21 @@ class FleetCodeFlow(BaseModel):
     href: str
     model_node_id: str | None = Field(
         default=None,
-        description="Map node id of the flow's model, when it is configured.",
+        description=(
+            "Map node id of the flow's main model: the most used model in the "
+            "window's gateway ledger, else the configured model."
+        ),
     )
+    model_node_ids: list[str] = Field(
+        default_factory=list,
+        max_length=5,
+        description=(
+            "Model nodes the flow's runs called through the gateway in the "
+            "window (api_usage flow_id or flow_execution_id), most requests "
+            "first; the configured model when no ledger row exists."
+        ),
+    )
+    run_count: int = Field(default=0, description="Runs started in the window.")
     last_active_at: datetime | None = None
 
 
@@ -146,6 +180,12 @@ class FleetCodeEvent(BaseModel):
         default=None, description="Short reference, e.g. ``acme/api#42``."
     )
     url: str | None = None
+    work_id: str | None = Field(
+        default=None, description="Work item id when the reference is known."
+    )
+    source: Literal["builtin", "cli", "github_mcp", "gitlab_mcp", "webhook"] | None = (
+        None
+    )
 
 
 WorkAction = Literal[
@@ -164,6 +204,10 @@ WorkAction = Literal[
 class FleetWorkItem(BaseModel):
     """One distinct issue or pull request active in the selected window."""
 
+    id: str = Field(default="", description="``work:<kind>:<key>``.")
+    href: str | None = Field(
+        default=None, description="Forge URL of the object (same as ``url``)."
+    )
     key: str
     kind: Literal["issue", "pull_request"]
     reference: str
@@ -181,6 +225,29 @@ class FleetWorkItem(BaseModel):
     )
     related_issue: str | None = None
     node_ids: list[str] = Field(default_factory=list, max_length=5)
+
+
+RelationKind = Literal["resolves", "mentions", "triggered", "produced", "touched"]
+
+
+class FleetWorkRelation(BaseModel):
+    """A typed, window-bounded relation between a node and a work item."""
+
+    id: str = Field(description="``<kind>:<source>:<target>``, unique.")
+    kind: RelationKind
+    source: str = Field(
+        description=(
+            "resolves/mentions: a pull request work id; triggered/produced: a "
+            "flow; touched: an agent or flow."
+        )
+    )
+    target: str = Field(description="An issue or pull request work id.")
+    actions: list[WorkAction] = Field(
+        default_factory=list, description="touched: distinct actions taken."
+    )
+    count: int = Field(default=0, description="touched: tool calls in the window.")
+    at: datetime
+    provenance: Literal["tracker", "flow_run", "tool_call", "cli", "mcp"]
 
 
 class FleetCodeActivityResponse(BaseModel):
@@ -201,6 +268,15 @@ class FleetCodeActivityResponse(BaseModel):
         default=False,
         description="More work items exist, or a bounded source read was capped.",
     )
+    relations: list[FleetWorkRelation] = Field(
+        default_factory=list,
+        max_length=500,
+        description=(
+            "Typed relations among visible work items, flows and agents in "
+            "the window, deduplicated by id, newest first, at most 500."
+        ),
+    )
+    relations_truncated: bool = False
 
 
 class FleetUsageTotals(BaseModel):
@@ -236,3 +312,37 @@ class FleetUsageResponse(BaseModel):
     partial: bool = False
     models: dict[str, FleetUsageTotals] = Field(default_factory=dict)
     providers: dict[str, FleetUsageTotals] = Field(default_factory=dict)
+    agents: dict[str, "FleetNodeTotals"] = Field(default_factory=dict)
+    people: dict[str, "FleetNodeTotals"] = Field(
+        default_factory=dict,
+        description="Owned agents' totals plus the person's direct gateway requests.",
+    )
+    flows: dict[str, "FleetNodeTotals"] = Field(default_factory=dict)
+    devices: dict[str, "FleetNodeTotals"] = Field(
+        default_factory=dict, description="Totals of the managed agents hosted."
+    )
+    work: dict[str, "FleetNodeTotals"] = Field(
+        default_factory=dict,
+        description="Gateway usage of linked flow runs plus tool calls on the item.",
+    )
+
+
+class FleetNodeTotals(FleetUsageTotals):
+    """Window totals for an agent, person, flow, device or work item node."""
+
+    request_count: int = 0
+    tool_calls: int = 0
+    approvals_requested: int = 0
+    approvals_approved: int = 0
+    approvals_declined: int = Field(
+        default=0, description="Declined or expired approval requests."
+    )
+    prs_opened: int = 0
+    prs_reviewed: int = 0
+    prs_merged: int = 0
+    review_comments: int = Field(default=0, description="Comments on a PR or MR.")
+    issues_touched: int = Field(default=0, description="Distinct issues touched.")
+    prs_touched: int = Field(default=0, description="Distinct PRs/MRs touched.")
+
+
+FleetUsageResponse.model_rebuild()

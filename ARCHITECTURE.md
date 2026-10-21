@@ -776,8 +776,14 @@ Omitted visible nodes are
 summarized by type, and source/output truncation and unavailable projections remain
 explicit so a partial graph never claims complete blast-radius coverage.
 `active_within_minutes` (1 to 527,040) narrows the graph to recent activity: agents, devices and
-runners count by their own last-seen evidence, what an active agent reaches stays,
-and people and devices stay when something they hold is active; the response echoes
+runners count by their own last-seen evidence or runtime sessions in the window;
+models, provider accounts and providers need their own gateway ledger rows in the
+window (being configured on, or bound to, an active agent is not activity), and
+people and devices stay when something they hold is active. Configured idle
+resources return only without a window or with `include_idle=true`, flagged
+`idle`; every node carries `last_active_at`. Ledger rows of an agent's runtime
+principal also draw an observed `uses_model` edge. People nodes carry the stored
+`avatar_url` (SSO picture or manual upload), never a third-party lookup. The response echoes
 the window. The console defaults to 30 days, lights the line live gateway traffic and
 approvals travelled (throttled, a state change rather than an animation), and offers
 instance administrators a spatial arrangement, with positions stored per user, also
@@ -841,6 +847,31 @@ or a guarantee that every creation path preserved current labels. The normal
 tool summary producer records argument sizes, not references. Such rows cannot
 identify work or actors; only an explicitly stored reference can do so. This
 projection neither adds argument capture nor infers an issue's creator.
+
+Classified work calls close that gap without argument capture. The MCP call
+recorder (`dynamic_fastmcp`) and the native permission hook
+(`/agents/permission-check`, PreToolUse) store a compact `work_ref` in the
+activity metadata (`services/fleet_work_refs.py`): the source (built-in tool,
+`gh`/`glab` CLI, GitHub or GitLab MCP server by server-name pattern), the action,
+the object reference (`#N`/`!N`), the repository, the forge host and up to five
+issue keys parsed from a title or body as closing or plain references. Never the
+arguments, the body or the command line. Native shell calls are classified at
+PreToolUse with the decision's status (no PostToolUse hook reaches the server), so
+an allowed command counts even if it later failed. The partial index
+`ix_runtime_session_activity_work_ref` serves these rows next to the tool-name
+index. Code activity then returns typed, deduplicated `relations` (at most 500)
+among the returned work items, flows and agents: `touched` (agent or flow to an
+item, with actions and call count), `resolves` (rollup PR/issue pair, closing
+run links, parsed closing references), `mentions`, `triggered` (a run's trigger
+subject) and `produced` (a run's published PR). `flows` lists every flow with a
+run, a gateway request or code activity in the window, with `model_node_ids`
+from its ledger rows (`api_usage.flow_id` or the execution's flow), falling back
+to the configured model. Issue snapshots enter a window by forge update time,
+creation or lifecycle revision, never by the local `updated_at` bookkeeping that
+every sync bumps. `GET /fleet/usage` adds `agents`, `people`, `flows`, `devices`
+and `work` totals keyed by node id: gateway tokens and estimated cost with the
+same honesty rules, tool calls, approvals, PR actions, review comments and
+distinct issues and PRs touched, one grouped, account-scoped query per source.
 
 Spatial layout packs measured owner/machine islands beside the model/provider core,
 with attached issue/PR rows in the work lane. The first drag stores the complete
