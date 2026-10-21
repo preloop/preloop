@@ -559,3 +559,72 @@ def test_a_model_under_two_providers_is_placed_by_most_configurations(
     assert model.provider_id == "provider:zeta"
     assert nodes["provider:zeta"].model_ids == ["model:shared-m"]
     assert nodes["provider:openrouter"].model_ids == []
+
+
+def test_out_of_scope_activity_cannot_crowd_the_scoped_caps(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    """Review: the scope is applied before the call, event and work caps."""
+    from preloop.services import fleet_code_activity, fleet_work
+
+    user, agent = fleet["user"], fleet["agent"]
+    extra = _two_people(db_session, fleet)
+    their_session = base._session(
+        db_session, user.account_id, f"{extra['their_agent'].session_source_id}:c2"
+    )
+    for number in range(100, 160):
+        _call(
+            db_session,
+            their_session,
+            "Bash",
+            0.5,
+            status="allowed",
+            metadata=_hook_ref(f"#{number}"),
+        )
+    _call(db_session, fleet["session"], "Bash", 50, metadata=_hook_ref("#99"))
+    db_session.flush()
+    with (
+        _devices(None),
+        patch.object(fleet_code_activity, "CALL_LIMIT", 20),
+        patch.object(fleet_code_activity, "EVENT_LIMIT", 5),
+        patch.object(fleet_work, "WORK_LIMIT", 10),
+    ):
+        scoped = build_code_activity(
+            db_session,
+            user=user,
+            active_within_minutes=60,
+            now=NOW,
+            user_ids=[str(user.id)],
+        )
+    me = f"agent:{agent.id}"
+    assert "work:pull_request:acme/api#99" in {item.id for item in scoped.work}
+    assert any(e.work_id == "work:pull_request:acme/api#99" for e in scoped.events)
+    assert all(e.node_id == me for e in scoped.events)
+
+
+def test_direct_only_usage_keeps_scoped_usage_keyed_like_the_map(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    """Review: totals are only returned for model nodes in the scoped map."""
+    user = fleet["user"]
+    person = _person(db_session, user.account_id, "uhura")
+    model = _model(db_session, user.account_id, "direct-only-model", "groq")
+    _usage(db_session, user.account_id, model, 3, user_id=person.id)
+    with _devices(None):
+        graph = build_fleet_map(
+            db_session,
+            user=user,
+            active_within_minutes=60,
+            now=NOW,
+            user_ids=[str(person.id)],
+        )
+        usage = build_fleet_usage(
+            db_session,
+            user=user,
+            active_within_minutes=60,
+            now=NOW,
+            user_ids=[str(person.id)],
+        )
+    ids = {node.id for node in graph.nodes}
+    assert set(usage.models) <= ids and set(usage.providers) <= ids
+    assert usage.people[f"user:{person.id}"].request_count == 1

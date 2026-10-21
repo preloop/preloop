@@ -149,3 +149,18 @@ def resolve_scope(
         else []
     )
     return FleetScope(users=graph.users or [], node_ids=node_ids, agents=agents)
+
+
+def scope_actors(scope: FleetScope) -> set[str]:
+    """Agent and person node ids that can act on work inside the scope."""
+    return {node for node in scope.node_ids if node.startswith(("agent:", "user:"))}
+
+
+def scope_principals(scope: FleetScope) -> list[tuple[str, str]]:
+    """Source pairs of the in-scope managed agents, plus ``managed_agent`` ids."""
+    pairs = [
+        (row.session_source_type, row.session_source_id)
+        for row in scope.agents
+        if row.session_source_type and row.session_source_id
+    ]
+    return pairs + [("managed_agent", str(row.id)) for row in scope.agents]

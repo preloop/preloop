@@ -38,7 +38,12 @@ from preloop.schemas.fleet_map import (
 )
 from preloop.services.fleet_map import _allowed, _reject_report_key, canonical_model
 from preloop.services.fleet_principals import agent_index, resolve_principal
-from preloop.services.fleet_scope import FleetScope, resolve_scope
+from preloop.services.fleet_scope import (
+    FleetScope,
+    resolve_scope,
+    scope_actors,
+    scope_principals,
+)
 from preloop.services.fleet_work import build_work_items
 
 logger = logging.getLogger(__name__)
@@ -214,6 +219,8 @@ def build_code_activity(
     if not (see_agents or see_flows):
         return result
 
+    if scope is None and user_ids is not None:
+        scope = resolve_scope(db, user=user, user_ids=user_ids, now=current)
     calls = fleet_crud.list_code_tool_calls(
         db,
         account_id=account_id,
@@ -221,6 +228,8 @@ def build_code_activity(
         until=current,
         limit=CALL_LIMIT + 1,
         include_work=True,
+        # Scope before the cap, so other people's calls cannot crowd it out.
+        principals=scope_principals(scope) if scope is not None else None,
     )
     result.truncated = len(calls) > CALL_LIMIT
     calls = calls[:CALL_LIMIT]
@@ -269,6 +278,7 @@ def build_code_activity(
         see_flows=see_flows,
         calls_truncated=result.truncated,
         pull_request_limit=MERGE_LIMIT,
+        actors=scope_actors(scope) if scope is not None else None,
     )
     result.work, result.work_truncated = work.work, work.truncated
     result.relations = work.relations or []
@@ -490,8 +500,6 @@ def build_code_activity(
     # Drop hidden flows before the cap, so visible events backfill it.
     result.events = events
     _drop_hidden_flows(db, user, result)
-    if scope is None and user_ids is not None:
-        scope = resolve_scope(db, user=user, user_ids=user_ids, now=current)
     if scope is not None:
         apply_scope(result, scope)
     result.events = result.events[:EVENT_LIMIT]
@@ -505,7 +513,7 @@ def apply_scope(result: FleetCodeActivityResponse, scope: FleetScope) -> None:
     an in-scope agent (or person) acted on it; its ``node_ids`` and relations
     keep only in-scope actors.
     """
-    actors = {node for node in scope.node_ids if node.startswith(("agent:", "user:"))}
+    actors = scope_actors(scope)
     result.users = list(scope.users)
     result.flows = []
     result.counts = {node: c for node, c in result.counts.items() if node in actors}

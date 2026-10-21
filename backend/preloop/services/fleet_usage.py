@@ -17,7 +17,7 @@ from preloop.schemas.fleet_map import (
 )
 from preloop.services.built_in_models import built_in_models_enabled
 from preloop.services.fleet_map import _allowed, _reject_report_key, canonical_model
-from preloop.services.fleet_scope import FleetScope, resolve_scope
+from preloop.services.fleet_scope import FleetScope, resolve_scope, scope_principals
 
 MODEL_LIMIT = 1000
 MAX_WINDOW = timedelta(days=90)
@@ -40,7 +40,8 @@ def build_fleet_usage(
         now: Optional UTC clock override for deterministic tests.
         user_ids: Scope to these people (``users=``): node dictionaries keep
             only in-scope ids, flows are omitted, and model/provider totals
-            count only the in-scope agents' and people's own gateway rows.
+            count only the in-scope agents' and people's own gateway rows,
+            on the models and providers present in the scoped map.
 
     Returns:
         Model/provider dictionaries keyed exactly as the fleet graph, with
@@ -126,7 +127,7 @@ def build_fleet_usage(
             grouping=grouping,
             since=result.since,
             until=result.until,
-            principals=_scope_principals(scope) if scope is not None else None,
+            principals=scope_principals(scope) if scope is not None else None,
             user_ids=[u.removeprefix("user:") for u in scope.users]
             if scope is not None
             else None,
@@ -134,19 +135,13 @@ def build_fleet_usage(
             values = dict(aggregate)
             node_id = values.pop("node_id")
             values["partial"] |= result.truncated
+            if scope is not None and not scope.has(node_id):
+                # Keyed exactly as the scoped map: a model or provider only a
+                # person's direct requests reached is not in that graph.
+                continue
             target[node_id] = FleetUsageTotals(**values)
             result.partial |= target[node_id].partial
     return result
-
-
-def _scope_principals(scope: FleetScope) -> list[tuple[str, str]]:
-    """Source pairs of the in-scope managed agents, plus ``managed_agent`` ids."""
-    pairs = [
-        (row.session_source_type, row.session_source_id)
-        for row in scope.agents
-        if row.session_source_type and row.session_source_id
-    ]
-    return pairs + [("managed_agent", str(row.id)) for row in scope.agents]
 
 
 #: Grouped rows read per node source; hitting it marks the response partial.
