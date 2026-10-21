@@ -91,19 +91,34 @@ export function activeGraph(
       .filter(
         (node) =>
           node.type === 'cluster' ||
-          (['agent', 'device', 'runner'].includes(node.type) &&
-            !!node.last_seen_at &&
-            parseUTCDate(node.last_seen_at).getTime() >= sinceMs)
+          node.idle === false ||
+          (node.idle !== true &&
+            (node.last_active_at ||
+              (['agent', 'device', 'runner'].includes(node.type) &&
+                node.last_seen_at)) &&
+            parseUTCDate(node.last_active_at || node.last_seen_at!).getTime() >=
+              sinceMs)
       )
       .map((node) => node.id)
   );
+  const idle = new Set(
+    graph.nodes.filter((node) => node.idle === true).map((node) => node.id)
+  );
   for (const kind of DOWNSTREAM)
     for (const edge of graph.edges)
-      if (edge.kind === kind && active.has(edge.source))
+      if (
+        edge.kind === kind &&
+        active.has(edge.source) &&
+        !idle.has(edge.target)
+      )
         active.add(edge.target);
   for (const kind of UPSTREAM)
     for (const edge of graph.edges)
-      if (edge.kind === kind && active.has(edge.target))
+      if (
+        edge.kind === kind &&
+        active.has(edge.target) &&
+        !idle.has(edge.source)
+      )
         active.add(edge.source);
   return {
     ...graph,

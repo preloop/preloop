@@ -502,19 +502,16 @@ describe('Device fleet', () => {
     );
     const map = view.shadowRoot.querySelector('fleet-map');
     await map.updateComplete;
-    const select = map.shadowRoot.querySelector(
-      '[data-testid="fleet-map-window"]'
-    ) as HTMLSelectElement;
-    expect(select.value).to.equal('30d');
-    select.value = '24h';
-    select.dispatchEvent(new Event('sl-change'));
+    expect(
+      map.shadowRoot.querySelector('[data-window="30d"]').checked
+    ).to.equal(true);
+    map.shadowRoot.querySelector('[data-window="24h"]').click();
     await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 2);
     expect(api.callsTo('/api/v1/fleet/map')[1].search).to.equal(
       '?active_within_minutes=1440'
     );
     expect(localStorage.getItem('preloop:fleet-map:window')).to.equal('24h');
-    select.value = 'any';
-    select.dispatchEvent(new Event('sl-change'));
+    map.shadowRoot.querySelector('[data-window="any"]').click();
     await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 3);
     expect(api.callsTo('/api/v1/fleet/map')[2].search).to.equal('');
     localStorage.removeItem('preloop:fleet-map:window');
