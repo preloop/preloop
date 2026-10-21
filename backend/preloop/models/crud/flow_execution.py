@@ -278,7 +278,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         current = execution.result if isinstance(execution.result, dict) else {}
         publications = current.get("published_prs")
         items = list(publications) if isinstance(publications, list) else []
-        from preloop.services.flow_pr_binding import normalize_pr_url
+        from preloop.services.flow_pr_binding import MAX_PUBLISHED_PRS, normalize_pr_url
 
         incoming = normalize_pr_url(publication["url"]) or publication["url"]
         primary_url = current.get("pr_url")
@@ -296,6 +296,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             and (normalize_pr_url(item.get("url")) or item.get("url")) == incoming
             for item in items
         ):
+            return
+        if len(items) >= MAX_PUBLISHED_PRS:
+            if not current.get("published_prs_truncated"):
+                execution.result = {**current, "published_prs_truncated": True}
+                db.commit()
             return
         execution.result = {**current, "published_prs": [*items, publication]}
         db.commit()

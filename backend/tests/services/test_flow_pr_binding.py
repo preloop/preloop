@@ -131,6 +131,28 @@ class TestMergeResultPreservingPrBinding:
         assert merged["published_prs"] == publications
         assert merged["summary"] == "complete"
 
+    def test_publication_overflow_flag_survives_terminal_merge(self):
+        merged = merge_result_preserving_pr_binding(
+            {"published_prs_truncated": True},
+            {"published_prs_truncated": False},
+        )
+        assert merged["published_prs_truncated"] is True
+
+    def test_none_incoming_keeps_existing(self):
+        existing = {"pr_url": "https://github.com/a/b/pull/1"}
+        assert merge_result_preserving_pr_binding(existing, None) == existing
+
+    def test_incoming_dict_keeps_pr_url(self):
+        existing = {
+            "pr_url": "https://github.com/a/b/pull/1",
+            "pr_source_branch": "feat/x",
+        }
+        incoming = {"verdict": "ship"}
+        merged = merge_result_preserving_pr_binding(existing, incoming)
+        assert merged["verdict"] == "ship"
+        assert merged["pr_url"] == "https://github.com/a/b/pull/1"
+        assert merged["pr_source_branch"] == "feat/x"
+
 
 def test_published_pr_collection_keeps_primary_and_deduplicates_url():
     execution = MagicMock()
@@ -160,6 +182,32 @@ def test_published_pr_collection_keeps_primary_and_deduplicates_url():
         {"url": "https://gitlab.example.com/team/lib/-/merge_requests/1"},
         publication,
     ]
+    db.commit.assert_called_once()
+
+
+def test_published_pr_collection_caps_commits_and_records_overflow():
+    from preloop.services.flow_pr_binding import MAX_PUBLISHED_PRS
+
+    execution = MagicMock()
+    execution.result = {
+        "pr_url": "https://github.com/team/app/pull/0",
+        "published_prs": [
+            {"url": f"https://github.com/team/app/pull/{index}"}
+            for index in range(MAX_PUBLISHED_PRS)
+        ],
+    }
+    db = MagicMock()
+    db.query.return_value.filter.return_value.populate_existing.return_value.with_for_update.return_value.one_or_none.return_value = execution
+
+    for index in (MAX_PUBLISHED_PRS, MAX_PUBLISHED_PRS + 1):
+        crud_flow_execution.add_published_pr(
+            db,
+            execution_id=uuid4(),
+            publication={"url": f"https://github.com/team/app/pull/{index}"},
+        )
+
+    assert len(execution.result["published_prs"]) == MAX_PUBLISHED_PRS
+    assert execution.result["published_prs_truncated"] is True
     db.commit.assert_called_once()
 
 
@@ -205,21 +253,6 @@ def test_published_pr_repository_uses_fixed_path_separator(url, repository):
     with patch.object(crud_flow_execution, "add_published_pr") as save:
         record_published_pr(MagicMock(), uuid4(), {"url": url})
     assert save.call_args.kwargs["publication"]["repository"] == repository
-
-    def test_none_incoming_keeps_existing(self):
-        existing = {"pr_url": "https://github.com/a/b/pull/1"}
-        assert merge_result_preserving_pr_binding(existing, None) == existing
-
-    def test_incoming_dict_keeps_pr_url(self):
-        existing = {
-            "pr_url": "https://github.com/a/b/pull/1",
-            "pr_source_branch": "feat/x",
-        }
-        incoming = {"verdict": "ship"}
-        merged = merge_result_preserving_pr_binding(existing, incoming)
-        assert merged["verdict"] == "ship"
-        assert merged["pr_url"] == "https://github.com/a/b/pull/1"
-        assert merged["pr_source_branch"] == "feat/x"
 
 
 class TestFlowRequiresPrCommentResume:

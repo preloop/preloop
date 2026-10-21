@@ -30,6 +30,7 @@ _GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
 # Single line the container wrapper prints after creating (or finding) the PR:
 #   PRELOOP_PR_OPENED {"url": "...", "branch": "...", "provider": "github"}
 PR_OPENED_MARKER = "PRELOOP_PR_OPENED"
+MAX_PUBLISHED_PRS = 32
 
 # Comment marker written by the PR reviewer flow, e.g.
 #   <!-- preloop-review:flow-id:pr-reviewer:severity:HIGH -->
@@ -444,6 +445,8 @@ def merge_result_preserving_pr_binding(
             merged[key] = existing[key]
     if "published_prs" in existing:
         merged["published_prs"] = existing["published_prs"]
+    if "published_prs_truncated" in existing:
+        merged["published_prs_truncated"] = existing["published_prs_truncated"]
     return merged
 
 
@@ -758,7 +761,8 @@ def record_runner_handoff_markers(
                     source_branch=opened.get("branch"),
                     raise_errors=True,
                 )
-            record_published_pr(db, execution.id, opened, raise_errors=True)
+            if not current.get("published_prs_truncated"):
+                record_published_pr(db, execution.id, opened, raise_errors=True)
     artifact = parse_native_artifact_marker(line)
     if artifact:
         expected_thread = (execution.trigger_event_details or {}).get(

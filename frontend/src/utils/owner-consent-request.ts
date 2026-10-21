@@ -1,6 +1,6 @@
-/** Retry one immutable start intent after its owner grants permission. */
 import { randomUuid } from './random-uuid';
 
+/** Retry one immutable start intent after its owner grants permission. */
 export async function ownerConsentRequest(
   fetcher: (path: string, init?: RequestInit) => Promise<Response>,
   path: string,

@@ -83,6 +83,7 @@ from preloop.services.flow_execution_notifications import (
 from preloop.config import settings
 from preloop.services.flow_pr_binding import (
     PR_OPENED_MARKER,
+    MAX_PUBLISHED_PRS,
     find_bound_execution,
     max_resumes_per_pr,
     merge_result_preserving_pr_binding,
@@ -923,6 +924,7 @@ class FlowExecutionOrchestrator:
         # from the PRELOOP_PR_OPENED log line and bound at terminal status.
         self._opened_pr: Optional[Dict[str, str]] = None
         self._published_pr_urls: set[str] = set()
+        self._published_prs_overflow_noted = False
         # True after this orchestrator has already persisted ``_opened_pr``.
         # Live log frames bind immediately; terminal rescan must not bind twice.
         self._opened_pr_bound = False
@@ -5017,6 +5019,12 @@ class FlowExecutionOrchestrator:
 
         key = normalize_pr_url(parsed["url"]) or parsed["url"]
         if key in seen:
+            return
+        if len(seen) >= MAX_PUBLISHED_PRS:
+            if not getattr(self, "_published_prs_overflow_noted", False):
+                if self.execution_log is not None:
+                    record_published_pr(self.db, self.execution_log.id, parsed)
+                self._published_prs_overflow_noted = True
             return
         seen.add(key)
         is_primary = self._opened_pr is None

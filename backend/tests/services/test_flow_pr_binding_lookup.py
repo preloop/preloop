@@ -93,6 +93,29 @@ def _failed(error_message: str, **extra):
 
 
 class TestLookupBinding:
+    def test_marker_writes_stop_after_publication_cap(self, monkeypatch):
+        from preloop.services.flow_pr_binding import MAX_PUBLISHED_PRS
+
+        orchestrator = _bare_orchestrator()
+        primary = []
+        published = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_opened_pr",
+            lambda db, execution_id, url, source_branch=None: primary.append(url),
+        )
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_published_pr",
+            lambda db, execution_id, publication: published.append(publication),
+        )
+        for index in range(MAX_PUBLISHED_PRS + 10):
+            orchestrator._note_opened_pr(
+                f'PRELOOP_PR_OPENED {{"url":"https://github.com/team/app/pull/{index}"}}'
+            )
+
+        assert len(primary) == 1
+        assert len(published) == MAX_PUBLISHED_PRS + 1
+        assert len(orchestrator._published_pr_urls) == MAX_PUBLISHED_PRS
+
     def test_multiple_markers_are_deduplicated_and_replayed(self, monkeypatch):
         orchestrator = _bare_orchestrator()
         primary = []

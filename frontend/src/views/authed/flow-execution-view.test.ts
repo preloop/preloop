@@ -714,6 +714,7 @@ describe('FlowExecutionView', () => {
           { url: 'javascript:alert(1)', branch: 'unsafe' },
           { url: 'http://', branch: 'invalid' },
         ],
+        published_prs_truncated: true,
       },
     };
     await element.updateComplete;
@@ -729,6 +730,7 @@ describe('FlowExecutionView', () => {
     expect(list.textContent).to.contain('team/lib');
     expect(list.textContent).to.contain('team/app');
     expect(list.textContent).to.contain('feature/change');
+    expect(list.textContent).to.contain('Additional published pull requests');
   });
 
   it('links follow-ups from the original execution', async () => {

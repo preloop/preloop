@@ -3962,6 +3962,13 @@ ${execution.resolved_input_prompt}</pre>
           </li>`;
         })}
       </ul>
+      ${
+        execution.result?.published_prs_truncated
+          ? html`<p>
+              Additional published pull requests were omitted from this list.
+            </p>`
+          : nothing
+      }
     </section>`;
   }
 
