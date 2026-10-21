@@ -21,7 +21,9 @@ alone does not establish model usage on servers with activity evidence.
 Instance administrators can choose Columns or Spatial. Columns reads People,
 Devices, Agents, Models, Providers, Flows and Work. Spatial packs the model and
 provider core beside each person, their machines and agents, with flows and the
-work they act on nearby. Until you arrange it yourself, the map repacks and refits
+work they act on nearby. In a narrow card the groups stack instead of running
+past the right edge; text never shrinks below a legible size, so a very large
+fleet pans. Until you arrange it yourself, the map repacks and refits
 when something joins. Drag a machine to move its contents. Your first drag saves
 the visible arrangement for your user and map scope. Refreshes preserve it; new
 resources join beside their links. Inactive positions are retained for seven days.

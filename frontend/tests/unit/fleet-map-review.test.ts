@@ -200,4 +200,60 @@ describe('Fleet Map review fixes', () => {
     expect(who).toContain('1 action · updated');
     expect(who).not.toContain('issue_updated');
   });
+
+  it('stacks spatial shelves so a narrow card shows every node at a legible scale', async () => {
+    await page.viewport(1024, 900);
+    const graph = sampleFleetMap();
+    const base = graph.nodes.find((n) => n.id === 'user:sam')!;
+    for (let i = 0; i < 4; i++) {
+      graph.nodes.push(
+        {
+          ...base,
+          id: `user:extra${i}`,
+          resource_id: `extra${i}`,
+          label: `Person ${i}`,
+        },
+        {
+          ...base,
+          id: `device:extra${i}`,
+          type: 'device',
+          resource_id: `extra${i}`,
+          label: `laptop-${i}`,
+          owner_ids: [`user:extra${i}`],
+        }
+      );
+      graph.edges.push({
+        id: `owns:user:extra${i}:device:extra${i}:observed`,
+        source: `user:extra${i}`,
+        target: `device:extra${i}`,
+        kind: 'owns',
+        provenance: 'observed',
+        impact_source: `device:extra${i}`,
+        impact_target: `user:extra${i}`,
+        gaps: [],
+      });
+    }
+    const el = await mount(
+      { graph, defaultArrangement: 'spatial' },
+      '752px',
+      '660px'
+    );
+    el.fit();
+    await el.updateComplete;
+    const stage = root(el).querySelector('.stage')!.getBoundingClientRect();
+    const outside = [...root(el).querySelectorAll('[data-node]')]
+      .filter((node) => {
+        const box = node.getBoundingClientRect();
+        return (
+          box.width > 0 &&
+          (box.left < stage.left - 1 ||
+            box.right > stage.right + 1 ||
+            box.top < stage.top - 1 ||
+            box.bottom > stage.bottom + 1)
+        );
+      })
+      .map((node) => node.getAttribute('data-node'));
+    expect(el.scale).toBeGreaterThanOrEqual(0.85);
+    expect(outside).toEqual([]);
+  });
 });

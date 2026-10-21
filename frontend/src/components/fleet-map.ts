@@ -70,6 +70,7 @@ import {
   type FleetMapWindow,
 } from '../utils/fleet-map-activity';
 import {
+  LEGIBLE_SPATIAL_SCALE,
   loadArrangement,
   loadPositions,
   saveArrangement,
@@ -155,8 +156,8 @@ const EMPTY: FleetMapGraph = {
 };
 
 const MIN_FIT_SCALE = 0.6;
-/** Spatial maps fit both ways, so they may shrink further. */
-const MIN_SPATIAL_FIT_SCALE = 0.85;
+/** Spatial fit stops at the legible scale; the layout stacks shelves instead. */
+const MIN_SPATIAL_FIT_SCALE = LEGIBLE_SPATIAL_SCALE;
 /** Below this stage width the toolbar's Arrange button drops its label. */
 const ARRANGE_LABEL_MIN_WIDTH = 1100;
 /** Narrower stages fold the legend behind its ? button. */
