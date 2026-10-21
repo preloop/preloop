@@ -18,11 +18,35 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
-from jsonschema import Draft7Validator
+from jsonschema import Draft7Validator, FormatChecker
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 SCHEMA_DIR = ROOT_DIR / "scripts" / "schemas"
+#: jsonschema skips ``format: uri`` unless an optional package is installed,
+#: so the check is explicit here: an absolute URI with a scheme.
+FORMAT_CHECKER = FormatChecker()
+
+
+@FORMAT_CHECKER.checks("uri")
+def _is_uri(value: object) -> bool:
+    """Return whether a string is an absolute URI.
+
+    Args:
+        value: The instance being validated.
+
+    Returns:
+        True for non-strings (type checks handle them) and absolute URIs.
+    """
+    if not isinstance(value, str):
+        return True
+    parsed = urlparse(value)
+    return (
+        bool(parsed.scheme) and bool(parsed.netloc or parsed.path) and " " not in value
+    )
+
+
 SCHEMA_URL = re.compile(
     r"^https://static\.modelcontextprotocol\.io/schemas/"
     r"(?P<date>\d{4}-\d{2}-\d{2})/server\.schema\.json$"
@@ -48,7 +72,9 @@ def validate(server: dict[str, Any], version: str) -> list[str]:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     problems = [
         f"{'/'.join(str(p) for p in err.absolute_path) or '<root>'}: {err.message}"
-        for err in Draft7Validator(schema).iter_errors(server)
+        for err in Draft7Validator(schema, format_checker=FORMAT_CHECKER).iter_errors(
+            server
+        )
     ]
     if server.get("version") != version:
         problems.append(

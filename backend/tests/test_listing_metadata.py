@@ -71,6 +71,14 @@ def test_description_over_registry_limit_is_rejected() -> None:
     assert any(p.startswith("description:") for p in problems)
 
 
+def test_malformed_uri_is_rejected() -> None:
+    """format: uri constraints are enforced, not just types."""
+    server = _server()
+    server["websiteUrl"] = "not a uri"
+
+    assert any(p.startswith("websiteUrl:") for p in validator.validate(server, VERSION))
+
+
 def test_version_drift_and_unknown_schema_are_rejected() -> None:
     """A stale version or an unvendored schema date fails validation."""
     server = _server()
