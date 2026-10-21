@@ -2860,6 +2860,41 @@ class TestSuccessConfirmationChannels:
         assert result["result"] == artifact
 
     @pytest.mark.asyncio
+    async def test_grace_success_stops_runtime_after_artifact_capture(
+        self, mock_nats_client, event_data
+    ):
+        """A confirmed completion cannot leave a Kubernetes Job retrying."""
+        executor = _confirmation_executor(
+            monitor_status=AgentStatus.RUNNING,
+            artifact={"status": "success"},
+        )
+        executor.stop = AsyncMock()
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=True
+        )
+        order = []
+
+        async def capture(*args):
+            order.append("capture")
+            return {"status": "success"}
+
+        async def stop(*args):
+            order.append("stop")
+
+        orchestrator._capture_result_artifact = AsyncMock(side_effect=capture)
+        executor.stop.side_effect = stop
+        with patch(
+            "preloop.services.flow_orchestrator.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await orchestrator._monitor_agent_execution(
+                "session-confirmation-123", executor
+            )
+        assert result["status"] == "SUCCEEDED"
+        assert order == ["capture", "stop"]
+        executor.stop.assert_awaited_once_with("session-confirmation-123")
+
+    @pytest.mark.asyncio
     async def test_grace_period_failure_override_includes_exit_code(
         self, mock_nats_client, event_data
     ):

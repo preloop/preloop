@@ -224,6 +224,10 @@ Responses API; chat-only custom models must enable `meta_data.gateway.enabled`
 to use the gateway translation. Flow saves reject incompatible bindings with
 remediation, and legacy incompatible runs fail with `model_config` before launch.
 Direct providers explicitly configured for Responses remain supported.
+Codex uses JSON events: only the last assistant message in a completed turn
+can provide a plaintext completion marker. Prompt echoes, tool output and
+diagnostics stay escaped in the log. The completion grace timeout captures
+artifacts and stops the runtime before reporting terminal success.
 
 Native Copilot host profiles can publish through managed legacy publication
 (`backend/preloop/services/host_exec_publication.py`, runner

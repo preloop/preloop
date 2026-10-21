@@ -7476,6 +7476,10 @@ class FlowExecutionOrchestrator:
                                     else None
                                 ),
                             }
+                        # A terminal execution must not leave the runtime
+                        # retrying or performing post-execution work. Capture
+                        # artifacts above before deleting a Kubernetes Job.
+                        await agent_executor.stop(session_reference)
                         cra_status, cra_error = self._apply_cra_fail_closed(
                             "SUCCEEDED", None
                         )

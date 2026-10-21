@@ -1,5 +1,7 @@
 """Pin custom-provider discovery connections to policy-checked IP addresses."""
 
+import asyncio
+
 import httpx
 
 
@@ -30,7 +32,9 @@ class DiscoveryTransport(httpx.AsyncBaseTransport):
         host = request.url.host
         literal = _parse_ip_literal(host)
         addresses = (
-            [literal] if literal is not None else _resolve_endpoint_host_uncached(host)
+            [literal]
+            if literal is not None
+            else await asyncio.to_thread(_resolve_endpoint_host_uncached, host)
         )
         if not addresses:
             raise ProviderValidationError("api_endpoint host did not resolve")
