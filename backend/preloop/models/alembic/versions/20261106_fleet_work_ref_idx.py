@@ -1,7 +1,7 @@
 """Index classified work tool calls for the Fleet Map.
 
 Revision ID: 20261106_fleet_work_ref_idx
-Revises: 20261106_anthropic_cache_input
+Revises: 20261106_control_command_idx
 """
 
 import sqlalchemy as sa
@@ -10,7 +10,7 @@ from alembic import op
 from preloop.models.concurrent_index_ddl import concurrent_index_ddl
 
 revision = "20261106_fleet_work_ref_idx"
-down_revision = "20261106_anthropic_cache_input"
+down_revision = "20261106_control_command_idx"
 branch_labels = None
 depends_on = None
 

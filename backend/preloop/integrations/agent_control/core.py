@@ -180,6 +180,7 @@ class AgentControlResult:
     status: Literal["completed", "accepted", "failed"] = "completed"
     session_reference: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentControlRuntimeHooks(Protocol):
@@ -338,6 +339,16 @@ class AgentControlClient:
         if envelope.get("type") == "ping":
             await self._send_json(websocket, {"type": "heartbeat", "payload": {}})
             return
+        if envelope.get("type") == "command":
+            await self._send_json(
+                websocket,
+                {
+                    "type": "status",
+                    "name": "command_ack",
+                    "message_id": str(envelope.get("message_id") or uuid4()),
+                    "payload": {"command_id": str(envelope.get("message_id") or "")},
+                },
+            )
         for outbound in await dispatch_operator_command(self.hooks, envelope):
             await self._send_json(websocket, outbound)
 
@@ -403,9 +414,18 @@ async def dispatch_operator_command(
     outbound: list[OutboundEnvelope] = [
         {
             "type": "status",
-            "name": "command_status",
+            "name": (
+                "command_ack"
+                if result.status == "accepted"
+                else "command_error"
+                if result.status == "failed"
+                else "command_result"
+            ),
             "message_id": command.command_id,
             "payload": {
+                "command_id": command.command_id,
+                "reply_text": result.reply_text,
+                **({"usage": result.usage} if result.usage else {}),
                 "status": result.status,
                 "command": "send_message",
                 "session_reference": result.session_reference
@@ -481,9 +501,14 @@ def _error_envelope(
 ) -> OutboundEnvelope:
     return {
         "type": "status",
-        "name": name,
+        "name": "invalid_json" if name == "invalid_json" else "command_error",
         "message_id": message_id,
-        "payload": {"status": "error", **payload},
+        "payload": {
+            "command_id": message_id,
+            "status": "error" if name == "invalid_json" else "failed",
+            "error": name,
+            **payload,
+        },
     }
 
 

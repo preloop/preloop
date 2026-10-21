@@ -215,13 +215,56 @@ async def test_dispatch_rejects_unsupported_voice() -> None:
     assert outbound == [
         {
             "type": "status",
-            "name": "unsupported_capability",
+            "name": "command_error",
             "message_id": "command-3",
             "payload": {
-                "status": "error",
+                "command_id": "command-3",
+                "status": "failed",
+                "error": "unsupported_capability",
                 "unsupported": ["voice"],
                 "session_mode": "current",
                 "input_mode": "voice",
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_failure_emits_correlated_terminal_error() -> None:
+    async def fail(command: OperatorCommand) -> AgentControlResult:
+        raise RuntimeError("native runtime failed")
+
+    outbound = await dispatch_operator_command(
+        OpenClawAgentControlAdapter.with_hooks(send_message=fail),
+        {
+            "type": "command",
+            "name": "send_message",
+            "message_id": "example-command",
+            "payload": {"text": "hello"},
+        },
+    )
+    assert outbound[0]["name"] == "command_error"
+    assert outbound[0]["payload"]["command_id"] == "example-command"
+    assert outbound[0]["payload"]["status"] == "failed"
+    assert outbound[0]["payload"]["error"] == "native runtime failed"
+
+
+@pytest.mark.asyncio
+async def test_async_acceptance_does_not_emit_terminal_result() -> None:
+    async def accept(command: OperatorCommand) -> AgentControlResult:
+        return AgentControlResult(status="accepted")
+
+    outbound = await dispatch_operator_command(
+        OpenClawAgentControlAdapter.with_hooks(send_message=accept),
+        {
+            "type": "command",
+            "name": "send_message",
+            "message_id": "example-command",
+            "payload": {"text": "hello"},
+        },
+    )
+    assert outbound[0]["name"] == "command_ack"
+    assert outbound[0]["payload"]["command_id"] == "example-command"
+    assert not any(
+        item["name"] in {"command_result", "command_error"} for item in outbound
+    )
