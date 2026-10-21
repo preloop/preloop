@@ -24,6 +24,10 @@ from preloop.services.context_analysis import (
     ToolSchemaOverheadProfile,
 )
 
+# These tests pin the local (no-model) path and inject their own models. CI's
+# init_db seeds a real global default model; never let it answer here.
+pytestmark = pytest.mark.usefixtures("isolate_system_ai_models")
+
 
 def _create_runtime_session(db_session, test_user, *, source_id: str) -> object:
     now = datetime.now(UTC)
