@@ -86,6 +86,33 @@ class CRUDIssue(CRUDBase[Issue]):
         ).one()
         return self.update(db, db_obj=existing, obj_in=values), False
 
+    def heal_timestamps(
+        self, db: Session, *, db_obj: Issue, values: Dict[str, Any]
+    ) -> Issue:
+        """Write provider timestamps exactly, bypassing ``updated_at`` onupdate.
+
+        Only ``created_at``, ``updated_at`` and ``last_updated_external`` are
+        written; an unchanged ``updated_at`` would otherwise be restamped with
+        the current time by the column's ``onupdate``.
+
+        Args:
+            db: Database session. The method commits.
+            db_obj: Stored issue.
+            values: Timestamp values to write.
+
+        Returns:
+            The refreshed issue.
+        """
+        allowed = {"created_at", "updated_at", "last_updated_external"}
+        row = {key: value for key, value in values.items() if key in allowed}
+        if row:
+            db.execute(
+                Issue.__table__.update().where(Issue.id == db_obj.id).values(**row)
+            )
+            db.commit()
+            db.refresh(db_obj)
+        return db_obj
+
     def set_triage_receipt(
         self, db: Session, *, db_obj: Issue, receipt: Dict[str, Any] | None
     ) -> Issue:

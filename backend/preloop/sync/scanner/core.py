@@ -529,8 +529,8 @@ class TrackerClient:
                 ):
                     # An older sync stamped its own clock as the provider time;
                     # the provider's earlier time replaces it (no content change).
-                    current_issue_model = crud_issue.update(
-                        db, db_obj=current_issue_model, obj_in=healed
+                    current_issue_model = crud_issue.heal_timestamps(
+                        db, db_obj=current_issue_model, values=healed
                     )
             else:
                 issue_changed = True

@@ -666,8 +666,9 @@ def test_a_resync_heals_a_sync_stamped_jira_row(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("local_edit", [False, True])
 async def test_a_full_scan_rewrites_the_stamped_jira_row(
-    db_session: Session, test_user: models.User
+    db_session: Session, test_user: models.User, local_edit: bool
 ) -> None:
     """Review: the heal runs inside scan_issues and is persisted."""
     from unittest.mock import AsyncMock
@@ -691,6 +692,15 @@ async def test_a_full_scan_rewrites_the_stamped_jira_row(
         )
     )
     db_session.flush()
+    edited = datetime(2026, 10, 21, 20, 40)
+    if local_edit:
+        # A local edit after the bad sync (raw write: onupdate would stamp now).
+        db_session.execute(
+            models.Issue.__table__.update()
+            .where(models.Issue.key == "SUBA-1")
+            .values(updated_at=edited)
+        )
+        db_session.flush()
     tracker = db_session.get(models.Tracker, project.organization.tracker_id)
     scanner = TrackerClient(tracker, initialize_client=False)
     jira = _jira(project)
@@ -702,5 +712,7 @@ async def test_a_full_scan_rewrites_the_stamped_jira_row(
     stored = db_session.query(models.Issue).filter_by(key="SUBA-1").one()
     db_session.refresh(stored)
     assert stored.last_updated_external == datetime(2026, 10, 18, 9, 15, 2, 871000)
-    assert stored.updated_at == datetime(2026, 10, 18, 9, 15, 2, 871000)
+    assert stored.updated_at == (
+        edited if local_edit else datetime(2026, 10, 18, 9, 15, 2, 871000)
+    )
     assert stored.created_at == datetime(2026, 10, 18, 9, 12, 44, 120000)
