@@ -478,8 +478,10 @@ def build_code_activity(
     ]
     result.counts = dict(counts)
     events.sort(key=lambda item: item.at, reverse=True)
-    result.events = events[:EVENT_LIMIT]
+    # Drop hidden flows before the cap, so visible events backfill it.
+    result.events = events
     _drop_hidden_flows(db, user, result)
+    result.events = result.events[:EVENT_LIMIT]
     return result
 
 

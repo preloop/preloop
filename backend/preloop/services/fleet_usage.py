@@ -297,6 +297,8 @@ def _node_totals(
     result.truncated |= (
         activity.truncated or activity.relations_truncated or activity.work_truncated
     )
+    # Totals built from a capped read are incomplete, whatever the model read.
+    result.partial |= result.truncated
     for node, counts in activity.counts.items():
         if node.startswith("user:"):
             continue

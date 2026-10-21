@@ -917,3 +917,40 @@ def test_flows_the_authorizer_denies_are_not_returned(
     assert all(r.source != flow for r in result.relations)
     assert all(e.node_id != flow for e in result.events)
     assert flow not in usage.flows
+
+
+def test_capped_activity_marks_usage_partial_without_model_permission(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    from preloop.services import fleet_code_activity, fleet_usage
+
+    real = fleet_usage._allowed
+
+    def no_models(db: Any, user: Any, permission: str, owner: bool) -> bool:
+        return permission != "view_ai_models" and real(db, user, permission, owner)
+
+    with (
+        patch.object(fleet_usage, "_allowed", side_effect=no_models),
+        patch.object(fleet_code_activity, "CALL_LIMIT", 0),
+    ):
+        usage = build_fleet_usage(
+            db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+        )
+    assert usage.truncated and usage.partial
+
+
+def test_hidden_flow_events_do_not_crowd_out_visible_ones(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    from preloop.services import fleet_code_activity
+
+    deny = lambda db, user, kind, rows: [] if kind == "flow" else list(rows)  # noqa: E731
+    with (
+        patch("preloop.plugins.account_hooks.filter_viewable", side_effect=deny),
+        patch.object(fleet_code_activity, "EVENT_LIMIT", 2),
+    ):
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+        )
+    agent = f"agent:{fleet['agent'].id}"
+    assert [event.node_id for event in result.events] == [agent, agent]
