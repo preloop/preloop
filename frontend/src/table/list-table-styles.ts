@@ -18,10 +18,12 @@ export const listTableStyles = css`
   th.numeric .table-header-content {
     justify-content: flex-end;
   }
+  .table-header-content > :not(column-picker) {
+    min-width: 0;
+  }
   .table-header-content > column-picker {
     flex: 0 0 auto;
     margin-left: auto;
-    padding: 4px 8px;
     text-transform: none;
     letter-spacing: normal;
   }

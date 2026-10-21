@@ -198,6 +198,7 @@ export function renderHeaderColumnPicker<TRow extends RowData>(
   density = true
 ): TemplateResult {
   return html`<column-picker
+    compact
     .columns=${table.pickerColumns}
     ?can-reset=${table.hasColumnChanges}
     density=${density ? table.density : ''}

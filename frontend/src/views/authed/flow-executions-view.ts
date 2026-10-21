@@ -73,11 +73,11 @@ import '../../components/token-figures.ts';
 import {
   ListTable,
   listTableStyles,
+  renderHeaderColumnPicker,
   renderListCells,
   renderListHeaders,
 } from '../../table';
 import type { ListColumn } from '../../table';
-import { renderHeaderColumnPicker } from '../../table/list-table-render';
 import {
   cacheSplitOf,
   formatCacheHitRate,
@@ -1359,11 +1359,6 @@ export class FlowExecutionsView extends AuthedElement {
           <sl-icon name="arrow-clockwise"></sl-icon>
           Refresh
         </sl-button>
-
-        <!-- Which columns the table shows sits with the filters that decide
-             which rows it shows, not in a header cell: the header row is the
-             table's own vocabulary and a control in it would be read as a
-             tenth column. -->
 
         <span slot="count">${this.resultsLabel}</span>
       </list-toolbar>

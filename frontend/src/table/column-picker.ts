@@ -44,6 +44,13 @@ export class ColumnPicker extends LitElement {
   @property({ type: String })
   label = 'Columns';
 
+  /**
+   * Icon-only trigger, for a header cell sized for one icon button. The
+   * label stays as the accessible name and the tooltip.
+   */
+  @property({ type: Boolean, reflect: true })
+  compact = false;
+
   /** Offers Reset only when something differs from the declared layout. */
   @property({ type: Boolean, attribute: 'can-reset' })
   canReset = false;
@@ -62,6 +69,15 @@ export class ColumnPicker extends LitElement {
     sl-dropdown {
       display: block;
     }
+    .compact-trigger::part(base) {
+      padding: 0;
+      min-width: 28px;
+    }
+    .compact-trigger::part(label) {
+      padding: 0 6px;
+      display: inline-flex;
+      align-items: center;
+    }
     sl-menu {
       max-height: 60vh;
       overflow-y: auto;
@@ -76,10 +92,22 @@ export class ColumnPicker extends LitElement {
            because Shoelace closes a dropdown on every selection. Reset is the
            one entry that ends the exchange, so it closes the menu itself. -->
       <sl-dropdown hoist stay-open-on-select placement="bottom-end">
-        <sl-button slot="trigger" size="small" caret>
-          <sl-icon slot="prefix" name="layout-three-columns"></sl-icon>
-          ${this.label}
-        </sl-button>
+        ${
+          this.compact
+            ? html`<sl-button
+                slot="trigger"
+                size="small"
+                class="compact-trigger"
+                aria-label=${this.label}
+                title=${this.label}
+              >
+                <sl-icon name="layout-three-columns"></sl-icon>
+              </sl-button>`
+            : html`<sl-button slot="trigger" size="small" caret>
+                <sl-icon slot="prefix" name="layout-three-columns"></sl-icon>
+                ${this.label}
+              </sl-button>`
+        }
         <sl-menu @sl-select=${this.handleSelect}>
           ${groups.map(
             (group) => html`

@@ -294,6 +294,33 @@ describe('ListTable: filtering, pagination, query', () => {
 });
 
 describe('<data-table>', () => {
+  it('fits the header picker inside its header cell', async () => {
+    const host = await mount();
+    await settle(host);
+    const within = (selector: string) => {
+      const cell = q(host, selector).getBoundingClientRect();
+      const picker = q(host, `${selector} column-picker`);
+      const trigger = picker.shadowRoot!.querySelector(
+        'sl-button[slot="trigger"]'
+      ) as HTMLElement;
+      const box = trigger.getBoundingClientRect();
+      expect(box.width).to.be.greaterThan(0);
+      expect(box.left).to.be.at.least(cell.left - 0.5);
+      expect(box.right).to.be.at.most(cell.right + 0.5);
+      expect(trigger.getAttribute('aria-label')).to.equal('Columns');
+      expect(trigger.textContent!.trim()).to.equal('');
+    };
+    within('thead th.actions-cell');
+
+    const table = q(
+      host,
+      'data-table'
+    ) as import('./data-table').DataTable<Key>;
+    table.rowActions = undefined;
+    await settle(host);
+    within('thead th:last-child');
+  });
+
   it('places the picker in the last header cell without adding a column or a toolbar control', async () => {
     const host = await mount();
     await settle(host);
