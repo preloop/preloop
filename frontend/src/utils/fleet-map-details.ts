@@ -168,6 +168,8 @@ export function workRelationLabel(
   const verb =
     edge.kind === 'touched' && actions.length
       ? actions.slice(0, 3).join(', ')
-      : edge.kind;
+      : edge.kind === 'triggered'
+        ? 'triggered by'
+        : edge.kind;
   return `${verb}${reference ? ` ${reference}` : ''}`.slice(0, 72);
 }

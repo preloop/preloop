@@ -113,6 +113,21 @@ describe('Fleet Map pass 3', () => {
         issue
       )
     ).toBe('opened #7');
+    expect(
+      workRelationLabel(
+        {
+          id: 'trigger',
+          source: 'flow:review',
+          target: issue.id,
+          kind: 'triggered',
+          provenance: 'observed',
+          impact_source: issue.id,
+          impact_target: 'flow:review',
+          gaps: [],
+        },
+        issue
+      )
+    ).toBe('triggered by #7');
   });
   it('retains standalone server-confirmed activity and opted-in idle resources through facets', async () => {
     const graph = sampleFleetMap();
