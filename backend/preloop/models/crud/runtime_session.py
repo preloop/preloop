@@ -1485,6 +1485,81 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             self._principal_id_condition(principal_id),
         )
 
+    def get_flow_tool_call_counts(
+        self, db: Session, *, account_id: Any, runtime_session_ids: Sequence[Any]
+    ) -> dict[str, int]:
+        """Count parsed flow tool events linked to each runtime session.
+
+        A Codex native command is recorded in ``FlowExecution.mcp_usage_logs``
+        with ``server_name=native`` but creates no ``RuntimeSessionActivity``.
+        Model gateway usage provides the execution-to-session link. Distinct
+        links prevent nine model requests for one run from counting the same
+        command nine times. Legacy flow sessions link by source ID instead.
+        """
+        if not runtime_session_ids:
+            return {}
+
+        sessions = (
+            db.query(
+                self.model.id,
+                self.model.session_source_type,
+                self.model.session_source_id,
+            )
+            .filter(
+                self.model.account_id == account_id,
+                self.model.id.in_(runtime_session_ids),
+            )
+            .all()
+        )
+        links: dict[str, set[uuid.UUID]] = {str(row.id): set() for row in sessions}
+        for row in sessions:
+            if row.session_source_type == "flow_execution" and _is_uuid(
+                row.session_source_id
+            ):
+                links[str(row.id)].add(uuid.UUID(row.session_source_id))
+
+        usage_links = (
+            db.query(ApiUsage.runtime_session_id, ApiUsage.flow_execution_id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.runtime_session_id.in_(runtime_session_ids),
+                ApiUsage.flow_execution_id.isnot(None),
+                ApiUsage.action_type == "model_gateway",
+                _exclude_internal_usage_condition(),
+            )
+            .distinct()
+            .all()
+        )
+        for session_id, execution_id in usage_links:
+            links[str(session_id)].add(execution_id)
+
+        execution_ids = set().union(*links.values()) if links else set()
+        if not execution_ids:
+            return {}
+        event_count = case(
+            (
+                func.jsonb_typeof(models.FlowExecution.mcp_usage_logs) == "array",
+                func.jsonb_array_length(models.FlowExecution.mcp_usage_logs),
+            ),
+            else_=0,
+        )
+        rows = (
+            db.query(models.FlowExecution.id, event_count)
+            .join(models.Flow, models.FlowExecution.flow_id == models.Flow.id)
+            .filter(
+                models.Flow.account_id == account_id,
+                models.FlowExecution.id.in_(execution_ids),
+            )
+            .all()
+        )
+        counts_by_execution = {row.id: int(row[1] or 0) for row in rows}
+        return {
+            session_id: sum(
+                counts_by_execution.get(execution_id, 0) for execution_id in ids
+            )
+            for session_id, ids in links.items()
+        }
+
     @staticmethod
     def _account_usage_links(
         db: Session,

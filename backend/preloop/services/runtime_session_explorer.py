@@ -410,13 +410,14 @@ class RuntimeSessionExplorerService:
         items: list[RuntimeSessionSummary],
         session_ids: list[str],
     ) -> None:
-        """Count recorded tool calls, falling back to the hook-reported count.
+        """Count observed tool calls from each available session source.
 
         Tool calls Preloop saw itself (MCP, governed native calls) are
         ``tool_call`` activities. A harness that only pushes usage reports a
         running conversation count instead, so its largest value is used when
-        nothing was recorded server side. The two are never added: the pushed
-        count already includes every call the harness made.
+        nothing was recorded server side. Flow agent logs also contain native
+        Codex commands absent from those sources. Counts are compared rather
+        than added because these sources can describe the same calls.
         """
         recorded = dict(
             self.db.query(
@@ -445,8 +446,15 @@ class RuntimeSessionExplorerService:
         )
         recorded = {str(key): int(value or 0) for key, value in recorded.items()}
         reported = {str(key): int(value or 0) for key, value in reported.items()}
+        flow_events = crud_runtime_session.get_flow_tool_call_counts(
+            self.db, account_id=account.id, runtime_session_ids=session_ids
+        )
         for item in items:
-            item.tool_call_count = recorded.get(item.id) or reported.get(item.id) or 0
+            item.tool_call_count = max(
+                recorded.get(item.id, 0),
+                reported.get(item.id, 0),
+                flow_events.get(item.id, 0),
+            )
 
     def _attach_pending_approval_counts(
         self,
@@ -698,6 +706,9 @@ class RuntimeSessionExplorerService:
 
         session = self._summary_row_to_schema(summary_row)
         self._attach_managed_agents(
+            account=account, items=[session], session_ids=[runtime_session_id]
+        )
+        self._attach_tool_call_counts(
             account=account, items=[session], session_ids=[runtime_session_id]
         )
         return AccountRuntimeSessionDetailResponse(

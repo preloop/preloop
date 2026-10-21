@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import or_, select, tuple_
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -106,6 +106,42 @@ def _account_for_execution(db: Session, execution_id: Any) -> Optional[str]:
 class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
     def __init__(self) -> None:
         super().__init__(model=models.FlowExecutionLog)
+
+    def count_copies_of_parsed_calls(
+        self,
+        db: Session,
+        *,
+        execution_ids: Sequence[uuid.UUID],
+        log_types: Sequence[str],
+    ) -> dict[str, int]:
+        """Count stream rows whose call ID also occurs in the parsed JSON log.
+
+        The two stores can contain the same native or MCP event. Matching an
+        explicit call ID avoids subtracting unrelated anonymous tool rows.
+        """
+        if not execution_ids:
+            return {}
+        call_id = self.model.metadata_["call_id"].astext
+        rows = (
+            db.query(
+                self.model.execution_id,
+                func.count(func.distinct(call_id)),
+            )
+            .join(
+                models.FlowExecution, models.FlowExecution.id == self.model.execution_id
+            )
+            .filter(
+                self.model.execution_id.in_(execution_ids),
+                self.model.log_type.in_(log_types),
+                call_id.isnot(None),
+                models.FlowExecution.mcp_usage_logs.contains(
+                    func.jsonb_build_array(func.jsonb_build_object("call_id", call_id))
+                ),
+            )
+            .group_by(self.model.execution_id)
+            .all()
+        )
+        return {str(execution_id): int(count) for execution_id, count in rows}
 
     def list_by_type(
         self,

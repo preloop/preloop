@@ -290,6 +290,79 @@ def test_rows_carry_agent_cwd_tool_and_approval_labels(
     assert second["pending_approval_count"] == 0
 
 
+def test_codex_native_events_count_on_linked_runtime_session(
+    client: Any, db_session: Session, account_id: Any
+) -> None:
+    """A Codex command in a flow log belongs in its linked session total."""
+    import json
+
+    from preloop.services.flow_execution_logger import FlowExecutionLogger
+
+    flow = models.Flow(
+        account_id=account_id, name="Example", prompt_template="x", agent_config={}
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(flow_id=flow.id)
+    db_session.add(execution)
+    db_session.flush()
+    session = _session(db_session, account_id, "codex-run", source_type="codex")
+    logger = FlowExecutionLogger()
+    command = {
+        "id": "item_3",
+        "type": "command_execution",
+        "command": "/bin/bash -lc 'python -m unittest'",
+        "aggregated_output": "OK",
+        "exit_code": 0,
+        "status": "completed",
+    }
+    lines = [
+        json.dumps(
+            {"type": "item.started", "item": {**command, "status": "in_progress"}}
+        ),
+        json.dumps({"type": "item.completed", "item": command}),
+    ]
+    logger.parse_agent_logs(lines + lines)
+    assert len(logger.mcp_usage_logs) == 1
+    assert logger.mcp_usage_logs[0]["server_name"] == "native"
+    execution.mcp_usage_logs = logger.mcp_usage_logs
+    db_session.add(
+        models.ApiUsage(
+            account_id=account_id,
+            runtime_session_id=session.id,
+            flow_execution_id=execution.id,
+            endpoint="/v1/messages",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            action_type="model_gateway",
+            timestamp=_now(),
+        )
+    )
+    db_session.add(
+        models.ApiUsage(
+            account_id=account_id,
+            runtime_session_id=session.id,
+            flow_execution_id=execution.id,
+            endpoint="/v1/messages",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            action_type="model_gateway",
+            timestamp=_now(),
+        )
+    )
+    db_session.flush()
+
+    response = client.get("/api/v1/runtime-sessions?limit=100")
+    assert response.status_code == 200, response.text
+    rows = {item["id"]: item for item in response.json()["items"]}
+    assert rows[str(session.id)]["tool_call_count"] == 1
+    detail = client.get(f"/api/v1/runtime-sessions/{session.id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["session"]["tool_call_count"] == 1
+
+
 def test_kind_filter_uses_the_stored_kind_fold_and_rejects_bad_shapes(
     client: Any, db_session: Session, account_id: Any
 ) -> None:

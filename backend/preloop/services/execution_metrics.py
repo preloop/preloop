@@ -5,7 +5,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import case, func
+from sqlalchemy import String, case, cast, func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -202,7 +202,7 @@ def get_execution_totals(
     if not ids:
         return {}
 
-    # The MCP log's length, and the rollups the row already carries. Only the
+    # The parsed tool log's length, and the rollups the row already carries. Only the
     # array length crosses the wire, never the payload.
     mcp_calls = case(
         (
@@ -222,13 +222,29 @@ def get_execution_totals(
     entry_rows = (
         db.query(
             FlowExecutionLog.execution_id.label("execution_id"),
-            func.count(FlowExecutionLog.id).label("tool_calls"),
+            func.count(
+                func.distinct(
+                    func.coalesce(
+                        FlowExecutionLog.metadata_["call_id"].astext,
+                        cast(FlowExecutionLog.id, String),
+                    )
+                )
+            ).label("tool_calls"),
         )
         .filter(
             FlowExecutionLog.execution_id.in_(ids),
             FlowExecutionLog.log_type.in_(TOOL_CALL_LOG_TYPES),
         )
         .group_by(FlowExecutionLog.execution_id)
+    )
+
+    # The live stream persists ``mcp_call`` rows as well as the JSONB parser
+    # rollup. A shared call_id proves they are copies of the same event;
+    # anonymous or different-id normalized calls remain independent.
+    from preloop.models.crud import crud_flow_execution_log
+
+    duplicated_calls = crud_flow_execution_log.count_copies_of_parsed_calls(
+        db, execution_ids=ids, log_types=TOOL_CALL_LOG_TYPES
     )
 
     # Tool calls the MCP server recorded against the run. The execution page
@@ -282,11 +298,14 @@ def get_execution_totals(
     totals: Dict[str, Dict[str, Any]] = {}
     for row in stored_rows:
         execution_id = str(row.execution_id)
-        # Same shape as ``_count_tool_calls``: the MCP log plus the normalized
-        # entries, floored by the rollup the orchestrator wrote and by what
-        # the MCP server recorded, because the execution page shows the
-        # largest of those and the two views have to agree.
-        visible = int(row.mcp_calls or 0) + entry_calls.get(execution_id, 0)
+        # Count independent normalized calls, removing only copies with a
+        # matching parsed call_id. This preserves shell calls and legacy rows
+        # that have no identity tying them to the JSONB log.
+        visible = (
+            int(row.mcp_calls or 0)
+            + entry_calls.get(execution_id, 0)
+            - duplicated_calls.get(execution_id, 0)
+        )
         tool_calls = max(
             int(row.stored_tool_calls or 0),
             visible,
@@ -523,8 +542,8 @@ class ExecutionMetricsService:
 
         Three sources, because no single one sees every call:
 
-        - the JSONB MCP log and the normalized log entries, both written from
-          the agent's own output;
+        - the JSONB parsed tool log and normalized log entries, which can
+          contain the same events;
         - the tool-call activity the Preloop MCP server recorded against this
           execution, which exists even when the agent printed nothing the log
           parser recognized;
@@ -540,25 +559,53 @@ class ExecutionMetricsService:
         Returns:
             Number of tool calls
         """
-        count = 0
+        parsed_count = 0
+        normalized_count = 0
+        parsed_ids: set[str] = set()
+        normalized_ids: set[str] = set()
 
         # Count from mcp_usage_logs if available
         if execution.mcp_usage_logs and isinstance(execution.mcp_usage_logs, list):
-            count += len(execution.mcp_usage_logs)
+            parsed_count = len(execution.mcp_usage_logs)
+            parsed_ids = {
+                log["call_id"]
+                for log in execution.mcp_usage_logs
+                if isinstance(log, dict) and isinstance(log.get("call_id"), str)
+            }
 
         # Count from normalized log_entries (new table) if available
         if execution.log_entries:
             for entry in execution.log_entries:
                 if entry.log_type in TOOL_CALL_LOG_TYPES:
-                    count += 1
+                    metadata = entry.metadata_ or {}
+                    call_id = (
+                        metadata.get("call_id") if isinstance(metadata, dict) else None
+                    )
+                    if isinstance(call_id, str) and (
+                        call_id in parsed_ids or call_id in normalized_ids
+                    ):
+                        continue
+                    normalized_count += 1
+                    if isinstance(call_id, str):
+                        normalized_ids.add(call_id)
         elif execution.execution_logs and isinstance(execution.execution_logs, list):
             # Legacy fallback: count from JSONB execution_logs
             for log in execution.execution_logs:
                 if isinstance(log, dict) and log.get("type") in TOOL_CALL_LOG_TYPES:
-                    count += 1
+                    metadata = log.get("payload") or log.get("metadata") or {}
+                    call_id = (
+                        metadata.get("call_id") if isinstance(metadata, dict) else None
+                    )
+                    if isinstance(call_id, str) and (
+                        call_id in parsed_ids or call_id in normalized_ids
+                    ):
+                        continue
+                    normalized_count += 1
+                    if isinstance(call_id, str):
+                        normalized_ids.add(call_id)
 
         return max(
-            count,
+            parsed_count + normalized_count,
             self._count_activity_tool_calls(execution),
             _as_count(getattr(execution, "tool_calls_count", None)),
         )
