@@ -157,6 +157,33 @@ describe('fleet-map corner notes', () => {
     expect(hit(spots[1]!, spots[2]!)).to.equal(false);
   });
 
+  it('looks no lower than two thirds of the stage', () => {
+    // Free only at the very bottom: too far from the corner to read as a
+    // corner note, so the note is not drawn.
+    const cover = { x: 12, y: 12, w: 600, h: 360 };
+    expect(
+      placeCornerNotes([{ w: 200, h: 26 }], { nodes: [cover], bounds })
+    ).to.deep.equal([null]);
+  });
+
+  it('stays cheap on a dense stage, as it runs on every pan frame', () => {
+    const wide: BubbleRect = { x: 12, y: 12, w: 1254, h: 626 };
+    const nodes: BubbleRect[] = [];
+    for (let row = 0; row < 12; row++)
+      for (let col = 0; col < 8; col++)
+        nodes.push({ x: 20 + col * 155, y: 20 + row * 52, w: 150, h: 40 });
+    const sizes = [
+      { w: 260, h: 26 },
+      { w: 260, h: 26 },
+      { w: 260, h: 26 },
+    ];
+    const start = performance.now();
+    for (let frame = 0; frame < 60; frame++)
+      placeCornerNotes(sizes, { nodes, bounds: wide });
+    // 60 frames of a fully covered stage well inside one second.
+    expect(performance.now() - start).to.be.below(500);
+  });
+
   it('drops a note when the stage has no free spot for it', () => {
     const spots = placeCornerNotes([{ w: 200, h: 26 }], {
       nodes: [bounds],

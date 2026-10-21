@@ -338,8 +338,14 @@ def test_per_model_rows_add_up_to_the_aggregate(
     account_id = fleet["account_id"]
     agent_id = str(fleet["a"].id)
     start = NOW - timedelta(days=30)
+    # A limit above the fixture's model count: the default top 10 would
+    # drop the remainder of an agent with more models.
     by_model = crud_managed_agent.get_usage_by_model_for_account(
-        db_session, account_id=account_id, agent_id=agent_id, start_date=start
+        db_session,
+        account_id=account_id,
+        agent_id=agent_id,
+        start_date=start,
+        limit=100,
     )
     aggregate = crud_managed_agent.get_usage_aggregate_for_account(
         db_session, account_id=account_id, agent_id=agent_id, start_date=start
@@ -552,3 +558,129 @@ def test_the_agent_detail_response_carries_the_subscription_block(
     assert block.api_equivalent_cost == pytest.approx(0.5)
     assert response.aggregate.estimated_cost == pytest.approx(0.16)
     assert response.agent.subscription_usage is not None
+
+
+def test_activity_status_follows_traffic_in_per_run_sessions(
+    db_session: Session, test_user: Any
+) -> None:
+    """An agent whose bound session is quiet but whose run is busy is active."""
+    base = f"claude-code-{uuid4().hex[:12]}"
+    bound = _session(db_session, test_user, source_type="claude_code", source_id=base)
+    agent = _agent(db_session, test_user, base=base, session=bound, name="Runner")
+    run = _session(
+        db_session,
+        test_user,
+        source_type="claude_code",
+        source_id=f"{base}:run-now",
+        principal_id=f"{base}:run-now",
+        days_ago=0,
+    )
+    _usage(
+        db_session,
+        test_user,
+        session=run,
+        principal_id=f"{base}:run-now",
+        cost=0.02,
+        days_ago=2 / (24 * 60),
+    )
+    account_id = str(test_user.account_id)
+    listed = next(
+        item
+        for item in crud_managed_agent.list_for_account(
+            db_session, account_id=account_id, status="all", limit=100
+        )["items"]
+        if item["id"] == str(agent.id)
+    )
+    detail = crud_managed_agent.get_summary_for_account(
+        db_session, account_id=account_id, agent_id=str(agent.id)
+    )
+    for summary in (listed, detail):
+        assert summary["total_requests"] == 1
+        assert summary["activity_status"] == "active_now"
+        assert summary["is_active_now"] is True
+
+
+def _statements(db: Session):
+    """Record the SQL a block runs, as a list filled in place."""
+    from contextlib import contextmanager
+
+    from sqlalchemy import event
+
+    @contextmanager
+    def recording():
+        statements: list[str] = []
+
+        def record(conn, cursor, statement, *args):
+            statements.append(" ".join(statement.split()))
+
+        engine = db.get_bind().engine
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            yield statements
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+
+    return recording()
+
+
+def _busy_runner(db: Session, user: Any, name: str) -> models.ManagedAgent:
+    base = f"claude-code-{uuid4().hex[:12]}"
+    bound = _session(db, user, source_type="claude_code", source_id=base)
+    agent = _agent(db, user, base=base, session=bound, name=name)
+    _usage(db, user, session=bound, principal_id=base, cost=0.0, days_ago=3)
+    run = _session(
+        db,
+        user,
+        source_type="claude_code",
+        source_id=f"{base}:run",
+        principal_id=f"{base}:run",
+    )
+    _usage(db, user, session=run, principal_id=f"{base}:run", cost=0.01, days_ago=0.01)
+    return agent
+
+
+def test_the_list_reads_latest_models_in_one_statement(
+    db_session: Session, test_user: Any
+) -> None:
+    """No query per agent for the latest model of its per-run sessions."""
+    account_id = str(test_user.account_id)
+    _busy_runner(db_session, test_user, "Runner 1")
+    with _statements(db_session) as one:
+        crud_managed_agent.list_for_account(
+            db_session, account_id=account_id, status="all", limit=100
+        )
+    for index in range(2, 5):
+        _busy_runner(db_session, test_user, f"Runner {index}")
+    with _statements(db_session) as four:
+        listed = crud_managed_agent.list_for_account(
+            db_session, account_id=account_id, status="all", limit=100
+        )["items"]
+    assert len(listed) == 4
+    assert all(item["latest_provider_name"] == "provider-a" for item in listed)
+
+    def usage_reads(statements: list[str]) -> list[str]:
+        return [s for s in statements if "api_usage" in s]
+
+    assert len(usage_reads(four)) == len(usage_reads(one))
+
+
+def test_the_agent_detail_resolves_its_sessions_once(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    from preloop.api.endpoints.account import (
+        MANAGED_AGENT_DETAIL_SECTIONS,
+        _build_managed_agent_detail_response,
+    )
+
+    with _statements(db_session) as statements:
+        _build_managed_agent_detail_response(
+            db_session,
+            account_id=fleet["account_id"],
+            agent_id=str(fleet["a"].id),
+            start_date=NOW - timedelta(days=30),
+            sections=frozenset({"usage_by_model"}) & MANAGED_AGENT_DETAIL_SECTIONS,
+        )
+    session_matches = [
+        s for s in statements if "FROM runtime_session" in s and "LIKE" in s
+    ]
+    assert len(session_matches) == 1

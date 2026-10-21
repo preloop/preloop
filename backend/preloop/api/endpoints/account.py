@@ -1031,8 +1031,18 @@ def _build_managed_agent_detail_response(
         start_date = start_date.astimezone(UTC).replace(tzinfo=None)
     if end_date and end_date.tzinfo:
         end_date = end_date.astimezone(UTC).replace(tzinfo=None)
-    summary = crud_managed_agent.get_summary_for_account(
+    agent_row = crud_managed_agent.get_for_account(
         db, account_id=account_id, agent_id=agent_id
+    )
+    if agent_row is None:
+        return None
+    # The agent's sessions are resolved once and shared by the summary, the
+    # windowed aggregate and the per-model rows below.
+    ownership = crud_managed_agent.session_ownership(
+        db, account_id=account_id, agent=agent_row
+    )
+    summary = crud_managed_agent.get_summary_for_account(
+        db, account_id=account_id, agent_id=agent_id, ownership=ownership
     )
     if summary is None:
         return None
@@ -1047,6 +1057,7 @@ def _build_managed_agent_detail_response(
         agent_id=agent_id,
         start_date=start_date,
         end_date=end_date,
+        ownership=ownership,
     )
     usage_by_model = (
         crud_managed_agent.get_usage_by_model_for_account(
@@ -1055,6 +1066,7 @@ def _build_managed_agent_detail_response(
             agent_id=agent_id,
             start_date=start_date,
             end_date=end_date,
+            ownership=ownership,
         )
         if "usage_by_model" in sections
         else []

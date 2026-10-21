@@ -123,6 +123,12 @@ def _coerce_utc(timestamp: Optional[datetime]) -> Optional[datetime]:
     return timestamp.astimezone(UTC)
 
 
+def _later(*moments: Optional[datetime]) -> Optional[datetime]:
+    """Return the latest of the given timestamps, ignoring missing ones."""
+    present = [_coerce_utc(moment) for moment in moments if moment is not None]
+    return max(present) if present else None
+
+
 def _latest_gateway_usage_for_runtime_session(
     db: Session, *, account_id: str, runtime_session_id: Any
 ):
@@ -483,6 +489,7 @@ def _usage_aggregates_for_principals(
     principals: list[tuple[str, str]],
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    ownership: Optional[_AgentSessionOwnership] = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Return principal-scoped usage totals for many agents in few queries.
 
@@ -492,6 +499,8 @@ def _usage_aggregates_for_principals(
         principals: ``(runtime_principal_type, runtime_principal_id)`` pairs.
         start_date: Optional inclusive lower bound for sessions and usage.
         end_date: Optional inclusive upper bound for sessions and usage.
+        ownership: Sessions already resolved for these principals, so one
+            request that reads several windows resolves them once.
 
     Returns:
         Mapping from principal tuple to the same aggregate shape produced by
@@ -502,9 +511,10 @@ def _usage_aggregates_for_principals(
         return {}
 
     results = {principal: _empty_usage_aggregate() for principal in unique_principals}
-    ownership = _agent_session_ownership(
-        db, account_id=account_id, principals=unique_principals
-    )
+    if ownership is None:
+        ownership = _agent_session_ownership(
+            db, account_id=account_id, principals=unique_principals
+        )
     lower = _coerce_utc(start_date)
     upper = _coerce_utc(end_date)
     for principal, session_ids in ownership.sessions_by_principal.items():
@@ -636,6 +646,7 @@ def _usage_aggregates_for_principals(
             )
             .group_by(owned.c.owner_type, owned.c.owner_id)
         ).all()
+        newer: set[tuple[str, str]] = set()
         for row in session_rows:
             key = (row.owner_type, row.owner_id)
             if key not in results or not int(row.request_count or 0):
@@ -645,22 +656,44 @@ def _usage_aggregates_for_principals(
             if current is None or (
                 row.last_request_at is not None and row.last_request_at > current
             ):
-                latest_row = (
-                    db.query(ApiUsage.model_alias, ApiUsage.provider_name)
-                    .filter(
-                        ApiUsage.account_id == account_id,
-                        gateway_action_condition(),
-                        ApiUsage.runtime_session_id.in_(
-                            ownership.sessions_by_principal[key]
-                        ),
-                        ApiUsage.timestamp == row.last_request_at,
-                    )
-                    .first()
-                )
                 results[key]["last_request_at"] = row.last_request_at
-                if latest_row is not None:
-                    results[key]["latest_model_alias"] = latest_row.model_alias
-                    results[key]["latest_provider_name"] = latest_row.provider_name
+                newer.add(key)
+        if newer:
+            # One statement for every owner whose latest request ran in a
+            # session it owns: the newest row per owner (DISTINCT ON).
+            for row in db.execute(
+                select(
+                    owned.c.owner_type,
+                    owned.c.owner_id,
+                    ApiUsage.model_alias,
+                    ApiUsage.provider_name,
+                )
+                .select_from(
+                    owned.join(
+                        ApiUsage,
+                        ApiUsage.runtime_session_id == owned.c.owned_session_id,
+                    )
+                )
+                .where(
+                    *_session_usage_filter(
+                        account_id=account_id,
+                        known_principals=ownership.known_principals,
+                        start_date=start_date,
+                        end_date=end_date,
+                    )
+                )
+                .distinct(owned.c.owner_type, owned.c.owner_id)
+                .order_by(
+                    owned.c.owner_type,
+                    owned.c.owner_id,
+                    ApiUsage.timestamp.desc(),
+                    ApiUsage.id.desc(),
+                )
+            ).all():
+                key = (row.owner_type, row.owner_id)
+                if key in newer:
+                    results[key]["latest_model_alias"] = row.model_alias
+                    results[key]["latest_provider_name"] = row.provider_name
         for row in db.execute(
             select(owned.c.owner_type, owned.c.owner_id, *_subscription_columns())
             .select_from(
@@ -717,6 +750,7 @@ def _usage_aggregate_for_principal(
     principal_id: str,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    ownership: Optional[_AgentSessionOwnership] = None,
 ) -> dict[str, Any]:
     """Return principal-scoped usage totals across all runtime sessions."""
     aggregates = _usage_aggregates_for_principals(
@@ -725,6 +759,7 @@ def _usage_aggregate_for_principal(
         principals=[(principal_type, principal_id)],
         start_date=start_date,
         end_date=end_date,
+        ownership=ownership,
     )
     return aggregates.get((principal_type, principal_id), _empty_usage_aggregate())
 
@@ -1495,6 +1530,18 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
 
         items = []
         for row in rows:
+            aggregate = aggregates.get(
+                (row.session_source_type, row.session_source_id),
+                _empty_usage_aggregate(),
+            )
+            # Status reads the agent's traffic in every session it owns, not
+            # only the bound one the page query counted (B-02).
+            row.request_count = max(
+                int(row.request_count or 0), aggregate["total_requests"]
+            )
+            row.last_request_at = _later(
+                row.last_request_at, aggregate["last_request_at"]
+            )
             summary = self._row_to_summary(row)
             if str(row.id) in shared_ids:
                 from preloop.models.crud.resource_share import crud_resource_share
@@ -1524,8 +1571,28 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
 
         return {"total": total, "items": items}
 
+    def session_ownership(
+        self, db: Session, *, account_id: str, agent: ManagedAgent
+    ) -> _AgentSessionOwnership:
+        """Resolve the sessions one agent owns, once per request.
+
+        The Agent detail reads its all-time summary, a windowed aggregate and
+        the per-model rows; passing this to each keeps the session match (an
+        account-scoped scan of runtime sessions) to one statement.
+        """
+        return _agent_session_ownership(
+            db,
+            account_id=account_id,
+            principals=[(agent.session_source_type, agent.session_source_id)],
+        )
+
     def get_summary_for_account(
-        self, db: Session, *, account_id: str, agent_id: str
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        agent_id: str,
+        ownership: Optional[_AgentSessionOwnership] = None,
     ) -> Optional[dict[str, Any]]:
         """Return one managed agent summary with runtime and usage aggregates."""
         row = (
@@ -1607,13 +1674,25 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         )
         if row is None:
             return None
-        summary = self._row_to_summary(row)
         aggregate = _usage_aggregate_for_principal(
             db,
             account_id=account_id,
             principal_type=row.session_source_type,
             principal_id=row.session_source_id,
+            ownership=ownership,
         )
+        row = _PageRow(
+            **{
+                **row._asdict(),
+                "request_count": max(
+                    int(row.request_count or 0), aggregate["total_requests"]
+                ),
+                "last_request_at": _later(
+                    row.last_request_at, aggregate["last_request_at"]
+                ),
+            }
+        )
+        summary = self._row_to_summary(row)
         summary["total_requests"] = aggregate["total_requests"]
         summary["successful_requests"] = aggregate["successful_requests"]
         summary["failed_requests"] = aggregate["failed_requests"]
@@ -1633,6 +1712,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         agent_id: str,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        ownership: Optional[_AgentSessionOwnership] = None,
     ) -> Optional[dict[str, Any]]:
         """Return historical usage totals across all sessions for one agent."""
         agent = self.get_for_account(db, account_id=account_id, agent_id=agent_id)
@@ -1646,6 +1726,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             principal_id=agent.session_source_id,
             start_date=start_date,
             end_date=end_date,
+            ownership=ownership,
         )
 
     def get_usage_by_agent_for_account(
@@ -1709,6 +1790,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         limit: int = 10,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
+        ownership: Optional[_AgentSessionOwnership] = None,
     ) -> list[dict[str, Any]]:
         """Return historical model usage grouped across all sessions for one agent."""
         agent = self.get_for_account(db, account_id=account_id, agent_id=agent_id)
@@ -1736,9 +1818,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         # The same rows as the agent's aggregate: its own principal's rows
         # plus the other rows of the sessions it owns (B-02).
         principal = (agent.session_source_type, agent.session_source_id)
-        ownership = _agent_session_ownership(
-            db, account_id=account_id, principals=[principal]
-        )
+        if ownership is None:
+            ownership = _agent_session_ownership(
+                db, account_id=account_id, principals=[principal]
+            )
         own_rows = and_(
             ApiUsage.runtime_principal_type == agent.session_source_type,
             ApiUsage.runtime_principal_id == agent.session_source_id,
@@ -1805,11 +1888,18 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         # requests is idle; once traffic exists, later session activity keeps
         # it fresh.
         has_gateway_traffic = int(row.request_count or 0) > 0
-        last_activity = (
-            _coerce_utc(row.last_activity_at or row.last_request_at)
-            if has_gateway_traffic
-            else None
-        )
+        # The later of the bound session's activity and the agent's last
+        # request: traffic in a per-run session keeps the agent fresh even
+        # when its bound session has been quiet (B-02).
+        moments = [
+            moment
+            for moment in (
+                _coerce_utc(row.last_activity_at),
+                _coerce_utc(row.last_request_at),
+            )
+            if moment is not None
+        ]
+        last_activity = max(moments) if has_gateway_traffic and moments else None
         if row.lifecycle_state == "decommissioned":
             activity_status = "decommissioned"
             is_active_now = False

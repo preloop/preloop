@@ -1,5 +1,8 @@
 import { expect } from '@open-wc/testing';
-import { subscriptionEstimate } from './subscription-estimate';
+import {
+  renderWithoutSubscriptionsLine,
+  subscriptionEstimate,
+} from './subscription-estimate';
 import type { SubscriptionUsageSummary } from '../types';
 
 const block = (
@@ -50,6 +53,24 @@ describe('subscriptionEstimate (D-05)', () => {
     );
     expect(estimate.value).to.equal(null);
     expect(estimate.text).to.equal('No estimate');
+  });
+
+  it('renders the table line only for agents with subscription use', async () => {
+    const { render, html } = await import('lit');
+    const host = document.createElement('div');
+    render(
+      html`${renderWithoutSubscriptionsLine(
+        subscriptionEstimate(0, block({ covered_requests: 0, coverage: 0 })),
+        3
+      )}`,
+      host
+    );
+    expect(host.textContent?.trim()).to.equal('w/o subs. unknown');
+    render(
+      html`${renderWithoutSubscriptionsLine(subscriptionEstimate(0.5, null), 0)}`,
+      host
+    );
+    expect(host.textContent?.trim()).to.equal('');
   });
 
   it('equals the spend for an agent without subscription use', () => {

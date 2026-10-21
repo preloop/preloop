@@ -76,15 +76,15 @@ export function renderWithoutSubscriptionsLine(
   if (!estimate || !requests) return nothing;
   // Compact for a table cell: the "$ est." header already says estimate,
   // and the title carries the full sentence and the coverage.
-  const figure =
+  const text =
     estimate.value === null
-      ? 'No estimate'
-      : `${estimate.partial ? '≥ ' : ''}${formatUsd(estimate.value)}`;
+      ? 'w/o subs. unknown'
+      : `${estimate.partial ? '≥ ' : ''}${formatUsd(estimate.value)} w/o subs.`;
   return html`<span
     class="without-subscriptions"
     data-testid="without-subscriptions"
     title=${`Without subscriptions. ${estimate.title}`}
     style="display:block;color:var(--sl-color-neutral-600);font-size:var(--console-text-meta, 12px);white-space:nowrap"
-    >${figure} w/o subs.</span
+    >${text}</span
   >`;
 }
