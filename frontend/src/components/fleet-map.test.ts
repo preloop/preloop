@@ -447,10 +447,12 @@ describe('fleet-map v2 readability', () => {
     expect(text('fleet-map-window')).to.equal('Last hour');
     expect(text('fleet-map-users')).to.equal('All users');
     expect(text('fleet-map-show')).to.equal('All resources');
+    // The name is in the slotted text: sl-button drops a host aria-label.
     expect(
       el
         .shadowRoot!.querySelector('[data-testid="fleet-map-window"]')!
-        .getAttribute('aria-label')
+        .textContent!.replace(/\s+/g, ' ')
+        .trim()
     ).to.equal('Window: Last hour');
     el.shadowRoot!.querySelector<HTMLElement>('[data-type="model"]')!.click();
     await el.updateComplete;

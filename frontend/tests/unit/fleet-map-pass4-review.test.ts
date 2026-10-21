@@ -84,9 +84,7 @@ describe('Fleet Map pass 4 review fixes', () => {
         item('example/widgets#2', ['agent:codex']),
       ]),
     });
-    expect(nodeIds(el).filter((id) => id!.startsWith('work:'))).toHaveLength(
-      2
-    );
+    expect(nodeIds(el).filter((id) => id!.startsWith('work:'))).toHaveLength(2);
     // The server answers the scoped request: only Sam's work, and a map it
     // already scoped. The older, unscoped history must not linger.
     el.users = ['user:sam'];
@@ -125,12 +123,31 @@ describe('Fleet Map pass 4 review fixes', () => {
       ...root(el).querySelectorAll(
         '[data-testid="fleet-map-arrangement"] sl-button'
       ),
-    ].map((button) =>
-      button.shadowRoot!.querySelector('button')!.textContent!.trim() ||
-      [...button.querySelectorAll('.sr-only')]
-        .map((n) => n.textContent!.trim())
-        .join('')
+    ].map(
+      (button) =>
+        button.shadowRoot!.querySelector('button')!.textContent!.trim() ||
+        [...button.querySelectorAll('.sr-only')]
+          .map((n) => n.textContent!.trim())
+          .join('')
     );
     expect(names).toEqual(['Lanes', 'Canvas']);
+  });
+
+  it('announces each filter trigger as its name and value', async () => {
+    await page.viewport(1440, 900);
+    const el = await mount({ activityWindow: '1h' });
+    const name = (id: string) => {
+      const host = root(el).querySelector(`[data-testid="${id}"]`)!;
+      // sl-button renders its slot inside the inner button: the light DOM
+      // text is what assistive tech reads; aria-label on the host is lost.
+      return host.textContent!.replace(/\s+/g, ' ').trim();
+    };
+    expect(name('fleet-map-window')).toBe('Window: Last hour');
+    expect(name('fleet-map-users')).toBe('Users: All users');
+    expect(name('fleet-map-show')).toBe('Show: All resources');
+    const shown = root(el).querySelector(
+      '[data-testid="fleet-map-window"] .filter-value'
+    )!;
+    expect(shown.textContent!.trim()).toBe('Last hour');
   });
 });

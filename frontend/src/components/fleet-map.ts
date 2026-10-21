@@ -1796,7 +1796,8 @@ export class FleetMap extends LitElement {
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .filter-value {
+      /* The value beside a label in the narrow Filters menu. */
+      .filter-value[slot='suffix'] {
         max-width: 112px;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -3447,9 +3448,11 @@ export class FleetMap extends LitElement {
                       size="small"
                       caret
                       data-testid=${filter.id}
-                      aria-label="${filter.label}: ${filter.value}"
                       title="${filter.label}: ${filter.value}"
-                      >${filter.value}</sl-button
+                      ><span class="sr-only">${filter.label}: </span
+                      ><span class="filter-value"
+                        >${filter.value}</span
+                      ></sl-button
                     >
                     <sl-menu class="filters-menu" aria-label=${filter.label}
                       >${filter.content}</sl-menu
