@@ -655,6 +655,52 @@ def test_a_resync_heals_a_sync_stamped_jira_row(
         "updated_at": datetime(2026, 10, 18, 9, 15, 2, 871000),
         "created_at": datetime(2026, 10, 18, 9, 12, 44, 120000),
     }
+    # A local edit after the bad sync keeps its own updated_at.
+    edited = datetime(2026, 10, 21, 20, 40)
+    stored.updated_at = edited
+    assert "updated_at" not in (stamped_times_to_heal(stored, values) or {})
+    stored.updated_at = datetime.fromisoformat(row["updated_at"])
     # A row already holding the provider time needs nothing.
     stored.last_updated_external = healed["last_updated_external"]
     assert stamped_times_to_heal(stored, values) is None
+
+
+@pytest.mark.asyncio
+async def test_a_full_scan_rewrites_the_stamped_jira_row(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Review: the heal runs inside scan_issues and is persisted."""
+    from unittest.mock import AsyncMock
+
+    from preloop.sync.scanner.core import TrackerClient
+
+    project = _tracker(db_session, test_user, "jira")
+    row = PROD["jira_prod_row_before_fix"]
+    stamp = datetime.fromisoformat(row["updated_at"])
+    db_session.add(
+        models.Issue(
+            project_id=project.id,
+            tracker_id=project.organization.tracker_id,
+            key="SUBA-1",
+            external_id="10001",
+            title="Subaccount tracker issue SUBA-1",
+            status="Backlog",
+            created_at=datetime.fromisoformat(row["created_at"]),
+            updated_at=stamp,
+            last_updated_external=stamp,
+        )
+    )
+    db_session.flush()
+    tracker = db_session.get(models.Tracker, project.organization.tracker_id)
+    scanner = TrackerClient(tracker, initialize_client=False)
+    jira = _jira(project)
+    stub = AsyncMock()
+    stub.get_issues.return_value = [PROD["jira_search_issue"]]
+    stub.transform_issue = jira.transform_issue
+    scanner.client = stub
+    await scanner.scan_issues(db_session, project.organization, project)
+    stored = db_session.query(models.Issue).filter_by(key="SUBA-1").one()
+    db_session.refresh(stored)
+    assert stored.last_updated_external == datetime(2026, 10, 18, 9, 15, 2, 871000)
+    assert stored.updated_at == datetime(2026, 10, 18, 9, 15, 2, 871000)
+    assert stored.created_at == datetime(2026, 10, 18, 9, 12, 44, 120000)

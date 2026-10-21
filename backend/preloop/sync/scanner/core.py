@@ -64,8 +64,9 @@ def stamped_times_to_heal(
     A provider's update time never moves backwards. A stored
     ``last_updated_external`` later than the provider's own value is the sync
     clock an older transform wrote (the Jira sync did, 2026-10-21), so the
-    provider's ``created_at``/``updated_at``/``last_updated_external`` replace
-    it. Returns None when nothing needs healing.
+    provider's ``created_at`` and ``last_updated_external`` replace it, and
+    ``updated_at`` too while it still carries the same stamp (a later local
+    edit keeps its own time). Returns None when nothing needs healing.
 
     Args:
         current: Stored issue row.
@@ -80,10 +81,11 @@ def stamped_times_to_heal(
         return None
     if stored <= provider + datetime.timedelta(seconds=1):
         return None
-    healed: Dict[str, Any] = {
-        "last_updated_external": provider,
-        "updated_at": provider,
-    }
+    healed: Dict[str, Any] = {"last_updated_external": provider}
+    local = _naive_utc(getattr(current, "updated_at", None))
+    if local is not None and abs(local - stored) <= datetime.timedelta(seconds=1):
+        # ``updated_at`` still carries the stamp; a later local edit keeps its time.
+        healed["updated_at"] = provider
     created = _naive_utc(incoming.get("created_at"))
     if created is not None:
         healed["created_at"] = created
