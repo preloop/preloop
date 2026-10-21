@@ -8,17 +8,16 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15223/badge)](https://www.bestpractices.dev/projects/15223)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/preloop/preloop/badge)](https://scorecard.dev/viewer/?uri=github.com/preloop/preloop)
 
-
 **The open-source AI agent control plane and software factory.**
 
-Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did.
+Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see spend by model, agent, session, API key and flow, including imported Copilot usage, and cap it with budgets.
 
 It has two halves, and the same policies, budgets and session timeline apply to both:
 
 - **Control plane.** An MCP firewall that allows, denies or holds any tool call for human approval; an AI model gateway with budgets and attribution; policy-as-code in YAML and CEL; one runtime timeline per session.
-- **Software factory.** Flows run agents on your own runners when GitHub, GitLab, Bitbucket Cloud, Jira, a webhook or a CI job fires. Presets review pull requests, implement issues, triage tickets, scan for vulnerabilities and collect evidence packs. A human can steer a running agent from the console, phone or watch, and the work lands as pull requests gated on the current head.
+- **Software factory.** Flows run agents on your private runners or hosted compute when GitHub, GitLab, Bitbucket Cloud, Jira, a webhook or a CI job fires. Presets review pull requests, implement issues, triage tickets, scan for vulnerabilities and collect evidence packs. A human can steer a running agent from the console, phone or watch, and the work lands as pull requests that are re-checked against the latest commit after review or CI feedback.
 
-Who it is for. Platform and security teams that need agents governed before they reach production systems. Engineering teams running coding agents that want to see the cost and keep an audit trail. Teams that want tickets and events turned into bounded agent work they can review.
+**Who it is for.** Platform and security teams that need agents governed before they reach production systems. Engineering teams running coding agents that want to see the cost and keep an audit trail. Teams that want tickets and events turned into bounded agent work they can review.
 
 Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
 
@@ -83,17 +82,19 @@ AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execu
 
 One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Cloud or Jira. A flow starts an agent on your private runner. Every tool call it makes passes the same firewall and approvals as your own agents, and every model call is charged to the flow's budget. The agent opens a pull request; the [Pull Request Reviewer](docs/guide/flows/pull-request-review.md) reviews it; review or CI feedback resumes [the implementation](docs/guide/flows/durable-implementation-feedback.md) on the same branch with current-head gates. You can steer the run with an operator note at any point, and the whole run is one timeline.
 
-Presets ship in [`backend/presets/`](./backend/presets/), including:
+[20 presets](backend/presets/README.md) ship in this repository, including:
 
 - [Issue Triage Assistant](docs/guide/flows/issue-triage.md) and issue refinement
 - [Pull Request Reviewer](docs/guide/flows/pull-request-review.md)
 - [Automated issue implementation](docs/guide/flows/automated-issue-implementation.md)
 - [Security audit presets](docs/guide/flows/security-audit-presets.md): SBOM verify, exploit check, release audit. They collect machine evidence for CRA- and EU AI Act-style reviews. That is not a conformity assessment, certification, or legal advice.
 - [Observe / Eval](./backend/presets/003-observe-eval.yaml)
+- Component due diligence, architecture and strategy review, repo code health review
+- Standards compliance walk, release backport, weekly model price review
 
-Or write your own. Trigger from CI with the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md); run agents on [private runners](docs/guide/runners/quickstart-linux.md); let a flow start child flows with [flow delegation](docs/guide/flows/flow-delegation.md). Tracker setup: [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md).
+Or write your own. Trigger from CI with the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md); run agents on [private runners](docs/guide/runners/quickstart-linux.md); let a flow start child flows with [flow delegation](docs/guide/flows/flow-delegation.md). Tracker setup: [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md); [Bitbucket Data Center](docs/guide/bitbucket-data-center.md) is available as an opt-in provider.
 
-### Policy-as-code
+## Policy-as-code
 
 ```yaml
 version: "1.0"
@@ -122,9 +123,10 @@ Check a sample call before saving with **Test this rule** or **Simulate** in the
   <a href="frontend/public/assets/screenshots/quickstart/dark/dashboard.png"><img alt="Preloop dashboard with live agent and gateway usage" src="frontend/public/assets/screenshots/quickstart/dark/dashboard-1600.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" /></a>
 </p>
 
-### More capabilities
+## More capabilities
 
 - **Model providers:** OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guide/providers/bedrock.md), [Azure OpenAI](docs/guide/providers/azure-openai.md), [Alibaba Cloud Model Studio](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot, Z.ai, OpenRouter, any OpenAI-compatible endpoint, and [runner-proxied local models](docs/guide/runner-local-models.md). [Reviewed model pricing](docs/guide/model-price-refresh.md); unpriced models stay visibly unpriced.
+- **Restricted CI identity:** a machine identity bound to one project and one flow for CI jobs. [Guide](docs/guide/flows/restricted-ci.md).
 - **Account kill switch:** blocks gateway and tool traffic and stops managed flow runs, with audited recovery. [Guide](docs/guide/account-kill-switch.md).
 - **Session search:** keyword search by default, semantic as an opt-in, every search audited. [Saved searches](docs/guide/session-saved-searches.md).
 - **DORA exports:** the AI-agent slice of the ICT inventory and incident record. [Guide](docs/guide/dora-agent-slice.md).
@@ -178,7 +180,7 @@ Also compare: [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloo
 
 ## Editions
 
-Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop Cloud** is the hosted service at [preloop.ai](https://preloop.ai). **Preloop Enterprise** is the commercial self-hosted edition. Cloud and Enterprise include support plans.
+Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop Cloud** is the hosted service at [preloop.ai](https://preloop.ai). **Preloop Enterprise** is the commercial self-hosted edition. Cloud and Enterprise include support plans. Cloud billing owners can compare usage from the previous three completed months in Account settings before requesting a plan-change quote.
 
 Your data: self-hosted, nothing leaves your network except the optional daily version check. On Preloop Cloud, sessions are stored only to give you search, audit trails, cost reports and policy enforcement; they are not used to train models and are not sold or shared. Details: [Security & Privacy](docs/security/security-privacy.md#your-data).
 
@@ -191,7 +193,7 @@ Governance itself is open source: every model provider, flows, private runners, 
 | Budgets scoped to a user or a team, budget notification routing | No | Yes |
 | Multi-approver routing, quorum, escalations | No | Yes |
 
-A self-hosted OSS instance is one operator per account. Enterprise licensing: sales@preloop.ai.
+A self-hosted OSS instance is one operator per account. Public signup, if left on, creates a separate account, not a teammate. Enterprise licensing: sales@preloop.ai.
 
 ## Working in this repository
 
