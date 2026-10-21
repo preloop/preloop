@@ -5,7 +5,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import String, case, cast, func
+from sqlalchemy import case, func
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
@@ -174,7 +174,6 @@ def get_execution_totals(
     )
     from preloop.models.models.api_usage import ApiUsage
     from preloop.models.models.flow_execution import FlowExecution
-    from preloop.models.models.flow_execution_log import FlowExecutionLog
     from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
 
     # Every column filtered below is a native UUID with an index on it (the
@@ -218,32 +217,13 @@ def get_execution_totals(
         FlowExecution.estimated_cost.label("stored_cost"),
     ).filter(FlowExecution.id.in_(ids))
 
-    # Tool calls normalized out of the JSONB blob into their own table.
-    entry_rows = (
-        db.query(
-            FlowExecutionLog.execution_id.label("execution_id"),
-            func.count(
-                func.distinct(
-                    func.coalesce(
-                        FlowExecutionLog.metadata_["call_id"].astext,
-                        cast(FlowExecutionLog.id, String),
-                    )
-                )
-            ).label("tool_calls"),
-        )
-        .filter(
-            FlowExecutionLog.execution_id.in_(ids),
-            FlowExecutionLog.log_type.in_(TOOL_CALL_LOG_TYPES),
-        )
-        .group_by(FlowExecutionLog.execution_id)
-    )
-
     # The live stream persists ``mcp_call`` rows as well as the JSONB parser
     # rollup. A shared call_id proves they are copies of the same event;
-    # anonymous or different-id normalized calls remain independent.
+    # anonymous or different-id normalized calls remain independent. Both
+    # counts come from one grouped query, preserving the list's query budget.
     from preloop.models.crud import crud_flow_execution_log
 
-    duplicated_calls = crud_flow_execution_log.count_copies_of_parsed_calls(
+    normalized_counts = crud_flow_execution_log.count_tool_events_and_parsed_copies(
         db, execution_ids=ids, log_types=TOOL_CALL_LOG_TYPES
     )
 
@@ -287,9 +267,6 @@ def get_execution_totals(
 
     # The maps are keyed by the string form because that is what the callers
     # (and the response schemas) hold.
-    entry_calls = {
-        str(row.execution_id): int(row.tool_calls or 0) for row in entry_rows
-    }
     activity_calls = {
         str(row.execution_id): int(row.tool_calls or 0) for row in activity_rows
     }
@@ -303,8 +280,8 @@ def get_execution_totals(
         # that have no identity tying them to the JSONB log.
         visible = (
             int(row.mcp_calls or 0)
-            + entry_calls.get(execution_id, 0)
-            - duplicated_calls.get(execution_id, 0)
+            + normalized_counts.get(execution_id, (0, 0))[0]
+            - normalized_counts.get(execution_id, (0, 0))[1]
         )
         tool_calls = max(
             int(row.stored_tool_calls or 0),

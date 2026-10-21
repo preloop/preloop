@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence
 
-from sqlalchemy import func, or_, select, tuple_
+from sqlalchemy import String, case, cast, func, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -107,14 +107,14 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
     def __init__(self) -> None:
         super().__init__(model=models.FlowExecutionLog)
 
-    def count_copies_of_parsed_calls(
+    def count_tool_events_and_parsed_copies(
         self,
         db: Session,
         *,
         execution_ids: Sequence[uuid.UUID],
         log_types: Sequence[str],
-    ) -> dict[str, int]:
-        """Count stream rows whose call ID also occurs in the parsed JSON log.
+    ) -> dict[str, tuple[int, int]]:
+        """Count distinct stream calls and copies present in parsed JSON.
 
         The two stores can contain the same native or MCP event. Matching an
         explicit call ID avoids subtracting unrelated anonymous tool rows.
@@ -122,10 +122,21 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         if not execution_ids:
             return {}
         call_id = self.model.metadata_["call_id"].astext
+        event_key = func.coalesce(call_id, cast(self.model.id, String))
+        parsed_copy_id = case(
+            (
+                models.FlowExecution.mcp_usage_logs.contains(
+                    func.jsonb_build_array(func.jsonb_build_object("call_id", call_id))
+                ),
+                call_id,
+            ),
+            else_=None,
+        )
         rows = (
             db.query(
                 self.model.execution_id,
-                func.count(func.distinct(call_id)),
+                func.count(func.distinct(event_key)),
+                func.count(func.distinct(parsed_copy_id)),
             )
             .join(
                 models.FlowExecution, models.FlowExecution.id == self.model.execution_id
@@ -133,15 +144,14 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
             .filter(
                 self.model.execution_id.in_(execution_ids),
                 self.model.log_type.in_(log_types),
-                call_id.isnot(None),
-                models.FlowExecution.mcp_usage_logs.contains(
-                    func.jsonb_build_array(func.jsonb_build_object("call_id", call_id))
-                ),
             )
             .group_by(self.model.execution_id)
             .all()
         )
-        return {str(execution_id): int(count) for execution_id, count in rows}
+        return {
+            str(execution_id): (int(count), int(copies))
+            for execution_id, count, copies in rows
+        }
 
     def list_by_type(
         self,
