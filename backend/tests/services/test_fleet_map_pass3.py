@@ -802,3 +802,118 @@ def test_device_totals_sum_the_agents_it_hosts(
         )
     device = usage.devices["device:fp:laptop"]
     assert device.request_count == usage.agents[f"agent:{agent.id}"].request_count == 1
+
+
+# ------------------------------------------------------- review regressions
+
+
+def test_node_source_cap_marks_usage_truncated_even_when_models_fit(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    from types import SimpleNamespace
+
+    from preloop.services import fleet_usage
+
+    rows = [
+        SimpleNamespace(
+            principal_type="x", principal_id=str(i), flow_id=None, tool_calls=1
+        )
+        for i in range(3)
+    ]
+    with (
+        patch.object(fleet_usage, "NODE_LIMIT", 2),
+        patch("preloop.models.crud.fleet_activity.tool_call_counts", return_value=rows),
+    ):
+        usage = build_fleet_usage(
+            db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+        )
+    assert usage.truncated and usage.partial
+
+
+def test_unresolved_reference_does_not_hide_a_tracker_key_issue(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    work_ref = classify_tool_call("preloop-mcp", "update_issue", {"issue": "proj-123"})
+    assert work_ref is not None and work_key(work_ref) == ("issue", "PROJ-123")
+    _call(
+        db_session, fleet["session"], "update_issue", 3, metadata={"work_ref": work_ref}
+    )
+    db_session.flush()
+    result = build_code_activity(
+        db_session, user=fleet["user"], active_within_minutes=60, now=NOW
+    )
+    assert "work:issue:PROJ-123" in {item.id for item in result.work}
+    assert any(r.target == "work:issue:PROJ-123" for r in result.relations)
+
+
+def test_a_slug_comment_target_is_a_pull_request() -> None:
+    found = classify_tool_call("preloop-mcp", "add_comment", {"target": "acme/api#42"})
+    assert found is not None and work_key(found) == ("pull_request", "acme/api#42")
+
+
+def test_gh_api_input_body_is_an_implicit_write() -> None:
+    found = classify_shell_command(
+        "gh api repos/acme/api/issues/1/comments --input body.json"
+    )
+    assert found is not None and found["action"] == "commented"
+
+
+def test_flow_cap_keeps_the_most_recent_and_says_truncated(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    from preloop.models.crud import crud_flow, crud_flow_execution
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+    from preloop.services import fleet_code_activity
+
+    user = fleet["user"]
+    newer = crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name="Newer flow",
+            prompt_template="x",
+            trigger_event_source="github",
+            trigger_event_types=["issue_opened"],
+            agent_type="openhands",
+            agent_config={},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            is_enabled=True,
+            account_id=user.account_id,
+        ),
+        account_id=user.account_id,
+    )
+    crud_flow_execution.create(
+        db_session,
+        obj_in=FlowExecutionCreate(
+            flow_id=newer.id, status="RUNNING", trigger_event_details={}
+        ),
+    )
+    db_session.flush()
+    with patch.object(fleet_code_activity, "FLOW_LIMIT", 1):
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60
+        )
+    assert [f.id for f in result.flows] == [f"flow:{newer.id}"] and result.truncated
+
+
+def test_flows_the_authorizer_denies_are_not_returned(
+    db_session: Session, fleet: dict[str, Any]
+) -> None:
+    flow = f"flow:{fleet['flow'].id}"
+    model = _model(db_session, fleet["user"].account_id, "hidden-flow-model")
+    _usage(db_session, fleet["user"].account_id, model, 5, flow_id=fleet["flow"].id)
+    deny = lambda db, user, kind, rows: [] if kind == "flow" else list(rows)  # noqa: E731
+    with patch("preloop.plugins.account_hooks.filter_viewable", side_effect=deny):
+        result = build_code_activity(
+            db_session, user=fleet["user"], active_within_minutes=60
+        )
+        usage = build_fleet_usage(
+            db_session, user=fleet["user"], active_within_minutes=60
+        )
+    assert flow not in {f.id for f in result.flows}
+    assert flow not in result.counts
+    assert all(flow not in item.node_ids for item in result.work)
+    assert all(r.source != flow for r in result.relations)
+    assert all(e.node_id != flow for e in result.events)
+    assert flow not in usage.flows

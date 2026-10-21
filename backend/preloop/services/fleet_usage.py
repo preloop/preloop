@@ -87,8 +87,8 @@ def build_fleet_usage(
             include_built_in=built_in_models_enabled(),
         ),
     )
-    result.truncated = len(rows) > MODEL_LIMIT
-    result.partial = result.truncated
+    result.truncated |= len(rows) > MODEL_LIMIT
+    result.partial |= result.truncated
     rows = rows[:MODEL_LIMIT]
     owned = [row for row in rows if row.account_id is not None]
     visible_ids = {row.id for row in filter_viewable(db, user, VISIBLE_AI_MODEL, owned)}
@@ -208,7 +208,8 @@ def _node_totals(
         loaded = read_source(
             db, source="agents", account_id=str(account_id), limit=NODE_LIMIT + 1
         )
-        result.truncated |= len(loaded) > NODE_LIMIT
+        if len(loaded) > NODE_LIMIT:
+            result.truncated = result.partial = True
         agents = viewable(db, user, VISIBLE_MANAGED_AGENT, loaded[:NODE_LIMIT])
     by_principal = {
         (row.session_source_type, row.session_source_id): f"agent:{row.id}"
@@ -293,7 +294,9 @@ def _node_totals(
     activity = build_code_activity(
         db, user=user, active_within_minutes=minutes, now=now
     )
-    result.truncated |= activity.truncated or activity.relations_truncated
+    result.truncated |= (
+        activity.truncated or activity.relations_truncated or activity.work_truncated
+    )
     for node, counts in activity.counts.items():
         if node.startswith("user:"):
             continue
@@ -332,6 +335,10 @@ def _node_totals(
             projection = service.read(db, account_id=account_id)
         except Exception:  # noqa: BLE001 - optional projection
             projection = None
+        if projection and (
+            projection.get("truncated") or len(projection.get("items", [])) > NODE_LIMIT
+        ):
+            result.truncated = result.partial = True
         for device in (projection or {}).get("items", [])[:NODE_LIMIT]:
             hosted = {
                 f"agent:{entry.get('managed_agent_id')}"
@@ -342,8 +349,16 @@ def _node_totals(
                 if node in totals:
                     _add(totals[f"device:{device['device_key']}"], totals[node])
 
+    from preloop.services.fleet_code_activity import visible_flow_ids
+
+    flows_named = {
+        node.removeprefix("flow:") for node in totals if node.startswith("flow:")
+    }
+    shown_flows = visible_flow_ids(db, user, flows_named) if flows_named else set()
     for node, item in totals.items():
         if not any(getattr(item, name) for name in _COUNT_FIELDS):
+            continue
+        if node.startswith("flow:") and node.removeprefix("flow:") not in shown_flows:
             continue
         target = {
             "agent": result.agents,

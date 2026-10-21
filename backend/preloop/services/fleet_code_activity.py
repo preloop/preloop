@@ -455,6 +455,12 @@ def build_code_activity(
             ordered = [model_nodes[str(model_id)]]
         return ordered[:5]
 
+    # Most recently active first, so the cap keeps the freshest flows.
+    ordered_flows = sorted(
+        (flow_id for flow_id in flow_rows if flow_id in last_flow),
+        key=lambda flow_id: (-last_flow[flow_id].timestamp(), flow_id),
+    )
+    result.truncated |= len(ordered_flows) > FLOW_LIMIT
     result.flows = [
         FleetCodeFlow(
             id=f"flow:{flow_id}",
@@ -466,14 +472,56 @@ def build_code_activity(
             run_count=run_counts.get(flow_id, 0),
             last_active_at=last_flow.get(flow_id),
         )
-        for flow_id, (name, model_id) in sorted(flow_rows.items())
-        if flow_id in last_flow
+        for flow_id in ordered_flows[:FLOW_LIMIT]
+        for name, model_id in [flow_rows[flow_id]]
         for observed in [flow_models(flow_id, model_id)]
-    ][:FLOW_LIMIT]
+    ]
     result.counts = dict(counts)
     events.sort(key=lambda item: item.at, reverse=True)
     result.events = events[:EVENT_LIMIT]
+    _drop_hidden_flows(db, user, result)
     return result
+
+
+def visible_flow_ids(db: Session, user: models.User, flow_ids: set[str]) -> set[str]:
+    """Flow ids the resource authorizer lets ``user`` view, as the flow lists do."""
+    from preloop.models.crud import fleet_activity
+    from preloop.plugins.account_hooks import VISIBLE_FLOW, filter_viewable
+
+    rows = fleet_activity.flows_by_ids(
+        db, account_id=user.account_id, flow_ids=flow_ids
+    )
+    return {str(row.id) for row in filter_viewable(db, user, VISIBLE_FLOW, rows)}
+
+
+def _drop_hidden_flows(
+    db: Session, user: models.User, result: FleetCodeActivityResponse
+) -> None:
+    """Remove flows the caller may not view from every part of the response."""
+    named = {
+        node.removeprefix("flow:")
+        for node in (
+            [flow.id for flow in result.flows]
+            + list(result.counts)
+            + [event.node_id for event in result.events]
+            + [node for item in result.work for node in item.node_ids]
+            + [relation.source for relation in result.relations]
+        )
+        if node.startswith("flow:")
+    }
+    if not named:
+        return
+    visible = visible_flow_ids(db, user, named)
+
+    def shown(node: str) -> bool:
+        return not node.startswith("flow:") or node.removeprefix("flow:") in visible
+
+    result.flows = [flow for flow in result.flows if shown(flow.id)]
+    result.counts = {node: c for node, c in result.counts.items() if shown(node)}
+    result.events = [event for event in result.events if shown(event.node_id)]
+    for item in result.work:
+        item.node_ids = [node for node in item.node_ids if shown(node)]
+    result.relations = [r for r in result.relations if shown(r.source)]
 
 
 def emit_code_tool_event(

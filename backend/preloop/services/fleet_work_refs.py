@@ -39,6 +39,7 @@ _CLOSING = re.compile(
     r"(?P<ref>(?:https://\S+)|(?:[\w.-]+/[\w.-]+)?[#!][0-9]+)",
     re.IGNORECASE,
 )
+_TRACKER_KEY = re.compile(r"^[A-Z][A-Z0-9_]*-[0-9]+$")
 _MENTION = re.compile(r"(?:https://\S+|(?<![\w/])(?:[\w.-]+/[\w.-]+)?#[0-9]+)")
 
 
@@ -200,9 +201,17 @@ def _builtin(tool: str, args: dict[str, Any]) -> dict[str, Any] | None:
         )
     if tool == "update_issue":
         ref = parse_reference(args.get("issue"), kind="issue")
-        return _result("builtin", "issue", "issue_updated", ref)
+        found = _result("builtin", "issue", "issue_updated", ref)
+        key = _bounded(args.get("issue"), 64)
+        if ref is None and key and _TRACKER_KEY.fullmatch(key.upper()):
+            # A tracker key (``PROJ-123``) is a complete identity on its own.
+            found["key"] = key.upper()
+        return found
     if tool in {"add_comment", "update_comment"}:
         ref = parse_reference(args.get("target"))
+        if ref is not None and ref["kind"] is None:
+            # The comment router reads an ``owner/repo#N`` target as a PR/MR.
+            ref["kind"] = "pull_request"
         if args.get("path") and args.get("line") is not None:
             ref = dict(ref or {}, kind="pull_request")
         return _result(
@@ -461,6 +470,7 @@ _VALUE_FLAGS = {
     "--milestone",
     "-p",
     "--project",
+    "--input",
 }
 _GH_API = re.compile(
     r"^/?repos/(?P<repo>[\w.-]+/[\w.-]+)/(?P<type>issues|pulls)(?:/(?P<n>[0-9]+))?(?:/(?P<sub>comments|reviews|merge))?/?$"
@@ -647,6 +657,13 @@ def work_key(work_ref: Any) -> tuple[Kind, str] | None:
     """``(kind, owner/repo#N)`` of a stored ``work_ref``, when fully known."""
     if not isinstance(work_ref, dict):
         return None
+    key = work_ref.get("key")
+    if (
+        work_ref.get("kind") == "issue"
+        and isinstance(key, str)
+        and _TRACKER_KEY.fullmatch(key)
+    ):
+        return "issue", key
     kind, ref, repo = work_ref.get("kind"), work_ref.get("ref"), work_ref.get("repo")
     if kind not in {"issue", "pull_request"} or not isinstance(ref, str):
         return None
@@ -662,7 +679,9 @@ def work_url(work_ref: Any) -> str | None:
     if found is None or not isinstance(host, str) or not host:
         return None
     kind, key = found
-    repo, ref = work_ref["repo"], work_ref["ref"]
+    repo, ref = work_ref.get("repo"), work_ref.get("ref")
+    if not isinstance(repo, str) or not isinstance(ref, str):
+        return None
     number = ref[1:]
     if ref.startswith("!"):
         return f"https://{host}/{repo}/-/merge_requests/{number}"

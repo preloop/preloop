@@ -353,3 +353,13 @@ def approval_counts(
             .limit(limit)
         ).all()
     )
+
+
+def flows_by_ids(db: Session, *, account_id: Any, flow_ids: set[str]) -> list[Any]:
+    """The account's flow rows by id, for the resource authorizer."""
+    if not flow_ids:
+        return []
+    f = models.Flow
+    return (
+        db.query(f).filter(f.account_id == account_id, f.id.in_(sorted(flow_ids))).all()
+    )

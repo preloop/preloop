@@ -335,7 +335,9 @@ def build_work_items(
     for call in calls:
         metadata = call.metadata_ if isinstance(call.metadata_, dict) else {}
         work_ref = metadata.get("work_ref")
-        if isinstance(work_ref, dict):
+        # A classified call is authoritative once its object is known; an
+        # unresolved one (e.g. a tracker key) falls through to the summary.
+        if isinstance(work_ref, dict) and work_key(work_ref) is not None:
             flow_id = flow_of_execution.get(str(call.flow_execution_id or ""))
             actor: str | None = f"flow:{flow_id}" if flow_id else None
             if not call.flow_execution_id:
