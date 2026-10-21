@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Integer, and_, case, cast, func, select, text, tuple_
+from sqlalchemy import Integer, Text, and_, case, cast, func, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1162,6 +1162,100 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .limit(min(max(limit, 1), 100))
             .all()
         )
+
+    def list_bounded_model_gateway_call_payloads_for_session(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        start_date: datetime,
+        end_date: datetime,
+        after: tuple[datetime, Any] | None = None,
+        limit: int = 20,
+        max_payload_bytes: int = 2_000_000,
+        newest_first: bool = False,
+    ) -> tuple[
+        list[Any], list[tuple[Any, datetime]], tuple[datetime, Any] | None, bool
+    ]:
+        """Read an oldest-first payload page under a SQL-enforced byte budget.
+
+        Returns fetched rows, oversized activity IDs, and the last inspected
+        cursor, and whether every capture in the requested window was read.
+        Callers must record skipped IDs as incomplete evidence.
+        Metadata is measured in PostgreSQL before it crosses the DB connection;
+        the fetch repeats the size predicate to protect against concurrent edits.
+        """
+        size = func.coalesce(func.octet_length(cast(self.model.metadata_, Text)), 0)
+        query = db.query(self.model.id, self.model.timestamp, size).filter(
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+            self.model.activity_type == "model_gateway_call",
+            self.model.timestamp >= start_date,
+            self.model.timestamp <= end_date,
+        )
+        if after is not None:
+            query = query.filter(
+                tuple_(self.model.timestamp, self.model.id) < after
+                if newest_first
+                else tuple_(self.model.timestamp, self.model.id) > after
+            )
+        order = (
+            (self.model.timestamp.desc(), self.model.id.desc())
+            if newest_first
+            else (self.model.timestamp.asc(), self.model.id.asc())
+        )
+        candidates = query.order_by(*order).limit(min(max(limit, 1), 20) + 1).all()
+        page_limit = min(max(limit, 1), 20)
+        chosen: list[Any] = []
+        oversized: list[tuple[Any, datetime]] = []
+        remaining = max_payload_bytes
+        cursor = after
+        for activity_id, timestamp, byte_count in candidates[:page_limit]:
+            if byte_count > max_payload_bytes:
+                oversized.append((activity_id, timestamp))
+                cursor = (timestamp, activity_id)
+                continue
+            if byte_count > remaining:
+                break
+            chosen.append(activity_id)
+            remaining -= byte_count
+            cursor = (timestamp, activity_id)
+        complete = len(candidates) <= page_limit and (
+            not candidates or cursor == (candidates[-1][1], candidates[-1][0])
+        )
+        if not chosen:
+            return [], oversized, cursor, complete and not oversized
+        measured_sizes = {
+            activity_id: byte_count
+            for activity_id, _, byte_count in candidates[:page_limit]
+            if activity_id in chosen
+        }
+        measured_timestamps = {
+            activity_id: timestamp
+            for activity_id, timestamp, _ in candidates[:page_limit]
+            if activity_id in chosen
+        }
+        rows = (
+            db.query(self.model.id, self.model.timestamp, self.model.metadata_)
+            .filter(
+                self.model.id.in_(chosen),
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.activity_type == "model_gateway_call",
+                size <= case(measured_sizes, value=self.model.id, else_=0),
+                self.model.timestamp == case(measured_timestamps, value=self.model.id),
+            )
+            .order_by(*order)
+            .all()
+        )
+        found = {row.id for row in rows}
+        oversized.extend(
+            (activity_id, timestamp)
+            for activity_id, timestamp, _ in candidates[:page_limit]
+            if activity_id in chosen and activity_id not in found
+        )
+        return rows, oversized, cursor, complete and not oversized
 
     def list_recent_model_gateway_call_payloads_for_session(
         self,

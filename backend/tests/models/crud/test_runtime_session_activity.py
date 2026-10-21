@@ -6,7 +6,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Callable
 from uuid import uuid4
 
+from sqlalchemy import event
 from sqlalchemy.orm import Session
+import pytest
 
 from preloop.models import models
 from preloop.models.crud.runtime_session_activity import (
@@ -16,6 +18,161 @@ from preloop.models.crud.runtime_session_activity import (
 )
 from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
+
+
+def test_bounded_gateway_payload_pages_preserve_equal_timestamp_order(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """A byte-limited read never transfers a long captured history at once."""
+    account = create_account()
+    at = datetime.now(UTC)
+    runtime_session = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="test",
+        session_source_id=str(uuid4()),
+        started_at=at,
+    )
+    db_session.add(runtime_session)
+    db_session.flush()
+    activities = [
+        models.RuntimeSessionActivity(
+            account_id=account.id,
+            runtime_session_id=runtime_session.id,
+            activity_type="model_gateway_call",
+            timestamp=at,
+            metadata_={"api_usage_id": str(index), "request": "x" * 350},
+        )
+        for index in range(45)
+    ]
+    db_session.add_all(activities)
+    db_session.flush()
+    seen = []
+    cursor = None
+    for _ in range(45):
+        rows, skipped, next_cursor, complete = (
+            crud_runtime_session_activity.list_bounded_model_gateway_call_payloads_for_session(
+                db_session,
+                account_id=account.id,
+                runtime_session_id=runtime_session.id,
+                start_date=at,
+                end_date=at,
+                after=cursor,
+                max_payload_bytes=1_000,
+            )
+        )
+        assert not skipped
+        assert 0 < len(rows) <= 2
+        seen.extend(row.id for row in rows)
+        if complete:
+            break
+        assert next_cursor is not None and next_cursor != cursor
+        cursor = next_cursor
+    assert len(seen) == 45
+    assert set(seen) == {activity.id for activity in activities}
+
+
+def test_bounded_gateway_payload_reports_oversized_capture(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """Oversized evidence is explicit and cannot masquerade as a full page."""
+    account = create_account()
+    at = datetime.now(UTC)
+    runtime_session = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="test",
+        session_source_id=str(uuid4()),
+        started_at=at,
+    )
+    db_session.add(runtime_session)
+    db_session.flush()
+    oversized = models.RuntimeSessionActivity(
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        activity_type="model_gateway_call",
+        timestamp=at,
+        metadata_={"request": "x" * 2_000},
+    )
+    db_session.add(oversized)
+    db_session.flush()
+    rows, skipped, cursor, complete = (
+        crud_runtime_session_activity.list_bounded_model_gateway_call_payloads_for_session(
+            db_session,
+            account_id=account.id,
+            runtime_session_id=runtime_session.id,
+            start_date=at,
+            end_date=at,
+            max_payload_bytes=1_000,
+        )
+    )
+    assert rows == []
+    assert skipped == [(oversized.id, at)]
+    assert cursor == (at, oversized.id)
+    assert not complete
+
+
+@pytest.mark.parametrize("mutation", ["growth", "timestamp"])
+def test_bounded_gateway_payload_rechecks_row_before_transfer(
+    db_session: Session,
+    create_account: Callable[..., models.Account],
+    mutation: str,
+) -> None:
+    """A changed row cannot cross the connection under a stale size/cursor."""
+    account = create_account()
+    at = datetime.now(UTC)
+    runtime_session = models.RuntimeSession(
+        account_id=account.id,
+        session_source_type="test",
+        session_source_id=str(uuid4()),
+        started_at=at,
+    )
+    db_session.add(runtime_session)
+    db_session.flush()
+    activity = models.RuntimeSessionActivity(
+        account_id=account.id,
+        runtime_session_id=runtime_session.id,
+        activity_type="model_gateway_call",
+        timestamp=at,
+        metadata_={"request": "small"},
+    )
+    db_session.add(activity)
+    db_session.flush()
+    connection = db_session.connection()
+    changed = False
+
+    def grow_after_probe(*args: object) -> None:
+        nonlocal changed
+        statement = str(args[2])
+        if changed or "octet_length" not in statement or "ORDER BY" not in statement:
+            return
+        changed = True
+        values = (
+            {"metadata_": {"request": "x" * 5_000}}
+            if mutation == "growth"
+            else {"timestamp": at + timedelta(seconds=1)}
+        )
+        db_session.query(models.RuntimeSessionActivity).filter(
+            models.RuntimeSessionActivity.id == activity.id
+        ).update(values)
+        db_session.flush()
+
+    event.listen(connection, "after_cursor_execute", grow_after_probe)
+    try:
+        rows, skipped, _, complete = (
+            crud_runtime_session_activity.list_bounded_model_gateway_call_payloads_for_session(
+                db_session,
+                account_id=account.id,
+                runtime_session_id=runtime_session.id,
+                start_date=at,
+                end_date=at,
+                max_payload_bytes=1_000,
+            )
+        )
+    finally:
+        event.remove(connection, "after_cursor_execute", grow_after_probe)
+    assert changed
+    assert rows == []
+    assert skipped == [(activity.id, at)]
+    assert not complete
 
 
 def test_timeline_hook_timestamps_do_not_displace_visible_activity(

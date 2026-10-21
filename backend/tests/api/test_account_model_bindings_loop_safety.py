@@ -22,7 +22,7 @@ from preloop.models.db.session import get_db_session
 async def test_model_binding_wait_does_not_block_liveness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The first DB wait on either route shape leaves the event loop responsive."""
+    """A blocked summary lookup leaves the event loop responsive."""
     started = threading.Event()
     release = threading.Event()
     account_id = uuid4()
@@ -48,17 +48,10 @@ async def test_model_binding_wait_does_not_block_liveness(
         # the loop; the test releases the fixed route immediately below.
         release.wait(1.5)
 
-    def scoped_lookup(*args: object, **kwargs: object) -> SimpleNamespace:
-        wait_for_database()
-        return SimpleNamespace(id=agent_id)
-
     def summary_lookup(*args: object, **kwargs: object) -> dict[str, str]:
         wait_for_database()
         return {"id": str(agent_id)}
 
-    monkeypatch.setattr(
-        account_api.crud_managed_agent, "get_for_account", scoped_lookup
-    )
     monkeypatch.setattr(
         account_api.crud_managed_agent, "get_summary_for_account", summary_lookup
     )
@@ -89,12 +82,10 @@ async def test_model_binding_wait_does_not_block_liveness(
 
 
 @pytest.mark.asyncio
-async def test_model_binding_lookup_keeps_ping_responsive_and_skips_usage_summary(
+async def test_model_binding_visibility_receives_raw_summary_mapping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A waiting scoped lookup cannot stall liveness or scan agent usage."""
-    started = threading.Event()
-    release = threading.Event()
+    """Resource authorizers keep the summary mapping they already consume."""
     agent_id = uuid4()
     account_id = uuid4()
     actor = models.User(
@@ -108,22 +99,17 @@ async def test_model_binding_lookup_keeps_ping_responsive_and_skips_usage_summar
     )
     app.dependency_overrides[get_db_session] = object
 
-    @app.get("/ping")
-    async def ping() -> dict[str, bool]:
-        return {"ok": True}
-
-    def blocked_lookup(*args: object, **kwargs: object) -> SimpleNamespace:
-        started.set()
-        assert release.wait(2)
-        return SimpleNamespace(id=agent_id)
-
-    summary = Mock(side_effect=AssertionError("usage summary should not be read"))
-    monkeypatch.setattr(
-        account_api.crud_managed_agent, "get_for_account", blocked_lookup
-    )
+    summary_row = {
+        "id": str(agent_id),
+        "owner_username": "Jane Doe",
+        "activity_status": "idle",
+    }
+    summary = Mock(return_value=summary_row)
     monkeypatch.setattr(
         account_api.crud_managed_agent, "get_summary_for_account", summary
     )
+    visible = Mock(return_value=[summary_row])
+    monkeypatch.setattr(account_api, "filter_viewable", visible)
     monkeypatch.setattr(
         account_api.crud_managed_agent_ai_model_binding,
         "list_for_agent",
@@ -136,25 +122,19 @@ async def test_model_binding_lookup_keeps_ping_responsive_and_skips_usage_summar
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        request = asyncio.create_task(client.get(f"/agents/{agent_id}/model-bindings"))
-        try:
-            assert await asyncio.to_thread(started.wait, 2)
-            assert (await client.get("/ping")).status_code == 200
-            assert not request.done()
-        finally:
-            release.set()
-        response = await request
+        response = await client.get(f"/agents/{agent_id}/model-bindings")
 
     assert response.status_code == 200, response.text
     assert response.json() == []
-    summary.assert_not_called()
+    summary.assert_called_once()
+    assert visible.call_args.args[3] == [summary_row]
 
 
 @pytest.mark.parametrize("visible", [False, True])
 def test_model_bindings_hide_missing_or_denied_agents(
     monkeypatch: pytest.MonkeyPatch, visible: bool
 ) -> None:
-    """The cheap lookup preserves the endpoint's 404 visibility boundary."""
+    """The summary lookup preserves the endpoint's 404 visibility boundary."""
     account_id = uuid4()
     agent_id = uuid4()
     actor = models.User(
@@ -169,8 +149,8 @@ def test_model_bindings_hide_missing_or_denied_agents(
     app.dependency_overrides[get_db_session] = object
     monkeypatch.setattr(
         account_api.crud_managed_agent,
-        "get_for_account",
-        lambda *args, **kwargs: SimpleNamespace(id=agent_id) if visible else None,
+        "get_summary_for_account",
+        lambda *args, **kwargs: {"id": str(agent_id)} if visible else None,
     )
     monkeypatch.setattr(account_api, "filter_viewable", lambda *args: [])
     bindings = Mock(side_effect=AssertionError("hidden agent bindings were read"))

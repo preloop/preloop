@@ -1906,13 +1906,9 @@ def list_account_managed_agent_model_bindings(
     db: Session = Depends(get_db_session),
 ):
     """List explicit AI model bindings for one managed agent."""
-    agent = crud_managed_agent.get_for_account(
-        db, account_id=str(account.id), agent_id=agent_id
+    _require_managed_agent_view(
+        db, current_user, account_id=str(account.id), agent_id=agent_id
     )
-    if agent is None or not filter_viewable(
-        db, current_user, VISIBLE_MANAGED_AGENT, [agent]
-    ):
-        raise HTTPException(404, "Managed agent not found")
     return _managed_agent_configured_models(
         db,
         account_id=str(account.id),
