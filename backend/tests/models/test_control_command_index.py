@@ -34,6 +34,7 @@ def test_control_lookup_index_plans_and_repairs_interrupted_build(db_engine):
     with db_engine.connect().execution_options(
         isolation_level="AUTOCOMMIT"
     ) as connection:
+        original_search_path = connection.execute(text("SHOW search_path")).scalar()
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         try:
             connection.execute(text(f'SET search_path TO "{schema}"'))
@@ -121,8 +122,15 @@ def test_control_lookup_index_plans_and_repairs_interrupted_build(db_engine):
                 is None
             )
         finally:
-            connection.execute(text("SET search_path TO public"))
+            connection.execute(
+                text("SELECT set_config('search_path', :path, false)"),
+                {"path": original_search_path},
+            )
             connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+            connection.commit()
+            # Alembic's autocommit blocks change connection isolation. Do not
+            # return a session with test-local settings to the shared pool.
+            connection.invalidate()
 
 
 def test_model_declares_the_same_partial_expression_index():
