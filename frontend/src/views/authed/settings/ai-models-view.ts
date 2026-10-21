@@ -1,3 +1,10 @@
+import {
+  modelFailureShareText,
+  modelHealthLabel,
+  modelHealthVariant,
+  type ModelHealthLabel,
+  type ModelHealthVariant,
+} from '../../../utils/model-health';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../../utils/money';
@@ -856,56 +863,17 @@ export class AIModelsView extends LitElement {
     );
   }
 
-  private getHealthVariant(modelId: string): 'success' | 'warning' | 'neutral' {
-    if (this.needsAttention(modelId)) {
-      return 'warning';
-    }
+  private getHealthLabel(modelId: string): ModelHealthLabel {
     const overview = this.getModelOverview(modelId);
-    if (!overview || overview.total_requests === 0) {
-      return 'neutral';
-    }
-    if (this.failsOften(modelId)) {
-      return 'neutral';
-    }
-    return 'success';
+    return modelHealthLabel({
+      needsAttention: this.needsAttention(modelId),
+      totalRequests: overview?.total_requests,
+      failedRequests: overview?.failed_requests,
+    });
   }
 
-  /**
-   * Failure rate in the window at or above which a quiet row is not called
-   * Healthy. An acknowledged failure keeps the row out of the attention
-   * count, but "Healthy" over 50 failures in 73 requests is a claim the
-   * numbers on the same row contradict.
-   */
-  private static readonly HEALTHY_FAILURE_RATE = 0.05;
-
-  private failsOften(modelId: string): boolean {
-    const overview = this.getModelOverview(modelId);
-    const total = overview?.total_requests || 0;
-    const failed = overview?.failed_requests || 0;
-    return (
-      total > 0 &&
-      failed > 0 &&
-      failed / total >= AIModelsView.HEALTHY_FAILURE_RATE
-    );
-  }
-
-  /**
-   * "Healthy" covers an acknowledged failure or an expected missing price
-   * too: the operator said this one is handled, and the marker's date is on
-   * the badge's tooltip so the claim stays checkable.
-   */
-  private getHealthLabel(modelId: string): string {
-    if (this.needsAttention(modelId)) {
-      return 'Attention';
-    }
-    const overview = this.getModelOverview(modelId);
-    if (!overview || overview.total_requests === 0) {
-      return 'Idle';
-    }
-    if (this.failsOften(modelId)) {
-      return 'Acknowledged';
-    }
-    return 'Healthy';
+  private getHealthVariant(modelId: string): ModelHealthVariant {
+    return modelHealthVariant(this.getHealthLabel(modelId));
   }
 
   /** The tooltip that says why a flagged-looking model reads as healthy. */
@@ -917,11 +885,11 @@ export class AIModelsView extends LitElement {
     const unpriced = this.unpricedStateForModel(modelId);
     const overview = this.getModelOverview(modelId);
     return [
-      this.failsOften(modelId) && overview
-        ? `${this.formatNumber(overview.failed_requests)} of ${this.formatNumber(
-            overview.total_requests
-          )} requests failed in ${this.windowSuffix}`
-        : '',
+      modelFailureShareText(
+        overview?.failed_requests,
+        overview?.total_requests,
+        this.windowSuffix
+      ),
       state.status === 'marked' ? state.markerLabel : '',
       unpriced.status === 'marked' ? unpriced.markerLabel : '',
     ]
