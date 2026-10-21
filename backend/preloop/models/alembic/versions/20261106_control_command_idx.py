@@ -8,7 +8,7 @@ from alembic import op
 
 
 revision = "20261106_control_command_idx"
-down_revision = "20261105_fleet_work_tools"
+down_revision = "20261106_anthropic_cache_input"
 branch_labels = None
 depends_on = None
 

@@ -192,7 +192,8 @@ def test_oauth_passthrough_preserves_system_array_and_cache_control(
     )
     assert usage_row is not None
     assert usage_row.status_code == 200
-    assert usage_row.prompt_tokens == 11
+    # Stored cache inclusive (#1955): 11 uncached + 6 read + 2 written.
+    assert usage_row.prompt_tokens == 19
     assert usage_row.completion_tokens == 5
     assert usage_row.cache_read_tokens == 6
     assert usage_row.cache_creation_tokens == 2
@@ -464,7 +465,8 @@ def test_oauth_passthrough_stream_relays_sse_verbatim(db_session, test_user):
     )
     assert usage_row is not None
     assert usage_row.status_code == 200
-    assert usage_row.prompt_tokens == 9
+    # Stored cache inclusive (#1955): 9 uncached + 3 read.
+    assert usage_row.prompt_tokens == 12
     assert usage_row.completion_tokens == 4
     assert usage_row.cache_read_tokens == 3
     assert usage_row.meta_data["endpoint_kind"] == "anthropic_messages_stream"

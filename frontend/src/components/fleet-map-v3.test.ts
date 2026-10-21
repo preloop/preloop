@@ -1,10 +1,12 @@
 import { expect, fixture, html } from '@open-wc/testing';
+import { setViewport } from '@web/test-runner-commands';
 import { useFakeTimers } from 'sinon';
 import './fleet-map';
 import type { FleetMap } from './fleet-map';
 import { sampleFleetMap } from '../test-helpers/fleet-map-graph';
 
 async function map(extra: Record<string, unknown> = {}) {
+  await setViewport({ width: 1280, height: 900 });
   const el = await fixture<FleetMap>(
     html`<fleet-map
       .graph=${sampleFleetMap()}
@@ -465,30 +467,27 @@ describe('fleet-map v3 pass 2', () => {
       if (key.startsWith('preloop:fleet-map')) localStorage.removeItem(key);
   });
 
-  it('keeps the search at a reading width and never clips a select', async () => {
+  it('keeps search compact and windows fully named in dropdown options', async () => {
     const el = await map({ spatialOnly: false });
+    await setViewport({ width: 1920, height: 1080 });
     el.style.width = '1880px';
-    await el.updateComplete;
     await new Promise((resolve) => setTimeout(resolve, 50));
+    await el.updateComplete;
     const bar = el.shadowRoot!.querySelector('list-toolbar')!;
-    const search = bar.shadowRoot!.querySelector('sl-input')!;
-    expect(search.getBoundingClientRect().width).to.be.at.most(320);
-    const windows = el.shadowRoot!.querySelector<
-      HTMLElement & { value: string }
-    >('[data-testid="fleet-map-window"]')!;
+    expect(
+      bar.shadowRoot!.querySelector('sl-input')!.getBoundingClientRect().width
+    ).to.be.at.most(240);
     for (const value of ['5m', '24h']) {
-      windows.value = value;
-      await (windows as unknown as { updateComplete: Promise<unknown> })
-        .updateComplete;
-      const input = windows.shadowRoot!.querySelector<HTMLInputElement>(
-        '.select__display-input'
+      const option = el.shadowRoot!.querySelector<HTMLElement>(
+        `[data-window="${value}"]`
       )!;
-      expect(input.scrollWidth, value).to.be.at.most(input.clientWidth + 1);
+      expect(option.textContent?.trim()).to.equal(
+        value === '5m' ? 'Last 5 minutes' : 'Last 24 hours'
+      );
+      option.click();
+      await el.updateComplete;
+      expect(el.activityWindow).to.equal(value);
     }
-    for (const select of el.shadowRoot!.querySelectorAll(
-      'sl-select.secondary-filter'
-    ))
-      expect(select.getBoundingClientRect().width).to.be.at.least(136);
   });
 
   it('keeps tracker labels on the issue chip after the PR opens', async () => {
@@ -1010,7 +1009,7 @@ describe('fleet-map window history', () => {
       await el.updateComplete;
       const box = (type: string) =>
         el.shadowRoot!.querySelector<HTMLElement & { checked: boolean }>(
-          `sl-checkbox[data-type="${type}"]`
+          `sl-menu-item[data-type="${type}"]`
         )!;
       expect(box('flow').textContent!.trim()).to.equal('Flows');
       expect(box('work').textContent!.trim()).to.equal('Work (issues, PRs)');
@@ -1020,7 +1019,7 @@ describe('fleet-map window history', () => {
       expect(count('flow')).to.equal(2);
       expect(count('work')).to.equal(3);
       for (const type of ['flow', 'work']) {
-        box(type).dispatchEvent(new CustomEvent('sl-change'));
+        box(type).dispatchEvent(new MouseEvent('click'));
         await el.updateComplete;
       }
       expect(count('flow'), arrangement).to.equal(0);
@@ -1039,7 +1038,7 @@ describe('fleet-map window history', () => {
         again.shadowRoot!.querySelectorAll('[data-kind="work"]').length
       ).to.equal(0);
       for (const type of ['flow', 'work']) {
-        box(type).dispatchEvent(new CustomEvent('sl-change'));
+        box(type).dispatchEvent(new MouseEvent('click'));
         await el.updateComplete;
       }
       expect(count('flow')).to.equal(2);
@@ -1087,15 +1086,17 @@ describe('fleet-map usage totals', () => {
         .trim();
     };
     expect(await pick('model:sonnet')).to.equal(
-      'In this window: 12 requests, 41.2k in / 3.8k out tokens (est. $0.42)'
+      'In this window Requests 12 Tokens in 41.2k Tokens out 3.8k Cost est. $0.42'
     );
     expect(await pick('provider:openai')).to.equal(
-      'In this window: 1 request, 41.2k in / 3.8k out tokens (partial)'
+      'In this window Requests 1 Tokens in 41.2k Tokens out 3.8k Cost est. Unknown Partial totals. Some values are unknown or the source is capped.'
     );
     expect(await pick('model:gpt')).to.equal(
-      'No gateway requests in this window.'
+      'In this window No gateway requests in this window.'
     );
-    expect(await pick('agent:claude')).to.equal(undefined);
+    expect(await pick('agent:claude')).to.contain(
+      'No usage reported for this resource'
+    );
   });
 });
 
@@ -1112,9 +1113,9 @@ describe('fleet-map Show memory', () => {
     });
     for (const box of el.shadowRoot!.querySelectorAll<
       HTMLElement & { checked: boolean }
-    >('sl-checkbox[data-type]'))
+    >('sl-menu-item[data-type]'))
       if (box.checked) {
-        box.dispatchEvent(new CustomEvent('sl-change'));
+        box.dispatchEvent(new MouseEvent('click'));
         await el.updateComplete;
       }
     expect(el.shadowRoot!.querySelectorAll('[data-node]').length).to.equal(0);

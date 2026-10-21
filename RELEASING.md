@@ -4,40 +4,11 @@ Use this checklist before every GitHub release or pre-release.
 
 ## Workflow
 
-1. Review `CHANGELOG.md` and confirm the release scope is complete.
-2. Run the release prep script:
-
-```bash
-./scripts/release.sh 0.8.0-beta.1
-```
-
-The script updates:
-
-- `VERSION`
-- `pyproject.toml`
-- `frontend/package.json`
-- `frontend/package-lock.json`
-- `helm/preloop/Chart.yaml`
-- `README.md`
-- `CHANGELOG.md`
-
-It can also optionally:
-
-- ask `opencode` or `codex` to draft changelog entries with `--generate-changelog-ai`
-- commit the release prep changes
-- create `v<version>`
-- push the current branch and tag
-- watch the tag's GitHub `Release` workflow with `gh`
-
-Before it pushes, the script checks that `.github/workflows/release.yml` can
-attest `release-assets/*` and upload `preloop-v<version>.intoto.jsonl`. The
-tag's Create Release job creates a draft only when that bundle is present,
-and publishes it only after the bundle is attached to the release. After
-the tag push the script waits for that tag's workflow run, not the `main`
-run of the same commit, and exits non-zero unless Create Release succeeded
-and the published release includes the provenance bundle plus the other
-shipped assets. A local-only run still exits non-zero when that workflow
-check fails.
+Follow the [protected-branch release process](docs/releasing.md): prepare a PR,
+review and merge it, then tag the exact merged commit with `--finalize`.
+Preparation never tags or pushes main. The tag workflow signs and verifies
+release assets before publishing. Failed publication must not be worked around
+by moving an existing tag.
 
 ## Pre-Release Checklist
 
@@ -120,15 +91,13 @@ Before `v0.8.0-beta.1`, confirm these release-facing areas are resolved:
 ## Suggested Commands
 
 ```bash
-# Prepare release files
-./scripts/release.sh 0.8.0-beta.1
-
-# Optional: package Helm artifacts too
-./scripts/release.sh 0.8.0-beta.1 --package-chart
-
-# Optional: ask a local AI CLI to draft changelog entries first
-./scripts/release.sh 0.8.0-beta.1 --generate-changelog-ai
-
-# Non-interactive full release flow
-./scripts/release.sh 0.8.0-beta.1 --yes --commit --tag --push-branch --push-tag --monitor-release
+./scripts/release.sh 0.17.1 --yes --open-pr
+# After review, successful checks, and merging the release PR:
+git switch --detach MERGE_COMMIT_SHA
+./scripts/release.sh 0.17.1 --finalize --target-commit MERGE_COMMIT_SHA --push-tag
+# Resume interrupted publication monitoring:
+./scripts/release.sh 0.17.1 --monitor-release
 ```
+
+Preparation also accepts `--package-chart` and `--generate-changelog-ai`.
+See the release process for remote selection and recovery instructions.
