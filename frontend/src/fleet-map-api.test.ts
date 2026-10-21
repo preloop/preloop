@@ -1,12 +1,12 @@
 import { expect } from '@open-wc/testing';
 import {
-  FLEET_MAP_COLUMNS,
   FLEET_MAP_TYPES,
   blastRadius,
   filterGraph,
   getFleetUsage,
   layoutGraph,
   nodeGaps,
+  scopeToUsers,
 } from './fleet-map-api';
 import sinon from 'sinon';
 import { sampleFleetMap } from './test-helpers/fleet-map-graph';
@@ -52,24 +52,24 @@ describe('fleet map graph', () => {
     ).to.equal('2 open fleet findings');
   });
 
-  it('filters by provider keeping the chain that reaches it', () => {
-    const view = filterGraph(sampleFleetMap(), {
-      types: all,
-      owner: '',
-      provider: 'provider:anthropic',
-    });
+  it('scopes to a person: their devices, agents, models, providers', () => {
+    const view = scopeToUsers(sampleFleetMap(), new Set(['user:sam']));
     expect(view.nodes.map((n) => n.id).sort()).to.deep.equal(
       [
-        'account:anthropic',
-        'model:sonnet',
-        'agent:claude',
-        'device:mbp',
-        'provider:anthropic',
-        'user:maya',
+        'user:sam',
+        'device:build',
+        'runner:r2',
+        'agent:cursor',
+        'account:dev',
+        'provider:openai',
       ].sort()
     );
     expect(
-      view.edges.every((e) => view.nodes.some((n) => n.id === e.source))
+      view.edges.every(
+        (e) =>
+          view.nodes.some((n) => n.id === e.source) &&
+          view.nodes.some((n) => n.id === e.target)
+      )
     ).to.equal(true);
   });
 
@@ -77,18 +77,23 @@ describe('fleet map graph', () => {
     const graph = sampleFleetMap();
     const noModels = filterGraph(graph, {
       types: new Set(FLEET_MAP_TYPES.filter((t) => t !== 'model')),
-      owner: '',
-      provider: '',
     });
     expect(noModels.nodes.some((n) => n.type === 'model')).to.equal(false);
     expect(noModels.edges.some((e) => e.kind === 'uses_model')).to.equal(false);
   });
 
-  it('lays out one column per present type, deterministically', () => {
+  it('lays out one lane per present type, models inside providers', () => {
     const graph = sampleFleetMap();
     const first = layoutGraph(graph);
     expect(first.columns.map((c) => c.type)).to.deep.equal([
-      ...FLEET_MAP_COLUMNS.filter((c) => c !== 'work' && c !== 'flow'),
+      'user',
+      'device',
+      'agent',
+      'provider',
+    ]);
+    expect(first.groups.get('provider:anthropic')).to.deep.equal([
+      'account:anthropic',
+      'model:sonnet',
     ]);
     expect(layoutGraph(graph).positions).to.deep.equal(first.positions);
     const users = first.positions.get('user:maya')!;
@@ -157,10 +162,7 @@ describe('gaps only', () => {
   it('keeps direct neighbours of gap nodes in any edge order', () => {
     const graph = sampleFleetMap();
     const ids = (edges: typeof graph.edges) =>
-      filterGraph(
-        { ...graph, edges },
-        { types: all, owner: '', provider: '', gapsOnly: true }
-      )
+      filterGraph({ ...graph, edges }, { types: all, gapsOnly: true })
         .nodes.map((n) => n.id)
         .sort();
     const forward = ids(graph.edges);

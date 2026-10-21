@@ -930,18 +930,25 @@ and `work` totals keyed by node id: gateway tokens and estimated cost with the
 same honesty rules, tool calls, approvals, PR actions, review comments and
 distinct issues and PRs touched, one grouped, account-scoped query per source.
 
-Spatial layout packs measured owner/machine islands beside the model/provider core,
-with attached issue/PR rows in the work lane. The first drag stores the complete
+Spatial (canvas) layout packs measured owner/machine islands first, then flows,
+then providers holding their accounts and models, then work, with block gaps of
+at most 48px and shelf gaps of at most 96px. The first drag stores the complete
 visible arrangement per user and scope. Membership updates preserve those positions
 and the camera, place arrivals beside their relationships and retain inactive slots
 for seven days. A growing machine moves only the following boxes in its island.
-Arrange clears manual positions and repacks the current nodes; in Columns it fits
-the view. Reset layout additionally clears folded groups and expanded columns.
+Arrange (an icon button beside Fit, canvas only, hidden on an empty map) clears
+manual positions and repacks the current nodes. Reset layout additionally clears folded groups and expanded columns.
 Both spatial actions offer a six-second Undo, with reduced-motion support. Unowned layouts repack on every membership
-change (core by provider, then people islands, then flows and work in adjacent
-shelves) and the camera refits when a node joins, unless the user has recently
-navigated. Columns gives flows their own column beside Work and stretches the row
-pitch (10px to 64px) to the stage height. Bubbles are placed by
+change (people islands, flows, provider core, work) and the camera refits when a node joins, unless the user has recently
+navigated. Columns (the lanes view) puts flows under the agents in one lane with a sub-header
+(`FleetMapLayout.columns[].groups`, titled by `laneTitle`) and stretches the row
+pitch (10px to 64px) to the stage height; where the wheel scrolls the page, Fit
+also contains the tallest lane. `containers()` and `providerContents()` nest
+models in their provider (optional `provider_id`, then `provided_by`, then
+`provider_ids`) whenever the provider is shown. `scopeToUsers()` applies the
+server's `users=` rule in the browser until a response echoes `users`; hosts
+refetch on `fleet-map-users-change`. The words "Lanes" and "Canvas" live in
+`utils/fleet-map-words.ts`; stored arrangement values stay `columns`/`spatial`. Bubbles are placed by
 `utils/fleet-map-bubbles.ts`: beside their node, never on another node's box, at
 most two per node. Lit lines carry the specific label of what travelled them
 (model and tokens, native tool and status, approval, or the work action), never
@@ -971,7 +978,7 @@ also lists attributed actors, available action counts and related work links.
 A window change clears old fetched totals before loading the next window.
 
 The shared `list-toolbar` has an opt-in condensed mode for canvas hosts. Fleet Map
-keeps search, Show, State, Owner, Provider, Window, count, arrangement and More on
+keeps search, Show, Users, Window (each trigger names its value), count, arrangement and More on
 one row when space permits; below 1280px or inside a narrow card it uses a search
 popup, Filters and the arrangement switch. The Overview keeps one stable Inventory
 component in its grid, giving Map a bounded full-width row. Embedded sizing excludes

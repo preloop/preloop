@@ -6,11 +6,20 @@ The Fleet Map connects people, devices, agents, flows, work, models and provider
 Open it from Device fleet or the Overview inventory card. Device evidence depends
 on the configured fleet collector; missing evidence is identified on the map.
 
-Search highlights matching nodes. Show selects resource kinds, including Flows
-and Work; Accounts are hidden by default. State includes onboarded, discovered
-and inactive agents, plus the available governance gaps. Owner, Provider and
-Window narrow the view. On narrow screens, search opens from its icon and Filters
-holds these options and the actions. The bar stays on one line in either host.
+Search highlights matching nodes. Each select shows its current value, for
+example "Last hour" rather than "Window". Show selects resource kinds, including
+Flows and Work (Accounts are hidden by default), Idle (configured) and the
+available governance gaps. Every agent active in the window is shown; there is no
+separate state or provider filter. Users scopes the map to one or more people:
+the people, the devices they own, the agents on those devices or owned by them,
+the models, accounts and providers those agents use, and the issues and pull
+requests the people or their agents touched. Flows are not attributed to a
+person, so a scoped map has none. With more than eight people the Users menu has
+a search field. The count then reads, for example, "12 active in this window for
+2 users". The map asks the server to scope (`users=`); an older server is scoped
+in the browser by the same rule. Window sets the activity window. On narrow
+screens, search opens from its icon and Filters holds these options and the
+actions. The bar stays on one line in either host.
 
 On servers that report per-resource activity, configured resources without
 activity stay hidden unless Show > Idle (configured) is selected. The count says
@@ -18,19 +27,24 @@ how many visible resources are active in the window and excludes idle resources.
 Older servers retain their existing window filtering. A configured model binding
 alone does not establish model usage on servers with activity evidence.
 
-Instance administrators can choose Columns or Spatial. Columns reads People,
-Devices, Agents, Models, Providers, Flows and Work. Spatial packs the model and
-provider core beside each person, their machines and agents, with flows and the
-work they act on nearby. In a narrow card the groups stack instead of running
+Instance administrators switch between the lanes view and the canvas view with
+an icon-only control (tooltips "Lanes" and "Canvas"). The lanes view reads People,
+Devices, Agents & Flows, Providers and Work: flows sit under the agents in the
+same lane, below a Flows sub-header, and the lane header names both with a count
+for each ("Agents" or "Flows" alone when only one has rows). When Models and
+Providers are both shown, each model sits inside its provider's box, in both
+views, below that provider's accounts; hide Providers to give models their own
+lane. The canvas view packs people and their devices (with the agents inside)
+first, then flows, then providers with their models, then work, with short gaps. In a narrow card the groups stack instead of running
 past the right edge; text never shrinks below a legible size, so a very large
 fleet pans. Until you arrange it yourself, the map repacks and refits
 when something joins. Drag a machine to move its contents. Your first drag saves
 the visible arrangement for your user and map scope. Refreshes preserve it; new
 resources join beside their links. Inactive positions are retained for seven days.
 
-The Arrange button beside Columns and Spatial (also in More, and in Filters on
-small screens) packs the current nodes again, clearing manual positions while
-keeping filters and folded groups. In a narrow card it shows only its icon. In Columns, Arrange fits the view. More > Reset
+Arrange is the icon button beside Fit on the canvas (it is not shown in the
+lanes view or on an empty map). It packs the current nodes again, clearing
+manual positions while keeping filters and folded groups. More > Reset
 layout also forgets folded groups and expanded columns. Both spatial actions offer
 Undo for six seconds. Fit changes the camera without moving your nodes. Layout
 changes use the existing glide and happen immediately with reduced motion.

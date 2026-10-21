@@ -403,6 +403,9 @@ export class InventoryCard extends LitElement {
   @state() private mapError = '';
   @state() private mapWindow: FleetMapWindow = loadFleetMapWindow();
   @state() private mapIncludeIdle = false;
+  /** Users the map is scoped to: node ids for the map, ids for `users=`. */
+  @state() private mapUsers: string[] = [];
+  private mapUserIds: string[] = [];
   private mapController: AbortController | null = null;
   @state() private tab: InventoryTab = 'agents';
   @state() private sorts: Record<InventoryTab, string> = {
@@ -1117,7 +1120,8 @@ export class InventoryCard extends LitElement {
       const map = await getFleetMap(
         controller.signal,
         windowMinutes(this.mapWindow),
-        this.mapIncludeIdle
+        this.mapIncludeIdle,
+        this.mapUserIds
       );
       if (!controller.signal.aborted) this.map = map;
     } catch (error) {
@@ -1166,6 +1170,7 @@ export class InventoryCard extends LitElement {
       .graph=${this.map}
       .activityWindow=${this.mapWindow}
       .includeIdle=${this.mapIncludeIdle}
+      .users=${this.mapUsers}
       live
       instance-admin
       default-arrangement="spatial"
@@ -1178,6 +1183,13 @@ export class InventoryCard extends LitElement {
         void this.loadMap();
       }}
       @fleet-map-stale=${() => void this.loadMap(true)}
+      @fleet-map-users-change=${(
+        event: CustomEvent<{ users: string[]; userIds: string[] }>
+      ) => {
+        this.mapUsers = event.detail.users;
+        this.mapUserIds = event.detail.userIds;
+        void this.loadMap();
+      }}
       @fleet-map-idle-change=${(
         event: CustomEvent<{ includeIdle: boolean }>
       ) => {

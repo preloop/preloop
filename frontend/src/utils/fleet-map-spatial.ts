@@ -2,7 +2,10 @@ import {
   FLEET_MAP_CHILD_HEIGHT,
   FLEET_MAP_NODE_HEIGHT,
   FLEET_MAP_NODE_WIDTH,
+  containingProvider,
+  providerChildOrder,
   type FleetMapGraph,
+  type FleetMapNode,
   type FleetMapLayout,
   type FleetMapPosition,
 } from '../fleet-map-api';
@@ -118,6 +121,9 @@ const GUTTER = 24;
  * smallest size. Fit never goes below it; a narrow stage stacks shelves instead.
  */
 export const LEGIBLE_SPATIAL_SCALE = 0.85;
+/** The most a packed canvas stretches between blocks and between shelves. */
+const MAX_BLOCK_GAP = 48;
+const MAX_SHELF_GAP = 96;
 const TYPE_ORDER = [
   'user',
   'device',
@@ -129,14 +135,12 @@ const TYPE_ORDER = [
 ];
 
 /**
- * Pack the canvas left to right in shelves: the shared core first (one short
- * column per provider, the provider on top and its models under it), then
- * the people islands (a person, their machines and the agents inside), then
- * the work cluster (flows, then issues with their pull requests). Agents sit
- * between the models they call and the work they create, so lines stay short
- * and do not cross the core. Every shelf is centred on the stage with its
- * gaps stretched to use the height, and the shelves are spread across the
- * width. Stable ordering makes reset repeatable.
+ * Pack the canvas left to right in shelves (pass 4 order): the people
+ * islands first (a person, their machines and the agents inside), then the
+ * flows, then the shared core (one short column per provider, its accounts
+ * and models inside it), then the work items. Every shelf is centred on the
+ * stage; gaps stretch to use the height and the width only up to a short
+ * line, so the picture stays packed. Stable ordering makes reset repeatable.
  */
 export function clusterSeed(
   ids: string[],
@@ -186,7 +190,27 @@ export function clusterSeed(
       sections.push(section);
     }
   };
-  // Core: one column per provider.
+  // People islands, then anything without a person.
+  const rank = (id: string) => TYPE_ORDER.indexOf(typeOf(id));
+  const islandOrder = (key: string, list: string[]) =>
+    key === 'other' ? 2 : list.some((id) => typeOf(id) === 'user') ? 0 : 1;
+  const islands = [...members]
+    .filter(([key]) => !['shared', 'work', 'flows'].includes(key))
+    .sort(
+      ([a, la], [b, lb]) =>
+        islandOrder(a, la) - islandOrder(b, lb) || a.localeCompare(b)
+    )
+    .map(([, list]) =>
+      [...list].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    );
+  fill(islands, 'people');
+  // Work cluster: the flows beside the issues and pull requests they act on.
+  const flows = (members.get('flows') ?? []).sort();
+  fill(
+    flows.map((id) => [id]),
+    'flows'
+  );
+  // Then the shared core: one column per provider, models inside it.
   const shared = members.get('shared') ?? [];
   const providerIds = new Set(shared.filter((id) => typeOf(id) === 'provider'));
   const providerOf = (id: string, depth = 0): string => {
@@ -215,26 +239,7 @@ export function clusterSeed(
       column.map((id) => [id]),
       'core'
     );
-  // People islands, then anything without a person.
-  const rank = (id: string) => TYPE_ORDER.indexOf(typeOf(id));
-  const islandOrder = (key: string, list: string[]) =>
-    key === 'other' ? 2 : list.some((id) => typeOf(id) === 'user') ? 0 : 1;
-  const islands = [...members]
-    .filter(([key]) => !['shared', 'work', 'flows'].includes(key))
-    .sort(
-      ([a, la], [b, lb]) =>
-        islandOrder(a, la) - islandOrder(b, lb) || a.localeCompare(b)
-    )
-    .map(([, list]) =>
-      [...list].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
-    );
-  fill(islands, 'people');
-  // Work cluster: the flows beside the issues and pull requests they act on.
-  const flows = (members.get('flows') ?? []).sort();
-  fill(
-    flows.map((id) => [id]),
-    'flows'
-  );
+  // Work items last.
   const work = (members.get('work') ?? []).sort();
   fill(
     work.map((id) => [id]),
@@ -271,7 +276,10 @@ export function clusterSeed(
       shelf.length > 1
         ? Math.max(
             GUTTER,
-            Math.min(120, (roomHeight * 0.92 - natural) / (shelf.length - 1))
+            Math.min(
+              MAX_BLOCK_GAP,
+              (roomHeight * 0.92 - natural) / (shelf.length - 1)
+            )
           )
         : 0;
     const height = natural + Math.max(0, shelf.length - 1) * gap;
@@ -292,7 +300,11 @@ export function clusterSeed(
   if (xs.length > 1) {
     const natural = xs[xs.length - 1] - xs[0] + nodeWidth;
     const target = Math.max(natural, viewport.width - 2 * GUTTER);
-    const gap = (target - nodeWidth) / (xs.length - 1);
+    // Spread, but never further than a short line apart (pass 4: packed).
+    const gap = Math.min(
+      (target - nodeWidth) / (xs.length - 1),
+      nodeWidth + MAX_SHELF_GAP
+    );
     const placed = new Map(xs.map((x, i) => [x, GUTTER + i * gap]));
     for (const p of seed.values()) p.x = placed.get(p.x)!;
   }
@@ -443,6 +455,27 @@ export function hostedBy(
   return kids;
 }
 
+/**
+ * What each provider box holds on the canvas: its accounts, then its models
+ * (pass 4: models sit inside their provider while Providers are shown).
+ */
+export function providerContents(
+  graph: Pick<FleetMapGraph, 'nodes' | 'edges'>
+): Map<string, string[]> {
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const kids = new Map<string, FleetMapNode[]>();
+  for (const node of graph.nodes) {
+    const provider = containingProvider(node, graph, byId);
+    if (provider) kids.set(provider, [...(kids.get(provider) ?? []), node]);
+  }
+  return new Map(
+    [...kids].map(([provider, list]) => [
+      provider,
+      list.sort(providerChildOrder).map((node) => node.id),
+    ])
+  );
+}
+
 /** Height of a machine holding `count` agents and runners. */
 export const containerHeight = (count: number): number =>
   count ? FLEET_MAP_NODE_HEIGHT + count * CHILD_ROW + 6 : FLEET_MAP_NODE_HEIGHT;
@@ -458,6 +491,9 @@ export function spatialLayout(
   // On a grouped map a machine is a box holding its agents: only the boxes
   // are placed, and what they hold is laid out inside them.
   const contained = clusters ? hostedBy(graph) : new Map<string, string[]>();
+  if (clusters)
+    for (const [provider, list] of providerContents(graph))
+      contained.set(provider, list);
   for (const node of graph.nodes)
     if (
       node.type === 'work' &&

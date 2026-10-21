@@ -11,7 +11,10 @@ import { getAgentKindPresentation } from './agent-kinds';
  * they read in both themes.
  */
 export interface NodeMark {
-  /** `img` draws a full-colour logo, `mask` a single-colour mark, `icon` a Shoelace icon. */
+  /**
+   * `img` draws a full-colour logo, `mask` a single-colour mark, `icon` a
+   * Shoelace icon: by `icon` name, or from `src` when both are set it is `src`.
+   */
   kind: 'img' | 'mask' | 'icon';
   src?: string;
   icon?: string;
@@ -20,6 +23,9 @@ export interface NodeMark {
 }
 
 const VENDOR = '/images/logos/vendors/';
+
+/** The Flows entry's icon in the console navbar (console-shell.ts). */
+export const FLOW_ICON_SRC = '/images/flow.svg';
 
 type Mark = [file: string, mono: boolean, name: string];
 
@@ -108,5 +114,7 @@ export function nodeMark(
         name: 'Provider',
       }
     );
+  if (node.type === 'flow')
+    return { kind: 'icon', src: FLOW_ICON_SRC, name: 'Flow' };
   return { kind: 'icon', icon: fallbackIcon, name: node.type };
 }

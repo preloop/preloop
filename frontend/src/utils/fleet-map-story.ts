@@ -1,3 +1,4 @@
+import { FLOW_ICON_SRC } from './fleet-map-icons';
 import type {
   FleetCodeActivity,
   FleetMapEdge,
@@ -301,7 +302,7 @@ export class FleetStory {
           to: subject || flow,
           actor: flow,
           kind: 'code',
-          icon: 'diagram-2',
+          icon: FLOW_ICON_SRC,
           label: `${name} ${state}${content ? `  ${content}` : ''}`,
         },
       ];

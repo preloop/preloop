@@ -92,13 +92,15 @@ describe('fleet-map spatial ownership', () => {
     expect(large.positions.get('model:gpt')!.w).to.be.at.least(
       small.positions.get('model:gpt')!.w
     );
-    expect(large.width).to.be.greaterThan(1700);
+    // Packed (pass 4): more room never spreads shelves past a short line.
+    expect(large.width).to.be.at.least(small.width);
+    expect(large.width).to.be.below(1900);
     for (const p of large.positions.values()) expect(p.w).to.be.at.least(180);
   });
 });
 
 describe('fleet-map spatial packing', () => {
-  it('packs the core, then people islands, then flows beside their work', () => {
+  it('packs people islands, then flows, then providers holding models, then work', () => {
     const base = sampleFleetMap();
     const extra = (id: string, type: 'flow' | 'work') => ({
       ...base.nodes[0],
@@ -124,26 +126,35 @@ describe('fleet-map spatial packing', () => {
       { width: 1600, height: 900 }
     );
     const x = (id: string) => layout.positions.get(id)!.x;
-    const models = graph.nodes.filter((n) => n.type === 'model');
     const people = graph.nodes.filter((n) => n.type === 'user');
-    for (const model of models)
-      for (const person of people)
-        expect(x(model.id)).to.be.below(x(person.id));
     for (const person of people)
       expect(x(person.id)).to.be.below(x('flow:triage'));
-    expect(x('flow:triage')).to.be.below(x('work:issue:41'));
-    // Adjacent shelves: nothing sits between the flow and its work.
+    expect(x('flow:triage')).to.be.below(x('provider:openai'));
+    expect(x('provider:openai')).to.be.below(x('work:issue:41'));
+    expect(x('provider:anthropic')).to.be.below(x('work:issue:41'));
+    // Models and accounts are drawn inside their provider box.
+    expect(layout.groups.get('provider:openai')).to.deep.equal([
+      'account:dev',
+      'account:prod',
+      'model:gpt',
+    ]);
+    const box = layout.positions.get('provider:openai')!;
+    const model = layout.positions.get('model:gpt')!;
+    expect(model.x).to.be.above(box.x);
+    expect(model.y + model.h).to.be.at.most(box.y + box.h);
+    // Tight: neighbouring shelves are never more than a short line apart.
     const shelves = [
-      ...new Set([...layout.positions.values()].map((p) => p.x)),
+      ...new Set(
+        [...layout.positions.values()].filter((p) => p.w >= 216).map((p) => p.x)
+      ),
     ].sort((a, b) => a - b);
-    expect(shelves.indexOf(x('work:issue:41'))).to.equal(
-      shelves.indexOf(x('flow:triage')) + 1
-    );
+    for (let i = 1; i < shelves.length; i++)
+      expect(shelves[i] - shelves[i - 1]).to.be.at.most(box.w + 96);
   });
 });
 
 describe('fleet-map columns', () => {
-  it('gives flows their own column beside Work and keeps Agents for agents', () => {
+  it('puts flows in the agents lane, under them, and keeps the agent count', () => {
     const base = sampleFleetMap();
     const graph = {
       ...base,
@@ -154,12 +165,12 @@ describe('fleet-map columns', () => {
     };
     const layout = layoutGraph(graph);
     const types = layout.columns.map((c) => c.type);
-    expect(types).to.include('flow');
-    expect(types.indexOf('flow')).to.equal(types.indexOf('provider') + 1);
-    expect(layout.columns.find((c) => c.type === 'agent')!.count).to.equal(
+    expect(types).not.to.include('flow');
+    const lane = layout.columns.find((c) => c.type === 'agent')!;
+    expect(lane.groups!.find((g) => g.type === 'agent')!.count).to.equal(
       base.nodes.filter((n) => n.type === 'agent').length
     );
-    // Seven columns still fit 1920px at 100%.
+    expect(layout.positions.get('flow:triage')!.x).to.equal(lane.x);
     expect(layout.width).to.be.at.most(1832);
   });
 
@@ -170,7 +181,7 @@ describe('fleet-map columns', () => {
         room: { width: 1880, height },
       });
       const ys = [...layout.positions]
-        .filter(([id]) => id.startsWith('model:'))
+        .filter(([id]) => id.startsWith('device:'))
         .map(([, p]) => p.y)
         .sort((a, b) => a - b);
       return { gap: ys[1] - ys[0], height: layout.height };

@@ -553,4 +553,48 @@ describe('Device fleet', () => {
     localStorage.removeItem('preloop:fleet-map:window');
     localStorage.removeItem('preloop.device_fleet.view_mode');
   });
+
+  it('passes the users chosen on the map to the server as users=', async () => {
+    localStorage.setItem('preloop.device_fleet.view_mode', 'canvas');
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet'] },
+      routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
+    });
+    const view = await mount();
+    await waitUntil(() => view.shadowRoot.querySelector('fleet-map')?.graph);
+    const map = view.shadowRoot.querySelector('fleet-map');
+    await map.updateComplete;
+    map.shadowRoot.querySelector('[data-user="user:maya"]').click();
+    await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 2);
+    expect(api.callsTo('/api/v1/fleet/map')[1].search).to.contain('users=maya');
+    await view.updateComplete;
+    expect(map.users).to.deep.equal(['user:maya']);
+    localStorage.removeItem('preloop.device_fleet.view_mode');
+  });
+
+  it('keeps the Table/Map switch clear of the subtitle at 390 px', async () => {
+    const { setViewport } = await import('@web/test-runner-commands');
+    await setViewport({ width: 390, height: 844 });
+    try {
+      localStorage.setItem('preloop.device_fleet.view_mode', 'canvas');
+      api = mockApi({
+        capabilities: ['fleet_coverage'],
+        profile: { permissions: ['view_device_fleet'] },
+        routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
+      });
+      const view = await mount();
+      await view.updateComplete;
+      const header = view.shadowRoot.querySelector('view-header');
+      await header.updateComplete;
+      const sw = view.shadowRoot.querySelector('.view-switch');
+      const subtitle = view.shadowRoot.querySelector('[slot="description"]');
+      expect(sw.getBoundingClientRect().bottom).to.be.at.most(
+        subtitle.getBoundingClientRect().top
+      );
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+      localStorage.removeItem('preloop.device_fleet.view_mode');
+    }
+  });
 });

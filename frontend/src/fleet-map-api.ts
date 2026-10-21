@@ -72,6 +72,15 @@ export interface FleetMapNode {
   last_active_at?: string | null;
   work_title?: string | null;
   work_reference?: string;
+  /**
+   * Pass 4 containment, all optional. Model and provider account: the
+   * provider that contains it. Model: the visible accounts serving it.
+   * Provider and account: the visible models inside. Provider: its accounts.
+   */
+  provider_id?: string | null;
+  provider_account_ids?: string[];
+  model_ids?: string[];
+  account_ids?: string[];
 }
 export type FleetMapAgentState = 'onboarded' | 'discovered' | 'inactive';
 export interface FleetMapEdge {
@@ -100,6 +109,11 @@ export interface FleetMapGraph {
   decommissioned_agents?: number;
   /** Activity window the server applied; absent on servers that ignore it. */
   active_within_minutes?: number | null;
+  /**
+   * The user node ids a `users=` scope applied. Absent when no scope was
+   * requested or the server predates it (the map then scopes here).
+   */
+  users?: string[];
 }
 
 /** Every resource type, in reading order; each can be shown or hidden. */
@@ -265,17 +279,113 @@ export function dependencies(
 
 export interface FleetMapFilters {
   types: ReadonlySet<FleetMapNodeType>;
-  owner: string;
-  provider: string;
-  /** Agent states to show; omitted means all. */
-  states?: ReadonlySet<FleetMapAgentState>;
   /** Keep only nodes with a gap and their direct neighbours. */
   gapsOnly?: boolean;
 }
 
 /**
+ * Scope a map to some people, by the server's `users=` rule (pass 4): the
+ * people, the devices they own, runners and agents they own or that run on
+ * those devices, the models, accounts and providers those agents use, and
+ * the work items the people or those agents touched. Flows carry no person,
+ * so a scoped map has none. Used while the server does not scope (its
+ * response has no `users`); an empty selection returns the graph unchanged.
+ */
+export function scopeToUsers(
+  graph: FleetMapGraph,
+  users: ReadonlySet<string>,
+  work: readonly { id?: string; node_ids?: string[] }[] = []
+): FleetMapGraph {
+  if (!users.size) return graph;
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const keep = new Set([...users].filter((id) => byId.has(id)));
+  const typeOf = (id: string) => byId.get(id)?.type;
+  const add = (id: string | null | undefined) => {
+    if (id && byId.has(id)) keep.add(id);
+  };
+  // Devices and runners the people own, then whatever those devices host.
+  for (const node of graph.nodes)
+    if (
+      (node.type === 'device' ||
+        node.type === 'runner' ||
+        node.type === 'agent') &&
+      node.owner_ids.some((id) => users.has(id))
+    )
+      keep.add(node.id);
+  for (const edge of graph.edges)
+    if (edge.kind === 'owns' && users.has(edge.source)) add(edge.target);
+  for (const edge of graph.edges)
+    if (
+      edge.kind === 'hosts' &&
+      typeOf(edge.source) === 'device' &&
+      keep.has(edge.source)
+    )
+      add(edge.target);
+  for (const edge of graph.edges)
+    if (
+      edge.kind === 'runs_on' &&
+      typeOf(edge.source) === 'agent' &&
+      keep.has(edge.target) &&
+      typeOf(edge.target) === 'device'
+    )
+      add(edge.source);
+  const agents = new Set(
+    [...keep].filter((id) => typeOf(id) === 'agent' || typeOf(id) === 'runner')
+  );
+  // What those agents reach: models, accounts and their providers.
+  for (const edge of graph.edges) {
+    if (!agents.has(edge.source)) continue;
+    if (edge.kind === 'uses_model') {
+      add(edge.target);
+      add(edge.account_id);
+    }
+    if (edge.kind === 'uses_account') add(edge.target);
+  }
+  for (const node of graph.nodes) {
+    if (!keep.has(node.id)) continue;
+    if (node.type === 'provider_account')
+      add(node.provider_id ?? node.parent_id);
+    if (node.type === 'model') add(node.provider_id ?? node.provider_ids[0]);
+  }
+  for (const edge of graph.edges)
+    if (
+      (edge.kind === 'provided_by' || edge.kind === 'account_of_provider') &&
+      keep.has(edge.source) &&
+      typeOf(edge.source) !== 'agent'
+    )
+      add(edge.target);
+  // Work the people or their agents touched, by any line between them.
+  const actors = new Set([...users, ...agents]);
+  for (const edge of graph.edges) {
+    if (typeOf(edge.target) === 'work' && actors.has(edge.source))
+      add(edge.target);
+    if (typeOf(edge.source) === 'work' && actors.has(edge.target))
+      add(edge.source);
+  }
+  for (const item of work)
+    if (item.id && item.node_ids?.some((id) => actors.has(id))) add(item.id);
+  // A kept work item keeps the parent it is drawn inside.
+  for (const node of graph.nodes)
+    if (node.type === 'work' && keep.has(node.id) && node.parent_id)
+      add(node.parent_id);
+  const nodes = graph.nodes.filter(
+    (node) =>
+      keep.has(node.id) && node.type !== 'flow' && node.type !== 'cluster'
+  );
+  const ids = new Set(nodes.map((node) => node.id));
+  return {
+    ...graph,
+    nodes,
+    edges: graph.edges.filter(
+      (edge) => ids.has(edge.source) && ids.has(edge.target)
+    ),
+    clusters: [],
+  };
+}
+
+/**
  * Facets use permission-filtered server associations, not an undirected walk.
- * When agents are narrowed (by state or gaps), models, accounts and providers
+ * When agents are narrowed (by type or gaps), models, accounts and providers
  * that no remaining agent reaches drop out too, so a filter shrinks the whole
  * picture instead of leaving a column of orphans.
  */
@@ -283,19 +393,7 @@ export function filterGraph(
   graph: FleetMapGraph,
   filters: FleetMapFilters
 ): FleetMapGraph {
-  let nodes = graph.nodes.filter(
-    (node) =>
-      filters.types.has(nodeType(node)) &&
-      (node.type !== 'agent' ||
-        !filters.states ||
-        filters.states.has(agentState(node))) &&
-      (!filters.owner ||
-        node.id === filters.owner ||
-        node.owner_ids.includes(filters.owner)) &&
-      (!filters.provider ||
-        node.id === filters.provider ||
-        node.provider_ids.includes(filters.provider))
-  );
+  let nodes = graph.nodes.filter((node) => filters.types.has(nodeType(node)));
   const edgesOf = (ids: Set<string>) =>
     graph.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target));
   if (filters.gapsOnly) {
@@ -315,10 +413,7 @@ export function filterGraph(
         keep.add(node.parent_id);
     nodes = nodes.filter((node) => keep.has(node.id));
   }
-  const narrowed =
-    filters.gapsOnly ||
-    (filters.states && filters.states.size < 3) ||
-    nodes.length < graph.nodes.length;
+  const narrowed = filters.gapsOnly || nodes.length < graph.nodes.length;
   if (narrowed && nodes.some((node) => node.type === 'agent')) {
     const reached = new Set(
       nodes
@@ -367,8 +462,46 @@ export function filterGraph(
 }
 
 /**
- * Which node visually contains which: a provider account sits inside its
- * provider, a runner inside the device that hosts it.
+ * The provider a model or provider account is drawn inside, when that
+ * provider is on the map: the server's `provider_id` (pass 4), else a
+ * `provided_by` or `account_of_provider` line, else the account's parent or
+ * the first listed provider. Undefined for anything else.
+ */
+export function containingProvider(
+  node: FleetMapNode,
+  graph: Pick<FleetMapGraph, 'nodes' | 'edges'>,
+  byId: Map<string, FleetMapNode> = new Map(
+    graph.nodes.map((item) => [item.id, item])
+  )
+): string | undefined {
+  if (node.type !== 'model' && node.type !== 'provider_account')
+    return undefined;
+  const isProvider = (id: string | null | undefined): id is string =>
+    !!id && byId.get(id)?.type === 'provider';
+  const kind = node.type === 'model' ? 'provided_by' : 'account_of_provider';
+  const candidates = [
+    node.provider_id,
+    ...graph.edges
+      .filter((edge) => edge.kind === kind && edge.source === node.id)
+      .map((edge) => edge.target),
+    node.parent_id,
+    ...node.provider_ids,
+  ];
+  return candidates.find(isProvider);
+}
+
+/** Children of a provider box: accounts first, then models, by name. */
+export function providerChildOrder(a: FleetMapNode, b: FleetMapNode): number {
+  return (
+    Number(a.type === 'model') - Number(b.type === 'model') ||
+    a.label.localeCompare(b.label)
+  );
+}
+
+/**
+ * Which node visually contains which: provider accounts and models sit
+ * inside their provider (models only while Providers are shown, pass 4), a
+ * runner inside the device that hosts it.
  */
 export function containers(
   graph: Pick<FleetMapGraph, 'nodes' | 'edges'>
@@ -376,6 +509,11 @@ export function containers(
   const ids = new Map(graph.nodes.map((node) => [node.id, node]));
   const parent = new Map<string, string>();
   for (const node of graph.nodes) {
+    if (node.type === 'model') {
+      const provider = containingProvider(node, graph, ids);
+      if (provider) parent.set(node.id, provider);
+      continue;
+    }
     if (
       node.type === 'work' &&
       node.parent_id &&
@@ -457,7 +595,16 @@ export interface FleetMapLayout {
   positions: Map<string, FleetMapPosition>;
   /** Top-level nodes that hold children, with their child ids. */
   groups: Map<string, string[]>;
-  columns: { type: FleetMapColumn; x: number; count: number }[];
+  /**
+   * One entry per lane. A lane can hold sub-groups (agents, then flows under
+   * a sub-header at `y`); `count` is the lane's total.
+   */
+  columns: {
+    type: FleetMapColumn;
+    x: number;
+    count: number;
+    groups?: { type: FleetMapColumn; count: number; y: number }[];
+  }[];
   more: { column: FleetMapColumn; hidden: number; x: number; y: number }[];
   /** Where a node is drawn: itself, its folded container, or nowhere. */
   anchor: (id: string) => string | undefined;
@@ -469,14 +616,38 @@ export const FLEET_MAP_NODE_WIDTH = 216;
 export const FLEET_MAP_NODE_HEIGHT = 48;
 export const FLEET_MAP_CHILD_HEIGHT = 36;
 export const FLEET_MAP_COLUMN_GAP = 88;
-/** Seven columns (flows present) still fit 1920 px at 100%. */
-export const FLEET_MAP_DENSE_COLUMN_GAP = 52;
 export const FLEET_MAP_ROW_GAP = 10;
 /** The widest row pitch: room for a 26px bubble under its node. */
 export const FLEET_MAP_MAX_ROW_GAP = 64;
 /** Room under the plane for the legend and the zoom controls. */
 const FLEET_MAP_FOOTER = 64;
 export const FLEET_MAP_HEADER = 36;
+/** Height of a sub-header inside a lane (flows under the agents). */
+export const FLEET_MAP_SUBHEADER = 28;
+const SUBHEADER_GAP = 14;
+
+/**
+ * Lanes left to right (pass 4): flows share the agents' lane, under them.
+ */
+const LANES: readonly (readonly FleetMapColumn[])[] = [
+  ['user'],
+  ['device'],
+  ['agent', 'flow'],
+  ['model'],
+  ['provider'],
+  ['work'],
+];
+
+/**
+ * A lane's header: "Agents & Flows" when both have rows, else the one that
+ * does. Counts are per sub-group, drawn beside each label.
+ */
+export function laneTitle(column: FleetMapLayout['columns'][number]): string {
+  const groups = column.groups ?? [];
+  return groups.length > 1
+    ? groups.map((group) => FLEET_MAP_COLUMN_LABEL[group.type]).join(' & ')
+    : FLEET_MAP_COLUMN_LABEL[column.type];
+}
 export const FLEET_MAP_CAP = 12;
 const CHILD_GAP = 6;
 const CHILD_INSET = 10;
@@ -518,82 +689,102 @@ function layoutColumns(
   const columns: FleetMapLayout['columns'] = [];
   const more: FleetMapLayout['more'] = [];
   let height = FLEET_MAP_HEADER;
-  for (const type of FLEET_MAP_COLUMNS) {
-    const list = graph.nodes.filter(
-      (node) => nodeColumn(node) === type && !parentOf.has(node.id)
-    );
-    if (!list.length) continue;
-    const score = (node: FleetMapNode): number => {
-      const ys = (adjacent.get(node.id) || [])
-        .map((id) => centre.get(id))
-        .filter((value): value is number => value !== undefined);
-      return ys.length
-        ? ys.reduce((sum, value) => sum + value, 0) / ys.length
-        : Number.POSITIVE_INFINITY;
-    };
-    const scores = new Map(list.map((node) => [node.id, score(node)]));
-    const ordered = [...list].sort(
-      (a, b) =>
-        Number(a.type === 'cluster') - Number(b.type === 'cluster') ||
-        scores.get(a.id)! - scores.get(b.id)! ||
-        Number(b.gaps.length > 0) - Number(a.gaps.length > 0) ||
-        a.label.localeCompare(b.label)
-    );
-    const limit = options.expanded?.has(type) ? Number.POSITIVE_INFINITY : cap;
-    const shown = ordered.filter(
-      (node, index) =>
-        index < limit ||
-        node.type === 'cluster' ||
-        options.pinned?.has(node.id) ||
-        (children.get(node.id) || []).some((child) =>
-          options.pinned?.has(child.id)
-        )
-    );
+  for (const lane of LANES) {
+    const parts = lane
+      .map((type) => ({
+        type,
+        list: graph.nodes.filter(
+          (node) => nodeColumn(node) === type && !parentOf.has(node.id)
+        ),
+      }))
+      .filter((part) => part.list.length);
+    if (!parts.length) continue;
     const x = columns.length * (FLEET_MAP_NODE_WIDTH + columnGap);
-    columns.push({ type, x, count: ordered.length });
+    const column: FleetMapLayout['columns'][number] = {
+      type: parts[0].type,
+      x,
+      count: 0,
+    };
+    columns.push(column);
     let y = FLEET_MAP_HEADER;
-    for (const node of shown) {
-      const kids = (children.get(node.id) || []).sort((a, b) =>
-        a.label.localeCompare(b.label)
+    parts.forEach(({ type, list }, part) => {
+      // A sub-header row names the second group (flows under the agents).
+      // It keeps clear of the counters that hang under the last agent.
+      const groupY = part > 0 ? y + SUBHEADER_GAP : 0;
+      // Counters also rise 10px above the first flow: leave them room.
+      if (part > 0) y = groupY + FLEET_MAP_SUBHEADER + 12;
+      const score = (node: FleetMapNode): number => {
+        const ys = (adjacent.get(node.id) || [])
+          .map((id) => centre.get(id))
+          .filter((value): value is number => value !== undefined);
+        return ys.length
+          ? ys.reduce((sum, value) => sum + value, 0) / ys.length
+          : Number.POSITIVE_INFINITY;
+      };
+      const scores = new Map(list.map((node) => [node.id, score(node)]));
+      const ordered = [...list].sort(
+        (a, b) =>
+          Number(a.type === 'cluster') - Number(b.type === 'cluster') ||
+          scores.get(a.id)! - scores.get(b.id)! ||
+          Number(b.gaps.length > 0) - Number(a.gaps.length > 0) ||
+          a.label.localeCompare(b.label)
       );
-      const open = kids.length && !options.collapsed?.has(node.id);
-      const h = open
-        ? FLEET_MAP_NODE_HEIGHT +
-          kids.length * (FLEET_MAP_CHILD_HEIGHT + CHILD_GAP) +
-          CHILD_INSET -
-          CHILD_GAP
-        : FLEET_MAP_NODE_HEIGHT;
-      positions.set(node.id, { x, y, w: FLEET_MAP_NODE_WIDTH, h });
-      centre.set(node.id, y + FLEET_MAP_NODE_HEIGHT / 2);
-      if (kids.length)
-        groups.set(
-          node.id,
-          kids.map((kid) => kid.id)
-        );
-      if (open)
-        kids.forEach((kid, index) => {
-          const ky =
-            y +
-            FLEET_MAP_NODE_HEIGHT +
-            index * (FLEET_MAP_CHILD_HEIGHT + CHILD_GAP);
-          positions.set(kid.id, {
-            x: x + CHILD_INSET,
-            y: ky,
-            w: FLEET_MAP_NODE_WIDTH - 2 * CHILD_INSET,
-            h: FLEET_MAP_CHILD_HEIGHT,
+      const limit = options.expanded?.has(type)
+        ? Number.POSITIVE_INFINITY
+        : cap;
+      const shown = ordered.filter(
+        (node, index) =>
+          index < limit ||
+          node.type === 'cluster' ||
+          options.pinned?.has(node.id) ||
+          (children.get(node.id) || []).some((child) =>
+            options.pinned?.has(child.id)
+          )
+      );
+      column.count += ordered.length;
+      if (parts.length > 1)
+        (column.groups ??= []).push({ type, count: ordered.length, y: groupY });
+      for (const node of shown) {
+        const kids = (children.get(node.id) || []).sort(providerChildOrder);
+        const open = kids.length && !options.collapsed?.has(node.id);
+        const h = open
+          ? FLEET_MAP_NODE_HEIGHT +
+            kids.length * (FLEET_MAP_CHILD_HEIGHT + CHILD_GAP) +
+            CHILD_INSET -
+            CHILD_GAP
+          : FLEET_MAP_NODE_HEIGHT;
+        positions.set(node.id, { x, y, w: FLEET_MAP_NODE_WIDTH, h });
+        centre.set(node.id, y + FLEET_MAP_NODE_HEIGHT / 2);
+        if (kids.length)
+          groups.set(
+            node.id,
+            kids.map((kid) => kid.id)
+          );
+        if (open)
+          kids.forEach((kid, index) => {
+            const ky =
+              y +
+              FLEET_MAP_NODE_HEIGHT +
+              index * (FLEET_MAP_CHILD_HEIGHT + CHILD_GAP);
+            positions.set(kid.id, {
+              x: x + CHILD_INSET,
+              y: ky,
+              w: FLEET_MAP_NODE_WIDTH - 2 * CHILD_INSET,
+              h: FLEET_MAP_CHILD_HEIGHT,
+            });
+            centre.set(kid.id, ky + FLEET_MAP_CHILD_HEIGHT / 2);
           });
-          centre.set(kid.id, ky + FLEET_MAP_CHILD_HEIGHT / 2);
-        });
-      else
-        for (const kid of kids)
-          centre.set(kid.id, y + FLEET_MAP_NODE_HEIGHT / 2);
-      y += h + rowGap;
-    }
-    const hidden = ordered.length - shown.length;
-    if (hidden > 0) {
-      more.push({ column: type, hidden, x, y });
-      y += FLEET_MAP_CHILD_HEIGHT + rowGap;
-    }
+        else
+          for (const kid of kids)
+            centre.set(kid.id, y + FLEET_MAP_NODE_HEIGHT / 2);
+        y += h + rowGap;
+      }
+      const hidden = ordered.length - shown.length;
+      if (hidden > 0) {
+        more.push({ column: type, hidden, x, y });
+        y += FLEET_MAP_CHILD_HEIGHT + rowGap;
+      }
+    });
     height = Math.max(height, y - rowGap);
   }
   const anchor = (id: string): string | undefined =>
@@ -613,15 +804,14 @@ function layoutColumns(
  * row pitch stretches (10px to 64px, the same in every column so rows stay
  * level) until the tallest column reaches the bottom of the fitted view: a
  * small fleet uses the height instead of the top third, and every node gets
- * a lane under it for its bubble. With a Flows column the column gap tightens
- * so seven columns still fit a 1920px screen at 100%.
+ * a lane under it for its bubble. Flows share the agents' lane (pass 4), so
+ * there are at most six lanes and one column gap.
  */
 export function layoutGraph(
   graph: Pick<FleetMapGraph, 'nodes' | 'edges'>,
   options: FleetMapLayoutOptions = {}
 ): FleetMapLayout {
-  const dense = graph.nodes.some((node) => nodeColumn(node) === 'flow');
-  const columnGap = dense ? FLEET_MAP_DENSE_COLUMN_GAP : FLEET_MAP_COLUMN_GAP;
+  const columnGap = FLEET_MAP_COLUMN_GAP;
   const natural = layoutColumns(graph, options, FLEET_MAP_ROW_GAP, columnGap);
   const room = options.room;
   if (!room || !natural.width) return natural;
@@ -657,14 +847,36 @@ export function layoutGraph(
     : natural;
 }
 
-export async function getFleetMap(
-  signal?: AbortSignal,
-  activeWithinMinutes: number | null = null,
-  includeIdle = false
-): Promise<FleetMapGraph> {
+/**
+ * The `users=` value: user resource ids (not node ids), comma separated.
+ * Node ids are accepted and their `user:` prefix dropped.
+ */
+export function usersParam(users: readonly string[]): string {
+  return [...new Set(users.map((id) => id.replace(/^user:/, '')))]
+    .filter(Boolean)
+    .slice(0, 50)
+    .join(',');
+}
+
+function fleetQuery(
+  activeWithinMinutes: number | null,
+  users: readonly string[]
+): URLSearchParams {
   const params = new URLSearchParams();
   if (activeWithinMinutes)
     params.set('active_within_minutes', String(activeWithinMinutes));
+  const scope = usersParam(users);
+  if (scope) params.set('users', scope);
+  return params;
+}
+
+export async function getFleetMap(
+  signal?: AbortSignal,
+  activeWithinMinutes: number | null = null,
+  includeIdle = false,
+  users: readonly string[] = []
+): Promise<FleetMapGraph> {
+  const params = fleetQuery(activeWithinMinutes, users);
   if (includeIdle) params.set('include_idle', 'true');
   const url = `/api/v1/fleet/map${params.size ? `?${params}` : ''}`;
   const response = await fetchWithAuth(url, { signal });
@@ -744,6 +956,8 @@ export interface FleetCodeActivity {
   work_truncated?: boolean;
   relations?: FleetWorkRelation[];
   relations_truncated?: boolean;
+  /** User node ids a `users=` scope applied (pass 4); absent otherwise. */
+  users?: string[];
 }
 
 export type FleetWorkRelationKind =
@@ -793,6 +1007,8 @@ export interface FleetUsageResponse {
   until: string;
   truncated: boolean;
   partial: boolean;
+  /** User node ids a `users=` scope applied (pass 4); absent otherwise. */
+  users?: string[];
   models: Record<string, FleetUsageTotals>;
   providers: Record<string, FleetUsageTotals>;
   agents?: Record<string, FleetNodeTotals>;
@@ -804,11 +1020,11 @@ export interface FleetUsageResponse {
 
 export async function getFleetUsage(
   signal?: AbortSignal,
-  activeWithinMinutes: number | null = null
+  activeWithinMinutes: number | null = null,
+  users: readonly string[] = []
 ): Promise<FleetUsageResponse> {
-  const url = activeWithinMinutes
-    ? `/api/v1/fleet/usage?active_within_minutes=${activeWithinMinutes}`
-    : '/api/v1/fleet/usage';
+  const params = fleetQuery(activeWithinMinutes, users);
+  const url = `/api/v1/fleet/usage${params.size ? `?${params}` : ''}`;
   const response = await fetchWithAuth(url, { signal });
   if (!response.ok) throw new Error('Usage totals could not be loaded.');
   return response.json();
@@ -816,11 +1032,11 @@ export async function getFleetUsage(
 
 export async function getFleetCodeActivity(
   signal?: AbortSignal,
-  activeWithinMinutes: number | null = null
+  activeWithinMinutes: number | null = null,
+  users: readonly string[] = []
 ): Promise<FleetCodeActivity> {
-  const url = activeWithinMinutes
-    ? `/api/v1/fleet/code-activity?active_within_minutes=${activeWithinMinutes}`
-    : '/api/v1/fleet/code-activity';
+  const params = fleetQuery(activeWithinMinutes, users);
+  const url = `/api/v1/fleet/code-activity${params.size ? `?${params}` : ''}`;
   const response = await fetchWithAuth(url, { signal });
   if (!response.ok) throw new Error('Code activity could not be loaded.');
   return response.json();

@@ -1291,6 +1291,30 @@ describe('inventory-card spatial map', () => {
     expect(api.callsTo('/api/v1/fleet/map').length).to.equal(1);
   });
 
+  it('refetches the map scoped to the users chosen on it', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    api = mockApi({
+      routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
+    });
+    const el = await fixture<InventoryCard>(
+      html`<inventory-card instanceAdmin userId="u9"></inventory-card>`
+    );
+    el.shadowRoot!.querySelector<HTMLButtonElement>(
+      '[data-inventory-view="map"]'
+    )!.click();
+    await waitUntil(() => el.shadowRoot!.querySelector('fleet-map')?.graph);
+    const map = el.shadowRoot!.querySelector('fleet-map')!;
+    await map.updateComplete;
+    map
+      .shadowRoot!.querySelector<HTMLElement>('[data-user="user:sam"]')!
+      .click();
+    await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 2);
+    expect(api.callsTo('/api/v1/fleet/map')[1].search).to.contain('users=sam');
+    await el.updateComplete;
+    expect(map.users).to.deep.equal(['user:sam']);
+    localStorage.removeItem('preloop:inventory:view:u9');
+  });
+
   it('keeps the table the default for an administrator', async () => {
     const el = await fixture<InventoryCard>(
       html`<inventory-card instanceAdmin userId="u2"></inventory-card>`

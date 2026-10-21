@@ -28,6 +28,10 @@ export const FLEET_MAP_WINDOWS: readonly {
 ];
 
 export const DEFAULT_FLEET_MAP_WINDOW: FleetMapWindow = '30d';
+
+/** The window's own words ("Last hour"), as its select shows it. */
+export const windowLabel = (value: FleetMapWindow): string =>
+  FLEET_MAP_WINDOWS.find((item) => item.value === value)?.label ?? 'Any time';
 export const FLEET_MAP_WINDOW_KEY = 'preloop:fleet-map:window';
 
 export const windowMinutes = (value: FleetMapWindow): number | null =>

@@ -1,17 +1,20 @@
 import { expect, fixture, html } from '@open-wc/testing';
 import { spy, stub, useFakeTimers } from 'sinon';
 import './fleet-map';
-import type { FleetMap } from './fleet-map';
+import { labelSpot, type FleetMap } from './fleet-map';
 import { sampleFleetMap } from '../test-helpers/fleet-map-graph';
+
+/** A select's shown value, wide (trigger text) or condensed (menu suffix). */
+const selectValue = (el: FleetMap, id: string) => {
+  const item = el.shadowRoot!.querySelector(`[data-testid="${id}"]`)!;
+  return (item.querySelector('.filter-value') ?? item).textContent!.trim();
+};
 
 const node = (el: FleetMap, id: string) =>
   el.shadowRoot!.querySelector<HTMLButtonElement>(`[data-node="${id}"]`)!;
 
-/** The default view is onboarded agents; include discovered and inactive. */
+/** Every agent shows by default (no State filter); also show accounts. */
 async function allAgents(el: FleetMap): Promise<void> {
-  el.shadowRoot!.querySelector<HTMLElement>(
-    '[data-state="discovered"]'
-  )!.click();
   el.shadowRoot!.querySelector<HTMLElement>(
     '[data-type="provider_account"]'
   )!.click();
@@ -82,22 +85,86 @@ describe('fleet-map', () => {
       .not.exist;
   });
 
-  it('filters by owner and counts honestly', async () => {
+  it('scopes to the chosen users and says so in the count', async () => {
     const el = await fixture<FleetMap>(
       html`<fleet-map .graph=${sampleFleetMap()}></fleet-map>`
     );
     await allAgents(el);
+    const events: CustomEvent[] = [];
+    el.addEventListener('fleet-map-users-change', (e) =>
+      events.push(e as CustomEvent)
+    );
+    expect(selectValue(el, 'fleet-map-users')).to.equal('All users');
     el.shadowRoot!.querySelector<HTMLElement>(
-      '[data-owner="user:sam"]'
+      '[data-user="user:sam"]'
     )!.click();
     await el.updateComplete;
     expect(node(el, 'user:maya')).to.not.exist;
+    expect(node(el, 'agent:cursor')).to.exist;
+    expect(selectValue(el, 'fleet-map-users')).to.equal('Sam Ortiz');
     expect(
       el
         .shadowRoot!.querySelector('.count')!
         .textContent!.replace(/\s+/g, ' ')
         .trim()
-    ).to.equal('6 active in this window');
+    ).to.equal('6 active in this window for 1 user');
+    expect(events[0].detail).to.deep.equal({
+      users: ['user:sam'],
+      userIds: ['sam'],
+    });
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-user="user:maya"]'
+    )!.click();
+    await el.updateComplete;
+    expect(selectValue(el, 'fleet-map-users')).to.equal('2 users');
+    expect(el.shadowRoot!.querySelector('.count')!.textContent).to.contain(
+      'for 2 users'
+    );
+    el.shadowRoot!.querySelector<HTMLElement>('[data-user="all"]')!.click();
+    await el.updateComplete;
+    expect(node(el, 'user:maya')).to.exist;
+    expect(events.at(-1)!.detail.users).to.deep.equal([]);
+  });
+
+  it('trusts a map the server already scoped to the same users', async () => {
+    const graph = { ...sampleFleetMap(), users: ['user:sam'] };
+    const el = await fixture<FleetMap>(
+      html`<fleet-map .graph=${graph} .users=${['user:sam']}></fleet-map>`
+    );
+    // Not re-filtered client side: maya stays because the server sent her.
+    expect(node(el, 'user:maya')).to.exist;
+  });
+
+  it('lists everyone a map ever showed and searches past eight people', async () => {
+    const base = sampleFleetMap();
+    const people = Array.from({ length: 9 }, (_, i) => ({
+      ...base.nodes[0],
+      id: `user:p${i}`,
+      resource_id: `p${i}`,
+      label: `Person ${i}`,
+    }));
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${{ ...base, nodes: [...base.nodes, ...people] }}
+      ></fleet-map>`
+    );
+    el.graph = {
+      ...base,
+      nodes: base.nodes.filter((n) => n.id !== 'user:sam'),
+    };
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('[data-user="user:sam"]')).to.exist;
+    const search = el.shadowRoot!.querySelector<
+      HTMLElement & { value: string }
+    >('[data-testid="fleet-map-users-search"]')!;
+    expect(search).to.exist;
+    search.value = 'person 3';
+    search.dispatchEvent(new CustomEvent('sl-input'));
+    await el.updateComplete;
+    const listed = [
+      ...el.shadowRoot!.querySelectorAll('[data-user]:not([data-user="all"])'),
+    ].map((item) => item.getAttribute('data-user'));
+    expect(listed).to.deep.equal(['user:p3']);
   });
 });
 
@@ -273,7 +340,7 @@ describe('fleet-map capped and narrow views', () => {
       '[data-gap="discovered_agent"]'
     )!.click();
     el.shadowRoot!.querySelector<HTMLElement>(
-      '[data-owner="user:maya"]'
+      '[data-user="user:maya"]'
     )!.click();
     await el.updateComplete;
     expect(el.shadowRoot!.querySelector('[data-gap="discovered_agent"]')).to.not
@@ -349,25 +416,45 @@ describe('fleet-map gesture performance', () => {
 });
 
 describe('fleet-map v2 readability', () => {
-  it('shows onboarded agents by default and counts the rest behind filters', async () => {
+  it('shows every agent in the window: no State or Provider filter', async () => {
     const el = await fixture<FleetMap>(
       html`<fleet-map
         .graph=${{ ...sampleFleetMap(), decommissioned_agents: 4 }}
       ></fleet-map>`
     );
-    expect(node(el, 'agent:cursor')).to.not.exist;
-    // Only the hidden agent used this account; it leaves with the agent.
-    expect(node(el, 'account:dev')).to.not.exist;
-    const discovered = el.shadowRoot!.querySelector<HTMLButtonElement>(
-      '[data-state="discovered"]'
-    )!;
-    expect(discovered.textContent).to.contain('Discovered 1');
+    expect(node(el, 'agent:cursor')).to.exist;
+    expect(el.shadowRoot!.querySelector('[data-state]')).to.equal(null);
+    expect(el.shadowRoot!.querySelector('[data-provider]')).to.equal(null);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="fleet-map-states"]')
+    ).to.equal(null);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="fleet-map-provider"]')
+    ).to.equal(null);
     expect(
       el.shadowRoot!.querySelector('.count')!.getAttribute('title')
     ).to.contain('4 decommissioned agents not shown');
-    discovered.click();
+  });
+
+  it('labels each select with its value, never its name', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        .activityWindow=${'1h'}
+      ></fleet-map>`
+    );
+    const text = (id: string) => selectValue(el, id);
+    expect(text('fleet-map-window')).to.equal('Last hour');
+    expect(text('fleet-map-users')).to.equal('All users');
+    expect(text('fleet-map-show')).to.equal('All resources');
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-testid="fleet-map-window"]')!
+        .getAttribute('aria-label')
+    ).to.equal('Window: Last hour');
+    el.shadowRoot!.querySelector<HTMLElement>('[data-type="model"]')!.click();
     await el.updateComplete;
-    expect(node(el, 'agent:cursor')).to.exist;
+    expect(text('fleet-map-show')).to.equal('7 kinds');
   });
 
   it('nests accounts in their provider and folds them', async () => {
@@ -423,7 +510,7 @@ describe('fleet-map v2 readability', () => {
       '[data-more="agent"]'
     )!;
     expect(more.textContent!.replace(/\s+/g, ' ').trim()).to.equal(
-      '+10 more agents'
+      '+11 more agents'
     );
     more.click();
     await el.updateComplete;
@@ -882,5 +969,284 @@ describe('fleet-map labels', () => {
       expect(parseFloat(restored.style.left)).to.equal(before.x + 60);
       expect(parseFloat(restored.style.top)).to.equal(before.y + 40);
     });
+  });
+});
+
+describe('fleet-map pass 4 controls', () => {
+  afterEach(() => {
+    for (const key of Object.keys(localStorage))
+      if (key.startsWith('preloop:fleet-map:')) localStorage.removeItem(key);
+  });
+
+  const flowNode = (id: string) => ({
+    ...sampleFleetMap().nodes[0],
+    id,
+    type: 'flow' as const,
+    label: id,
+    detail: 'Flow',
+  });
+
+  it('switches arrangement with icon-only Lanes and Canvas buttons', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        instance-admin
+        user-id="p4"
+      ></fleet-map>`
+    );
+    const buttons = [
+      ...el.shadowRoot!.querySelectorAll<HTMLElement>('[data-arrangement]'),
+    ];
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).to.deep.equal([
+      'Lanes',
+      'Canvas',
+    ]);
+    for (const button of buttons) {
+      expect(button.textContent!.trim()).to.equal('');
+      expect(button.closest('sl-tooltip')!.getAttribute('content')).to.equal(
+        button.getAttribute('aria-label')
+      );
+    }
+    expect(buttons[0].getAttribute('aria-pressed')).to.equal('true');
+    buttons[1].click();
+    await el.updateComplete;
+    expect(
+      localStorage.getItem('preloop:fleet-map:arrangement:fleet:p4')
+    ).to.equal('spatial');
+  });
+
+  it('puts an icon-only Arrange beside Fit on a canvas with nodes, and Undo restores', async () => {
+    localStorage.setItem('preloop:fleet-map:arrangement:fleet:p4', 'spatial');
+    const el = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        instance-admin
+        user-id="p4"
+      ></fleet-map>`
+    );
+    const root = el.shadowRoot!;
+    const arrange = root.querySelector<HTMLButtonElement>(
+      '.canvas-tools [data-testid="fleet-map-arrange-button"]'
+    )!;
+    expect(arrange).to.exist;
+    expect(arrange.getAttribute('aria-label')).to.equal('Arrange');
+    expect(arrange.textContent!.trim()).to.equal('');
+    expect(arrange.closest('sl-tooltip')).to.exist;
+    // Next to Fit, and gone from the toolbar and the More menu.
+    expect(
+      (
+        arrange.closest('sl-tooltip')!.nextElementSibling as HTMLElement
+      ).textContent!.trim()
+    ).to.equal('Fit');
+    expect(
+      root.querySelector(
+        'list-toolbar [data-testid="fleet-map-arrange-button"]'
+      )
+    ).to.equal(null);
+    expect(root.querySelector('[data-testid="fleet-map-arrange"]')).to.equal(
+      null
+    );
+    arrange.click();
+    await el.updateComplete;
+    const notice = root.querySelector('.reset-notice')!;
+    expect(notice.textContent).to.contain('Arranged');
+    notice.querySelector<HTMLButtonElement>('button')!.click();
+    await el.updateComplete;
+    expect(root.querySelector('.reset-notice')).to.equal(null);
+  });
+
+  it('hides Arrange in lanes and on an empty canvas', async () => {
+    const lanes = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${sampleFleetMap()}
+        instance-admin
+        user-id="p4"
+      ></fleet-map>`
+    );
+    expect(
+      lanes.shadowRoot!.querySelector(
+        '[data-testid="fleet-map-arrange-button"]'
+      )
+    ).to.equal(null);
+    localStorage.setItem('preloop:fleet-map:arrangement:fleet:p5', 'spatial');
+    const empty = await fixture<FleetMap>(
+      html`<fleet-map
+        .graph=${{ ...sampleFleetMap(), nodes: [], edges: [] }}
+        instance-admin
+        user-id="p5"
+      ></fleet-map>`
+    );
+    expect(
+      empty.shadowRoot!.querySelector(
+        '[data-testid="fleet-map-arrange-button"]'
+      )
+    ).to.equal(null);
+  });
+
+  it('draws flows under the agents with an Agents & Flows header', async () => {
+    const graph = sampleFleetMap();
+    graph.nodes.push(flowNode('flow:triage'), flowNode('flow:review'));
+    const el = await fixture<FleetMap>(
+      html`<fleet-map .graph=${graph}></fleet-map>`
+    );
+    const root = el.shadowRoot!;
+    const header = root.querySelector('[data-lane="agent"]')!;
+    expect(header.textContent!.replace(/\s+/g, '')).to.equal('Agents3&Flows2');
+    expect(
+      header.querySelector('[data-lane-count="agent"]')!.textContent
+    ).to.equal('3');
+    expect(
+      header.querySelector('[data-lane-count="flow"]')!.textContent
+    ).to.equal('2');
+    expect(root.querySelector('[data-lane="flow"]')).to.equal(null);
+    const sub = root.querySelector<HTMLElement>('[data-lane-group="flow"]')!;
+    expect(sub.textContent!.replace(/\s+/g, '')).to.equal('Flows2');
+    const agent = node(el, 'agent:cursor').getBoundingClientRect();
+    const flow = node(el, 'flow:triage').getBoundingClientRect();
+    expect(Math.round(flow.left)).to.equal(Math.round(agent.left));
+    expect(sub.getBoundingClientRect().top).to.be.at.least(agent.bottom);
+    expect(flow.top).to.be.at.least(sub.getBoundingClientRect().bottom);
+  });
+
+  it('names the lane Agents alone when there are no flows', async () => {
+    const el = await fixture<FleetMap>(
+      html`<fleet-map .graph=${sampleFleetMap()}></fleet-map>`
+    );
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-lane="agent"]')!
+        .textContent!.replace(/\s+/g, '')
+    ).to.equal('Agents3');
+    expect(el.shadowRoot!.querySelector('[data-lane-group]')).to.equal(null);
+  });
+
+  it('draws a flow with the navbar flow icon', async () => {
+    const graph = sampleFleetMap();
+    graph.nodes.push(flowNode('flow:triage'));
+    const el = await fixture<FleetMap>(
+      html`<fleet-map .graph=${graph}></fleet-map>`
+    );
+    const icon = node(el, 'flow:triage').querySelector('.glyph sl-icon')!;
+    expect(icon.getAttribute('src')).to.equal('/images/flow.svg');
+  });
+
+  it('contains models in their provider when both are shown, in both views', async () => {
+    for (const arrangement of ['columns', 'spatial']) {
+      for (const key of Object.keys(localStorage))
+        if (key.startsWith('preloop:fleet-map:')) localStorage.removeItem(key);
+      localStorage.setItem(
+        'preloop:fleet-map:arrangement:fleet:p6',
+        arrangement
+      );
+      const el = await fixture<FleetMap>(
+        html`<fleet-map
+          .graph=${sampleFleetMap()}
+          instance-admin
+          user-id="p6"
+        ></fleet-map>`
+      );
+      const box = node(
+        el,
+        'provider:openai'
+      ).previousElementSibling!.getBoundingClientRect();
+      const model = node(el, 'model:gpt').getBoundingClientRect();
+      expect(model.left, arrangement).to.be.above(box.left);
+      expect(model.right, arrangement).to.be.below(box.right);
+      expect(model.top, arrangement).to.be.above(box.top);
+      expect(model.bottom, arrangement).to.be.at.most(box.bottom + 1);
+      el.shadowRoot!.querySelector<HTMLElement>(
+        '[data-type="provider"]'
+      )!.click();
+      await el.updateComplete;
+      expect(node(el, 'provider:openai')).to.equal(null);
+      expect(node(el, 'model:gpt')).to.exist;
+    }
+  });
+});
+
+describe('fleet-map pass 3 leftovers', () => {
+  const hit = (a: DOMRect, b: DOMRect) =>
+    a.left < b.right - 0.5 &&
+    b.left < a.right - 0.5 &&
+    a.top < b.bottom - 0.5 &&
+    b.top < a.bottom - 0.5;
+
+  it('never sets an edge caption under a card or its counters', () => {
+    const card = { x: 100, y: 0, w: 216, h: 48 };
+    const placed: { x: number; y: number; w: number; h: number }[] = [];
+    // The midpoint caption would graze the card's corner: another spot wins.
+    const spot = labelSpot(
+      'Automated Issue Implementation opened a PR',
+      [0, 60],
+      [400, 60],
+      true,
+      [card],
+      placed
+    );
+    if (spot) {
+      const rect = placed[0];
+      expect(rect.w).to.be.at.least(42 * 6.6);
+      const clear =
+        rect.y >= card.y + card.h + 6 ||
+        rect.y + rect.h <= card.y - 16 ||
+        rect.x >= card.x + card.w + 6 ||
+        rect.x + rect.w <= card.x - 6;
+      expect(clear).to.equal(true);
+    }
+  });
+
+  it('keeps toasts off every card at tablet widths, wherever they were before', async () => {
+    const { setViewport } = await import('@web/test-runner-commands');
+    for (const width of [768, 1024]) {
+      await setViewport({ width, height: 900 });
+      const graph = sampleFleetMap();
+      const el = await fixture<FleetMap>(
+        html`<fleet-map
+          .graph=${graph}
+          instance-admin
+          reduced-motion
+          style="width:${width - 40}px;--fleet-map-height:600px"
+        ></fleet-map>`
+      );
+      const now = Date.now();
+      el.seedToasts(
+        {
+          active_within_minutes: 60,
+          since: new Date(now - 3_600_000).toISOString(),
+          truncated: false,
+          counts: {},
+          flows: [],
+          events: ['agent:claude', 'agent:codex', 'agent:cursor'].map(
+            (node, i) => ({
+              id: `e${i}`,
+              node_id: node,
+              action: 'opened' as const,
+              pr: 'acme/app#1',
+              at: new Date(now - (i + 1) * 1000).toISOString(),
+            })
+          ),
+        } as never,
+        now
+      );
+      await el.updateComplete;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      // A stale spot from a wider layout must not decide the size.
+      for (const toast of el.shadowRoot!.querySelectorAll<HTMLElement>(
+        '.toast'
+      ))
+        toast.style.left = `${width - 120}px`;
+      (el as unknown as { positionToasts(): void }).positionToasts();
+      const cards = [
+        ...el.shadowRoot!.querySelectorAll<HTMLElement>('[data-node], .box'),
+      ].map((n) => n.getBoundingClientRect());
+      for (const toast of el.shadowRoot!.querySelectorAll<HTMLElement>(
+        '.toast'
+      )) {
+        if (getComputedStyle(toast).visibility === 'hidden') continue;
+        const rect = toast.getBoundingClientRect();
+        expect(cards.some((card) => hit(rect, card))).to.equal(false);
+      }
+    }
+    await setViewport({ width: 1280, height: 800 });
   });
 });

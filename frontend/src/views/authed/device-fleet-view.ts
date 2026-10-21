@@ -165,6 +165,9 @@ export class DeviceFleetView extends LitElement {
   @state() private mapError = '';
   @state() private mapWindow: FleetMapWindow = loadFleetMapWindow();
   @state() private mapIncludeIdle = false;
+  /** Users the map is scoped to: node ids for the map, ids for `users=`. */
+  @state() private mapUsers: string[] = [];
+  private mapUserIds: string[] = [];
   @state() private instanceAdmin = false;
   @state() private userId = '';
   private controller?: AbortController;
@@ -227,6 +230,14 @@ export class DeviceFleetView extends LitElement {
         background: var(--console-button-face);
         color: var(--console-meta-color);
         cursor: pointer;
+      }
+      /* Phones: the switch wraps under the title; a negative margin there
+         pulled the subtitle up under it (390 px). */
+      @media (max-width: 640px) {
+        .view-switch {
+          align-self: flex-start;
+          margin-bottom: 0;
+        }
       }
       .view-switch button + button {
         border-left: 1px solid var(--console-button-border);
@@ -586,7 +597,8 @@ export class DeviceFleetView extends LitElement {
       const map = await getFleetMap(
         controller.signal,
         windowMinutes(this.mapWindow),
-        this.mapIncludeIdle
+        this.mapIncludeIdle,
+        this.mapUserIds
       );
       if (!controller.signal.aborted) this.map = map;
     } catch (error) {
@@ -656,6 +668,7 @@ export class DeviceFleetView extends LitElement {
       .graph=${this.map}
       .activityWindow=${this.mapWindow}
       .includeIdle=${this.mapIncludeIdle}
+      .users=${this.mapUsers}
       live
       ?instance-admin=${this.instanceAdmin}
       user-id=${this.userId}
@@ -666,6 +679,13 @@ export class DeviceFleetView extends LitElement {
         void this.loadMap();
       }}
       @fleet-map-stale=${() => void this.loadMap(true)}
+      @fleet-map-users-change=${(
+        event: CustomEvent<{ users: string[]; userIds: string[] }>
+      ) => {
+        this.mapUsers = event.detail.users;
+        this.mapUserIds = event.detail.userIds;
+        void this.loadMap();
+      }}
       @fleet-map-idle-change=${(
         event: CustomEvent<{ includeIdle: boolean }>
       ) => {
