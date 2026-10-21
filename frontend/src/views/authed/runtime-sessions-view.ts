@@ -1,3 +1,4 @@
+import { randomUuid } from '../../utils/random-uuid';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
@@ -898,7 +899,7 @@ export class RuntimeSessionsView extends LitElement {
     if (sessionId === this.selectedSessionId) {
       // Create an optimistic event
       const newEvent = {
-        id: message.id || crypto.randomUUID(),
+        id: message.id || randomUuid(),
         execution_id: message.execution_id || '',
         timestamp: payload.timestamp || new Date().toISOString(),
         type: message.type,
@@ -943,7 +944,7 @@ export class RuntimeSessionsView extends LitElement {
       // Update interactions list if visible
       if (message.type === 'model_gateway_call' && this.interactions) {
         const newInteraction = {
-          id: message.id || crypto.randomUUID(),
+          id: message.id || randomUuid(),
           request: payload.request || {},
           response: payload.response || {},
           error_detail: payload.error_detail,

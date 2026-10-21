@@ -90,6 +90,7 @@ from preloop.services.flow_pr_binding import (
     parse_pr_opened_marker,
     record_cli_session,
     record_opened_pr,
+    record_published_pr,
     resume_cli_session_of,
     resume_count,
     take_pending_followup,
@@ -921,6 +922,7 @@ class FlowExecutionOrchestrator:
         # PR/MR the container wrapper opened in its post-execution step, read
         # from the PRELOOP_PR_OPENED log line and bound at terminal status.
         self._opened_pr: Optional[Dict[str, str]] = None
+        self._published_pr_urls: set[str] = set()
         # True after this orchestrator has already persisted ``_opened_pr``.
         # Live log frames bind immediately; terminal rescan must not bind twice.
         self._opened_pr_bound = False
@@ -5001,25 +5003,36 @@ class FlowExecutionOrchestrator:
         return [line for line in logs if isinstance(line, str)]
 
     def _note_opened_pr(self, line: str) -> None:
-        """Remember the PR/MR the wrapper opened (first one wins)."""
+        """Remember each wrapper publication; retain the first as the follow-up binding."""
         if getattr(self, "_isolated_publication_policy", None) is not None:
             return  # Only the trusted publisher can bind an isolated execution.
         parsed = parse_pr_opened_marker(line)
         if not parsed:
             return
-        if self._opened_pr is not None:
+        seen = getattr(self, "_published_pr_urls", None)
+        if seen is None:
+            seen = set()
+            self._published_pr_urls = seen
+        from preloop.services.flow_pr_binding import normalize_pr_url
+
+        key = normalize_pr_url(parsed["url"]) or parsed["url"]
+        if key in seen:
             return
-        self._opened_pr = parsed
+        seen.add(key)
+        is_primary = self._opened_pr is None
+        if is_primary:
+            self._opened_pr = parsed
         if self.execution_log is not None:
-            # Persist while the publication marker is available. A lost final
-            # runner report must not erase the PR's continuation binding.
-            record_opened_pr(
-                self.db,
-                self.execution_log.id,
-                parsed["url"],
-                source_branch=parsed.get("branch"),
-            )
-            self._opened_pr_bound = True
+            if is_primary:
+                # Keep existing follow-up semantics tied to the first PR.
+                record_opened_pr(
+                    self.db,
+                    self.execution_log.id,
+                    parsed["url"],
+                    source_branch=parsed.get("branch"),
+                )
+                self._opened_pr_bound = True
+            record_published_pr(self.db, self.execution_log.id, parsed)
         logger.info("Wrapper opened a pull request for this execution")
         self.execution_logger.log_milestone(
             "pull_request_opened",
@@ -5473,11 +5486,10 @@ class FlowExecutionOrchestrator:
         trusted publication receipt that never went through the wrapper
         marker. The same URL is not written twice.
         """
-        if self._opened_pr is None and output_summary:
+        if output_summary:
             for line in output_summary.splitlines():
                 if PR_OPENED_MARKER in line:
                     self._note_opened_pr(line)
-                    break
         if getattr(self, "_opened_pr_bound", False):
             return
         if self._opened_pr is None or self.execution_log is None:

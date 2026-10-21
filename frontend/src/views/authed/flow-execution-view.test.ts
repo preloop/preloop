@@ -693,6 +693,44 @@ describe('FlowExecutionView', () => {
     ]);
   });
 
+  it('shows each published repository and branch without changing follow-up', async () => {
+    const element = await load('exec-1');
+    (element as any).execution = {
+      ...(element as any).execution,
+      result: {
+        pr_url: 'https://gitlab.example.com/team/lib/-/merge_requests/1',
+        pr_source_branch: 'feature/change',
+        published_prs: [
+          {
+            url: 'https://gitlab.example.com/team/lib/-/merge_requests/1',
+            branch: 'feature/change',
+            provider: 'gitlab',
+          },
+          {
+            url: 'https://gitlab.example.com/team/app/-/merge_requests/2',
+            branch: 'feature/change',
+            provider: 'gitlab',
+          },
+          { url: 'javascript:alert(1)', branch: 'unsafe' },
+          { url: 'http://', branch: 'invalid' },
+        ],
+      },
+    };
+    await element.updateComplete;
+    const list = element.shadowRoot!.querySelector(
+      '[data-testid="published-prs"]'
+    )!;
+    expect(
+      Array.from(list.querySelectorAll('a')).map((a) => a.getAttribute('href'))
+    ).to.deep.equal([
+      'https://gitlab.example.com/team/lib/-/merge_requests/1',
+      'https://gitlab.example.com/team/app/-/merge_requests/2',
+    ]);
+    expect(list.textContent).to.contain('team/lib');
+    expect(list.textContent).to.contain('team/app');
+    expect(list.textContent).to.contain('feature/change');
+  });
+
   it('links follow-ups from the original execution', async () => {
     const element = await load('exec-resume');
     (element as any).execution = {

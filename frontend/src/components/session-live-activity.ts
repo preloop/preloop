@@ -1,3 +1,4 @@
+import { randomUuid } from '../utils/random-uuid';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import { LitElement, html, css, nothing } from 'lit';
@@ -200,7 +201,7 @@ export class SessionLiveActivity extends LitElement {
           return;
         this.lastUpdate = Date.now();
         const event: FlowGatewayEvent = {
-          id: message.id || crypto.randomUUID(),
+          id: message.id || randomUuid(),
           execution_id: '',
           timestamp:
             payload.timestamp || message.timestamp || new Date().toISOString(),

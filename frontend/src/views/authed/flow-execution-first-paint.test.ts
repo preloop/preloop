@@ -203,6 +203,34 @@ describe('FlowExecutionView first paint', () => {
     releaseAll();
   });
 
+  it('renders tool activity when randomUUID is unavailable on HTTP', async () => {
+    const uuid = sinon.stub(crypto, 'randomUUID').value(undefined);
+    const previous = bodies.detail;
+    bodies.detail = () => ({
+      ...DETAIL,
+      mcp_usage_logs: [
+        {
+          timestamp: '2026-09-01T10:00:30Z',
+          tool_name: 'search_issues',
+          status: 'success',
+        },
+      ],
+    });
+    try {
+      const element = await mount();
+      await paint(element);
+      expect(
+        root(element).querySelector('view-header')?.getAttribute('headertext')
+      ).to.equal('Nightly triage');
+      expect(text(element)).to.contain('search_issues');
+      expect((element as any).isLoading).to.equal(false);
+      releaseAll();
+    } finally {
+      bodies.detail = previous;
+      uuid.restore();
+    }
+  });
+
   it('fills each section as its own response lands', async () => {
     const element = await mount();
     await paint(element);

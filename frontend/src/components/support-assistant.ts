@@ -1,3 +1,4 @@
+import { randomUuid } from '../utils/random-uuid';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -336,7 +337,7 @@ export class SupportAssistant extends LitElement {
     )
       this.pending = {
         text,
-        event_id: crypto.randomUUID(),
+        event_id: randomUuid(),
         human_request: human,
         ...(contact ? { contact } : {}),
       };

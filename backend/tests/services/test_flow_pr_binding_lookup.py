@@ -93,6 +93,31 @@ def _failed(error_message: str, **extra):
 
 
 class TestLookupBinding:
+    def test_multiple_markers_are_deduplicated_and_replayed(self, monkeypatch):
+        orchestrator = _bare_orchestrator()
+        primary = []
+        published = []
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_opened_pr",
+            lambda db, execution_id, url, source_branch=None: primary.append(url),
+        )
+        monkeypatch.setattr(
+            "preloop.services.flow_orchestrator.record_published_pr",
+            lambda db, execution_id, publication: published.append(publication),
+        )
+        second = (
+            'PRELOOP_PR_OPENED {"url":"https://gitlab.example.com/team/other/'
+            '-/merge_requests/2","branch":"feature/change","provider":"gitlab"}'
+        )
+        orchestrator._bind_opened_pr("\n".join((MARKER, second, second)))
+
+        assert primary == [PR_URL]
+        assert [item["url"] for item in published] == [
+            PR_URL,
+            "https://gitlab.example.com/team/other/-/merge_requests/2",
+        ]
+        assert orchestrator._opened_pr["url"] == PR_URL
+
     @pytest.mark.asyncio
     async def test_happy_path_marker_binds_without_a_lookup(self, monkeypatch):
         orchestrator = _bare_orchestrator()
@@ -488,6 +513,36 @@ def _agent(status, error_message=None, exit_code=1, output_summary=""):
 
 @pytest.mark.asyncio
 class TestEndToEnd:
+    async def test_two_markers_publish_distinct_results_and_keep_first_binding(
+        self, db_session, flow, event_data
+    ):
+        second_url = "https://gitlab.example.com/team/app/-/merge_requests/2"
+        second = (
+            f'PRELOOP_PR_OPENED {{"url":"{second_url}",'
+            '"branch":"feature/change","provider":"gitlab"}'
+        )
+        monitor, _ = _monitor(
+            [
+                _agent(
+                    "SUCCEEDED",
+                    exit_code=0,
+                    output_summary=f"{MARKER}\n{second}\n{second}\n",
+                )
+            ]
+        )
+        orchestrator = await _run(
+            db_session, flow, event_data, monitor, _github_client(prs=[])
+        )
+
+        result = orchestrator.execution_log.result
+        assert result["pr_url"] == PR_URL
+        assert [item["url"] for item in result["published_prs"]] == [
+            PR_URL,
+            second_url,
+        ]
+        assert result["published_prs"][1]["repository"] == "gitlab.example.com/team/app"
+        assert result["published_prs"][1]["branch"] == "feature/change"
+
     async def test_happy_path_marker_binds_the_pr(self, db_session, flow, event_data):
         monitor, calls = _monitor(
             [_agent("SUCCEEDED", exit_code=0, output_summary=f"pushing\n{MARKER}\n")]

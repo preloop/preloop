@@ -261,6 +261,45 @@ def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
 
+    def add_published_pr(
+        self, db: Session, *, execution_id: uuid.UUID, publication: dict[str, str]
+    ) -> None:
+        """Append a wrapper publication once without changing the primary binding."""
+        with db.no_autoflush:
+            execution = (
+                db.query(FlowExecution)
+                .filter(FlowExecution.id == execution_id)
+                .populate_existing()
+                .with_for_update()
+                .one_or_none()
+            )
+        if execution is None:
+            return
+        current = execution.result if isinstance(execution.result, dict) else {}
+        publications = current.get("published_prs")
+        items = list(publications) if isinstance(publications, list) else []
+        from preloop.services.flow_pr_binding import normalize_pr_url
+
+        incoming = normalize_pr_url(publication["url"]) or publication["url"]
+        primary_url = current.get("pr_url")
+        if (
+            not items
+            and isinstance(primary_url, str)
+            and (normalize_pr_url(primary_url) or primary_url) != incoming
+        ):
+            primary = {"url": primary_url}
+            if current.get("pr_source_branch"):
+                primary["branch"] = current["pr_source_branch"]
+            items.append(primary)
+        if any(
+            isinstance(item, dict)
+            and (normalize_pr_url(item.get("url")) or item.get("url")) == incoming
+            for item in items
+        ):
+            return
+        execution.result = {**current, "published_prs": [*items, publication]}
+        db.commit()
+
     def get_continuation_navigation(
         self, db: Session, *, root_id: uuid.UUID, account_id: uuid.UUID
     ) -> List[FlowExecutionNavigationRow]:

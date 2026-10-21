@@ -1,3 +1,4 @@
+import { randomUuid } from '../../utils/random-uuid';
 import { flowRuntimeLabel } from '../../utils/flow-runtime';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd } from '../../utils/money';
@@ -508,6 +509,22 @@ export class FlowExecutionView extends LitElement {
       }
       .continuation-navigation a {
         color: var(--sl-color-primary-600);
+      }
+      .published-prs {
+        margin: var(--sl-spacing-medium) 0;
+      }
+      .published-prs ul {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small) var(--sl-spacing-large);
+        list-style: none;
+        padding: 0;
+        margin: var(--sl-spacing-x-small) 0 0;
+      }
+      .published-prs li {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
       }
       /* One of the page's two ambient animations: the dot that says this run
          is still going. The chip beside it stays a soft tint. */
@@ -2572,7 +2589,7 @@ export class FlowExecutionView extends LitElement {
         toolName,
         payload.status || 'unknown',
         detail || '',
-        crypto.randomUUID(), // Ensure keys are unique even if the same tool is called at the same second
+        randomUuid(), // Ensure keys are unique even if the same tool is called at the same second
       ].join(':'),
       timestamp,
       toolName,
@@ -3891,6 +3908,62 @@ ${execution.resolved_input_prompt}</pre>
     </section>`;
   }
 
+  private renderPublishedPrs(execution: FlowExecution) {
+    const raw = execution.result?.published_prs;
+    if (!Array.isArray(raw) || raw.length === 0) return nothing;
+    const seen = new Set<string>();
+    const publications = raw.filter(
+      (
+        item
+      ): item is {
+        url: string;
+        branch?: string;
+        provider?: string;
+        repository?: string;
+      } => {
+        if (!item || typeof item.url !== 'string') return false;
+        try {
+          if (!['http:', 'https:'].includes(new URL(item.url).protocol))
+            return false;
+        } catch {
+          return false;
+        }
+        const key = item.url.replace(/\/$/, '');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }
+    );
+    if (!publications.length) return nothing;
+    return html`<section
+      class="published-prs"
+      data-testid="published-prs"
+      aria-label="Published pull requests"
+    >
+      <strong>Published pull requests</strong>
+      <ul>
+        ${publications.map((item) => {
+          const url = new URL(item.url);
+          const repository =
+            item.repository ||
+            url.pathname
+              .replace(
+                /\/(?:-\/)?(?:merge_requests|pull|pull-requests)\/\d+.*$/,
+                ''
+              )
+              .replace(/^\//, '');
+          return html`<li>
+            <a href=${item.url} target="_blank" rel="noopener noreferrer"
+              >${repository || url.host} ·
+              ${item.provider === 'gitlab' ? 'MR' : 'PR'}</a
+            >
+            ${item.branch ? html`<code>${item.branch}</code>` : nothing}
+          </li>`;
+        })}
+      </ul>
+    </section>`;
+  }
+
   /**
    * The run's actions, from the one registry the executions list reads
    * (`src/actions/flow-execution-actions.ts`). The page used to spell out its
@@ -4105,7 +4178,7 @@ ${execution.resolved_input_prompt}</pre>
               .execution=${execution}
             ></preloop-execution-continuation>
           </div>
-          ${this.renderHostSessions()}
+          ${this.renderPublishedPrs(execution)} ${this.renderHostSessions()}
           <!-- What this run delegated, and what that cost. Renders nothing
                for the overwhelming majority of runs, which delegate
                nothing. -->

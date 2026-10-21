@@ -1,3 +1,4 @@
+import { randomUuid } from '../utils/random-uuid';
 import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -1073,7 +1074,7 @@ export class PreloopSessionObserver extends LitElement {
 
     if (this.activeSessionId === sessionId && this.loadedEvents[sessionId]) {
       const event: FlowGatewayEvent = {
-        id: message.id || crypto.randomUUID(),
+        id: message.id || randomUuid(),
         execution_id: message.execution_id || '',
         timestamp: payload.timestamp || new Date().toISOString(),
         type: message.type,

@@ -442,7 +442,41 @@ def merge_result_preserving_pr_binding(
     for key in ("native_resume", "continuation"):
         if key in existing:
             merged[key] = existing[key]
+    if "published_prs" in existing:
+        merged["published_prs"] = existing["published_prs"]
     return merged
+
+
+def record_published_pr(
+    db: Session,
+    execution_id: Any,
+    publication: Dict[str, str],
+    *,
+    raise_errors: bool = False,
+) -> None:
+    """Save a wrapper publication as an inspectable output without rebinding follow-up."""
+    try:
+        if execution_id and publication.get("url"):
+            parsed_url = urlparse(publication["url"])
+            repository_path = re.sub(
+                r"/(?:-/)?(?:pull|pull-requests|merge_requests)/\d+.*$",
+                "",
+                parsed_url.path,
+            )
+            output = {
+                **publication,
+                "repository": f"{parsed_url.netloc}{repository_path}",
+            }
+            crud_flow_execution.add_published_pr(
+                db, execution_id=execution_id, publication=output
+            )
+    except Exception:
+        logger.warning(
+            "Failed to record published PR on execution %s", execution_id, exc_info=True
+        )
+        db.rollback()
+        if raise_errors:
+            raise
 
 
 def record_cli_session(
@@ -719,6 +753,7 @@ def record_runner_handoff_markers(
                     source_branch=opened.get("branch"),
                     raise_errors=True,
                 )
+            record_published_pr(db, execution.id, opened, raise_errors=True)
     artifact = parse_native_artifact_marker(line)
     if artifact:
         expected_thread = (execution.trigger_event_details or {}).get(

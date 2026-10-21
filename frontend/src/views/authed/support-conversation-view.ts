@@ -1,3 +1,4 @@
+import { randomUuid } from '../../utils/random-uuid';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -35,7 +36,7 @@ export class SupportConversationView extends LitElement {
         ...(action
           ? {
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action, event_id: crypto.randomUUID() }),
+              body: JSON.stringify({ action, event_id: randomUuid() }),
             }
           : {}),
       }

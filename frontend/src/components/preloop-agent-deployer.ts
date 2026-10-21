@@ -1,3 +1,4 @@
+import { randomUuid } from '../utils/random-uuid';
 import { getBrandConfig } from '../brand-config';
 import type { Edition } from '../api';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -346,7 +347,7 @@ export class PreloopAgentDeployer extends LitElement {
     };
     const signature = JSON.stringify(request);
     if (signature !== this.deploymentRequestSignature) {
-      this.deploymentRequestId = crypto.randomUUID();
+      this.deploymentRequestId = randomUuid();
       this.deploymentRequestSignature = signature;
     }
     const controller = new AbortController();
