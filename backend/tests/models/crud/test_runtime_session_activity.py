@@ -20,8 +20,11 @@ from preloop.models.models.managed_agent import ManagedAgent
 from preloop.models.models.runtime_session import RuntimeSession
 
 
+@pytest.mark.parametrize("newest_first", [False, True])
 def test_bounded_gateway_payload_pages_preserve_equal_timestamp_order(
-    db_session: Session, create_account: Callable[..., models.Account]
+    db_session: Session,
+    create_account: Callable[..., models.Account],
+    newest_first: bool,
 ) -> None:
     """A byte-limited read never transfers a long captured history at once."""
     account = create_account()
@@ -58,6 +61,7 @@ def test_bounded_gateway_payload_pages_preserve_equal_timestamp_order(
                 end_date=at,
                 after=cursor,
                 max_payload_bytes=1_000,
+                newest_first=newest_first,
             )
         )
         assert not skipped
@@ -69,6 +73,8 @@ def test_bounded_gateway_payload_pages_preserve_equal_timestamp_order(
         cursor = next_cursor
     assert len(seen) == 45
     assert set(seen) == {activity.id for activity in activities}
+    assert seen == sorted(seen, reverse=newest_first)
+    assert complete
 
 
 def test_bounded_gateway_payload_reports_oversized_capture(
