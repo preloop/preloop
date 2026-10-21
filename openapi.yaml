@@ -44860,8 +44860,8 @@ components:
         tool_call_count:
           type: integer
           title: Tool Call Count
-          description: Tool calls recorded for this session, or the count its usage
-            hook reported when no tool call was recorded server side
+          description: Largest observed tool-call count from session activity, usage-hook
+            reports, or parsed events in linked flow executions
           default: 0
         pending_approval_count:
           type: integer

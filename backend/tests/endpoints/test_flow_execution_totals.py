@@ -174,7 +174,7 @@ async def test_projection_does_not_write_the_rollup_columns(db_session, test_use
 async def test_codex_command_is_not_counted_twice_from_persisted_event_copy(
     db_session, test_user
 ):
-    """The JSONB parsed event and stream log row describe one command."""
+    """Matching stream copies dedupe while independent rows still count."""
     flow = _create_flow(db_session, test_user, name="Native command flow")
     execution = crud_flow_execution.create(
         db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
@@ -205,6 +205,20 @@ async def test_codex_command_is_not_counted_twice_from_persisted_event_copy(
                 metadata_=parsed.mcp_usage_logs[0],
             )
         )
+    db_session.add_all(
+        [
+            models.FlowExecutionLog(
+                execution_id=execution.id,
+                log_type="tool_call",
+                metadata_={"call_id": "independent-call"},
+            ),
+            models.FlowExecutionLog(
+                execution_id=execution.id,
+                log_type="tool_call",
+                metadata_={"tool_name": "anonymous-shell"},
+            ),
+        ]
+    )
     db_session.flush()
 
     listed = await maybe_await(
@@ -220,9 +234,9 @@ async def test_codex_command_is_not_counted_twice_from_persisted_event_copy(
     metrics = ExecutionMetricsService(db_session).get_execution_metrics(
         str(execution.id)
     )
-    assert listed[0].tool_calls_count == 1
-    assert detail.tool_calls_count == 1
-    assert metrics["tool_calls"] == 1
+    assert listed[0].tool_calls_count == 3
+    assert detail.tool_calls_count == 3
+    assert metrics["tool_calls"] == 3
 
 
 @pytest.mark.asyncio

@@ -444,8 +444,8 @@ class RuntimeSessionSummary(BaseModel):
     tool_call_count: int = Field(
         0,
         description=(
-            "Tool calls recorded for this session, or the count its usage hook "
-            "reported when no tool call was recorded server side"
+            "Largest observed tool-call count from session activity, usage-hook "
+            "reports, or parsed events in linked flow executions"
         ),
     )
     pending_approval_count: int = Field(
