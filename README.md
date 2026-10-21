@@ -15,9 +15,13 @@ Preloop is one self-hostable service that sits between your AI agents and everyt
 It has two halves, and the same policies, budgets and session timeline apply to both:
 
 - **Control plane.** An MCP firewall that allows, denies or holds any tool call for human approval; an AI model gateway with budgets and attribution; policy-as-code in YAML and CEL; one runtime timeline per session.
-- **Software factory.** Flows run agents on your private runners or hosted compute when GitHub, GitLab, Bitbucket Cloud, Jira, a webhook or a CI job fires. Presets review pull requests, implement issues, triage tickets, scan for vulnerabilities and collect evidence packs. A human can steer a running agent from the console, phone or watch, and the work lands as pull requests that are re-checked against the latest commit after review or CI feedback.
+- **Software factory.** Flows run agents on your private runners or hosted compute when GitHub, GitLab, Bitbucket Cloud, Jira, a webhook or a CI job fires. Presets review pull requests, implement issues, triage tickets, scan for vulnerabilities and collect evidence packs. A human can steer a running agent from the console, phone or watch, and the work lands as pull requests you can review.
 
-**Who it is for.** Platform and security teams that need agents governed before they reach production systems. Engineering teams running coding agents that want to see the cost and keep an audit trail. Teams that want tickets and events turned into bounded agent work they can review.
+**Who it is for:**
+
+- Platform and security teams that need agents governed before they reach production systems.
+- Engineering teams running coding agents that want to see the cost and keep an audit trail.
+- Teams that want tickets and events turned into bounded agent work they can review.
 
 Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
 
@@ -80,7 +84,7 @@ AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execu
 
 ## The software factory
 
-One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Cloud or Jira. A flow starts an agent on your private runner. Every tool call it makes passes the same firewall and approvals as your own agents, and every model call is charged to the flow's budget. The agent opens a pull request; the [Pull Request Reviewer](docs/guide/flows/pull-request-review.md) reviews it; review or CI feedback resumes [the implementation](docs/guide/flows/durable-implementation-feedback.md) on the same branch with current-head gates. You can steer the run with an operator note at any point, and the whole run is one timeline.
+One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Cloud or Jira. A flow starts an agent on your private runner. Every tool call it makes passes the same firewall and approvals as your own agents, and every model call is charged to the flow's budget. The agent opens a pull request; the [Pull Request Reviewer](docs/guide/flows/pull-request-review.md) reviews it; review or CI feedback resumes [the implementation](docs/guide/flows/durable-implementation-feedback.md) on the same branch, and the result is a pull request you can review. You can steer the run with an operator note at any point, and the whole run is one timeline.
 
 [20 presets](backend/presets/README.md) ship in this repository, including:
 
@@ -163,20 +167,7 @@ Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/R
 
 Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
 
-## Open-source alternative to AWS Bedrock AgentCore
-
-Same core jobs (runtime, gateway, identity, observability, policy), vendor-neutral and self-hostable. Full comparison: [preloop.ai/vs/aws-agentcore](https://preloop.ai/vs/aws-agentcore).
-
-| | Preloop | AWS Bedrock AgentCore |
-|---|:---:|:---:|
-| Open source (Apache 2.0) | Yes | No |
-| Self-hostable (VPC / on-prem) | Yes | No |
-| Policy-as-code (YAML + CEL) | Yes | Limited |
-| MCP-native tool governance | Yes | Partial |
-| Human approvals (mobile, Slack, webhook) | Yes | Limited |
-| Onboard existing local agents (`preloop agents discover`) | Yes | No |
-
-Also compare: [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloop.ai/vs/portkey), [Helicone](https://preloop.ai/vs/helicone), [MintMCP](https://preloop.ai/vs/mintmcp), [Lunar](https://preloop.ai/vs/lunar), [Runlayer](https://preloop.ai/vs/runlayer), [Zenity](https://preloop.ai/vs/zenity).
+Compare: [AWS Bedrock AgentCore](https://preloop.ai/vs/aws-agentcore), [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloop.ai/vs/portkey), [Helicone](https://preloop.ai/vs/helicone), [MintMCP](https://preloop.ai/vs/mintmcp), [Lunar](https://preloop.ai/vs/lunar), [Runlayer](https://preloop.ai/vs/runlayer), [Zenity](https://preloop.ai/vs/zenity).
 
 ## Editions
 
