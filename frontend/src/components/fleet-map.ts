@@ -103,6 +103,7 @@ import {
   avatarSource,
   personInitials,
   nodeUsage,
+  workActionWords,
   withWorkRelations,
   isWorkRelation,
   workRelationLabel,
@@ -801,20 +802,30 @@ export class FleetMap extends LitElement {
       <h4>In this window</h4>
       <dl class="usage-metrics">
         ${metric('Requests', totals.request_count)}
-        ${metric('Tokens in', totals.input_tokens)}
-        ${metric('Tokens out', totals.output_tokens)}
-        <dt>Cost est.</dt>
-        <dd>${costText}</dd>
+        ${
+          // No requests: there are no tokens or cost to be unknown about.
+          totals.request_count === 0
+            ? nothing
+            : html`${metric('Tokens in', totals.input_tokens)}
+                ${metric('Tokens out', totals.output_tokens)}
+                <dt>Cost est.</dt>
+                <dd>${costText}</dd>`
+        }
         ${metric('Tool calls', totals.tool_calls)}
-        ${metric('Approvals requested', totals.approvals_requested)}
-        ${metric('Approvals approved', totals.approvals_approved)}
-        ${metric('Approvals declined', totals.approvals_declined)}
-        ${metric('PRs opened', totals.prs_opened)}
-        ${metric('PRs reviewed', totals.prs_reviewed)}
-        ${metric('PRs merged', totals.prs_merged)}
-        ${metric('PRs touched', totals.prs_touched)}
-        ${metric('Issues touched', totals.issues_touched)}
-        ${metric('Review comments', totals.review_comments)}
+        ${
+          // An issue or PR is acted on; it does not open PRs or ask approvals.
+          node.type === 'work'
+            ? nothing
+            : html`${metric('Approvals requested', totals.approvals_requested)}
+              ${metric('Approvals approved', totals.approvals_approved)}
+              ${metric('Approvals declined', totals.approvals_declined)}
+              ${metric('PRs opened', totals.prs_opened)}
+              ${metric('PRs reviewed', totals.prs_reviewed)}
+              ${metric('PRs merged', totals.prs_merged)}
+              ${metric('PRs touched', totals.prs_touched)}
+              ${metric('Issues touched', totals.issues_touched)}
+              ${metric('Review comments', totals.review_comments)}`
+        }
       </dl>
       ${totals.partial || this.usage?.partial || this.usage?.truncated ? html`<p class="meta">Partial totals. Some values are unknown or the source is capped.</p>` : nothing}
     </section>`;
@@ -878,12 +889,11 @@ export class FleetMap extends LitElement {
                 const other = byId.get(id)!;
                 return html`<li>
                   ${link(other)}<span class="meta"
-                    >${FLEET_MAP_TYPE_LABEL[other.type]}${touch.count === undefined ? '' : ` · ${compactCount(touch.count)} actions`}${
+                    >${FLEET_MAP_TYPE_LABEL[other.type]}${touch.count === undefined ? '' : ` · ${compactCount(touch.count)} ${touch.count === 1 ? 'action' : 'actions'}`}${
                       touch.actions.size
-                        ? ` · ${[...touch.actions]
+                        ? ` · ${workActionWords(touch.actions)
                             .slice(0, 3)
-                            .join(', ')
-                            .replace(/labeled/g, 'labelled')}`
+                            .join(', ')}`
                         : ''
                     }</span
                   >

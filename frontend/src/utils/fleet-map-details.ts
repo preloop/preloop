@@ -140,6 +140,19 @@ export function withWorkRelations(
 }
 
 /** Metadata only, bounded so an active line cannot become a paragraph. */
+/** Server action keys as words: issue_updated -> updated, labeled -> labelled. */
+export function workActionWords(actions: Iterable<string>): string[] {
+  const words: string[] = [];
+  for (const action of actions) {
+    const word = action
+      .replace(/^(issue|pull_request)_/, '')
+      .replace(/_/g, ' ')
+      .replace(/^labeled$/, 'labelled');
+    if (word && !words.includes(word)) words.push(word);
+  }
+  return words;
+}
+
 export function workRelationLabel(
   edge: FleetMapEdge,
   target?: FleetMapNode

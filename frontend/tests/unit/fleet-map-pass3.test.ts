@@ -698,10 +698,12 @@ describe('pass 3 usage and hosts', () => {
       expect(metrics.get('Requests')).toBe('14');
       expect(metrics.get('Tokens out')).toBe('Unknown');
       expect(metrics.get('Cost est.')).toBe('$0.0042');
-      expect(metrics.get('PRs merged')).toBe('0');
-      expect(metrics.get('Review comments')).toBe('4');
-      expect(metrics.get('Issues touched')).toBe('3');
-      expect(metrics.get('Approvals declined')).toBe('1');
+      if (!id.startsWith('work:')) {
+        expect(metrics.get('PRs merged')).toBe('0');
+        expect(metrics.get('Review comments')).toBe('4');
+        expect(metrics.get('Issues touched')).toBe('3');
+        expect(metrics.get('Approvals declined')).toBe('1');
+      }
       expect(
         getComputedStyle(block.querySelector('dd')!).fontVariantNumeric
       ).toBe('tabular-nums');

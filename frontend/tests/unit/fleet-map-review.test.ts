@@ -3,6 +3,7 @@ import { page } from 'vitest/browser';
 import '@shoelace-style/shoelace/dist/themes/light.css';
 import '../../src/components/fleet-map';
 import { sampleFleetMap } from '../../src/test-helpers/fleet-map-graph';
+import { workActionWords } from '../../src/utils/fleet-map-details';
 
 const mounted: HTMLElement[] = [];
 async function mount(
@@ -100,5 +101,103 @@ describe('Fleet Map review fixes', () => {
     const el = await mount({ defaultArrangement: 'spatial' }, '1168px', '800px');
     expect(root(el).querySelector<HTMLElement>('.legend')!.hidden).toBe(false);
     expect(root(el).querySelector('.legend-toggle')).toBeNull();
+  });
+
+  it('words server action keys and counts one action in the singular', () => {
+    expect(
+      workActionWords(['issue_updated', 'commented', 'labeled', 'commented'])
+    ).toEqual(['updated', 'commented', 'labelled']);
+    expect(workActionWords(['pull_request_updated', 'issue_opened'])).toEqual([
+      'updated',
+      'opened',
+    ]);
+  });
+
+  it('shows an issue only the window numbers that apply to it', async () => {
+    await page.viewport(1440, 900);
+    const at = new Date().toISOString();
+    const issue = {
+      id: 'work:issue:example/widgets#8',
+      key: 'example/widgets#8',
+      kind: 'issue',
+      reference: '#8',
+      title: 'Document export limits',
+      repo: 'example/widgets',
+      url: 'https://example.com/example/widgets/issues/8',
+      state: 'open',
+      last_action: 'commented',
+      last_at: at,
+      review_state: null,
+      labels: [],
+      related_issue: null,
+      node_ids: ['agent:codex'],
+    };
+    const codeActivity = {
+      active_within_minutes: 60,
+      since: at,
+      truncated: false,
+      counts: {},
+      events: [],
+      flows: [],
+      work: [issue],
+      relations: [
+        {
+          id: `touched:agent:codex:${issue.id}`,
+          kind: 'touched',
+          source: 'agent:codex',
+          target: issue.id,
+          actions: ['issue_updated'],
+          count: 1,
+          at,
+          provenance: 'tool_call',
+        },
+      ],
+    };
+    const usage = {
+      active_within_minutes: 60,
+      since: at,
+      until: at,
+      partial: false,
+      truncated: false,
+      models: {},
+      providers: {},
+      work: {
+        [issue.id]: {
+          request_count: 0,
+          input_tokens: null,
+          output_tokens: null,
+          cache_read_tokens: null,
+          cache_write_tokens: null,
+          estimated_cost: null,
+          cost_is_estimate: true,
+          currency: null,
+          partial: false,
+          tool_calls: 2,
+          approvals_requested: 0,
+          approvals_approved: 0,
+          approvals_declined: 0,
+          prs_opened: 0,
+          prs_reviewed: 0,
+          prs_merged: 0,
+          review_comments: 0,
+          issues_touched: 0,
+          prs_touched: 0,
+        },
+      },
+    };
+    const el = await mount({ codeActivity, usage });
+    const chip = root(el).querySelector(`[data-node="${issue.id}"]`)!;
+    chip.dispatchEvent(new MouseEvent('click'));
+    await el.updateComplete;
+    const block = root(el).querySelector('[data-testid="fleet-map-usage"]')!;
+    const labels = [...block.querySelectorAll('dt')].map((dt) =>
+      dt.textContent?.trim()
+    );
+    expect(labels).toEqual(['Requests', 'Tool calls']);
+    const who = root(el)
+      .querySelector('[data-testid="fleet-map-work-details"]')!
+      .textContent!.replace(/\s+/g, ' ');
+    expect(who).toContain('1 action · updated');
+    expect(who).not.toContain('issue_updated');
   });
 });
