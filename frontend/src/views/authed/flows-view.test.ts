@@ -1673,6 +1673,14 @@ describe('FlowsView', () => {
         () => !(element as any).isLoading,
         'Flows view did not finish loading'
       );
+      // The list deliberately renders before its execution sample arrives.
+      // Date-window assertions need that separate read to finish as well.
+      if (options.executions.length && (options.flowsStatus ?? 200) === 200)
+        await waitUntil(
+          () =>
+            (element as any).executions.length === options.executions.length,
+          'Flow execution fixtures did not finish loading'
+        );
       await element.updateComplete;
       return element;
     }

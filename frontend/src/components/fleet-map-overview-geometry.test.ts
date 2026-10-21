@@ -205,7 +205,7 @@ describe('fleet-map on the Overview: a dense fleet fits its canvas (B-08)', () =
     const toggle = async (type: string) => {
       const box = el.shadowRoot!.querySelector<
         HTMLElement & { checked: boolean }
-      >(`.filter-options sl-checkbox[data-type="${type}"]`);
+      >(`sl-menu-item[data-type="${type}"]`);
       expect(box, type).to.exist;
       box!.click();
       await settle(el);

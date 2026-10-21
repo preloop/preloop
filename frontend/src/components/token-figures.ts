@@ -54,39 +54,12 @@ export function formatCacheHitRate(
   return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
-/**
- * True when the reported input cannot include the cache: more tokens were
- * read from and written to the cache than the input says it held.
- *
- * Anthropic-shaped usage reports `input_tokens` without the cached part,
- * while OpenAI-shaped usage includes it, and the server's uncached
- * remainder (`input - read - write`, clamped at zero) assumes the latter.
- * Under that assumption an aggregate of the former reads "12.5B in, 16.9B
- * hit, 0 miss", which is impossible. When the numbers say so, the reported
- * input is the uncached part.
- */
-export function inputExcludesCache(
-  usage: GatewayTokenUsage | null | undefined
-): boolean {
-  if (!usage) return false;
-  const read = Number(usage.cache_read_tokens || 0);
-  const write = Number(usage.cache_write_tokens || 0);
-  return read + write > inputTokensOf(usage);
-}
-
 /** The cache read/miss counts an aggregate reports, or null when it reports none. */
 export function cacheSplitOf(
   usage: GatewayTokenUsage | null | undefined
 ): { hit: number; miss: number; ratio: number | null } | null {
   if (!usage) return null;
   const hit = Number(usage.cache_read_tokens || 0);
-  if (inputExcludesCache(usage)) {
-    const miss = Math.max(
-      Number(usage.uncached_input_tokens || 0),
-      inputTokensOf(usage)
-    );
-    return { hit, miss, ratio: hit + miss > 0 ? hit / (hit + miss) : null };
-  }
   const miss = Number(usage.uncached_input_tokens || 0);
   const ratio =
     usage.cache_hit_ratio === null || usage.cache_hit_ratio === undefined
@@ -96,23 +69,6 @@ export function cacheSplitOf(
       : Number(usage.cache_hit_ratio);
   if (ratio === null) return null;
   return { hit, miss, ratio };
-}
-
-/**
- * The input to state: the reported input, or, when it excludes the cache,
- * the reported input plus what was read from and written to the cache, so
- * "in" is never smaller than "hit".
- */
-export function displayInputTokensOf(
-  usage: GatewayTokenUsage | null | undefined
-): number {
-  const input = inputTokensOf(usage);
-  if (!usage || !inputExcludesCache(usage)) return input;
-  return (
-    input +
-    Number(usage.cache_read_tokens || 0) +
-    Number(usage.cache_write_tokens || 0)
-  );
 }
 
 /**
@@ -147,18 +103,6 @@ export function totalTokensOf(
   const total = Number(usage?.total_tokens || 0);
   if (total > 0) return total;
   return inputTokensOf(usage) + outputTokensOf(usage);
-}
-
-/**
- * The total to state beside `displayInputTokensOf`: when the reported input
- * excludes the cache, the reported total does too, so it is rebuilt from the
- * displayed input and the output and the figures on one card add up.
- */
-export function displayTotalTokensOf(
-  usage: GatewayTokenUsage | null | undefined
-): number {
-  if (!usage || !inputExcludesCache(usage)) return totalTokensOf(usage);
-  return displayInputTokensOf(usage) + outputTokensOf(usage);
 }
 
 /**
@@ -219,9 +163,9 @@ export function tokenFiguresTitle(
   usage: GatewayTokenUsage | null | undefined
 ): string {
   if (!usage) return 'No token usage recorded';
-  const input = displayInputTokensOf(usage);
+  const input = inputTokensOf(usage);
   const output = outputTokensOf(usage);
-  const total = displayTotalTokensOf(usage);
+  const total = totalTokensOf(usage);
   const parts = [
     `${formatExactTokenCount(input)} input tokens`,
     `${formatExactTokenCount(output)} output tokens`,
@@ -352,7 +296,7 @@ export class TokenFigures extends LitElement {
       return html`<sl-tooltip content=${description} hoist>
         <span class="figures" title=${description}>
           <span class="direction"
-            >${formatTokenCount(displayTotalTokensOf(usage))}</span
+            >${formatTokenCount(totalTokensOf(usage))}</span
           >
         </span>
       </sl-tooltip>`;
@@ -360,7 +304,7 @@ export class TokenFigures extends LitElement {
     return html`<sl-tooltip content=${description} hoist>
       <span class="figures" title=${description}>
         <span class="direction"
-          >${formatTokenCount(displayInputTokensOf(usage))}
+          >${formatTokenCount(inputTokensOf(usage))}
           <span class="unit">in</span></span
         >
         <span class="unit">·</span>

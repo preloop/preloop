@@ -1,3 +1,8 @@
+import {
+  modelFailureShareText,
+  modelHealthLabel,
+  modelHealthVariant,
+} from '../../../utils/model-health';
 import { formatCount, formatCountExact } from '../../../utils/count-format';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
@@ -1351,6 +1356,18 @@ export class AIModelDetailView extends LitElement {
   }
 
   /**
+   * The range control's own short label ("7d", "30d"), for "failed in 7d";
+   * empty for All time, where "in" has no window to name.
+   */
+  private rangeShortLabel(): string {
+    if (this.selectedRange === 'all') return '';
+    return (
+      DATE_RANGE_OPTIONS.find((option) => option.value === this.selectedRange)
+        ?.label || ''
+    );
+  }
+
+  /**
    * Which days the numbers cover, restated under the control that chose them.
    * The server's own window wins over the client's preset.
    */
@@ -2316,10 +2333,21 @@ export class AIModelDetailView extends LitElement {
       return null;
     }
     // One badge for both facts: the page reads Healthy only when every open
-    // claim about this model has been answered.
+    // claim about this model has been answered, and, as on the Models list,
+    // not while the window's failures stay at or above the threshold (#1956).
     const flagged =
       state.status === 'failing' || unpriced.status === 'unpriced';
-    const markerLabels = [
+    const label = modelHealthLabel({
+      needsAttention: flagged,
+      totalRequests: this.summary?.total_requests,
+      failedRequests: this.summary?.failed_requests,
+    });
+    const title = [
+      modelFailureShareText(
+        this.summary?.failed_requests,
+        this.summary?.total_requests,
+        this.rangeShortLabel()
+      ),
       state.status === 'marked' ? state.markerLabel : '',
       unpriced.status === 'marked' ? unpriced.markerLabel : '',
     ]
@@ -2330,10 +2358,10 @@ export class AIModelDetailView extends LitElement {
         <sl-badge
           class="status-chip"
           pill
-          variant=${flagged ? 'warning' : 'success'}
-          title=${flagged ? '' : markerLabels}
+          variant=${modelHealthVariant(label)}
+          title=${flagged ? '' : title}
         >
-          ${flagged ? 'Attention' : 'Healthy'}
+          ${label}
         </sl-badge>
         ${
           state.failuresSinceMarker !== null

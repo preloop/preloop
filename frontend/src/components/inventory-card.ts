@@ -403,6 +403,7 @@ export class InventoryCard extends LitElement {
   @state() private map: FleetMapGraph | null = null;
   @state() private mapError = '';
   @state() private mapWindow: FleetMapWindow = loadFleetMapWindow();
+  @state() private mapIncludeIdle = false;
   private mapController: AbortController | null = null;
   @state() private tab: InventoryTab = 'agents';
   @state() private sorts: Record<InventoryTab, string> = {
@@ -446,11 +447,15 @@ export class InventoryCard extends LitElement {
         :host {
           display: block;
           width: 100%;
+          min-width: 0;
+          max-width: 100%;
         }
 
         .content-card,
         .content-card::part(base) {
           width: 100%;
+          min-width: 0;
+          box-sizing: border-box;
         }
 
         .content-card::part(body) {
@@ -496,8 +501,11 @@ export class InventoryCard extends LitElement {
           color: var(--console-body-color);
           background: var(--console-hover-tint);
         }
-        .inventory-map {
-          --fleet-map-height: clamp(420px, calc(100dvh - 360px), 720px);
+        .inventory-map:not([fullscreen]) {
+          --fleet-map-height: clamp(360px, calc(100dvh - 240px), 720px);
+          padding: 0 12px 12px;
+          width: 100%;
+          min-width: 0;
         }
 
         .header-controls {
@@ -1126,7 +1134,8 @@ export class InventoryCard extends LitElement {
     try {
       const map = await getFleetMap(
         controller.signal,
-        windowMinutes(this.mapWindow)
+        windowMinutes(this.mapWindow),
+        this.mapIncludeIdle
       );
       if (!controller.signal.aborted) this.map = map;
     } catch (error) {
@@ -1174,6 +1183,7 @@ export class InventoryCard extends LitElement {
       wheel-mode="page"
       .graph=${this.map}
       .activityWindow=${this.mapWindow}
+      .includeIdle=${this.mapIncludeIdle}
       live
       instance-admin
       default-arrangement="spatial"
@@ -1186,10 +1196,20 @@ export class InventoryCard extends LitElement {
         void this.loadMap();
       }}
       @fleet-map-stale=${() => void this.loadMap(true)}
+      @fleet-map-idle-change=${(
+        event: CustomEvent<{ includeIdle: boolean }>
+      ) => {
+        this.mapIncludeIdle = event.detail.includeIdle;
+        void this.loadMap();
+      }}
     ></fleet-map>`;
   }
 
   private renderHeader() {
+    if (this.instanceAdmin && this.inventoryView === 'map')
+      return html`<div slot="header" class="card-head">
+        <span class="title">Inventory</span>${this.renderViewChoice()}
+      </div>`;
     const options = SORT_OPTIONS[this.activeTab];
     const sortHeld =
       this.activeTab === 'flows'

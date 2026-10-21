@@ -646,6 +646,37 @@ the allowance when supported. Before adding a system alias, operators can run
 The lookup exposes no account identifiers and does not change model routing.
 
 
+### Cache-inclusive input tokens
+
+`ApiUsage.prompt_tokens` is cache inclusive for every provider: it counts the
+input read from and written to the prompt cache as well as the uncached part,
+so `uncached = prompt - cache_read - cache_creation` holds per row and in every
+aggregate. Anthropic reports `input_tokens` without the cache, so the gateway
+adds `cache_read_input_tokens` and `cache_creation_input_tokens` back when it
+records a raw Anthropic payload (`usage_token_details.anthropic_cache_input_tokens`);
+litellm's OpenAI-shaped usage is already inclusive and is left alone. The raw
+provider usage stays in `meta_data.usage_details`, and cost is priced from it,
+so cached input keeps the cache rate. The remaining clamp at zero only absorbs
+provider rounding.
+
+Existing rows were backfilled rather than guarded at read time
+(`20261106_anthropic_cache_input`): aggregates sum `prompt_tokens` from
+covering indexes that never read `meta_data`, so a read-time guard could only
+be a heuristic over sums, which a mix of Anthropic and other traffic defeats.
+The backfill touches only rows whose raw usage is the Anthropic shape and whose
+`prompt_tokens` still equals the raw `input_tokens`, and records what it added
+in `meta_data.input_cache_backfill` for an exact downgrade. Because the
+migration runs before the new pods while the previous release keeps serving,
+each API replica runs the same conversion once more over the last day of rows
+15 minutes after startup (`services/anthropic_cache_input_repair.py`); an
+advisory lock lets one pass run at a time and the update re-checks each row,
+so concurrent replicas never convert a row twice.
+`estimated_cost` is not repriced: catalog-priced rows were already priced from
+the raw usage, while rows priced by a configured price or the DeepSeek native
+tariff keep the old undercount of their uncached input. Activity rollup
+buckets and budget windows written before the change keep their original
+token counts.
+
 ### Console edit permissions
 
 Edit controls use the cached user profile with three distinct states: a null
@@ -869,7 +900,9 @@ with attached issue/PR rows in the work lane. The first drag stores the complete
 visible arrangement per user and scope. Membership updates preserve those positions
 and the camera, place arrivals beside their relationships and retain inactive slots
 for seven days. A growing machine moves only the following boxes in its island.
-Reset layout offers a six-second Undo. Unowned layouts repack on every membership
+Arrange clears manual positions and repacks the current nodes; in Columns it fits
+the view. Reset layout additionally clears folded groups and expanded columns.
+Both spatial actions offer a six-second Undo, with reduced-motion support. Unowned layouts repack on every membership
 change (core by provider, then people islands, then flows and work in adjacent
 shelves) and the camera refits when a node joins, unless the user has recently
 navigated. Columns gives flows their own column beside Work and stretches the row
@@ -879,11 +912,36 @@ most two per node. Lit lines carry the specific label of what travelled them
 (model and tokens, native tool and status, approval, or the work action), never
 a kind; MCP calls light no device line. Gateway calls carrying `flow_id` add an
 observed flow-to-model line. Code activity seeds the window's merged PRs from
-forge merge events, and every work item when the server sends the optional
-`FleetCodeActivity.work` list (not yet emitted by this backend), and refits an
-unowned map when it first arrives. When the server provides `GET /fleet/usage`
-(separate backend change), a selected model or provider shows its window
-totals; without it the panel omits them. The Show choice is stored per user and scope.
+forge merge events, and up to 200 work items from the optional
+`FleetCodeActivity.work` list. Optional `relations` join canonical work identities
+and draw resolves, mentions, triggered, produced and touched edges, deduplicated
+by kind and endpoints. Resolves is solid, mentions dashed; selected or live lines
+carry at most six bounded labels. Explicit relations keep PRs and issues separate;
+older responses retain legacy containment. `model_node_ids` adds every observed
+flow model, falling back to `model_node_id`. Missing new fields remain supported.
+
+The frontend honours optional per-node `idle` evidence. Idle nodes only appear
+when Show includes Idle (configured), which makes the host request
+`include_idle=true`; the active count excludes them. Nodes with explicit activity
+flags do not depend on agent-binding reachability to survive a facet filter.
+Optional `avatar_url` supplies a lazy 24px round image for people and their panel
+headers, falling back to initials and then the generic icon.
+
+`GET /fleet/usage` populates an In this window section for every selection. The
+client accepts optional agents, people, flows, devices and work buckets alongside
+models/providers, displaying only reported counters and preserving null token or
+cost values as unknown. Cost is labelled est., including four decimal places below
+one cent. Work usage joins live URL identities to server work ids. The work panel
+also lists attributed actors, available action counts and related work links.
+A window change clears old fetched totals before loading the next window.
+
+The shared `list-toolbar` has an opt-in condensed mode for canvas hosts. Fleet Map
+keeps search, Show, State, Owner, Provider, Window, count, arrangement and More on
+one row when space permits; below 1280px or inside a narrow card it uses a search
+popup, Filters and the arrangement switch. The Overview keeps one stable Inventory
+component in its grid, giving Map a bounded full-width row. Embedded sizing excludes
+full screen so either host can cover the viewport and restore body scrolling on
+exit. The Show choice remains stored per user and scope.
 
 Gateway starts light the sender; real completions light the model and show measured
 input/output tokens. Native permission activity identifies its managed agent

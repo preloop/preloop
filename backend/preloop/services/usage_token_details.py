@@ -142,3 +142,31 @@ def extract_token_details(
             ", ".join(rejected),
         )
     return result
+
+
+def anthropic_cache_input_tokens(usage: Optional[Dict[str, Any]]) -> int:
+    """Return the cache tokens a raw Anthropic ``input_tokens`` leaves out.
+
+    Anthropic Messages usage reports ``input_tokens`` without the tokens read
+    from or written to the prompt cache (they arrive as top-level
+    ``cache_read_input_tokens`` / ``cache_creation_input_tokens``). Every other
+    shape the gateway sees is cache inclusive: Chat Completions
+    ``prompt_tokens`` (litellm folds the Anthropic cache into it) and
+    Responses ``input_tokens``. The ledger stores input cache inclusive, so
+    the caller adds this figure to a raw Anthropic input total (#1955).
+
+    A payload that names ``prompt_tokens`` is already cache inclusive and
+    yields 0, as does one without the top-level Anthropic cache keys.
+
+    Args:
+        usage: Raw or normalized provider usage payload.
+
+    Returns:
+        Cache read plus cache write tokens to add to ``input_tokens``.
+    """
+    if not isinstance(usage, dict) or "prompt_tokens" in usage:
+        return 0
+    return sum(
+        coerce_token_count(usage.get(key)) or 0
+        for key in ("cache_read_input_tokens", "cache_creation_input_tokens")
+    )

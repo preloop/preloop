@@ -164,6 +164,7 @@ export class DeviceFleetView extends LitElement {
   @state() private mapLoading = false;
   @state() private mapError = '';
   @state() private mapWindow: FleetMapWindow = loadFleetMapWindow();
+  @state() private mapIncludeIdle = false;
   @state() private instanceAdmin = false;
   @state() private userId = '';
   private controller?: AbortController;
@@ -181,6 +182,7 @@ export class DeviceFleetView extends LitElement {
     css`
       :host {
         display: block;
+        min-width: 0;
         font-size: var(--console-text-body);
       }
       .content {
@@ -197,7 +199,7 @@ export class DeviceFleetView extends LitElement {
         padding: 0;
         gap: 12px;
       }
-      .map-content fleet-map {
+      .map-content fleet-map:not([fullscreen]) {
         flex: 1 1 0;
         min-height: 0;
         height: auto;
@@ -484,6 +486,16 @@ export class DeviceFleetView extends LitElement {
     `,
   ];
   private hostObserver?: ResizeObserver;
+  private sizeFrame?: number;
+  // Resizing a descendant during observer delivery can resize this host again.
+  // Defer layout writes until the next frame and coalesce repeated notifications.
+  private scheduleSizeMap = (): void => {
+    if (this.sizeFrame !== undefined) return;
+    this.sizeFrame = requestAnimationFrame(() => {
+      this.sizeFrame = undefined;
+      if (this.isConnected) this.sizeMap();
+    });
+  };
   private sizeMap = (): void => {
     const content = this.shadowRoot?.querySelector<HTMLElement>('.map-content');
     if (!content) return;
@@ -495,20 +507,22 @@ export class DeviceFleetView extends LitElement {
     );
   };
   protected updated(): void {
-    this.sizeMap();
+    this.scheduleSizeMap();
   }
   connectedCallback(): void {
     super.connectedCallback();
-    this.hostObserver = new ResizeObserver(this.sizeMap);
+    this.hostObserver = new ResizeObserver(this.scheduleSizeMap);
     this.hostObserver.observe(this);
-    window.addEventListener('resize', this.sizeMap);
+    window.addEventListener('resize', this.scheduleSizeMap);
     void this.load();
   }
   disconnectedCallback(): void {
     this.controller?.abort();
     this.mapController?.abort();
     this.hostObserver?.disconnect();
-    window.removeEventListener('resize', this.sizeMap);
+    window.removeEventListener('resize', this.scheduleSizeMap);
+    if (this.sizeFrame !== undefined) cancelAnimationFrame(this.sizeFrame);
+    this.sizeFrame = undefined;
     super.disconnectedCallback();
   }
 
@@ -571,7 +585,8 @@ export class DeviceFleetView extends LitElement {
     try {
       const map = await getFleetMap(
         controller.signal,
-        windowMinutes(this.mapWindow)
+        windowMinutes(this.mapWindow),
+        this.mapIncludeIdle
       );
       if (!controller.signal.aborted) this.map = map;
     } catch (error) {
@@ -640,6 +655,7 @@ export class DeviceFleetView extends LitElement {
       wheel-mode="pan"
       .graph=${this.map}
       .activityWindow=${this.mapWindow}
+      .includeIdle=${this.mapIncludeIdle}
       live
       ?instance-admin=${this.instanceAdmin}
       user-id=${this.userId}
@@ -650,6 +666,12 @@ export class DeviceFleetView extends LitElement {
         void this.loadMap();
       }}
       @fleet-map-stale=${() => void this.loadMap(true)}
+      @fleet-map-idle-change=${(
+        event: CustomEvent<{ includeIdle: boolean }>
+      ) => {
+        this.mapIncludeIdle = event.detail.includeIdle;
+        void this.loadMap();
+      }}
     ></fleet-map>`;
   }
 

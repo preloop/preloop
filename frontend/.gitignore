@@ -9,3 +9,7 @@ test-results
 # E2E staging creds read by tests/e2e/custom-agent-session.spec.ts (never commit)
 tmp
 tmp/staging-creds.json
+
+# Vitest browser failure artifacts
+.vitest-attachments/
+tests/unit/__screenshots__/

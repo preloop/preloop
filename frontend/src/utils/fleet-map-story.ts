@@ -174,6 +174,8 @@ export class FleetStory {
         href: url || previous?.node.href || '',
         ...(text(s.title) || !previous ? { label } : {}),
         work_kind: kind,
+        work_reference: ref || previous?.node.work_reference,
+        work_title: text(s.title, 160) || previous?.node.work_title,
         last_seen_at: new Date(now).toISOString(),
       },
     });
@@ -377,21 +379,25 @@ export class FleetStory {
       ];
       if (!allowed.includes(action)) return [];
       const raw = object(p.subject);
+      const kind =
+        p.kind === 'issue' || action.startsWith('issue_')
+          ? 'issue'
+          : 'pull_request';
+      const workKey = text(p.work_id).replace(
+        /^work:(?:issue|pull_request):/,
+        ''
+      );
       const fallback =
-        !Object.keys(raw).length && (text(p.pr) || workUrl(p.url))
+        !Object.keys(raw).length && (workKey || text(p.pr) || workUrl(p.url))
           ? {
-              kind: 'pull_request',
-              key: text(p.pr) || workUrl(p.url),
-              reference: text(p.pr).match(/[#!]\d+$/)?.[0],
+              kind,
+              key: workKey || text(p.pr) || workUrl(p.url),
+              reference: (workKey || text(p.pr)).match(/[#!]\d+$/)?.[0],
               title: p.title,
               url: p.url,
             }
           : raw;
-      const subject = this.subject(
-        fallback,
-        action.startsWith('issue_') ? 'issue' : 'pull_request',
-        at
-      );
+      const subject = this.subject(fallback, kind, at);
       const issue = this.subject(p.related_issue, 'issue', at);
       const work = this.works.get(subject);
       if (work && work.at > at) return [];
@@ -472,7 +478,7 @@ export class FleetStory {
       const ref =
         text(object(fallback).reference) ||
         text(p.pr) ||
-        (action.startsWith('issue_') ? 'issue' : 'PR');
+        (kind === 'issue' ? 'issue' : 'PR');
       const labels = Array.isArray(p.labels_added)
         ? p.labels_added
             .slice(0, 12)
@@ -592,7 +598,7 @@ export class FleetStory {
    */
   seedWork(activity: FleetCodeActivity | null | undefined): boolean {
     if (!activity) return false;
-    const items = (activity.work ?? []).slice(0, 50).map((item) => ({
+    const items = (activity.work ?? []).slice(0, 200).map((item) => ({
       ...item,
       at: parseUTCDate(item.last_at).getTime(),
     }));
@@ -643,7 +649,7 @@ export class FleetStory {
           reference: item.reference,
           repo: item.repo,
           title: item.title,
-          url: item.url,
+          url: item.href ?? item.url,
         },
         item.kind,
         item.at
@@ -658,7 +664,9 @@ export class FleetStory {
           ? 'Merged'
           : item.state === 'closed'
             ? 'Closed'
-            : 'Open';
+            : item.state === 'open'
+              ? 'Open'
+              : null;
       if (item.review_state) work.node.review_state = item.review_state;
       if (item.labels?.length)
         work.node.labels = nextLabels([], item.labels, []);
@@ -667,7 +675,11 @@ export class FleetStory {
           ? ids.get(`issue:${item.related_issue}`)
           : undefined;
       const parent = issue ? this.works.get(issue) : undefined;
-      if (issue && parent) {
+      if (activity.relations !== undefined) {
+        // Explicit links distinguish mentions from resolutions. Keep the
+        // objects separate rather than infer an issue state from its PR.
+        delete work.node.parent_id;
+      } else if (issue && parent) {
         work.node.parent_id = issue;
         if (parent.node.status !== 'Merged')
           parent.node.status = item.state === 'merged' ? 'Merged' : 'PR open';

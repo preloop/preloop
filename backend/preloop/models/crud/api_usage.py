@@ -77,6 +77,54 @@ def _refresh_committed_row(db: Session, db_obj: Any) -> None:
             set_committed_value(db_obj, key, value)
 
 
+#: Advisory lock key that serialises :meth:`CRUDApiUsage.repair_anthropic_cache_input`.
+ANTHROPIC_CACHE_INPUT_REPAIR_LOCK = "api_usage:anthropic_cache_input_repair"
+
+#: Convert raw (cache exclusive) Anthropic input rows since ``:since`` (#1955).
+#: The outer ``WHERE`` repeats the guard on the target row so PostgreSQL's
+#: re-check after a row-lock wait skips a row another writer already converted.
+ANTHROPIC_CACHE_INPUT_REPAIR_SQL = """
+WITH candidate AS (
+    SELECT id,
+           coalesce((meta_data -> 'usage_details'
+                     ->> 'cache_read_input_tokens')::bigint, 0)
+         + coalesce((meta_data -> 'usage_details'
+                     ->> 'cache_creation_input_tokens')::bigint, 0)
+           AS cache_tokens
+    FROM api_usage
+    WHERE timestamp >= :since
+      AND action_type = 'model_gateway'
+      AND usage_source IS DISTINCT FROM 'imported'
+      AND NOT (meta_data ? 'input_cache_backfill')
+      AND jsonb_typeof(meta_data -> 'usage_details') = 'object'
+      AND NOT (meta_data -> 'usage_details' ? 'prompt_tokens')
+      AND (meta_data -> 'usage_details' ->> 'input_tokens') ~ '^[0-9]+$'
+      AND coalesce(meta_data -> 'usage_details'
+                   ->> 'cache_read_input_tokens', '0') ~ '^[0-9]+$'
+      AND coalesce(meta_data -> 'usage_details'
+                   ->> 'cache_creation_input_tokens', '0') ~ '^[0-9]+$'
+      AND (meta_data -> 'usage_details' ? 'cache_read_input_tokens'
+           OR meta_data -> 'usage_details' ? 'cache_creation_input_tokens')
+      AND prompt_tokens
+          = (meta_data -> 'usage_details' ->> 'input_tokens')::bigint
+)
+UPDATE api_usage AS u
+SET prompt_tokens = u.prompt_tokens + c.cache_tokens,
+    total_tokens = CASE
+        WHEN u.total_tokens IS NULL THEN NULL
+        ELSE u.total_tokens + c.cache_tokens
+    END,
+    meta_data = jsonb_set(u.meta_data, '{input_cache_backfill}',
+                          to_jsonb(c.cache_tokens))
+FROM candidate AS c
+WHERE u.id = c.id
+  AND c.cache_tokens > 0
+  AND NOT (u.meta_data ? 'input_cache_backfill')
+  AND u.prompt_tokens
+      = (u.meta_data -> 'usage_details' ->> 'input_tokens')::bigint
+"""
+
+
 @dataclass(frozen=True)
 class GovernanceSpendSnapshot:
     """Statement-consistent governance costs read before account admission.
@@ -998,6 +1046,41 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         else:
             db.flush()
         return db_obj
+
+    def repair_anthropic_cache_input(self, db: Session, *, since: datetime) -> int:
+        """Store raw Anthropic input written since ``since`` cache inclusive.
+
+        Migration ``20261106_anthropic_cache_input`` backfills the rows that
+        existed when it ran. Pods still on the previous release keep writing
+        raw (cache exclusive) Anthropic input until the rollout finishes, so
+        this pass repeats the same predicate over recent rows once the new
+        release is serving. The amount added goes to
+        ``meta_data.input_cache_backfill`` like the migration's, so the
+        migration's downgrade reverts these rows too (#1955).
+
+        Safe to run from several replicas at once: one pass runs at a time
+        (a transaction-scoped advisory lock; a replica that finds it taken
+        skips), and the outer ``UPDATE`` re-checks the guard on the row it
+        writes, so a row converted by a concurrent writer is never converted
+        twice.
+
+        Args:
+            db: Database session; committed when the pass ran.
+            since: Earliest ``timestamp`` to repair.
+
+        Returns:
+            How many rows were converted (0 when another pass holds the lock).
+        """
+        locked = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": ANTHROPIC_CACHE_INPUT_REPAIR_LOCK},
+        ).scalar()
+        if not locked:
+            db.rollback()
+            return 0
+        result = db.execute(text(ANTHROPIC_CACHE_INPUT_REPAIR_SQL), {"since": since})
+        db.commit()
+        return int(result.rowcount or 0)
 
     def get_gateway_attempt_summary(
         self,
