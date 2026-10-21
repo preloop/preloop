@@ -22,7 +22,7 @@ import (
 // Build-time variables (set via ldflags).
 var (
 	// Version is the current CLI version. Build pipelines can override this via ldflags.
-	Version = "0.17.0"
+	Version = "0.17.1"
 
 	// Commit is the git commit hash.
 	Commit = "unknown"

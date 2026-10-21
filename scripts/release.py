@@ -315,6 +315,7 @@ def get_origin_repo_slug() -> str | None:
 def create_release_commit(plan: ReleasePlan, paths: list[Path]) -> None:
     """Commit the release preparation changes."""
     relative_paths = [str(path.relative_to(ROOT_DIR)) for path in paths]
+    run_command(["pre-commit", "run", "--files", *relative_paths])
     run_command(["git", "add", "--", *relative_paths])
 
     staged = run_command(
@@ -344,6 +345,8 @@ def create_git_tag(plan: ReleasePlan) -> None:
 def push_current_branch() -> None:
     """Push the current branch to origin."""
     branch = get_current_branch()
+    if branch in {"main", "master", "HEAD"}:
+        raise SystemExit("Release preparation must be pushed through a pull request")
     print(f"Pushing branch {branch}...")
     run_command(["git", "push", "origin", branch])
 
@@ -352,6 +355,87 @@ def push_git_tag(plan: ReleasePlan) -> None:
     """Push the release tag to origin."""
     print(f"Pushing tag {plan.tag}...")
     run_command(["git", "push", "origin", plan.tag])
+
+
+def ensure_clean_checkout() -> None:
+    """Refuse to mix release operations with unrelated local changes."""
+    result = run_command(["git", "status", "--porcelain"], capture_output=True)
+    if result.stdout.strip():
+        raise SystemExit("Commit or stash local changes before release operations")
+
+
+def prepare_release_branch(plan: ReleasePlan) -> None:
+    """Create a release branch from fetched main, never commit directly on main."""
+    ensure_clean_checkout()
+    run_command(["git", "fetch", "origin", "main"])
+    run_command(["git", "switch", "-c", f"release/{plan.tag}", "origin/main"])
+
+
+def finalize_release(
+    plan: ReleasePlan, *, push: bool, target: str | None = None
+) -> None:
+    """Tag only the reviewed commit at fetched origin/main, without editing files."""
+    ensure_clean_checkout()
+    run_command(["git", "fetch", "origin", "main", "--tags"])
+    main_sha = run_command(
+        ["git", "rev-parse", "origin/main"], capture_output=True
+    ).stdout.strip()
+    target_sha = run_command(
+        ["git", "rev-parse", "--verify", f"{target or main_sha}^{{commit}}"],
+        capture_output=True,
+    ).stdout.strip()
+    merged = run_command(
+        ["git", "merge-base", "--is-ancestor", target_sha, main_sha], check=False
+    )
+    if merged.returncode != 0:
+        raise SystemExit("Release commit must be merged into origin/main")
+    if get_head_sha() != target_sha:
+        raise SystemExit(
+            "Check out the selected merged release commit before finalizing"
+        )
+    if read_text(ROOT_DIR / "VERSION").strip() != plan.version:
+        raise SystemExit("Merged main VERSION does not match the requested release")
+    ensure_release_workflow_ready()
+    existing = run_command(
+        ["git", "rev-parse", "--verify", f"refs/tags/{plan.tag}^{{commit}}"],
+        capture_output=True,
+        check=False,
+    )
+    if existing.returncode == 0:
+        if existing.stdout.strip() != target_sha:
+            raise SystemExit(f"Tag {plan.tag} already points to a different commit")
+    else:
+        create_git_tag(plan)
+    if push:
+        push_git_tag(plan)
+        monitor_release_workflow(plan)
+    else:
+        print(
+            f"Created {plan.tag} locally; rerun with --finalize --push-tag to publish"
+        )
+
+
+def open_release_pr(plan: ReleasePlan) -> None:
+    """Push a release branch and open its reviewable pull request."""
+    push_current_branch()
+    run_command(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--base",
+            "main",
+            "--head",
+            get_current_branch(),
+            "--title",
+            f"release: {plan.tag}",
+            "--body",
+            f"Prepare {plan.tag} version metadata and changelog. "
+            "After review and successful checks, merge this PR and finalize the "
+            "release from the merged main commit using scripts/release.sh "
+            f"{plan.version} --finalize --push-tag. No release tag is created by this PR.",
+        ]
+    )
 
 
 def extract_job(workflow: str, job_id: str) -> str:
@@ -834,7 +918,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tag",
         action="store_true",
-        help="Create the release tag after committing",
+        help="Deprecated: use --finalize after the release PR merges",
     )
     parser.add_argument(
         "--push-branch",
@@ -853,6 +937,17 @@ def parse_args() -> argparse.Namespace:
             "Watch an already-pushed tag's Release workflow and require its "
             "signed assets. Pushing a tag always does this."
         ),
+    )
+    parser.add_argument(
+        "--open-pr",
+        action="store_true",
+        help="Commit, push the release branch and open a PR",
+    )
+    parser.add_argument("--target-commit", help="Exact merged release PR commit to tag")
+    parser.add_argument(
+        "--finalize",
+        action="store_true",
+        help="Tag the clean merged origin/main commit without edits",
     )
     return parser.parse_args()
 
@@ -876,11 +971,22 @@ def main() -> int:
     version = resolve_version(args.version)
     plan = ReleasePlan(version=version, release_date=args.release_date)
 
+    if args.monitor_release:
+        monitor_release_workflow(plan)
+        return 0
+    if args.finalize:
+        finalize_release(plan, push=args.push_tag, target=args.target_commit)
+        return 0
+    if args.tag or args.push_tag:
+        raise SystemExit("Tagging requires --finalize after the release PR merges")
+    if args.open_pr and not command_exists("gh"):
+        raise SystemExit("gh is required to open a release PR")
     print_checklist(plan)
-    if not args.yes and not prompt_yes_no("Update versioned files now?", default=True):
-        print("Aborted.")
+    if not args.yes and not prompt_yes_no(
+        "Prepare a release branch now?", default=True
+    ):
         return 1
-
+    prepare_release_branch(plan)
     updated_paths = [
         update_version_file(plan),
         update_pyproject(plan),
@@ -900,75 +1006,22 @@ def main() -> int:
     if args.package_chart:
         maybe_package_chart()
 
-    commit_release = args.commit
-    create_tag = args.tag
-    push_branch = args.push_branch
-    push_tag = args.push_tag
-    monitor_release = args.monitor_release
-
+    ensure_release_workflow_ready()
+    commit_release = args.commit or args.open_pr
     if not args.yes:
         commit_release = commit_release or prompt_yes_no(
             "Commit the release preparation changes?", default=True
         )
-        if commit_release:
-            create_tag = create_tag or prompt_yes_no(
-                f"Create git tag {plan.tag}?", default=True
-            )
-            push_branch = push_branch or prompt_yes_no(
-                "Push the current branch to origin?", default=False
-            )
-            if create_tag:
-                push_tag = push_tag or prompt_yes_no(
-                    f"Push tag {plan.tag} to origin?", default=False
-                )
-                if push_tag:
-                    monitor_release = True
-        else:
-            if git_has_changes(updated_paths):
-                print("Release files are still uncommitted; skipping tag/push steps.")
-                create_tag = False
-                push_branch = False
-                push_tag = False
-                monitor_release = False
-
     if commit_release:
         create_release_commit(plan, updated_paths)
-
-    if create_tag or push_branch or push_tag:
-        ensure_release_workflow_ready()
-
-    if create_tag:
-        create_git_tag(plan)
-
-    if push_branch:
+    if args.open_pr:
+        open_release_pr(plan)
+    elif args.push_branch:
         push_current_branch()
+    print("Review the release diff and merge its PR after checks pass.")
+    print("Then check out merged main and run:")
+    print(f"  ./scripts/release.sh {plan.version} --finalize --push-tag")
 
-    if push_tag:
-        push_git_tag(plan)
-        monitor_release_workflow(plan)
-    elif monitor_release:
-        monitor_release_workflow(plan)
-
-    ensure_release_workflow_ready()
-
-    print("")
-    print("Updated files:")
-    for path in updated_paths:
-        print(f"  - {path.relative_to(ROOT_DIR)}")
-
-    print("")
-    if push_tag:
-        print(f"{plan.tag} was published with signed release assets.")
-    else:
-        print("Next steps:")
-        print("  1. Review the diff, especially CHANGELOG.md and README.md.")
-        print("  2. Run your release validation commands.")
-        print(
-            f"  3. Commit, tag, and push {plan.tag} when ready. "
-            "The script will not push, and will not exit successfully, "
-            "unless this checkout can publish signed assets and the tag "
-            "run attaches them."
-        )
     return 0
 
 

@@ -250,6 +250,8 @@ The [disposable capacity lab](scripts/capacity/README.md) measures authenticated
 
 [Apache License 2.0](LICENSE). Copyright (c) 2026 Spacecode AI Inc.
 
+Maintainers: follow the [protected-branch release process](./docs/releasing.md).
+
 Release assets carry signed Sigstore build provenance and checksums. See [verification instructions](./docs/release-verification.md).
 
 Windows CLI release binaries pass a required Defender scan and ten-minute observation before publication. Optional VirusTotal scanning and SignPath Authenticode signing provide additional release checks; signing is pending. [windows-cli.md](./docs/windows-cli.md), [windows-code-signing.md](./docs/windows-code-signing.md), [code-signing-policy.md](./docs/code-signing-policy.md).

@@ -187,3 +187,116 @@ def test_draft_release_is_not_done() -> None:
     """A draft is not a published signed release."""
     problem = release_script.published_release_problem("1.2.3", {"isDraft": True})
     assert problem == "v1.2.3 is still a draft"
+
+
+def test_finalize_rejects_unmerged_commit(tmp_path, monkeypatch) -> None:
+    """A release branch must not be tagged before it reaches main."""
+    import subprocess
+
+    import pytest
+
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[:2] == ["git", "rev-parse"]:
+            return subprocess.CompletedProcess(args, 0, "a" * 40, "")
+        if args[:2] == ["git", "merge-base"]:
+            return subprocess.CompletedProcess(args, 1, "", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(release_script, "run_command", run)
+    with pytest.raises(SystemExit, match="must be merged"):
+        release_script.finalize_release(
+            release_script.ReleasePlan("0.17.1", "2026-10-21"), push=True
+        )
+    assert not any(args[:2] == ["git", "tag"] for args in calls)
+    assert not any(args[:2] == ["git", "push"] for args in calls)
+
+
+def test_finalize_rejects_dirty_checkout(monkeypatch) -> None:
+    """Local release metadata must not be mistaken for merged source."""
+    import subprocess
+
+    import pytest
+
+    monkeypatch.setattr(
+        release_script,
+        "run_command",
+        lambda args, **kwargs: subprocess.CompletedProcess(args, 0, " M VERSION", ""),
+    )
+    with pytest.raises(SystemExit, match="Commit or stash"):
+        release_script.finalize_release(
+            release_script.ReleasePlan("0.17.1", "2026-10-21"), push=True
+        )
+
+
+def test_finalize_tags_selected_merged_commit(tmp_path, monkeypatch) -> None:
+    """Main can advance without changing the selected release merge commit."""
+    import subprocess
+
+    calls = []
+    release_sha = "b" * 40
+    (tmp_path / "VERSION").write_text("0.17.1\n")
+
+    def run(args, **kwargs):
+        calls.append(args)
+        stdout = ""
+        if args == ["git", "rev-parse", "origin/main"]:
+            stdout = "a" * 40
+        elif args[:3] == ["git", "rev-parse", "--verify"]:
+            if args[3].startswith("refs/tags/"):
+                return subprocess.CompletedProcess(args, 1, "", "")
+            stdout = release_sha
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr(release_script, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(release_script, "run_command", run)
+    monkeypatch.setattr(release_script, "get_head_sha", lambda: release_sha)
+    monkeypatch.setattr(release_script, "ensure_release_workflow_ready", lambda: None)
+    release_script.finalize_release(
+        release_script.ReleasePlan("0.17.1", "2026-10-21"),
+        push=False,
+        target=release_sha,
+    )
+    assert ["git", "merge-base", "--is-ancestor", release_sha, "a" * 40] in calls
+    assert ["git", "tag", "-a", "v0.17.1", "-m", "Release v0.17.1"] in calls
+    assert not any(args[:2] == ["git", "push"] for args in calls)
+
+
+def test_prepare_refuses_push_to_main(monkeypatch) -> None:
+    """Legacy push flags must never bypass protected main."""
+    import pytest
+
+    monkeypatch.setattr(release_script, "get_current_branch", lambda: "main")
+    with pytest.raises(SystemExit, match="pull request"):
+        release_script.push_current_branch()
+
+
+def test_finalize_never_moves_existing_tag(tmp_path, monkeypatch) -> None:
+    """A conflicting immutable tag must stop before any push."""
+    import subprocess
+
+    import pytest
+
+    calls = []
+    (tmp_path / "VERSION").write_text("0.17.1\n")
+
+    def run(args, **kwargs):
+        calls.append(args)
+        stdout = ""
+        if args[:2] == ["git", "rev-parse"]:
+            stdout = "a" * 40
+            if args[-1].startswith("refs/tags/"):
+                stdout = "b" * 40
+        return subprocess.CompletedProcess(args, 0, stdout, "")
+
+    monkeypatch.setattr(release_script, "ROOT_DIR", tmp_path)
+    monkeypatch.setattr(release_script, "run_command", run)
+    monkeypatch.setattr(release_script, "get_head_sha", lambda: "a" * 40)
+    monkeypatch.setattr(release_script, "ensure_release_workflow_ready", lambda: None)
+    with pytest.raises(SystemExit, match="different commit"):
+        release_script.finalize_release(
+            release_script.ReleasePlan("0.17.1", "2026-10-21"), push=True
+        )
+    assert not any(args[:2] == ["git", "push"] for args in calls)
