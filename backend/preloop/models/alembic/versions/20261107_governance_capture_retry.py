@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from preloop.models.concurrent_index_ddl import concurrent_index_ddl
 
 revision = "20261107_gov_capture_retry"
-down_revision = "20261106_fleet_work_ref_idx"
+down_revision = "20261107_mcp_tool_annotations"
 branch_labels = None
 depends_on = None
 

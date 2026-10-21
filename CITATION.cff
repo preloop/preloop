@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use Preloop in research, please cite it using these metadata."
+title: "Preloop"
+type: software
+authors:
+  - name: "Spacecode AI Inc."
+repository-code: "https://github.com/preloop/preloop"
+url: "https://preloop.ai"
+abstract: "The open-source AI agent control plane and software factory: MCP firewall, model gateway with budgets, human approvals, runtime observability, and audit trails."
+keywords:
+  - ai-agents
+  - mcp
+  - ai-gateway
+  - policy-as-code
+  - human-in-the-loop
+  - observability
+license: Apache-2.0
+version: "0.17.1"

@@ -1,0 +1,9 @@
+# Artifact Hub repository metadata for oci://ghcr.io/preloop/charts/preloop.
+# release.yml pushes this file as the `artifacthub.io` tag of the chart
+# package on every release (application/vnd.cncf.artifacthub.* media types).
+# After adding the repository in the Artifact Hub control panel, uncomment
+# repositoryID with the ID shown there to earn the Verified publisher badge.
+# repositoryID: <id-from-artifacthub-control-panel>
+owners:
+  - name: Preloop
+    email: sales@preloop.ai

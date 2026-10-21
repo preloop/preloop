@@ -141,6 +141,34 @@ def update_chart(plan: ReleasePlan) -> Path:
     return path
 
 
+def update_server_json(plan: ReleasePlan) -> Path:
+    """Update the official MCP registry ``server.json`` version.
+
+    The registry refuses to re-publish an existing version, so every release
+    carries its own (scripts/validate_server_json.py checks they match).
+    """
+    path = ROOT_DIR / "server.json"
+    data = json.loads(read_text(path))
+    data["version"] = plan.version
+    write_text(path, json.dumps(data, indent=2) + "\n")
+    return path
+
+
+def update_citation_metadata(plan: ReleasePlan) -> list[Path]:
+    """Update the version in CITATION.cff and codemeta.json."""
+    citation = ROOT_DIR / "CITATION.cff"
+    text = read_text(citation)
+    write_text(
+        citation,
+        replace_once(text, r'^version: ".*"$', f'version: "{plan.version}"', citation),
+    )
+    codemeta = ROOT_DIR / "codemeta.json"
+    data = json.loads(read_text(codemeta))
+    data["version"] = plan.version
+    write_text(codemeta, json.dumps(data, indent=2) + "\n")
+    return [citation, codemeta]
+
+
 def update_cli_version(plan: ReleasePlan) -> Path:
     """Update the CLI's hardcoded fallback version.
 
@@ -418,6 +446,14 @@ def ensure_version_metadata(plan: ReleasePlan) -> None:
     checks["chart appVersion"] = re.search(
         r'^appVersion: "([^\"]+)"$', chart, re.M
     ).group(1)
+    checks["server.json"] = json.loads(read_text(ROOT_DIR / "server.json"))["version"]
+    checks["codemeta.json"] = json.loads(read_text(ROOT_DIR / "codemeta.json"))[
+        "version"
+    ]
+    citation = re.search(
+        r'^version: "([^\"]+)"$', read_text(ROOT_DIR / "CITATION.cff"), re.M
+    )
+    checks["CITATION.cff"] = citation.group(1) if citation else ""
     wrong = [name for name, value in checks.items() if value != plan.version]
     if wrong:
         raise SystemExit("Release version mismatch: " + ", ".join(wrong))
@@ -1114,6 +1150,8 @@ def main() -> int:
         update_chart(plan),
         update_cli_version(plan),
         update_readme(plan),
+        update_server_json(plan),
+        *update_citation_metadata(plan),
     ]
 
     if not args.skip_changelog:

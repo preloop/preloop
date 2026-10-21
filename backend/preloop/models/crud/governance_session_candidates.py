@@ -77,11 +77,12 @@ def list_session_digest_retries(
     runtime_session_id: UUID | None = None,
     limit: int = 50,
 ) -> list[UUID]:
-    """Return only the oldest failed or abandoned summaries for an account.
+    """Return the oldest provider, parse, and capture retry candidates.
 
-    Filter and limit in SQL using the partial retry queue index, so completed
-    history is excluded from both the returned rows and the indexed scan. Stale claims use the typed update timestamp rather
-    than parsing optional JSON diagnostics. No traffic watermark is required.
+    Three indexed UNION branches keep completed history out of retry scans.
+    Stale summarizing claims and capture-incomplete rows wait until
+    ``stale_before``; parse failures can retry immediately. No traffic
+    watermark is required.
     """
     digest = models.GovernanceSessionDigest
     status = digest.digest["summary_status"].astext

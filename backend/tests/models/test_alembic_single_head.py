@@ -474,4 +474,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert command_lookup.down_revision == "20261106_anthropic_cache_input"
     work_ref = script.get_revision("20261106_fleet_work_ref_idx")
     assert work_ref.down_revision == "20261106_control_command_idx"
-    assert script.get_heads() == ["20261106_fleet_work_ref_idx"]
+    annotations = script.get_revision("20261107_mcp_tool_annotations")
+    assert annotations.down_revision == "20261106_fleet_work_ref_idx"
+    capture_retry = script.get_revision("20261107_gov_capture_retry")
+    assert capture_retry.down_revision == "20261107_mcp_tool_annotations"
+    assert script.get_heads() == ["20261107_gov_capture_retry"]

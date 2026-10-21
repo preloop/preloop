@@ -33,6 +33,9 @@ class MCPTool(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     input_schema: Mapped[Dict] = mapped_column(JSONB, nullable=False)
+    # MCP ToolAnnotations as advertised upstream (camelCase keys), passed
+    # through unchanged in tools/list. NULL when the upstream sent none.
+    annotations: Mapped[Optional[Dict]] = mapped_column(JSONB, nullable=True)
 
     # Discovery tracking
     discovered_at: Mapped[str] = mapped_column(String, nullable=False)

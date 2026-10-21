@@ -25,7 +25,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
 from fastmcp.tools.tool import ToolResult
-from mcp.types import TextContent
+from mcp.types import TextContent, ToolAnnotations
 
 from preloop.services.dynamic_mcp_server import (
     UserContext,
@@ -42,6 +42,7 @@ from preloop.services.mcp_tool_collisions import (
 )
 from preloop.models.db.session import get_db_session as get_db
 from preloop.api.endpoints.tools import BUILTIN_TOOLS, TOOL_NAME_ALIASES
+from preloop.tools.builtin_defs import BUILTIN_TOOL_ANNOTATIONS
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.services import kill_switch as kill_switch_service
 from preloop.services.subject_governance import (
@@ -61,6 +62,49 @@ from preloop.services.sensitive_data.storage import (
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
+
+
+def with_builtin_annotations(tool: Tool) -> Tool:
+    """Attach the declared MCP annotations to a builtin tool.
+
+    Args:
+        tool: A builtin tool as registered on the server.
+
+    Returns:
+        A copy carrying ``BUILTIN_TOOL_ANNOTATIONS[tool.name]`` (and its
+        title), or the tool unchanged when it already has annotations or
+        none are declared for its name.
+    """
+    declared = BUILTIN_TOOL_ANNOTATIONS.get(tool.name)
+    if declared is None or tool.annotations is not None:
+        return tool
+    annotations = ToolAnnotations.model_validate(declared)
+    return tool.model_copy(
+        update={"annotations": annotations, "title": tool.title or annotations.title}
+    )
+
+
+def upstream_tool_annotations(mcp_tool: Any) -> Optional[ToolAnnotations]:
+    """Rebuild a proxied tool's upstream annotations, unchanged.
+
+    Args:
+        mcp_tool: The cached ``MCPTool`` row for the proxied tool.
+
+    Returns:
+        The stored upstream annotations, or None when the upstream sent none
+        or the stored value is not a valid annotations object.
+    """
+    stored = getattr(mcp_tool, "annotations", None)
+    if not isinstance(stored, dict) or not stored:
+        return None
+    try:
+        return ToolAnnotations.model_validate(stored)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid stored annotations for proxied tool %r",
+            getattr(mcp_tool, "name", None),
+        )
+        return None
 
 
 def _deprecated_alias_names() -> frozenset[str]:
@@ -1390,7 +1434,11 @@ class DynamicFastMCP(FastMCP):
             t for t in await super().list_tools(run_middleware=run_middleware)
         ]
         # Filter out internal proxied tool names (they start with "account_")
-        builtin_tools = [t for t in default_tools if not t.name.startswith("account_")]
+        builtin_tools = [
+            with_builtin_annotations(t)
+            for t in default_tools
+            if not t.name.startswith("account_")
+        ]
         if getattr(user_context, "credential_type", "legacy") == "restricted_runtime":
             builtin_tools = []
 
@@ -1612,6 +1660,7 @@ class DynamicFastMCP(FastMCP):
                         name=original_name,  # Client sees original name
                         description=mcp_tool.description or "",
                         parameters=mcp_tool.input_schema,
+                        annotations=upstream_tool_annotations(mcp_tool),
                     )
                     available_tools.append(tool)
                     logger.info(
@@ -1726,8 +1775,10 @@ class DynamicFastMCP(FastMCP):
                             modified_schema["required"] = required
                     tool = Tool(
                         name=tool.name,
+                        title=tool.title,
                         description=tool.description or "",
                         parameters=modified_schema,
+                        annotations=tool.annotations,
                     )
                     logger.info(
                         f"Injected justification parameter "
