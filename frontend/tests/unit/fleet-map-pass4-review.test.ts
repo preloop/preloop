@@ -118,4 +118,19 @@ describe('Fleet Map pass 4 review fixes', () => {
     expect(subtitle('provider:openai')).toContain('1 model · 2 accounts');
   });
 
+  it('gives the icon-only Lanes and Canvas buttons accessible names', async () => {
+    await page.viewport(1440, 900);
+    const el = await mount();
+    const names = [
+      ...root(el).querySelectorAll(
+        '[data-testid="fleet-map-arrangement"] sl-button'
+      ),
+    ].map((button) =>
+      button.shadowRoot!.querySelector('button')!.textContent!.trim() ||
+      [...button.querySelectorAll('.sr-only')]
+        .map((n) => n.textContent!.trim())
+        .join('')
+    );
+    expect(names).toEqual(['Lanes', 'Canvas']);
+  });
 });

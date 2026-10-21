@@ -1805,6 +1805,14 @@ export class FleetMap extends LitElement {
         font-size: var(--console-text-meta);
         margin-inline-end: 4px;
       }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
       .users-search {
         padding: 4px 12px 8px;
       }
@@ -3472,8 +3480,12 @@ export class FleetMap extends LitElement {
                         ><sl-icon
                           name=${ARRANGEMENT_ICON[value]}
                           aria-hidden="true"
-                        ></sl-icon></sl-button
-                    ></sl-tooltip>`
+                        ></sl-icon
+                        ><span class="sr-only"
+                          >${ARRANGEMENT_LABEL[value]}</span
+                        ></sl-button
+                      ></sl-tooltip
+                    >`
                 )}
               </sl-button-group>`
             : nothing

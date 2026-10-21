@@ -1002,7 +1002,13 @@ describe('fleet-map pass 4 controls', () => {
       'Canvas',
     ]);
     for (const button of buttons) {
-      expect(button.textContent!.trim()).to.equal('');
+      // Icon-only on screen; the name is visually hidden text, since
+      // sl-button does not pass aria-label to its inner button.
+      const hidden = button.querySelector('.sr-only')!;
+      expect(hidden.textContent!.trim()).to.equal(
+        button.getAttribute('aria-label')
+      );
+      expect(getComputedStyle(hidden).width).to.equal('1px');
       expect(button.closest('sl-tooltip')!.getAttribute('content')).to.equal(
         button.getAttribute('aria-label')
       );
