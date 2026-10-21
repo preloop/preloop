@@ -18,6 +18,7 @@ from pathlib import Path
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+RELEASE_REMOTE = "origin"
 
 
 @dataclass(frozen=True)
@@ -300,7 +301,7 @@ def git_has_changes(paths: list[Path]) -> bool:
 def get_origin_repo_slug() -> str | None:
     """Infer the GitHub owner/repo slug from origin."""
     result = run_command(
-        ["git", "remote", "get-url", "origin"], capture_output=True, check=False
+        ["git", "remote", "get-url", RELEASE_REMOTE], capture_output=True, check=False
     )
     if result.returncode != 0:
         return None
@@ -348,13 +349,69 @@ def push_current_branch() -> None:
     if branch in {"main", "master", "HEAD"}:
         raise SystemExit("Release preparation must be pushed through a pull request")
     print(f"Pushing branch {branch}...")
-    run_command(["git", "push", "origin", branch])
+    run_command(["git", "push", RELEASE_REMOTE, branch])
 
 
 def push_git_tag(plan: ReleasePlan) -> None:
     """Push the release tag to origin."""
     print(f"Pushing tag {plan.tag}...")
-    run_command(["git", "push", "origin", plan.tag])
+    run_command(["git", "push", RELEASE_REMOTE, plan.tag])
+
+
+def select_release_remote(explicit: str | None) -> str:
+    """Prefer the GitHub remote used to publish OSS in multi-remote checkouts."""
+    remotes = run_command(["git", "remote"], capture_output=True).stdout.split()
+    candidates = (
+        [explicit]
+        if explicit
+        else [name for name in ("github", "origin") if name in remotes]
+    )
+    for remote in candidates:
+        if remote not in remotes:
+            raise SystemExit(f"Unknown release remote: {remote}")
+        url = run_command(
+            ["git", "remote", "get-url", remote], capture_output=True
+        ).stdout.strip()
+        if re.fullmatch(
+            r"(?:https://github\.com/|git@github\.com:)preloop/preloop(?:\.git)?", url
+        ):
+            return remote
+    raise SystemExit("Release remote must point to github.com/preloop/preloop")
+
+
+def ensure_version_metadata(plan: ReleasePlan) -> None:
+    """Check every shipped version before allowing a tag."""
+    checks = {
+        "VERSION": read_text(ROOT_DIR / "VERSION").strip(),
+        "pyproject.toml": re.search(
+            r'^version = "([^\"]+)"$', read_text(ROOT_DIR / "pyproject.toml"), re.M
+        ).group(1),
+        "openapi.yaml": re.search(
+            r"^  version: (.+)$", read_text(ROOT_DIR / "openapi.yaml"), re.M
+        ).group(1),
+        "cli/internal/version/check.go": re.search(
+            r'^\tVersion = "([^\"]+)"$',
+            read_text(ROOT_DIR / "cli/internal/version/check.go"),
+            re.M,
+        ).group(1),
+    }
+    package = json.loads(read_text(ROOT_DIR / "frontend/package.json"))
+    lock = json.loads(read_text(ROOT_DIR / "frontend/package-lock.json"))
+    checks.update(
+        {
+            "frontend/package.json": package["version"],
+            "frontend/package-lock.json": lock["version"],
+            "frontend lock root": lock["packages"][""]["version"],
+        }
+    )
+    chart = read_text(ROOT_DIR / "helm/preloop/Chart.yaml")
+    checks["chart version"] = re.search(r"^version: (.+)$", chart, re.M).group(1)
+    checks["chart appVersion"] = re.search(
+        r'^appVersion: "([^\"]+)"$', chart, re.M
+    ).group(1)
+    wrong = [name for name, value in checks.items() if value != plan.version]
+    if wrong:
+        raise SystemExit("Release version mismatch: " + ", ".join(wrong))
 
 
 def ensure_clean_checkout() -> None:
@@ -367,8 +424,10 @@ def ensure_clean_checkout() -> None:
 def prepare_release_branch(plan: ReleasePlan) -> None:
     """Create a release branch from fetched main, never commit directly on main."""
     ensure_clean_checkout()
-    run_command(["git", "fetch", "origin", "main"])
-    run_command(["git", "switch", "-c", f"release/{plan.tag}", "origin/main"])
+    run_command(["git", "fetch", RELEASE_REMOTE, "main"])
+    run_command(
+        ["git", "switch", "-c", f"release/{plan.tag}", f"{RELEASE_REMOTE}/main"]
+    )
 
 
 def finalize_release(
@@ -376,9 +435,9 @@ def finalize_release(
 ) -> None:
     """Tag only the reviewed commit at fetched origin/main, without editing files."""
     ensure_clean_checkout()
-    run_command(["git", "fetch", "origin", "main", "--tags"])
+    run_command(["git", "fetch", RELEASE_REMOTE, "main", "--tags"])
     main_sha = run_command(
-        ["git", "rev-parse", "origin/main"], capture_output=True
+        ["git", "rev-parse", f"{RELEASE_REMOTE}/main"], capture_output=True
     ).stdout.strip()
     target_sha = run_command(
         ["git", "rev-parse", "--verify", f"{target or main_sha}^{{commit}}"],
@@ -395,6 +454,7 @@ def finalize_release(
         )
     if read_text(ROOT_DIR / "VERSION").strip() != plan.version:
         raise SystemExit("Merged main VERSION does not match the requested release")
+    ensure_version_metadata(plan)
     ensure_release_workflow_ready()
     existing = run_command(
         ["git", "rev-parse", "--verify", f"refs/tags/{plan.tag}^{{commit}}"],
@@ -423,6 +483,8 @@ def open_release_pr(plan: ReleasePlan) -> None:
             "gh",
             "pr",
             "create",
+            "--repo",
+            "preloop/preloop",
             "--base",
             "main",
             "--head",
@@ -943,6 +1005,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Commit, push the release branch and open a PR",
     )
+    parser.add_argument("--remote", help="GitHub remote (default: github, then origin)")
     parser.add_argument("--target-commit", help="Exact merged release PR commit to tag")
     parser.add_argument(
         "--finalize",
@@ -967,7 +1030,9 @@ def resolve_version(raw_version: str | None) -> str:
 
 def main() -> int:
     """Run the release preparation workflow."""
+    global RELEASE_REMOTE
     args = parse_args()
+    RELEASE_REMOTE = select_release_remote(args.remote)
     version = resolve_version(args.version)
     plan = ReleasePlan(version=version, release_date=args.release_date)
 

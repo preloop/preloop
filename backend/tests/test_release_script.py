@@ -254,6 +254,7 @@ def test_finalize_tags_selected_merged_commit(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(release_script, "run_command", run)
     monkeypatch.setattr(release_script, "get_head_sha", lambda: release_sha)
     monkeypatch.setattr(release_script, "ensure_release_workflow_ready", lambda: None)
+    monkeypatch.setattr(release_script, "ensure_version_metadata", lambda plan: None)
     release_script.finalize_release(
         release_script.ReleasePlan("0.17.1", "2026-10-21"),
         push=False,
@@ -295,8 +296,49 @@ def test_finalize_never_moves_existing_tag(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(release_script, "run_command", run)
     monkeypatch.setattr(release_script, "get_head_sha", lambda: "a" * 40)
     monkeypatch.setattr(release_script, "ensure_release_workflow_ready", lambda: None)
+    monkeypatch.setattr(release_script, "ensure_version_metadata", lambda plan: None)
     with pytest.raises(SystemExit, match="different commit"):
         release_script.finalize_release(
             release_script.ReleasePlan("0.17.1", "2026-10-21"), push=True
         )
     assert not any(args[:2] == ["git", "push"] for args in calls)
+
+
+def test_release_remote_prefers_github_over_gitlab_origin(monkeypatch) -> None:
+    """A private mirror must never receive public release pushes."""
+    import subprocess
+
+    def run(args, **kwargs):
+        output = "origin\ngithub\n"
+        if args[-1] == "origin":
+            output = "git@gitlab.example.com:team/preloop.git"
+        elif args[-1] == "github":
+            output = "git@github.com:preloop/preloop.git"
+        return subprocess.CompletedProcess(args, 0, output, "")
+
+    monkeypatch.setattr(release_script, "run_command", run)
+    assert release_script.select_release_remote(None) == "github"
+    import pytest
+
+    with pytest.raises(SystemExit, match="github.com/preloop/preloop"):
+        release_script.select_release_remote("origin")
+
+
+def test_release_metadata_checks_all_versions(monkeypatch) -> None:
+    """A correct VERSION alone cannot conceal a stale packaged version."""
+    import pytest
+
+    version = (REPO_ROOT / "VERSION").read_text().strip()
+    plan = release_script.ReleasePlan(version, "2026-10-21")
+    release_script.ensure_version_metadata(plan)
+    original = release_script.read_text
+
+    def read(path):
+        value = original(path)
+        if path.name == "package.json":
+            value = value.replace(f'"version": "{version}"', '"version": "0.0.0"')
+        return value
+
+    monkeypatch.setattr(release_script, "read_text", read)
+    with pytest.raises(SystemExit, match="frontend/package.json"):
+        release_script.ensure_version_metadata(plan)
