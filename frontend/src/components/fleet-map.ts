@@ -2475,7 +2475,7 @@ export class FleetMap extends LitElement {
           top: auto;
           max-height: 60%;
         }
-        .legend {
+        .legend:not(.raised) {
           display: none;
         }
         .search input {

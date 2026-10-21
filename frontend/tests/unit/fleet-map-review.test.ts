@@ -278,4 +278,17 @@ describe('Fleet Map review fixes', () => {
       'labelled, unlabelled #7'
     );
   });
+
+  it('opens the folded legend on a phone', async () => {
+    await page.viewport(390, 844);
+    const el = await mount({ defaultArrangement: 'spatial' }, '366px', '600px');
+    const toggle = root(el).querySelector<HTMLElement>('.legend-toggle')!;
+    expect(toggle).not.toBeNull();
+    toggle.click();
+    await el.updateComplete;
+    const box = root(el).querySelector('.legend')!.getBoundingClientRect();
+    expect(box.width).toBeGreaterThan(0);
+    expect(box.left).toBeGreaterThanOrEqual(0);
+    expect(box.right).toBeLessThanOrEqual(390);
+  });
 });

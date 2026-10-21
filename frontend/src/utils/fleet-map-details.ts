@@ -139,7 +139,6 @@ export function withWorkRelations(
   };
 }
 
-/** Metadata only, bounded so an active line cannot become a paragraph. */
 /** Server action keys as words: issue_updated -> updated, labeled -> labelled. */
 export function workActionWords(actions: Iterable<string>): string[] {
   const words: string[] = [];
@@ -153,6 +152,7 @@ export function workActionWords(actions: Iterable<string>): string[] {
   return words;
 }
 
+/** Metadata only, bounded so an active line cannot become a paragraph. */
 export function workRelationLabel(
   edge: FleetMapEdge,
   target?: FleetMapNode
