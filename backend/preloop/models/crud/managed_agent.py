@@ -490,6 +490,7 @@ def _usage_aggregates_for_principals(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     ownership: Optional[_AgentSessionOwnership] = None,
+    include_subscription_usage: bool = True,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Return principal-scoped usage totals for many agents in few queries.
 
@@ -501,6 +502,8 @@ def _usage_aggregates_for_principals(
         end_date: Optional inclusive upper bound for sessions and usage.
         ownership: Sessions already resolved for these principals, so one
             request that reads several windows resolves them once.
+        include_subscription_usage: Read API-equivalent subscription pricing.
+            Disable for list reads to avoid parsing historical request metadata.
 
     Returns:
         Mapping from principal tuple to the same aggregate shape produced by
@@ -572,31 +575,29 @@ def _usage_aggregates_for_principals(
         .limit(1)
         .lateral("principal_latest_usage")
     )
-    # Subscription-routed rows (D-05): part of the agent's usage and tokens,
-    # $0 of its spend, with an API-equivalent estimate reported beside it.
-    # A third LATERAL in the same statement, so the list still reads each
-    # principal's own index range and never sorts the account's rows.
-    subscription = (
-        select(*_subscription_columns())
-        .where(
-            *_principal_usage_filter(),
-            ApiUsage.cost_source == literal_column("'subscription'"),
-        )
-        .lateral("principal_subscription_totals")
+    # Usage totals include subscription traffic at its recorded marginal cost.
+    # Detailed readers also request the API-equivalent estimate. List readers
+    # skip that aggregate: extracting its price detoasts historical JSON even
+    # when the subscription index finds the matching rows efficiently.
+    usage_query = select(
+        principal_rows.c.principal_type,
+        principal_rows.c.principal_id,
+        totals,
+        latest,
     )
-    usage_rows = db.execute(
-        select(
-            principal_rows.c.principal_type,
-            principal_rows.c.principal_id,
-            totals,
-            latest,
-            subscription,
-        ).select_from(
-            principal_rows.join(totals, true())
-            .outerjoin(latest, true())
-            .join(subscription, true())
+    usage_from = principal_rows.join(totals, true()).outerjoin(latest, true())
+    if include_subscription_usage:
+        subscription = (
+            select(*_subscription_columns())
+            .where(
+                *_principal_usage_filter(),
+                ApiUsage.cost_source == literal_column("'subscription'"),
+            )
+            .lateral("principal_subscription_totals")
         )
-    ).all()
+        usage_query = usage_query.add_columns(subscription)
+        usage_from = usage_from.join(subscription, true())
+    usage_rows = db.execute(usage_query.select_from(usage_from)).all()
     for row in usage_rows:
         key = (row.principal_type, row.principal_id)
         if key not in results:
@@ -606,7 +607,8 @@ def _usage_aggregates_for_principals(
         results[key]["latest_model_alias"] = row.latest_model_alias
         results[key]["latest_provider_name"] = row.latest_provider_name
         results[key]["last_request_at"] = row.last_request_at
-        _add_subscription(results[key], row)
+        if include_subscription_usage:
+            _add_subscription(results[key], row)
 
     # Rows in the agent's own sessions written under another principal (a
     # per-run ``<base>:<run>`` id, or none): the same rows the Overview maps
@@ -694,27 +696,29 @@ def _usage_aggregates_for_principals(
                 if key in newer:
                     results[key]["latest_model_alias"] = row.model_alias
                     results[key]["latest_provider_name"] = row.provider_name
-        for row in db.execute(
-            select(owned.c.owner_type, owned.c.owner_id, *_subscription_columns())
-            .select_from(
-                owned.join(
-                    ApiUsage, ApiUsage.runtime_session_id == owned.c.owned_session_id
+        if include_subscription_usage:
+            for row in db.execute(
+                select(owned.c.owner_type, owned.c.owner_id, *_subscription_columns())
+                .select_from(
+                    owned.join(
+                        ApiUsage,
+                        ApiUsage.runtime_session_id == owned.c.owned_session_id,
+                    )
                 )
-            )
-            .where(
-                *_session_usage_filter(
-                    account_id=account_id,
-                    known_principals=ownership.known_principals,
-                    start_date=start_date,
-                    end_date=end_date,
-                ),
-                ApiUsage.cost_source == literal_column("'subscription'"),
-            )
-            .group_by(owned.c.owner_type, owned.c.owner_id)
-        ).all():
-            key = (row.owner_type, row.owner_id)
-            if key in results:
-                _add_subscription(results[key], row)
+                .where(
+                    *_session_usage_filter(
+                        account_id=account_id,
+                        known_principals=ownership.known_principals,
+                        start_date=start_date,
+                        end_date=end_date,
+                    ),
+                    ApiUsage.cost_source == literal_column("'subscription'"),
+                )
+                .group_by(owned.c.owner_type, owned.c.owner_id)
+            ).all():
+                key = (row.owner_type, row.owner_id)
+                if key in results:
+                    _add_subscription(results[key], row)
 
     return results
 
@@ -1529,7 +1533,13 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
 
         principals = [(row.session_source_type, row.session_source_id) for row in rows]
         aggregates = _usage_aggregates_for_principals(
-            db, account_id=account_id, principals=principals
+            db,
+            account_id=account_id,
+            principals=principals,
+            # The optional estimate parses wide JSON for every subscription
+            # request. Keep list reads on the covering usage index; detailed
+            # pricing remains available on the agent and Spend pages.
+            include_subscription_usage=False,
         )
 
         items = []
