@@ -77,6 +77,8 @@ HTTP creation payloads and one-time token responses retain their shape. CRUD
 consumes `api_key` and `jira_webhook_secret` inputs and persists references.
 `ApiKey.key` is a write-only compatibility input that hashes immediately; reads
 return `None`. Use `crud_api_key.issue` to receive `(row, token)` for delivery.
+Hash-based rotations may continue supplying `key=None`; CRUD discards that
+obsolete field and uses the supplied hash and prefix.
 `create_with_owner` returns only the persisted row; callers that need a token
 must retain their supplied `key_value` or use `issue`. The AI model and tracker
 legacy ORM properties return `None`; direct constructor writes are unsupported.

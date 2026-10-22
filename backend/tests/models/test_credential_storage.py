@@ -107,3 +107,33 @@ def test_ai_model_and_webhook_credentials_survive_reload_and_update(
     )
     assert tracker.resolved_webhook_secret == "replacement-webhook-secret"
     assert model.api_key is None and tracker.jira_webhook_secret is None
+
+
+def test_hashed_rotation_accepts_null_legacy_key(
+    db_session, create_account, create_user
+) -> None:
+    """Already-hashed callers can clear the obsolete field during rotation."""
+    user = create_user(account=create_account())
+    row, previous = crud_api_key.issue(
+        db_session,
+        obj_in={
+            "name": "Runtime credential",
+            "account_id": user.account_id,
+            "user_id": user.id,
+        },
+    )
+    replacement = "replacement-synthetic-runtime-token"
+    crud_api_key.update(
+        db_session,
+        db_obj=row,
+        obj_in={
+            "key": None,
+            "key_hash": crud_api_key.build_key_hash(replacement),
+            "key_prefix": crud_api_key.build_key_prefix(replacement),
+        },
+    )
+    assert crud_api_key.get_by_key(db_session, key=previous) is None
+    assert crud_api_key.get_by_key(db_session, key=replacement).id == row.id
+    assert row.key is None
+    crud_api_key.update(db_session, db_obj=row, obj_in={"key": None})
+    assert crud_api_key.get_by_key(db_session, key=replacement).id == row.id

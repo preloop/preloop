@@ -73,8 +73,9 @@ class CRUDApiKey(CRUDBase[ApiKey]):
     ) -> ApiKey:
         """Hash legacy rotation input before updating persisted columns."""
         data = dict(obj_in)
-        if "key" in data:
-            token = data.pop("key")
+        token = data.pop("key", None)
+        # Already-hashed callers used None to clear the retired plaintext field.
+        if token is not None:
             if not isinstance(token, str) or not token:
                 raise ValueError("API key must not be empty")
             data["key_hash"] = self.build_key_hash(token)
