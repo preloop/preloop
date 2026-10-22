@@ -169,7 +169,12 @@ describe('agent-notes-tab', () => {
           .getCalls()
           .some((call) => String(call.args[0]).includes('/session-targets'))
       );
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await waitUntil(() => {
+        const hint = el.shadowRoot!.querySelector(
+          '[data-testid="note-target-hint"]'
+        );
+        return !!hint && !hint.textContent?.includes('Loading live sessions');
+      }, 'live session targets finished loading');
       await el.updateComplete;
     }
 

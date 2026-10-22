@@ -8,6 +8,8 @@ together.
 
 from __future__ import annotations
 
+from typing import Any
+
 import asyncio
 import json
 import sys
@@ -125,3 +127,27 @@ def test_replaying_the_same_run_is_all_duplicates(client, db_session, test_user)
 
     assert sum(r.accepted for r in again.results) == 0
     assert sum(r.duplicates for r in again.results) == 12
+
+
+def test_timestamped_gif_reaches_real_artifact_and_sync_routes(
+    client: Any, db_session: Any, test_user: Any
+) -> None:
+    session, token, _ = _setup(db_session, test_user)
+    reporter = PreloopBrowserUseReporter(
+        PreloopTarget(str(client.base_url), token, str(session.id)), client=client
+    )
+    items = json.loads(FIXTURE.read_text())["history"][:3]
+    asyncio.run(reporter.run(_ReplayAgent(items), gif=True))
+    assert reporter.recording_uploaded
+    headers = {"Authorization": f"Bearer {token}"}
+    artifacts = client.get(
+        f"/api/v1/runtime-sessions/{session.id}/artifacts", headers=headers
+    ).json()["items"]
+    gif = next(row for row in artifacts if row["kind"] == "screencast")
+    assert gif["content_type"] == "image/gif"
+    assert len(gif["media_timing"]["step_offsets"]) == 3
+    sync = client.get(
+        f"/api/v1/runtime-sessions/{session.id}/media-sync", headers=headers
+    ).json()["recordings"][0]
+    assert [row["offset_ms"] for row in sync["mappings"]] == [2500, 5500, 8500]
+    assert all(row["rule"] == "exact" for row in sync["mappings"])

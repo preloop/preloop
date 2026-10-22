@@ -78,8 +78,21 @@ when Preloop is unreachable:
 from preloop_browser_use import PreloopBrowserUseReporter
 
 reporter = PreloopBrowserUseReporter.from_env()
-history = await reporter.run(agent)
+history = await reporter.run(agent, gif=True)
 ```
+
+Install `preloop-browser-use[recording]` to enable the optional GIF export.
+`run(agent)` keeps the existing steps-only behavior; `run(agent, gif=True)` or
+`finish(agent)` deposits a completed timestamped GIF as a `screencast`.
+`finish(agent, gif=False)` only flushes steps. For a completed MP4/WebM, use
+`finish(agent, recording_path="capture.webm", media_timing=timing)` with its
+actual capture timebase. Upload failures are logged and never fail the run.
+The adapter does not guess timing for arbitrary external files.
+
+The stock Browser Use GIF has fixed frame durations, so the optional exporter
+uses per-step timestamps to preserve elapsed time instead. It adds no task or
+reasoning text overlays. Missing timing produces a plain GIF without synchronization metadata.
+Excessive decoded image size can omit the GIF while keeping the reported steps.
 
 Setup, the field mapping and the supported versions are in its
 [README](https://github.com/preloop/preloop/blob/main/runtime-plugins/browser-use-preloop/README.md).
@@ -100,6 +113,10 @@ preloop-skyvern-import --task tsk_123 --session "$SESSION_ID"
 Re-importing the same task stores nothing new. Webhook setup and the field
 mapping are in its
 [README](https://github.com/preloop/preloop/blob/main/runtime-plugins/skyvern-preloop/README.md).
+
+Skyvern recordings carry `media_timing` with the task creation time (or first
+step creation time) as t=0 and exact offsets from step creation timestamps.
+Missing timestamps leave that recording untimed.
 
 ## Screenshots
 
@@ -239,6 +256,14 @@ A screenshot that was evicted by a storage bound or expired under the
 retention policy shows a grey placeholder with the reason and a link to
 the session artifact storage card under **Settings > Account**. The step
 itself stays.
+
+For finished videos, the docked player synchronizes with browser steps,
+model calls and tool calls. Choose a recording, click **Play from here**, or
+use `[` / `]` to navigate mapped steps. Playback highlights the step strip;
+recent manual scrolling pauses automatic timeline following for five seconds.
+GIFs display with a seek-unsupported notice; MP4/WebM support seeking.
+See [Recording timing and the ffmpeg recipe](artifacts.md#recordings-synchronized-to-the-timeline)
+for clock correction, absent timing, multiple captures and the deposit schema.
 
 ## What is stored
 

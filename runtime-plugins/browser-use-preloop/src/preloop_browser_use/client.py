@@ -7,6 +7,8 @@ or slow the agent that is being observed.
 from __future__ import annotations
 
 import logging
+import json
+from pathlib import Path
 import os
 import time
 from collections.abc import Callable, Sequence
@@ -184,6 +186,55 @@ class StepPoster:
             last_error,
         )
         return BatchResult(ok=False)
+
+    def deposit_recording(
+        self, path: Path, *, run_id: str, timing: dict[str, Any] | None
+    ) -> bool:
+        """Upload a finished file with an idempotent identity and bounded retries."""
+        content_type = {
+            ".gif": "image/gif",
+            ".mp4": "video/mp4",
+            ".webm": "video/webm",
+        }.get(path.suffix.lower())
+        if content_type is None:
+            logger.warning("Preloop recording must be GIF, MP4 or WebM")
+            return False
+        kind = "screencast" if content_type == "image/gif" else "recording"
+        cap = (64 if kind == "screencast" else 512) * 1024 * 1024
+        metadata: dict[str, Any] = {
+            "kind": kind,
+            "name": path.name,
+            "labels": {"tags": ["browser_use"]},
+        }
+        if timing is not None:
+            metadata["media_timing"] = timing
+        headers = {
+            "Authorization": f"Bearer {self.target.agent_key}",
+            "Idempotency-Key": f"browser_use:{run_id}:recording:0",
+        }
+        for attempt in range(self.attempts):
+            if attempt:
+                self._sleep(self.backoff * 2 ** (attempt - 1))
+            try:
+                if path.stat().st_size > cap:
+                    logger.warning("Preloop recording exceeds the artifact size cap")
+                    return False
+                # Reopen on retry: a consumed multipart stream cannot be replayed.
+                with path.open("rb") as stream:
+                    response = self._client.post(
+                        self.target.steps_url.rsplit("/", 1)[0] + "/artifacts",
+                        headers=headers,
+                        files={"file": (path.name, stream, content_type)},
+                        data={"metadata": json.dumps(metadata)},
+                    )
+                if response.status_code == 201:
+                    return True
+                if response.status_code not in RETRYABLE_STATUS:
+                    break
+            except (OSError, httpx.HTTPError):
+                continue
+        logger.warning("Preloop recording upload failed after bounded retries")
+        return False
 
     def close(self) -> None:
         """Close the HTTP client when this poster created it."""
