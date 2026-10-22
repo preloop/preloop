@@ -174,8 +174,11 @@ export function invalidateUserProfileCache(): void {
  */
 const apiCacheResetHooks = new Set<() => void>();
 
-export function onApiCachesInvalidated(reset: () => void): void {
+export function onApiCachesInvalidated(reset: () => void): () => void {
   apiCacheResetHooks.add(reset);
+  return () => {
+    apiCacheResetHooks.delete(reset);
+  };
 }
 
 export function invalidateApiCaches(): void {

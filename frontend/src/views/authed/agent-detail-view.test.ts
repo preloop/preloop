@@ -654,6 +654,10 @@ describe('AgentDetailView', () => {
     const governance = new Promise<void>((resolve) => {
       releaseGovernance = resolve;
     });
+    let releaseNextGovernance!: () => void;
+    const nextGovernance = new Promise<void>((resolve) => {
+      releaseNextGovernance = resolve;
+    });
     let holdGovernance = false;
     fetchStub.callsFake(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -661,6 +665,7 @@ describe('AgentDetailView', () => {
         if (url === '/api/v1/users') await users;
         if (url.includes('agent-1/governance') && holdGovernance)
           await governance;
+        if (url.includes('agent-2/governance')) await nextGovernance;
         const isNext = url.includes('agent-2');
         if (isNext) url = url.replace('agent-2', 'agent-1');
         const response = await defaultFetch(url, init);
@@ -683,7 +688,10 @@ describe('AgentDetailView', () => {
     holdGovernance = true;
     const staleContext = (el as any).ensureEditorContext(true);
     try {
-      (el as any).onBeforeEnter({ params: { agentId: 'agent-2' } });
+      (el as any).onBeforeEnter({
+        params: { agentId: 'agent-2' },
+        search: '?tab=tools',
+      });
       expect((el as any).editorContextReady).to.equal(false);
       await (el as any).saveGovernance();
       await (el as any).saveAllowedModels(['old-model']);
@@ -696,6 +704,7 @@ describe('AgentDetailView', () => {
     } finally {
       releaseUsers();
       releaseGovernance();
+      releaseNextGovernance();
     }
     await waitUntil(() => (el as any).agent?.id === 'agent-2');
     await waitUntil(() => (el as any).editorContextReady);

@@ -1310,6 +1310,7 @@ export class AgentDetailView extends LitElement {
 
   /** Editor catalogs are needed only after opening Tools or Models. */
   private ensureEditorContext(refresh = false): Promise<void> {
+    if (!this.agent || this.agent.id !== this.agentId) return Promise.resolve();
     if (this.editorContextRequest) return this.editorContextRequest;
     if (this.editorContextReady && !refresh) return Promise.resolve();
     const generation = this.editorContextGeneration;

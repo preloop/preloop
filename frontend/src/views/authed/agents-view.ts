@@ -69,6 +69,7 @@ import {
   getFeatures,
   updateAccountAgent,
   getUserProfile,
+  onApiCachesInvalidated,
   type ManagedAgentListParams,
 } from '../../api';
 import type {
@@ -211,6 +212,7 @@ export interface AgentListRow {
   tokenUsage: GatewayTokenUsage | null;
   spend: number;
   withoutSubscriptions: SubscriptionEstimate | null;
+  withoutSubscriptionsStale?: boolean;
   lastSeen: string | null;
   /** The original API item, so row actions keep working on the real object. */
   source: any;
@@ -1156,6 +1158,11 @@ export class AgentsView extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    this.unsubscribeCacheReset = onApiCachesInvalidated(() => {
+      ++this.agentsLoadGeneration;
+      this.subscriptionEstimates.clear();
+      this.agents = null;
+    });
 
     this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
       this.narrowViewport = narrow;
@@ -1264,6 +1271,9 @@ export class AgentsView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.unsubscribeCacheReset?.();
+    this.unsubscribeCacheReset = null;
+    this.subscriptionEstimates.clear();
     ++this.agentsLoadGeneration;
     this.unsubscribeRealtime?.();
     this.narrowViewportSubscription?.disconnect();
@@ -1329,6 +1339,32 @@ export class AgentsView extends LitElement {
   }
 
   private agentsLoadGeneration = 0;
+  private unsubscribeCacheReset: (() => void) | null = null;
+  private subscriptionEstimates = new Map<string, SubscriptionEstimate>();
+
+  private hasSubscriptionEstimate(agent: ManagedAgentSummary): boolean {
+    // Explicit null means no subscription traffic. An omitted block means
+    // unavailable, even if an older/partial response claims it was computed.
+    return (
+      agent.subscription_usage_computed === true &&
+      agent.subscription_usage !== undefined &&
+      typeof agent.estimated_cost === 'number' &&
+      Number.isFinite(agent.estimated_cost)
+    );
+  }
+
+  private rememberSubscriptionEstimates(agents: ManagedAgentSummary[]): void {
+    for (const agent of agents) {
+      if (this.hasSubscriptionEstimate(agent)) {
+        // Retain the entire previous calculation; never add stale subscription
+        // pricing to fresh metered spend from a partial response.
+        this.subscriptionEstimates.set(
+          agent.id,
+          subscriptionEstimate(agent.estimated_cost, agent.subscription_usage)
+        );
+      }
+    }
+  }
 
   private async loadAgents(): Promise<void> {
     const generation = ++this.agentsLoadGeneration;
@@ -1468,6 +1504,7 @@ export class AgentsView extends LitElement {
             items: Array.isArray(page?.items) ? page.items : [],
           };
           if (generation === this.agentsLoadGeneration) {
+            this.rememberSubscriptionEstimates(data.items);
             this.agents = data;
             this.loading = false;
             this.initializeNodePositions(false);
@@ -3336,6 +3373,9 @@ export class AgentsView extends LitElement {
       });
       if (generation !== this.agentsLoadGeneration || !this.agents) return;
       const seen = new Set(this.agents.items.map((item) => item.id));
+      this.rememberSubscriptionEstimates(
+        page.items.filter((item) => !seen.has(item.id))
+      );
       this.agents = {
         ...this.agents,
         total: page.total,
@@ -3472,9 +3512,11 @@ export class AgentsView extends LitElement {
         requests: agent.total_requests || 0,
         tokenUsage: agent.token_usage || null,
         spend: agent.estimated_cost || 0,
-        withoutSubscriptions: agent.subscription_usage_computed
+        withoutSubscriptions: this.hasSubscriptionEstimate(agent)
           ? subscriptionEstimate(agent.estimated_cost, agent.subscription_usage)
-          : null,
+          : (this.subscriptionEstimates.get(agent.id) ?? null),
+        withoutSubscriptionsStale:
+          this.loading || !!this.error || !this.hasSubscriptionEstimate(agent),
         lastSeen: live?.lastActivityAt || agent.last_seen_at || null,
         source: agent,
       };
@@ -3657,9 +3699,14 @@ export class AgentsView extends LitElement {
             >`;
           return html`<span
             data-testid="without-subscriptions"
-            title=${estimate.title}
+            title=${
+              row.withoutSubscriptionsStale
+                ? `Estimate from a previous successful read; current pricing is unavailable or updating. ${estimate.title}`
+                : estimate.title
+            }
           >
             ${estimate.value === null ? 'No estimate' : `${estimate.partial ? '≥ ' : ''}${formatUsd(estimate.value)}`}
+            ${row.withoutSubscriptionsStale ? html`<small>previous</small>` : nothing}
           </span>`;
         },
       },

@@ -4,6 +4,7 @@ import sinon from 'sinon';
 import './agents-view.ts';
 import type { AgentListRow, AgentsView } from './agents-view';
 import { ListTable } from '../../table';
+import { invalidateApiCaches } from '../../api';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
@@ -1471,6 +1472,78 @@ describe('AgentsView', () => {
     );
     expect(estimate?.closest('td')).to.equal(spendCell?.nextElementSibling);
     expect(row.textContent).to.contain('$0.42');
+  });
+
+  it('retains a labeled previous subscription estimate through partial reads and replaces it with real zero', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Example Agent', 'codex'),
+        estimated_cost: 0.42,
+        subscription_usage_computed: true,
+        subscription_usage: {
+          request_count: 1,
+          covered_requests: 1,
+          api_equivalent_cost: 0.5,
+        },
+      },
+    ];
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const estimate = () =>
+      el.shadowRoot!.querySelector('[data-testid="without-subscriptions"]');
+    expect(estimate()?.textContent?.trim()).to.equal('$0.92');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (input.toString().startsWith('/api/v1/agents')) await held;
+      return defaultFetch(input);
+    });
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Example Agent', 'codex'),
+        estimated_cost: 9,
+        subscription_usage_computed: false,
+      },
+    ];
+    const refresh = (el as any).loadAgents();
+    try {
+      await el.updateComplete;
+      expect(estimate()?.textContent).to.contain('$0.92');
+      expect(estimate()?.textContent).to.contain('previous');
+    } finally {
+      release();
+    }
+    await refresh;
+    await el.updateComplete;
+    expect(estimate()?.textContent).to.contain('$0.92');
+    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.getAttribute('title')).to.contain(
+      'previous successful read'
+    );
+    // A nominally computed response missing the block is still partial.
+    agentItems[0].subscription_usage_computed = true;
+    await (el as any).loadAgents();
+    await el.updateComplete;
+    expect(estimate()?.textContent).to.contain('$0.92');
+    expect(estimate()?.textContent).to.contain('previous');
+    // Explicit null means no subscription traffic, and zero is real data.
+    agentItems[0].estimated_cost = 0;
+    agentItems[0].subscription_usage = null;
+    await (el as any).loadAgents();
+    await el.updateComplete;
+    expect(estimate()?.textContent?.trim()).to.equal('$0.00');
+    agentItems[0].subscription_usage_computed = false;
+    await (el as any).loadAgents();
+    await el.updateComplete;
+    expect(estimate()?.textContent).to.contain('$0.00');
+    expect(estimate()?.textContent).to.contain('previous');
+    // Sign-out/account changes cannot lend a previous account's value.
+    invalidateApiCaches();
+    await (el as any).loadAgents();
+    await el.updateComplete;
+    expect(estimate()).to.not.exist;
   });
 
   for (const [label, computed, requests, expected] of [

@@ -95,6 +95,12 @@ and ignore stale results. Live refreshes retain already displayed older rows;
 pagination resumes from the server offset, never the number of retained rows.
 Full event drill-in remains available from the existing detail endpoint.
 The Agents deployment dialog mounts its editor only when opened.
+The list retains each agent's last complete subscription estimate during
+refreshes and partial reads, visibly marked "previous". It keeps the complete
+calculation rather than mixing old subscription pricing with new metered spend.
+A computed null subscription block means no subscription traffic; an omitted
+block is unavailable. Fresh zero or unpriced results replace the previous value.
+These view-local snapshots clear on account cache invalidation and disposal.
 
 ### Capability-gated account views (`src/capabilities.ts`, `src/components/capability-extension.ts`)
 
