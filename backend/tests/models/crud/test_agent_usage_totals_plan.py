@@ -116,11 +116,22 @@ def test_principal_totals_plan_is_index_only(
     # recognize the literal partial-index predicates, even with unknown
     # account and principal parameter values.
     placeholders: dict[str, int] = {}
-    generic_sql = re.sub(
-        r"%\(([^)]+)\)s",
-        lambda match: f"${placeholders.setdefault(match.group(1), len(placeholders) + 1)}",
-        statement,
-    )
+
+    def generic_parameter(match: re.Match[str]) -> str:
+        name = match.group(1)
+        value = parameters[name]
+        # SQLAlchemy 2.0 does not render the numeric casts that 2.1 adds.
+        # Untyped CASE parameters resolve to text, making SUM(text) invalid.
+        # Inline query constants; leave account/principal/window inputs unknown.
+        if isinstance(value, (int, float)) or value in (
+            "api_equivalent_cost",
+            "number",
+        ):
+            return _literal(value)
+        number = placeholders.setdefault(name, len(placeholders) + 1)
+        return f"${number}"
+
+    generic_sql = re.sub(r"%\(([^)]+)\)s", generic_parameter, statement)
     generic_plan = "\n".join(
         row[0]
         for row in db_session.connection().exec_driver_sql(
