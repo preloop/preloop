@@ -55,10 +55,18 @@ Example YAML:
         keywords:
           - name: codenames
             terms: ["Project Phoenix"]
-
-    defaults:
-      unknown_tools: "deny"
-      require_approval_for_new_tools: true
+      # No defaults block: apply only accepts unknown_tools: allow, so a
+      # tool call that no rule matches is allowed. This rule denies every
+      # other tool on github-mcp instead. The scope names the server
+      # defined under mcp_servers; apply rejects a server that neither the
+      # file nor the account has.
+      rules:
+        - id: github-allowlist
+          "on": [tool.args]
+          scope:
+            servers: [github-mcp]
+          condition: "!(tool.name in ['get_issue', 'list_issues'])"
+          action: deny
 """
 
 import re
@@ -1245,25 +1253,41 @@ def _rule_pii_types(rule: ModelIORule) -> List[str]:
 class DefaultsDefinition(BaseModel):
     """Default behaviors for the policy.
 
+    ``apply`` only implements the built-in behavior and rejects the other
+    values (see ``unsupported_default_settings`` in the loader).
+
     Attributes:
-        unknown_tools: How to handle tools not explicitly configured.
-        require_approval_for_new_tools: Require approval for newly discovered tools.
-        default_approval_workflow: Default approval workflow for tools requiring approval.
-        inherit_from_parent: Whether to inherit settings from parent/global policy.
+        unknown_tools: How to handle tools not explicitly configured. Only
+            ``allow`` is supported.
+        require_approval_for_new_tools: Require approval for newly discovered
+            tools. Only ``False`` is supported.
+        default_approval_workflow: Default approval workflow for tools
+            requiring approval. Not implemented; ``apply`` rejects any value.
+        inherit_from_parent: Not used; ``apply`` accepts any value and
+            ignores it.
     """
 
     unknown_tools: UnknownToolsPolicy = Field(
         UnknownToolsPolicy.ALLOW,
-        description="How to handle tools not explicitly configured",
+        description=(
+            "How to handle tools not explicitly configured. Only 'allow' is "
+            "supported; apply rejects 'deny' and 'require_approval'"
+        ),
     )
     require_approval_for_new_tools: bool = Field(
-        False, description="Require approval for newly discovered tools"
+        False,
+        description=(
+            "Require approval for newly discovered tools. Only false is "
+            "supported; apply rejects true"
+        ),
     )
     default_approval_workflow: Optional[str] = Field(
-        None, description="Default approval workflow name"
+        None,
+        description="Default approval workflow name. Not implemented; apply rejects it",
     )
     inherit_from_parent: bool = Field(
-        True, description="Whether to inherit from parent/global policy"
+        True,
+        description="Not used; apply accepts any value and ignores it",
     )
 
     model_config = ConfigDict(use_enum_values=True)

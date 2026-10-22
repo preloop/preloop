@@ -540,7 +540,8 @@ async def upload_policy(
         False,
         description=(
             "If true, skip tools that reference MCP servers not configured in your "
-            "account instead of failing. Skipped tools are reported as warnings."
+            "account instead of failing, and keep sensitive_data scopes that name "
+            "such servers. Both are reported as warnings."
         ),
     ),
     account: Account = Depends(get_account_for_user),
@@ -562,6 +563,10 @@ async def upload_policy(
     referenced server doesn't exist:
     - With `skip_missing_servers=false` (default): Returns an error
     - With `skip_missing_servers=true`: Skips the tool and adds a warning
+
+    A `sensitive_data` rule or reference_only entry whose tool scope names
+    such a server is an error too. With `skip_missing_servers=true` it is
+    kept and reported as a warning.
 
     Args:
         file: The policy file to apply (YAML or JSON).
@@ -1841,6 +1846,9 @@ async def generate_policy_from_audit(
         yaml_output = await asyncio.to_thread(
             service._call_llm, model, system_prompt, summary
         )
+        # The audit summary asks to remove nothing, so put back everything
+        # configured that the model left out.
+        yaml_output = service._merge_preserving_unrelated(yaml_output, "")
         warnings = service._validate_output(yaml_output)
         result = {"yaml": yaml_output, "warnings": warnings}
     except PolicyGenerationError as exc:

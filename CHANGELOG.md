@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking or behavior changes
+
+- **`apply` rejects a `sensitive_data` scope server it does not know.** A tool
+  rule or `reference_only` entry whose `scope.servers` names a server that is
+  neither in the file's `mcp_servers` nor configured in or shared with the
+  account matched no call, so a deny rule or reference-only entry applied to
+  nothing. `apply` now returns an error, as it does for a tool on an unknown
+  server. `skip_missing_servers` turns it into a warning and keeps the entry
+  (#1426).
+
+### Fixed
+
+- **Generated policies no longer set `defaults` that `apply` rejects.** The
+  policy-generation prompts asked for `unknown_tools: deny` or
+  `require_approval` (the audit-log prompt always asked for
+  `require_approval`), which `preloop policy apply` refuses. The prompts now
+  leave `defaults` out and show a `sensitive_data` rule scoped to one MCP
+  server, with a CEL allowlist, for deny-by-default; the audit-log prompt's
+  version requires approval through a workflow it defines. A generated
+  `defaults` block that `apply` would reject goes back to the model with the
+  error. Because `apply` replaces the whole `sensitive_data` block,
+  generation puts back the stored detectors, rules and `reference_only`
+  entries that the model leaves out. Audit-log generation now runs the same
+  merge as prompt generation. The policy-as-code reference and the schema
+  now say that `inherit_from_parent` is not used (#1426).
+
 ## [0.17.1] - 2026-10-21
 
 ### Added

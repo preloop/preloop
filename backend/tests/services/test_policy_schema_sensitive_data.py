@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 import yaml
 from pydantic import ValidationError
+from pytest_mock import MockerFixture
 
 from preloop.services.policy import (
     PolicyDocument,
@@ -190,16 +191,40 @@ def test_locales_are_normalised() -> None:
     assert config.locales == ["de", "nl"]
 
 
-def test_yaml_example_in_schema_docstring_loads() -> None:
+def _schema_docstring_example() -> PolicyDocument:
     import preloop.services.policy.schema as schema_module
 
     doc_text = schema_module.__doc__
     example = doc_text.split("Example YAML:", 1)[1]
     example = "\n".join(line[4:] for line in example.splitlines())
-    data = yaml.safe_load(example)
-    doc = PolicyDocument.model_validate(data)
+    return PolicyDocument.model_validate(yaml.safe_load(example))
+
+
+def test_yaml_example_in_schema_docstring_loads() -> None:
+    doc = _schema_docstring_example()
     assert doc.sensitive_data.detectors.locales == ["de", "nl"]
     assert "employee_id" in doc.model_io[0].detectors.pii.types
+
+
+def test_schema_docstring_example_passes_the_account_check(
+    mocker: MockerFixture,
+) -> None:
+    """Its scope names a server the example defines, so an empty account
+    accepts it."""
+    from preloop.services.policy.loader import PolicyApplier
+
+    mocker.patch(
+        "preloop.models.crud.crud_mcp_server.get_active_by_account", return_value=[]
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_approval_workflow.get_names_by_account",
+        return_value=set(),
+    )
+    doc = _schema_docstring_example()
+    assert doc.sensitive_data is not None
+    assert doc.sensitive_data.rules[0].scope.servers == ["github-mcp"]
+    applier = PolicyApplier(MagicMock(), uuid.uuid4())
+    assert applier._validate_references(doc) == []
 
 
 def test_sensitive_data_diff_is_reported_as_one_item() -> None:

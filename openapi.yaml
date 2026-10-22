@@ -28331,7 +28331,8 @@ components:
           type: boolean
           title: Skip Missing Servers
           description: If true, skip tools that reference MCP servers not configured
-            in your account instead of failing. Skipped tools are reported as warnings.
+            in your account instead of failing, and keep sensitive_data scopes that
+            name such servers. Both are reported as warnings.
           default: false
       type: object
       required:

@@ -1,13 +1,17 @@
 """Tests for PolicyGenerationService and policy generation endpoints."""
 
 import json
+import re
 import sys
 import uuid
 from datetime import datetime, timezone
 from types import ModuleType
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
+from pytest_mock import MockerFixture
 
 # litellm is not installed in the test environment — provide a stub so
 # the policy_generation module can be imported.
@@ -17,9 +21,21 @@ if "litellm" not in sys.modules:
     sys.modules["litellm"] = _stub
 
 from preloop.models.models.account import Account
+from preloop.services.policy import (
+    DefaultsDefinition,
+    PolicyApplier,
+    PolicyDocument,
+    UnknownToolsPolicy,
+    load_policy_from_string,
+)
 from preloop.services.policy_generation import (
     PolicyGenerationError,
     PolicyGenerationService,
+)
+from preloop.services.policy_simulation import (
+    PolicyEvaluationRequest,
+    PolicyEvaluationResponse,
+    simulate_policy,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -160,6 +176,343 @@ class TestValidateOutput:
     def test_schema_errors(self):
         with pytest.raises(PolicyGenerationError, match="schema errors"):
             PolicyGenerationService._validate_output(INVALID_POLICY_YAML)
+
+
+# ---------------------------------------------------------------------------
+# defaults: generation accepts what `preloop policy apply` accepts (#1426)
+# ---------------------------------------------------------------------------
+
+DEFAULTS_CASES = [
+    {},
+    {"unknown_tools": "allow"},
+    {"unknown_tools": "deny"},
+    {"unknown_tools": "require_approval"},
+    {"require_approval_for_new_tools": True},
+    {"default_approval_workflow": "review"},
+]
+
+
+def _apply_accepts(defaults: dict[str, Any]) -> bool:
+    """Whether ``PolicyApplier._apply_defaults`` accepts these defaults."""
+    applier = PolicyApplier(MagicMock(), account_id=str(uuid.uuid4()))
+    return applier._apply_defaults(DefaultsDefinition(**defaults), dry_run=True)
+
+
+def _with_defaults(defaults: dict[str, Any]) -> str:
+    policy = yaml.safe_load(VALID_POLICY_YAML)
+    policy["defaults"] = defaults
+    return yaml.safe_dump(policy, sort_keys=False)
+
+
+def _yaml_examples(prompt: str) -> list[str]:
+    return re.findall(r"```yaml\n(.*?)```", prompt, re.DOTALL)
+
+
+def _as_policy(example: str) -> str:
+    """Add the fields a policy file needs to a YAML example from a prompt."""
+    policy = yaml.safe_load(example)
+    policy.setdefault("version", "1.0")
+    policy.setdefault("metadata", {"name": "Prompt example"})
+    return yaml.safe_dump(policy, sort_keys=False)
+
+
+class TestValidateOutputDefaults:
+    @pytest.mark.parametrize("defaults", DEFAULTS_CASES)
+    def test_rejects_what_apply_rejects(self, defaults: dict[str, Any]) -> None:
+        text = _with_defaults(defaults)
+        if _apply_accepts(defaults):
+            PolicyGenerationService._validate_output(text)
+        else:
+            with pytest.raises(PolicyGenerationError, match="defaults"):
+                PolicyGenerationService._validate_output(text)
+
+    def test_retry_names_the_rejected_setting(
+        self, service: PolicyGenerationService, mock_ai_model: MagicMock
+    ) -> None:
+        # What the norm-based prompt used to ask for.
+        bad_response = MagicMock()
+        bad_response.choices = [MagicMock()]
+        bad_response.choices[0].message.content = _with_defaults(
+            {"unknown_tools": "require_approval"}
+        )
+        good_response = MagicMock()
+        good_response.choices = [MagicMock()]
+        good_response.choices[0].message.content = VALID_POLICY_YAML
+
+        with patch("preloop.services.policy_generation.litellm") as mock_litellm:
+            mock_litellm.completion.side_effect = [bad_response, good_response]
+            result = service._call_llm(mock_ai_model, "system", "user")
+
+        assert result == VALID_POLICY_YAML.strip()
+        messages = mock_litellm.completion.call_args.kwargs["messages"]
+        assert "unknown_tools='require_approval'" in messages[-1]["content"]
+
+
+@pytest.fixture(params=["_build_system_prompt", "_build_audit_system_prompt"])
+def system_prompt(
+    request: pytest.FixtureRequest, service: PolicyGenerationService
+) -> str:
+    prompt: str = getattr(service, request.param)("{}", "")
+    return prompt
+
+
+class TestPromptDefaultsGuidance:
+    def test_rules_name_no_unknown_tools_value_apply_rejects(
+        self, system_prompt: str
+    ) -> None:
+        rejected = [
+            value.value
+            for value in UnknownToolsPolicy
+            if not _apply_accepts({"unknown_tools": value.value})
+        ]
+        assert rejected
+        rules = system_prompt.split("### RULES", 1)[1].split("###", 1)[0]
+        for bullet in rules.split("\n- "):
+            if "unknown_tools" not in bullet:
+                continue
+            for value in rejected:
+                assert not re.search(rf"\b{value}\b", bullet), bullet
+
+    def test_yaml_examples_pass_apply(self, system_prompt: str) -> None:
+        examples = _yaml_examples(system_prompt)
+        assert examples, "the prompt shows no YAML example"
+        for example in examples:
+            text = _as_policy(example)
+            policy, result = load_policy_from_string(text)
+            assert result.is_valid, result.errors
+            assert policy is not None
+            defaults = policy.defaults.model_dump() if policy.defaults else {}
+            assert _apply_accepts(defaults)
+            PolicyGenerationService._validate_output(text)
+
+    @pytest.mark.parametrize(
+        ("builder", "unlisted_decision"),
+        [
+            ("_build_system_prompt", "deny"),
+            # The audit-log policy puts tools the logs never show behind
+            # approval instead of denying them.
+            ("_build_audit_system_prompt", "require_approval"),
+        ],
+    )
+    async def test_example_rule_handles_unlisted_tools(
+        self,
+        service: PolicyGenerationService,
+        builder: str,
+        unlisted_decision: str,
+    ) -> None:
+        system_prompt = getattr(service, builder)("{}", "")
+        [example] = [e for e in _yaml_examples(system_prompt) if "condition" in e]
+        text = _as_policy(example)
+        policy, _ = load_policy_from_string(text)
+        assert policy is not None and policy.sensitive_data is not None
+        [rule] = policy.sensitive_data.rules
+        assert rule.condition is not None
+        assert rule.action == unlisted_decision
+        # An approval rule names a workflow the example defines.
+        workflows = {workflow.name for workflow in policy.approval_workflows or []}
+        if unlisted_decision == "require_approval":
+            assert rule.approval_workflow in workflows
+        else:
+            assert rule.approval_workflow is None
+        [server] = rule.scope.servers
+        listed = re.findall(r"'([^']+)'", rule.condition)
+        assert listed
+
+        async def decide(name: str) -> PolicyEvaluationResponse:
+            request = PolicyEvaluationRequest.model_validate(
+                {"name": name, "server": server, "args": {}, "draft_yaml": text}
+            )
+            return await simulate_policy(
+                request, db=MagicMock(), account_id=uuid.uuid4(), user_id=uuid.uuid4()
+            )
+
+        for name in listed:
+            assert (await decide(name)).decision == "allow", name
+        result = await decide("tool_the_example_does_not_list")
+        assert result.decision == unlisted_decision
+        assert result.matched_rule == rule.id
+
+    def test_example_scope_server_is_a_placeholder_apply_rejects(
+        self, system_prompt: str, mocker: MockerFixture
+    ) -> None:
+        # A copied example fails on apply instead of scoping the rule to a
+        # server that no call comes from.
+        [example] = [e for e in _yaml_examples(system_prompt) if "condition" in e]
+        policy, _ = load_policy_from_string(_as_policy(example))
+        assert policy is not None
+        server = MagicMock()
+        server.name = "github"
+        server.auth_config = None
+        mocker.patch(
+            "preloop.models.crud.crud_mcp_server.get_active_by_account",
+            return_value=[server],
+        )
+        mocker.patch(
+            "preloop.models.crud.crud_approval_workflow.get_names_by_account",
+            return_value=set(),
+        )
+        mocker.patch(
+            "preloop.services.model_content_policy.load_model_io_rules",
+            return_value=[],
+        )
+        applier = PolicyApplier(MagicMock(), account_id=str(uuid.uuid4()))
+        errors = applier._validate_references(policy)
+        assert any("<mcp-server-name>" in error for error in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# sensitive_data: apply replaces the block, so the merge keeps stored entries
+# ---------------------------------------------------------------------------
+
+STORED_SENSITIVE_DATA = {
+    "detectors": {
+        "locales": ["de"],
+        "custom_patterns": [{"name": "employee_id", "regex": r"EMP-\d{6}"}],
+    },
+    "rules": [
+        {
+            "id": "block-ids",
+            "on": ["tool.args"],
+            "types": ["credit_card", "employee_id"],
+            "action": "deny",
+        }
+    ],
+    "reference_only": [{"id": "patient-refs", "scope": {"servers": ["ehr"]}}],
+}
+
+# Only the new allowlist rule and a new keyword list: what a model writes
+# when it does not copy the stored block.
+GENERATED_SENSITIVE_DATA_YAML = """\
+version: "1.0"
+metadata:
+  name: "Generated"
+sensitive_data:
+  detectors:
+    keywords:
+      - name: codenames
+        terms: ["Project Phoenix"]
+  rules:
+    - id: github-allowlist
+      "on": [tool.args]
+      scope:
+        servers: [github]
+      condition: "!(tool.name in ['get_issue'])"
+      action: deny
+"""
+
+
+def _generate_over_stored_block(
+    service: PolicyGenerationService,
+    mock_ai_model: MagicMock,
+    generated_yaml: str,
+    prompt: str = "Only allow get_issue on github",
+) -> PolicyDocument:
+    current = PolicyDocument.model_validate(
+        {
+            "version": "1.0",
+            "metadata": {"name": "current"},
+            "sensitive_data": STORED_SENSITIVE_DATA,
+        }
+    )
+    with (
+        patch.object(service, "_resolve_model", return_value=mock_ai_model),
+        patch.object(service, "_call_llm", return_value=generated_yaml),
+        patch.object(service, "_build_context_block", return_value="ctx"),
+        patch(
+            "preloop.services.policy_generation.export_current_policy",
+            return_value=current,
+        ),
+    ):
+        result = service.generate_from_prompt(prompt)
+    return PolicyDocument.model_validate(yaml.safe_load(result["yaml"]))
+
+
+class TestMergeKeepsSensitiveData:
+    def test_restores_entries_the_model_left_out(
+        self, service: PolicyGenerationService, mock_ai_model: MagicMock
+    ) -> None:
+        document = _generate_over_stored_block(
+            service, mock_ai_model, GENERATED_SENSITIVE_DATA_YAML
+        )
+        block = document.sensitive_data
+        assert block is not None and block.detectors is not None
+        assert [rule.id for rule in block.rules] == ["github-allowlist", "block-ids"]
+        assert [item.id for item in block.reference_only] == ["patient-refs"]
+        assert block.detectors.locales == ["de"]
+        assert [item.name for item in block.detectors.custom_patterns] == [
+            "employee_id"
+        ]
+        assert [item.name for item in block.detectors.keywords] == ["codenames"]
+
+    def test_values_the_model_wrote_win(
+        self, service: PolicyGenerationService, mock_ai_model: MagicMock
+    ) -> None:
+        data = yaml.safe_load(GENERATED_SENSITIVE_DATA_YAML)
+        data["sensitive_data"]["detectors"]["locales"] = ["nl"]
+        data["sensitive_data"]["rules"].append(
+            {"id": "block-ids", "on": ["tool.args"], "action": "notify"}
+        )
+        document = _generate_over_stored_block(
+            service, mock_ai_model, yaml.safe_dump(data, sort_keys=False)
+        )
+        block = document.sensitive_data
+        assert block is not None and block.detectors is not None
+        assert block.detectors.locales == ["nl"]
+        [stored_id_rule] = [rule for rule in block.rules if rule.id == "block-ids"]
+        assert stored_id_rule.action == "notify"
+
+    def test_prompt_can_drop_a_stored_rule(
+        self, service: PolicyGenerationService, mock_ai_model: MagicMock
+    ) -> None:
+        document = _generate_over_stored_block(
+            service,
+            mock_ai_model,
+            GENERATED_SENSITIVE_DATA_YAML,
+            prompt="Remove the block-ids rule",
+        )
+        assert document.sensitive_data is not None
+        assert [rule.id for rule in document.sensitive_data.rules] == [
+            "github-allowlist"
+        ]
+
+    def test_block_left_out_stays_out(
+        self, service: PolicyGenerationService, mock_ai_model: MagicMock
+    ) -> None:
+        # Apply keeps the stored block when the document has none.
+        document = _generate_over_stored_block(
+            service, mock_ai_model, VALID_POLICY_YAML
+        )
+        assert document.sensitive_data is None
+
+    @pytest.mark.parametrize("include_current_config", [True, False])
+    def test_prompt_asks_to_keep_entries_only_when_it_shows_them(
+        self,
+        service: PolicyGenerationService,
+        mock_ai_model: MagicMock,
+        include_current_config: bool,
+    ) -> None:
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(
+                service, "_call_llm", return_value=VALID_POLICY_YAML
+            ) as mock_call,
+            patch.object(service, "_build_context_block", return_value="ctx"),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                side_effect=RuntimeError("not needed"),
+            ),
+        ):
+            service.generate_from_prompt(
+                "test", include_current_config=include_current_config
+            )
+        system_prompt = " ".join(mock_call.call_args.args[1].split())
+        assert ("existing detectors" in system_prompt) is include_current_config
+
+    def test_audit_prompt_asks_to_keep_entries_only_when_it_shows_them(
+        self, service: PolicyGenerationService
+    ) -> None:
+        assert "existing detectors" not in service._build_audit_system_prompt("{}", "")
+        assert "existing detectors" in service._build_audit_system_prompt("{}", "ctx")
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +1027,39 @@ class TestGenerateFromAuditLogs:
         mock_ext.assert_called_once_with(logs_json)
         assert result["yaml"] == VALID_POLICY_YAML
 
+    def test_restores_configuration_the_model_left_out(
+        self, service: PolicyGenerationService, mock_ai_model: MagicMock
+    ) -> None:
+        current = PolicyDocument.model_validate(
+            {
+                "version": "1.0",
+                "metadata": {"name": "current"},
+                "tools": [{"name": "bash", "source": "builtin"}],
+                "sensitive_data": STORED_SENSITIVE_DATA,
+            }
+        )
+        with (
+            patch.object(service, "_resolve_model", return_value=mock_ai_model),
+            patch.object(service, "_summarise_account_logs", return_value="summary"),
+            patch.object(
+                service, "_call_llm", return_value=GENERATED_SENSITIVE_DATA_YAML
+            ),
+            patch.object(service, "_build_context_block", return_value="ctx"),
+            patch(
+                "preloop.services.policy_generation.export_current_policy",
+                return_value=current,
+            ),
+        ):
+            result = service.generate_from_audit_logs()
+
+        document = PolicyDocument.model_validate(yaml.safe_load(result["yaml"]))
+        assert [tool.name for tool in document.tools or []] == ["bash"]
+        assert document.sensitive_data is not None
+        assert [rule.id for rule in document.sensitive_data.rules] == [
+            "github-allowlist",
+            "block-ids",
+        ]
+
     def test_empty_logs_raises(self, service, mock_ai_model):
         with (
             patch.object(service, "_resolve_model", return_value=mock_ai_model),
@@ -857,6 +1243,9 @@ class TestGeneratePolicyFromAuditEndpoint:
             instance._build_context_block.return_value = ""
             instance._build_audit_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
+            instance._merge_preserving_unrelated.side_effect = (
+                lambda yaml_text, _prompt: yaml_text
+            )
             instance._validate_output.return_value = ["minor warning"]
             result = await generate_policy_from_audit(
                 request,
@@ -867,6 +1256,9 @@ class TestGeneratePolicyFromAuditEndpoint:
 
         assert result.yaml == VALID_POLICY_YAML
         assert result.warnings == ["minor warning"]
+        instance._merge_preserving_unrelated.assert_called_once_with(
+            VALID_POLICY_YAML, ""
+        )
 
     async def test_with_date_range(self, mock_account, mock_db, mock_user):
         from preloop.api.endpoints.policies import (
@@ -885,6 +1277,9 @@ class TestGeneratePolicyFromAuditEndpoint:
             instance._build_context_block.return_value = ""
             instance._build_audit_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
+            instance._merge_preserving_unrelated.side_effect = (
+                lambda yaml_text, _prompt: yaml_text
+            )
             instance._validate_output.return_value = []
             result = await generate_policy_from_audit(
                 request,
@@ -980,6 +1375,9 @@ class TestGeneratePolicyFromAuditEndpoint:
             instance._build_context_block.return_value = ""
             instance._build_audit_system_prompt.return_value = "system"
             instance._call_llm.return_value = VALID_POLICY_YAML
+            instance._merge_preserving_unrelated.side_effect = (
+                lambda yaml_text, _prompt: yaml_text
+            )
             instance._validate_output.return_value = []
             result = await generate_policy_from_audit(
                 request,
