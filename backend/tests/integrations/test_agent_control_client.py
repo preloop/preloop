@@ -522,3 +522,45 @@ async def test_terminal_result_replays_until_ordered_heartbeat_receipt(
         for x in second.sent
         if x.get("name") == "command_result"
     ] == ["Retain this completed investigation"]
+
+
+async def test_eviction_during_inference_does_not_reconnect() -> None:
+    class EvictedSocket(FakeWebSocket):
+        async def send_json(self, payload: dict[str, Any]) -> None:
+            if payload.get("name") == "command_result":
+                self.close_code = 4000
+                raise ConnectionResetError("Cannot write to closing transport")
+            await super().send_json(payload)
+
+    socket = EvictedSocket(
+        [
+            {
+                "type": "command",
+                "name": "send_message",
+                "message_id": "evicted",
+                "payload": {"text": "Analyze"},
+            }
+        ]
+    )
+    connections = []
+
+    def factory(headers: dict[str, str]) -> FakeSession:
+        connections.append(True)
+        return FakeSession(socket, headers)
+
+    async def finish(command: OperatorCommand) -> AgentControlResult:
+        return AgentControlResult(reply_text="Finished")
+
+    client = AgentControlClient(
+        AgentControlConfig(
+            control_ws_url="wss://example.com/control",
+            bearer_token="test",
+            runtime_principal_id="test",
+        ),
+        HookedAgentControlAdapter.with_hooks(send_message=finish),
+        session_factory=factory,
+        reconnect_delay_seconds=0,
+    )
+    with pytest.raises(ConnectionEvictedError):
+        await client.run_forever(max_attempts=2)
+    assert len(connections) == 1

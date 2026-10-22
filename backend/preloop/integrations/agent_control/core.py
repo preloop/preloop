@@ -419,7 +419,17 @@ class AgentControlClient:
     async def _send_json(
         self, websocket: aiohttp.ClientWebSocketResponse, envelope: OutboundEnvelope
     ) -> None:
-        await websocket.send_json(envelope)
+        try:
+            await websocket.send_json(envelope)
+        except Exception:
+            # The concurrent reader can observe eviction while inference is
+            # running. Its later send fails before the normal loop-exit check.
+            # Never reconnect and evict the newer owner in that case.
+            if getattr(websocket, "close_code", None) == EVICTION_CLOSE_CODE:
+                raise ConnectionEvictedError(
+                    "Connection evicted by server: superseded by a newer connection"
+                ) from None
+            raise
 
     def capability_envelope(self) -> OutboundEnvelope:
         """Build the initial capability advertisement envelope."""
