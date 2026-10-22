@@ -21720,9 +21720,66 @@ paths:
         content:
           application/json:
             schema:
+              $defs:
+                MediaStepOffset:
+                  additionalProperties: false
+                  description: An exact producer-reported position in the media timebase.
+                  properties:
+                    source_step_id:
+                      maxLength: 200
+                      minLength: 1
+                      title: Source Step Id
+                      type: string
+                    offset_ms:
+                      minimum: 0
+                      title: Offset Ms
+                      type: integer
+                  required:
+                  - source_step_id
+                  - offset_ms
+                  title: MediaStepOffset
+                  type: object
+                MediaTiming:
+                  additionalProperties: false
+                  description: Wall clock at media t=0, optionally supplemented by
+                    exact offsets.
+                  properties:
+                    started_at:
+                      format: date-time
+                      title: Started At
+                      type: string
+                    duration_ms:
+                      anyOf:
+                      - minimum: 0
+                        type: integer
+                      - type: 'null'
+                      title: Duration Ms
+                    clock:
+                      enum:
+                      - agent
+                      - server
+                      title: Clock
+                      type: string
+                    step_offsets:
+                      anyOf:
+                      - items:
+                          $ref: '#/components/schemas/MediaStepOffset'
+                        maxItems: 5000
+                        type: array
+                      - type: 'null'
+                      title: Step Offsets
+                  required:
+                  - started_at
+                  - clock
+                  title: MediaTiming
+                  type: object
               additionalProperties: false
               description: 'JSON deposit: the metadata fields plus one MCP ``ContentBlock``.'
               properties:
+                media_timing:
+                  anyOf:
+                  - $ref: '#/components/schemas/MediaTiming'
+                  - type: 'null'
                 kind:
                   anyOf:
                   - type: string
@@ -21786,8 +21843,8 @@ paths:
                   format: binary
                 metadata:
                   type: string
-                  description: 'JSON object: kind, name, labels, activity_id, parent_artifact_id,
-                    tool_name'
+                  description: 'JSON object: media_timing, kind, name, labels, activity_id,
+                    parent_artifact_id, tool_name'
       security:
       - bearerAuth: []
       x-restricted-ci: deny
@@ -21865,6 +21922,111 @@ paths:
           description: Runtime session not found in this account
         '422':
           description: Bad kind, label, limit or cursor
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}/media-timing:
+    patch:
+      tags:
+      - Runtime Sessions
+      summary: Update Artifact Media Timing
+      description: Idempotently replace timing using a session-bound key or manage_agents.
+      operationId: update_artifact_media_timing_api_v1_runtime_sessions__runtime_session_id__artifacts__artifact_id__media_timing_patch
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Artifact Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MediaTiming'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionArtifactOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/media-sync:
+    get:
+      tags:
+      - Runtime Sessions
+      summary: Get Session Media Sync
+      description: Resolve recording positions with the artifact read authorization.
+      operationId: get_session_media_sync_api_v1_runtime_sessions__runtime_session_id__media_sync_get
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaSyncOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '503':
           description: Credential verification unavailable
       security:
@@ -26864,6 +27026,10 @@ components:
           type: string
           format: date-time
           title: Created At
+        media_timing:
+          anyOf:
+          - $ref: '#/components/schemas/MediaTiming'
+          - type: 'null'
         content_block:
           $ref: '#/components/schemas/McpResourceLink'
         session_title:
@@ -39677,6 +39843,104 @@ components:
       - size
       title: McpResourceLink
       description: MCP ``ResourceLink`` pointing at the artifact's byte route.
+    MediaStepOffset:
+      properties:
+        source_step_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Source Step Id
+        offset_ms:
+          type: integer
+          minimum: 0.0
+          title: Offset Ms
+      additionalProperties: false
+      type: object
+      required:
+      - source_step_id
+      - offset_ms
+      title: MediaStepOffset
+      description: An exact producer-reported position in the media timebase.
+    MediaSyncMapping:
+      properties:
+        activity_id:
+          type: string
+          title: Activity Id
+        activity_type:
+          type: string
+          title: Activity Type
+        api_usage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Usage Id
+        offset_ms:
+          type: integer
+          title: Offset Ms
+        rule:
+          type: string
+          enum:
+          - exact
+          - occurred_at
+          - server_skew
+          title: Rule
+        approximate:
+          type: boolean
+          title: Approximate
+      type: object
+      required:
+      - activity_id
+      - activity_type
+      - offset_ms
+      - rule
+      - approximate
+      title: MediaSyncMapping
+      description: One timeline row resolved to a recording position.
+    MediaSyncOut:
+      properties:
+        recordings:
+          items:
+            $ref: '#/components/schemas/RecordingSync'
+          type: array
+          title: Recordings
+      type: object
+      required:
+      - recordings
+      title: MediaSyncOut
+      description: Session mappings computed once for the console and evidence export.
+    MediaTiming:
+      properties:
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        duration_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Duration Ms
+        clock:
+          type: string
+          enum:
+          - agent
+          - server
+          title: Clock
+        step_offsets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/MediaStepOffset'
+            type: array
+            maxItems: 5000
+          - type: 'null'
+          title: Step Offsets
+      additionalProperties: false
+      type: object
+      required:
+      - started_at
+      - clock
+      title: MediaTiming
+      description: Wall clock at media t=0, optionally supplemented by exact offsets.
     MobileDeviceRegistration:
       properties:
         platform:
@@ -42397,6 +42661,32 @@ components:
       title: RebuiltInputsRequest
       description: Authenticated rebuilt SBOM for the published commit. Not an automatic
         rebuild.
+    RecordingSync:
+      properties:
+        artifact_id:
+          type: string
+          title: Artifact Id
+        skew_ms:
+          type: integer
+          title: Skew Ms
+        mappings:
+          items:
+            $ref: '#/components/schemas/MediaSyncMapping'
+          type: array
+          title: Mappings
+        unmapped_activity_ids:
+          items:
+            type: string
+          type: array
+          title: Unmapped Activity Ids
+      type: object
+      required:
+      - artifact_id
+      - skew_ms
+      - mappings
+      - unmapped_activity_ids
+      title: RecordingSync
+      description: Independent mapping for one recording, including unavailable artifacts.
     RefreshRequest:
       properties:
         refresh_token:
@@ -44032,6 +44322,10 @@ components:
           type: string
           format: date-time
           title: Created At
+        media_timing:
+          anyOf:
+          - $ref: '#/components/schemas/MediaTiming'
+          - type: 'null'
         content_block:
           $ref: '#/components/schemas/McpResourceLink'
       type: object
@@ -49759,7 +50053,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

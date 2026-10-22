@@ -1,3 +1,9 @@
+import type { RecordingSync } from '../types';
+import {
+  recordingCue,
+  recordingEventActivity,
+  recordingToolActivity,
+} from '../utils/recording-cue';
 import { parseUTCDate } from '../utils/date';
 import {
   renderSessionApproval,
@@ -252,6 +258,11 @@ export class SessionReplayPanel extends LitElement {
       }
     );
   }
+  @property({ attribute: false }) recordingSync: RecordingSync | undefined;
+  @property({ type: Boolean }) recordingEnabled = false;
+  @property({ attribute: false }) recordingActivityId: string | null = null;
+  @property({ type: Boolean }) syncedRecordingPlayer = false;
+
   @property({ type: Object })
   session: ObservedSession | null = null;
 
@@ -474,6 +485,15 @@ export class SessionReplayPanel extends LitElement {
   private resumeReplayAfterScroll = false;
 
   static styles = css`
+    .recording-current {
+      outline: 2px solid var(--sl-color-primary-500, #3b82f6);
+      outline-offset: 2px;
+    }
+    .recording-cue {
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
     :host {
       display: block;
       min-height: 0;
@@ -5464,6 +5484,7 @@ export class SessionReplayPanel extends LitElement {
       data-artifact-key=${turn.id}
     >
       <session-artifact-row
+        .syncedRecordingPlayer=${this.syncedRecordingPlayer}
         .item=${item}
         .artifact=${view}
         .sessionId=${this.session?.id || ''}
@@ -5480,10 +5501,12 @@ export class SessionReplayPanel extends LitElement {
     if (turn.artifact) return this.renderArtifactTurn(turn);
     if (turn.browserStep) {
       return html`<div
-        class="chat-turn browser-step-turn"
+        class="chat-turn browser-step-turn ${turn.browserStep.activity_id === this.recordingActivityId ? 'recording-current' : ''}"
+        data-recording-activity=${turn.browserStep.activity_id ?? nothing}
         tabindex="0"
         data-browser-step-key=${turn.id}
       >
+        ${recordingCue(this, turn.browserStep.activity_id, this.recordingSync, this.recordingEnabled)}
         <browser-step-row
           .item=${turn.browserStep}
           .sessionId=${this.session?.id || ''}
@@ -5516,6 +5539,7 @@ export class SessionReplayPanel extends LitElement {
         tabindex="0"
       >
         ${this.renderChatTurnHeader(turn, isMostExpensive)}
+        ${recordingCue(this, recordingEventActivity(event, this.recordingSync), this.recordingSync, this.recordingEnabled)}
         ${
           showSummary && summary
             ? html`
@@ -5856,9 +5880,11 @@ export class SessionReplayPanel extends LitElement {
                       row.turn
                         ? this.renderChatTurn(row.turn, mostExpensiveTurnId)
                         : row.tool
-                          ? html`<session-tool-card
-                              .tool=${row.tool}
-                            ></session-tool-card>`
+                          ? html`<div>
+                              ${recordingCue(this, recordingToolActivity(row.tool.id, row.tool.callId ?? null, this.activity), this.recordingSync, this.recordingEnabled)}<session-tool-card
+                                .tool=${row.tool}
+                              ></session-tool-card>
+                            </div>`
                           : this.renderApproval(row.request!)
                   )}
                 </div>
@@ -5901,6 +5927,7 @@ export class SessionReplayPanel extends LitElement {
       .includes('fail');
     return html`
       <div class="tool-row">
+        ${recordingCue(this, item.activity_id, this.recordingSync, this.recordingEnabled)}
         <div class="tool-row-main">
           <sl-icon name="wrench-adjustable"></sl-icon>
           <span class="tool-row-name">

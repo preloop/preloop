@@ -420,3 +420,44 @@ async def test_a_flow_opts_in_through_allowed_mcp_tools(app, shared_db, test_use
             TOOL, {"name": "note.md", "content": {"type": "text", "text": "# ok"}}
         )
         assert not result.isError, result.content
+
+
+@pytest.mark.asyncio
+async def test_media_timing_through_mcp(
+    app: Any, shared_db: Any, test_user: Any
+) -> None:
+    import base64
+
+    db = shared_db
+    session = _session(db, test_user.account_id, "mcp-recording")
+    token = _token(db, test_user, runtime_session_id=session.id)
+    _enable(db, test_user.account_id)
+    timing = {
+        "started_at": "2026-10-01T00:00:00Z",
+        "clock": "agent",
+        "step_offsets": [{"source_step_id": "step-1", "offset_ms": 2000}],
+    }
+    async with _mcp(app, token) as mcp:
+        result = await mcp.call_tool(
+            TOOL,
+            {
+                "name": "capture.webm",
+                "kind": "recording",
+                "media_timing": timing,
+                "content": {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///capture.webm",
+                        "mimeType": "video/webm",
+                        "blob": base64.b64encode(
+                            b"\x1a\x45\xdf\xa3" + b"\0" * 32
+                        ).decode(),
+                    },
+                },
+            },
+        )
+    assert not result.isError
+    assert (
+        result.structuredContent["media_timing"]["step_offsets"]
+        == timing["step_offsets"]
+    )

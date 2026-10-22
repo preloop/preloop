@@ -196,6 +196,7 @@ def _deposit_files(
     task_id: str,
     artifacts: list[dict[str, Any]],
     report: ImportReport,
+    media_timing: dict[str, Any] | None = None,
 ) -> None:
     for artifact in artifacts:
         kind_name = artifact.get("artifact_type")
@@ -222,6 +223,7 @@ def _deposit_files(
             data=data,
             idempotency_key=f"skyvern:{task_id}:{artifact_id}",
             labels={"tags": ["skyvern", kind_name]},
+            media_timing=media_timing if kind == "recording" else None,
         )
         if stored is None:
             report.skipped.append(f"{artifact_id}: {kind_name} refused")
@@ -258,7 +260,9 @@ def import_task(
         report.steps = preloop.post_steps(browser_steps)
     if include_files:
         try:
-            _deposit_files(skyvern, preloop, task_id, files, report)
+            _deposit_files(
+                skyvern, preloop, task_id, files, report, recording_timing(task, steps)
+            )
         except DepositUnavailableError:
             logger.info(
                 "Skipping HAR, trace and recording: this Preloop server has no "
@@ -266,3 +270,31 @@ def import_task(
             )
             report.skipped.append("files: artifact deposit API unavailable (#1080)")
     return report
+
+
+def recording_timing(
+    task: dict[str, Any], steps: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Use task creation as video t=0 and step creation for exact positions."""
+    started = _iso(task.get("created_at")) or next(
+        (stamp for step in steps if (stamp := _iso(step.get("created_at")))), None
+    )
+    if started is None:
+        return None
+    start = datetime.fromisoformat(started)
+    offsets = []
+    for step in steps:
+        stamp = _iso(step.get("created_at"))
+        if stamp is None:
+            continue
+        offset = round((datetime.fromisoformat(stamp) - start).total_seconds() * 1000)
+        if offset >= 0:
+            offsets.append(
+                {
+                    "source_step_id": f"{task.get('task_id')}:{step.get('step_id')}"[
+                        :200
+                    ],
+                    "offset_ms": offset,
+                }
+            )
+    return {"started_at": started, "clock": "agent", "step_offsets": offsets[:5000]}

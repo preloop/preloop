@@ -9181,3 +9181,15 @@ export function keepGovernanceReviewOn(
     )
   );
 }
+
+/** Recording-to-timeline mapping, resolved by the server for every consumer. */
+export async function getRuntimeSessionMediaSync(
+  sessionId: string
+): Promise<import('./types').MediaSyncResponse> {
+  const response = await fetchWithAuth(
+    `/api/v1/runtime-sessions/${encodeURIComponent(sessionId)}/media-sync`
+  );
+  if (!response.ok)
+    throw new Error(`Could not load recording timing (${response.status})`);
+  return response.json();
+}
