@@ -25,7 +25,10 @@ from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.key_scopes import TELEMETRY_INGEST_SCOPE
+from preloop.api.auth.key_scopes import (
+    TELEMETRY_INGEST_SCOPE,
+    enforce_api_key_route_scope,
+)
 from preloop.models.crud import crud_api_key, crud_telemetry_ingest
 from preloop.models.db.session import get_db_session
 from preloop.services import otlp_telemetry as otlp
@@ -78,9 +81,14 @@ def _presented_key(request: Request) -> Optional[str]:
 
 
 def _authenticate(db: Session, token: str) -> Any:
-    """Return the active key for ``token`` or None."""
+    """Return an active key whose owner still belongs to the key's account."""
+    from preloop.models.crud import crud_user
+
     key = crud_api_key.get_by_key(db, key=token)
     if key is None or not key.is_active or key.is_expired:
+        return None
+    owner = crud_user.get(db, id=key.user_id)
+    if owner is None or owner.account_id != key.account_id:
         return None
     return key
 
@@ -169,6 +177,7 @@ def _export(request: Request, signal: str, raw: RawBody, db: Session) -> Respons
     key = _authenticate(db, token)
     if key is None:
         return _error(status.HTTP_401_UNAUTHORIZED, "Invalid API key")
+    enforce_api_key_route_scope(key, request)
     scopes = key.scopes if isinstance(key.scopes, (list, tuple)) else []
     if TELEMETRY_INGEST_SCOPE not in scopes:
         return _error(

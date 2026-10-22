@@ -740,6 +740,9 @@ def _authenticate_endpoint(db: Session, token: str) -> _EndpointIdentity:
     if api_key is None:
         raise _error(401, "unauthorized", "Invalid API key")
     user = _authenticate_with_api_key(db, api_key, allow_stale_runtime_session=True)
+    from preloop.api.auth.key_scopes import enforce_runtime_api_key_scope
+
+    enforce_runtime_api_key_scope(api_key)
     context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
     bound = context.get("managed_agent_id")
     return _EndpointIdentity(
@@ -1158,6 +1161,12 @@ async def _resolve_viewer(token: str) -> Optional[models.User]:
     def lookup(db: Session) -> Optional[models.User]:
         user = get_user_from_token_if_valid_sync(token, db)
         if user is None or _is_machine_credential(user):
+            return None
+        from preloop.api.auth.key_scopes import api_key_allowed_on_channel
+
+        if not api_key_allowed_on_channel(
+            getattr(user, "_auth_api_key", None), "desktop viewer websocket"
+        ):
             return None
         return detach_user(db, user)
 

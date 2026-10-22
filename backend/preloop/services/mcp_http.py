@@ -203,20 +203,22 @@ class PreloopBearerAuthBackend(AuthenticationBackend):
         access_token = AccessToken(
             token=token,
             client_id=str(current_user.id),  # Use account ID as client_id
-            scopes=[],  # We don't use scopes in Phase 1A
+            scopes=[scope for scope in (key.scopes or []) if isinstance(scope, str)]
+            if key
+            else [],
             expires_at=None,  # API keys don't expire by default
         )
 
         # Store user info and API key in AccessToken for later use (avoiding re-validation)
         # Use object.__setattr__() to bypass Pydantic's validation
         object.__setattr__(access_token, "user", current_user)
-        if api_key_obj:
-            object.__setattr__(access_token, "api_key", api_key_obj)
+        if key:
+            object.__setattr__(access_token, "api_key", key)
 
         # Return authentication credentials and user
         # This will be stored in scope["auth"] and scope["user"]
         return (
-            AuthCredentials(scopes=[]),
+            AuthCredentials(scopes=access_token.scopes),
             AuthenticatedUser(
                 access_token
             ),  # Pass access_token as positional arg (auth_info)
