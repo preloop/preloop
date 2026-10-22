@@ -15,6 +15,7 @@ from fastmcp.tools import FunctionTool
 from fastmcp.tools.tool import ToolResult
 
 from preloop.services.approval_helper import require_approval
+from preloop.services.audit.async_writer import outbox_enabled
 from preloop.services.dynamic_fastmcp import (
     DynamicFastMCP,
     _rule_workflow_id_var,
@@ -1046,6 +1047,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         ),
                     },
                 )
+                # A declined approval never reaches the delivery transaction.
+                if outbox_enabled():
+                    db.commit()
                 return prepared, author_sessions
             finally:
                 db.close()
@@ -2449,46 +2453,45 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
                         elapsed_ms = int((_time.monotonic() - exec_start) * 1000)
 
-                        # Store the real result in a fresh transaction
+                        # Store the result and its audit intent in one transaction.
+                        from preloop.services.approval_service import (
+                            enqueue_approval_audit,
+                        )
+                        from preloop.models.crud.approval_request import (
+                            get_approval_request_async,
+                        )
+
                         async with get_async_db_session() as db2:
-                            update_result = await db2.execute(
-                                select(ApprovalRequest).where(
-                                    ApprovalRequest.id == req_id
-                                )
-                            )
-                            ar = update_result.scalar_one_or_none()
+                            ar = await get_approval_request_async(db2, req_id)
                             if ar:
-                                ar.tool_result = result_data
+                                from preloop.models.crud import crud_approval_request
+
+                                await db2.run_sync(
+                                    lambda session: crud_approval_request.update(
+                                        session,
+                                        db_obj=ar,
+                                        obj_in={"tool_result": result_data},
+                                        commit=False,
+                                    )
+                                )
+                                await enqueue_approval_audit(
+                                    db2,
+                                    "log_approval_tool_executed",
+                                    account_id=str(approval_request.account_id),
+                                    approval_id=req_id,
+                                    tool_name=tool_name,
+                                    status=exec_status,
+                                    duration_ms=elapsed_ms,
+                                    result_preview=result_preview,
+                                    error=exec_error,
+                                    extra_details={"grant": replay_grant}
+                                    if replay_grant is not None
+                                    else None,
+                                    execution_id=str(approval_request.execution_id)
+                                    if approval_request.execution_id
+                                    else None,
+                                )
                                 await db2.commit()
-
-                        # Audit the post-approval execution outcome so the
-                        # audit timeline shows the full story even for the
-                        # async-poll path (which bypasses DynamicFastMCP's
-                        # built-in tool_call audit).
-                        try:
-                            from preloop.services.approval_service import (
-                                _log_approval_tool_executed_async,
-                            )
-
-                            _log_approval_tool_executed_async(
-                                account_id=str(approval_request.account_id),
-                                approval_id=req_id,
-                                tool_name=tool_name,
-                                status=exec_status,
-                                duration_ms=elapsed_ms,
-                                result_preview=result_preview,
-                                error=exec_error,
-                                extra_details={"grant": replay_grant}
-                                if replay_grant is not None
-                                else None,
-                                execution_id=str(approval_request.execution_id)
-                                if approval_request.execution_id
-                                else None,
-                            )
-                        except Exception as audit_err:  # pragma: no cover
-                            logger.debug(
-                                f"Failed to audit post-approval execution: {audit_err}"
-                            )
 
                         if "_error" not in (result_data or {}):
                             response["tool_result"] = result_data
