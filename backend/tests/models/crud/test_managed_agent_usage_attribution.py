@@ -487,8 +487,8 @@ def test_spend_is_metered_and_the_estimate_adds_the_api_equivalent(
     )
     # All time: the 60-day-old priced run too; tokens include subscription use.
     assert listed["estimated_cost"] == pytest.approx(0.46)
-    assert listed["subscription_usage"]["api_equivalent_cost"] == pytest.approx(1.75)
-    assert listed["subscription_usage"]["request_count"] == 3
+    assert listed["subscription_usage"] is None
+    assert listed["token_usage"]["total_tokens"] >= 3300
 
 
 def test_a_subscription_row_without_an_estimate_is_reported_not_zeroed(
@@ -684,3 +684,19 @@ def test_the_agent_detail_resolves_its_sessions_once(
         s for s in statements if "FROM runtime_session" in s and "LIKE" in s
     ]
     assert len(session_matches) == 1
+
+
+def test_list_skips_subscription_metadata_reads(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """The list never detoasts historical JSON for the optional price estimate."""
+    with _statements(db_session) as statements:
+        result = crud_managed_agent.list_for_account(
+            db_session, account_id=str(test_user.account_id), limit=100
+        )
+    assert result["items"]
+    assert all(item["subscription_usage"] is None for item in result["items"])
+    usage_reads = [statement for statement in statements if "api_usage" in statement]
+    assert usage_reads
+    assert all("api_usage.meta_data" not in statement for statement in usage_reads)
+    assert all("sub_requests" not in statement for statement in usage_reads)

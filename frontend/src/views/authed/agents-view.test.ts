@@ -1178,7 +1178,7 @@ describe('AgentsView', () => {
       '150px',
       '110px',
       '110px',
-      '140px',
+      '110px',
       '128px',
     ]);
 
@@ -1406,10 +1406,7 @@ describe('AgentsView', () => {
     expect(window?.getAttribute('slot')).to.equal('count');
   });
 
-  // D-05: subscription requests are $0 spend; the list also shows what the
-  // spend would have been without subscriptions, as an estimate that says
-  // when only part of the subscription traffic carries a price.
-  it('shows the without-subscriptions estimate beside the spend', async () => {
+  it('keeps the list spend cell to metered spend even with subscription data', async () => {
     agentItems = [
       {
         ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
@@ -1432,10 +1429,7 @@ describe('AgentsView', () => {
     await waitForAgents(el);
     const row = el.shadowRoot!.querySelector('table.agents-table tbody tr')!;
     const estimate = row.querySelector('[data-testid="without-subscriptions"]');
-    expect(estimate?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
-      '≥ $0.92 w/o subs.'
-    );
-    expect(estimate?.getAttribute('title')).to.contain('1 of 2');
+    expect(estimate).to.not.exist;
     expect(row.textContent).to.contain('$0.42');
   });
 

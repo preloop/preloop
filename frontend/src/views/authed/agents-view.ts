@@ -2,11 +2,6 @@ import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../utils/money';
-import {
-  renderWithoutSubscriptionsLine,
-  subscriptionEstimate,
-  type SubscriptionEstimate,
-} from '../../utils/subscription-estimate';
 import { editionOf } from '../../capabilities';
 import type { Edition } from '../../api';
 import { LitElement, css, html, unsafeCSS, nothing } from 'lit';
@@ -211,8 +206,6 @@ export interface AgentListRow {
    */
   tokenUsage: GatewayTokenUsage | null;
   spend: number;
-  /** Spend plus the API-equivalent cost of subscription requests (D-05). */
-  withoutSubscriptions: SubscriptionEstimate;
   lastSeen: string | null;
   /** The original API item, so row actions keep working on the real object. */
   source: any;
@@ -482,13 +475,11 @@ export class AgentsView extends LitElement {
          220px minimum with room for borders. Owner and Model start hidden (column picker), which
          is what lets the default list fit a 1440px window without scrolling
          sideways; turned on, they share Agent's space and the card scrolls
-         only below 990px. The list falls back to cards under 640px. */
+         only below 960px. The list falls back to cards under 640px. */
         .agents-table {
           table-layout: fixed;
           width: 100%;
-          /* 990: the spend column grew 30px for the without-subscriptions
-             line (D-05); the Agent column keeps its floor. */
-          min-width: 990px;
+          min-width: 960px;
         }
         .table-scroll {
           overflow-x: auto;
@@ -3443,10 +3434,6 @@ export class AgentsView extends LitElement {
           requests: stats.total_execs || 0,
           tokenUsage: stats.token_usage || null,
           spend: stats.estimated_cost || 0,
-          withoutSubscriptions: subscriptionEstimate(
-            stats.estimated_cost,
-            null
-          ),
           lastSeen: stats.last_seen_at || null,
           source: item,
         };
@@ -3478,10 +3465,6 @@ export class AgentsView extends LitElement {
         requests: agent.total_requests || 0,
         tokenUsage: agent.token_usage || null,
         spend: agent.estimated_cost || 0,
-        withoutSubscriptions: subscriptionEstimate(
-          agent.estimated_cost,
-          agent.subscription_usage
-        ),
         lastSeen: live?.lastActivityAt || agent.last_seen_at || null,
         source: agent,
       };
@@ -3634,16 +3617,15 @@ export class AgentsView extends LitElement {
         pickerLabel: 'Estimated spend',
         numeric: true,
         sort: 'number',
-        // Room for the without-subscriptions line under the spend (D-05).
-        width: 140,
+        width: 110,
         headerTitle: 'Estimated spend, all time',
         headerLabel: 'Estimated spend, all time',
         value: (row) => row.spend,
         searchText: () => '',
         cell: (row) =>
           html`<span title=${formatUsdExact(row.spend)}
-              >${formatUsd(row.spend)}</span
-            >${renderWithoutSubscriptionsLine(row.withoutSubscriptions, row.source?.subscription_usage)}`,
+            >${formatUsd(row.spend)}</span
+          >`,
       },
       {
         id: 'last_seen',
