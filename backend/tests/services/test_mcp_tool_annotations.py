@@ -181,10 +181,10 @@ async def test_list_tools_annotates_builtins() -> None:
     result = {t.name: t for t in await _list(mcp, _patches(offered))}
 
     assert result["get_issue"].annotations is not None
-    assert result["get_issue"].annotations.readOnlyHint is True
+    assert result["get_issue"].annotations.read_only_hint is True
     assert result["create_issue"].annotations is not None
-    assert result["create_issue"].annotations.readOnlyHint is False
-    assert result["create_issue"].annotations.destructiveHint is False
+    assert result["create_issue"].annotations.read_only_hint is False
+    assert result["create_issue"].annotations.destructive_hint is False
 
 
 async def test_justification_injection_keeps_annotations() -> None:
@@ -224,8 +224,8 @@ async def test_unknown_tool_is_left_unannotated() -> None:
     assert with_builtin_annotations(tool) is tool
 
 
-async def test_discovery_stores_upstream_annotations_unchanged() -> None:
-    """Discovery keeps every upstream hint, unknown keys included."""
+async def test_discovery_stores_supported_upstream_annotations() -> None:
+    """SDK v2 retains the protocol-defined hints and ignores unknown fields."""
     upstream = McpTool(
         name="delete_repo",
         inputSchema={"type": "object"},
@@ -237,7 +237,6 @@ async def test_discovery_stores_upstream_annotations_unchanged() -> None:
     assert upstream_annotations(upstream) == {
         "title": "Delete repo",
         "destructiveHint": True,
-        "x-vendor": 1,
     }
     assert upstream_annotations(McpTool(name="t", inputSchema={})) is None
     assert upstream_annotations(MagicMock()) is None
