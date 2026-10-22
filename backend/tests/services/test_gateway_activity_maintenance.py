@@ -197,3 +197,40 @@ def test_next_pass_resumes_after_the_last_row_walked(db_session, test_user, cap)
     finally:
         del monkeypatch_target.gateway_call_batch
     assert calls and calls[0] is not None
+
+
+def test_failed_batch_is_retried_by_the_next_pass(
+    db_session, test_user, cap, monkeypatch
+):
+    session = _session(db_session, test_user.account_id)
+    row = _row(db_session, session, turns=6)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("lock timeout")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(maintenance, "_rewrite_batch", boom)
+        with pytest.raises(RuntimeError):
+            maintenance.compact_existing_rows(
+                db_session, batch_size=10, max_batches=1
+            )
+    result = maintenance.compact_existing_rows(
+        db_session, batch_size=10, max_batches=1
+    )
+    assert result.compacted_rows == 1
+    db_session.refresh(row)
+    assert COMPACTION_KEY in row.metadata_
+
+
+def test_walk_restarts_daily(db_session, test_user, cap, monkeypatch):
+    session = _session(db_session, test_user.account_id)
+    _row(db_session, session, turns=6)
+    maintenance.compact_existing_rows(db_session, batch_size=10, max_batches=2)
+    assert maintenance._compaction_cursor.get("after") is not None
+    monkeypatch.setitem(
+        maintenance._compaction_cursor,
+        "started_at",
+        maintenance.time.monotonic() - maintenance._CURSOR_MAX_AGE_S - 1,
+    )
+    maintenance.compact_existing_rows(db_session, batch_size=10, max_batches=0)
+    assert maintenance._compaction_cursor.get("after") is None

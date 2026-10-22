@@ -55,8 +55,10 @@ _MIN_STORED_BYTES = 2048
 # a row it never needs to look at it again, and the next hourly pass resumes
 # here instead of re-walking the compacted prefix. Kept in memory on purpose
 # (no schema change): a restarted worker walks the table once more, which
-# finds nothing to rewrite and costs one index scan.
+# finds nothing to rewrite and costs one index scan. The walk restarts from
+# the oldest row once a day so rows it passed over are seen again.
 _compaction_cursor: dict[str, Any] = {}
+_CURSOR_MAX_AGE_S = 24 * 3600
 
 
 def reset_compaction_cursor() -> None:
@@ -134,6 +136,12 @@ def compact_existing_rows(
         else max_bytes
     )
     result = result or MaintenanceResult(dry_run=dry_run)
+    started_at = _compaction_cursor.get("started_at")
+    if started_at is None or time.monotonic() - started_at > _CURSOR_MAX_AGE_S:
+        # Start a fresh walk at least daily, so rows a walk passed over (a
+        # session under legal hold since released) are picked up again.
+        _compaction_cursor.clear()
+        _compaction_cursor["started_at"] = time.monotonic()
     after: Optional[tuple[datetime, Any]] = _compaction_cursor.get("after")
     for _ in range(max(0, max_batches)):
         rows = crud_runtime_session_activity.gateway_call_batch(
@@ -143,8 +151,6 @@ def compact_existing_rows(
             result.exhausted = True
             break
         after = (rows[-1].timestamp, rows[-1].id)
-        if not dry_run:
-            _compaction_cursor["after"] = after
         changed = _rewrite_batch(
             db,
             rows,
@@ -152,6 +158,10 @@ def compact_existing_rows(
             result,
             dry_run=dry_run,
         )
+        # Only after the batch committed: a batch that raised is retried by
+        # the next pass instead of being skipped until a restart.
+        if not dry_run:
+            _compaction_cursor["after"] = after
         result.compacted_rows += changed
         result.batches += 1
         logger.info(
