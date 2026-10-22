@@ -2577,12 +2577,27 @@ paths:
           - type: string
           - type: 'null'
           description: 'Comma list of optional sections: usage_by_model, activity,
-            sessions. Omitted returns all of them; an empty value returns the agent,
-            its aggregate, credentials and enrollments only.'
+            sessions, aggregate. Omitted returns all sections; an empty value returns
+            identity. Legacy reads always include the aggregate. Lightweight section
+            reads omit unrelated identity enrichment, devices, credentials and enrollments.'
           title: Include
-        description: 'Comma list of optional sections: usage_by_model, activity, sessions.
-          Omitted returns all of them; an empty value returns the agent, its aggregate,
-          credentials and enrollments only.'
+        description: 'Comma list of optional sections: usage_by_model, activity, sessions,
+          aggregate. Omitted returns all sections; an empty value returns identity.
+          Legacy reads always include the aggregate. Lightweight section reads omit
+          unrelated identity enrichment, devices, credentials and enrollments.'
+      - name: lightweight
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Return identity and recency without all-time usage totals.
+            Aggregate is null unless its section is included. Identity totals are
+            not computed (agent.usage_computed=false).
+          default: false
+          title: Lightweight
+        description: Return identity and recency without all-time usage totals. Aggregate
+          is null unless its section is included. Identity totals are not computed
+          (agent.usage_computed=false).
       - name: session_limit
         in: query
         required: false
@@ -38617,7 +38632,9 @@ components:
           type: array
           title: Devices
         aggregate:
-          $ref: '#/components/schemas/ManagedAgentUsageAggregate'
+          anyOf:
+          - $ref: '#/components/schemas/ManagedAgentUsageAggregate'
+          - type: 'null'
         usage_by_model:
           items:
             $ref: '#/components/schemas/GatewayUsageByModel'
@@ -38656,7 +38673,6 @@ components:
       type: object
       required:
       - agent
-      - aggregate
       title: ManagedAgentDetailResponse
       description: One managed agent plus its recent runtime session history.
     ManagedAgentDeviceSummary:
@@ -39340,6 +39356,11 @@ components:
             format: date-time
           - type: 'null'
           title: Ended At
+        usage_computed:
+          type: boolean
+          title: Usage Computed
+          description: False for lightweight identity reads; usage totals are unavailable.
+          default: true
         total_requests:
           type: integer
           title: Total Requests
