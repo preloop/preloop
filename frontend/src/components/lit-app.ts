@@ -1,4 +1,5 @@
 import { installSupportAssistant } from '../support-loader';
+import { runtimeSessionPathRedirect } from '../utils/runtime-session-route';
 import { consumeLoginReturn } from '../utils/login-return';
 import { releaseBlogFallback } from '../release-blog';
 import { LitElement, html, css } from 'lit';
@@ -438,6 +439,17 @@ export class LitApp extends LitElement {
             },
           },
           { path: '/runtime-sessions', component: 'runtime-sessions-view' },
+          {
+            path: '/runtime-sessions/:sessionId',
+            action: (context, commands) =>
+              commands.redirect(
+                runtimeSessionPathRedirect(
+                  String(context.params.sessionId),
+                  context.search,
+                  context.hash
+                )
+              ),
+          },
           { path: '/artifacts', component: 'artifacts-view' },
           { path: '/agents', component: 'agents-view' },
           // Before ':agentId' would not matter to Vaadin Router (it matches

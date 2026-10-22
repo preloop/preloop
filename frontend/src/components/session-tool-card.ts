@@ -16,6 +16,7 @@ import {
 } from '../utils/session-live';
 import { getApprovalRepository } from '../utils/approval-identity';
 import './repository-chip';
+import type { ToolRow } from '../utils/session-turns';
 
 /**
  * One tool invocation, in chronological context, without opening anything.
@@ -37,8 +38,17 @@ export class SessionToolCard extends LitElement {
   /** Captured tool from `sessionTools`. Used when the row is not a live call. */
   @property({ attribute: false }) tool: SessionTool | null = null;
 
+  /**
+   * Terminal-style row from the turn model (`buildSessionTurns`). Takes
+   * precedence over `call` and `tool`.
+   */
+  @property({ attribute: false }) row: ToolRow | null = null;
+
   @state()
   private expanded = false;
+
+  @state()
+  private showAllLines = false;
 
   static styles = css`
     :host {
@@ -206,6 +216,109 @@ export class SessionToolCard extends LitElement {
       font-size: 0.8rem;
     }
 
+    .row {
+      margin: 0 var(--sl-spacing-medium, 1rem);
+      color: var(--sl-color-neutral-800, #1f2937);
+      font-size: var(--sl-font-size-small, 0.875rem);
+    }
+
+    .row-head {
+      align-items: baseline;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+
+    .mono,
+    .row .name,
+    .row-target,
+    .row-lines,
+    .diff {
+      font-family: var(
+        --console-font-mono,
+        ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        Consolas,
+        monospace
+      );
+    }
+
+    .glyph {
+      color: var(--sl-color-neutral-500, #6b7280);
+    }
+
+    .row.failed .glyph {
+      color: var(--sl-color-danger-600, #dc2626);
+    }
+
+    .verb {
+      font-weight: 600;
+    }
+
+    .row .name {
+      color: var(--sl-color-neutral-600, #4b5563);
+      font-size: 0.8rem;
+    }
+
+    .row-target {
+      overflow-wrap: anywhere;
+    }
+
+    .row-meta {
+      color: var(--sl-color-neutral-500, #6b7280);
+      font-size: var(--sl-font-size-x-small, 0.75rem);
+    }
+
+    .row-detail,
+    .row-lines,
+    .diff {
+      margin: 0.15rem 0 0 1.1rem;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 0.8rem;
+      color: var(--sl-color-neutral-700, #374151);
+    }
+
+    .row-lines {
+      margin-top: 0.15rem;
+    }
+
+    .diff {
+      border-left: 2px solid var(--sl-color-neutral-200, #e5e7eb);
+      padding-left: 0.5rem;
+    }
+
+    .diff .add {
+      background: var(--sl-color-success-50, #f0fdf4);
+      color: var(--sl-color-success-800, #166534);
+    }
+
+    .diff .del {
+      background: var(--sl-color-danger-50, #fef2f2);
+      color: var(--sl-color-danger-800, #991b1b);
+    }
+
+    .diff .hunk {
+      color: var(--sl-color-neutral-500, #6b7280);
+    }
+
+    .more {
+      background: none;
+      border: none;
+      color: var(--sl-color-primary-600, #2563eb);
+      cursor: pointer;
+      font: inherit;
+      font-size: var(--sl-font-size-x-small, 0.75rem);
+      margin-left: 1.1rem;
+      padding: 0;
+    }
+
+    .more:focus-visible {
+      outline: 2px solid var(--sl-color-primary-500, #0ea5e9);
+      outline-offset: 2px;
+    }
+
     .preview {
       font-size: 0.8rem;
       color: var(--sl-color-neutral-600);
@@ -248,9 +361,126 @@ ${text}</pre>`
   }
 
   render() {
+    if (this.row) return this.renderRow();
     if (this.call) return this.renderCall();
     if (this.tool) return this.renderCaptured();
     return nothing;
+  }
+
+  private renderRow() {
+    const row = this.row;
+    if (!row) return nothing;
+    const claude = row.runtime === 'claude';
+    const time = this.formatTime(row.timestamp);
+    const lines = this.showAllLines
+      ? (row.resultText ?? '').replace(/\s+$/, '').split('\n')
+      : row.previewLines;
+    const duration = formatDuration(row.durationMs);
+    const head = claude
+      ? html`<span class="verb mono">${row.name}</span
+          ><span class="row-target">(${row.target})</span>`
+      : html`<span class="verb">${row.verb}</span>
+          <span class="row-target">${row.detail ? '' : row.target}</span>`;
+    return html`<div
+      class="row ${row.failed ? 'failed' : ''}"
+      data-testid="session-tool-card"
+      data-state=${row.state}
+      data-runtime=${row.runtime}
+      title=${time ? parseUTCDate(row.timestamp ?? '').toLocaleString() : ''}
+    >
+      <div class="row-head">
+        <span class="glyph" aria-hidden="true">${row.glyph}</span>
+        ${head}
+        ${claude ? nothing : html`<span class="name">${row.name}</span>`}
+        ${
+          row.failed
+            ? html`<sl-badge variant="danger" pill data-testid="tool-failed"
+                >${row.exitCode !== null ? `Failed (exit ${row.exitCode})` : 'Failed'}</sl-badge
+              >`
+            : html`<span class="row-meta state"
+                >${row.state === 'unknown' ? '' : row.state}</span
+              >`
+        }
+        ${duration ? html`<span class="row-meta duration">${duration}</span>` : nothing}
+        ${time ? html`<span class="row-meta time">${time}</span>` : nothing}
+        ${
+          getApprovalRepository(row.repositoryArgs)
+            ? html`<repository-chip
+                .toolArgs=${row.repositoryArgs}
+              ></repository-chip>`
+            : nothing
+        }
+        ${row.redacted ? html`<sl-badge variant="warning" pill>Redacted</sl-badge>` : nothing}
+        ${row.truncated ? html`<sl-badge variant="warning" pill>Truncated</sl-badge>` : nothing}
+        ${
+          row.argumentsText || row.resultText
+            ? html`<button
+                class="toggle"
+                type="button"
+                aria-expanded=${this.expanded ? 'true' : 'false'}
+                data-testid="tool-toggle"
+                @click=${() => this.toggle()}
+              >
+                ${this.expanded ? 'Hide details' : 'Arguments & result'}
+              </button>`
+            : nothing
+        }
+      </div>
+      ${row.detail ? html`<div class="row-detail mono">└ ${row.detail}</div>` : nothing}
+      ${
+        row.diff
+          ? html`<div class="diff" data-testid="tool-diff">
+              ${row.diff.map(
+                (line) =>
+                  html`<div class=${line.kind}>
+                    ${
+                      line.kind === 'add'
+                        ? '+ '
+                        : line.kind === 'del'
+                          ? '- '
+                          : line.kind === 'ctx'
+                            ? '  '
+                            : ''
+                    }${line.text}
+                  </div>`
+              )}
+            </div>`
+          : nothing
+      }
+      ${
+        lines.length && !row.diff
+          ? html`<div class="row-lines" data-testid="tool-preview">
+              ${lines.map(
+                (line, index) =>
+                  html`<div>
+                    ${index === 0 ? (claude ? '⎿  ' : '└ ') : '   '}${line}
+                  </div>`
+              )}
+            </div>`
+          : nothing
+      }
+      ${
+        row.hiddenLineCount > 0 && !row.diff
+          ? html`<button
+              class="more"
+              type="button"
+              data-testid="tool-more"
+              aria-expanded=${this.showAllLines ? 'true' : 'false'}
+              @click=${() => (this.showAllLines = !this.showAllLines)}
+            >
+              ${this.showAllLines ? 'Show fewer lines' : `+ ${row.hiddenLineCount} lines`}
+            </button>`
+          : nothing
+      }
+      ${
+        this.expanded
+          ? html`<div class="body">
+              ${this.renderPayload('Arguments', row.argumentsText ? readablePayload(row.argumentsText) : null, row.redacted)}
+              ${this.renderPayload('Result', row.resultText, row.redacted)}
+            </div>`
+          : nothing
+      }
+    </div>`;
   }
 
   private renderCaptured() {

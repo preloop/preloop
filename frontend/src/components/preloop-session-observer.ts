@@ -2336,7 +2336,9 @@ export class PreloopSessionObserver extends LitElement {
       // "Chat" implied you could type here. This tab reads a session; the
       // talk window is where a conversation happens.
       { mode: 'conversation', label: 'Conversation', icon: 'chat-left-text' },
-      { mode: 'timeline', label: 'Transcript', icon: 'list-ul' },
+      // Per model request, with cost and tokens. Conversation is the
+      // terminal-ordered transcript.
+      { mode: 'timeline', label: 'Requests', icon: 'list-ul' },
       { mode: 'replay', label: 'Replay', icon: 'play-circle' },
     ];
     if (this.enabledFeatures.optimization) {
@@ -2870,7 +2872,7 @@ export class PreloopSessionObserver extends LitElement {
             }}
           >
             <sl-icon slot="prefix" name="list-columns-reverse"></sl-icon>
-            Requests
+            Usage log
           </sl-button>
           ${this.renderLiveDesktopButton(session)} ${this.renderTalkButton()}
           ${this.renderMoreActions(session)}
@@ -3150,6 +3152,9 @@ export class PreloopSessionObserver extends LitElement {
           }
           .totalEvents=${this.activeEventPage?.total ?? null}
           .optimizationEnabled=${this.enabledFeatures.optimization}
+          .sessionTotalTokens=${
+            this.activeSession?.tokenUsage?.total_tokens ?? null
+          }
           .availableModels=${this.aiModels}
           .availableModelsLoading=${this.aiModelsLoading}
           .optimizationResult=${

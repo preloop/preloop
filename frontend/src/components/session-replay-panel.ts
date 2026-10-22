@@ -69,6 +69,12 @@ import {
 import { getExampleSessionOptimization } from '../api';
 import './preloop-gateway-event';
 import './session-optimization-panel';
+import {
+  countToolRows,
+  isSessionContextMessage,
+  stripWrapperTags,
+} from '../utils/session-turns';
+import { matchInjectedSegment } from '../utils/transcript';
 
 // The bundled example has no runtime session behind it and nothing can be
 // applied from it, so `session` and `applyingSuggestionId` are left at their
@@ -328,6 +334,13 @@ export class SessionReplayPanel extends LitElement {
 
   @property({ type: Boolean })
   optimizationEnabled = false;
+
+  /**
+   * The session's token total as the page header shows it. When set, the
+   * Requests summary shows this number so one session has one total.
+   */
+  @property({ type: Number })
+  sessionTotalTokens: number | null = null;
 
   @property({ type: Boolean })
   loadingOptimization = false;
@@ -853,6 +866,15 @@ export class SessionReplayPanel extends LitElement {
       top: 20px;
       transform: translateX(-50%);
       white-space: nowrap;
+    }
+
+    /* End labels sit inside the track so they never collide. */
+    .timeline-datetime-label.edge-start {
+      transform: none;
+    }
+
+    .timeline-datetime-label.edge-end {
+      transform: translateX(-100%);
     }
 
     .timeline-marker.user,
@@ -1691,7 +1713,7 @@ export class SessionReplayPanel extends LitElement {
     if (changed.has('timelineEvents') && this.replayViewActive) {
       const messages = this.getVisibleReplayMessages();
       if (messages.length) {
-        this.replayIndex = messages.length - 1;
+        this.replayIndex = this.getInitialReplayIndex(messages);
         this.ensureOptimizationBounds(messages);
         this.requestReplayCurrentEventDetail(messages[this.replayIndex]);
       }
@@ -2348,9 +2370,30 @@ export class SessionReplayPanel extends LitElement {
     this.requestEventDetail(message.event);
   }
 
+  /**
+   * Replay opens where the terminal scrollback starts: the first prompt a
+   * person typed. System, developer, AGENTS.md and environment messages
+   * (Session context) and hook-injected segments are skipped.
+   */
   private getInitialReplayIndex(messages: ReplayMessage[]): number {
     if (!messages.length) return 0;
-    return this.replayReversed ? 0 : messages.length - 1;
+    if (this.replayReversed) return 0;
+    const first = messages.findIndex((message) => {
+      const role = (message.role || '').toLowerCase();
+      if (role !== 'user' || !message.text) return false;
+      const text = stripWrapperTags(message.text);
+      if (matchInjectedSegment(text)) return false;
+      return !isSessionContextMessage({
+        type: 'message',
+        key: message.key,
+        kind: 'user_prompt',
+        role,
+        text,
+        timestamp: message.timestamp,
+        event: null,
+      });
+    });
+    return first >= 0 ? first : messages.length - 1;
   }
 
   private setReplayReversed(reversed: boolean): void {
@@ -2633,9 +2676,13 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private shouldShowTimelineLabel(index: number, markerCount: number): boolean {
-    if (markerCount <= 3) return true;
+    if (markerCount <= 2) return true;
+    if (index === 0 || index === markerCount - 1) return true;
     const interval = Math.max(1, Math.ceil(markerCount / 3));
-    return index === 0 || index === markerCount - 1 || index % interval === 0;
+    if (index % interval !== 0) return false;
+    // A middle label too close to either end label overlaps it (C-D16).
+    const position = index / (markerCount - 1);
+    return position >= 0.25 && position <= 0.75;
   }
 
   private getReplayIndexFromScroll(
@@ -3641,7 +3688,13 @@ export class SessionReplayPanel extends LitElement {
                     )
                       ? html`
                           <span
-                            class="timeline-datetime-label"
+                            class="timeline-datetime-label ${
+                              markerIndex === 0
+                                ? 'edge-start'
+                                : markerIndex === eventMarkers.length - 1
+                                  ? 'edge-end'
+                                  : ''
+                            }"
                             style=${`left: ${markerPercent}%;`}
                             title=${this.formatDateTime(marker.timestamp)}
                           >
@@ -4749,15 +4802,33 @@ export class SessionReplayPanel extends LitElement {
       totalTokens += turn.totalTokens;
       promptTokens += turn.promptTokens;
       cachedTokens += turn.cachedTokens ?? 0;
-      toolCallCount += turn.toolCallCount;
       if (turn.failed) failedCount += 1;
       else okCount += 1;
     }
+    // Some providers report prompt tokens without cache reads, others with
+    // them. The share is cached over all prompt tokens either way, so it can
+    // never exceed 100%.
+    const promptWithCache =
+      cachedTokens > promptTokens ? promptTokens + cachedTokens : promptTokens;
     const cachedPct =
-      promptTokens > 0 ? Math.round((cachedTokens / promptTokens) * 100) : null;
+      promptWithCache > 0
+        ? Math.round((cachedTokens / promptWithCache) * 100)
+        : null;
+    // Count tools the way the Conversation shows them: one row per call.
+    toolCallCount = countToolRows(
+      sessionTools(this.events, this.activity).map((tool) => ({
+        type: 'tool' as const,
+        key: tool.id,
+        tool,
+      })),
+      { activity: this.activity }
+    );
     return {
       totalCost,
-      totalTokens,
+      totalTokens:
+        this.sessionTotalTokens !== null && this.sessionTotalTokens > 0
+          ? this.sessionTotalTokens
+          : totalTokens,
       promptTokens,
       cachedTokens,
       cachedPct,
@@ -5556,7 +5627,11 @@ export class SessionReplayPanel extends LitElement {
               </span>`
         }
         <span class="chat-summary-item">
-          <span class="chat-summary-label">Tokens</span>
+          <span
+            class="chat-summary-label"
+            title="Same total as the session header. Cached prompt tokens are part of it and billed at the cache-read price."
+            >Tokens</span
+          >
           <span class="chat-summary-value"
             >${formatNumber(summary.totalTokens)}</span
           >

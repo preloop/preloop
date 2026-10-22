@@ -1129,3 +1129,316 @@ describe('session-chat-view session change', () => {
     expect(distanceFromBottom(next)).to.be.lessThan(2);
   });
 });
+
+describe('session-chat-view terminal-ordered turns', () => {
+  type CardHost = HTMLElement & { updateComplete: Promise<boolean> };
+
+  function toolsEvent(
+    id: string,
+    timestamp: string,
+    tools: Array<Record<string, unknown>>,
+    messages: Array<{ role: string; text: string; source?: string }> = []
+  ): FlowGatewayEvent {
+    return previewEvent(id, timestamp, messages, { tools });
+  }
+
+  async function cards(el: SessionChatView): Promise<CardHost[]> {
+    await el.updateComplete;
+    const found = Array.from(
+      el.shadowRoot!.querySelectorAll('session-tool-card')
+    ) as CardHost[];
+    await Promise.all(found.map((card) => card.updateComplete));
+    return found;
+  }
+
+  it('a tool call is one row with a three-line preview and an expand control', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          toolsEvent('e1', '2026-08-06T10:00:05Z', [
+            {
+              kind: 'call',
+              call_id: 'call_1',
+              name: 'Bash',
+              text: '{"command": "ls"}',
+            },
+            {
+              kind: 'result',
+              call_id: 'call_1',
+              text: 'one\ntwo\nthree\nfour\nfive',
+            },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    const found = await cards(el);
+    expect(found).to.have.length(1);
+    const root = found[0].shadowRoot!;
+    const preview = root.querySelector('[data-testid="tool-preview"]')!;
+    expect(preview.children).to.have.length(3);
+    expect(preview.textContent).to.contain('one');
+    expect(preview.textContent).to.not.contain('four');
+    const more = root.querySelector<HTMLButtonElement>(
+      '[data-testid="tool-more"]'
+    )!;
+    expect(more.textContent!.trim()).to.equal('+ 2 lines');
+    more.click();
+    await found[0].updateComplete;
+    expect(
+      root.querySelector('[data-testid="tool-preview"]')!.children
+    ).to.have.length(5);
+  });
+
+  it('codex exec requested card and hook row merge into one Ran row', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          toolsEvent('e1', '2026-08-06T10:00:05Z', [
+            {
+              kind: 'call',
+              call_id: 'call_7',
+              name: 'exec_command',
+              text: '{"cmd": "npm run build"}',
+            },
+            { kind: 'result', call_id: 'call_7', text: 'built in 3s' },
+          ]),
+        ]}
+        .activity=${[
+          activityItem({
+            activity_type: 'tool_call',
+            timestamp: '2026-08-06T10:00:06Z',
+            title: 'Bash',
+            tool_name: 'Bash',
+            summary: 'npm run build',
+            status: 'completed',
+            metadata: { source: 'codex_cli' },
+          }),
+        ]}
+      ></session-chat-view>
+    `);
+    const found = await cards(el);
+    expect(found, 'one call must render one row').to.have.length(1);
+    const text = found[0].shadowRoot!.textContent!;
+    expect(text).to.contain('Ran');
+    expect(text).to.contain('npm run build');
+    expect(
+      found[0].shadowRoot!.querySelector('.glyph')!.textContent!.trim()
+    ).to.equal('•');
+  });
+
+  it('tool-result-only user message is not a You bubble', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: 'clean the tree' },
+          ]),
+          toolsEvent('e2', '2026-08-06T10:00:05Z', [
+            {
+              kind: 'call',
+              call_id: 'call_1',
+              name: 'Bash',
+              text: '{"command": "git clean -n"}',
+            },
+          ]),
+          previewEvent('e3', '2026-08-06T10:00:09Z', [
+            { role: 'user', text: 'clean the tree' },
+            { role: 'user', text: '(Bash completed with no output)' },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    const prompts = Array.from(
+      el.shadowRoot!.querySelectorAll('.bubble[data-kind="user_prompt"]')
+    );
+    expect(prompts.map((p) => p.textContent)).to.satisfy((texts: string[]) =>
+      texts.every((t) => !t.includes('completed with no output'))
+    );
+    const found = await cards(el);
+    expect(found[0].shadowRoot!.textContent).to.contain('(No output)');
+  });
+
+  it('developer and AGENTS.md messages collapse into Session context', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'developer', text: 'You are a coding agent.' },
+            {
+              role: 'user',
+              text: '# AGENTS.md instructions for /repo\nUse ruff.',
+            },
+            {
+              role: 'user',
+              text: '<environment_context><cwd>/repo</cwd></environment_context>',
+            },
+            { role: 'user', text: 'Move the button' },
+            { role: 'assistant', text: 'Done', source: 'response' },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    const prompts = el.shadowRoot!.querySelectorAll(
+      '.bubble[data-kind="user_prompt"]'
+    );
+    expect(prompts).to.have.length(1);
+    expect(prompts[0].textContent).to.contain('Move the button');
+    const context = el.shadowRoot!.querySelector(
+      '[data-testid="session-context"]'
+    )!;
+    expect(context).to.exist;
+    expect(context.textContent).to.contain('AGENTS.md');
+    expect(context.textContent).to.contain('environment_context');
+  });
+
+  it('failed exec shows Failed (exit 1) with a danger pill', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .runtime=${'codex'}
+        .events=${[
+          toolsEvent('e1', '2026-08-06T10:00:05Z', [
+            {
+              kind: 'call',
+              call_id: 'call_2',
+              name: 'exec_command',
+              text: '{"cmd": "cat missing.txt"}',
+            },
+            {
+              kind: 'result',
+              call_id: 'call_2',
+              text: 'Process exited with code 1\ncat: missing.txt: No such file',
+            },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    const [card] = await cards(el);
+    const pill = card.shadowRoot!.querySelector('[data-testid="tool-failed"]')!;
+    expect(pill.textContent!.trim()).to.equal('Failed (exit 1)');
+    expect(pill.getAttribute('variant')).to.equal('danger');
+    expect(
+      card
+        .shadowRoot!.querySelector('[data-testid="session-tool-card"]')!
+        .getAttribute('data-state')
+    ).to.equal('failed');
+  });
+
+  it('edit result renders a diff', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          toolsEvent('e1', '2026-08-06T10:00:05Z', [
+            {
+              kind: 'call',
+              call_id: 'call_3',
+              name: 'Edit',
+              text: JSON.stringify({
+                file_path: 'src/a.ts',
+                old_string: 'const a = 1;',
+                new_string: 'const a = 2;',
+              }),
+            },
+            { kind: 'result', call_id: 'call_3', text: 'ok' },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    const [card] = await cards(el);
+    const diff = card.shadowRoot!.querySelector('[data-testid="tool-diff"]')!;
+    expect(diff.querySelector('.del')!.textContent).to.contain('const a = 1;');
+    expect(diff.querySelector('.add')!.textContent).to.contain('const a = 2;');
+    expect(card.shadowRoot!.textContent).to.contain('src/a.ts');
+  });
+
+  it('turn_end renders a Worked for footer', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: 'fix it' },
+            { role: 'assistant', text: 'fixed', source: 'response' },
+          ]),
+        ]}
+        .activity=${[
+          activityItem({
+            activity_type: 'turn_end',
+            timestamp: '2026-08-06T10:03:24Z',
+            title: 'Turn ended',
+            metadata: { source: 'codex_cli' },
+          }),
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    const footer = el.shadowRoot!.querySelector('[data-testid="turn-footer"]')!;
+    expect(footer.textContent!.trim()).to.match(/^Worked for 3m 24s • /);
+  });
+
+  it('agent prose uses the body face', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: 'hi' },
+            { role: 'assistant', text: 'hello there', source: 'response' },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    const prose = el.shadowRoot!.querySelector(
+      '.bubble[data-kind="agent_response"] .bubble-text'
+    )!;
+    const face = getComputedStyle(prose).fontFamily.toLowerCase();
+    expect(face).to.equal(getComputedStyle(el).fontFamily.toLowerCase());
+    expect(face).to.not.contain('monospace');
+  });
+
+  it('session wrapper tags are not rendered', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: '<session>\nMove the button\n</session>' },
+            { role: 'assistant', text: 'ok', source: 'response' },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    const prompt = el.shadowRoot!.querySelector(
+      '.bubble[data-kind="user_prompt"]'
+    )!;
+    expect(prompt.textContent).to.contain('Move the button');
+    expect(prompt.textContent).to.not.contain('<session>');
+    expect(prompt.textContent).to.not.contain('</session>');
+  });
+
+  it('model authorization error shows as a failed turn', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          previewEvent(
+            'e1',
+            '2026-08-06T10:00:00Z',
+            [{ role: 'user', text: 'Move the button' }],
+            {
+              outcome: 'error',
+              status_code: 403,
+              error_detail: {
+                error: { message: 'model_not_authorized for this key' },
+              },
+            }
+          ),
+        ]}
+      ></session-chat-view>
+    `);
+    await el.updateComplete;
+    const failed = el.shadowRoot!.querySelector('.bubble.failed')!;
+    expect(failed).to.exist;
+    expect(failed.textContent).to.contain('model_not_authorized');
+    expect(failed.textContent).to.contain('Failed');
+  });
+});

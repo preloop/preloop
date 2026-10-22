@@ -7,6 +7,7 @@ import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 import './runtime-sessions-view';
 import type { RuntimeSessionsView } from './runtime-sessions-view';
 import { SESSION_PAGE_SIZE, formatCueStart } from './runtime-sessions-view';
+import { runtimeSessionPathRedirect } from '../../utils/runtime-session-route';
 
 const SESSION_OPTIONS = {
   runner_id: 'r',
@@ -2554,5 +2555,18 @@ describe('RuntimeSessionsView', () => {
       expect(button).to.not.equal(null);
       expect(button!.hasAttribute('loading')).to.equal(false);
     });
+  });
+});
+
+describe('runtime session path route', () => {
+  it('path id route redirects to sessionId query', () => {
+    expect(runtimeSessionPathRedirect('abc-123')).to.equal(
+      '/console/runtime-sessions?sessionId=abc-123'
+    );
+    expect(
+      runtimeSessionPathRedirect('abc-123', '?replay=replay', '#turn-4')
+    ).to.equal(
+      '/console/runtime-sessions?replay=replay&sessionId=abc-123#turn-4'
+    );
   });
 });

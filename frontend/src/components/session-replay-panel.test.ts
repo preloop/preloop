@@ -1483,3 +1483,124 @@ describe('SessionReplayPanel', () => {
     ).to.equal(null);
   });
 });
+
+describe('SessionReplayPanel Requests summary and replay start', () => {
+  function summaryText(element: SessionReplayPanel): string {
+    return (
+      element.shadowRoot?.querySelector('.chat-summary-bar')?.textContent || ''
+    ).replace(/\s+/g, ' ');
+  }
+
+  it('token total equals the session header total', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .sessionTotalTokens=${21631}
+        .events=${[
+          previewEvent(
+            'e1',
+            '2026-06-07T12:00:00Z',
+            [{ role: 'user', text: 'go' }],
+            {
+              total_tokens: 500,
+              prompt_tokens: 100,
+              completion_tokens: 400,
+              usage_details: { prompt_tokens_details: { cached_tokens: 9000 } },
+            }
+          ),
+        ]}
+      ></session-replay-panel>
+    `);
+    const text = summaryText(element);
+    expect(text).to.match(/Tokens\s*21,631/);
+    // A cached share above 100% is impossible.
+    const pct = /(\d+)%/.exec(text);
+    expect(pct).to.not.equal(null);
+    expect(Number(pct![1])).to.be.at.most(100);
+  });
+
+  it('tools count comes from tool rows', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${[
+          previewEvent(
+            'e1',
+            '2026-06-07T12:00:00Z',
+            [{ role: 'user', text: 'run it' }],
+            {
+              tools: [
+                {
+                  kind: 'call',
+                  call_id: 'c1',
+                  name: 'exec_command',
+                  text: '{"cmd": "ls"}',
+                },
+                { kind: 'result', call_id: 'c1', text: 'a' },
+                {
+                  kind: 'call',
+                  call_id: 'c2',
+                  name: 'exec_command',
+                  text: '{"cmd": "pwd"}',
+                },
+              ],
+            }
+          ),
+        ]}
+        .activity=${[
+          {
+            activity_type: 'tool_call',
+            timestamp: '2026-06-07T12:00:01Z',
+            title: 'Bash',
+            summary: 'ls',
+            status: 'completed',
+            api_usage_id: null,
+            tool_name: 'Bash',
+            server_name: null,
+            auth_subject_type: null,
+            api_key_id: null,
+            api_key_name: null,
+            estimated_cost: null,
+            total_tokens: null,
+          } as RuntimeSessionActivityItem,
+        ]}
+      ></session-replay-panel>
+    `);
+    // Two calls; the hook row for `ls` merges into its gateway row.
+    expect(summaryText(element)).to.match(/Tools\s*2\b/);
+  });
+
+  it('replay starts at the first real prompt', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="replay"
+        .session=${SESSION}
+        .events=${[
+          previewEvent('e1', '2026-06-07T12:00:00Z', [
+            { role: 'system', text: 'You are Codex, a coding agent.' },
+            {
+              role: 'user',
+              text: '# AGENTS.md instructions for /repo\nUse ruff.',
+            },
+            { role: 'user', text: 'Move the Columns button' },
+            { role: 'assistant', text: 'Looking' },
+          ]),
+          previewEvent('e2', '2026-06-07T12:01:00Z', [
+            { role: 'assistant', text: 'Done' },
+          ]),
+        ]}
+      ></session-replay-panel>
+    `);
+    await element.updateComplete;
+    const internals = element as unknown as {
+      replayIndex: number;
+      getVisibleReplayMessages(): Array<{ text: string | null }>;
+    };
+    const messages = internals.getVisibleReplayMessages();
+    expect(messages[internals.replayIndex]?.text).to.equal(
+      'Move the Columns button'
+    );
+  });
+});

@@ -348,7 +348,7 @@ describe('PreloopSessionObserver', () => {
     // now inline rather than in a separate "Supporting activity" section).
     expect(text).to.include('Build a widget');
     expect(text).to.not.include('Duplicate model summary');
-    expect(text).to.include('Transcript');
+    expect(text).to.include('Requests');
     expect(text).to.include('Replay');
     expect(
       fetchStub.calledWithMatch(
@@ -579,7 +579,7 @@ describe('PreloopSessionObserver', () => {
 
     const requestsButton = Array.from(
       el.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim().startsWith('Requests'));
+    ).find((button) => button.textContent?.trim().startsWith('Usage log'));
     expect(requestsButton).to.exist;
     requestsButton!.click();
 
@@ -1117,7 +1117,7 @@ describe('PreloopSessionObserver', () => {
       ).to.equal('replay');
 
       // Returning to the default mode clears the param to keep URLs clean.
-      findTab('Transcript')!.click();
+      findTab('Requests')!.click();
       await el.updateComplete;
       expect(new URLSearchParams(window.location.search).get('replay')).to.be
         .null;

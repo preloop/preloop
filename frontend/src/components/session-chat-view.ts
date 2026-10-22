@@ -44,6 +44,13 @@ import type {
 } from '../utils/transcript';
 import { buildConversation } from '../utils/transcript';
 import { noteAuthorLabel } from '../utils/note-author';
+import {
+  buildSessionTurns,
+  type SessionRuntime,
+  type SessionTurn,
+  type SessionTurnsResult,
+  type TurnItem,
+} from '../utils/session-turns';
 
 /** "Note from <author> (<credential>)": a note is not an anonymous operator. */
 function noteRoleLabel(note: TranscriptNoteDelivery): string {
@@ -128,6 +135,11 @@ export class SessionChatView extends LitElement {
     return renderSessionApproval(this, this.approvalState, request);
   }
   @property({ type: Boolean }) liveEnabled = true;
+  /**
+   * Which CLI produced the session, for the row glyphs and the footer
+   * format. Empty means "infer from the hook metadata".
+   */
+  @property({ type: String }) runtime: SessionRuntime | '' = '';
   @property({ type: Boolean }) ended = false;
   private renderActivity() {
     if (!this.liveEnabled) return nothing;
@@ -556,6 +568,8 @@ export class SessionChatView extends LitElement {
 
     .bubble-text {
       color: var(--sl-color-neutral-900);
+      /* Prose is body face; mono is for commands and telemetry only. */
+      font-family: inherit;
       font-size: var(--sl-font-size-small);
       line-height: 1.55;
       margin: 0;
@@ -629,6 +643,27 @@ export class SessionChatView extends LitElement {
 
     .artifact-item {
       margin: 0.25rem 0;
+    }
+    .turn {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-small);
+    }
+    .turn-footer {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
+      margin: 0 var(--sl-spacing-medium);
+    }
+    .turn-footer.interrupted {
+      color: var(--sl-color-warning-700);
+    }
+    .session-context {
+      align-self: stretch;
+      margin: 0 var(--sl-spacing-medium);
+    }
+    .session-context::part(summary) {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
     }
     .artifact-filter-note {
       font-size: 0.8rem;
@@ -1279,6 +1314,82 @@ ${
     `;
   }
 
+  /** Turn model, rebuilt only with the transcript (see willUpdate). */
+  private turnsCache: { source: unknown; result: SessionTurnsResult } | null =
+    null;
+
+  private get sessionTurns(): SessionTurnsResult {
+    const items = this.displayItems;
+    const signature = items.map((item) => item.key).join('|');
+    const source = `${signature}#${this.runtime}`;
+    if (
+      this.turnsCache &&
+      this.turnsCache.source === source &&
+      this.turnsBuiltFrom === this.conversation &&
+      this.turnsActivity === this.activity &&
+      this.turnsApprovals === this.approvalState
+    )
+      return this.turnsCache.result;
+    const result = buildSessionTurns(items, {
+      activity: this.activity,
+      runtime: this.runtime || undefined,
+    });
+    this.turnsCache = { source, result };
+    this.turnsBuiltFrom = this.conversation;
+    this.turnsActivity = this.activity;
+    this.turnsApprovals = this.approvalState;
+    return result;
+  }
+  private turnsBuiltFrom: unknown = null;
+  private turnsActivity: unknown = null;
+  private turnsApprovals: unknown = null;
+
+  private renderTurnItem(item: TurnItem) {
+    if (item.type === 'row') {
+      return html`<session-tool-card .row=${item}></session-tool-card>`;
+    }
+    return this.renderItem(item as (typeof this.displayItems)[number]);
+  }
+
+  private renderTurn(turn: SessionTurn) {
+    return html`<div class="turn" data-testid="session-turn">
+      ${turn.prompt ? this.renderMessage(turn.prompt) : nothing}
+      ${repeat(
+        turn.items,
+        (item) => item.key,
+        (item) => this.renderTurnItem(item)
+      )}
+      ${
+        turn.footer
+          ? html`<div
+              class="turn-footer ${turn.footer.interrupted ? 'interrupted' : ''}"
+              data-testid="turn-footer"
+              title=${parseUTCDate(turn.footer.endedAt).toLocaleString()}
+            >
+              ${turn.footer.text}
+            </div>`
+          : nothing
+      }
+    </div>`;
+  }
+
+  private renderSessionContext(context: TranscriptMessageItem[]) {
+    if (!context.length) return nothing;
+    return html`<sl-details
+      class="session-context"
+      data-testid="session-context"
+    >
+      <span slot="summary"
+        >Session context · ${context.length}
+        message${context.length === 1 ? '' : 's'}</span
+      >
+      ${context.map(
+        (item) =>
+          html`<pre class="step-text" data-role=${item.role}>${item.text}</pre>`
+      )}
+    </sl-details>`;
+  }
+
   private renderPending(message: PendingTalkMessage) {
     return html`
       <div
@@ -1377,6 +1488,7 @@ ${
 
     const { stats } = this.conversation;
     const items = this.displayItems;
+    const turns = this.sessionTurns;
     if (!items.length && !this.pending.length) {
       return html`${this.renderLiveRegion()} ${this.renderLiveActivity()}
         <div class="empty">${this.emptyText}</div>`;
@@ -1452,11 +1564,20 @@ ${
                 </div>`
               : nothing
           }
-          ${repeat(
-            items.filter((item) => this.passesArtifactFilter(item)),
-            (item) => item.key,
-            (item) => this.renderItem(item)
-          )}
+          ${
+            this.artifactKindFilter
+              ? repeat(
+                  items.filter((item) => this.passesArtifactFilter(item)),
+                  (item) => item.key,
+                  (item) => this.renderItem(item)
+                )
+              : html`${this.renderSessionContext(turns.context)}
+                ${repeat(
+                  turns.turns,
+                  (turn) => turn.key,
+                  (turn) => this.renderTurn(turn)
+                )}`
+          }
           ${repeat(
             this.pending,
             (message) => message.id,
