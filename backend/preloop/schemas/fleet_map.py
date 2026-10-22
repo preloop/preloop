@@ -70,6 +70,29 @@ class FleetMapNode(BaseModel):
     last_active_at: datetime | None = Field(
         default=None, description="Latest activity evidence inside the window."
     )
+    provider_id: str | None = Field(
+        default=None,
+        description=(
+            "Model and provider account nodes: the provider node that contains "
+            "it. A model reachable through several providers is placed in the "
+            "provider of most of its configurations (ties by id). Null when that "
+            "provider node is not returned."
+        ),
+    )
+    provider_account_ids: list[str] = Field(
+        default_factory=list,
+        description="Model nodes: returned provider accounts that serve the model.",
+    )
+    model_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Provider and provider account nodes: returned models they contain."
+        ),
+    )
+    account_ids: list[str] = Field(
+        default_factory=list,
+        description="Provider nodes: returned provider accounts they contain.",
+    )
 
 
 class FleetMapEdge(BaseModel):
@@ -121,6 +144,13 @@ class FleetMapResponse(BaseModel):
     decommissioned_agents: int = Field(
         default=0,
         description="Decommissioned agents left out of the map, counted for context.",
+    )
+    users: list[str] | None = Field(
+        default=None,
+        description=(
+            "The user node ids the graph was scoped to (users= parameter), "
+            "unknown ids dropped; null when not scoped."
+        ),
     )
 
 
@@ -277,6 +307,13 @@ class FleetCodeActivityResponse(BaseModel):
         ),
     )
     relations_truncated: bool = False
+    users: list[str] | None = Field(
+        default=None,
+        description=(
+            "The user node ids the response was scoped to (users= parameter), "
+            "unknown ids dropped; null when not scoped."
+        ),
+    )
 
 
 class FleetUsageTotals(BaseModel):
@@ -324,6 +361,13 @@ class FleetUsageResponse(BaseModel):
     work: dict[str, "FleetNodeTotals"] = Field(
         default_factory=dict,
         description="Gateway usage of linked flow runs plus tool calls on the item.",
+    )
+    users: list[str] | None = Field(
+        default=None,
+        description=(
+            "The user node ids the response was scoped to (users= parameter), "
+            "unknown ids dropped; null when not scoped."
+        ),
     )
 
 

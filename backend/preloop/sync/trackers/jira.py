@@ -4,7 +4,7 @@ Jira tracker implementation for preloop.sync.
 
 import base64
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import logging
 import urllib.parse
@@ -99,6 +99,40 @@ _WEBHOOK_BLOCKED_STATUSES = frozenset({401, 403})
 _ATLASSIAN_CLOUD_HOST_RE = re.compile(
     r"(?i)^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net$"
 )
+
+
+def _jira_timestamp(issue_data: Dict[str, Any], name: str) -> Optional[datetime]:
+    """Read a Jira ``created``/``updated`` time as naive UTC.
+
+    Webhook payloads may carry the value at the top level; REST results nest it
+    under ``fields``. Jira writes ``2026-10-21T20:26:13.725+0000``; ISO forms
+    with ``Z``, ``+00:00`` or no fraction are accepted too.
+
+    Args:
+        issue_data: Jira issue payload.
+        name: ``created`` or ``updated``.
+
+    Returns:
+        The timestamp in naive UTC, or None when absent or unparseable.
+    """
+    fields = issue_data.get("fields")
+    value = issue_data.get(name)
+    if value is None and isinstance(fields, dict):
+        value = fields.get(name)
+    if isinstance(value, datetime):
+        parsed: Optional[datetime] = value
+    elif isinstance(value, str) and value.strip():
+        text = value.strip().replace("Z", "+00:00")
+        text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
 
 
 def _safe_error_text(response: httpx.Response, limit: int = 300) -> str:
@@ -2192,26 +2226,10 @@ class JiraTracker(BaseTracker):
                     f"Fields status: {fields_status}"
                 )
 
-        # Extract timestamps
-        created_at = None
-        if "created" in issue_data:
-            try:
-                created_at = datetime.strptime(
-                    issue_data["created"], "%Y-%m-%dT%H:%M:%S.%f%z"
-                )
-            except (ValueError, TypeError):
-                # Jira timestamp format may omit fractional seconds or timezone.
-                pass
-
-        updated_at = None
-        if "updated" in issue_data:
-            try:
-                updated_at = datetime.strptime(
-                    issue_data["updated"], "%Y-%m-%dT%H:%M:%S.%f%z"
-                )
-            except (ValueError, TypeError):
-                # Jira timestamp format may omit fractional seconds or timezone.
-                pass
+        # Extract timestamps. REST search results nest them under ``fields``;
+        # reading only the top level stamped every synced issue with ``now()``.
+        created_at = _jira_timestamp(issue_data, "created")
+        updated_at = _jira_timestamp(issue_data, "updated")
 
         # Get fields from either top level (webhook) or nested in fields (API)
         fields = issue_data.get("fields", issue_data)
@@ -2242,7 +2260,8 @@ class JiraTracker(BaseTracker):
             "status": status_name,
             "created_at": created_at or datetime.now(),
             "updated_at": updated_at or datetime.now(),
-            "last_updated_external": updated_at or datetime.now(),
+            # Never the sync time: a resync is not activity on the issue.
+            "last_updated_external": updated_at,
             "last_synced": datetime.now(),
             "external_url": issue_url,
             "meta_data": {

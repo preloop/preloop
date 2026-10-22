@@ -143,6 +143,7 @@ def build_work_items(
     see_flows: bool,
     calls_truncated: bool,
     pull_request_limit: int,
+    actors: set[str] | None = None,
 ) -> FleetWorkResult:
     """Read each persisted source once and merge by kind and canonical key.
 
@@ -153,7 +154,7 @@ def build_work_items(
     their IDs are returned. Agent owners are not inferred to have acted.
     """
     items: dict[tuple[Kind, str], FleetWorkItem] = {}
-    actors: dict[tuple[Kind, str], dict[str, datetime]] = {}
+    performers: dict[tuple[Kind, str], dict[str, datetime]] = {}
     relations: dict[str, FleetWorkRelation] = {}
 
     def relate(
@@ -245,7 +246,7 @@ def build_work_items(
         if related and (issue := _identity(related, "issue")):
             item.related_issue = issue[0]
         if node_id:
-            by_node = actors.setdefault(slot, {})
+            by_node = performers.setdefault(slot, {})
             by_node[node_id] = max(by_node.get(node_id, at), at)
 
     links = (
@@ -586,8 +587,8 @@ def build_work_items(
         provenance = _PROVENANCE.get(str(work_ref.get("via")), "tool_call")
         if creator:
             relate("touched", creator, pr_slot, at, provenance, "opened")
-            actors.setdefault(pr_slot, {})[creator] = max(
-                actors.get(pr_slot, {}).get(creator, at), at
+            performers.setdefault(pr_slot, {})[creator] = max(
+                performers.get(pr_slot, {}).get(creator, at), at
             )
         for relation_kind, name in (("resolves", "closes"), ("mentions", "mentions")):
             for issue_key in (work_ref.get(name) or [])[:5]:
@@ -596,13 +597,26 @@ def build_work_items(
                     add(issue_key, "issue", at, "issue_updated")
                     relate(relation_kind, work_id(*pr_slot), issue, at, provenance)
 
+    def actors_of(slot: tuple[Kind, str]) -> list[str]:
+        by_node = performers.get(slot, {})
+        return sorted(by_node, key=lambda node: (-by_node[node].timestamp(), node))
+
     for slot, item in items.items():
         item.id = work_id(slot[0], slot[1])
         item.href = item.url
-        item.node_ids = sorted(
-            actors.get(slot, {}),
-            key=lambda node: (-actors[slot][node].timestamp(), node),
-        )[:5]
+        ranked = actors_of(slot)
+        if actors is not None:
+            ranked = [node for node in ranked if node in actors]
+        item.node_ids = ranked[:5]
+    if actors is not None:
+        # A people scope keeps items an in-scope actor touched, before the cap.
+        items = {
+            slot: item
+            for slot, item in items.items()
+            if any(node in actors for node in actors_of(slot))
+        }
+        for item in items.values():
+            item.node_ids = [node for node in item.node_ids if node in actors]
     ordered = sorted(
         items.values(),
         key=lambda item: (-item.last_at.timestamp(), item.kind, item.key),
@@ -613,7 +627,7 @@ def build_work_items(
         for node in item.node_ids:
             if node.startswith("flow:"):
                 flow_id = node.removeprefix("flow:")
-                at = actors[(item.kind, item.key)][node]
+                at = performers[(item.kind, item.key)][node]
                 active_flows[flow_id] = max(active_flows.get(flow_id, at), at)
     # A relation needs both work ends among the returned items; a node end
     # (agent/flow) is checked by the caller's visibility.

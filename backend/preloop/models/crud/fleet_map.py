@@ -2,8 +2,9 @@
 
 from datetime import datetime
 from typing import Any, Literal
+from uuid import UUID
 
-from sqlalchemy import Row, and_, or_, select, tuple_
+from sqlalchemy import Row, and_, false, or_, select, tuple_
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -120,6 +121,7 @@ def list_code_tool_calls(
     limit: int,
     until: datetime | None = None,
     include_work: bool = False,
+    principals: list[tuple[str, str]] | None = None,
 ) -> list[Row[Any]]:
     """Read successful pull and merge request tool calls since ``since``.
 
@@ -133,6 +135,9 @@ def list_code_tool_calls(
         limit: Maximum rows, including a truncation sentinel.
         until: Optional inclusive upper bound.
         include_work: Include issue tools for the work-item projection.
+        principals: When set (a people scope), only calls outside flow runs by
+            these ``(type, source id)`` principals or their per-conversation
+            ``<id>:<run>`` principals, so the cap holds in-scope rows only.
 
     Returns:
         Rows of timestamp, tool name, arguments metadata, flow execution id and
@@ -171,11 +176,33 @@ def list_code_tool_calls(
                 a.timestamp >= since,
                 *([a.timestamp <= until] if until is not None else []),
                 s.account_id == account_id,
+                *_principal_filter(s, a, principals),
             )
             .order_by(a.timestamp.desc(), a.id)
             .limit(limit)
         ).all()
     )
+
+
+def _principal_filter(
+    s: Any, a: Any, principals: list[tuple[str, str]] | None
+) -> list[Any]:
+    """Session principal conditions for a people scope (none: no filter)."""
+    if principals is None:
+        return []
+    options = [
+        and_(
+            s.runtime_principal_type == kind,
+            or_(
+                s.runtime_principal_id == identity,
+                s.runtime_principal_id.startswith(f"{identity}:", autoescape=True),
+            ),
+        )
+        for kind, identity in principals
+    ]
+    if not options:
+        return [false()]
+    return [a.flow_execution_id.is_(None), or_(*options)]
 
 
 def agents_for_principals(
@@ -194,12 +221,29 @@ def agents_for_principals(
     if not principals:
         return []
     m = models.ManagedAgent
+    # Per-conversation principals (``<base>:<run>``) belong to the base agent;
+    # a ``managed_agent`` principal is the agent id itself.
+    pairs: set[tuple[str, str]] = set()
+    agent_ids: set[UUID] = set()
+    for principal_type, principal_id in principals:
+        if not principal_type or not principal_id:
+            continue
+        pairs.add((principal_type, principal_id))
+        pairs.add((principal_type, principal_id.split(":", 1)[0]))
+        if principal_type == "managed_agent":
+            try:
+                agent_ids.add(UUID(principal_id))
+            except ValueError:
+                pass
+    matches = [tuple_(m.session_source_type, m.session_source_id).in_(sorted(pairs))]
+    if agent_ids:
+        matches.append(m.id.in_(sorted(agent_ids)))
     return (
         db.query(m)
         .filter(
             m.account_id == account_id,
             m.lifecycle_state != "decommissioned",
-            tuple_(m.session_source_type, m.session_source_id).in_(sorted(principals)),
+            or_(*matches),
         )
         .all()
     )

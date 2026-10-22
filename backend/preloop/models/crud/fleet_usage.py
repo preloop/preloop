@@ -1,7 +1,7 @@
 """Account-scoped, SQL-grouped usage over a bounded visible model mapping."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from sqlalchemy import String, Uuid, and_, case, column, func, or_, select, values
@@ -23,6 +23,8 @@ def usage_by_node(
     grouping: Literal["model", "provider"],
     since: datetime,
     until: datetime,
+    principals: list[tuple[str, str]] | None = None,
+    user_ids: list[str] | None = None,
 ) -> list[RowMapping]:
     """Aggregate gateway rows once per grouping, never loading ledger rows.
 
@@ -33,6 +35,11 @@ def usage_by_node(
         grouping: Which graph node identifier to group by.
         since: Inclusive window start in UTC.
         until: Inclusive window end in UTC.
+        principals: When set (a people scope), count only rows outside flow
+            runs made by these ``(type, source id)`` principals, including
+            their per-conversation ``<id>:<run>`` principals.
+        user_ids: With ``principals``, also count these users' direct rows
+            (no principal, no flow).
 
     Returns:
         SQL aggregates keyed by graph node id, with missing-data indicators.
@@ -44,6 +51,12 @@ def usage_by_node(
     """
     if not model_nodes:
         return []
+    scoped: list[Any] = []
+    if principals is not None or user_ids is not None:
+        condition = _scope_condition(principals or [], user_ids or [])
+        if condition is None:
+            return []
+        scoped.append(condition)
     mapping = values(
         column("model_id", Uuid),
         column("model_node", String),
@@ -98,8 +111,43 @@ def usage_by_node(
             exclude_replay_usage_condition(),
             usage.timestamp >= since.replace(tzinfo=None),
             usage.timestamp <= until.replace(tzinfo=None),
+            *scoped,
         )
         .group_by(node)
         .order_by(node)
     )
     return list(db.execute(statement).mappings())
+
+
+def _scope_condition(
+    principals: list[tuple[str, str]], user_ids: list[str]
+) -> Any | None:
+    """Ledger rows made by the scoped agents or directly by the scoped users."""
+    usage = models.ApiUsage
+    outside_flows = and_(usage.flow_execution_id.is_(None), usage.flow_id.is_(None))
+    options: list[Any] = []
+    for principal_type, principal_id in principals:
+        options.append(
+            and_(
+                usage.runtime_principal_type == principal_type,
+                or_(
+                    usage.runtime_principal_id == principal_id,
+                    usage.runtime_principal_id.startswith(
+                        f"{principal_id}:", autoescape=True
+                    ),
+                ),
+            )
+        )
+    users: list[UUID] = []
+    for value in user_ids:
+        try:
+            users.append(UUID(str(value)))
+        except ValueError:
+            continue
+    if users:
+        options.append(
+            and_(usage.runtime_principal_id.is_(None), usage.user_id.in_(users))
+        )
+    if not options:
+        return None
+    return and_(outside_flows, or_(*options))

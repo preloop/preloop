@@ -1,0 +1,46 @@
+{
+  "_comment": "Shapes observed on prod 2026-10-21 ~21:10Z (founder account, read-only), scrubbed: install ids hashed, subaccount Jira keys renamed SUBA-n, titles replaced. Times are the observed ones.",
+  "observed_at": "2026-10-21T21:10:00Z",
+  "principals": {
+    "claude_code_agent_source_id": "claude-code-5e1a9c0b7d42",
+    "claude_code_conversation": "claude-code-5e1a9c0b7d42:9d0f6a52-6b0e-4d8f-9a51-3c7e2b1d4f60",
+    "claude_code_subagent": "claude-code-5e1a9c0b7d42:9d0f6a52-6b0e-4d8f-9a51-3c7e2b1d4f60:a41f0c2e9b7d6a5c3",
+    "codex_agent_source_id": "codex-7b3c1e9a0d55",
+    "codex_thread": "codex-7b3c1e9a0d55:01a1604a-a48a-7d80-9195-42a3c2b4dd62"
+  },
+  "native_hook_call": {
+    "tool_name": "Bash",
+    "status": "allowed",
+    "minutes_before_observed": 12,
+    "metadata": {
+      "origin": "native_hook",
+      "source": "claude_code",
+      "arguments_summary": {"command": 61, "description": 30},
+      "work_ref": {"via": "cli", "tool": "gh", "kind": "issue", "action": "issue_updated", "ref": "#1957", "repo": "preloop/preloop", "host": "github.com"}
+    }
+  },
+  "jira_search_issue": {
+    "id": "10001",
+    "key": "SUBA-1",
+    "fields": {
+      "summary": "Subaccount tracker issue SUBA-1",
+      "status": {"name": "Backlog"},
+      "labels": ["preloop-implement"],
+      "created": "2026-10-18T09:12:44.120+0000",
+      "updated": "2026-10-18T09:15:02.871+0000"
+    }
+  },
+  "jira_prod_row_before_fix": {
+    "created_at": "2026-10-21T20:26:13.725030",
+    "updated_at": "2026-10-21T20:26:13.725033"
+  },
+  "github_issue": {
+    "id": 3550001957,
+    "number": 1957,
+    "title": "Remove the legacy issue duplicates and assignments",
+    "body": "",
+    "state": "closed",
+    "created_at": "2026-10-21T13:18:42Z",
+    "updated_at": "2026-10-21T18:44:26Z"
+  }
+}

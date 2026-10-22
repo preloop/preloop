@@ -17,6 +17,7 @@ from preloop.schemas.fleet_map import (
 )
 from preloop.services.built_in_models import built_in_models_enabled
 from preloop.services.fleet_map import _allowed, _reject_report_key, canonical_model
+from preloop.services.fleet_scope import FleetScope, resolve_scope, scope_principals
 
 MODEL_LIMIT = 1000
 MAX_WINDOW = timedelta(days=90)
@@ -28,6 +29,7 @@ def build_fleet_usage(
     user: models.User,
     active_within_minutes: int | None = None,
     now: datetime | None = None,
+    user_ids: list[str] | None = None,
 ) -> FleetUsageResponse:
     """Read SQL totals for authorized model and provider nodes in one window.
 
@@ -36,6 +38,10 @@ def build_fleet_usage(
         user: Authenticated user in the selected account.
         active_within_minutes: Requested window; None means the last 90 days.
         now: Optional UTC clock override for deterministic tests.
+        user_ids: Scope to these people (``users=``): node dictionaries keep
+            only in-scope ids, flows are omitted, and model/provider totals
+            count only the in-scope agents' and people's own gateway rows,
+            on the models and providers present in the scoped map.
 
     Returns:
         Model/provider dictionaries keyed exactly as the fleet graph, with
@@ -67,6 +73,13 @@ def build_fleet_usage(
         since=current - min(window, MAX_WINDOW),
         until=current,
     )
+    scope = (
+        resolve_scope(db, user=user, user_ids=user_ids, now=current)
+        if user_ids is not None
+        else None
+    )
+    if scope is not None:
+        result.users = list(scope.users)
     _node_totals(
         db,
         user=user,
@@ -74,6 +87,7 @@ def build_fleet_usage(
         result=result,
         minutes=active_within_minutes,
         now=current,
+        scope=scope,
     )
     if not _allowed(db, user, "view_ai_models", owner):
         return result
@@ -113,10 +127,18 @@ def build_fleet_usage(
             grouping=grouping,
             since=result.since,
             until=result.until,
+            principals=scope_principals(scope) if scope is not None else None,
+            user_ids=[u.removeprefix("user:") for u in scope.users]
+            if scope is not None
+            else None,
         ):
             values = dict(aggregate)
             node_id = values.pop("node_id")
             values["partial"] |= result.truncated
+            if scope is not None and not scope.has(node_id):
+                # Keyed exactly as the scoped map: a model or provider only a
+                # person's direct requests reached is not in that graph.
+                continue
             target[node_id] = FleetUsageTotals(**values)
             result.partial |= target[node_id].partial
     return result
@@ -179,6 +201,7 @@ def _node_totals(
     result: FleetUsageResponse,
     minutes: int | None,
     now: datetime,
+    scope: FleetScope | None = None,
 ) -> None:
     """Fill the agent, person, flow, device and work dictionaries.
 
@@ -211,11 +234,16 @@ def _node_totals(
         if len(loaded) > NODE_LIMIT:
             result.truncated = result.partial = True
         agents = viewable(db, user, VISIBLE_MANAGED_AGENT, loaded[:NODE_LIMIT])
-    by_principal = {
-        (row.session_source_type, row.session_source_id): f"agent:{row.id}"
-        for row in agents
-        if getattr(row, "session_source_type", None)
-    }
+    from preloop.services.fleet_principals import agent_index, resolve_principal
+
+    principal_index = agent_index(agents, lambda row: f"agent:{row.id}")
+    agent_by_id = {str(row.id): f"agent:{row.id}" for row in agents}
+
+    def agent_of(principal_type: Any, principal_id: Any) -> str | None:
+        return resolve_principal(
+            principal_index, principal_type, principal_id, by_id=agent_by_id
+        )
+
     agent_ids = {f"agent:{row.id}" for row in agents}
 
     def capped(rows: list[Any]) -> list[Any]:
@@ -237,7 +265,7 @@ def _node_totals(
 
     if see_agents:
         for row in usage("principal"):
-            node = by_principal.get((row["key_a"], row["key_b"]))
+            node = agent_of(row["key_a"], row["key_b"])
             if node:
                 _add(totals[node], dict(row))
     if see_flows:
@@ -263,7 +291,7 @@ def _node_totals(
         node = (
             f"flow:{row.flow_id}"
             if row.flow_id and see_flows
-            else by_principal.get((row.principal_type, row.principal_id))
+            else agent_of(row.principal_type, row.principal_id)
         )
         if node:
             totals[node].tool_calls += int(row.tool_calls)
@@ -292,7 +320,7 @@ def _node_totals(
             item.approvals_declined += int(row.count)
 
     activity = build_code_activity(
-        db, user=user, active_within_minutes=minutes, now=now
+        db, user=user, active_within_minutes=minutes, now=now, scope=scope
     )
     result.truncated |= (
         activity.truncated or activity.relations_truncated or activity.work_truncated
@@ -368,10 +396,15 @@ def _node_totals(
         node.removeprefix("flow:") for node in totals if node.startswith("flow:")
     }
     shown_flows = visible_flow_ids(db, user, flows_named) if flows_named else set()
+    scoped_work = {item.id for item in activity.work}
     for node, item in totals.items():
         if not any(getattr(item, name) for name in _COUNT_FIELDS):
             continue
         if node.startswith("flow:") and node.removeprefix("flow:") not in shown_flows:
+            continue
+        if scope is not None and not (
+            scope.has(node) or (node.startswith("work:") and node in scoped_work)
+        ):
             continue
         target = {
             "agent": result.agents,
