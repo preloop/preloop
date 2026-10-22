@@ -564,6 +564,65 @@ describe('talk-composer per-session routing', () => {
     );
   });
 
+  it('a delivered note leaves exactly one bubble', async () => {
+    route(terminalControl());
+    const el = await mountRouted();
+    await type(el, 'rebase first');
+    await waitUntil(() => el.pendingMessages[0]?.state === 'waiting');
+
+    // Not echoed yet: the pending bubble stays.
+    el.clearSentPending(new Set());
+    expect(el.pendingMessages).to.have.length(1);
+
+    el.handleRealtime({
+      payload: {
+        runtime_session_id: 'sess-1',
+        metadata: {
+          kind: 'operator_note',
+          note_id: 'note-1',
+          hook_event: 'stop',
+          delivered_at: '2026-10-21T10:12:40Z',
+        },
+      },
+    });
+    // The reload shows the note on the timeline: the pending copy goes.
+    el.clearSentPending(new Set(['note-1']));
+    expect(el.pendingMessages).to.have.length(0);
+
+    // The timeline copy carries the read point itself.
+    await import('./session-chat-view');
+    const view = await fixture(
+      html`<session-chat-view
+        .activity=${[
+          {
+            id: 'act-1',
+            activity_type: 'agent_control_message',
+            timestamp: '2026-10-21T10:12:40Z',
+            title: 'Operator message',
+            summary: 'rebase first',
+            status: 'delivered',
+            metadata: {
+              kind: 'operator_note',
+              note_id: 'note-1',
+              delivery_event: 'stop',
+              author_display: 'Ada',
+              author_auth_method: 'jwt',
+            },
+          },
+        ]}
+      ></session-chat-view>`
+    );
+    await (view as unknown as { updateComplete: Promise<unknown> })
+      .updateComplete;
+    const bubbles = view.shadowRoot!.querySelectorAll(
+      '.bubble[data-kind="operator"]'
+    );
+    expect(bubbles).to.have.length(1);
+    expect(
+      bubbles[0].querySelector('[data-testid="note-read-at"]')!.textContent
+    ).to.contain('Read at turn end');
+  });
+
   it('no Interrupt or Release for a note-mode session', async () => {
     route(terminalControl());
     const el = await mountRouted();

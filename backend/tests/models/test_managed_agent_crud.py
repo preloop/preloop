@@ -32,9 +32,10 @@ def test_reachable_session_ids_persisted_and_capped(client, db_session, test_use
     db_session.expire_all()
     stored = crud_managed_agent.get(db_session, id=row.id).control_reachable_session_ids
 
+    # Plugins report oldest first: the newest 50 survive the cap.
     assert CONTROL_REACHABLE_SESSION_IDS_CAP == 50
     assert len(stored) == 50
-    assert stored[:2] == ["ses-0", "ses-1"]
+    assert stored == many[-50:]
     assert len(set(stored)) == 50
 
     # A frame without the list leaves it alone; an empty list clears it.

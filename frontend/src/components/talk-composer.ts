@@ -934,11 +934,15 @@ export class TalkComposer extends LitElement {
    * matched and is dropped on reload, as before.
    */
   public clearSentPending(echoedCommandIds: ReadonlySet<string>): void {
-    const keep = this.pending.filter(
-      (item) =>
+    const keep = this.pending.filter((item) => {
+      // A note the timeline now shows (with its own "Read at" label) is
+      // dropped, so it never renders twice. An unread note stays.
+      if (item.noteId) return !echoedCommandIds.has(item.noteId);
+      return (
         item.state !== 'sent' ||
         (item.commandId !== undefined && !echoedCommandIds.has(item.commandId))
-    );
+      );
+    });
     if (keep.length === this.pending.length) return;
     this.setPending(keep);
   }

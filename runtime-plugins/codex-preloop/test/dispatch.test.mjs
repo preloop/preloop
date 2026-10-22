@@ -630,6 +630,8 @@ test("full durable receipt ledger rejects new work and preserves replay after re
 
 test("presence lists owned threads as reachable", async () => {
   const { sidecar } = makeSidecar();
+  const early = [];
+  sidecar.sendEnvelope = (envelope) => early.push(envelope);
   assert.deepEqual(sidecar.reachableSessionIds(), []);
   await sidecar.handleFrame(
     fakeSocket(),
@@ -641,6 +643,9 @@ test("presence lists owned threads as reachable", async () => {
     }),
   );
   assert.deepEqual(sidecar.reachableSessionIds(), ["thread-1"]);
+  // Opening the thread republishes presence without waiting for a heartbeat.
+  assert.equal(early.length, 1);
+  assert.deepEqual(early[0].payload.reachable_session_ids, ["thread-1"]);
 
   const sent = [];
   sidecar.sendEnvelope = (envelope) => sent.push(envelope);

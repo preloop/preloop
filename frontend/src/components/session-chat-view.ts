@@ -51,6 +51,7 @@ import {
   type SessionTurnsResult,
   type TurnItem,
 } from '../utils/session-turns';
+import { noteReadPointLabel } from '../utils/agent-control';
 
 /** "Note from <author> (<credential>)": a note is not an anonymous operator. */
 function noteRoleLabel(note: TranscriptNoteDelivery): string {
@@ -1083,6 +1084,13 @@ export class SessionChatView extends LitElement {
             }
           </span>
           <span>${this.formatTime(item.timestamp)}</span>
+          ${
+            item.note
+              ? html`<span data-testid="note-read-at"
+                  >Read at ${noteReadPointLabel(item.note.deliveryEvent)}</span
+                >`
+              : nothing
+          }
           ${
             typeof item.note?.turnIndex === 'number'
               ? html`<span data-testid="note-turn"

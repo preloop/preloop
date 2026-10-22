@@ -406,6 +406,21 @@ export class PreloopClaudeSidecar {
 
   /** Execute one operator command envelope. Exposed for tests. */
   async dispatch(command: OperatorCommand): Promise<unknown> {
+    // A command can open or close an SDK session. Republish the reachable
+    // list right away instead of waiting for the next heartbeat, so the
+    // server does not route a session this sidecar just opened as a
+    // terminal it cannot type into.
+    const before = this.reachableSessionIds().join("\n");
+    try {
+      return await this.runCommand(command);
+    } finally {
+      if (this.reachableSessionIds().join("\n") !== before) {
+        this.publishPresence();
+      }
+    }
+  }
+
+  private async runCommand(command: OperatorCommand): Promise<unknown> {
     if (command.type !== "command") {
       return undefined;
     }
@@ -567,6 +582,12 @@ export class PreloopClaudeSidecar {
   }
 
   private broadcastMode(): void {
+    this.publishPresence();
+    this.launcher.notifyStatus();
+  }
+
+  /** Send the session_mode presence frame, with the reachable list. */
+  private publishPresence(): void {
     this.sendEnvelope({
       type: "presence",
       name: "session_mode",
@@ -578,7 +599,6 @@ export class PreloopClaudeSidecar {
         reachable_session_ids: this.reachableSessionIds(),
       },
     });
-    this.launcher.notifyStatus();
   }
 
   private rememberOutcome(

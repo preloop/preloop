@@ -198,7 +198,8 @@ def _empty_usage_aggregate() -> dict[str, Any]:
 
 
 #: Most native session ids kept per agent. A sidecar that owns more sessions
-#: than this is unusual; the newest entries it reports first are kept.
+#: than this is unusual. Plugins report oldest first, so the last (newest)
+#: entries are kept.
 CONTROL_REACHABLE_SESSION_IDS_CAP = 50
 _REACHABLE_SESSION_ID_MAX_LEN = 255
 
@@ -210,7 +211,8 @@ def normalize_reachable_session_ids(values: Sequence[Any]) -> list[str]:
         values: Raw list from the presence frame.
 
     Returns:
-        Distinct non-blank string ids in their reported order, capped.
+        Distinct non-blank string ids in their reported order, keeping the
+        newest (last reported) ``CONTROL_REACHABLE_SESSION_IDS_CAP``.
     """
     cleaned: list[str] = []
     seen: set[str] = set()
@@ -222,9 +224,7 @@ def normalize_reachable_session_ids(values: Sequence[Any]) -> list[str]:
             continue
         seen.add(item)
         cleaned.append(item)
-        if len(cleaned) >= CONTROL_REACHABLE_SESSION_IDS_CAP:
-            break
-    return cleaned
+    return cleaned[-CONTROL_REACHABLE_SESSION_IDS_CAP:]
 
 
 class _PageRow:

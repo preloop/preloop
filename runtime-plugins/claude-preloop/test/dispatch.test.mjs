@@ -283,12 +283,14 @@ test("reconnect replays only outcomes that missed delivery", async () => {
       payload: { text: "while online" },
     }),
   );
-  assert.equal(live.sent.length, 2);
-  assert.equal(live.sent[0].name, "command_progress");
-  assert.equal(live.sent[0].payload.command_id, "live-1");
-  assert.match(live.sent[0].payload.summary, /tokens: 6/);
-  assert.equal(live.sent[1].name, "command_result");
-  assert.equal(live.sent[1].payload.reply_text, "ok: while online");
+  // Presence frames (the reachable session list) may ride along.
+  const frames = live.sent.filter((frame) => frame.name !== "session_mode");
+  assert.equal(frames.length, 2);
+  assert.equal(frames[0].name, "command_progress");
+  assert.equal(frames[0].payload.command_id, "live-1");
+  assert.match(frames[0].payload.summary, /tokens: 6/);
+  assert.equal(frames[1].name, "command_result");
+  assert.equal(frames[1].payload.reply_text, "ok: while online");
 
   const reconnected = fakeSocket();
   sidecar.replayCommandOutcomes(reconnected);
@@ -361,6 +363,8 @@ test("stop() clears sessions so a later dispatch recreates the manager", async (
 
 test("presence lists sdk-owned and launcher sessions as reachable", async () => {
   const { sidecar } = makeSidecar();
+  const early = [];
+  sidecar.sendEnvelope = (envelope) => early.push(envelope);
   assert.deepEqual(sidecar.reachableSessionIds(), []);
   await sidecar.dispatch({
     type: "command",
@@ -368,6 +372,10 @@ test("presence lists sdk-owned and launcher sessions as reachable", async () => 
     payload: { text: "start work" },
   });
   assert.deepEqual(sidecar.reachableSessionIds(), ["session-1"]);
+  // Opening the session republishes presence without waiting for a heartbeat.
+  assert.equal(early.length, 1);
+  assert.equal(early[0].name, "session_mode");
+  assert.deepEqual(early[0].payload.reachable_session_ids, ["session-1"]);
 
   // A launcher TUI held locally is reachable; a released one is not.
   sidecar.launcher.hasLauncher = () => true;

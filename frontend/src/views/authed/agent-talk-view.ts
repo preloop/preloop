@@ -525,6 +525,8 @@ export class AgentTalkView extends LitElement {
     for (const item of activity) {
       const metadata = (item.metadata || {}) as Record<string, unknown>;
       if (typeof metadata.command_id === 'string') ids.add(metadata.command_id);
+      // A delivered note is echoed by its note id.
+      if (typeof metadata.note_id === 'string') ids.add(metadata.note_id);
     }
     return ids;
   }

@@ -178,6 +178,11 @@ def build_operator_envelope(
     )
 
 
+#: ``session_reference`` of the tracking row a ``start_new_session`` command
+#: mints. The plugin runs that session itself, so it is never a terminal.
+COMMAND_HISTORY_SESSION_REFERENCE = "Agent Control new session"
+
+
 def create_command_history_session(
     db: Session,
     *,
@@ -229,7 +234,7 @@ def create_command_history_session(
         account_id=account_id,
         session_source_type=agent.session_source_type,
         session_source_id=command_session_id,
-        session_reference="Agent Control new session",
+        session_reference=COMMAND_HISTORY_SESSION_REFERENCE,
         runtime_principal_type=agent.session_source_type,
         runtime_principal_id=agent.session_source_id,
         runtime_principal_name=agent.display_name,
@@ -583,6 +588,21 @@ TERMINAL_SESSION_REASON = (
 )
 
 
+def _is_command_history_session(agent: Any, session: Any) -> bool:
+    """Say whether ``session`` is a tracking row minted for a new session.
+
+    ``start_new_session`` records its turns on a Preloop-created row
+    (``create_command_history_session``) whose id no plugin reports. The
+    plugin started that session itself, so follow-up lines are commands.
+    """
+    source_id = str(session.session_source_id or "")
+    return (
+        session.session_reference == COMMAND_HISTORY_SESSION_REFERENCE
+        and session.session_source_type == agent.session_source_type
+        and source_id.startswith(f"{agent.session_source_id}-")
+    )
+
+
 def session_reachable_by_control(agent: Any, session: Any) -> bool:
     """Say whether the agent's control plugin can drive ``session`` itself.
 
@@ -611,6 +631,8 @@ def session_reachable_by_control(agent: Any, session: Any) -> bool:
         session.session_source_type == agent.session_source_type
         and session.session_source_id == agent.session_source_id
     ):
+        return True
+    if _is_command_history_session(agent, session):
         return True
     return bool(session.session_source_id) and session.session_source_id in set(
         str(item) for item in reachable
