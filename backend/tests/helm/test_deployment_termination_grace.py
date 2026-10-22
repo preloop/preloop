@@ -65,9 +65,16 @@ def test_values_declare_a_stream_covering_grace_period(
     )
 
 
-def _rendered_pod_spec(template: str, overrides: List[str] | None = None) -> Dict:
+def _rendered_pod_spec(
+    template: str,
+    overrides: List[str] | None = None,
+    *,
+    kube_version: str | None = None,
+) -> Dict:
     """Render a deployment template and return its pod spec."""
-    rendered = yaml.safe_load(helm_template(template, overrides))
+    rendered = yaml.safe_load(
+        helm_template(template, overrides, kube_version=kube_version)
+    )
     return rendered["spec"]["template"]["spec"]
 
 
@@ -115,7 +122,7 @@ def test_grace_period_outlives_the_prestop_sleep(template: str, component: str) 
 
 def test_api_liveness_failure_recovers_without_full_rollout_drain() -> None:
     """A failed replica must restart promptly while deployments drain streams."""
-    spec = _rendered_pod_spec("templates/api-deployment.yaml")
+    spec = _rendered_pod_spec("templates/api-deployment.yaml", kube_version="1.28.0")
     container = spec["containers"][0]
     grace = container["livenessProbe"].get("terminationGracePeriodSeconds")
     assert grace is not None
@@ -130,6 +137,7 @@ def test_api_liveness_recovery_grace_is_overridable() -> None:
     spec = _rendered_pod_spec(
         "templates/api-deployment.yaml",
         ["api.livenessTerminationGracePeriodSeconds=45"],
+        kube_version="1.28.0",
     )
     assert spec["containers"][0]["livenessProbe"]["terminationGracePeriodSeconds"] == 45
     assert spec["terminationGracePeriodSeconds"] == 900
@@ -148,4 +156,15 @@ def test_api_probe_grace_respects_supported_kubernetes_versions(
     spec = rendered["spec"]["template"]["spec"]
     probe = spec["containers"][0]["livenessProbe"]
     assert ("terminationGracePeriodSeconds" in probe) is supported
+    assert spec["terminationGracePeriodSeconds"] == 900
+
+
+def test_api_liveness_grace_defaults_when_old_release_has_no_value() -> None:
+    """Reuse-values upgrades must recover even without the new chart default."""
+    spec = _rendered_pod_spec(
+        "templates/api-deployment.yaml",
+        ["api.livenessTerminationGracePeriodSeconds=null"],
+        kube_version="1.28.0",
+    )
+    assert spec["containers"][0]["livenessProbe"]["terminationGracePeriodSeconds"] == 60
     assert spec["terminationGracePeriodSeconds"] == 900
