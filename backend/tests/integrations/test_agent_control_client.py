@@ -1,5 +1,6 @@
 """Unit tests for runtime Agent Control adapter client behavior."""
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -281,6 +282,8 @@ async def test_client_reconnects_after_connection_failure() -> None:
     sleeps: list[float] = []
 
     async def sleep(delay: float) -> None:
+        if delay == 30.0:
+            await asyncio.Event().wait()  # Keep heartbeat asleep, as in production.
         sleeps.append(delay)
 
     client = AgentControlClient(
@@ -307,6 +310,8 @@ async def test_client_stops_on_eviction_close_code_4000() -> None:
     sleeps: list[float] = []
 
     async def sleep(delay: float) -> None:
+        if delay == 30.0:
+            await asyncio.Event().wait()  # Keep heartbeat asleep, as in production.
         sleeps.append(delay)
 
     client = AgentControlClient(
@@ -344,6 +349,8 @@ async def test_client_reconnects_normally_without_eviction_code() -> None:
     sleeps: list[float] = []
 
     async def sleep(delay: float) -> None:
+        if delay == 30.0:
+            await asyncio.Event().wait()  # Keep heartbeat asleep, as in production.
         sleeps.append(delay)
 
     client = AgentControlClient(
@@ -403,3 +410,49 @@ async def test_ack_precedes_native_runtime_and_result_uses_backend_contract() ->
     assert result["payload"]["command_id"] == "example-command"
     assert result["payload"]["reply_text"] == "example response"
     assert result["payload"]["session_reference"] == "example-session"
+
+
+async def test_client_keeps_receiving_during_slow_command() -> None:
+    """A pending inference must not prevent aiohttp handling protocol pings."""
+    receiving = asyncio.Event()
+    finished = asyncio.Event()
+
+    class PingDuringCommand(FakeWebSocket):
+        async def __anext__(self) -> dict[str, Any]:
+            if self._messages:
+                return self._messages.pop(0)
+            receiving.set()
+            await finished.wait()
+            raise StopAsyncIteration
+
+    async def send_message(command: OperatorCommand) -> AgentControlResult:
+        await asyncio.wait_for(receiving.wait(), timeout=0.2)
+        finished.set()
+        return AgentControlResult(reply_text="Completed while receiving")
+
+    websocket = PingDuringCommand(
+        [
+            {
+                "type": "command",
+                "name": "send_message",
+                "message_id": "slow-command",
+                "payload": {"text": "Analyze the supplied evidence"},
+            }
+        ]
+    )
+    client = AgentControlClient(
+        AgentControlConfig(
+            control_ws_url="wss://example.com/control",
+            bearer_token="test",
+            runtime_principal_id="test",
+        ),
+        HookedAgentControlAdapter.with_hooks(send_message=send_message),
+        session_factory=lambda headers: FakeSession(websocket, headers),
+    )
+    try:
+        await asyncio.wait_for(client.run_until_disconnect(), timeout=1)
+    finally:
+        finished.set()
+    results = [x for x in websocket.sent if x.get("name") == "command_result"]
+    assert len(results) == 1
+    assert results[0]["payload"]["reply_text"] == "Completed while receiving"

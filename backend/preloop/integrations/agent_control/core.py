@@ -278,8 +278,28 @@ class AgentControlClient:
             async with session.ws_connect(self.config.control_ws_url) as websocket:
                 await self._send_json(websocket, self.capability_envelope())
                 heartbeat_task = asyncio.create_task(self._heartbeat_loop(websocket))
+                # aiohttp services WebSocket protocol PING/PONG only while
+                # receive is being awaited. Keep reading during native model
+                # calls; a heartbeat writer alone does not prevent ping timeout.
+                inbox: asyncio.Queue[Any] = asyncio.Queue()
+                end_of_stream = object()
+
+                async def receive_messages() -> None:
+                    try:
+                        async for message in websocket:
+                            if inbox.qsize() >= 128:
+                                raise RuntimeError("Control receive queue overflow")
+                            inbox.put_nowait(message)
+                    finally:
+                        inbox.put_nowait(end_of_stream)
+
+                receiver_task = asyncio.create_task(receive_messages())
                 try:
-                    async for message in websocket:
+                    while True:
+                        message = await inbox.get()
+                        if message is end_of_stream:
+                            await receiver_task
+                            break
                         if self._stopped.is_set():
                             break
                         envelope = _parse_inbound_message(message)
@@ -305,7 +325,10 @@ class AgentControlClient:
                             break
                 finally:
                     heartbeat_task.cancel()
-                    await asyncio.gather(heartbeat_task, return_exceptions=True)
+                    receiver_task.cancel()
+                    await asyncio.gather(
+                        heartbeat_task, receiver_task, return_exceptions=True
+                    )
                 # Detect server-initiated eviction after the message loop ends.
                 close_code = getattr(websocket, "close_code", None)
                 if close_code == EVICTION_CLOSE_CODE:
