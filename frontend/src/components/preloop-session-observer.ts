@@ -412,6 +412,30 @@ export class PreloopSessionObserver extends LitElement {
   private seekRecording(activityId: string): void {
     void this.recordingPlayer?.seekActivity(activityId);
   }
+  private recordingUnavailable(
+    event: CustomEvent<{
+      sessionId: string;
+      artifactId: string;
+      availability: string;
+    }>
+  ): void {
+    const { sessionId, artifactId, availability } = event.detail;
+    const cached = this.loadedArtifacts[sessionId];
+    const artifact = cached?.byId[artifactId];
+    if (!artifact) return;
+    if (
+      sessionId === this.activeSessionId &&
+      artifactId === this.selectedRecording?.id
+    )
+      this.recordingActivityId = null;
+    this.loadedArtifacts = {
+      ...this.loadedArtifacts,
+      [sessionId]: {
+        ...cached,
+        byId: { ...cached.byId, [artifactId]: { ...artifact, availability } },
+      },
+    };
+  }
   private recordingPlayhead(
     event: CustomEvent<{ activityId: string | null }>
   ): void {
@@ -444,6 +468,7 @@ export class PreloopSessionObserver extends LitElement {
         this.recordingActivityId = null;
       }}
       @recording-playhead=${this.recordingPlayhead}
+      @recording-unavailable=${this.recordingUnavailable}
     ></session-recording-player>`;
   }
 

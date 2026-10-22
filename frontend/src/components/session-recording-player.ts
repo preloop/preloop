@@ -155,6 +155,14 @@ export class SessionRecordingPlayer extends LitElement {
     if (generation !== this.generation || !this.isConnected) return;
     this.loading = false;
     this.load = load;
+    if (load.status === 'gone') {
+      this.pendingSeek = null;
+      this.emit('recording-unavailable', {
+        sessionId: this.sessionId,
+        artifactId: selected.id,
+        availability: load.availability,
+      });
+    }
     if (load.status === 'error') {
       this.release();
       this.load = load;

@@ -1,4 +1,10 @@
-import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import {
+  expect,
+  fixture,
+  fixtureCleanup,
+  html,
+  waitUntil,
+} from '@open-wc/testing';
 import sinon from 'sinon';
 import './session-recording-player';
 import './session-chat-view';
@@ -69,6 +75,7 @@ describe('synchronized recording player', () => {
       );
   });
   afterEach(() => {
+    fixtureCleanup();
     sinon.restore();
     resetSessionArtifactCache();
     localStorage.removeItem('accessToken');
@@ -319,11 +326,12 @@ import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
 
 describe('recording in the session observer', () => {
   afterEach(() => {
+    fixtureCleanup();
     sinon.restore();
     localStorage.removeItem('accessToken');
     resetSessionArtifactCache();
   });
-  it('loads mapping, respects the rollout flag, and pauses automatic scroll after user input', async () => {
+  it('loads mapping, respects the rollout flag, suppresses user scroll, and removes evicted recording cues', async () => {
     localStorage.setItem('accessToken', 'fixture-token');
     sinon.stub(unifiedWebSocketManager, 'connect');
     sinon.stub(unifiedWebSocketManager, 'subscribe').returns(() => undefined);
@@ -340,13 +348,18 @@ describe('recording in the session observer', () => {
       });
     const request = sinon.stub(window, 'fetch').callsFake(async (input) => {
       const url = String(input);
+      if (url.includes('/artifacts/'))
+        return new Response(JSON.stringify({ availability: 'evicted' }), {
+          status: 410,
+          headers: { 'Content-Type': 'application/json' },
+        });
       if (url.includes('/media-sync')) return json({ recordings: [sync] });
       if (url.includes('/artifacts?'))
         return json({ items: [artifact()], next_cursor: null });
       if (url.includes('/activity')) return json({ items: [row] });
       if (url.includes('/gateway-events'))
         return json({ logs: [], pagination: { has_more: false } });
-      if (url.includes('/approvals')) return json([]);
+      if (url.includes('/approval')) return json([]);
       return json({});
     });
     const el = await fixture<PreloopSessionObserver>(
@@ -404,6 +417,18 @@ describe('recording in the session observer', () => {
         .getCalls()
         .some((call) => String(call.args[0]).includes('/media-sync'))
     ).to.equal(true);
+    expect(chat.shadowRoot!.querySelector('.recording-cue')).not.to.equal(null);
+    await player.seekActivity('step-0');
+    expect(
+      request
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('/artifacts/'))
+    ).to.equal(true);
+    await el.updateComplete;
+    await chat.updateComplete;
+    expect(player.shadowRoot!.textContent?.toLowerCase()).to.contain('evicted');
+    expect(chat.shadowRoot!.querySelector('.recording-cue')).to.equal(null);
+    expect(chat.shadowRoot!.querySelector('.recording-current')).to.equal(null);
     el.features = { syncedRecordingPlayer: false };
     await el.updateComplete;
     await chat.updateComplete;
