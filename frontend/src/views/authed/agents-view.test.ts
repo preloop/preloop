@@ -174,6 +174,20 @@ describe('AgentsView', () => {
     fetchStub.callsFake(defaultFetch);
   });
 
+  it('mounts Copilot inventory gaps only with the extension feature', async () => {
+    localStorage.setItem('preloop.agents.view_mode', 'list');
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    expect(el.shadowRoot!.querySelector('copilot-activity-panel')).to.equal(
+      null
+    );
+    el['featureFlags'] = { copilot_seat_activity: true };
+    await el.updateComplete;
+    const panel = el.shadowRoot!.querySelector('copilot-activity-panel');
+    expect(panel).to.not.equal(null);
+    expect(panel?.hasAttribute('inventory')).to.equal(true);
+  });
+
   afterEach(() => {
     fetchStub.restore();
     localStorage.clear();

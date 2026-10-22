@@ -29998,16 +29998,18 @@ components:
           type: string
           title: Login
         net_amount:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Amount
         net_quantity:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Quantity
       type: object
       required:
       - login
-      - net_amount
-      - net_quantity
       title: CopilotDeveloperSpend
       description: Premium-request spend for one developer.
     CopilotModelMix:
@@ -30057,16 +30059,18 @@ components:
           type: string
           title: Model
         net_amount:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Amount
         net_quantity:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Quantity
       type: object
       required:
       - model
-      - net_amount
-      - net_quantity
       title: CopilotModelSpend
       description: Premium-request spend for one model.
     CopilotPremiumRequests:
