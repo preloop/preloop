@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time as time_module
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
@@ -33,6 +34,7 @@ from urllib.parse import quote, urlparse
 import httpx
 from sqlalchemy.orm import Session
 
+from preloop.plugins import get_plugin_manager
 from preloop.models import models
 from preloop.models.crud import (
     crud_copilot_import_connection,
@@ -411,6 +413,7 @@ class PremiumRequestResult:
     scope: str
     reason: Optional[str] = None
     warning: Optional[str] = None
+    available: bool = True
 
 
 @dataclass
@@ -454,48 +457,55 @@ def _premium_routes(
     return routes
 
 
+def _number(value: Any) -> Optional[float]:
+    """Finite vendor numbers only; booleans and absent fields are unknown."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(value) else None
+
+
+def _known_sum(values: Iterable[Any]) -> Optional[float]:
+    """A complete sum, or unknown if any contributing value is unknown."""
+    numbers = [_number(value) for value in values]
+    if not numbers or any(value is None for value in numbers):
+        return None
+    return sum(value for value in numbers if value is not None)
+
+
 def _usage_by_model(body: Any) -> Dict[str, Dict[str, Any]]:
-    """Group ``usageItems`` by model, summing quantities and amounts."""
-    grouped: Dict[str, Dict[str, Any]] = {}
+    """Group vendor items without turning missing fields into zeroes."""
     items = body.get("usageItems") if isinstance(body, dict) else None
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
     for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        model = str(item.get("model") or "unknown")
-        entry = grouped.setdefault(
-            model,
-            {
-                "netAmount": 0.0,
-                "netQuantity": 0.0,
-                "grossAmount": 0.0,
-                "grossQuantity": 0.0,
-                "discountAmount": 0.0,
-                "pricePerUnit": None,
-                "skus": [],
-                "products": [],
+        if isinstance(item, dict):
+            grouped.setdefault(str(item.get("model") or "unknown"), []).append(item)
+    return {
+        model: {
+            **{
+                key: _known_sum(item.get(key) for item in entries)
+                for key in (
+                    "netAmount",
+                    "netQuantity",
+                    "grossAmount",
+                    "grossQuantity",
+                    "discountAmount",
+                )
             },
-        )
-        for key in (
-            "netAmount",
-            "netQuantity",
-            "grossAmount",
-            "grossQuantity",
-            "discountAmount",
-        ):
-            value = item.get(key)
-            if isinstance(value, (int, float)):
-                entry[key] += float(value)
-        price = item.get("pricePerUnit")
-        if isinstance(price, (int, float)):
-            current = entry["pricePerUnit"]
-            entry["pricePerUnit"] = (
-                float(price) if current is None else max(current, float(price))
-            )
-        for key, target in (("sku", "skus"), ("product", "products")):
-            value = item.get(key)
-            if value and value not in entry[target]:
-                entry[target].append(value)
-    return grouped
+            "pricePerUnit": max(
+                (
+                    value
+                    for item in entries
+                    if (value := _number(item.get("pricePerUnit"))) is not None
+                ),
+                default=None,
+            ),
+            "skus": sorted({str(item["sku"]) for item in entries if item.get("sku")}),
+            "products": sorted(
+                {str(item["product"]) for item in entries if item.get("product")}
+            ),
+        }
+        for model, entries in grouped.items()
+    }
 
 
 def _premium_rows(
@@ -557,17 +567,29 @@ def _residual_rows(
     ``unattributed`` organization row and the day still adds up to GitHub's
     bill.
     """
-    attributed: Dict[str, Dict[str, float]] = {}
+    attributed: Dict[str, List[Dict[str, Any]]] = {}
     for row in per_user_rows:
-        entry = attributed.setdefault(row["model"], {"amount": 0.0, "quantity": 0.0})
-        entry["amount"] += float(row["cost_amount"] or 0.0)
-        entry["quantity"] += float(row["raw"].get("netQuantity") or 0.0)
+        attributed.setdefault(row["model"], []).append(row)
     rows = []
     for model, usage in _usage_by_model(aggregate_body).items():
-        seen = attributed.get(model, {"amount": 0.0, "quantity": 0.0})
-        amount = usage["netAmount"] - seen["amount"]
-        quantity = usage["netQuantity"] - seen["quantity"]
-        if amount < _RESIDUAL_AMOUNT_EPSILON and quantity < _RESIDUAL_QUANTITY_EPSILON:
+        seen = attributed.get(model, [])
+        seen_amount = _known_sum(row["cost_amount"] for row in seen) if seen else 0.0
+        seen_quantity = (
+            _known_sum(row["raw"].get("netQuantity") for row in seen) if seen else 0.0
+        )
+        amount = (
+            max(usage["netAmount"] - seen_amount, 0.0)
+            if usage["netAmount"] is not None and seen_amount is not None
+            else None
+        )
+        quantity = (
+            max(usage["netQuantity"] - seen_quantity, 0.0)
+            if usage["netQuantity"] is not None and seen_quantity is not None
+            else None
+        )
+        if (amount is None or amount < _RESIDUAL_AMOUNT_EPSILON) and (
+            quantity is None or quantity < _RESIDUAL_QUANTITY_EPSILON
+        ):
             continue
         rows.append(
             {
@@ -581,11 +603,11 @@ def _residual_rows(
                 "user_login": None,
                 "usage_source": IMPORTED_USAGE_SOURCE,
                 "cost_basis": "reconciled",
-                "cost_amount": max(amount, 0.0),
+                "cost_amount": amount,
                 "currency": "USD",
                 "raw": {
-                    "netAmount": max(amount, 0.0),
-                    "netQuantity": max(quantity, 0.0),
+                    "netAmount": amount,
+                    "netQuantity": quantity,
                     "pricePerUnit": usage["pricePerUnit"],
                     "skus": usage["skus"],
                     "products": usage["products"],
@@ -667,8 +689,8 @@ def fetch_premium_requests(
         The rows, whether they are per-user, and any warning.
 
     Raises:
-        CopilotImportError: When not even the aggregate is readable, or on an
-            unexpected GitHub error.
+        CopilotImportError: On an unexpected GitHub error. Permission refusals
+            return unavailable data so adoption reports can still import.
     """
     base = {"year": day.year, "month": day.month, "day": day.day}
     routes = _premium_routes(org_client, enterprise_client, org, enterprise)
@@ -792,13 +814,21 @@ def fetch_premium_requests(
             scope=route.scope,
             reason=reason,
         )
-    raise CopilotImportError(
+    reason = (
         "Premium-request spend could not be read: "
         + "; ".join(refusals)
         + ". The organization route needs an organization administrator token; "
         "the enterprise route needs an enterprise admin, billing manager or a "
         "token with enterprise billing read access. A Copilot metrics "
         "permission does not grant billing access."
+    )
+    return PremiumRequestResult(
+        rows=[],
+        per_user=False,
+        scope="unavailable",
+        reason=reason,
+        warning=reason,
+        available=False,
     )
 
 
@@ -859,9 +889,7 @@ _COUNT_FIELDS = (
 
 def _counts(entry: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        key: entry[key]
-        for key in _COUNT_FIELDS
-        if isinstance(entry.get(key), (int, float))
+        key: entry[key] for key in _COUNT_FIELDS if _number(entry.get(key)) is not None
     }
 
 
@@ -900,6 +928,11 @@ def reduce_metrics_record(record: Dict[str, Any]) -> Dict[str, Any]:
     reduced: Dict[str, Any] = {
         **_counts(record),
         "editors": editors,
+        "editor_usage": [
+            {"editor": str(entry["ide"]), **_counts(entry)}
+            for entry in record.get("totals_by_ide") or []
+            if isinstance(entry, dict) and entry.get("ide")
+        ],
         "features": features,
         "models": model_features,
     }
@@ -1145,6 +1178,13 @@ def sync_connection(
                     "spend."
                 )
             for day in days:
+                extension = get_plugin_manager().get_service(
+                    "copilot_organization_metrics"
+                )
+                if extension is not None:
+                    extension.sync_day(
+                        db, connection=connection, client=org_client, day=day, now=now
+                    )
                 premium = fetch_premium_requests(
                     org_client=org_client,
                     enterprise_client=enterprise_client,
@@ -1160,13 +1200,14 @@ def sync_connection(
                 metrics = fetch_user_metrics(
                     org_client, org=org, day=day, fetched_at=now
                 )
-                crud_copilot_usage.replace_day_rows(
-                    db,
-                    account_id=connection.account_id,
-                    bucket_start=day_start(day),
-                    line_items=(LINE_ITEM_PREMIUM_REQUEST,),
-                    rows=premium.rows,
-                )
+                if premium.available:
+                    crud_copilot_usage.replace_day_rows(
+                        db,
+                        account_id=connection.account_id,
+                        bucket_start=day_start(day),
+                        line_items=(LINE_ITEM_PREMIUM_REQUEST,),
+                        rows=premium.rows,
+                    )
                 if metrics.available:
                     crud_copilot_usage.replace_day_rows(
                         db,
@@ -1337,34 +1378,36 @@ def build_copilot_summary(
         if not row.user_login and (row.raw or {}).get("unattributed")
     ]
     aggregate_days = {row.bucket_start for row in aggregate_rows}
-    org_aggregate_amount = sum(float(row.cost_amount or 0) for row in aggregate_rows)
-    unattributed_amount = sum(float(row.cost_amount or 0) for row in unattributed_rows)
+    org_aggregate_amount = _known_sum(row.cost_amount for row in aggregate_rows)
+    unattributed_amount = _known_sum(row.cost_amount for row in unattributed_rows)
 
     by_developer: Dict[str, Dict[str, Any]] = {}
     by_model: Dict[str, Dict[str, Any]] = {}
     amount_by_user_model: Dict[str, Dict[str, float]] = {}
-    total_amount = 0.0
+    total_amount = _known_sum(row["net_amount"] for row in totals)
     for row in totals:
-        amount = row["net_amount"] or 0.0
-        quantity = row["net_quantity"] or 0.0
+        amount = row["net_amount"]
+        quantity = row["net_quantity"]
         model = row["model"] or "unknown"
-        total_amount += amount
         model_entry = by_model.setdefault(
             model, {"model": model, "net_amount": 0.0, "net_quantity": 0.0}
         )
-        model_entry["net_amount"] += amount
-        model_entry["net_quantity"] += quantity
+        model_entry["net_amount"] = _known_sum([model_entry["net_amount"], amount])
+        model_entry["net_quantity"] = _known_sum(
+            [model_entry["net_quantity"], quantity]
+        )
         login = row["user_login"]
         if not login:
             continue
         developer = by_developer.setdefault(
             login, {"login": login, "net_amount": 0.0, "net_quantity": 0.0}
         )
-        developer["net_amount"] += amount
-        developer["net_quantity"] += quantity
-        amount_by_user_model.setdefault(login, {})[model] = (
-            amount_by_user_model.get(login, {}).get(model, 0.0) + amount
-        )
+        developer["net_amount"] = _known_sum([developer["net_amount"], amount])
+        developer["net_quantity"] = _known_sum([developer["net_quantity"], quantity])
+        if amount is not None:
+            amount_by_user_model.setdefault(login, {})[model] = (
+                amount_by_user_model.get(login, {}).get(model, 0.0) + amount
+            )
 
     metrics_rows = crud_copilot_usage.list_rows(
         db,
@@ -1377,7 +1420,11 @@ def build_copilot_summary(
     requests_by_user_model = _metrics_requests_by_user_model(metrics_rows)
     model_mix = []
     for login in sorted(set(amount_by_user_model) | set(requests_by_user_model)):
-        shares = _share_rows(amount_by_user_model.get(login, {}))
+        shares = (
+            _share_rows(amount_by_user_model.get(login, {}))
+            if by_developer.get(login, {}).get("net_amount") is not None
+            else []
+        )
         basis = "net_amount"
         if not shares:
             shares = _share_rows(requests_by_user_model.get(login, {}))
@@ -1455,10 +1502,19 @@ def build_copilot_summary(
             "aggregate_days": len(aggregate_days),
             "by_developer": sorted(
                 by_developer.values(),
-                key=lambda row: (-row["net_amount"], row["login"]),
+                key=lambda row: (
+                    row["net_amount"] is None,
+                    -(row["net_amount"] or 0),
+                    row["login"],
+                ),
             ),
             "by_model": sorted(
-                by_model.values(), key=lambda row: (-row["net_amount"], row["model"])
+                by_model.values(),
+                key=lambda row: (
+                    row["net_amount"] is None,
+                    -(row["net_amount"] or 0),
+                    row["model"],
+                ),
             ),
         },
         "model_mix": model_mix,

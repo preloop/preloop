@@ -10,7 +10,7 @@
 
 **The open-source AI agent control plane and software factory.**
 
-Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see spend by model, agent, session, API key and flow, including imported Copilot usage, and cap it with budgets.
+Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see gateway spend by model, agent, session, API key and flow, and cap it with budgets. Imported Copilot usage is displayed separately as vendor-reported data.
 
 It has two halves, and the same policies, budgets and session timeline apply to both:
 

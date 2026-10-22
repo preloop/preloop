@@ -1098,6 +1098,25 @@ describe('CostView', () => {
     );
   });
 
+  it('mounts vendor activity only when the extension feature is enabled', async () => {
+    const element = await loadedView();
+    await element['handleTabShow'](
+      new CustomEvent('sl-tab-show', { detail: { name: 'copilot' } })
+    );
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('copilot-activity-panel')
+    ).to.equal(null);
+    element['featureFlags'] = { copilot_seat_activity: true };
+    await element.updateComplete;
+    const panel = element.shadowRoot!.querySelector(
+      'copilot-activity-panel'
+    ) as HTMLElement & { startDate?: string; endDate?: string };
+    expect(panel).to.not.equal(null);
+    expect(panel.startDate).to.equal(element['currentPeriod']?.startDate);
+    expect(panel.endDate).to.equal(element['currentPeriod']?.endDate);
+  });
+
   it('shows a Teams tab only with team budgets on a server with teams', async () => {
     const tabsOf = async () => {
       const element = (await fixture(

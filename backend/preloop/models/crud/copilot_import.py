@@ -19,7 +19,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from sqlalchemy import Float, and_, cast, func
+from sqlalchemy import Float, and_, case, cast, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Query, Session
 
@@ -259,8 +259,17 @@ class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
         query = db.query(
             ProviderBillingSnapshot.user_login.label("user_login"),
             ProviderBillingSnapshot.model.label("model"),
-            func.sum(ProviderBillingSnapshot.cost_amount).label("net_amount"),
-            func.sum(net_quantity).label("net_quantity"),
+            case(
+                (
+                    func.count(ProviderBillingSnapshot.cost_amount) == func.count(),
+                    func.sum(ProviderBillingSnapshot.cost_amount),
+                ),
+                else_=None,
+            ).label("net_amount"),
+            case(
+                (func.count(net_quantity) == func.count(), func.sum(net_quantity)),
+                else_=None,
+            ).label("net_quantity"),
             func.count(func.distinct(ProviderBillingSnapshot.bucket_start)).label(
                 "days"
             ),

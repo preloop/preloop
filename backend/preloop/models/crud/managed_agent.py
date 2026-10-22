@@ -948,6 +948,28 @@ def _usage_aggregate_for_principal(
 class CRUDManagedAgent(CRUDBase[ManagedAgent]):
     """CRUD helpers for account-scoped managed-agent registry entries."""
 
+    def governed_owner_ids(
+        self,
+        db: Session,
+        *,
+        account_id: UUID | str,
+        user_ids: Sequence[UUID],
+    ) -> set[UUID]:
+        """Return candidate owners with an active agent in this account."""
+        if not user_ids:
+            return set()
+        rows = (
+            db.query(models.ManagedAgent.owner_user_id)
+            .filter(
+                models.ManagedAgent.account_id == account_id,
+                models.ManagedAgent.owner_user_id.in_(set(user_ids)),
+                models.ManagedAgent.lifecycle_state == "active",
+            )
+            .distinct()
+            .all()
+        )
+        return {row.owner_user_id for row in rows if row.owner_user_id is not None}
+
     def remove_registry_entry(
         self, db: Session, *, agent: ManagedAgent, commit: bool = True
     ) -> None:

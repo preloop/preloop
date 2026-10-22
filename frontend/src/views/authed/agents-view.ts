@@ -1,3 +1,4 @@
+import '../../components/copilot-activity-panel.ts';
 import {
   subscriptionEstimate,
   type SubscriptionEstimate,
@@ -4872,6 +4873,14 @@ export class AgentsView extends LitElement {
             ? nothing
             : html`<div class="content-bounds ${this.pageBoxClass}">
                 <discovered-agents-panel></discovered-agents-panel>
+                ${
+                  this.featureFlags.copilot_seat_activity === true
+                    ? html`<copilot-activity-panel
+                        enabled
+                        inventory
+                      ></copilot-activity-panel>`
+                    : nothing
+                }
               </div>`
         }
       </div>

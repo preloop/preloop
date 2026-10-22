@@ -1343,3 +1343,16 @@ provider alias. Custom model discovery applies the operator endpoint CIDR policy
 and pins each request to a checked IP while preserving Host/TLS identity.
 Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
+
+
+### Optional vendor organization activity
+
+The Copilot daily importer exposes the `copilot_organization_metrics` service
+hook after reading seats. An installed extension may import daily aggregate
+reports through the existing read-only client; its service and endpoints live
+outside core. Account-scoped snapshots and governed-owner lookups remain in
+`preloop.models.crud`. The OSS Lit `copilot-activity-panel` is mounted in Cost
+and Agents only when `copilot_seat_activity` is enabled, and hides data when
+the extension denies permissions or entitlement. Vendor counters never enter
+gateway token totals. Nullable premium fields preserve unknown values through
+parsing, aggregation, API schemas and display.

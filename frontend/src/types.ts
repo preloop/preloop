@@ -1986,8 +1986,16 @@ export interface CopilotUsageSummary {
     // Spend on per-developer days that no current seat holder explains.
     unattributed_net_amount: number | null;
     aggregate_days: number;
-    by_developer: { login: string; net_amount: number; net_quantity: number }[];
-    by_model: { model: string; net_amount: number; net_quantity: number }[];
+    by_developer: {
+      login: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
+    by_model: {
+      model: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
   };
   model_mix: {
     login: string;
