@@ -333,3 +333,48 @@ async def test_read_failure_does_not_resend_to_another_address(
             )
         ).success
     assert hosts == ["93.184.216.34"]
+
+
+@pytest.mark.asyncio
+async def test_slow_resolution_obeys_connect_timeout_without_opening_socket(
+    blocking: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    release = threading.Event()
+    finished = threading.Event()
+
+    def resolve(host: str, port: Any) -> list[Any]:
+        release.wait(5)
+        finished.set()
+        return [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("93.184.216.34", 0),
+            )
+        ]
+
+    async def unexpected(*args: Any, **kwargs: Any) -> httpx.Response:
+        pytest.fail("Resolution timed out before a connection could be opened")
+
+    monkeypatch.setattr(targets.socket, "getaddrinfo", resolve)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", unexpected)
+    try:
+        async with httpx.AsyncClient(
+            transport=WebhookTransport(), timeout=0.02
+        ) as client:
+            result = await asyncio.wait_for(
+                worker.post_delivery(
+                    client, delivery("https://collector.example/hook")
+                ),
+                timeout=1,
+            )
+        assert not result.success
+        assert "ConnectTimeout" in result.error
+        assert not finished.is_set()
+    finally:
+        release.set()

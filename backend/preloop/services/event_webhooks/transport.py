@@ -35,9 +35,14 @@ class WebhookTransport(httpx.AsyncBaseTransport):
         if not settings.webhook_block_private_targets:
             return await transport.handle_async_request(request)
         try:
-            addresses = await asyncio.to_thread(
-                checked_target_addresses, request.url.host
+            addresses = await asyncio.wait_for(
+                asyncio.to_thread(checked_target_addresses, request.url.host),
+                timeout=request.extensions.get("timeout", {}).get("connect"),
             )
+        except TimeoutError as exc:
+            raise httpx.ConnectTimeout(
+                "Webhook target resolution timed out", request=request
+            ) from exc
         except ValueError as exc:
             raise httpx.ConnectError(
                 f"Webhook target blocked: {exc}", request=request
