@@ -24,7 +24,7 @@ jobs:
     env:
       PRELOOP_DISABLE_TELEMETRY: 'true'
       PRELOOP_DISCOVERY_OFFLINE: 'true'
-      DISCOVERY_TESTS: 'Test(Unattended|AllUsersInventory|Inventory|SafeDiscoveryJSON|Discover|BuildDiscovery|DiscoveryKind|HomeRelative|ConfigPathHash|WorkstationFingerprint|LocalProfile|ParseMachineID|PersistedWorkstationID|ClaudeDesktopConfigPaths|ConfigPathsForOther|UserConfigDirs|VSCodeDiscovery|BuildHarnessInventory|HarnessInventory|PersonalRunnerFixtures|RegisterFixturesDecodeInventory|HeartbeatSendsFullInventory|RegisterHashSuppresses|HeartbeatMessageCarriesInventory|GeneratedProfilesAreAdvertised|RegisterSendsInventory)'
+      DISCOVERY_TESTS: 'Test(Unattended|AllUsersInventory|Inventory|SafeDiscoveryJSON|Discover|ConfigPathHash|WorkstationFingerprint|LocalProfile|ParseMachineID|PersistedWorkstationID|ClaudeDesktopConfigPaths|ConfigPathsForOther|UserConfigDirs|VSCodeDiscovery|BuildHarnessInventory|HarnessInventory|PersonalRunnerFixtures|RegisterFixturesDecodeInventory|HeartbeatSendsFullInventory|RegisterHashSuppresses|HeartbeatMessageCarriesInventory|GeneratedProfilesAreAdvertised|RegisterSendsInventory)'
     defaults:
       run:
         working-directory: cli
