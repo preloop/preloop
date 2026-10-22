@@ -456,3 +456,69 @@ async def test_client_keeps_receiving_during_slow_command() -> None:
     results = [x for x in websocket.sent if x.get("name") == "command_result"]
     assert len(results) == 1
     assert results[0]["payload"]["reply_text"] == "Completed while receiving"
+
+
+@pytest.mark.parametrize("send_fails", [True, False])
+async def test_terminal_result_replays_until_ordered_heartbeat_receipt(
+    send_fails: bool,
+) -> None:
+    calls = []
+
+    async def send_message(command: OperatorCommand) -> AgentControlResult:
+        calls.append(command.command_id)
+        return AgentControlResult(reply_text="Retain this completed investigation")
+
+    class LostResult(FakeWebSocket):
+        async def send_json(self, payload: dict[str, Any]) -> None:
+            if send_fails and payload.get("name") == "command_result":
+                raise ConnectionError("connection closed before result commit")
+            await super().send_json(payload)
+
+    class ConfirmedResult(FakeWebSocket):
+        async def send_json(self, payload: dict[str, Any]) -> None:
+            await super().send_json(payload)
+            if payload.get("type") == "heartbeat":
+                self._messages.append(
+                    {
+                        "type": "ack",
+                        "name": "heartbeat",
+                        "message_id": payload["message_id"],
+                        "payload": {"status": "ok"},
+                    }
+                )
+
+    first = LostResult(
+        [
+            {
+                "type": "command",
+                "name": "send_message",
+                "message_id": "cmd-replay",
+                "payload": {"text": "Investigate"},
+            }
+        ]
+    )
+    second = ConfirmedResult()
+    sockets = [first, second]
+    client = AgentControlClient(
+        AgentControlConfig(
+            control_ws_url="wss://example.com/control",
+            bearer_token="test",
+            runtime_principal_id="test",
+        ),
+        HookedAgentControlAdapter.with_hooks(send_message=send_message),
+        session_factory=lambda headers: FakeSession(sockets.pop(0), headers),
+    )
+    if send_fails:
+        with pytest.raises(ConnectionError):
+            await client.run_until_disconnect()
+    else:
+        await client.run_until_disconnect()  # Sent, but no server commit receipt.
+    assert len(client._pending_results) == 1
+    await client.run_until_disconnect()
+    assert calls == ["cmd-replay"]
+    assert not client._pending_results
+    assert [
+        x["payload"]["reply_text"]
+        for x in second.sent
+        if x.get("name") == "command_result"
+    ] == ["Retain this completed investigation"]

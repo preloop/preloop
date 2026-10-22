@@ -234,6 +234,9 @@ class AgentControlClient:
         self._session_factory = session_factory or _default_session_factory
         self._sleep = sleep
         self._stopped = asyncio.Event()
+        # Process-lifetime outbox: retain completed inference through transport
+        # or database disconnects. A process restart is not covered by this cache.
+        self._pending_results: dict[str, OutboundEnvelope] = {}
 
     def stop(self) -> None:
         """Request the connection loop to stop after the current iteration."""
@@ -277,6 +280,8 @@ class AgentControlClient:
         async with self._session_factory(headers) as session:
             async with session.ws_connect(self.config.control_ws_url) as websocket:
                 await self._send_json(websocket, self.capability_envelope())
+                for receipt_id, result in list(self._pending_results.items()):
+                    await self._send_result_with_receipt(websocket, receipt_id, result)
                 heartbeat_task = asyncio.create_task(self._heartbeat_loop(websocket))
                 # aiohttp services WebSocket protocol PING/PONG only while
                 # receive is being awaited. Keep reading during native model
@@ -359,10 +364,20 @@ class AgentControlClient:
     async def _handle_text_message(
         self, websocket: aiohttp.ClientWebSocketResponse, envelope: dict[str, Any]
     ) -> None:
+        if envelope.get("type") == "ack" and envelope.get("name") == "heartbeat":
+            if envelope.get("payload", {}).get("status") == "ok":
+                self._pending_results.pop(str(envelope.get("message_id")), None)
+            return
         if envelope.get("type") == "ping":
             await self._send_json(websocket, {"type": "heartbeat", "payload": {}})
             return
         if envelope.get("type") == "command":
+            for receipt_id, result in self._pending_results.items():
+                if result.get("message_id") == envelope.get("message_id"):
+                    await self._send_result_with_receipt(websocket, receipt_id, result)
+                    return
+            if len(self._pending_results) >= 128:
+                raise RuntimeError("Control result outbox is full; reconnect to drain")
             await self._send_json(
                 websocket,
                 {
@@ -373,7 +388,33 @@ class AgentControlClient:
                 },
             )
         for outbound in await dispatch_operator_command(self.hooks, envelope):
-            await self._send_json(websocket, outbound)
+            if outbound.get("name") in {"command_result", "command_error"}:
+                receipt_id = str(uuid4())
+                self._pending_results[receipt_id] = outbound
+                await self._send_result_with_receipt(websocket, receipt_id, outbound)
+            else:
+                await self._send_json(websocket, outbound)
+
+    async def _send_result_with_receipt(
+        self,
+        websocket: aiohttp.ClientWebSocketResponse,
+        receipt_id: str,
+        result: OutboundEnvelope,
+    ) -> None:
+        await self._send_json(websocket, result)
+        # The backend processes and commits inbound frames serially, then
+        # acknowledges a heartbeat. Its matching ACK is therefore a barrier
+        # proving the preceding result transaction completed. Replayed results
+        # are deduplicated by command_id on the backend.
+        await self._send_json(
+            websocket,
+            {
+                "type": "heartbeat",
+                "name": "heartbeat",
+                "message_id": receipt_id,
+                "payload": {"observed_at": _now_iso()},
+            },
+        )
 
     async def _send_json(
         self, websocket: aiohttp.ClientWebSocketResponse, envelope: OutboundEnvelope
