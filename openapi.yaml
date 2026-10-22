@@ -20256,6 +20256,67 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/approvals/{approval_id}/expire:
+    post:
+      tags:
+      - Agent Permissions
+      - Agent Permissions
+      summary: Expire Approval By Hook
+      description: 'Expire an approval whose permission hook stopped waiting.
+
+
+        The hook proposes the approval id on permission-check, so it can name the
+
+        request even while that call is still held. Only the agent (or key) that
+
+        raised the approval may expire it. A pending request becomes ``expired``
+
+        and is broadcast, so no surface keeps offering Approve or Deny.'
+      operationId: expire_approval_by_hook_api_v1_approvals__approval_id__expire_post
+      parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Approval Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalExpireRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalExpireResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/session-start:
     post:
       tags:
@@ -24433,6 +24494,15 @@ components:
           title: Client Decision
           description: 'What the client''s own policy decided: ''allow'' | ''deny''
             | ''ask''. Absent/''ask'' escalates to a human approver.'
+        approval_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Request Id
+          description: Id the hook proposes for an approval this call may create,
+            so it can expire that approval through POST /approvals/{id}/expire when
+            its own deadline passes. Ignored when the id is taken.
         evaluation_phase:
           type: string
           enum:
@@ -24474,6 +24544,14 @@ components:
             which is almost always: the PreToolUse call the agent was making anyway
             carries the note, so a note costs no extra round trip and no note costs
             nothing at all.'
+        decided_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decided By
+          description: 'Who decided an approval this call waited on: a person''s username,
+            ''AI review'' or ''policy''. Null when no approval was involved or it
+            expired. Hooks show it in the terminal.'
         timed_out:
           type: boolean
           title: Timed Out
@@ -25609,6 +25687,43 @@ components:
       - timestamp
       title: ApprovalEventResponse
       description: One entry in an approval request's workflow-history timeline.
+    ApprovalExpireRequest:
+      properties:
+        reason:
+          type: string
+          const: hook_deadline
+          title: Reason
+          default: hook_deadline
+        waited_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 0.0
+          - type: 'null'
+          title: Waited Seconds
+      type: object
+      title: ApprovalExpireRequest
+      description: Why the waiter gave up on an approval.
+    ApprovalExpireResponse:
+      properties:
+        approval_request_id:
+          type: string
+          title: Approval Request Id
+        status:
+          type: string
+          title: Status
+        approver_comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approver Comment
+      type: object
+      required:
+      - approval_request_id
+      - status
+      title: ApprovalExpireResponse
+      description: The approval's status after the call; a decision that landed first
+        wins.
     ApprovalFlowExecutionSummary:
       properties:
         id:
@@ -25682,19 +25797,18 @@ components:
           type: string
           title: Status
         requested_at:
-          type: string
-          format: date-time
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Requested At
         resolved_at:
           anyOf:
           - type: string
-            format: date-time
           - type: 'null'
           title: Resolved At
         expires_at:
           anyOf:
           - type: string
-            format: date-time
           - type: 'null'
           title: Expires At
         approver_comment:

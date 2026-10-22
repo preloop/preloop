@@ -1,3 +1,4 @@
+import { parseUtc } from './date';
 import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
 import { lastFinishReason } from './session-live';
 
@@ -104,11 +105,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function parseTime(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const parsed = new Date(value).getTime();
-  return Number.isNaN(parsed) ? null : parsed;
-}
+// Offset-less backend timestamps are UTC; a local parse shifted ages by the
+// viewer's offset (an approval seconds old read as "120m").
+const parseTime = parseUtc;
 
 /** Argument keys that carry the one detail worth showing on a collapsed row. */
 const SUMMARY_KEYS = [

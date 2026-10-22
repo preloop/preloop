@@ -332,6 +332,7 @@
   "POST /api/v1/approval-requests/{request_id}/decline": "deny",
   "POST /api/v1/approval-workflows": "deny",
   "POST /api/v1/approval-workflows/{workflow_id}/webhook-secret/rotate": "deny",
+  "POST /api/v1/approvals/{approval_id}/expire": "deny",
   "POST /api/v1/audio/speech": "deny",
   "POST /api/v1/audio/transcriptions": "deny",
   "POST /api/v1/auth/api-keys": "deny",

@@ -82,6 +82,8 @@ def test_permission_check_accepts_source_opencode_and_stamps_marker(client, db_s
         # The hook carries operator notes back with the decision; this session
         # has none, which is the common case and costs nothing.
         "operator_note": None,
+        # No approval row was involved, so nobody is named as the decider.
+        "decided_by": None,
     }
     decide.assert_awaited_once()
     kwargs = decide.await_args.kwargs

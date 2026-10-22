@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import './session-live-activity';
 import type { SessionLiveActivity } from './session-live-activity';
 import type { LiveSessionState } from '../utils/live-session';
+import { deriveLiveSessionState } from '../utils/live-session';
 
 const SINCE = Date.parse('2026-10-02T09:00:00Z');
 
@@ -157,6 +158,30 @@ describe('session-live-activity', () => {
         .shadowRoot!.querySelector('[data-testid="live-activity-label"]')!
         .textContent?.trim()
     ).to.equal('Activity unavailable');
+  });
+});
+
+describe('session-live-activity approval age', () => {
+  it('approval age is seconds, not hours, for an offset-less UTC timestamp', async () => {
+    const requestedAt = Date.UTC(2026, 9, 2, 10, 0, 0);
+    const now = requestedAt + 30_000;
+    const value = deriveLiveSessionState({
+      events: [],
+      pendingApprovals: [
+        // The backend used to emit naive UTC; a local parse shifted the age
+        // by the viewer's timezone offset.
+        { status: 'pending', requested_at: '2026-10-02T10:00:00' } as {
+          status: string;
+        },
+      ],
+      connected: true,
+      now,
+    });
+    expect(value.since).to.equal(requestedAt);
+    const el = await renderLine(value, now);
+    expect(
+      el.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
+    ).to.equal('· 30s');
   });
 });
 
@@ -475,6 +500,35 @@ describe('shared session approval controller', () => {
         .shadowRoot!.querySelector('session-approval-card')!
         .shadowRoot!.textContent!.includes('Approved')
     );
+    expect(
+      element.shadowRoot!.querySelector('session-live-activity')!.shadowRoot!
+        .textContent
+    ).not.to.include('Waiting for approval');
+  });
+  it('expired approval removes Approve and Deny', async () => {
+    const element = await chat();
+    const card = () =>
+      element.shadowRoot!.querySelector('session-approval-card')!.shadowRoot!;
+    const buttons = () =>
+      [...card().querySelectorAll('sl-button')].map((b) =>
+        (b.textContent || '').trim()
+      );
+    await waitUntil(() => buttons().includes('Approve'));
+    expect(buttons()).to.include('Deny');
+    // The hook holding the approval gave up: the server marks it expired and
+    // broadcasts that, and nobody may decide it any more.
+    rows[0] = {
+      ...rows[0],
+      status: 'expired',
+      resolved_at: '2026-10-02T10:09:00Z',
+    };
+    callbacks.get('approvals')!({
+      type: 'approval_expired',
+      approval_request_id: rows[0].id,
+      runtime_session_id: 'session-a',
+    });
+    await waitUntil(() => !buttons().includes('Approve'));
+    expect(buttons()).not.to.include('Deny');
     expect(
       element.shadowRoot!.querySelector('session-live-activity')!.shadowRoot!
         .textContent
