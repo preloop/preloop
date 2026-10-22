@@ -99,7 +99,7 @@ export class MCPServerForm extends LitElement {
       this.oauthClientId = this.server.auth_config?.client_id || '';
       this.oauthIssuer = this.server.auth_config?.issuer || '';
       const scope =
-        this.server.auth_config?.scope || this.server.auth_config?.scopes || '';
+        this.server.auth_config?.scope ?? this.server.auth_config?.scopes ?? '';
       this.oauthScope = Array.isArray(scope) ? scope.join(' ') : scope;
     }
   }
@@ -334,14 +334,28 @@ export class MCPServerForm extends LitElement {
     if (this.authType === 'bearer' && this.bearerToken.trim()) {
       authConfigObj = { token: this.bearerToken };
     } else if (this.authType === 'oauth') {
-      authConfigObj = {
-        ...(this.server?.auth_config || {}),
-        client_id: this.oauthClientId.trim(),
-        scope: this.oauthScope.trim(),
-      };
-      if (this.oauthIssuer.trim())
-        authConfigObj.issuer = this.oauthIssuer.trim();
-      else delete authConfigObj.issuer;
+      const saved = this.server?.auth_config || {};
+      authConfigObj = { ...saved };
+      const clientId = this.oauthClientId.trim();
+      if (clientId !== (saved.client_id || '')) {
+        if (clientId) authConfigObj.client_id = clientId;
+        else delete authConfigObj.client_id;
+      }
+      const issuer = this.oauthIssuer.trim();
+      if (issuer !== (saved.issuer || '')) {
+        if (issuer) authConfigObj.issuer = issuer;
+        else delete authConfigObj.issuer;
+      }
+      // Preserve optional fields and the stored scope representation when only
+      // other form fields changed; changing consent bindings invalidates grants.
+      const savedScope = saved.scope ?? saved.scopes ?? '';
+      const originalScope = Array.isArray(savedScope)
+        ? savedScope.join(' ')
+        : savedScope;
+      if (this.oauthScope.trim() !== originalScope.trim()) {
+        authConfigObj.scope = this.oauthScope.trim();
+        delete authConfigObj.scopes;
+      }
       if (this.oauthClientSecret)
         authConfigObj.client_secret = this.oauthClientSecret;
     }

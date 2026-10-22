@@ -429,4 +429,49 @@ describe('MCPServerForm', () => {
     expect(update.calledBefore(connect)).to.equal(true);
     expect(connect.calledOnceWithExactly(server.id)).to.equal(true);
   });
+
+  for (const authConfig of [
+    { client_id: 'synthetic-client', scopes: ['read', 'write'] },
+    { client_id: 'synthetic-client', scope: ['read', 'write'] },
+    { client_id: 'synthetic-client', scope: '', scopes: ['read'] },
+    { client_id: 'synthetic-client' },
+    { access_token: '***REDACTED***' },
+  ]) {
+    it(`preserves unchanged OAuth configuration on rename: ${JSON.stringify(authConfig)}`, async () => {
+      const server = {
+        id: 'synthetic-oauth',
+        name: 'Synthetic OAuth',
+        url: 'https://resource.example.com/mcp',
+        auth_type: 'oauth',
+        connection_state: 'connected',
+        auth_config: authConfig,
+      };
+      const el = await createForm(server);
+      (el as any).serverName = 'Renamed OAuth';
+      const update = sinon.stub().resolves(server);
+      (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+      await el.handleSave();
+      expect(update.firstCall.args[1].auth_config).to.deep.equal(authConfig);
+    });
+  }
+
+  it('replaces the saved scope alias when consent scopes are edited', async () => {
+    const server = {
+      id: 'synthetic-oauth',
+      name: 'Synthetic OAuth',
+      url: 'https://resource.example.com/mcp',
+      auth_type: 'oauth',
+      connection_state: 'connected',
+      auth_config: { client_id: 'synthetic-client', scopes: ['read'] },
+    };
+    const el = await createForm(server);
+    (el as any).oauthScope = 'read write';
+    const update = sinon.stub().resolves(server);
+    (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+    await el.handleSave();
+    expect(update.firstCall.args[1].auth_config).to.deep.equal({
+      client_id: 'synthetic-client',
+      scope: 'read write',
+    });
+  });
 });
