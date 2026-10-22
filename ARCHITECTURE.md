@@ -1361,4 +1361,5 @@ API liveness-triggered restarts use a separate 60-second termination grace
 (`api.livenessTerminationGracePeriodSeconds`, including the preStop sleep).
 Planned rollouts retain the 900-second stream drain. This prevents an unhealthy
 replica from spending the full rollout window draining before replacement.
-Probe-level grace requires Kubernetes 1.28 or newer; production runs 1.30.
+The chart renders probe-level grace on Kubernetes 1.28 or newer; older
+clusters retain the existing pod-level grace behavior.

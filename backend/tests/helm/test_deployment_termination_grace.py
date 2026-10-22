@@ -133,3 +133,19 @@ def test_api_liveness_recovery_grace_is_overridable() -> None:
     )
     assert spec["containers"][0]["livenessProbe"]["terminationGracePeriodSeconds"] == 45
     assert spec["terminationGracePeriodSeconds"] == 900
+
+
+@pytest.mark.parametrize(
+    "version,supported",
+    [("1.19.0", False), ("1.27.0", False), ("1.28.0", True), ("1.30.12", True)],
+)
+def test_api_probe_grace_respects_supported_kubernetes_versions(
+    version: str, supported: bool
+) -> None:
+    rendered = yaml.safe_load(
+        helm_template("templates/api-deployment.yaml", kube_version=version)
+    )
+    spec = rendered["spec"]["template"]["spec"]
+    probe = spec["containers"][0]["livenessProbe"]
+    assert ("terminationGracePeriodSeconds" in probe) is supported
+    assert spec["terminationGracePeriodSeconds"] == 900
