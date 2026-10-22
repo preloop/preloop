@@ -899,7 +899,7 @@ export class PreloopSessionObserver extends LitElement {
       changed.has('selectedSessionId') &&
       !changed.has('sessions') &&
       !changed.has('scopeId') &&
-      this.selectedSessionId
+      this.selectedSessionId !== null
     ) {
       if (
         this.observedSessions.some(
@@ -1218,9 +1218,9 @@ export class PreloopSessionObserver extends LitElement {
     ) {
       this.observedSessions = [pinned, ...this.observedSessions];
     }
-    const requested = this.selectedSessionId || this.activeSessionId;
+    const requested = this.selectedSessionId ?? this.activeSessionId;
     if (
-      this.selectedSessionId &&
+      this.selectedSessionId !== null &&
       !this.observedSessions.some(
         (session) => session.id === this.selectedSessionId
       )

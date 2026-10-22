@@ -305,9 +305,14 @@ describe('PreloopSessionObserver', () => {
     expect((el as any).activeSessionId).to.equal('older-session');
   });
 
-  for (const failure of ['missing', 'other-agent', 'invalid']) {
+  for (const failure of ['missing', 'other-agent', 'invalid', 'empty']) {
     it(`does not substitute another session when the pinned session is ${failure}`, async () => {
-      const id = failure === 'invalid' ? '../other' : 'unavailable-session';
+      const id =
+        failure === 'invalid'
+          ? '../other'
+          : failure === 'empty'
+            ? ''
+            : 'unavailable-session';
       fetchStub
         .withArgs('/api/v1/runtime-sessions/unavailable-session')
         .resolves(
