@@ -288,3 +288,55 @@ def test_bulk_writes_update_each_scope_once(
             ).scalar_one()
             == 0
         )
+
+
+def test_bulk_writes_keep_scopes_and_latest_metadata_separate(
+    db_engine: Engine, totals_schema: MigrationFixture
+) -> None:
+    """One statement aggregates and repairs two scopes independently."""
+    schema, account, migration = totals_schema
+    with db_engine.begin() as connection:
+        connection.execute(text(f"SET LOCAL search_path TO {schema}"))
+        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+            pass
+        rows = connection.execute(
+            text("""
+            INSERT INTO api_usage(account_id,runtime_principal_type,runtime_principal_id,
+                action_type,estimated_cost,timestamp,model_alias)
+            SELECT :account,'codex',scope,'model_gateway',cost,
+                timestamp '2026-01-01' + age * interval '1 day',alias
+            FROM (VALUES ('a',1,0,'a-old'),('a',2,1,'a-new'),
+                         ('b',3,0,'b-old'),('b',4,1,'b-new'))
+                 AS v(scope,cost,age,alias)
+            RETURNING id,model_alias
+        """),
+            {"account": account},
+        ).all()
+        ids = {row.model_alias: row.id for row in rows}
+
+        def assert_totals(costs: dict[str, int], suffix: str, count: int) -> None:
+            totals = connection.execute(
+                text("""
+                SELECT principal_id,request_count,estimated_cost,last_usage_id,latest_model_alias
+                FROM agent_usage_total WHERE principal_id IN ('a','b')
+            """)
+            ).all()
+            assert len(totals) == 2
+            for row in totals:
+                assert row.request_count == count
+                assert row.estimated_cost == costs[row.principal_id]
+                alias = f"{row.principal_id}-{suffix}"
+                assert row.last_usage_id == ids[alias]
+                assert row.latest_model_alias == alias
+
+        assert_totals({"a": 3, "b": 7}, "new", 2)
+        connection.execute(
+            text(
+                "UPDATE api_usage SET estimated_cost=estimated_cost*2 WHERE runtime_principal_id IN ('a','b')"
+            )
+        )
+        assert_totals({"a": 6, "b": 14}, "new", 2)
+        connection.execute(
+            text("DELETE FROM api_usage WHERE model_alias IN ('a-new','b-new')")
+        )
+        assert_totals({"a": 2, "b": 6}, "old", 1)
