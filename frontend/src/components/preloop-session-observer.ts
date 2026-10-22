@@ -866,6 +866,8 @@ export class PreloopSessionObserver extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.pinnedSessionRequest;
+    this.pinnedSessionPending = null;
     this.clearDesktopRecheck();
     // Reconnecting looks the endpoint up afresh.
     this.desktopLookupKey = null;
@@ -883,11 +885,32 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   willUpdate(changed: Map<string | number | symbol, unknown>): void {
-    if (changed.has('sessions')) {
+    if (changed.has('scopeId') && changed.get('scopeId') !== undefined) {
+      ++this.pinnedSessionRequest;
+      this.pinnedSessionPending = null;
+      this.pinnedSessionError = null;
+      this.observedSessions = [];
+      this.activeSessionId = null;
+    }
+    if (changed.has('sessions') || changed.has('scopeId')) {
       this.applySessions(this.sessions || []);
     }
-    if (changed.has('selectedSessionId') && this.selectedSessionId) {
-      void this.selectSession(this.selectedSessionId);
+    if (
+      changed.has('selectedSessionId') &&
+      !changed.has('sessions') &&
+      !changed.has('scopeId') &&
+      this.selectedSessionId
+    ) {
+      if (
+        this.observedSessions.some(
+          (session) => session.id === this.selectedSessionId
+        )
+      )
+        void this.selectSession(this.selectedSessionId);
+      else {
+        this.activeSessionId = null;
+        void this.loadPinnedSession(this.selectedSessionId);
+      }
     }
   }
 
@@ -1180,9 +1203,32 @@ export class PreloopSessionObserver extends LitElement {
     }
   }
 
+  private pinnedSessionRequest = 0;
+  @state() private pinnedSessionPending: string | null = null;
+  @state() private pinnedSessionError: string | null = null;
+
   private applySessions(rows: SessionInput[], preserveSelection = true): void {
+    const pinned = this.observedSessions.find(
+      (session) => session.id === this.selectedSessionId
+    );
     this.observedSessions = normalizeObservedSessions(rows);
+    if (
+      pinned &&
+      !this.observedSessions.some((session) => session.id === pinned.id)
+    ) {
+      this.observedSessions = [pinned, ...this.observedSessions];
+    }
     const requested = this.selectedSessionId || this.activeSessionId;
+    if (
+      this.selectedSessionId &&
+      !this.observedSessions.some(
+        (session) => session.id === this.selectedSessionId
+      )
+    ) {
+      this.activeSessionId = null;
+      void this.loadPinnedSession(this.selectedSessionId);
+      return;
+    }
     const nextActive =
       preserveSelection &&
       requested &&
@@ -1192,12 +1238,60 @@ export class PreloopSessionObserver extends LitElement {
           ? this.observedSessions[0]?.id || null
           : null;
     if (nextActive && nextActive !== this.activeSessionId) {
-      // Stagger heavy event/activity loads so the session list can paint first.
       requestAnimationFrame(() => {
+        if (
+          !this.isConnected ||
+          (this.selectedSessionId && this.selectedSessionId !== nextActive)
+        )
+          return;
         void this.selectSession(nextActive);
       });
-    } else if (!nextActive) {
-      this.activeSessionId = null;
+    } else if (!nextActive) this.activeSessionId = null;
+  }
+
+  /** Resolve a pinned session outside the list page through the authorized API. */
+  private async loadPinnedSession(sessionId: string): Promise<void> {
+    if (this.pinnedSessionPending === sessionId) return;
+    const request = ++this.pinnedSessionRequest;
+    const scopeId = this.scopeId;
+    this.pinnedSessionPending = sessionId;
+    this.pinnedSessionError = null;
+    try {
+      // IDs are a path segment, never an arbitrary API path.
+      if (!/^[a-zA-Z0-9_-]+$/.test(sessionId))
+        throw new Error('Invalid session');
+      const { session } = await getAccountRuntimeSessionDetail(sessionId);
+      if (
+        request !== this.pinnedSessionRequest ||
+        scopeId !== this.scopeId ||
+        this.selectedSessionId !== sessionId ||
+        !this.isConnected
+      )
+        return;
+      if (
+        session.id !== sessionId ||
+        (this.scope === 'managed_agent' && session.agent_id !== scopeId)
+      )
+        throw new Error('Session belongs to another agent');
+      this.observedSessions = [
+        ...normalizeObservedSessions([session]),
+        ...this.observedSessions.filter((row) => row.id !== sessionId),
+      ];
+      await this.selectSession(sessionId);
+    } catch {
+      if (
+        request === this.pinnedSessionRequest &&
+        scopeId === this.scopeId &&
+        this.selectedSessionId === sessionId &&
+        this.isConnected
+      ) {
+        this.pinnedSessionError =
+          'This session is unavailable or does not belong to this agent. Select another session from the list.';
+        this.activeSessionId = null;
+      }
+    } finally {
+      if (request === this.pinnedSessionRequest)
+        this.pinnedSessionPending = null;
     }
   }
 
@@ -1268,6 +1362,12 @@ export class PreloopSessionObserver extends LitElement {
       // intent, so it may collapse the list even though nothing reloads.
       if (options.userInitiated) this.collapseSidebar();
       return;
+    }
+    this.pinnedSessionError = null;
+    if (options.userInitiated) {
+      ++this.pinnedSessionRequest;
+      this.pinnedSessionPending = null;
+      this.selectedSessionId = sessionId;
     }
     this.activeSessionId = sessionId;
     // Only a USER selection hands the list's column to the transcript.
@@ -2995,6 +3095,8 @@ export class PreloopSessionObserver extends LitElement {
           void this.scrollToArtifact(event.detail.artifactId)}
       >
         ${this.renderToolbar()} ${this.renderOptimizeHint()}
+        ${this.pinnedSessionError ? html`<p role="alert">${this.pinnedSessionError}</p>` : nothing}
+        ${this.pinnedSessionPending ? html`<p role="status">Loading selected session…</p>` : nothing}
         ${
           this.error
             ? html`

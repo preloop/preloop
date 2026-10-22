@@ -7,6 +7,7 @@ import { invalidateApiCaches } from '../../api';
 import { historyStateForNavigation } from '../../utils/in-app-history';
 
 describe('AgentDetailView', () => {
+  const originalUrl = window.location.href;
   let fetchStub: sinon.SinonStub;
   let defaultFetch: (
     input: RequestInfo | URL,
@@ -435,8 +436,75 @@ describe('AgentDetailView', () => {
   });
 
   afterEach(() => {
+    window.history.replaceState(null, '', originalUrl);
     fetchStub.restore();
     localStorage.clear();
+  });
+
+  it('honors a pinned session deep link and clears it when the next agent has no session parameter', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/console/agents/old-agent?session=old-session'
+    );
+    const element = document.createElement(
+      'agent-detail-view'
+    ) as AgentDetailView;
+    element.onBeforeEnter({
+      params: { agentId: 'agent-1' },
+      search: '?session=runtime-session-1',
+    });
+    await fixture(element);
+    await waitUntil(
+      () => !!element.shadowRoot?.querySelector('preloop-session-observer')
+    );
+    const observer = element.shadowRoot!.querySelector(
+      'preloop-session-observer'
+    ) as any;
+    expect(observer.selectedSessionId).to.equal('runtime-session-1');
+    observer.dispatchEvent(
+      new CustomEvent('session-selected', {
+        detail: { sessionId: 'runtime-session-2' },
+      })
+    );
+    expect(new URLSearchParams(location.search).get('session')).to.equal(
+      'runtime-session-2'
+    );
+    window.history.replaceState(null, '', '/console/agents/agent-2');
+    element.onBeforeEnter({ params: { agentId: 'agent-2' } });
+    expect((element as any).selectedSessionId).to.equal(null);
+  });
+
+  it('distinguishes never-run, failed and unsupported checks without claiming they are disabled', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(
+      () => !!(element as any).agent && !(element as any).loading
+    );
+    for (const [status, supported, label] of [
+      ['not_run', true, 'Not checked'],
+      ['failed', true, 'Last check failed'],
+      ['not_run', false, 'No live check'],
+    ] as const) {
+      (element as any).agent = {
+        ...(element as any).agent,
+        live_validation_status: status,
+        live_validation_supported: supported,
+      };
+      await element.updateComplete;
+      expect(
+        element.shadowRoot?.querySelector('.agent-settings')?.textContent
+      ).to.contain(label);
+      expect(
+        element.shadowRoot?.querySelector('.badge-row')?.textContent
+      ).not.to.contain('Live check: off');
+    }
+    (element as any).agent = { ...(element as any).agent, is_shared: true };
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings summary')?.textContent
+    ).not.to.contain('Session permissions:');
   });
 
   describe('live desktop (#870)', () => {
@@ -633,6 +701,11 @@ describe('AgentDetailView', () => {
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
     );
     try {
+      window.history.replaceState(
+        null,
+        '',
+        '/console/agents/agent-2?tab=tools'
+      );
       (el as any).onBeforeEnter({ params: { agentId: 'agent-2' } });
       expect((el as any).agent).to.equal(null);
     } finally {
@@ -1176,7 +1249,9 @@ describe('AgentDetailView', () => {
     ).map((chip) => chip.textContent?.replace(/\s+/g, ' ').trim());
     expect(chips).to.deep.equal(['Your turn']);
     expect(content).to.not.contain('Live check: off');
-    expect(content).to.not.contain('Live validated');
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Live validated');
     // Enrolment method is plumbing, not a feature: no blue chip for it.
     expect(content).to.not.contain('runtime_session_token');
 
@@ -1204,10 +1279,6 @@ describe('AgentDetailView', () => {
       'Agent detail view did not finish loading'
     );
 
-    // The CLI persisted an upstream-refused probe: the gateway plumbing is
-    // proven but model traffic is unverified. The header chip says "Live
-    // check: off" and the detail is on its tooltip; the old fallthrough
-    // rendered an eternal "Live check pending".
     (element as any).agent = {
       ...(element as any).agent,
       live_validation_passed: false,
@@ -1215,14 +1286,12 @@ describe('AgentDetailView', () => {
     };
     await element.updateComplete;
 
-    const chip = element.shadowRoot?.querySelector(
-      '.badge-row sl-badge.capability-chip'
-    );
-    expect(chip?.textContent?.trim()).to.equal('Live check: off');
-    expect(chip?.getAttribute('variant')).to.equal('warning');
-    expect(chip?.closest('sl-tooltip')?.getAttribute('content')).to.equal(
-      'Live check throttled, unverified'
-    );
+    expect(
+      element.shadowRoot?.querySelector('.badge-row')?.textContent
+    ).not.to.contain('Live check: off');
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Live check throttled, unverified');
     expect(getDeepText(element)).to.not.contain('Live check pending');
     expect((element as any).getLiveValidationVariant()).to.equal('warning');
 
@@ -1232,11 +1301,8 @@ describe('AgentDetailView', () => {
     };
     await element.updateComplete;
     expect(
-      element.shadowRoot
-        ?.querySelector('.badge-row sl-badge.capability-chip')
-        ?.closest('sl-tooltip')
-        ?.getAttribute('content')
-    ).to.equal('Upstream refused, unverified');
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Upstream refused, unverified');
   });
 
   it('labels a timed out live check as unverified with a warning', async () => {
@@ -1253,13 +1319,10 @@ describe('AgentDetailView', () => {
       live_validation_status: 'timeout',
     };
     await element.updateComplete;
-    const chip = element.shadowRoot?.querySelector(
-      '.badge-row sl-badge.capability-chip'
-    );
-    expect(chip?.getAttribute('variant')).to.equal('warning');
-    expect(chip?.closest('sl-tooltip')?.getAttribute('content')).to.equal(
-      'Live check timed out, unverified'
-    );
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Live check timed out, unverified');
+    expect((element as any).getLiveValidationVariant()).to.equal('warning');
   });
 
   describe('progressive load', () => {
@@ -1604,14 +1667,20 @@ describe('AgentDetailView', () => {
       }
     });
 
-    it('keeps Decommission and Remove in the More menu', async () => {
+    it('keeps metadata and lifecycle actions in the More menu', async () => {
       const element = await mount();
       const actions = (element as any).agentActions as Array<{
         id: string;
         menu?: boolean;
       }>;
       const pinned = actions.filter((action) => action.menu).map((a) => a.id);
-      expect(pinned).to.deep.equal(['decommission', 'remove']);
+      expect(pinned).to.deep.equal([
+        'rename',
+        'edit-tags',
+        'pause',
+        'decommission',
+        'remove',
+      ]);
     });
   });
 
