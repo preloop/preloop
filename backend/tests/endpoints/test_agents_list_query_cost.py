@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, List
 from uuid import uuid4
 
+import pytest
+
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
@@ -137,9 +139,14 @@ def test_page_ranks_by_last_request_then_activity(
     assert [item["id"] for item in page["items"]] == order[2:]
 
 
+@pytest.mark.parametrize("ready", [False, True])
 def test_list_statement_does_not_group_the_account_usage(
-    db_session: Session, test_user: Any
+    db_session: Session, test_user: Any, ready: bool
 ) -> None:
+    state = db_session.get(models.AgentUsageBackfill, "agents")
+    assert state is not None
+    state.ready = ready
+    db_session.flush()
     for index in range(6):
         _agent(db_session, test_user, index, seen_minutes_ago=index, requests=index % 3)
     statements: List[str] = []
@@ -169,7 +176,11 @@ def test_list_statement_does_not_group_the_account_usage(
         and "GROUP BY api_usage.runtime_session_id" in sql
         and "api_usage.runtime_session_id IN" in sql
     ]
-    assert len(usage_by_session) == 1, statements
+    if ready:
+        assert not any("FROM api_usage" in sql for sql in statements), statements
+        assert any("agent_usage_total" in sql for sql in statements), statements
+    else:
+        assert len(usage_by_session) == 1, statements
 
 
 def test_principal_usage_is_read_per_principal(

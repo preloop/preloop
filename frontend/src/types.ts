@@ -741,6 +741,7 @@ export interface ManagedAgentSummary {
 
   /** Subscription-routed requests: $0 spend, an API-equivalent estimate. */
   subscription_usage?: SubscriptionUsageSummary | null;
+  subscription_usage_computed?: boolean;
   id: string;
   runtime_session_id: string | null;
   owner_user_id: string | null;

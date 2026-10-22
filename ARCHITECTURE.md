@@ -544,6 +544,25 @@ $0 to its spend; each surface also reports the agent's subscription block
 subscriptions" as spend plus that estimate, a lower bound when coverage is
 partial and no figure when nothing is covered.
 
+The Agents list reads all-time figures from `agent_usage_total`, grouped by
+account, source principal and runtime session. PostgreSQL triggers apply
+transactional deltas on usage insert, update and delete, so corrections and
+rollbacks affect requests, tokens, metered cost and subscription pricing
+together. Statement triggers group transition rows by scope before updating
+counters, so bulk imports, repricing and deletes do not rewrite a shared counter
+once per request. Monetary counters use decimal arithmetic. Agent ownership is resolved
+at read time from these source dimensions, so reassigning a session does not
+require rewriting historical usage or counters. Date-window detail and Overview
+readers retain their existing source aggregates.
+
+The migration installs capture before an online backfill. `agent_usage_counted`
+records which source IDs contributed; bounded batches lock source rows and claim
+IDs once, making retries and concurrent writes safe. `agent_usage_backfill`
+persists progress and enables stored reads only after completion. During an
+incomplete backfill the list uses its metered-cost fallback and reports
+`subscription_usage_computed=false`. Once ready, the without-subscriptions
+estimate appears in a separate column immediately after metered estimated spend.
+
 Managed tracker OAuth persistence uses the [provider-neutral storage contract](docs/architecture/managed-oauth-storage.md),
 with tenant-bound connection transactions and serialized token-pair rotation.
 The console creates a managed tracker at consent completion, before scope is

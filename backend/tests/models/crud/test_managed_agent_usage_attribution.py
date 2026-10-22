@@ -487,7 +487,9 @@ def test_spend_is_metered_and_the_estimate_adds_the_api_equivalent(
     )
     # All time: the 60-day-old priced run too; tokens include subscription use.
     assert listed["estimated_cost"] == pytest.approx(0.46)
-    assert listed["subscription_usage"] is None
+    assert listed["subscription_usage"]["api_equivalent_cost"] == pytest.approx(1.75)
+    assert listed["subscription_usage"]["request_count"] == 3
+    assert listed["subscription_usage_computed"] is True
     assert listed["token_usage"]["total_tokens"] >= 3300
 
 
@@ -558,6 +560,7 @@ def test_the_agent_detail_response_carries_the_subscription_block(
     assert block.api_equivalent_cost == pytest.approx(0.5)
     assert response.aggregate.estimated_cost == pytest.approx(0.16)
     assert response.agent.subscription_usage is not None
+    assert response.agent.subscription_usage_computed is True
 
 
 def test_activity_status_follows_traffic_in_per_run_sessions(
@@ -695,8 +698,113 @@ def test_list_skips_subscription_metadata_reads(
             db_session, account_id=str(test_user.account_id), limit=100
         )
     assert result["items"]
-    assert all(item["subscription_usage"] is None for item in result["items"])
+    assert all(item["subscription_usage_computed"] for item in result["items"])
     usage_reads = [statement for statement in statements if "api_usage" in statement]
-    assert usage_reads
-    assert all("api_usage.meta_data" not in statement for statement in usage_reads)
-    assert all("sub_requests" not in statement for statement in usage_reads)
+    assert not usage_reads
+    assert any("agent_usage_total" in statement for statement in statements)
+
+
+def _assert_stored_matches_source(db: Session, account_id: str) -> None:
+    """Compare every stored list figure with a fresh source aggregate."""
+    from preloop.models.crud.managed_agent import _usage_aggregates_for_principals
+
+    agents = db.query(models.ManagedAgent).filter_by(account_id=account_id).all()
+    principals = [(a.session_source_type, a.session_source_id) for a in agents]
+    source = _usage_aggregates_for_principals(
+        db, account_id=account_id, principals=principals
+    )
+    stored = _usage_aggregates_for_principals(
+        db, account_id=account_id, principals=principals, use_stored_totals=True
+    )
+    for principal in principals:
+        actual = dict(stored[principal])
+        assert actual.pop("_stored_totals") is True
+        expected = source[principal]
+        assert actual.pop("estimated_cost") == pytest.approx(expected["estimated_cost"])
+        expected = {k: v for k, v in expected.items() if k != "estimated_cost"}
+        assert actual == expected
+
+
+def test_stored_totals_follow_corrections_moves_deletes_and_rollback(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """Source updates replace prior contributions, including metadata and owner."""
+    account_id = str(test_user.account_id)
+    _subscription_usage(
+        db_session,
+        test_user,
+        session=fleet["run_colon"],
+        principal_id=None,
+        api_equivalent=1.0,
+        days_ago=0,
+    )
+    _assert_stored_matches_source(db_session, account_id)
+    usage = (
+        db_session.query(models.ApiUsage)
+        .filter_by(account_id=account_id, cost_source="subscription")
+        .one()
+    )
+    usage.meta_data = {"api_equivalent_cost": 2.5}
+    usage.prompt_tokens = 2500
+    usage.estimated_cost = 0.1
+    db_session.flush()
+    _assert_stored_matches_source(db_session, account_id)
+    usage.runtime_principal_type = fleet["b"].session_source_type
+    usage.runtime_principal_id = fleet["b"].session_source_id
+    usage.runtime_session_id = fleet["b"].runtime_session_id
+    db_session.flush()
+    _assert_stored_matches_source(db_session, account_id)
+    with db_session.begin_nested() as savepoint:
+        db_session.delete(usage)
+        db_session.flush()
+        _assert_stored_matches_source(db_session, account_id)
+        savepoint.rollback()
+    _assert_stored_matches_source(db_session, account_id)
+    db_session.delete(usage)
+    db_session.flush()
+    _assert_stored_matches_source(db_session, account_id)
+
+
+def test_partial_backfill_does_not_publish_partial_totals(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """Until backfill completes, metered figures use the hotfix fallback."""
+    state = db_session.get(models.AgentUsageBackfill, "agents")
+    assert state is not None
+    state.ready = False
+    db_session.flush()
+    listed = crud_managed_agent.list_for_account(
+        db_session, account_id=str(test_user.account_id), limit=100
+    )["items"]
+    assert listed
+    assert all(not item["subscription_usage_computed"] for item in listed)
+    assert all(item["subscription_usage"] is None for item in listed)
+    assert next(item for item in listed if item["id"] == str(fleet["a"].id))[
+        "estimated_cost"
+    ] == pytest.approx(0.46)
+
+
+def test_totals_follow_session_ownership_changes_without_recounting(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """Counters keep source identity; changing a binding changes its reader."""
+    fleet["b"].runtime_session_id = fleet["run_colon"].id
+    db_session.flush()
+    _assert_stored_matches_source(db_session, str(test_user.account_id))
+
+
+def test_account_deletion_does_not_recreate_counters_during_fk_cascades(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """Session/account SET NULL updates must not resurrect a deleted owner."""
+    account_id = test_user.account_id
+    account = db_session.get(models.Account, account_id)
+    assert account is not None
+    db_session.delete(account)
+    db_session.flush()
+    assert (
+        db_session.query(models.AgentUsageTotal)
+        .filter_by(account_id=account_id)
+        .count()
+        == 0
+    )

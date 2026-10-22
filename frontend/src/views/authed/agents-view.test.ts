@@ -485,6 +485,7 @@ describe('AgentsView', () => {
       // consequence of it.
       'Tokens',
       '$ est.',
+      'W/o subs.',
       'Last seen',
       'Actions',
     ]);
@@ -511,7 +512,7 @@ describe('AgentsView', () => {
       'Requests, all time'
     );
 
-    const lastSeen = headers[6];
+    const lastSeen = headers[7];
     expect(lastSeen.getAttribute('aria-sort'), 'default sort').to.equal(
       'descending'
     );
@@ -529,7 +530,7 @@ describe('AgentsView', () => {
     await settle();
     expect(
       el.shadowRoot
-        ?.querySelectorAll('table.agents-table thead th')[6]
+        ?.querySelectorAll('table.agents-table thead th')[7]
         .getAttribute('aria-sort')
     ).to.equal('ascending');
 
@@ -539,7 +540,7 @@ describe('AgentsView', () => {
       'table.agents-table thead th'
     );
     expect(after?.[1].getAttribute('aria-sort')).to.equal('ascending');
-    expect(after?.[6].getAttribute('aria-sort')).to.equal('none');
+    expect(after?.[7].getAttribute('aria-sort')).to.equal('none');
 
     // The picker offers the two hidden columns back.
     const picker = el.agentTable.pickerColumns;
@@ -1176,11 +1177,12 @@ describe('AgentsView', () => {
     const widths = Array.from(table?.querySelectorAll('thead th') || []).map(
       (th) => (th as HTMLElement).style.width
     );
-    expect(widths.slice(2, 7)).to.deep.equal([
+    expect(widths.slice(2, 8)).to.deep.equal([
       '150px',
       '110px',
       '110px',
       '110px',
+      '160px',
       '128px',
     ]);
 
@@ -1408,11 +1410,12 @@ describe('AgentsView', () => {
     expect(window?.getAttribute('slot')).to.equal('count');
   });
 
-  it('keeps the list spend cell to metered spend even with subscription data', async () => {
+  it('shows stored subscription pricing in a separate column after metered spend', async () => {
     agentItems = [
       {
         ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
         estimated_cost: 0.42,
+        subscription_usage_computed: true,
         subscription_usage: {
           request_count: 2,
           prompt_tokens: 2000,
@@ -1431,9 +1434,49 @@ describe('AgentsView', () => {
     await waitForAgents(el);
     const row = el.shadowRoot!.querySelector('table.agents-table tbody tr')!;
     const estimate = row.querySelector('[data-testid="without-subscriptions"]');
-    expect(estimate).to.not.exist;
+    expect(estimate?.textContent?.trim()).to.equal('≥ $0.92');
+    expect(estimate?.getAttribute('title')).to.contain('1 of 2');
+    const spendCell = Array.from(row.querySelectorAll('td')).find(
+      (cell) => cell.textContent?.trim() === '$0.42'
+    );
+    expect(estimate?.closest('td')).to.equal(spendCell?.nextElementSibling);
     expect(row.textContent).to.contain('$0.42');
   });
+
+  for (const [label, computed, requests, expected] of [
+    ['no subscription traffic', true, 0, '$0.42'],
+    ['unpriced subscription traffic', true, 1, 'No estimate'],
+    ['totals not ready', false, 1, null],
+  ] as const) {
+    it(`shows an honest separate estimate for ${label}`, async () => {
+      agentItems = [
+        {
+          ...makeAgent('agent-1', 'Example Agent', 'codex'),
+          estimated_cost: 0.42,
+          subscription_usage_computed: computed,
+          subscription_usage: {
+            request_count: requests,
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            total_tokens: 110,
+            api_equivalent_cost: 0,
+            api_equivalent_cost_is_estimate: true,
+            covered_requests: 0,
+            coverage: 0,
+            billed: null,
+            billed_available: false,
+          },
+        },
+      ];
+      const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+      await waitForAgents(el);
+      const estimate = el.shadowRoot!.querySelector(
+        '[data-testid="without-subscriptions"]'
+      );
+      if (expected === null) expect(estimate).to.not.exist;
+      else expect(estimate?.textContent?.trim()).to.equal(expected);
+    });
+  }
 
   it('labels the header actions by what they do', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);

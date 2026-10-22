@@ -39358,7 +39358,15 @@ components:
           - $ref: '#/components/schemas/SubscriptionUsageSummary'
           - type: 'null'
           description: 'Subscription-routed requests: $0 spend, with an API-equivalent
-            estimate and its coverage. Null without any.'
+            estimate and its coverage. Null when pricing was not computed or there
+            are no subscription requests. See subscription_usage_computed for list
+            responses.'
+        subscription_usage_computed:
+          type: boolean
+          title: Subscription Usage Computed
+          description: Whether subscription usage was computed. List responses require
+            complete stored totals.
+          default: false
         configured_model_alias:
           anyOf:
           - type: string

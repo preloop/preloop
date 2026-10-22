@@ -484,4 +484,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert turn_state.down_revision == "20261108_agent_sub_principal"
     reachable = script.get_revision("20261108_control_reachable")
     assert reachable.down_revision == "20261107_session_turn_state"
-    assert script.get_heads() == ["20261108_control_reachable"]
+    totals = script.get_revision("20261109_agent_usage_totals")
+    assert totals.down_revision == "20261108_control_reachable"
+    assert script.get_heads() == ["20261109_agent_usage_totals"]
