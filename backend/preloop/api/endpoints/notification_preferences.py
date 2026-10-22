@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.models.crud import notification_preferences
+from preloop.models.crud import crud_api_key, notification_preferences
 from preloop.models.db.session import get_db_session
 from preloop.api.auth import get_current_active_user
 from preloop.schemas.notification_preferences import (
@@ -338,7 +338,6 @@ async def register_device_via_token(
     import secrets
     import string
     from datetime import timedelta
-    from preloop.models.models.api_key import ApiKey
     from preloop.models.crud import crud_user
 
     # Validate token
@@ -406,19 +405,18 @@ async def register_device_via_token(
     # Create API key with device_token reference for later cleanup
     # Store the device token in scopes metadata so we can delete this key
     # when the device is unregistered
-    new_api_key = ApiKey(
-        name=device_name,
-        key=api_key_value,
-        scopes=[{"device_token": device_in.token}],
-        account_id=user.account_id,
-        user_id=user_id,
-        expires_at=expires_at,
+    new_api_key, api_key_value = crud_api_key.issue(
+        db,
+        key_value=api_key_value,
+        obj_in={
+            "name": device_name,
+            "scopes": [{"device_token": device_in.token}],
+            "account_id": user.account_id,
+            "user_id": user_id,
+            "expires_at": expires_at,
+        },
     )
-
-    db.add(new_api_key)
-    db.commit()
     db.refresh(prefs)
-    db.refresh(new_api_key)
 
     # Send WebSocket notification to user about device registration
     from preloop.services.websocket_manager import manager
@@ -439,7 +437,7 @@ async def register_device_via_token(
 
     return {
         "preferences": prefs,
-        "api_key": new_api_key.key,
+        "api_key": api_key_value,
         "api_key_id": new_api_key.id,
         "api_key_expires_at": new_api_key.expires_at,
         "push_registered": push_registered,

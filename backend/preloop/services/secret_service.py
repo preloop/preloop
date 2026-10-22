@@ -573,13 +573,6 @@ class SecretService:
                 secret_reference_id=resolved.secret_reference_id,
             )
 
-        if ai_model.api_key:
-            return ResolvedModelCredentials(
-                credential_type="api_key",
-                backend_type="legacy_plaintext",
-                value=ai_model.api_key,
-            )
-
         return None
 
     def resolve_ai_model_api_key(self, ai_model: AIModel) -> Optional[ResolvedSecret]:

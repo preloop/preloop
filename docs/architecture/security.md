@@ -17,6 +17,13 @@ Auth, tenancy, redaction, and secret custody are platform concerns, not agent se
 *   **External Backends:** Optional Vault/OpenBao-compatible KV v2 references via `SecretReference.external_ref`.
 *   **Runtime Boundary:** Gateway-enabled runtimes receive Preloop gateway tokens instead of provider API keys.
 
+User, mobile and runtime API keys store SHA-256 fingerprints and lookup prefixes;
+issuance returns the token once. AI model keys and webhook secrets use account-owned
+(or system-owned for global models) `SecretReference` rows. The legacy plaintext
+columns are removed after a separate backfill revision. See the
+[operator upgrade guide](../operations/credential-storage-upgrade.md) for the
+required maintenance window and compatible rollback versions.
+
 ## preloop.security (`./backend/preloop/security`)
 *   **Purpose:** Deterministic, server-side validation of security audit results. It is result validation, not scanning.
 *   **Gap-Register Freeze:** `gap_register.py` validates the `result.json` produced by release security audit runs. Previous SHA+path finding rows are a floor: dropping one without a `resolved` marker plus a reason fails, unclassified rows fail, and `secrets_findings_count` must match the row count. The agent never self-grades the floor.
@@ -227,7 +234,7 @@ rather than erase machine markers and turn a CI key into an owner key.
 - [x] User invitation system with secure token-based verification
 - [x] Password hashing with industry-standard algorithms
 - [x] Input validation for all parameters via Pydantic models
-- [x] Issue tracker credentials encrypted at rest via the Secret Service (`credentials_secret_id`/`webhook_secret_id` → `SecretReference`; a startup backfill migrates legacy plaintext rows)
+- [x] Issue tracker credentials encrypted at rest via the Secret Service (`credentials_secret_id`/`webhook_secret_id` → `SecretReference`; a startup backfill migrates legacy tracker API-key rows; staged schema migrations remove legacy webhook and AI-model key columns)
 - [x] Sensitive data masked in logs (see Redaction Policy below)
 - [ ] Rate limiting to prevent abuse (partial implementation exists)
 - [ ] 2FA/MFA support for user accounts

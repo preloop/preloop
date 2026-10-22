@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import threading
 from typing import Any
 from uuid import UUID, uuid4
@@ -38,7 +40,7 @@ def resource(storage: Any) -> Any:  # noqa: F811 - imported shared fixture
     ids = []
     with crud.session() as db, db.begin():
         for owner, _ in owners:
-            row = models.AIModel(
+            row = ai_model_with_secret(
                 account_id=owner,
                 name="Example model",
                 provider_name="example",

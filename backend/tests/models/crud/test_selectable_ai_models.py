@@ -1,5 +1,7 @@
 """The selectable catalog preserves history but excludes retired built-ins."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -87,7 +89,7 @@ def test_builtin_usage_is_scoped_to_the_requesting_account(
             "is_active": True,
         },
     )
-    built_in = models.AIModel(
+    built_in = ai_model_with_secret(
         id=uuid4(),
         name="DeepSeek V4.1 Flash",
         provider_name="qwen",

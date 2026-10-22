@@ -107,3 +107,23 @@ def test_concurrent_index_budgets_can_be_tuned_without_relaxing_blocking_ddl() -
     assert env["PRELOOP_MIGRATION_LOCK_TIMEOUT"] == "5s"
     assert env["PRELOOP_MIGRATION_CONCURRENT_LOCK_TIMEOUT_SECONDS"] == "45"
     assert env["PRELOOP_MIGRATION_CONCURRENT_STATEMENT_TIMEOUT_SECONDS"] == "180"
+
+
+def test_migration_job_uses_the_same_secret_keys_as_the_application() -> None:
+    """Credential backfills must not encrypt with a different process default."""
+    for overrides in ([], ["security.encryptionKey=synthetic-render-only-value"]):
+        migration = _container(_job(overrides))
+        application = yaml.safe_load(
+            helm_template("templates/api-deployment.yaml", overrides)
+        )
+        app_container = application["spec"]["template"]["spec"]["containers"][0]
+        migration_env = {item["name"]: item for item in migration["env"]}
+        application_env = {item["name"]: item for item in app_container["env"]}
+        assert migration_env["SECRET_KEY"] == application_env["SECRET_KEY"]
+        if overrides:
+            assert (
+                migration_env["SECURITY__ENCRYPTION_KEY"]
+                == application_env["SECURITY__ENCRYPTION_KEY"]
+            )
+        else:
+            assert "SECURITY__ENCRYPTION_KEY" not in migration_env
