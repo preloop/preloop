@@ -296,6 +296,7 @@ nav:
       - Windows: operations/windows-wsl2.md
       - TLS reverse proxy: operations/tls.md
       - Upgrading Preloop: operations/upgrade.md
+      - Upgrade acceptance: operations/upgrade-acceptance.md
       - Schema migrations: operations/schema-migrations.md
       - Database credentials: operations/database-credentials.md
       - Gateway memory: operations/gateway-memory.md

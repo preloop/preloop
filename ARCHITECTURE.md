@@ -101,6 +101,12 @@ Explicit concurrent-index blocks have bounded lock and statement budgets and
 restore the migration session's short blocking-DDL timeout afterwards. Operation
 durations and cancellation diagnostics identify contention without extending
 the deployment deadline. See [schema migrations](docs/operations/schema-migrations.md).
+
+The [upgrade acceptance harness](docs/operations/upgrade-acceptance.md) runs published
+release initializers and Helm hooks against a synthetic corpus in disposable local
+stacks. It stops old writers, preserves encryption settings, and verifies data,
+identity and credential continuity. Candidate rehearsals remain separate from
+acceptance of an actually published release candidate.
 Cost and cycle time per tracker issue are rolled up across flows into their own
 tables. Each issue row, summary and unassigned bucket also states `cost_coverage`
 (`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
