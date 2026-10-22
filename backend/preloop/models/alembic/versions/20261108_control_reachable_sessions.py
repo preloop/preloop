@@ -1,7 +1,7 @@
 """Native session ids an Agent Control sidecar can drive.
 
-Revision ID: 20261107_control_reachable
-Revises: 20261106_fleet_work_ref_idx
+Revision ID: 20261108_control_reachable
+Revises: 20261107_gov_capture_retry
 Create Date: 2026-10-21
 """
 
@@ -9,8 +9,8 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "20261107_control_reachable"
-down_revision = "20261106_fleet_work_ref_idx"
+revision = "20261108_control_reachable"
+down_revision = "20261107_gov_capture_retry"
 branch_labels = None
 depends_on = None
 _ALEMBIC_IDENTIFIERS = (revision, down_revision, branch_labels, depends_on)
