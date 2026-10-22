@@ -619,6 +619,10 @@ database:
     storage:
       size: 1Gi
       storageClass: ""
+      # CloudNativePG spec.storage.resizeInUseVolumes. true lets the operator
+      # grow an in-use PVC when storage.size increases; set false to manage
+      # volume resizes manually.
+      resizeInUseVolumes: true
     resources:
       limits:
         cpu: 1500m
