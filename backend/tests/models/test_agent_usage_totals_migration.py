@@ -11,6 +11,9 @@ import pytest
 from sqlalchemy import Engine, text
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
+from sqlalchemy.orm import Session
+
+from preloop.models.backfills import AGENT_USAGE_TOTALS_BATCH, run_pending_backfills
 
 MigrationFixture = tuple[str, UUID, ModuleType]
 
@@ -73,7 +76,7 @@ def test_backfill_resumes_without_double_counting_and_captures_live_writes(
     schema, account, migration = totals_schema
     with db_engine.begin() as connection:
         connection.execute(text(f"SET LOCAL search_path TO {schema}"))
-        assert connection.execute(text(migration.BACKFILL)).scalar_one() is False
+        assert connection.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one() is False
         assert (
             connection.execute(
                 text("SELECT sum(request_count) FROM agent_usage_total")
@@ -92,13 +95,13 @@ def test_backfill_resumes_without_double_counting_and_captures_live_writes(
         # DDL can be repeated after an interrupted migration without erasing
         # the ledger or the progress cursor.
         connection.execute(text(migration.DDL))
-        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+        while not connection.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one():
             pass
         # Replaying from the beginning must not add any request twice.
         connection.execute(
             text("UPDATE agent_usage_backfill SET last_usage_id=NULL, ready=false")
         )
-        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+        while not connection.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one():
             pass
         row = connection.execute(
             text(
@@ -123,7 +126,7 @@ def test_concurrent_writers_do_not_lose_counter_increments(
     schema, account, migration = totals_schema
     with db_engine.begin() as connection:
         connection.execute(text(f"SET LOCAL search_path TO {schema}"))
-        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+        while not connection.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one():
             pass
 
     def write(_: int) -> None:
@@ -165,6 +168,20 @@ def test_actual_upgrade_and_downgrade_preserve_usage(
         context = MigrationContext.configure(connection)
         with context.begin_transaction(), Operations.context(context):
             migration.upgrade()
+        # The schema hook only registers the backfill; history is not scanned.
+        assert connection.execute(
+            text("SELECT ready, last_usage_id FROM agent_usage_backfill")
+        ).one() == (False, None)
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM agent_usage_counted")
+            ).scalar_one()
+            == 0
+        )
+        connection.commit()
+        with Session(bind=connection) as db:
+            results = run_pending_backfills(db)
+        assert [(r.name, r.ready, r.batches) for r in results] == [("agents", True, 3)]
         assert (
             connection.execute(
                 text("SELECT ready FROM agent_usage_backfill")
@@ -197,7 +214,7 @@ def test_reclassifying_latest_request_restores_previous_model(
     schema, account, migration = totals_schema
     with db_engine.begin() as connection:
         connection.execute(text(f"SET LOCAL search_path TO {schema}"))
-        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+        while not connection.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one():
             pass
         usage_id = connection.execute(
             text("""
@@ -229,7 +246,7 @@ def test_bulk_writes_update_each_scope_once(
     schema, account, migration = totals_schema
     with db_engine.begin() as connection:
         connection.execute(text(f"SET LOCAL search_path TO {schema}"))
-        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+        while not connection.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one():
             pass
         connection.execute(
             text("""
@@ -297,7 +314,7 @@ def test_bulk_writes_keep_scopes_and_latest_metadata_separate(
     schema, account, migration = totals_schema
     with db_engine.begin() as connection:
         connection.execute(text(f"SET LOCAL search_path TO {schema}"))
-        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+        while not connection.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one():
             pass
         rows = connection.execute(
             text("""
@@ -340,3 +357,128 @@ def test_bulk_writes_keep_scopes_and_latest_metadata_separate(
             text("DELETE FROM api_usage WHERE model_alias IN ('a-new','b-new')")
         )
         assert_totals({"a": 2, "b": 6}, "old", 1)
+
+
+def test_upgrade_keeps_a_completed_backfill_complete(
+    db_engine: Engine, totals_schema: MigrationFixture
+) -> None:
+    """Re-applying the revision on a finished database must not rescan history."""
+    schema, _account, migration = totals_schema
+    with db_engine.connect() as connection:
+        connection.execute(text(f"SET search_path TO {schema}"))
+        connection.commit()
+        with Session(bind=connection) as db:
+            assert run_pending_backfills(db)[0].ready is True
+        before = connection.execute(
+            text("SELECT last_usage_id FROM agent_usage_backfill")
+        ).scalar_one()
+        connection.commit()
+        context = MigrationContext.configure(connection)
+        with context.begin_transaction(), Operations.context(context):
+            migration.upgrade()
+        assert connection.execute(
+            text("SELECT ready, last_usage_id FROM agent_usage_backfill")
+        ).one() == (True, before)
+        connection.commit()
+        with Session(bind=connection) as db:
+            assert run_pending_backfills(db) == []
+        connection.execute(text("RESET search_path"))
+        connection.commit()
+
+
+def _totals(connection: object, schema: str) -> list[tuple[object, ...]]:
+    """Every stored total, minus surrogate keys and bookkeeping timestamps."""
+    return connection.execute(  # type: ignore[attr-defined]
+        text(f"""
+        SELECT account_id, principal_type, principal_id, session_id,
+               request_count, success_count, error_count, prompt_tokens,
+               completion_tokens, total_tokens, cache_read_tokens,
+               cache_write_tokens, covered_prompt_tokens, estimated_cost,
+               sub_requests, sub_prompt, sub_completion, sub_total, sub_covered,
+               sub_equivalent, last_request_at, last_usage_id,
+               latest_model_alias, latest_provider_name
+        FROM {schema}.agent_usage_total
+        ORDER BY principal_id, session_id NULLS FIRST
+        """)
+    ).all()
+
+
+_SYNTHETIC_USAGE = """
+INSERT INTO api_usage(id, account_id, runtime_principal_type, runtime_principal_id,
+    runtime_session_id, action_type, status_code, prompt_tokens, completion_tokens,
+    total_tokens, cache_read_tokens, cache_creation_tokens, estimated_cost,
+    cost_source, meta_data, timestamp, model_alias, provider_name)
+SELECT md5('row' || g)::uuid, :account, 'codex', 'agent-' || (g % 3),
+    CASE WHEN g % 4 = 0 THEN NULL ELSE md5('session' || (g % 5))::uuid END,
+    CASE WHEN g % 11 = 0 THEN 'other' ELSE 'model_gateway' END,
+    CASE WHEN g % 7 = 0 THEN 500 ELSE 200 END,
+    g, g * 2, g * 3, g % 13, g % 17, g / 100.0,
+    CASE WHEN g % 2 = 0 THEN 'subscription' ELSE 'api' END,
+    jsonb_build_object('api_equivalent_cost', g / 50.0),
+    timestamp '2026-10-01' + g * interval '1 minute',
+    'model-' || (g % 4), 'provider-' || (g % 2)
+FROM generate_series(1, 1203) g
+"""
+
+
+def test_runner_produces_the_same_totals_as_live_capture(db_engine: Engine) -> None:
+    """History counted by the runner equals the same rows counted by triggers.
+
+    One schema receives the synthetic requests after the revision is
+    installed (the triggers count them as they arrive); the other receives
+    them before (the post-deploy runner counts them). Both must store
+    identical totals.
+    """
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "preloop/models/alembic/versions/20261109_agent_usage_totals.py"
+    )
+    spec = importlib.util.spec_from_file_location("usage_totals_parity", path)
+    assert spec is not None and spec.loader is not None
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    account = uuid4()
+    live, backfilled = ("usage_live_" + uuid4().hex, "usage_runner_" + uuid4().hex)
+    source = """
+        CREATE TABLE account(id uuid PRIMARY KEY);
+        CREATE TABLE api_usage (
+            id uuid PRIMARY KEY DEFAULT gen_random_uuid(), account_id uuid,
+            runtime_principal_type varchar(64), runtime_principal_id varchar(255),
+            runtime_session_id uuid, action_type text, status_code integer DEFAULT 200,
+            prompt_tokens integer, completion_tokens integer, total_tokens integer,
+            cache_read_tokens integer, cache_creation_tokens integer,
+            estimated_cost double precision, cost_source text, meta_data jsonb,
+            timestamp timestamp DEFAULT now(), model_alias varchar(255),
+            provider_name varchar(255)
+        )
+    """
+    try:
+        for schema, history_first in ((live, False), (backfilled, True)):
+            with db_engine.begin() as connection:
+                connection.execute(text(f"CREATE SCHEMA {schema}"))
+                connection.execute(text(f"SET LOCAL search_path TO {schema}"))
+                connection.execute(text(source))
+                connection.execute(
+                    text("INSERT INTO account VALUES(:id)"), {"id": account}
+                )
+                if history_first:
+                    connection.execute(text(_SYNTHETIC_USAGE), {"account": account})
+                connection.execute(text(migration.DDL))
+                if not history_first:
+                    connection.execute(text(_SYNTHETIC_USAGE), {"account": account})
+        with db_engine.connect() as connection:
+            connection.execute(text(f"SET search_path TO {backfilled}"))
+            connection.commit()
+            with Session(bind=connection) as db:
+                (result,) = run_pending_backfills(db)
+            assert result.ready and result.batches > 1 and not result.errors
+            connection.execute(text("RESET search_path"))
+            connection.commit()
+        with db_engine.connect() as connection:
+            expected = _totals(connection, live)
+            assert len(expected) > 3
+            assert _totals(connection, backfilled) == expected
+    finally:
+        with db_engine.begin() as connection:
+            for schema in (live, backfilled):
+                connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))

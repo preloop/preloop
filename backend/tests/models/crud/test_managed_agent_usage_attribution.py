@@ -102,6 +102,21 @@ def _usage(
     db.flush()
 
 
+@pytest.fixture(autouse=True)
+def completed_backfill(db_session: Session) -> None:
+    """Model a database whose post-deploy usage backfill has finished.
+
+    Migrations only register the backfill; the sync worker completes it after
+    the deploy. Tests that need the partial state set ``ready`` back to false.
+    """
+    state = db_session.get(models.AgentUsageBackfill, "agents")
+    if state is None:
+        state = models.AgentUsageBackfill(id="agents")
+        db_session.add(state)
+    state.ready = True
+    db_session.flush()
+
+
 @pytest.fixture
 def fleet(db_session: Session, test_user: Any) -> dict[str, Any]:
     """Two agents whose spend lands under every principal shape seen on prod."""

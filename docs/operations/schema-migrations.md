@@ -91,6 +91,48 @@ for interrupted builds. A current snapshot cannot identify a historical
 blocker once its transaction has ended. Do not increase deployment timeouts
 to hide a repeatedly canceled build.
 
+## Data backfills run after the deploy
+
+Helm waits on the `pre-upgrade` hook for its default five minutes. When that
+runs out the release fails, but the Job keeps running and replacement pods pick
+it up again, so a slow revision both breaks the deploy and keeps working
+against live traffic. Schema changes (tables, triggers, indexes) fit that
+budget. Rewriting history row by row does not: on a large `api_usage` table a
+batch loop over every gateway request takes far longer than five minutes.
+
+So revisions do not backfill data. A revision that needs one:
+
+1. creates the schema, including any trigger that keeps the derived data
+   current for new writes;
+2. registers the backfill: a row in `agent_usage_backfill` with a `name`, a
+   cursor (`last_usage_id`) and `ready = false`, inserted with
+   `ON CONFLICT DO NOTHING` so re-running the revision never resets progress;
+3. leaves readers on their previous query path until `ready` is true.
+
+The batch statement lives in `preloop.models.backfills`. The sync scheduler
+publishes `run_data_backfills` one minute after it starts and then every two
+minutes; a worker runs each pending backfill in committed batches for at most
+60 seconds per pass (inside the worker's three-minute acknowledgement window)
+and the next pass resumes from the cursor. A pass with nothing pending reads
+the small registry table and returns.
+
+Operators can also drive it by hand, for example to finish a backfill before
+scaling the sync role down:
+
+```bash
+kubectl exec deploy/preloop-api -- python -m preloop.models.backfills --time-budget 3600
+```
+
+To check progress:
+
+```sql
+SELECT name, ready, last_usage_id FROM agent_usage_backfill;
+```
+
+A test (`backend/tests/models/test_no_backfill_loops_in_revisions.py`) fails
+when a revision file contains a `while` loop, so a new batch loop in a revision
+is caught in review.
+
 ## Application sessions must not idle in a transaction
 
 A short lock timeout only helps if the lock eventually becomes free. A session

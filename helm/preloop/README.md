@@ -374,6 +374,7 @@ helm uninstall preloop
 | `database.urlFromSecret.name`        | Secret containing DATABASE_URL                     | `""`        |
 | `database.urlFromSecret.key`         | Key inside that Secret                             | `database-url` |
 | `database.cnpg.enableSuperuserAccess` | Keep the postgres superuser password enabled     | `true`      |
+| `database.cnpg.storage.resizeInUseVolumes` | Let CloudNativePG grow an in-use volume when `storage.size` increases | `true` |
 | `database.postgresql.auth.username` | PostgreSQL username                                 | `postgres`  |
 | `database.postgresql.auth.password` | PostgreSQL password                                 | `postgres`  |
 | `database.postgresql.auth.database` | PostgreSQL database                                 | `preloop` |
