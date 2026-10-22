@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 import { fetchWithAuth } from './api';
 
 /**
@@ -865,7 +866,7 @@ export async function getFleetMap(
 ): Promise<FleetMapGraph> {
   const params = fleetQuery(activeWithinMinutes, users);
   if (includeIdle) params.set('include_idle', 'true');
-  const url = `/api/v1/fleet/map${params.size ? `?${params}` : ''}`;
+  const url = `${REST_API_PREFIX}/fleet/map${params.size ? `?${params}` : ''}`;
   const response = await fetchWithAuth(url, { signal });
   if (!response.ok)
     throw new Error(
@@ -1011,7 +1012,7 @@ export async function getFleetUsage(
   users: readonly string[] = []
 ): Promise<FleetUsageResponse> {
   const params = fleetQuery(activeWithinMinutes, users);
-  const url = `/api/v1/fleet/usage${params.size ? `?${params}` : ''}`;
+  const url = `${REST_API_PREFIX}/fleet/usage${params.size ? `?${params}` : ''}`;
   const response = await fetchWithAuth(url, { signal });
   if (!response.ok) throw new Error('Usage totals could not be loaded.');
   return response.json();
@@ -1023,7 +1024,7 @@ export async function getFleetCodeActivity(
   users: readonly string[] = []
 ): Promise<FleetCodeActivity> {
   const params = fleetQuery(activeWithinMinutes, users);
-  const url = `/api/v1/fleet/code-activity${params.size ? `?${params}` : ''}`;
+  const url = `${REST_API_PREFIX}/fleet/code-activity${params.size ? `?${params}` : ''}`;
   const response = await fetchWithAuth(url, { signal });
   if (!response.ok) throw new Error('Code activity could not be loaded.');
   return response.json();

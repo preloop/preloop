@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	flowsPath              = "/api/v1/flows"
+	flowsPath              = api.RESTPrefix + "/flows"
 	defaultFlowWaitTimeout = 60 * time.Minute
 	flowPollInitial        = time.Second
 	flowPollMax            = 5 * time.Second
@@ -303,7 +303,7 @@ func newLogLines(source string, alreadyPrinted int, entries []flowLogEntry) []st
 func drainExecutionLogs(client *api.Client, executionID string, printed int, out io.Writer) (int, error) {
 	for page := 0; page < flowLogMaxPages; page++ {
 		var logs flowLogsResponse
-		path := fmt.Sprintf("/api/v1/flows/executions/%s/logs?skip=%d&limit=%d", executionID, printed, flowLogPageSize)
+		path := fmt.Sprintf(api.RESTPrefix+"/flows/executions/%s/logs?skip=%d&limit=%d", executionID, printed, flowLogPageSize)
 		if err := client.Get(path, &logs); err != nil {
 			return printed, fmt.Errorf("failed to read execution logs: %w", err)
 		}
@@ -342,7 +342,7 @@ func waitForExecutionUntil(
 		}
 
 		var exec flowExecutionStatus
-		if err := client.Get("/api/v1/flows/executions/"+executionID, &exec); err != nil {
+		if err := client.Get(api.RESTPrefix+"/flows/executions/"+executionID, &exec); err != nil {
 			return fmt.Errorf("failed to read execution: %w", err)
 		}
 
@@ -428,7 +428,7 @@ func stopInterruptedExecution(client *api.Client, executionID string, sig os.Sig
 			err:  fmt.Errorf("interrupted by %s; execution %s final status %s", sig, executionID, final),
 		}
 	}
-	executionPath := "/api/v1/flows/executions/" + executionID
+	executionPath := api.RESTPrefix + "/flows/executions/" + executionID
 
 	client.SetTimeout(min(flowStopCheckTimeout, budget(flowStopStatusReserve)))
 	var current flowExecutionStatus

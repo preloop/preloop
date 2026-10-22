@@ -1812,7 +1812,7 @@ func waitForManagedValidationUsage(
 			values.Set("model_alias", modelAlias)
 		}
 		var response gatewayUsageSearchResponse
-		if err := client.Get("/api/v1/account/gateway-usage/search?"+values.Encode(), &response); err == nil {
+		if err := client.Get(api.RESTPrefix+"/account/gateway-usage/search?"+values.Encode(), &response); err == nil {
 			for _, item := range response.Items {
 				if item.APIUsageID != "" {
 					return &item, nil
@@ -2702,7 +2702,7 @@ func serverHasReusableGatewayCredential(
 		return false
 	}
 	var existing []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &existing); err != nil {
 		return false
 	}
 	target := findReusableManagedGatewayAIModel(existing, upstream)
@@ -2795,7 +2795,7 @@ func repairCodexOAuthSecretInPlace(
 		"credential_payload": upstream.CredentialPayload,
 	}
 	var updated aiModelResponse
-	if err := client.Put("/api/v1/ai-models/"+owner.ID, update, &updated); err != nil {
+	if err := client.Put(api.RESTPrefix+"/ai-models/"+owner.ID, update, &updated); err != nil {
 		return fmt.Errorf(
 			"failed to refresh OAuth credential on AI model %q: %w",
 			owner.Name,
@@ -6075,7 +6075,7 @@ func syncSingleOpenClawAIModel(
 	}
 
 	var existing []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &existing); err != nil {
 		return nil, nil, fmt.Errorf("failed to list AI models: %w", err)
 	}
 
@@ -6118,7 +6118,7 @@ func syncSingleOpenClawAIModel(
 		}
 		if len(update) > 0 {
 			var updated aiModelResponse
-			if err := client.Put("/api/v1/ai-models/"+target.ID, update, &updated); err != nil {
+			if err := client.Put(api.RESTPrefix+"/ai-models/"+target.ID, update, &updated); err != nil {
 				return nil, nil, fmt.Errorf("failed to update AI model %q: %w", target.Name, err)
 			}
 			target = &updated
@@ -6160,7 +6160,7 @@ func syncSingleOpenClawAIModel(
 	}
 
 	var created aiModelResponse
-	if err := client.Post("/api/v1/ai-models", create, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/ai-models", create, &created); err != nil {
 		return nil, nil, fmt.Errorf("failed to create AI model for %s: %w", managedModelAlias, err)
 	}
 	notes = append(
@@ -6446,7 +6446,7 @@ func syncManagedGatewayAIModel(
 	}
 
 	var existing []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &existing); err != nil {
 		return nil, nil, fmt.Errorf("failed to list AI models: %w", err)
 	}
 
@@ -6552,7 +6552,7 @@ func syncManagedGatewayAIModel(
 		}
 		if len(update) > 0 {
 			var updated aiModelResponse
-			if err := client.Put("/api/v1/ai-models/"+target.ID, update, &updated); err != nil {
+			if err := client.Put(api.RESTPrefix+"/ai-models/"+target.ID, update, &updated); err != nil {
 				return nil, nil, fmt.Errorf(
 					"failed to update AI model %q: %w",
 					target.Name,
@@ -6641,7 +6641,7 @@ func syncManagedGatewayAIModel(
 	}
 
 	var created aiModelResponse
-	if err := client.Post("/api/v1/ai-models", create, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/ai-models", create, &created); err != nil {
 		return nil, nil, fmt.Errorf(
 			"failed to create AI model for %s: %w",
 			upstream.ManagedModelAlias,
@@ -6675,7 +6675,7 @@ func syncManagedAgentModelBindings(
 	payload := managedAgentModelBindingSyncRequest{Bindings: bindings}
 	var response []managedAgentModelBindingSummary
 	if err := client.Put(
-		"/api/v1/agents/"+managedAgentID+"/model-bindings",
+		api.RESTPrefix+"/agents/"+managedAgentID+"/model-bindings",
 		payload,
 		&response,
 	); err != nil {

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { renderTrackerStatus } from '../utils/tracker-status';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -147,7 +148,7 @@ export class TrackerList extends LitElement {
     this.isLoading = true;
     this.error = null;
     try {
-      const response = await fetchWithAuth('/api/v1/trackers');
+      const response = await fetchWithAuth(REST_API_PREFIX + '/trackers');
       if (!response.ok) {
         throw new Error('Failed to fetch trackers');
       }
@@ -324,9 +325,12 @@ export class TrackerList extends LitElement {
 
   private async _deleteTracker(id: string) {
     try {
-      const response = await fetchWithAuth(`/api/v1/trackers/${id}`, {
-        method: 'DELETE',
-      });
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/trackers/${id}`,
+        {
+          method: 'DELETE',
+        }
+      );
       if (!response.ok) {
         throw new Error('Failed to delete tracker');
       }
