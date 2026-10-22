@@ -116,9 +116,9 @@ export class CopilotActivityPanel extends LitElement {
     if (!this.metrics) return nothing;
     return html`<h4>Daily organization usage</h4>
       <p class="muted">
-        Active users and feature engagement are reported by GitHub. Unknown
-        fields are not supplied by the report. Feature engagement can overlap;
-        it is never summed into a user total or premium requests.
+        GitHub reports daily active users and activity counts. Overall daily
+        engaged users remain unknown. Rolling 28-day feature engagement is shown
+        separately below and never converted to premium requests.
       </p>
       ${
         this.metrics.days.length
@@ -166,12 +166,12 @@ export class CopilotActivityPanel extends LitElement {
                       <div class="scroll">
                         <table>
                           <caption>
-                            Feature usage
+                            Daily feature usage
                           </caption>
                           <thead>
                             <tr>
                               <th>Feature</th>
-                              <th>Engaged users</th>
+
                               <th>Interactions</th>
                               <th>Code generations</th>
                               <th>Code acceptances</th>
@@ -182,7 +182,7 @@ export class CopilotActivityPanel extends LitElement {
                               (row) =>
                                 html`<tr>
                                   <td>${row.feature}</td>
-                                  <td>${this.count(row.engaged_users)}</td>
+
                                   <td>
                                     ${this.count(row.user_initiated_interaction_count)}
                                   </td>
@@ -197,6 +197,49 @@ export class CopilotActivityPanel extends LitElement {
                           </tbody>
                         </table>
                       </div>
+                      ${
+                        day.feature_usage.some(
+                          (row) => row.engaged_users !== undefined
+                        ) || day.engagement_active_users != null
+                          ? html`
+                              <div class="scroll">
+                                <table data-testid="copilot-rolling-engagement">
+                                  <caption>
+                                    Rolling 28-day engagement · ending
+                                    ${day.day}
+                                  </caption>
+                                  <thead>
+                                    <tr>
+                                      <th>Feature</th>
+                                      <th>Engaged users (28 days)</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    ${day.feature_usage
+                                      .filter(
+                                        (row) => row.engaged_users !== undefined
+                                      )
+                                      .map(
+                                        (row) =>
+                                          html`<tr>
+                                            <td>${row.feature}</td>
+                                            <td>
+                                              ${this.count(row.engaged_users)}
+                                            </td>
+                                          </tr>`
+                                      )}
+                                  </tbody>
+                                </table>
+                              </div>
+                              <p class="muted">
+                                Distinct active users in this 28-day window:
+                                ${this.count(day.engagement_active_users)}.
+                                Feature counts overlap and are not added
+                                together.
+                              </p>
+                            `
+                          : nothing
+                      }
                       <div class="scroll">
                         <table>
                           <caption>

@@ -284,8 +284,9 @@ using the existing connection's token and daily import schedule. It needs
 metrics policy enabled. No write permission is requested or used. See the
 [GitHub REST report documentation](https://docs.github.com/en/rest/copilot/copilot-usage-metrics#get-copilot-usage-metrics-for-an-organization-for-a-specific-day).
 
-Daily active users, per-feature engagement, editor interactions and code
-activity are shown as **vendor-reported**. Feature engagement overlaps and is
+Daily active users, editor interactions and code activity are shown as
+**vendor-reported**. Feature engagement has its own table labelled as a
+rolling 28-day window ending on the report date. Feature engagement overlaps and is
 never added into an engaged-user total. Missing premium fields, unavailable
 reports, and unsupported totals show **Unknown**; interactions and AI credits
 are never used as a proxy for premium requests. Reported zero remains zero.

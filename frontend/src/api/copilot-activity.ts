@@ -40,6 +40,8 @@ export interface CopilotOrganizationMetrics {
     reason: string | null;
     active_users: number | null;
     engaged_users: number | null;
+    engagement_window_days?: 28;
+    engagement_active_users?: number | null;
     feature_usage: (CopilotMetricCounts & {
       feature: string;
       engaged_users?: number | null;
@@ -106,6 +108,10 @@ function validMetrics(value: RecordValue): boolean {
       nullableNumber(day.active_users) &&
       nullableNumber(day.engaged_users) &&
       counts(day) &&
+      (day.engagement_window_days === undefined ||
+        day.engagement_window_days === 28) &&
+      (day.engagement_active_users === undefined ||
+        nullableNumber(day.engagement_active_users)) &&
       items(
         day.feature_usage,
         (row) =>

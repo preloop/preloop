@@ -54,6 +54,8 @@ const metrics = {
       status: 'available',
       reason: null,
       active_users: 4,
+      engagement_window_days: 28,
+      engagement_active_users: 8,
       engaged_users: null,
       user_initiated_interaction_count: 12,
       code_generation_activity_count: 8,
@@ -116,7 +118,19 @@ describe('Copilot vendor activity', () => {
     expect(text).to.include('No governed agent');
     expect(text).to.include('Identity link missing');
     expect(text).to.include('Unknown');
-    expect(text).to.include('Feature usage');
+    expect(text).to.include('Daily feature usage');
+    expect(text).to.include('Rolling 28-day engagement');
+    expect(text).to.include('Engaged users (28 days)');
+    const dailyFeatureTable = Array.from(
+      el.shadowRoot!.querySelectorAll('table')
+    ).find((table) =>
+      table
+        .querySelector('caption')
+        ?.textContent?.includes('Daily feature usage')
+    )!;
+    expect(dailyFeatureTable.textContent).to.not.include('Engaged users');
+    expect(text).to.match(/Distinct active users in this 28-day window:\s*8/);
+
     expect(text).to.include('vscode');
     expect(String(fetchStub.lastCall.args[0])).to.include(
       'start_date=2026-10-01'
