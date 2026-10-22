@@ -1,17 +1,9 @@
-"""Optional guard against pointing a webhook at internal address space.
+"""Optional network policy for registration and webhook connections.
 
-A webhook URL is operator-supplied and the delivery worker runs inside the
-cluster, so an unchecked URL is a server-side request forgery primitive: an
-account admin could aim an endpoint at a metadata service or a neighbouring
-pod and read the first bytes of the response back through the delivery log.
-
-Off by default (``webhook_block_private_targets``), because a self-hosted
-deployment posting to a collector on the same private network is the normal
-case, not the attack. Turn it on for multi-tenant hosting.
-
-The check runs when the endpoint is registered, not on every attempt: it
-resolves DNS once, so a name that later re-resolves to a private address is
-not caught here. It raises the bar; it is not a sandbox.
+Private collectors remain supported when ``webhook_block_private_targets`` is
+false. When enabled, registration checks give immediate feedback and the delivery
+transport resolves and pins checked addresses for each attempt. Response bodies
+are not retained in delivery records.
 """
 
 from __future__ import annotations
@@ -29,7 +21,9 @@ def _blocked_reason_for_address(raw: str) -> Optional[str]:
     try:
         address = ipaddress.ip_address(raw)
     except ValueError:
-        return None
+        return "invalid address"
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
     if address.is_loopback:
         return "loopback"
     if address.is_link_local:
@@ -38,7 +32,35 @@ def _blocked_reason_for_address(raw: str) -> Optional[str]:
         return "private"
     if address.is_reserved or address.is_multicast or address.is_unspecified:
         return "reserved"
+    if not address.is_global:
+        return "non-global"
     return None
+
+
+def checked_target_addresses(host: str) -> list[str]:
+    """Resolve once and reject the entire answer if any address is disallowed."""
+    if not host:
+        raise ValueError("no host")
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            addresses = list(
+                dict.fromkeys(
+                    str(info[4][0]) for info in socket.getaddrinfo(host, None)
+                )
+            )
+        except socket.gaierror as exc:
+            raise ValueError("unresolvable") from exc
+    else:
+        addresses = [str(literal)]
+    if not addresses:
+        raise ValueError("unresolvable")
+    for address in addresses:
+        reason = _blocked_reason_for_address(address)
+        if reason:
+            raise ValueError(reason)
+    return addresses
 
 
 def blocked_target_reason(url: str) -> Optional[str]:
@@ -53,20 +75,8 @@ def blocked_target_reason(url: str) -> Optional[str]:
     """
     if not settings.webhook_block_private_targets:
         return None
-    host = (urlparse(url).hostname or "").strip()
-    if not host:
-        return "no host"
-    direct = _blocked_reason_for_address(host)
-    if direct:
-        return direct
     try:
-        resolved = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        # A name that does not resolve now cannot be checked, and delivering
-        # to it would fail anyway. Refuse rather than register blind.
-        return "unresolvable"
-    for info in resolved:
-        reason = _blocked_reason_for_address(str(info[4][0]))
-        if reason:
-            return reason
+        checked_target_addresses((urlparse(url).hostname or "").strip())
+    except ValueError as exc:
+        return str(exc)
     return None

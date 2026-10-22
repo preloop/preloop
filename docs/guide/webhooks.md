@@ -337,6 +337,10 @@ notification.
 
 `WEBHOOK_BLOCK_PRIVATE_TARGETS` is off by default because a self-hosted
 deployment posting to a collector on the same private network is the normal
-case. Turn it on for multi-tenant hosting. The check resolves the hostname
-when the endpoint is registered, not on every attempt, so a name that later
-re-resolves into private space is not caught by it.
+case. Turn it on for multi-tenant hosting. Registration and every delivery
+attempt check all resolved addresses; any non-public answer rejects the target.
+Delivery connects to a checked address while preserving the original HTTP Host
+and TLS hostname verification. Retries resolve and check again, and redirects
+are not followed. With this policy enabled, the delivery worker connects
+directly, without environment proxies, so a proxy cannot independently resolve
+an unchecked destination.
