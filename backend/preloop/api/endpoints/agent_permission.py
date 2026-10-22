@@ -1043,11 +1043,6 @@ class AgentSessionEventRequest(BaseModel):
     exit_code: Optional[int] = None
     is_error: Optional[bool] = None
     duration_ms: Optional[int] = Field(None, ge=0)
-    output_preview: Optional[str] = Field(
-        None,
-        max_length=4000,
-        description="Start of the tool output; scrubbed and cut to 400 chars",
-    )
     notification_type: Optional[str] = Field(None, max_length=64)
     interrupted: Optional[bool] = Field(
         None, description="Stop only: the user interrupted the turn"
@@ -1110,7 +1105,6 @@ def _record_session_event(
                     "exit_code",
                     "is_error",
                     "duration_ms",
-                    "output_preview",
                     "notification_type",
                     "interrupted",
                 },

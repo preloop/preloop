@@ -335,11 +335,23 @@ export function deriveAgentStatus(input: AgentStatusInput): AgentStatus {
     input.turnEndedAt === null ||
     input.turnEndedAt === undefined ||
     (startedAt !== null && input.turnEndedAt < startedAt);
+  // A server `working` state alone, with nothing observed for
+  // STALE_WORKING_MS, is a harness that died mid-turn: not working (the
+  // same rule as agentStateChip, so the line and the lists agree).
+  const lastSeen = Math.max(
+    input.lastEventAt ?? -Infinity,
+    startedAt ?? -Infinity
+  );
+  const serverWorking =
+    input.turnState === 'working' &&
+    turnOpen &&
+    startedAt !== null &&
+    now - lastSeen <= STALE_WORKING_MS;
   const busy =
     Boolean(input.hookRunning) ||
     Boolean(input.runningTool) ||
     Boolean(input.modelBusy) ||
-    (input.turnState === 'working' && turnOpen && startedAt !== null);
+    serverWorking;
 
   if (busy) {
     if (input.catchingUp) {

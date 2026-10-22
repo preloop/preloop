@@ -3,11 +3,17 @@
 One agent state per session, so lists and headers stop guessing "working"
 from recency. The state moves on the rows that already describe a turn:
 
-* ``user_prompt`` and ``tool_end`` mean the agent is ``working``;
-* a pending approval for the session means ``waiting_for_approval``, and that
-  wins over working until the last pending approval is resolved;
+* ``user_prompt`` opens a turn: ``working``. It is the only row that moves a
+  finished turn (``your_turn``) back to working;
+* ``tool_end`` keeps an open turn ``working`` and changes nothing else, so a
+  late PostToolUse after Stop does not reopen the turn;
+* a pending approval for the session means ``waiting_for_approval``; it
+  stays until the last pending approval is resolved, even across a turn
+  end, and then the state returns to ``working`` or ``your_turn`` by the
+  turn's own bounds;
 * ``turn_end`` and ``waiting_for_input`` mean ``your_turn``;
-* ``session_end`` means ``ended``, which nothing re-opens.
+* ``session_end`` means ``ended`` while ``ended_at`` is set. Reopening a
+  session clears the turn (:func:`reset_turn`).
 """
 
 from __future__ import annotations
@@ -56,13 +62,16 @@ def next_turn_state(current: Optional[str], activity_type: str) -> Optional[str]
         activity_type: The new row's kind.
 
     Returns:
-        The new state. ``ended`` is final; a tool end does not clear a pending
-        approval, because the approval belongs to a different call.
+        The new state. Only a prompt reopens a finished turn; a pending
+        approval survives tool ends and turn ends. ``ended`` is enforced by
+        :func:`apply_activity` from ``ended_at``.
     """
     implied = ACTIVITY_TURN_STATES.get(activity_type)
-    if implied is None or current == TURN_STATE_ENDED:
+    if implied is None:
         return current
-    if implied == TURN_STATE_WORKING and current == TURN_STATE_WAITING_FOR_APPROVAL:
+    if activity_type == "tool_end":
+        return TURN_STATE_WORKING if current in (None, TURN_STATE_WORKING) else current
+    if implied == TURN_STATE_YOUR_TURN and current == TURN_STATE_WAITING_FOR_APPROVAL:
         return current
     return implied
 
@@ -107,6 +116,27 @@ def _naive_utc(value: Optional[datetime]) -> datetime:
     return value
 
 
+def reset_turn(session: RuntimeSession) -> None:
+    """Forget the turn of a session that is being reopened.
+
+    Called wherever ``ended_at`` is cleared, so a resumed session does not
+    read Ended or show the old turn's footer until its next prompt.
+    """
+    session.turn_state = None
+    session.turn_started_at = None
+    session.turn_ended_at = None
+    session.turn_interrupted = None
+
+
+def state_after_approvals(session: RuntimeSession) -> str:
+    """Where a session goes once its last pending approval is resolved."""
+    ended = session.turn_ended_at
+    started = session.turn_started_at
+    if ended is not None and (started is None or ended >= started):
+        return TURN_STATE_YOUR_TURN
+    return TURN_STATE_WORKING
+
+
 def _has_other_pending(db: Session, runtime_session_id: Any, exclude: Any) -> bool:
     query = db.query(func.count(ApprovalRequest.id)).filter(
         ApprovalRequest.runtime_session_id == runtime_session_id,
@@ -120,7 +150,7 @@ def _has_other_pending(db: Session, runtime_session_id: Any, exclude: Any) -> bo
 def release_approval_wait(
     db: Session, runtime_session_ids: Iterable[Any], *, exclude: Any = None
 ) -> None:
-    """Return sessions to ``working`` once no approval is pending for them.
+    """Release sessions once no approval is pending for them.
 
     Called for approvals resolved in bulk (expiry, cancellation), which the
     flush listener cannot see because they are ``UPDATE`` statements.
@@ -133,7 +163,7 @@ def release_approval_wait(
             ):
                 continue
             if not _has_other_pending(db, session_id, exclude):
-                session.turn_state = TURN_STATE_WORKING
+                session.turn_state = state_after_approvals(session)
 
 
 def _status_changed(obj: Any) -> bool:
@@ -162,4 +192,4 @@ def _approval_turn_state(session: Session, flush_context: Any, instances: Any) -
                     runtime_session.turn_state == TURN_STATE_WAITING_FOR_APPROVAL
                     and not _has_other_pending(session, obj.runtime_session_id, obj.id)
                 ):
-                    runtime_session.turn_state = TURN_STATE_WORKING
+                    runtime_session.turn_state = state_after_approvals(runtime_session)

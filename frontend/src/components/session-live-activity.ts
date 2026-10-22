@@ -367,11 +367,16 @@ export class SessionLiveActivity extends LitElement {
   protected willUpdate(): void {
     const now = this.effectiveNow;
     const status = this.state?.status ?? null;
-    if (status && this.state && status !== this.lastAnnouncedStatus) {
-      this.lastAnnouncedStatus = status;
+    // Keyed on the derived phase and turn end, not the host's status: a
+    // realtime turn end changes the footer while the host still says idle.
+    const line = status && this.state ? this.lineStatus(this.state) : null;
+    const signature = line
+      ? `${status}|${line.phase}|${line.marker ?? ''}|${line.footer ?? ''}`
+      : null;
+    if (line && this.state && signature !== this.lastAnnouncedStatus) {
+      this.lastAnnouncedStatus = signature;
       // Announce the words, not the ticking counter: "Working", "Waiting
       // for approval", the footer of a finished turn.
-      const line = this.lineStatus(this.state);
       const words = line.line
         ? line.line.split(' (')[0].replace(/…$/, '')
         : line.marker || line.footer || this.state.label;

@@ -491,6 +491,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             return db_obj
         now = datetime.now(UTC)
         db_obj.ended_at = None
+        from .runtime_session_turn_state import reset_turn
+
+        reset_turn(db_obj)
         # started_at is NOT NULL, so it is left alone: reopening continues the
         # original session rather than pretending it began now.
         db_obj.last_activity_at = now
@@ -662,7 +665,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if db_obj.alias:
                 db_obj.alias_namespace = f"parent:{parent_session_id}"
         if reopen_if_ended and db_obj.ended_at is not None and ended_at is None:
+            from .runtime_session_turn_state import reset_turn
+
             db_obj.ended_at = None
+            reset_turn(db_obj)
             db_obj.started_at = started_at or last_activity_at
         elif started_at is not None and db_obj.started_at is None:
             db_obj.started_at = started_at

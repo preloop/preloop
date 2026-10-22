@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -62,11 +63,15 @@ func TestActivityHookBuildsToolEndAndIdleNotification(t *testing.T) {
 	if !ok || req.ToolName != "Bash" || req.ToolUseID != "toolu_1" {
 		t.Fatalf("unexpected %+v %v", req, ok)
 	}
-	if req.ExitCode == nil || *req.ExitCode != 2 || len(req.OutputPreview) != activityOutputPreviewRunes {
-		t.Fatalf("exit/preview wrong: %+v", req)
+	if req.ExitCode == nil || *req.ExitCode != 2 {
+		t.Fatalf("exit code wrong: %+v", req)
+	}
+	body, _ := json.Marshal(req)
+	if strings.Contains(string(body), "aaaa") {
+		t.Fatalf("tool output must not be sent: %s", body)
 	}
 	fail, ok := buildSessionEventRequest("claude_code", []byte(`{"hook_event_name":"PostToolUseFailure","session_id":"ext-1","tool_name":"Read","error":"no such file"}`))
-	if !ok || fail.IsError == nil || !*fail.IsError || fail.OutputPreview != "no such file" {
+	if !ok || fail.IsError == nil || !*fail.IsError {
 		t.Fatalf("failure wrong: %+v", fail)
 	}
 	idle, ok := buildSessionEventRequest("claude_code", []byte(`{"hook_event_name":"Notification","session_id":"ext-1","message":"Claude is waiting for your input"}`))
@@ -101,5 +106,26 @@ func TestActivityHookPostsAndFailsOpen(t *testing.T) {
 	}
 	if err := postSessionEvent(permissionHookCredential{BaseURL: "http://127.0.0.1:1", Token: "agt_x"}, req); err == nil {
 		t.Fatal("expected an error from an unreachable server")
+	}
+}
+
+func TestTranscriptShowsInterruptReadsOnlyTheTail(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.jsonl")
+	write := func(lines ...string) {
+		if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(`{"type":"user","message":"[Request interrupted by user]"}`, `{"type":"assistant"}`, `{"type":"assistant"}`, `{"type":"assistant"}`, `{"type":"assistant"}`)
+	if transcriptShowsInterrupt(path) {
+		t.Fatal("an old interrupt must not mark this turn")
+	}
+	write(`{"type":"assistant"}`, `{"type":"user","message":"[Request interrupted by user]"}`)
+	if !transcriptShowsInterrupt(path) {
+		t.Fatal("expected the interrupt at the tail")
+	}
+	if transcriptShowsInterrupt(filepath.Join(dir, "missing.jsonl")) {
+		t.Fatal("a missing transcript is not an interrupt")
 	}
 }

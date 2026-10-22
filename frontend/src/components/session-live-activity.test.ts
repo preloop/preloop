@@ -85,6 +85,31 @@ describe('session-live-activity', () => {
     expect(footer?.textContent).to.match(/^Worked for 3m 24s • /);
   });
 
+  it('announces a turn end that arrives while the host still says idle', async () => {
+    const idle = state({ status: 'idle', label: 'Idle', since: null });
+    const el = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .state=${idle}
+        .now=${SINCE + 600_000}
+        .turn=${{
+          sourceType: 'codex',
+          turnState: 'working',
+          turnStartedAt: '2026-10-02T09:00:00',
+        }}
+      ></session-live-activity>`
+    );
+    el.turn = {
+      sourceType: 'codex',
+      turnState: 'your_turn',
+      turnStartedAt: '2026-10-02T09:00:00',
+      turnEndedAt: '2026-10-02T09:03:24',
+    };
+    await el.updateComplete;
+    await el.updateComplete;
+    const live = el.shadowRoot!.querySelector('.live-region')!;
+    expect(live.textContent).to.contain('Worked for 3m 24s');
+  });
+
   it('keeps the elapsed readout anchored to when the status began', async () => {
     const first = await renderLine(state(), SINCE + 12_000);
     expect(labelText(first)).to.equal('Working (12s)');

@@ -104,7 +104,6 @@ def _approval(
 def test_post_tool_use_stores_tool_end_and_broadcasts(
     db_session: Session, runtime: models.RuntimeSession, emitted: list
 ) -> None:
-    secret = "Authorization: Bearer sk-live-abcdefghijklmnopqrstuvwxyz0123456789"
     first = _event(
         db_session,
         runtime,
@@ -113,7 +112,7 @@ def test_post_tool_use_stores_tool_end_and_broadcasts(
         tool_name="Bash",
         exit_code=0,
         duration_ms=1250,
-        output_preview=secret + "\n" + "x" * 1000,
+        output_preview="must never be stored",
     )
     second = _event(
         db_session,
@@ -129,9 +128,9 @@ def test_post_tool_use_stores_tool_end_and_broadcasts(
     assert first.metadata_["tool_use_id"] == "toolu_1"
     assert first.metadata_["exit_code"] == 0
     assert first.metadata_["duration_ms"] == 1250
-    preview = first.metadata_["output_preview"]
-    assert len(preview) <= session_hook_events.TOOL_OUTPUT_PREVIEW_CHARS
-    assert "sk-live-abcdefghijklmnopqrstuvwxyz0123456789" not in preview
+    # No tool output reaches the content-free activity table.
+    assert "output_preview" not in first.metadata_
+    assert "must never be stored" not in str(first.metadata_)
     assert second.metadata_["is_error"] is True
 
     assert [e["type"] for e in emitted] == [
@@ -144,7 +143,7 @@ def test_post_tool_use_stores_tool_end_and_broadcasts(
     assert event["runtime_session_id"] == str(runtime.id)
     assert event["payload"]["tool_name"] == "Bash"
     assert event["payload"]["turn_state"] == "working"
-    assert "output_preview" not in event["payload"]
+    assert "must never be stored" not in str(event)
 
 
 def test_turn_state_transitions(
@@ -225,3 +224,66 @@ def test_notification_idle_prompt_sets_waiting_for_input(
     assert runtime.turn_state == "your_turn"
     assert emitted[-1]["type"] == "runtime_session_waiting_for_input"
     assert emitted[-1]["runtime_session_id"] == str(runtime.id)
+
+
+def test_reopened_session_leaves_ended_on_its_next_prompt(
+    db_session: Session, runtime: models.RuntimeSession, emitted: list
+) -> None:
+    from preloop.models.crud import crud_runtime_session
+
+    _prompt(db_session, runtime)
+    _event(db_session, runtime, "Stop")
+    _event(db_session, runtime, "SessionEnd")
+    db_session.refresh(runtime)
+    assert runtime.turn_state == "ended"
+
+    crud_runtime_session.upsert_by_source(
+        db_session,
+        account_id=runtime.account_id,
+        session_source_type=runtime.session_source_type,
+        session_source_id=runtime.session_source_id,
+        last_activity_at=datetime.now(UTC),
+        reopen_if_ended=True,
+    )
+    db_session.refresh(runtime)
+    assert runtime.ended_at is None
+    # The old turn is forgotten: no Ended chip, no stale footer.
+    assert runtime.turn_state is None
+    assert runtime.turn_ended_at is None
+
+    # The dedupe window keys on kind; a new prompt after it opens a turn.
+    session_hook_events.crud_runtime_session_activity.log_hook_turn_event(
+        db_session,
+        account_id=runtime.account_id,
+        runtime_session_id=runtime.id,
+        activity_type="user_prompt",
+        dedupe_seconds=0,
+    )
+    db_session.refresh(runtime)
+    assert runtime.turn_state == "working"
+
+
+def test_late_tool_end_does_not_reopen_a_finished_turn(
+    db_session: Session, runtime: models.RuntimeSession, emitted: list
+) -> None:
+    _prompt(db_session, runtime)
+    _event(db_session, runtime, "Stop")
+    _event(db_session, runtime, "PostToolUse", tool_use_id="late", tool_name="Bash")
+    db_session.refresh(runtime)
+    assert runtime.turn_state == "your_turn"
+
+
+def test_turn_end_keeps_a_pending_approval_until_it_resolves(
+    db_session: Session, runtime: models.RuntimeSession, emitted: list
+) -> None:
+    _prompt(db_session, runtime)
+    approval = _approval(db_session, runtime)
+    _event(db_session, runtime, "Stop")
+    db_session.refresh(runtime)
+    assert runtime.turn_state == "waiting_for_approval"
+
+    approval.status = "declined"
+    db_session.flush()
+    db_session.refresh(runtime)
+    # The turn already ended, so the session goes to the operator.
+    assert runtime.turn_state == "your_turn"

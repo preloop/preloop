@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -30,10 +30,6 @@ const activityHookTimeoutSeconds = 5
 
 // activityHookHTTPTimeout keeps the request inside the host timeout.
 const activityHookHTTPTimeout = 3 * time.Second
-
-// activityOutputPreviewRunes bounds the tool output preview the hook sends.
-// The server scrubs secrets and cuts it again.
-const activityOutputPreviewRunes = 400
 
 // activityHookEvents are the Claude Code events wired to the activity hook,
 // with their matcher.
@@ -75,7 +71,6 @@ type activityHookInput struct {
 	ToolName         string          `json:"tool_name"`
 	ToolUseID        string          `json:"tool_use_id"`
 	ToolResponse     json.RawMessage `json:"tool_response"`
-	Error            string          `json:"error"`
 	DurationMS       *int64          `json:"duration_ms"`
 	NotificationType string          `json:"notification_type"`
 	Message          string          `json:"message"`
@@ -90,8 +85,8 @@ type sessionEventRequest struct {
 	ExitCode         *int   `json:"exit_code,omitempty"`
 	IsError          *bool  `json:"is_error,omitempty"`
 	DurationMS       *int64 `json:"duration_ms,omitempty"`
-	OutputPreview    string `json:"output_preview,omitempty"`
 	NotificationType string `json:"notification_type,omitempty"`
+	Interrupted      *bool  `json:"interrupted,omitempty"`
 }
 
 // buildSessionEventRequest maps one hook payload to the session-event body.
@@ -111,17 +106,15 @@ func buildSessionEventRequest(source string, raw []byte) (sessionEventRequest, b
 		req.ToolUseID = truncateUTF8(strings.TrimSpace(in.ToolUseID), 200)
 		req.ToolName = truncateUTF8(strings.TrimSpace(in.ToolName), 100)
 		req.DurationMS = in.DurationMS
-		preview, exitCode, isError := toolResponseSummary(in.ToolResponse)
+		// No output text leaves the machine: only the exit code and whether
+		// the call failed.
+		exitCode, isError := toolResponseOutcome(in.ToolResponse)
 		if in.HookEventName == "PostToolUseFailure" {
 			failed := true
 			isError = &failed
-			if preview == "" {
-				preview = in.Error
-			}
 		}
 		req.ExitCode = exitCode
 		req.IsError = isError
-		req.OutputPreview = clipRunes(preview, activityOutputPreviewRunes)
 	case "Notification":
 		kind := strings.TrimSpace(in.NotificationType)
 		if kind == "" && strings.Contains(strings.ToLower(in.Message), "waiting for your input") {
@@ -137,19 +130,15 @@ func buildSessionEventRequest(source string, raw []byte) (sessionEventRequest, b
 	return req, true
 }
 
-// toolResponseSummary reads the start of a tool's output and, for shells, its
-// exit code. Unknown shapes yield no preview rather than raw JSON.
-func toolResponseSummary(raw json.RawMessage) (string, *int, *bool) {
+// toolResponseOutcome reads a shell's exit code and an explicit error flag
+// from the tool response. Unknown shapes yield nothing.
+func toolResponseOutcome(raw json.RawMessage) (*int, *bool) {
 	if len(raw) == 0 {
-		return "", nil, nil
-	}
-	var text string
-	if json.Unmarshal(raw, &text) == nil {
-		return text, nil, nil
+		return nil, nil
 	}
 	var obj map[string]interface{}
 	if json.Unmarshal(raw, &obj) != nil {
-		return "", nil, nil
+		return nil, nil
 	}
 	var exitCode *int
 	for _, key := range []string{"exit_code", "exitCode", "returncode"} {
@@ -163,21 +152,7 @@ func toolResponseSummary(raw json.RawMessage) (string, *int, *bool) {
 	if value, ok := obj["is_error"].(bool); ok {
 		isError = &value
 	}
-	parts := []string{}
-	for _, key := range []string{"stdout", "output", "content", "stderr"} {
-		if value, ok := obj[key].(string); ok && strings.TrimSpace(value) != "" {
-			parts = append(parts, value)
-		}
-	}
-	return strings.Join(parts, "\n"), exitCode, isError
-}
-
-func clipRunes(text string, limit int) string {
-	if utf8.RuneCountInString(text) <= limit {
-		return text
-	}
-	runes := []rune(text)
-	return string(runes[:limit])
+	return exitCode, isError
 }
 
 func postSessionEvent(cred permissionHookCredential, req sessionEventRequest) error {
@@ -230,4 +205,75 @@ func runAgentsActivityHook(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(errOut, "preloop activity hook: %v\n", err)
 	}
 	return nil
+}
+
+// interruptTranscriptMarker is what Claude Code writes into the transcript
+// when the operator interrupts a turn.
+const interruptTranscriptMarker = "[Request interrupted by user"
+
+// transcriptTailBytes bounds how much of the transcript the Stop hook reads.
+const transcriptTailBytes = 16 * 1024
+
+// transcriptShowsInterrupt reports whether the newest transcript lines say
+// the operator interrupted the turn. Any read error means "no".
+func transcriptShowsInterrupt(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer file.Close() //nolint:errcheck
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	offset := info.Size() - transcriptTailBytes
+	if offset < 0 {
+		offset = 0
+	}
+	buf := make([]byte, info.Size()-offset)
+	if _, err := file.ReadAt(buf, offset); err != nil && err != io.EOF {
+		return false
+	}
+	lines := strings.Split(strings.TrimRight(string(buf), "\n"), "\n")
+	// Only the last few records: an interrupt earlier in the session does not
+	// make this turn interrupted.
+	start := len(lines) - 3
+	if start < 0 {
+		start = 0
+	}
+	for _, line := range lines[start:] {
+		if strings.Contains(line, interruptTranscriptMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+// reportTurnEnd posts the Stop that ended a turn to /agents/session-event, so
+// the console can show "Your turn" and the turn footer. Best effort: errors
+// go to stderr and never change the hook's answer.
+func reportTurnEnd(cmd *cobra.Command, raw []byte, hookEventName, sessionID string) {
+	if !sessionFileIDPattern.MatchString(sessionID) {
+		return
+	}
+	name := strings.TrimSpace(hookEventName)
+	if name != "stop" {
+		name = "Stop"
+	}
+	cred, ok := hookCredentialForCommand(cmd)
+	if !ok {
+		return
+	}
+	req := sessionEventRequest{SessionID: sessionID, HookEventName: name, Source: cred.Source}
+	if cred.Source == permissionSourceClaudeCode && transcriptShowsInterrupt(hookEventFieldFromRaw(raw, "transcript_path")) {
+		interrupted := true
+		req.Interrupted = &interrupted
+	}
+	if err := postSessionEvent(cred, req); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "preloop stop hook: could not report the turn end: %v\n", err)
+	}
 }

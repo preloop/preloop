@@ -1,11 +1,14 @@
-"""Prompt, turn-end and session-end timestamps from harness hooks (#1889).
+"""Prompt, tool-end, turn-end and session-end signals from harness hooks.
 
-The SessionStart/UserPromptSubmit, Stop and SessionEnd hooks already run on
-every onboarded harness. This module persists *when* they fired as
-``runtime_session_activity`` rows (``user_prompt``, ``turn_end``,
-``session_end``) and announces them on the ``runtime_sessions`` realtime
-topic. It never stores what was typed: the rows carry a kind, a time, the
-source and the credential's user, nothing else.
+The SessionStart/UserPromptSubmit, Stop and SessionEnd hooks run on every
+onboarded harness (#1889); PostToolUse, PostToolUseFailure and Notification
+add tool ends and waits for input. This module persists *when* they fired
+as ``runtime_session_activity`` rows (``user_prompt``, ``tool_end``,
+``turn_end``, ``waiting_for_input``, ``session_end``), moves the session's
+``turn_state``, and announces them on the ``runtime_sessions`` realtime
+topic. It never stores what was typed or what a tool printed: the rows
+carry a kind, a time, the source, the credential's user and, for a tool
+end, its id, name, exit code, error flag and duration.
 """
 
 from __future__ import annotations
@@ -33,8 +36,6 @@ TOOL_END_HOOK_EVENTS = frozenset({"PostToolUse", "PostToolUseFailure"})
 NOTIFICATION_HOOK_EVENTS = frozenset({"Notification"})
 #: Notification types that mean the harness is waiting for the operator.
 WAITING_NOTIFICATION_TYPES = frozenset({"idle_prompt"})
-#: Longest tool output preview kept on a ``tool_end`` row, after scrubbing.
-TOOL_OUTPUT_PREVIEW_CHARS = 400
 
 EVENT_PROMPT = "runtime_session_prompt"
 EVENT_TURN_ENDED = "runtime_session_turn_ended"
@@ -148,9 +149,7 @@ def record_prompt(
 
 
 def _tool_end_details(details: dict[str, Any]) -> dict[str, Any]:
-    """Keep the bounded tool-end fields; scrub and clip the output preview."""
-    from preloop.utils.secret_scrubbing import scrub_secrets
-
+    """Keep the bounded tool-end fields: ids, outcome and duration, no text."""
     out: dict[str, Any] = {}
     for key, limit in (("tool_use_id", 200), ("tool_name", 100)):
         value = details.get(key)
@@ -165,11 +164,6 @@ def _tool_end_details(details: dict[str, Any]) -> dict[str, Any]:
     is_error = details.get("is_error")
     if isinstance(is_error, bool):
         out["is_error"] = is_error
-    preview = details.get("output_preview")
-    if isinstance(preview, str) and preview:
-        out["output_preview"] = (scrub_secrets(preview) or "")[
-            :TOOL_OUTPUT_PREVIEW_CHARS
-        ]
     return out
 
 
@@ -232,8 +226,7 @@ def record_session_event(
             dedupe_seconds=0,
         )
         if activity is not None:
-            public = {k: v for k, v in tool.items() if k != "output_preview"}
-            _emit(activity, session, EVENT_TOOL_ENDED, actor_user_id, public)
+            _emit(activity, session, EVENT_TOOL_ENDED, actor_user_id, tool)
         return activity
     if hook_event_name in NOTIFICATION_HOOK_EVENTS:
         kind = details.get("notification_type")

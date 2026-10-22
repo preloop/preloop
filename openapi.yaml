@@ -24643,13 +24643,6 @@ components:
             minimum: 0.0
           - type: 'null'
           title: Duration Ms
-        output_preview:
-          anyOf:
-          - type: string
-            maxLength: 4000
-          - type: 'null'
-          title: Output Preview
-          description: Start of the tool output; scrubbed and cut to 400 chars
         notification_type:
           anyOf:
           - type: string

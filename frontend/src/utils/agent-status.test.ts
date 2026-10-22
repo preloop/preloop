@@ -177,6 +177,27 @@ describe('agent status vocabulary', () => {
     );
   });
 
+  it('a working turn with nothing observed for 10 minutes is not working', () => {
+    const status = deriveAgentStatus({
+      runtime: 'codex',
+      turnStartedAt: T0,
+      turnState: 'working',
+      lastEventAt: T0 + 60_000,
+      now: T0 + 60_000 + 11 * 60_000,
+    });
+    expect(status.line).to.equal(null);
+    expect(status.chip.label).to.equal('Idle');
+    expect(
+      deriveAgentStatus({
+        runtime: 'codex',
+        turnStartedAt: T0,
+        turnState: 'working',
+        lastEventAt: T0 + 60_000,
+        now: T0 + 120_000,
+      }).line
+    ).to.equal('Working (2m 00s)');
+  });
+
   it('maps source types and list rows to one chip vocabulary', () => {
     expect(runtimeForSource('codex_cli')).to.equal('codex');
     expect(runtimeForSource('claude_code')).to.equal('claude');

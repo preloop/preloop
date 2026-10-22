@@ -913,8 +913,12 @@ activity metadata (`services/fleet_work_refs.py`): the source (built-in tool,
 the object reference (`#N`/`!N`), the repository, the forge host and up to five
 issue keys parsed from a title or body as closing or plain references. Never the
 arguments, the body or the command line. Native shell calls are classified at
-PreToolUse with the decision's status (no PostToolUse hook reaches the server), so
-an allowed command counts even if it later failed. The partial index
+PreToolUse with the decision's status, so an allowed command counts even if it
+later failed. The PostToolUse and PostToolUseFailure hooks that Claude Code
+onboarding installs report only a content-free `tool_end` row (tool id, name,
+exit code, error flag, duration) through `/agents/session-event`. That row moves
+the session's derived `turn_state` (`crud/runtime_session_turn_state.py`) and
+does not reclassify work. The partial index
 `ix_runtime_session_activity_work_ref` serves these rows next to the tool-name
 index. Code activity then returns typed, deduplicated `relations` (at most 500)
 among the returned work items, flows and agents: `touched` (agent or flow to an
