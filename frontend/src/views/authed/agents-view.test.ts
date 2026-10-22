@@ -1541,9 +1541,40 @@ describe('AgentsView', () => {
     expect(estimate()?.textContent).to.contain('previous');
     // Sign-out/account changes cannot lend a previous account's value.
     invalidateApiCaches();
-    await (el as any).loadAgents();
+    await waitUntil(() => !!(el as any).agents && !(el as any).loading);
     await el.updateComplete;
     expect(estimate()).to.not.exist;
+  });
+
+  it('automatically replaces an in-flight list read after auth cache invalidation', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const response = await defaultFetch(input);
+      if (input.toString().startsWith('/api/v1/agents') && ++reads === 1)
+        await gate;
+      return response;
+    });
+    const obsolete = (el as any).loadAgents();
+    await waitUntil(() => reads === 1);
+    agentItems = [makeAgent('agent-2', 'Fresh identity', 'codex')];
+    try {
+      window.dispatchEvent(new CustomEvent('auth-change'));
+      await waitUntil(
+        () =>
+          (el as any).agents?.items[0]?.id === 'agent-2' && !(el as any).loading
+      );
+    } finally {
+      release();
+    }
+    await obsolete;
+    expect((el as any).agents.items[0].id).to.equal('agent-2');
+    expect((el as any).loading).to.equal(false);
   });
 
   for (const [label, computed, requests, expected] of [

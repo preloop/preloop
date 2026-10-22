@@ -1412,6 +1412,83 @@ describe('AgentDetailView', () => {
       }
     });
 
+    it('matches agent summaries and merges without a bound session, and top-level session ids', async () => {
+      const element = await mount();
+      await waitUntil(() => (element as any).loadedSections.has('sessions'));
+      (element as any).agent = {
+        ...(element as any).agent,
+        runtime_session_id: null,
+      };
+      const refresh = sinon.stub(element as any, 'scheduleRefresh');
+      for (const message of [
+        {
+          topic: 'managed_agents',
+          type: 'managed_agent_updated',
+          payload: { id: 'agent-1', runtime_session_id: null },
+        },
+        {
+          topic: 'managed_agents',
+          type: 'managed_agent_merged',
+          payload: { survivor_id: 'other', duplicate_id: 'agent-1' },
+        },
+        {
+          topic: 'managed_agents',
+          type: 'managed_agent_merged',
+          payload: { survivor_id: 'agent-1', duplicate_id: 'other' },
+        },
+        { runtime_session_id: (element as any).sessions[0].id, payload: {} },
+      ])
+        (element as any).handleResourceEvent(message, false);
+      expect(refresh.callCount).to.equal(4);
+      (element as any).handleResourceEvent(
+        { type: 'managed_agent_updated', payload: { id: 'other' } },
+        false
+      );
+      (element as any).handleResourceEvent(
+        { type: 'unrelated', payload: { id: 'agent-1' } },
+        false
+      );
+      expect(refresh.callCount).to.equal(4);
+    });
+
+    it('shows unavailable figures instead of zero while initial spend is pending or fails', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).includes('include=aggregate')) {
+            await gate;
+            return new Response('{}', { status: 500 });
+          }
+          return defaultFetch(input, init);
+        }
+      );
+      const element = await mount();
+      const assertUnavailable = () => {
+        expect(
+          element.shadowRoot!.querySelector('.strip-value')?.textContent?.trim()
+        ).to.equal('—');
+        expect(
+          element.shadowRoot!.querySelector('.strip-requests')?.textContent
+        ).to.not.contain('0 requests');
+        expect(element.shadowRoot!.querySelector('.strip-tokens token-figures'))
+          .to.not.exist;
+      };
+      try {
+        await element.updateComplete;
+        expect(element.shadowRoot!.textContent).to.contain('Loading spend');
+        assertUnavailable();
+      } finally {
+        release();
+      }
+      await waitUntil(() => !(element as any).spendLoading);
+      await element.updateComplete;
+      expect(element.shadowRoot!.textContent).to.contain('Spend unavailable');
+      assertUnavailable();
+    });
+
     it('defers hidden-view invalidations and reconciles once when visible', async () => {
       const element = await mount();
       await waitUntil(() => (element as any).loadedSections.has('sessions'));

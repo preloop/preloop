@@ -1159,9 +1159,16 @@ export class AgentsView extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.unsubscribeCacheReset = onApiCachesInvalidated(() => {
-      ++this.agentsLoadGeneration;
+      const generation = ++this.agentsLoadGeneration;
       this.subscriptionEstimates.clear();
       this.agents = null;
+      this.loading = false;
+      // Silent token refresh also invalidates caches. Replace the discarded
+      // read after the cache broom finishes, so this cannot join an old GET.
+      queueMicrotask(() => {
+        if (this.isConnected && generation === this.agentsLoadGeneration)
+          void this.loadAgents();
+      });
     });
 
     this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {

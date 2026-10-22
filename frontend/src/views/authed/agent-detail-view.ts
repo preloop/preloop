@@ -869,19 +869,29 @@ export class AgentDetailView extends LitElement {
 
   private handleResourceEvent(message: any, sessionOnly: boolean): void {
     const payload = message?.payload ?? message ?? {};
-    const agentId =
-      payload.managed_agent_id ??
-      payload.agent_id ??
-      (payload.resource_type === 'managed_agent'
+    const agentEvent =
+      message?.topic === 'managed_agents' ||
+      String(message?.type ?? '').startsWith('managed_agent_');
+    const agentIds = [
+      payload.managed_agent_id,
+      payload.agent_id,
+      message?.managed_agent_id,
+      message?.agent_id,
+      payload.resource_type === 'managed_agent'
         ? payload.resource_id
-        : undefined);
+        : undefined,
+      ...(agentEvent
+        ? [payload.id, payload.survivor_id, payload.duplicate_id]
+        : []),
+    ].filter((id) => typeof id === 'string' && id);
     const sessionId =
       payload.runtime_session_id ??
+      message?.runtime_session_id ??
       (payload.resource_type === 'runtime_session'
         ? payload.resource_id
         : undefined);
-    const matches = agentId
-      ? agentId === this.agentId
+    const matches = agentIds.length
+      ? agentIds.includes(this.agentId)
       : (sessionId &&
           (sessionId === this.agent?.runtime_session_id ||
             this.sessions.some((session) => session.id === sessionId))) ||
@@ -1690,19 +1700,24 @@ export class AgentDetailView extends LitElement {
           <!-- Volume before money: the tokens are what the spend is made of,
                split in and out with the cache share of the input. -->
           <span class="strip-tokens" data-testid="agent-token-figures">
-            <token-figures
-              expanded
-              .usage=${aggregate?.token_usage ?? null}
-            ></token-figures>
+            ${
+              aggregate
+                ? html`<token-figures
+                    expanded
+                    .usage=${aggregate.token_usage ?? null}
+                  ></token-figures>`
+                : '— tokens'
+            }
           </span>
           <span class="strip-value"
-            >${html`<span title=${formatUsdExact(aggregate?.estimated_cost)}>${formatUsd(aggregate?.estimated_cost)}</span>`}</span
+            >${aggregate ? html`<span title=${formatUsdExact(aggregate.estimated_cost)}>${formatUsd(aggregate.estimated_cost)}</span>` : '—'}</span
           >
           ${this.renderWithoutSubscriptions(aggregate)}
           <span
             class="strip-requests"
-            title=${`${formatCountExact(requests)} request${requests === 1 ? '' : 's'}`}
-            >${formatCount(requests)} request${requests === 1 ? '' : 's'}</span
+            title=${aggregate ? `${formatCountExact(requests)} request${requests === 1 ? '' : 's'}` : 'Usage unavailable'}
+            >${aggregate ? formatCount(requests) : '—'}
+            request${requests === 1 ? '' : 's'}</span
           >
           <time-range-select
             ariaLabel="Estimated spend range"

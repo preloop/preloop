@@ -375,6 +375,7 @@ export class AgentTalkView extends LitElement {
     this.eventsRequest = null;
     this.eventsAbort = null;
     this.eventsRefreshQueued = false;
+    this.eventsMoreQueued = false;
     this.unsubscribeRealtime?.();
     this.unsubscribeRealtime = null;
     if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
@@ -572,6 +573,7 @@ export class AgentTalkView extends LitElement {
   private eventsRequest: Promise<void> | null = null;
   private eventsAbort: AbortController | null = null;
   private eventsRefreshQueued = false;
+  @state() private eventsMoreQueued = false;
 
   private async loadEvents(sessionId: string): Promise<void> {
     if (this.eventsRequest) {
@@ -593,7 +595,10 @@ export class AgentTalkView extends LitElement {
       if (this.eventsRequest !== request) return;
       this.eventsRequest = null;
       this.eventsAbort = null;
-      if (this.eventsRefreshQueued) {
+      if (this.eventsMoreQueued) {
+        this.eventsMoreQueued = false;
+        if (this.isConnected && this.sessionId) void this.loadMoreEvents();
+      } else if (this.eventsRefreshQueued) {
         this.eventsRefreshQueued = false;
         if (this.isConnected && this.sessionId)
           void this.loadEvents(this.sessionId);
@@ -653,7 +658,11 @@ export class AgentTalkView extends LitElement {
   }
 
   private async loadMoreEvents(): Promise<void> {
-    if (this.eventsRequest) return;
+    if (this.loadingMoreEvents) return;
+    if (this.eventsRequest) {
+      this.eventsMoreQueued = true;
+      return;
+    }
     await this.runEventsRead(() => this.readMoreEvents());
   }
 
@@ -744,12 +753,21 @@ export class AgentTalkView extends LitElement {
     void unifiedWebSocketManager.connect();
   }
 
-  private handleActivity(message: { payload?: Record<string, unknown> }): void {
+  private handleActivity(message: {
+    payload?: Record<string, unknown>;
+    managed_agent_id?: string;
+    agent_id?: string;
+    runtime_session_id?: string;
+  }): void {
     const payload = message?.payload ?? {};
     const agentId =
-      (payload.managed_agent_id as string) || (payload.agent_id as string);
+      (payload.managed_agent_id as string) ||
+      (payload.agent_id as string) ||
+      message.managed_agent_id ||
+      message.agent_id;
     if (agentId && agentId !== this.agentId) return;
-    const sessionId = payload.runtime_session_id as string | undefined;
+    const sessionId = (payload.runtime_session_id ??
+      message.runtime_session_id) as string | undefined;
     if (!agentId && !sessionId) return;
     if (!agentId && sessionId && sessionId !== this.sessionId) return;
     if (sessionId && sessionId !== this.sessionId && agentId === this.agentId) {
@@ -862,6 +880,7 @@ export class AgentTalkView extends LitElement {
     this.eventsRequest = null;
     this.eventsAbort = null;
     this.eventsRefreshQueued = false;
+    this.eventsMoreQueued = false;
     this.sessionResolved = true;
     this.sessionId = sessionId;
     this.events = [];
@@ -1023,7 +1042,7 @@ export class AgentTalkView extends LitElement {
         .pending=${this.pending}
         .loading=${this.loadingEvents && !this.events.length}
         .hasMoreEvents=${this.hasMoreEvents}
-        .loadingMoreEvents=${this.loadingMoreEvents}
+        .loadingMoreEvents=${this.loadingMoreEvents || this.eventsMoreQueued}
         emptyText=${
           this.sessionId
             ? 'Nothing has been said in this session yet.'

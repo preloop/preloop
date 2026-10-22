@@ -208,6 +208,79 @@ describe('agent-talk-view', () => {
     el.remove();
   });
 
+  it('queues an older-page click behind a live read and keeps the button busy', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    (el as any).hasMoreEvents = true;
+    (el as any).nextEventOffset = 50;
+    let finish!: (response: Response) => void;
+    const offsets: string[] = [];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events')) {
+        offsets.push(new URL(url, location.origin).searchParams.get('offset')!);
+        if (offsets.length === 1)
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        return jsonResponse({ logs: [], pagination: { has_more: false } });
+      }
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      return jsonResponse([]);
+    });
+    try {
+      const live = (el as any).loadEvents('sess-1');
+      await waitUntil(() => !!finish);
+      void (el as any).loadEvents('sess-1');
+      await (el as any).loadMoreEvents();
+      await el.updateComplete;
+      expect(
+        (el.shadowRoot!.querySelector('session-chat-view') as any)
+          .loadingMoreEvents
+      ).to.equal(true);
+      expect(offsets).to.deep.equal(['0']);
+      finish(
+        jsonResponse({
+          logs: [],
+          pagination: { has_more: true, next_offset: 75 },
+        })
+      );
+      await live;
+      await waitUntil(() => offsets.length === 3);
+      expect(offsets).to.deep.equal(['0', '75', '0']);
+    } finally {
+      el.remove();
+    }
+  });
+
+  it('routes top-level-only control acknowledgements to the composer and refreshes', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    const composer = el.shadowRoot!.querySelector('talk-composer')!;
+    const realtime = sinon.stub(composer as any, 'handleRealtime');
+    const refresh = sinon.stub(el as any, 'scheduleReload');
+    const turn = sinon.stub(el as any, 'noteAgentTurn');
+    try {
+      const message = {
+        type: 'agent_control_ack',
+        managed_agent_id: 'agent-1',
+        runtime_session_id: 'sess-1',
+        payload: { name: 'ack', message_id: 'command-1', agent_payload: {} },
+      };
+      (el as any).handleActivity(message);
+      expect(realtime.calledOnceWithExactly(message)).to.equal(true);
+      expect(refresh.callCount).to.equal(1);
+      expect(turn.callCount).to.equal(1);
+      (el as any).handleActivity({
+        ...message,
+        managed_agent_id: 'other-agent',
+      });
+      expect(refresh.callCount).to.equal(1);
+    } finally {
+      el.remove();
+    }
+  });
+
   it('fills the viewport and never scrolls the page', async () => {
     const el = await mount();
     const styles = getComputedStyle(el);
