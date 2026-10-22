@@ -112,7 +112,15 @@ def agent_supports_notes(
 EVENT_SESSION_START = "session_start"
 EVENT_STOP = "stop"
 EVENT_PRE_TOOL_USE = "pre_tool_use"
-DELIVERY_EVENTS = (EVENT_SESSION_START, EVENT_STOP, EVENT_PRE_TOOL_USE)
+#: The operator typed the next prompt in the terminal; the note rides it as
+#: extra context. The only way a note reaches an idle terminal session.
+EVENT_USER_PROMPT_SUBMIT = "user_prompt_submit"
+DELIVERY_EVENTS = (
+    EVENT_SESSION_START,
+    EVENT_STOP,
+    EVENT_PRE_TOOL_USE,
+    EVENT_USER_PROMPT_SUBMIT,
+)
 
 #: Audit actions. ``sent`` is written before the API answers the author,
 #: ``delivered`` before the request carrying the note leaves Preloop, and
@@ -569,6 +577,7 @@ def claim_pending_notes(
             notes=claimed,
             delivered_at=moment,
             channel=channel,
+            delivery_event=event,
         )
         _index_claimed_notes(
             db,
@@ -593,6 +602,7 @@ def _emit_delivered_notes(
     notes: List[Any],
     delivered_at: datetime,
     channel: str,
+    delivery_event: Optional[str] = None,
 ) -> None:
     """Tell anyone watching the session that a note reached the agent (#1149).
 
@@ -627,6 +637,10 @@ def _emit_delivered_notes(
                             "kind": "operator_note",
                             "note_id": note.command_id,
                             "delivery_channel": channel,
+                            "hook_event": (
+                                delivery_event or getattr(note, "delivery_event", None)
+                            ),
+                            "delivered_at": delivered_at.isoformat(),
                             "author_display": note.author_display,
                             "author_auth_method": note.author_auth_method,
                         },

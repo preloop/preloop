@@ -69,13 +69,13 @@ async def test_start_wires_native_commands_and_preserves_manifest(
     assert caps["desktop"] == "vnc" and caps["desktop_display"] == ":99"
     native.send_command.assert_awaited_once()
     assert native.send_command.call_args.args[0].session_mode == "new"
-    assert [e["name"] for e in sent[1:]] == [
+    assert [e["name"] for e in sent[1:] if e["name"] != "heartbeat"] == [
         "command_ack",
         "command_result",
-        "heartbeat",
         "agent_reply",
         "command_ack",
         "command_error",
-        "heartbeat",
     ]
-    assert sent[-2]["payload"]["command_id"] == "example-existing"
+    assert any(e["name"] == "heartbeat" for e in sent[1:])
+    error = next(e for e in sent if e["name"] == "command_error")
+    assert error["payload"]["command_id"] == "example-existing"

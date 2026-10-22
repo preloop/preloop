@@ -5,7 +5,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from uuid import UUID
 
 from sqlalchemy import (
@@ -195,6 +195,36 @@ def _empty_usage_aggregate() -> dict[str, Any]:
         "last_request_at": None,
         "subscription_usage": None,
     }
+
+
+#: Most native session ids kept per agent. A sidecar that owns more sessions
+#: than this is unusual. Plugins report oldest first, so the last (newest)
+#: entries are kept.
+CONTROL_REACHABLE_SESSION_IDS_CAP = 50
+_REACHABLE_SESSION_ID_MAX_LEN = 255
+
+
+def normalize_reachable_session_ids(values: Sequence[Any]) -> list[str]:
+    """Clean a plugin-reported list of reachable native session ids.
+
+    Args:
+        values: Raw list from the presence frame.
+
+    Returns:
+        Distinct non-blank string ids in their reported order, keeping the
+        newest (last reported) ``CONTROL_REACHABLE_SESSION_IDS_CAP``.
+    """
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        item = value.strip()
+        if not item or len(item) > _REACHABLE_SESSION_ID_MAX_LEN or item in seen:
+            continue
+        seen.add(item)
+        cleaned.append(item)
+    return cleaned[-CONTROL_REACHABLE_SESSION_IDS_CAP:]
 
 
 class _PageRow:
@@ -1142,9 +1172,15 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         observed_at: datetime,
         control_session_mode: Optional[str] = None,
         control_heartbeat_at: Optional[datetime] = None,
+        control_reachable_session_ids: Optional[Sequence[Any]] = None,
         commit: bool = False,
     ) -> Optional[ManagedAgent]:
         """Update last-seen timestamp for one durable managed agent.
+
+        ``control_reachable_session_ids`` replaces the stored list of native
+        session ids the plugin can drive when given (None leaves it alone).
+        Non-string and blank entries are dropped, duplicates collapse, and
+        the list is capped at ``CONTROL_REACHABLE_SESSION_IDS_CAP``.
 
         ``control_heartbeat_at`` is passed only by the Agent Control
         WebSocket. It is a separate column from ``last_seen_at`` because
@@ -1166,6 +1202,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db_obj.control_last_heartbeat_at = control_heartbeat_at
         if control_session_mode in {"local", "remote", "queued"}:
             db_obj.control_session_mode = control_session_mode
+        if control_reachable_session_ids is not None:
+            db_obj.control_reachable_session_ids = normalize_reachable_session_ids(
+                control_reachable_session_ids
+            )
         if runtime_session_id is not None:
             db_obj.runtime_session_id = runtime_session_id
         db.add(db_obj)

@@ -1,14 +1,14 @@
 """Store agent usage totals with transactional updates and resumable backfill.
 
 Revision ID: 20261109_agent_usage_totals
-Revises: 20261107_session_turn_state
+Revises: 20261108_control_reachable
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 revision = "20261109_agent_usage_totals"
-down_revision = "20261107_session_turn_state"
+down_revision = "20261108_control_reachable"
 branch_labels = None
 depends_on = None
 

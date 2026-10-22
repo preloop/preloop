@@ -271,8 +271,8 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 	// one stat. A prompt with no text is ignored too.
 	hasPrompt := strings.TrimSpace(event.Prompt) != ""
 	needsRegistration := !isPrompt || (hasPrompt && !(haveFile && existing.TitleSent))
-	if isPrompt && !needsRegistration {
-		// Nothing to register and (see below) nothing new to deliver.
+	carriesNotes := !sessionHookRegisterOnly(cmd) && sessionEventCarriesNotes(source, event.HookEventName)
+	if isPrompt && !needsRegistration && !carriesNotes {
 		return nil
 	}
 
@@ -324,15 +324,20 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}
-	// Notes ride the same event: a note sent before the run started reaches
-	// the model before its first tool call. First turn only, so an interactive
-	// session does not pay a request per prompt; later notes land on the tool
-	// call or the Stop hook.
+	// Notes ride the same event. At SessionStart a note sent before the run
+	// started reaches the model before its first tool call. Every
+	// UserPromptSubmit claims too: for an idle terminal session the
+	// operator's next prompt is the only point a note can arrive, so it rides
+	// that prompt as additional context.
 	// The permission-hook fallback registers lineage only. Claiming notes
 	// here would mark them delivered before SessionStart and write a second
 	// JSON document onto the permission decision's stdout.
-	if !sessionHookRegisterOnly(cmd) && sessionEventCarriesNotes(source, event.HookEventName) && registered && (!isPrompt || !haveFile) {
-		if text := claimNotesForHook(cred, externalID, noteEventSessionStart); text != "" {
+	if carriesNotes && (isPrompt || registered) {
+		noteEvent := noteEventSessionStart
+		if isPrompt {
+			noteEvent = noteEventUserPromptSubmit
+		}
+		if text := claimNotesForHook(cred, externalID, noteEvent); text != "" {
 			writeSessionAdditionalContext(cmd.OutOrStdout(), event.HookEventName, text)
 		}
 	}

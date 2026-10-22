@@ -15,6 +15,12 @@
  * - **The turn is a user turn**, not a system prompt: the server records it as
  *   an operator message on the session and the runtime injects it into the
  *   agent's normal conversation.
+ * - **A message goes where it can arrive.** For a session-bound window the
+ *   server says, per session, whether a line is a turn (command mode) or a
+ *   note (`/runtime-sessions/<id>/control`). A terminal session Preloop
+ *   cannot type into gets a note, read at its next tool call, at the end of
+ *   the turn, or with the next prompt typed in that terminal; the bubble says
+ *   when it was read. Interrupt and Release show only in command mode.
  */
 import { LitElement, css, html, nothing } from 'lit';
 import type { PropertyValues } from 'lit';
@@ -27,17 +33,22 @@ import '@shoelace-style/shoelace/dist/components/textarea/textarea.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 
 import {
+  getRuntimeSessionControl,
+  sendOperatorNote,
   sendAgentControlCommand,
   sendAgentControlRelease,
   sendAgentControlTakeover,
   sendAgentControlVoiceTranscript,
   transcribeAudio,
 } from '../api';
+import type { RuntimeSessionControl } from '../api';
 import type { ManagedAgentSummary } from '../types';
 import {
   getAgentControlInstallHint,
   getAgentControlSessionMode,
   getAgentControlState,
+  noteModeLine,
+  noteReadPointLabel,
 } from '../utils/agent-control';
 import type { PendingTalkMessage } from './session-chat-view';
 
@@ -79,6 +90,9 @@ export const TALK_SWITCH_SESSION_EVENT = 'talk-switch-session';
 /** Asked by the ended-session guard: start a new session instead. */
 export const TALK_NEW_SESSION_EVENT = 'talk-new-session';
 
+/** How long a note may wait on an idle session before the bubble says so. */
+export const NOTE_STALE_AFTER_MS = 10 * 60 * 1000;
+
 /** Where an operator can go when the open session has ended. */
 export interface TalkSessionAlternative {
   id: string;
@@ -104,6 +118,26 @@ export class TalkComposer extends LitElement {
   /** The live session offered when the open one has ended, if any. */
   @property({ attribute: false })
   liveAlternative: TalkSessionAlternative | null = null;
+
+  /** The open session is idle (no live turn), so a note waits for a prompt. */
+  @property({ type: Boolean })
+  sessionIdle = false;
+
+  /** The open session failed to load: show no control buttons at all. */
+  @property({ type: Boolean })
+  sessionLoadFailed = false;
+
+  /** The server's per-session answer: turn or note, and why. */
+  @state()
+  private sessionControl: RuntimeSessionControl | null = null;
+
+  /** Reading the session's control mode failed. */
+  @state()
+  private sessionControlFailed = false;
+
+  /** The server answered without a mode (an older backend): agent-level mode. */
+  @state()
+  private sessionControlLegacy = false;
 
   @state()
   private endedGuardVisible = false;
@@ -143,6 +177,9 @@ export class TalkComposer extends LitElement {
   private fallbackTranscribing = false;
   private fallbackTranscriptionUnavailable = false;
   private copyResetTimer: number | null = null;
+  private controlGeneration = 0;
+  private controlRefreshTimer: number | null = null;
+  private staleTimer: number | null = null;
 
   static styles = css`
     :host {
@@ -252,6 +289,115 @@ export class TalkComposer extends LitElement {
     this.stopListening();
     this.stopFallbackRecording();
     if (this.copyResetTimer !== null) window.clearTimeout(this.copyResetTimer);
+    if (this.controlRefreshTimer !== null)
+      window.clearTimeout(this.controlRefreshTimer);
+    if (this.staleTimer !== null) window.clearInterval(this.staleTimer);
+  }
+
+  /** Ask the server how a line typed on this session is delivered. */
+  private async loadSessionControl(): Promise<void> {
+    const sessionId = this.sessionId;
+    const generation = ++this.controlGeneration;
+    if (!sessionId) {
+      this.sessionControl = null;
+      this.sessionControlFailed = false;
+      return;
+    }
+    try {
+      const control = await getRuntimeSessionControl(sessionId);
+      if (generation !== this.controlGeneration) return;
+      const known = control?.mode === 'command' || control?.mode === 'note';
+      this.sessionControl = known ? control : null;
+      this.sessionControlLegacy = !known;
+      this.sessionControlFailed = false;
+    } catch {
+      if (generation !== this.controlGeneration) return;
+      this.sessionControl = null;
+      this.sessionControlFailed = true;
+    }
+  }
+
+  /**
+   * A realtime message for the open session (runtime_sessions or
+   * agent_control topic). A note delivery marks its bubble read; anything
+   * else may have changed the routing, so the control mode is read again.
+   */
+  public handleRealtime(message: {
+    type?: string;
+    event_type?: string;
+    payload?: Record<string, unknown>;
+  }): void {
+    const payload = message?.payload ?? {};
+    const metadata = (payload.metadata ?? {}) as Record<string, unknown>;
+    if (
+      metadata.kind === 'operator_note' &&
+      typeof metadata.note_id === 'string'
+    ) {
+      this.markNoteRead(
+        metadata.note_id,
+        typeof metadata.hook_event === 'string' ? metadata.hook_event : null,
+        typeof metadata.delivered_at === 'string'
+          ? metadata.delivered_at
+          : typeof payload.last_activity_at === 'string'
+            ? payload.last_activity_at
+            : new Date().toISOString()
+      );
+      return;
+    }
+    if (!this.sessionId) return;
+    if (this.controlRefreshTimer !== null)
+      window.clearTimeout(this.controlRefreshTimer);
+    this.controlRefreshTimer = window.setTimeout(() => {
+      this.controlRefreshTimer = null;
+      void this.loadSessionControl();
+    }, 500);
+  }
+
+  private markNoteRead(
+    noteId: string,
+    hookEvent: string | null,
+    readAt: string
+  ): void {
+    if (!this.pending.some((item) => item.noteId === noteId)) return;
+    this.setPending(
+      this.pending.map((item) =>
+        item.noteId === noteId
+          ? {
+              ...item,
+              state: 'read',
+              stale: false,
+              readPoint: noteReadPointLabel(hookEvent),
+              readAt,
+            }
+          : item
+      )
+    );
+  }
+
+  /** Flag notes that have waited too long on an idle session. */
+  private checkStaleNotes(): void {
+    const now = Date.now();
+    let changed = false;
+    const next = this.pending.map((item) => {
+      const stale =
+        item.state === 'waiting' &&
+        this.sessionIdle &&
+        now - new Date(item.at).getTime() >= NOTE_STALE_AFTER_MS;
+      if (Boolean(item.stale) === stale) return item;
+      changed = true;
+      return { ...item, stale };
+    });
+    if (changed) this.setPending(next);
+    const waiting = this.pending.some((item) => item.state === 'waiting');
+    if (!waiting && this.staleTimer !== null) {
+      window.clearInterval(this.staleTimer);
+      this.staleTimer = null;
+    }
+  }
+
+  private watchStaleNotes(): void {
+    if (this.staleTimer !== null) return;
+    this.staleTimer = window.setInterval(() => this.checkStaleNotes(), 30_000);
   }
 
   /** The window opens with the cursor already in the box. */
@@ -296,10 +442,19 @@ export class TalkComposer extends LitElement {
     ) {
       this.endedGuardVisible = false;
     }
+    if (changed.has('sessionId')) {
+      // A new session has no answer yet: show no control buttons until the
+      // server says how it is routed.
+      this.sessionControl = null;
+      this.sessionControlFailed = false;
+      this.sessionControlLegacy = false;
+    }
   }
 
   updated(changed: PropertyValues<this>): void {
+    if (changed.has('sessionIdle')) this.checkStaleNotes();
     if (!changed.has('sessionId')) return;
+    void this.loadSessionControl();
     // Re-emit for the new session: its pending turns, never the old one's.
     if (changed.get('sessionId') !== undefined) this.emitPending();
   }
@@ -494,6 +649,21 @@ export class TalkComposer extends LitElement {
     return getAgentControlSessionMode(this.agent);
   }
 
+  /** The open session takes notes, not turns (server's per-session answer). */
+  private get noteMode(): boolean {
+    return Boolean(this.sessionId) && this.sessionControl?.mode === 'note';
+  }
+
+  /**
+   * Whether Interrupt, Release and "You have this session" may show: only
+   * when the server says this session takes commands. Before that answer
+   * arrives, and when it failed, the window shows no control buttons.
+   */
+  private get sessionDrivable(): boolean {
+    if (!this.sessionId || this.sessionControlLegacy) return true;
+    return this.sessionControl?.mode === 'command';
+  }
+
   private get startsNewSession(): boolean {
     return !this.sessionId && this.agent?.supports_new_session !== false;
   }
@@ -553,8 +723,19 @@ export class TalkComposer extends LitElement {
 
   /** Retry a failed turn, keeping its place in the thread. */
   public async retry(id: string): Promise<void> {
-    const message = this.pending.find((item) => item.id === id);
-    if (!message) return;
+    const found = this.pending.find((item) => item.id === id);
+    if (!found) return;
+    // Route by what the server says now, not by the shape the turn had when
+    // it failed: the session's mode may have been learned since.
+    let message = found;
+    if (
+      found.targetSessionId &&
+      found.targetSessionId === this.sessionId &&
+      found.noteId === undefined &&
+      this.noteMode
+    ) {
+      message = { ...found, noteId: '' };
+    }
     this.setPending(
       this.pending.map((item) =>
         item.id === id ? { ...item, state: 'sending', error: undefined } : item
@@ -581,28 +762,108 @@ export class TalkComposer extends LitElement {
 
     const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const inputMode = this.lastInputMode;
+    const targetSessionId = this.sessionId ?? null;
     // The target is fixed here, at Enter. Anything that moves the window
-    // after this point (a takeover round trip, a session switch) must not
-    // move the turn with it.
+    // after this point (a control read, a takeover round trip, a session
+    // switch) must not move the turn with it.
     const pending: PendingTalkMessage = {
       id,
       text,
       at: new Date().toISOString(),
       state: 'sending',
       inputMode,
-      targetSessionId: this.sessionId ?? null,
+      targetSessionId,
       startNewSession: this.startsNewSession,
     };
     // The turn shows in the thread before the server has seen it: a chat that
     // swallows what you typed until a round trip finishes reads as broken.
+    // Clearing the box now also means a second Enter cannot resend it.
     this.setPending([...this.pending, pending]);
     this.message = '';
     this.lastInputMode = 'text';
-    await this.deliver(pending);
+    const asNote = targetSessionId
+      ? await this.sessionTakesNotes(targetSessionId)
+      : false;
+    const routed: PendingTalkMessage = asNote
+      ? { ...pending, noteId: '' }
+      : pending;
+    if (asNote) {
+      this.setPending(
+        this.pending.map((item) => (item.id === id ? routed : item))
+      );
+    }
+    await this.deliver(routed);
+  }
+
+  /**
+   * Whether a line typed on ``sessionId`` goes as a note. Uses the known
+   * answer for the open session, otherwise asks the server for that session.
+   * A failed read routes as a command; a terminal session then answers 409
+   * and the line is resent as a note.
+   */
+  private async sessionTakesNotes(sessionId: string): Promise<boolean> {
+    if (sessionId === this.sessionId) {
+      if (this.sessionControlLegacy) return false;
+      if (this.sessionControl) return this.sessionControl.mode === 'note';
+    }
+    try {
+      const control = await getRuntimeSessionControl(sessionId);
+      return control?.mode === 'note';
+    } catch {
+      return false;
+    }
+  }
+
+  /** Send one line as an operator note the session reads at its next hook. */
+  private async deliverNote(turn: PendingTalkMessage): Promise<void> {
+    const { id, text } = turn;
+    this.sending = true;
+    this.controlError = null;
+    try {
+      const note = await sendOperatorNote({
+        text,
+        runtime_session_id: turn.targetSessionId ?? undefined,
+      });
+      this.setPending(
+        this.pending.map((item) =>
+          item.id === id
+            ? { ...item, state: 'waiting', noteId: note.note_id }
+            : item
+        )
+      );
+      this.statusMessage = null;
+      this.watchStaleNotes();
+      this.dispatchEvent(
+        new CustomEvent(TALK_MESSAGE_SENT_EVENT, {
+          detail: { response: note, pendingId: id },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    } catch (error) {
+      this.setPending(
+        this.pending.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                state: 'failed',
+                error:
+                  error instanceof Error ? error.message : 'Failed to send',
+              }
+            : item
+        )
+      );
+    } finally {
+      this.sending = false;
+    }
   }
 
   private async deliver(turn: PendingTalkMessage): Promise<void> {
     if (!this.agent) return;
+    if (turn.noteId !== undefined && turn.targetSessionId) {
+      await this.deliverNote(turn);
+      return;
+    }
     const { id, text } = turn;
     const inputMode = turn.inputMode ?? 'text';
     const targetSessionId = turn.targetSessionId ?? null;
@@ -700,6 +961,25 @@ export class TalkComposer extends LitElement {
         )
       );
       this.statusMessage = null;
+      // The server refused a command because this session is a terminal it
+      // cannot type into: resend the same line as a note, and learn the mode.
+      if (
+        (error as { code?: string } | null)?.code === 'terminal_session' &&
+        targetSessionId &&
+        !startNewSession
+      ) {
+        void this.loadSessionControl();
+        this.setPending(
+          this.pending.map((item) =>
+            item.id === id
+              ? { ...item, state: 'sending', error: undefined, noteId: '' }
+              : item
+          )
+        );
+        this.sending = false;
+        await this.deliverNote({ ...turn, noteId: '' });
+        return;
+      }
     } finally {
       this.sending = false;
     }
@@ -715,11 +995,15 @@ export class TalkComposer extends LitElement {
    * matched and is dropped on reload, as before.
    */
   public clearSentPending(echoedCommandIds: ReadonlySet<string>): void {
-    const keep = this.pending.filter(
-      (item) =>
+    const keep = this.pending.filter((item) => {
+      // A note the timeline now shows (with its own "Read at" label) is
+      // dropped, so it never renders twice. An unread note stays.
+      if (item.noteId) return !echoedCommandIds.has(item.noteId);
+      return (
         item.state !== 'sent' ||
         (item.commandId !== undefined && !echoedCommandIds.has(item.commandId))
-    );
+      );
+    });
     if (keep.length === this.pending.length) return;
     this.setPending(keep);
   }
@@ -814,9 +1098,28 @@ export class TalkComposer extends LitElement {
       (this.localSpeechRecognitionAvailable || this.mediaRecorderAvailable);
     const listening = this.listening || this.recordingFallback;
 
+    const showControlRow =
+      enabled &&
+      !this.sessionLoadFailed &&
+      !(this.sessionId && this.sessionControlFailed);
     return html`
       ${
-        enabled
+        showControlRow && this.noteMode
+          ? html`
+              <div class="control-row">
+                <span class="mode" data-testid="composer-mode">
+                  ${noteModeLine(
+                    this.sessionControl?.reason_code,
+                    this.sessionControl?.reason,
+                    this.sessionIdle
+                  )}
+                </span>
+              </div>
+            `
+          : nothing
+      }
+      ${
+        showControlRow && !this.noteMode && this.sessionDrivable
           ? html`
               <div class="control-row">
                 <span class="mode" data-testid="composer-mode">

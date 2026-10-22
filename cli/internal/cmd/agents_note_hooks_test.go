@@ -317,3 +317,38 @@ func TestNoteLifecycleHooksMatchCapturedFixture(t *testing.T) {
 		}
 	}
 }
+
+func TestUserPromptSubmitClaimsNotesOnEveryPrompt(t *testing.T) {
+	stub, _ := newNoteHookStub(t)
+	runNoteHook(t, runAgentsSessionHook, `{"session_id":"sess-prompt-1","hook_event_name":"SessionStart"}`)
+	runNoteHook(t, runAgentsSessionHook, `{"session_id":"sess-prompt-1","hook_event_name":"UserPromptSubmit","prompt":"first"}`)
+	stub.mu.Lock()
+	stub.pendingText = "<operator-notes>use the staging bucket</operator-notes>"
+	stub.mu.Unlock()
+
+	out := runNoteHook(t, runAgentsSessionHook, `{"session_id":"sess-prompt-1","hook_event_name":"UserPromptSubmit","prompt":"second"}`)
+
+	var decoded struct {
+		HookSpecificOutput struct {
+			HookEventName     string `json:"hookEventName"`
+			AdditionalContext string `json:"additionalContext"`
+		} `json:"hookSpecificOutput"`
+	}
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("invalid prompt hook JSON %q: %v", out, err)
+	}
+	if decoded.HookSpecificOutput.HookEventName != "UserPromptSubmit" {
+		t.Errorf("expected UserPromptSubmit event name, got %q", decoded.HookSpecificOutput.HookEventName)
+	}
+	if decoded.HookSpecificOutput.AdditionalContext != "<operator-notes>use the staging bucket</operator-notes>" {
+		t.Errorf("expected the note as additionalContext, got %q", decoded.HookSpecificOutput.AdditionalContext)
+	}
+	var events []string
+	for _, pull := range stub.pulls() {
+		events = append(events, pull.Event)
+	}
+	want := []string{noteEventSessionStart, noteEventUserPromptSubmit, noteEventUserPromptSubmit}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("expected a pull at start and on every prompt, got %v", events)
+	}
+}
