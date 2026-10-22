@@ -138,6 +138,8 @@ MCP revisions `2025-11-25` and earlier use `initialize` version negotiation
 supported versions and capabilities. Modern and legacy clients can share
 an endpoint under the
 [MCP compatibility specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
+The [tested Preloop matrix](architecture/mcp-protocol-compatibility.md) records
+SDK/FastMCP versions, supported transports, and migration details.
 Support for the modern revision, the Python SDK v2 migration, and the tested
 interoperability matrix are pending in
 [#1629](https://github.com/preloop/preloop/issues/1629); this policy does not

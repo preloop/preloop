@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Any
 from uuid import UUID
 
 from mcp.server import Server
+from mcp.server.context import ServerRequestContext
 from mcp import types
 from sqlalchemy.orm import Session
 
@@ -196,12 +197,11 @@ class DynamicMCPServer:
     def _setup_handlers(self):
         """Register MCP protocol handlers for list_tools and call_tool."""
 
-        @self.server.list_tools()
-        async def handle_list_tools() -> list[types.Tool]:
+        async def handle_list_tools(ctx: ServerRequestContext) -> list[types.Tool]:
             """Return tools based on current request context.
 
             This handler is called for every MCP tools/list request.
-            It extracts user context from server.request_context (as per POC findings)
+            It reads authenticated context established by the HTTP middleware
             and returns a filtered tool list based on user configuration.
 
             Returns:
@@ -209,8 +209,13 @@ class DynamicMCPServer:
             """
             logger.info("handle_list_tools called")
             try:
-                # Access request context (as per OPTION_B_FINDINGS.md)
-                user_context = self._extract_user_context(self.server.request_context)
+                # SDK v2 ctx.meta is client-supplied protocol metadata, not
+                # authenticated identity. Reuse the HTTP middleware context.
+                from preloop.services.dynamic_fastmcp_http import (
+                    get_current_user_context,
+                )
+
+                user_context = get_current_user_context()
 
                 if not user_context:
                     logger.warning("No user context available in request")
@@ -239,9 +244,8 @@ class DynamicMCPServer:
                 logger.error(f"Error in handle_list_tools: {e}", exc_info=True)
                 return []
 
-        @self.server.call_tool()
         async def handle_call_tool(
-            name: str, arguments: dict | None
+            ctx: ServerRequestContext, name: str, arguments: dict | None
         ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
             """Call a tool if user has access.
 
@@ -258,8 +262,13 @@ class DynamicMCPServer:
             """
             logger.info(f"handle_call_tool called for tool: {name}")
             try:
-                # Access request context (as per OPTION_B_FINDINGS.md)
-                user_context = self._extract_user_context(self.server.request_context)
+                # SDK v2 ctx.meta is client-supplied protocol metadata, not
+                # authenticated identity. Reuse the HTTP middleware context.
+                from preloop.services.dynamic_fastmcp_http import (
+                    get_current_user_context,
+                )
+
+                user_context = get_current_user_context()
 
                 if not user_context:
                     logger.warning("No user context available for tool call")
@@ -440,6 +449,25 @@ class DynamicMCPServer:
                         type="text", text=f"Error executing tool: {str(e)}"
                     )
                 ]
+
+        async def list_adapter(
+            ctx: ServerRequestContext, params: types.PaginatedRequestParams
+        ) -> types.ListToolsResult:
+            return types.ListToolsResult(tools=await handle_list_tools(ctx))
+
+        async def call_adapter(
+            ctx: ServerRequestContext, params: types.CallToolRequestParams
+        ) -> types.CallToolResult:
+            return types.CallToolResult(
+                content=await handle_call_tool(ctx, params.name, params.arguments)
+            )
+
+        self.server.add_request_handler(
+            "tools/list", types.PaginatedRequestParams, list_adapter
+        )
+        self.server.add_request_handler(
+            "tools/call", types.CallToolRequestParams, call_adapter
+        )
 
     def _extract_user_context(self, request_context) -> Optional[UserContext]:
         """Extract user context from MCP request metadata.

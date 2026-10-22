@@ -295,9 +295,9 @@ def test_github_tracker_sync(preloop_client, github_client):
             # Try structuredContent first (most reliable) - FastMCP puts Pydantic model fields here
             if (
                 hasattr(create_result, "structuredContent")
-                and create_result.structuredContent
+                and create_result.structured_content
             ):
-                url = create_result.structuredContent.get("url")
+                url = create_result.structured_content.get("url")
                 if url:
                     # Parse GitHub URL: https://github.com/owner/repo/issues/123
                     url_match = re.search(

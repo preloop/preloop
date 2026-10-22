@@ -22,6 +22,7 @@ from preloop.services.dynamic_fastmcp import (
     create_user_context_from_scope,
 )
 from preloop.services.mcp_http import PreloopBearerAuthBackend
+from preloop.services.mcp_protocol import MCPProtocolMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +178,7 @@ def setup_dynamic_mcp_http(mcp: DynamicFastMCP):
         "transport": "streamable-http",
         "json_response": None,  # Allow SSE streaming for progress notifications
         "stateless_http": True,  # Don't maintain session state (allows clean reconnections)
+        "host_origin_protection": True,
     }
     http_app_params = inspect.signature(mcp.http_app).parameters
     allowed_hosts = mcp_http_allowed_hosts()
@@ -194,7 +196,7 @@ def setup_dynamic_mcp_http(mcp: DynamicFastMCP):
 
     # Wrap with our middleware layers
     # Layer 1: User context middleware (extracts and stores user context)
-    context_app = UserContextMiddleware(base_app)
+    context_app = UserContextMiddleware(MCPProtocolMiddleware(base_app))
 
     # Layer 2: Authentication middleware (validates Bearer tokens)
     auth_app = AuthenticationMiddleware(

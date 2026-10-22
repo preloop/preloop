@@ -403,7 +403,7 @@ async def mcp_http_streaming_endpoint(
                 {
                     "name": tool.name,
                     "description": tool.description,
-                    "inputSchema": tool.inputSchema,
+                    "inputSchema": tool.input_schema,
                 }
                 for tool in tools
             ]

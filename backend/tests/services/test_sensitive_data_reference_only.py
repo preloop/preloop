@@ -934,7 +934,7 @@ def test_argument_keep_fields_ignore_result_paths() -> None:
 
 
 def test_result_keep_from_structured_content() -> None:
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import ToolResult
     from mcp.types import TextContent
 
     result = ToolResult(
@@ -979,7 +979,7 @@ def test_absent_result_leaves_result_fields_empty(salts) -> None:
 
 
 def test_attach_result_sets_salted_result_hmac(reference_policy, salts) -> None:
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import ToolResult
 
     config = _config(**RESULT_RULE)
     scope = StorageScope(
@@ -1112,7 +1112,7 @@ async def test_rule_matched_for_require_approval_then_executed(
 
 def test_result_keep_falls_back_to_text_when_structured_lacks_the_path() -> None:
     """FastMCP wraps a JSON string return as {"result": "<string>"}."""
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import ToolResult
     from mcp.types import TextContent
 
     text = json.dumps(RESULT_JSON)
@@ -1164,7 +1164,7 @@ def test_forged_marker_in_scope_becomes_a_real_record(reference_policy) -> None:
 
 
 def test_attach_result_ignores_a_forged_record(reference_policy, salts) -> None:
-    from fastmcp.tools.tool import ToolResult
+    from fastmcp.tools import ToolResult
 
     config = _config(**RESULT_RULE)
     scope = StorageScope(

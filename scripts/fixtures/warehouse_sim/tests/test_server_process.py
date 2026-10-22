@@ -9,7 +9,7 @@ import time
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from .conftest import REPO_ROOT
 
@@ -31,7 +31,7 @@ def _free_port():
 
 
 def _env():
-    return {**os.environ, "PRELOOP_DISABLE_TELEMETRY": "1"}
+    return {**os.environ, "PRELOOP_DISABLE_TELEMETRY": "true"}
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ async def _exercise(session):
     assert {t.name for t in tools.tools} == EXPECTED_TOOLS
 
     tr = await session.call_tool("get_transcript", {"site": "nord", "shift": "late"})
-    assert not tr.isError
+    assert not tr.is_error
     blocks = [b.model_dump(mode="json", by_alias=True) for b in tr.content]
     assert [b["type"] for b in blocks] == ["text", "resource"]
     assert blocks[1]["resource"]["uri"] == "warehouse-sim://transcripts/nord/late.vtt"
@@ -85,12 +85,12 @@ async def _exercise(session):
     assert [b.model_dump(mode="json", by_alias=True) for b in tx.content] == blocks
 
     bad = await session.call_tool("get_transcript", {"site": "west", "shift": "late"})
-    assert bad.isError
+    assert bad.is_error
 
 
 @pytest.mark.asyncio
 async def test_http_server_lists_six_tools_and_serves_content(http_server):
-    async with streamablehttp_client(http_server) as (read, write, _):
+    async with streamable_http_client(http_server) as (read, write):
         async with ClientSession(read, write) as session:
             await _exercise(session)
 

@@ -23,6 +23,10 @@ It has two halves, and the same policies, budgets and session timeline apply to 
 - Engineering teams running coding agents that want to see the cost and keep an audit trail.
 - Teams that want tickets and events turned into bounded agent work they can review.
 
+MCP clients connect to `/mcp`; existing `/mcp/v1` configurations remain compatible.
+See the [tested MCP protocol matrix](docs/architecture/mcp-protocol-compatibility.md)
+for modern discovery, legacy initialization, and SDK migration details.
+
 Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
 
 ## Your first five minutes

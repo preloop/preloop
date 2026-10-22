@@ -2,7 +2,7 @@
 
 from unittest.mock import AsyncMock, patch
 
-import httpx
+import httpx2 as httpx
 import pytest
 
 from preloop.services.mcp_client_pool import MCPClient, describe_mcp_connection_error
@@ -18,7 +18,7 @@ async def test_connect_unwraps_nested_task_group_failure() -> None:
     )
     client = MCPClient(url="https://example.com/mcp")
     with patch(
-        "preloop.services.mcp_client_pool.streamablehttp_client", return_value=streams
+        "preloop.services.mcp_client_pool.streamable_http_client", return_value=streams
     ):
         with pytest.raises(httpx.ConnectError) as raised:
             await client.connect()
