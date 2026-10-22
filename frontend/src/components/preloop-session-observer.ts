@@ -1261,7 +1261,8 @@ export class PreloopSessionObserver extends LitElement {
       requestAnimationFrame(() => {
         if (
           !this.isConnected ||
-          (this.selectedSessionId && this.selectedSessionId !== nextActive)
+          (this.selectedSessionId !== null &&
+            this.selectedSessionId !== nextActive)
         )
           return;
         void this.selectSession(nextActive);

@@ -398,6 +398,39 @@ describe('PreloopSessionObserver', () => {
     expect(missing.callCount).to.equal(calls + 1);
   });
 
+  it('does not let queued auto-selection replace a newly empty pin', async () => {
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'../invalid'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    const frames: FrameRequestCallback[] = [];
+    const frame = sinon
+      .stub(window, 'requestAnimationFrame')
+      .callsFake((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    try {
+      el.selectedSessionId = null;
+      await el.updateComplete;
+      expect(frames.length).to.be.greaterThan(0);
+      el.selectedSessionId = '';
+      await el.updateComplete;
+    } finally {
+      frame.restore();
+    }
+    for (const callback of frames) callback(performance.now());
+    await el.updateComplete;
+    expect((el as any).activeSessionId).to.equal(null);
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.exist;
+  });
+
   it('invalidates an in-flight pinned read when the host removes the pin', async () => {
     let release!: (response: Response) => void;
     fetchStub.withArgs('/api/v1/runtime-sessions/older-session').returns(
