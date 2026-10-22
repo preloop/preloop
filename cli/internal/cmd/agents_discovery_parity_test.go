@@ -2,12 +2,16 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
 )
@@ -15,6 +19,48 @@ import (
 type discoveryPlatformExpectation struct {
 	Path              string `json:"path"`
 	UnsupportedReason string `json:"unsupported_reason"`
+}
+
+// Run only inside the CI job's OS isolation (or the same local sandbox).
+// A timeout/refused connection is not proof of isolation: require the kernel's
+// policy denial, or Linux's missing route in the loopback-only namespace.
+func TestDiscoveryOfflineNetwork(t *testing.T) {
+	if os.Getenv("PRELOOP_DISCOVERY_OFFLINE") != "true" {
+		t.Skip("requires the discovery workflow's OS network isolation")
+	}
+	if os.Getenv("PRELOOP_DISABLE_TELEMETRY") != "true" {
+		t.Fatal("offline fixtures require disabled telemetry")
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	conn, err := net.DialTimeout("tcp4", listener.Addr().String(), time.Second)
+	if err != nil {
+		t.Fatalf("loopback fixtures must remain available: %v", err)
+	}
+	conn.Close()
+
+	// RFC 5737 documentation address, never an external service or credential.
+	conn, err = net.DialTimeout("tcp4", "192.0.2.1:9", time.Second)
+	if conn != nil {
+		conn.Close()
+	}
+	var want error
+	switch runtime.GOOS {
+	case "linux":
+		want = syscall.ENETUNREACH
+	case "darwin":
+		want = syscall.EPERM
+	case "windows":
+		want = syscall.Errno(10013) // WSAEACCES: Windows Firewall policy denial.
+	default:
+		t.Fatalf("no isolation policy for %s", runtime.GOOS)
+	}
+	if !errors.Is(err, want) {
+		t.Fatalf("external connection error = %v, want OS isolation error %v", err, want)
+	}
 }
 
 // The fixture is independent of agentSpecs and the profile platform bitset.

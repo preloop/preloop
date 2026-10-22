@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 15
     env:
       PRELOOP_DISABLE_TELEMETRY: 'true'
+      PRELOOP_DISCOVERY_OFFLINE: 'true'
       DISCOVERY_TESTS: 'Test(Unattended|AllUsersInventory|Inventory|SafeDiscoveryJSON|Discover|BuildDiscovery|DiscoveryKind|HomeRelative|ConfigPathHash|WorkstationFingerprint|LocalProfile|ParseMachineID|PersistedWorkstationID|ClaudeDesktopConfigPaths|ConfigPathsForOther|UserConfigDirs|VSCodeDiscovery|BuildHarnessInventory|HarnessInventory|PersonalRunnerFixtures|RegisterFixturesDecodeInventory|HeartbeatSendsFullInventory|RegisterHashSuppresses|HeartbeatMessageCarriesInventory|GeneratedProfilesAreAdvertised|RegisterSendsInventory)'
     defaults:
       run:
@@ -51,7 +52,7 @@ jobs:
         working-directory: cli/internal/cmd
         shell: bash
         run: |
-          sudo --preserve-env=PRELOOP_DISABLE_TELEMETRY unshare --net bash -eu -c '
+          sudo --preserve-env=PRELOOP_DISABLE_TELEMETRY,PRELOOP_DISCOVERY_OFFLINE unshare --net bash -eu -c '
             ip link set lo up
             uid="$1"; gid="$2"; shift 2
             exec setpriv --reuid="$uid" --regid="$gid" --init-groups "$@"
@@ -70,9 +71,11 @@ jobs:
           $binary = Join-Path $env:RUNNER_TEMP 'discovery.test.exe'
           $rule = 'Preloop discovery fixture isolation'
           # Windows Firewall exempts loopback, used by httptest fixtures.
+          Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True -ErrorAction Stop
           New-NetFirewallRule -DisplayName $rule -Direction Outbound -Program $binary -Action Block -Profile Any -ErrorAction Stop | Out-Null
           try {
-            & $binary -test.run $env:DISCOVERY_TESTS -test.v -test.count=1 -test.timeout=10m
+            $testArgs = @('-test.run', $env:DISCOVERY_TESTS, '-test.v', '-test.count=1', '-test.timeout=10m')
+            & $binary @testArgs
             if ($LASTEXITCODE -ne 0) { throw "Discovery fixtures failed: $LASTEXITCODE" }
           } finally {
             Remove-NetFirewallRule -DisplayName $rule -ErrorAction Stop

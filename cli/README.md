@@ -715,6 +715,8 @@ and Windows. It downloads dependencies before compiling offline, then runs the
 test binary with external networking blocked (Linux network namespace, macOS
 sandbox, or Windows Firewall). Loopback HTTP fixture servers remain available.
 Telemetry is disabled on all three runners.
+An isolation test requires the OS to reject an external documentation address
+with a policy or namespace error, while allowing a loopback connection.
 
 When registering an app or changing its config locations, update
 `internal/cmd/testdata/discovery-platform-paths.json`. Every app needs an explicit
