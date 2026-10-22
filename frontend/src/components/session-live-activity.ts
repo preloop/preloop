@@ -22,6 +22,16 @@ import { sessionWork, sessionTools } from '../utils/session-live';
 import type { LiveSessionState } from '../utils/live-session';
 import { formatElapsed } from '../utils/live-session';
 import { isUnexpiredPendingRequest } from '../utils/approvals';
+import {
+  applyTurnEvent,
+  deriveAgentStatus,
+  runtimeForSource,
+  turnOutputTokens,
+  utcMs,
+  type AgentStatus,
+  type AgentTurnInfo,
+} from '../utils/agent-status';
+import './agent-status-line';
 
 export interface SessionApprovalState {
   requests: ApprovalRequest[];
@@ -68,6 +78,15 @@ export class SessionLiveActivity extends LitElement {
   @property({ type: Number }) now = 0;
   /** Compact "what is happening" line. Null hides it; the controller still runs. */
   @property({ attribute: false }) state: LiveSessionState | null = null;
+  /**
+   * Turn facts of this session (runtime, server turn state and bounds).
+   * Realtime prompt, tool-end, turn-end and progress events update a local
+   * copy, so the line moves without a reload.
+   */
+  @property({ attribute: false }) turn: AgentTurnInfo | null = null;
+  /** True where Preloop can interrupt the turn; adds the interrupt hint. */
+  @property({ type: Boolean }) canInterrupt = false;
+  @state() private liveTurn: AgentTurnInfo | null = null;
   @state() private connected = false;
   @state() private error = '';
   private generation = 0;
@@ -135,6 +154,22 @@ export class SessionLiveActivity extends LitElement {
     }
     .elapsed {
       font-variant-numeric: tabular-nums;
+    }
+    .turn-footer,
+    .turn-marker {
+      color: var(--sl-color-neutral-600);
+      font-family: var(
+        --console-font-mono,
+        ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        Consolas,
+        monospace
+      );
+      font-size: 0.78rem;
+    }
+    .turn-marker + .turn-footer::before {
+      content: '· ';
     }
     .jump {
       background: none;
@@ -213,6 +248,13 @@ export class SessionLiveActivity extends LitElement {
           event,
         ].slice(-256);
       }),
+      unifiedWebSocketManager.subscribe('runtime_sessions', (message) =>
+        this.handleTurnEvent(message)
+      ),
+      unifiedWebSocketManager.subscribe('agent_control', (message) => {
+        if (message?.type === 'managed_agent_command_progress')
+          this.handleTurnEvent(message);
+      }),
     ];
     this.timer = setInterval(() => {
       this.clock = Date.now();
@@ -225,6 +267,88 @@ export class SessionLiveActivity extends LitElement {
         this.notify();
     }, 1000);
     return true;
+  }
+  private handleTurnEvent(message: {
+    type?: string;
+    timestamp?: string;
+    runtime_session_id?: string;
+    payload?: Record<string, unknown>;
+  }): void {
+    const payload = message?.payload ?? {};
+    if (
+      (payload.runtime_session_id || message?.runtime_session_id) !==
+      this.sessionId
+    )
+      return;
+    this.liveTurn = applyTurnEvent(
+      this.liveTurn ?? { ...(this.turn ?? {}) },
+      message
+    );
+  }
+  /** Server turn facts, overlaid by realtime events seen since. */
+  private get effectiveTurn(): AgentTurnInfo {
+    return { ...(this.turn ?? {}), ...(this.liveTurn ?? {}) };
+  }
+  /**
+   * The one status (D35) from what this controller observed: approvals,
+   * tools, open model requests and the turn's own bounds.
+   */
+  private agentStatus(
+    live: {
+      busyModel: boolean;
+      runningTool: string | null;
+      queued: boolean;
+      since: number | null;
+      lastEventAt: number | null;
+    },
+    pending: Array<{ requested_at?: string }>,
+    events: FlowGatewayEvent[],
+    now: number
+  ): AgentStatus {
+    const turn = this.effectiveTurn;
+    const ended = this.ended || turn.turnState === 'ended';
+    const turnEndedAt = utcMs(turn.turnEndedAt);
+    const serverStart = utcMs(turn.turnStartedAt);
+    const turnStartedAt = serverStart ?? live.since;
+    const pendingSince = pending
+      .map((request) => utcMs(request.requested_at))
+      .filter((value): value is number => value !== null)
+      .sort((left, right) => left - right)[0];
+    return deriveAgentStatus({
+      runtime: runtimeForSource(turn.sourceType),
+      turnId: turn.turnStartedAt || null,
+      turnStartedAt,
+      turnEndedAt,
+      interrupted: turn.turnInterrupted === true,
+      ended,
+      turnState: turn.turnState ?? null,
+      modelBusy: live.busyModel,
+      runningTool: live.runningTool || turn.runningTool || null,
+      pendingApprovals: pending.length,
+      pendingSince: pendingSince ?? null,
+      queued: live.queued,
+      outputTokens: turnOutputTokens(events, turnStartedAt),
+      catchingUp: this.sessionId ? !this.connected : false,
+      lastEventAt: live.lastEventAt,
+      canInterrupt: this.canInterrupt,
+      now,
+    });
+  }
+  private renderTurnEnd(status: AgentStatus) {
+    if (!status.marker && !status.footer) return nothing;
+    return html`${
+      status.marker
+        ? html`<span class="turn-marker" data-testid="turn-marker"
+            >${status.marker}</span
+          >`
+        : nothing
+    }${
+      status.footer
+        ? html`<span class="turn-footer" data-testid="turn-footer"
+            >${status.footer}</span
+          >`
+        : nothing
+    }`;
   }
   disconnectedCallback(): void {
     ++this.generation;
@@ -243,12 +367,17 @@ export class SessionLiveActivity extends LitElement {
   protected willUpdate(): void {
     const now = this.effectiveNow;
     const status = this.state?.status ?? null;
-    if (status && status !== this.lastAnnouncedStatus) {
+    if (status && this.state && status !== this.lastAnnouncedStatus) {
       this.lastAnnouncedStatus = status;
-      const elapsed = formatElapsed(this.state?.since ?? null, now);
-      this.announcement = elapsed
-        ? `${this.state?.label}, ${elapsed} elapsed`
-        : `${this.state?.label}.`;
+      // Announce the words, not the ticking counter: "Working", "Waiting
+      // for approval", the footer of a finished turn.
+      const line = this.lineStatus(this.state);
+      const words = line.line
+        ? line.line.split(' (')[0].replace(/…$/, '')
+        : line.marker || line.footer || this.state.label;
+      const elapsed = formatElapsed(this.state.since ?? null, now);
+      this.announcement =
+        elapsed && line.line ? `${words}, ${elapsed} elapsed` : `${words}.`;
     }
     this.syncTicker();
   }
@@ -269,7 +398,8 @@ export class SessionLiveActivity extends LitElement {
   private syncTicker(): void {
     const busy =
       this.state?.status === 'model_processing' ||
-      this.state?.status === 'running_tool';
+      this.state?.status === 'running_tool' ||
+      this.state?.status === 'waiting_for_approval';
     if (!busy) {
       if (this.tickTimer !== null) {
         window.clearInterval(this.tickTimer);
@@ -303,6 +433,7 @@ export class SessionLiveActivity extends LitElement {
     this.revisions.clear();
     this.requests = [];
     this.transient = [];
+    this.liveTurn = null;
     this.canView = false;
     this.canDecide = false;
     this.author = '';
@@ -474,34 +605,58 @@ export class SessionLiveActivity extends LitElement {
   render() {
     return html`${this.renderStatusLine()}${this.renderControllerBar()}`;
   }
+  /** The status line's state from the host's LiveSessionState. */
+  private lineStatus(state: LiveSessionState): AgentStatus {
+    const now = this.effectiveNow;
+    const pending = Array.from({ length: state.pendingApprovalCount }, () => ({
+      requested_at: undefined as string | undefined,
+    }));
+    const status = this.agentStatus(
+      {
+        busyModel: state.status === 'model_processing',
+        runningTool:
+          state.status === 'running_tool' ? state.detail || 'tool' : null,
+        queued: state.status === 'waiting_for_agent',
+        since: state.since,
+        lastEventAt: state.lastUpdateAt,
+      },
+      pending,
+      [...this.events, ...this.transient],
+      now
+    );
+    if (status.phase === 'waiting_for_approval' && state.since !== null) {
+      return deriveAgentStatus({
+        runtime: runtimeForSource(this.effectiveTurn.sourceType),
+        pendingApprovals: state.pendingApprovalCount,
+        pendingSince: state.since,
+        now,
+      });
+    }
+    return status;
+  }
   private renderStatusLine() {
     const state = this.state;
     if (!state) return nothing;
-    const elapsed = formatElapsed(state.since, this.effectiveNow);
-    const busy =
-      state.status === 'model_processing' || state.status === 'running_tool';
+    const status = this.lineStatus(state);
     return html`
       <div
         class="line ${state.status}"
         data-testid="live-activity"
         data-status=${state.status}
+        data-phase=${status.phase}
         data-transport=${state.transport}
       >
-        ${
-          busy
-            ? html`<sl-spinner
-                style="--indicator-size: 0.75rem; --width: 2px"
-                aria-hidden="true"
-              ></sl-spinner>`
-            : nothing
-        }
-        <span data-testid="live-activity-label">${state.label}</span>
-        ${state.detail ? html`<span>· ${state.detail}</span>` : nothing}
-        ${
-          elapsed
-            ? html`<span class="elapsed" aria-hidden="true">· ${elapsed}</span>`
-            : nothing
-        }
+        <span data-testid="live-activity-label"
+          >${
+            status.line
+              ? html`<agent-status-line .status=${status}></agent-status-line>`
+              : status.marker || status.footer
+                ? this.renderTurnEnd(status)
+                : status.phase === 'your_turn'
+                  ? status.chip.label
+                  : state.label
+          }</span
+        >
         ${
           state.pendingApprovalCount > 0
             ? html`<button
@@ -553,25 +708,54 @@ export class SessionLiveActivity extends LitElement {
     const running = runningEvidence.filter(
       (t) => this.clock - Date.parse(t.timestamp || '') < 120000
     );
-    const label = this.ended
+    const status = this.agentStatus(
+      {
+        // A reply that asked for tools means the agent is running them.
+        busyModel:
+          work.label === 'Model processing' || work.label === 'Agent working',
+        runningTool: running.length
+          ? running.map((t) => t.name).join(', ')
+          : null,
+        queued: false,
+        since: work.startedAt ?? null,
+        lastEventAt: this.lastUpdate,
+      },
+      pending,
+      events,
+      this.clock
+    );
+    // Words for what the status line cannot say: evidence that aged out,
+    // a tool the model asked for, an idle or ended session.
+    const fallback = this.ended
       ? 'Ended'
-      : pending.length
-        ? `Waiting for approval · ${pending.length}`
-        : this.connected && running.length
-          ? `Running ${running.map((t) => t.name).join(', ')}`
-          : runningEvidence.length && !running.length
-            ? 'Activity unavailable'
-            : !this.connected && work.label === 'Model processing'
-              ? 'Activity unavailable'
-              : work.label === 'Waiting for agent' && requested.length
-                ? `Tool requested · ${requested.map((t) => t.name).join(', ')}`
-                : work.label;
+      : runningEvidence.length && !running.length
+        ? 'Activity unavailable'
+        : work.label === 'Waiting for agent' && requested.length
+          ? `Tool requested · ${requested.map((t) => t.name).join(', ')}`
+          : status.phase === 'your_turn' || status.phase === 'interrupted'
+            ? 'Your turn'
+            : work.label;
     const truncated = events.some(
       (event) => event.payload?.tools_metadata_truncated === true
     );
     return html`<div class="row">
-      <span role="status" aria-live="polite">${label}</span>
-      ${!this.ended && this.connected && !pending.length && work.startedAt ? html`<span>${work.model} · ${Math.max(0, Math.floor((this.clock - work.startedAt) / 1000))}s${(work.count || 0) > 1 ? ` · ${work.count} requests` : ''}</span>` : nothing}
+      ${
+        this.state
+          ? nothing
+          : html`<span
+                role="status"
+                aria-live="polite"
+                data-phase=${status.phase}
+                >${
+                  status.line
+                    ? html`<agent-status-line
+                        .status=${status}
+                      ></agent-status-line>`
+                    : fallback
+                }</span
+              >${this.renderTurnEnd(status)}`
+      }
+      ${!this.state && status.line && work.model && (work.count || 0) > 1 ? html`<span class="transport">${work.model} · ${work.count} requests</span>` : nothing}
       ${pending.length ? html`<sl-button variant="neutral" size="small" @click=${() => this.dispatchEvent(new CustomEvent('session-approval-jump', { detail: { id: pending[0].id }, bubbles: true, composed: true }))}>Next pending approval</sl-button>` : nothing}
       ${!this.connected ? html`<span class="transport">Reconnecting · last update ${new Date(this.lastUpdate).toLocaleTimeString()}</span>` : nothing}
       ${truncated ? html`<span class="transport">Additional tool history omitted by capture limits.</span>` : nothing}

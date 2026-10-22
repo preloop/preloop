@@ -49,7 +49,20 @@ import type {
   RuntimeSessionActivityItem,
   RuntimeSessionSummary,
 } from '../../types';
-import { getAgentStatusChip } from '../../utils/agent-display';
+import {
+  getAgentStatusChip,
+  type AgentStatusChip,
+} from '../../utils/agent-display';
+import { agentStateChip, turnInfoFromSession } from '../../utils/agent-status';
+
+/** Agent chips that say what it is doing, as opposed to its lifecycle. */
+const ACTIVITY_CHIP_LABELS = new Set([
+  'Working',
+  'Needs approval',
+  'Your turn',
+  'Idle',
+  'Ended',
+]);
 import { renderAgentIcon } from '../../utils/agent-icons';
 import { normalizeObservedSession } from '../../utils/session-observer';
 import {
@@ -433,6 +446,17 @@ export class AgentTalkView extends LitElement {
     return this.sessions.find((session) => session.id === this.sessionId);
   }
 
+  /**
+   * Lifecycle and onboarding chips come from the agent; what it is doing
+   * comes from the session this window is on (D35).
+   */
+  private headerChip(agent: ManagedAgentSummary): AgentStatusChip {
+    const chip = getAgentStatusChip(agent);
+    const session = this.currentSession;
+    if (!session || !ACTIVITY_CHIP_LABELS.has(chip.label)) return chip;
+    return agentStateChip(session);
+  }
+
   /** The live session the ended-session guard offers, newest first. */
   private get liveAlternative(): { id: string; subject: string } | null {
     const live = this.sessions
@@ -805,7 +829,7 @@ export class AgentTalkView extends LitElement {
 
   private renderHeader() {
     const agent = this.agent;
-    const chip = agent ? getAgentStatusChip(agent) : null;
+    const chip = agent ? this.headerChip(agent) : null;
     const subject = this.sessionSubject;
     return html`
       <div class="talk-header">
@@ -907,6 +931,9 @@ export class AgentTalkView extends LitElement {
         @session-live-reload=${() => this.scheduleReload()}
         .sessionId=${this.sessionId || ''}
         .ended=${Boolean(this.currentSession?.ended_at)}
+        .turn=${turnInfoFromSession(
+          this.currentSession as unknown as Record<string, unknown> | undefined
+        )}
         @browser-step-open=${(event: CustomEvent<{ key: string }>) => {
           this.browserStepViewerIndex = sortBrowserSteps(
             this.activity

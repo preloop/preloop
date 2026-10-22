@@ -145,17 +145,37 @@ describe('getAgentStatusChip', () => {
     ).to.deep.equal({ label: 'Idle', variant: 'neutral' });
   });
 
-  it('shows Active now for a live agent and an outlined chip for a recent one', () => {
-    expect(
-      getAgentStatusChip({ ...onboarded, is_active_now: true })
-    ).to.deep.equal({ label: 'Active now', variant: 'success' });
-    expect(
-      getAgentStatusChip({ ...onboarded, activity_status: 'recently_active' })
-    ).to.deep.equal({
-      label: 'Recently active',
-      variant: 'success',
-      outline: true,
+  it('active_now with your_turn state renders Your turn, not Active now', () => {
+    const agent = {
+      ...onboarded,
+      is_active_now: true,
+      activity_status: 'active_now',
+      turn_state: 'your_turn',
+    };
+    expect(getAgentStatusChip(agent)).to.deep.equal({
+      label: 'Your turn',
+      variant: 'neutral',
     });
+    expect(getAgentLifecycleLabel(agent)).to.equal('Your turn');
+    expect(getAgentLifecycleLabel(agent)).to.not.equal('Active now');
+  });
+
+  it('reads the server turn state as Working or Needs approval', () => {
+    const now = new Date().toISOString();
+    expect(
+      getAgentStatusChip({
+        ...onboarded,
+        turn_state: 'working',
+        last_activity_at: now,
+      })
+    ).to.deep.equal({ label: 'Working', variant: 'success' });
+    expect(
+      getAgentStatusChip({ ...onboarded, turn_state: 'waiting_for_approval' })
+    ).to.deep.equal({ label: 'Needs approval', variant: 'warning' });
+    // Recency alone is "seen recently", shown in Last seen, not a state.
+    expect(
+      getAgentStatusChip({ ...onboarded, is_active_now: true }).label
+    ).to.equal('Idle');
   });
 
   it('falls back to Idle', () => {

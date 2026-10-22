@@ -19,6 +19,15 @@ function state(overrides: Partial<LiveSessionState> = {}): LiveSessionState {
   };
 }
 
+function labelText(el: SessionLiveActivity): string {
+  return (
+    el
+      .shadowRoot!.querySelector('[data-testid="live-activity-label"]')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim() ?? ''
+  );
+}
+
 async function renderLine(
   value: LiveSessionState,
   now = SINCE + 12_000
@@ -34,34 +43,56 @@ async function renderLine(
 }
 
 describe('session-live-activity', () => {
-  it('shows model, status and elapsed time in one line', async () => {
+  it('shows the status and turn elapsed time in one line', async () => {
     const el = await renderLine(state());
 
     const line = el.shadowRoot!.querySelector('[data-testid="live-activity"]')!;
     expect(line.getAttribute('data-status')).to.equal('model_processing');
-    expect(
-      line
-        .querySelector('[data-testid="live-activity-label"]')
-        ?.textContent?.trim()
-    ).to.equal('Model processing');
-    expect(line.textContent).to.contain('openai/gpt-5');
-    expect(line.querySelector('.elapsed')?.textContent?.trim()).to.equal(
-      '· 12s'
+    expect(line.getAttribute('data-phase')).to.equal('thinking');
+    expect(labelText(el)).to.equal('Working (12s)');
+    expect(line.querySelector('agent-status-line')).to.not.equal(null);
+  });
+
+  it("speaks the runtime's words for a Claude Code turn", async () => {
+    const el = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .state=${state()}
+        .now=${SINCE + 12_000}
+        .turn=${{
+          sourceType: 'claude_code',
+          turnState: 'working',
+          turnStartedAt: '2026-10-02T09:00:00',
+        }}
+      ></session-live-activity>`
     );
+    expect(labelText(el)).to.match(/^\S+… \(12s · thinking\)$/);
+  });
+
+  it('shows the turn footer once the turn ended', async () => {
+    const el = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .state=${state({ status: 'idle', label: 'Idle', since: null })}
+        .now=${SINCE + 600_000}
+        .turn=${{
+          sourceType: 'codex',
+          turnState: 'your_turn',
+          turnStartedAt: '2026-10-02T09:00:00',
+          turnEndedAt: '2026-10-02T09:03:24',
+        }}
+      ></session-live-activity>`
+    );
+    const footer = el.shadowRoot!.querySelector('[data-testid="turn-footer"]');
+    expect(footer?.textContent).to.match(/^Worked for 3m 24s • /);
   });
 
   it('keeps the elapsed readout anchored to when the status began', async () => {
     const first = await renderLine(state(), SINCE + 12_000);
-    expect(
-      first.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
-    ).to.equal('· 12s');
+    expect(labelText(first)).to.equal('Working (12s)');
 
     // A re-render at a later clock must advance the same status, never restart it.
     first.now = SINCE + 45_000;
     await first.updateComplete;
-    expect(
-      first.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
-    ).to.equal('· 45s');
+    expect(labelText(first)).to.equal('Working (45s)');
   });
 
   it('shows the pending count and offers an in-place jump', async () => {
@@ -112,20 +143,15 @@ describe('session-live-activity', () => {
   it('announces a state change once, not every elapsed second', async () => {
     const el = await renderLine(state());
     const live = el.shadowRoot!.querySelector('[aria-live="polite"]')!;
-    expect(live.textContent).to.contain('Model processing');
-    // The ticking number is presentational only.
-    expect(
-      el.shadowRoot!.querySelector('.elapsed')?.getAttribute('aria-hidden')
-    ).to.equal('true');
+    expect(live.textContent).to.contain('Working, 12s elapsed');
 
     el.now = SINCE + 30_000;
     await el.updateComplete;
+    // The announcement does not follow the ticking number.
     expect(
       el.shadowRoot!.querySelector('[aria-live="polite"]')!.textContent
-    ).to.contain('Model processing');
-    expect(
-      el.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
-    ).to.equal('· 30s');
+    ).to.contain('Working, 12s elapsed');
+    expect(labelText(el)).to.equal('Working (30s)');
   });
 
   it('re-announces when the status actually changes', async () => {
@@ -193,16 +219,12 @@ describe('session-live-activity ticking', () => {
   it('keeps counting up instead of freezing on the last event', async () => {
     const el = await mountBusy(1_000_000);
 
-    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
-      '12s'
-    );
+    expect(labelText(el)).to.contain('12s');
 
     await clock.tickAsync(5000);
     await el.updateComplete;
 
-    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
-      '17s'
-    );
+    expect(labelText(el)).to.contain('17s');
   });
 
   it('stops the tick once the agent is no longer busy', async () => {
@@ -228,9 +250,7 @@ describe('session-live-activity ticking', () => {
     await el.updateComplete;
 
     // 6s of ticking on top of the 12s already elapsed, not 6s total.
-    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
-      '18s'
-    );
+    expect(labelText(el)).to.contain('18s');
   });
 });
 
@@ -541,10 +561,11 @@ describe('shared session approval controller', () => {
       },
     });
     await element.updateComplete;
-    expect(element.shadowRoot!.textContent).to.include('Model processing');
+    expect(element.shadowRoot!.textContent).to.include('Working (');
     stateCallback(ConnectionState.DISCONNECTED);
     await element.updateComplete;
-    expect(element.shadowRoot!.textContent).to.include('Activity unavailable');
+    // Only whole events can arrive now: the line says it is catching up.
+    expect(element.shadowRoot!.textContent).to.include('Catching up');
     expect(element.shadowRoot!.textContent).to.include('Reconnecting');
     let reconciled = false;
     element.addEventListener(

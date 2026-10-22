@@ -593,6 +593,15 @@ export interface RuntimeSessionSummary {
   latest_model_alias: string | null;
   latest_provider_name: string | null;
   is_active_now: boolean;
+  /**
+   * What the agent is doing, derived by the server from hook rows:
+   * `working`, `waiting_for_approval`, `your_turn` or `ended`; null when no
+   * hook has reported a turn yet.
+   */
+  turn_state?: string | null;
+  turn_started_at?: string | null;
+  turn_ended_at?: string | null;
+  turn_interrupted?: boolean | null;
   activity_status: 'active_now' | 'idle' | 'ended' | string;
   total_requests: number;
   successful_requests: number;
@@ -751,6 +760,15 @@ export interface ManagedAgentSummary {
   lifecycle_reason: string | null;
   lifecycle_updated_at: string | null;
   is_active_now: boolean;
+  /**
+   * What the agent is doing, derived by the server from hook rows:
+   * `working`, `waiting_for_approval`, `your_turn` or `ended`; null when no
+   * hook has reported a turn yet.
+   */
+  turn_state?: string | null;
+  turn_started_at?: string | null;
+  turn_ended_at?: string | null;
+  turn_interrupted?: boolean | null;
   activity_status:
     | 'active_now'
     | 'recently_active'

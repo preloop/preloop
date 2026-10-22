@@ -30,6 +30,7 @@ function makeAgent(
     lifecycle_reason: null,
     lifecycle_updated_at: '2026-03-10T10:00:00Z',
     is_active_now: true,
+    turn_state: 'your_turn',
     activity_status: 'active_now',
     last_seen_at: '2026-03-10T10:00:00Z',
     started_at: '2026-03-10T09:00:00Z',
@@ -589,8 +590,9 @@ describe('AgentsView', () => {
     await waitForAgents(el);
 
     const chip = el.shadowRoot?.querySelector('tbody sl-badge.status-chip');
-    expect(chip?.textContent?.trim()).to.equal('Active now');
-    expect(chip?.getAttribute('variant')).to.equal('success');
+    // The server's turn state, never recency ("Active now" lives in Last seen).
+    expect(chip?.textContent?.trim()).to.equal('Your turn');
+    expect(chip?.getAttribute('variant')).to.equal('neutral');
     // Wave 4: a state is a tint. The class carries the soft recipe; only a
     // header count or a failed run opts back into a solid pill.
     expect(chip?.classList.contains('solid'), 'row state is a solid pill').to.be

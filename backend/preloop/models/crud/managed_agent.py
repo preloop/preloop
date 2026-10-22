@@ -1481,6 +1481,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 RuntimeSession.started_at,
                 RuntimeSession.last_activity_at,
                 RuntimeSession.ended_at,
+                RuntimeSession.turn_state,
+                RuntimeSession.turn_started_at,
+                RuntimeSession.turn_ended_at,
+                RuntimeSession.turn_interrupted,
                 last_request.label("last_request_at"),
             )
             .order_by(
@@ -1635,6 +1639,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 RuntimeSession.started_at,
                 RuntimeSession.last_activity_at,
                 RuntimeSession.ended_at,
+                RuntimeSession.turn_state,
+                RuntimeSession.turn_started_at,
+                RuntimeSession.turn_ended_at,
+                RuntimeSession.turn_interrupted,
                 func.count(ApiUsage.id).label("request_count"),
                 func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
                     "estimated_cost"
@@ -1669,6 +1677,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 RuntimeSession.started_at,
                 RuntimeSession.last_activity_at,
                 RuntimeSession.ended_at,
+                RuntimeSession.turn_state,
+                RuntimeSession.turn_started_at,
+                RuntimeSession.turn_ended_at,
+                RuntimeSession.turn_interrupted,
             )
             .first()
         )
@@ -1950,6 +1962,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             "tags": row.tags or {},
             "is_active_now": is_active_now,
             "activity_status": activity_status,
+            "turn_state": getattr(row, "turn_state", None),
+            "turn_started_at": getattr(row, "turn_started_at", None),
+            "turn_ended_at": getattr(row, "turn_ended_at", None),
+            "turn_interrupted": getattr(row, "turn_interrupted", None),
             "last_seen_at": row.last_seen_at,
             "control_session_mode": getattr(row, "control_session_mode", None)
             or "offline",

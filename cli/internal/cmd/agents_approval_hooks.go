@@ -379,6 +379,12 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 		if err := upsertNestedCommandHook(configPath, "SessionEnd", "", sessionEndHookCommand(source), sessionHookTimeoutSeconds); err != nil {
 			return err
 		}
+		// Agent state (tool ends, waits for input): fail-open, 5 s.
+		for _, hook := range activityHookEvents {
+			if err := upsertNestedCommandHook(configPath, hook.event, hook.matcher, activityHookCommand(source), activityHookTimeoutSeconds); err != nil {
+				return err
+			}
+		}
 	case permissionSourceCodexCLI:
 		for _, hook := range []struct{ event, command string }{
 			{"Stop", stopHookCommand(source)},
@@ -574,7 +580,7 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 				return err
 			}
 		}
-		for _, event := range noteLifecycleHookEvents {
+		for _, event := range append(append([]string{}, noteLifecycleHookEvents...), activityHookEventNames()...) {
 			if err := removeNestedCommandHook(configPath, event, false); err != nil {
 				return err
 			}

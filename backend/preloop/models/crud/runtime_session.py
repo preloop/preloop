@@ -431,7 +431,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.id == runtime_session_id,
                 self.model.ended_at.is_(None),
             )
-            .values(ended_at=ended_at, last_activity_at=ended_at)
+            .values(ended_at=ended_at, last_activity_at=ended_at, turn_state="ended")
             .returning(self.model.id)
             .execution_options(synchronize_session=False)
         ).first()
@@ -1723,6 +1723,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
                 func.max(cast(usage_model.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
@@ -1778,6 +1782,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
             )
         )
@@ -2098,6 +2106,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
                 func.max(cast(ApiUsage.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
@@ -2156,6 +2168,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
             )
             .first()
@@ -2337,6 +2353,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "latest_provider_name": row.latest_provider_name,
             "is_active_now": is_active_now,
             "activity_status": activity_status,
+            "turn_state": getattr(row, "turn_state", None),
+            "turn_started_at": getattr(row, "turn_started_at", None),
+            "turn_ended_at": getattr(row, "turn_ended_at", None),
+            "turn_interrupted": getattr(row, "turn_interrupted", None),
             "total_requests": int(row.request_count or 0),
             "successful_requests": int(row.success_count or 0),
             "failed_requests": int(row.error_count or 0),

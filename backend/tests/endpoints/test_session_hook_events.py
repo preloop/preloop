@@ -272,9 +272,25 @@ def test_crud_dedupe_is_per_kind_and_window(
 
 
 def test_request_schemas_carry_no_prompt_field_for_events() -> None:
-    """Privacy: the event route has no field that could carry content."""
+    """Privacy: no field carries prompt text or tool arguments.
+
+    The only free text is the tool-end ``output_preview``, which the service
+    scrubs and cuts to 400 characters before it is stored.
+    """
     fields = set(endpoint.AgentSessionEventRequest.model_fields)
-    assert fields == {"session_id", "hook_event_name", "source"}
+    assert fields == {
+        "session_id",
+        "hook_event_name",
+        "source",
+        "tool_use_id",
+        "tool_name",
+        "exit_code",
+        "is_error",
+        "duration_ms",
+        "output_preview",
+        "notification_type",
+        "interrupted",
+    }
     for banned in ("prompt", "first_prompt", "summary", "tool_args"):
         assert banned not in fields
     names = set(
@@ -282,7 +298,16 @@ def test_request_schemas_carry_no_prompt_field_for_events() -> None:
             endpoint.AgentSessionEventRequest.model_fields["hook_event_name"].annotation
         )
     )
-    assert names == {"Stop", "SubagentStop", "SessionEnd", "stop", "sessionEnd"}
+    assert names == {
+        "Stop",
+        "SubagentStop",
+        "SessionEnd",
+        "stop",
+        "sessionEnd",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Notification",
+    }
 
 
 def test_mark_ended_by_hook_stamps_only_an_open_session(
