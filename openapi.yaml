@@ -40362,9 +40362,11 @@ components:
           - session_start
           - stop
           - pre_tool_use
+          - user_prompt_submit
           title: Event
           description: 'The harness lifecycle point asking for notes: session_start,
-            stop or pre_tool_use. Recorded on the delivery for audit.'
+            stop, pre_tool_use or user_prompt_submit (the operator''s next prompt
+            in the terminal). Recorded on the delivery for audit.'
           default: pre_tool_use
         session_id:
           anyOf:
@@ -40507,6 +40509,7 @@ components:
             - session_start
             - stop
             - pre_tool_use
+            - user_prompt_submit
           - type: 'null'
           title: Delivery Event
         delivered_turn_index:
@@ -44204,6 +44207,7 @@ components:
             - agent_inactive
             - no_control_plugin
             - control_offline
+            - terminal_session
           - type: 'null'
           title: Reason Code
         reason:
@@ -44211,6 +44215,13 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        delivery:
+          type: string
+          enum:
+          - turn
+          - note
+          title: Delivery
+          default: note
         send_path:
           anyOf:
           - type: string

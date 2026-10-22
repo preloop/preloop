@@ -628,6 +628,34 @@ test("full durable receipt ledger rejects new work and preserves replay after re
   } finally { await fs.rm(directory, {recursive: true, force: true}); }
 });
 
+test("presence lists owned threads as reachable", async () => {
+  const { sidecar } = makeSidecar();
+  const early = [];
+  sidecar.sendEnvelope = (envelope) => early.push(envelope);
+  assert.deepEqual(sidecar.reachableSessionIds(), []);
+  await sidecar.handleFrame(
+    fakeSocket(),
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "m-reach",
+      payload: { text: "go", start_new_session: true },
+    }),
+  );
+  assert.deepEqual(sidecar.reachableSessionIds(), ["thread-1"]);
+  // Opening the thread republishes presence without waiting for a heartbeat.
+  assert.equal(early.length, 1);
+  assert.deepEqual(early[0].payload.reachable_session_ids, ["thread-1"]);
+
+  const sent = [];
+  sidecar.sendEnvelope = (envelope) => sent.push(envelope);
+  sidecar.launcher.notifyStatus = () => {};
+  sidecar.broadcastMode();
+  assert.equal(sent[0].name, "session_mode");
+  assert.deepEqual(sent[0].payload.reachable_session_ids, ["thread-1"]);
+  sidecar.stop();
+});
+
 function fakeAppServer(reachable = ["tui-thread"]) {
   const calls = { turns: [], interrupts: [] };
   const driver = {

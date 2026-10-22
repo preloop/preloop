@@ -83,6 +83,65 @@ export function getAgentControlState(
   };
 }
 
+/**
+ * Where a note was read, in the words the Talk window uses: "tool call",
+ * "turn end" or "next prompt". The hook event comes from the server's
+ * delivery event (`metadata.hook_event`); a gateway delivery has none and
+ * reads at the next model call.
+ */
+export function noteReadPointLabel(
+  hookEvent: string | null | undefined
+): string {
+  switch (hookEvent) {
+    case 'pre_tool_use':
+      return 'tool call';
+    case 'stop':
+      return 'turn end';
+    case 'user_prompt_submit':
+    case 'session_start':
+      return 'next prompt';
+    default:
+      return 'model call';
+  }
+}
+
+/**
+ * The line above the Talk input for a session the server routes as notes.
+ *
+ * The server decides per session (`/runtime-sessions/<id>/control`); this
+ * only words its answer. A terminal session reads a note at its next tool
+ * call or when the turn ends, and an idle one only with the operator's next
+ * prompt in that terminal.
+ */
+export function noteModeLine(
+  reasonCode: string | null | undefined,
+  reason: string | null | undefined,
+  idle: boolean
+): string {
+  if (reasonCode === 'terminal_session') {
+    const base =
+      'Terminal session. Your message is read at its next tool call or when the turn ends.';
+    return idle
+      ? `${base} It is idle: it reads this with your next prompt in the terminal.`
+      : base;
+  }
+  if (reasonCode === 'session_ended') {
+    return 'This session has ended. Nothing can be sent.';
+  }
+  const text = (
+    reason ||
+    'Your message is a note the agent reads at its next tool or model call'
+  ).trim();
+  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
+  return `Note. ${sentence.endsWith('.') ? sentence : `${sentence}.`}`;
+}
+
+/**
+ * Agent-level control mode. Used only when a Talk window has no session yet
+ * (the next turn starts one): for a session-bound window the server's
+ * per-session answer decides, because one plugin online for a machine says
+ * nothing about whether it can reach a given terminal session.
+ */
 export function getAgentControlSessionMode(
   agent: ManagedAgentSummary | null | undefined
 ): 'local' | 'remote' | 'queued' | 'offline' {

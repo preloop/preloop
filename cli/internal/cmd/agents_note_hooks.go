@@ -25,9 +25,11 @@ import (
 // sent after its last tool call, or before its first, is lost. Two more
 // lifecycle hooks close that gap, both fail open:
 //
-//   - SessionStart (and the first UserPromptSubmit) claims notes for the run
-//     as soon as the session is registered. This is where a note sent before
-//     the child starts lands, before the first tool call.
+//   - SessionStart claims notes for the run as soon as the session is
+//     registered. This is where a note sent before the child starts lands,
+//     before the first tool call.
+//   - Every UserPromptSubmit claims notes too, so a note sent to an idle
+//     terminal session rides the operator's next prompt.
 //   - Stop asks once more as the turn ends. If something is pending it blocks
 //     the stop with the rendered block as the continuation reason, so the
 //     model reads it and may act. At most `stopBlockSessionMax` blocks per
@@ -52,6 +54,9 @@ const (
 	noteEventSessionStart = "session_start"
 	// noteEventStop is the Stop rescue that continues a headless run.
 	noteEventStop = "stop"
+	// noteEventUserPromptSubmit is the operator's next prompt in the
+	// terminal; the note rides it as additional context.
+	noteEventUserPromptSubmit = "user_prompt_submit"
 
 	// stopBlockSessionMax caps how many Stop blocks one session may cause. A
 	// sender must not be able to keep a worker alive in a loop.

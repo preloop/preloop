@@ -82,6 +82,8 @@ export interface TranscriptNoteDelivery {
   authorDisplay: string | null;
   authorAuthMethod: string | null;
   turnIndex: number | null;
+  /** Hook event that read the note (`pre_tool_use`, `stop`, ...), if any. */
+  deliveryEvent?: string | null;
 }
 
 export interface TranscriptStepGroupItem {
@@ -835,5 +837,6 @@ function noteDelivery(
     authorAuthMethod: text(metadata.author_auth_method),
     turnIndex:
       typeof metadata.turn_index === 'number' ? metadata.turn_index : null,
+    deliveryEvent: text(metadata.delivery_event),
   };
 }

@@ -157,9 +157,13 @@ class RuntimeSessionControlResponse(BaseModel):
             "agent_inactive",
             "no_control_plugin",
             "control_offline",
+            "terminal_session",
         ]
     ] = None
     reason: Optional[str] = None
+    #: ``turn`` when a line starts an agent turn (command mode), ``note``
+    #: when it is an operator note the session reads at its next hook.
+    delivery: Literal["turn", "note"] = "note"
     #: Where a command-mode line is POSTed as ``{"text": ...}`` when the
     #: session is not run by a managed agent. Set for runner-hosted sessions
     #: (``agent_kind="runner_session"``, #1482):

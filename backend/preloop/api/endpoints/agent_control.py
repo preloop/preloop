@@ -74,6 +74,9 @@ from preloop.services.agent_control_dispatch import (
     dispatch_operator_message,
     persist_and_deliver_command,
     resolve_session_control_mode,
+    TERMINAL_SESSION_REASON,
+    TERMINAL_SESSION_REASON_CODE,
+    session_reachable_by_control,
     session_managed_agent,
 )
 
@@ -448,6 +451,7 @@ def _touch_presence(
     *,
     observed_at: datetime,
     session_mode: Optional[str] = None,
+    reachable_session_ids: Optional[list[Any]] = None,
     commit: bool = True,
 ) -> None:
     # Match operator lifecycle transactions: managed agent before runtime.
@@ -463,6 +467,7 @@ def _touch_presence(
         # every call here is proof the plugin is connected right now. It is the
         # only presence signal the other api replicas can read.
         control_heartbeat_at=observed_at,
+        control_reachable_session_ids=reachable_session_ids,
         commit=False,
     )
     crud_runtime_session.touch_activity(
@@ -1405,8 +1410,18 @@ def _process_control_message(
     inbound_mode = inbound.payload.get("session_mode")
     if inbound_mode not in {"local", "remote", "queued"}:
         inbound_mode = None
+    # Native ids the plugin can drive. Absent on older plugins and on frames
+    # that do not carry presence, which leaves the stored list unchanged.
+    reachable = inbound.payload.get("reachable_session_ids")
+    if not isinstance(reachable, list):
+        reachable = None
     _touch_presence(
-        db, connection, observed_at=observed_at, session_mode=inbound_mode, commit=False
+        db,
+        connection,
+        observed_at=observed_at,
+        session_mode=inbound_mode,
+        reachable_session_ids=reachable,
+        commit=False,
     )
     _mark_control_verified_from_capabilities(db, connection, inbound, commit=False)
     _handle_command_ack(db, connection, inbound, commit=False)
@@ -1927,6 +1942,21 @@ async def _route_managed_agent_prompt(
         agent=agent,
         request=request,
     )
+    if (
+        session_mode == "existing"
+        and target_session is not None
+        and not session_reachable_by_control(agent, target_session)
+    ):
+        # The plugin cannot type into this terminal; a command would resume
+        # the same native session in a second process and fork it. The
+        # operator sends a note instead (POST /operator-notes).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": TERMINAL_SESSION_REASON_CODE,
+                "message": TERMINAL_SESSION_REASON,
+            },
+        )
     await _require_session_start_consent(
         db, agent=agent, request=request, current_user=current_user
     )
@@ -2203,6 +2233,7 @@ def get_runtime_session_control_mode(
         mode=decision.mode,
         reason_code=decision.reason_code,
         reason=decision.reason,
+        delivery=decision.delivery,
         send_path=decision.send_path,
         managed_agent_id=agent.id if agent is not None else None,
         agent_name=agent.display_name if agent is not None else None,

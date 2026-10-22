@@ -274,6 +274,7 @@ export class PreloopClaudeSidecar {
             tool_approval: true,
           },
           session_mode: this.currentMode(),
+          reachable_session_ids: this.reachableSessionIds(),
           queued_count: 0,
           runtime_principal_id: config.runtime_principal_id,
           runtime_principal_name: config.runtime_principal_name,
@@ -405,6 +406,21 @@ export class PreloopClaudeSidecar {
 
   /** Execute one operator command envelope. Exposed for tests. */
   async dispatch(command: OperatorCommand): Promise<unknown> {
+    // A command can open or close an SDK session. Republish the reachable
+    // list right away instead of waiting for the next heartbeat, so the
+    // server does not route a session this sidecar just opened as a
+    // terminal it cannot type into.
+    const before = this.reachableSessionIds().join("\n");
+    try {
+      return await this.runCommand(command);
+    } finally {
+      if (this.reachableSessionIds().join("\n") !== before) {
+        this.publishPresence();
+      }
+    }
+  }
+
+  private async runCommand(command: OperatorCommand): Promise<unknown> {
     if (command.type !== "command") {
       return undefined;
     }
@@ -510,6 +526,26 @@ export class PreloopClaudeSidecar {
     }
   }
 
+  /**
+   * Native session ids this sidecar can drive: sessions it owns through the
+   * SDK, plus the launcher's session while that launcher holds it locally.
+   * The server routes Talk for any other session of this agent (a plain
+   * terminal session) as a note, because resuming it here would fork it.
+   */
+  reachableSessionIds(): string[] {
+    const ids = [...(this.sessions?.ownedSessionIds() ?? [])];
+    const launcherId = this.launcher.lastSessionId;
+    if (
+      launcherId &&
+      this.launcher.mode === "local" &&
+      this.launcher.hasLauncher() &&
+      !ids.includes(launcherId)
+    ) {
+      ids.push(launcherId);
+    }
+    return ids;
+  }
+
   currentMode(): OwnershipMode {
     if (this.sessions && this.sessions.ownedSessionIds().length > 0) {
       return "remote";
@@ -546,6 +582,12 @@ export class PreloopClaudeSidecar {
   }
 
   private broadcastMode(): void {
+    this.publishPresence();
+    this.launcher.notifyStatus();
+  }
+
+  /** Send the session_mode presence frame, with the reachable list. */
+  private publishPresence(): void {
     this.sendEnvelope({
       type: "presence",
       name: "session_mode",
@@ -554,9 +596,9 @@ export class PreloopClaudeSidecar {
         session_mode: this.currentMode(),
         session_id: this.launcher.lastSessionId,
         owned_session_ids: this.sessions?.ownedSessionIds() ?? [],
+        reachable_session_ids: this.reachableSessionIds(),
       },
     });
-    this.launcher.notifyStatus();
   }
 
   private rememberOutcome(
@@ -672,6 +714,7 @@ export class PreloopClaudeSidecar {
           status: "online",
           runtime_principal_id: config.runtime_principal_id,
           session_mode: this.currentMode(),
+          reachable_session_ids: this.reachableSessionIds(),
         },
       });
     }, HEARTBEAT_INTERVAL_MS);

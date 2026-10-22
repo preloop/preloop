@@ -24,7 +24,9 @@ OperatorNoteChannel = Literal["gateway", "hook", "claude_channel", "claude_messa
 OperatorNotePullChannel = Literal["hook", "claude_channel", "claude_message"]
 # The lifecycle point that pulled the note. Bounded on purpose: the value lands
 # in the audit record, so the hook must not be able to write arbitrary text.
-OperatorNoteEvent = Literal["session_start", "stop", "pre_tool_use"]
+OperatorNoteEvent = Literal[
+    "session_start", "stop", "pre_tool_use", "user_prompt_submit"
+]
 
 
 class OperatorNoteCreate(BaseModel):
@@ -187,7 +189,8 @@ class OperatorNotePendingRequest(BaseModel):
         "pre_tool_use",
         description=(
             "The harness lifecycle point asking for notes: session_start, "
-            "stop or pre_tool_use. Recorded on the delivery for audit."
+            "stop, pre_tool_use or user_prompt_submit (the operator's next "
+            "prompt in the terminal). Recorded on the delivery for audit."
         ),
     )
     session_id: Optional[str] = Field(

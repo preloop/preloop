@@ -127,6 +127,8 @@ export class AgentTalkView extends LitElement {
   @state() private loadingMoreEvents = false;
   @state() private hasMoreEvents = false;
   @state() private error: string | null = null;
+  /** The agent or the open session's conversation could not be loaded. */
+  @state() private sessionLoadFailed = false;
   @state() private events: FlowGatewayEvent[] = [];
   @state() private activity: RuntimeSessionActivityItem[] = [];
   @state() private pending: PendingTalkMessage[] = [];
@@ -531,6 +533,7 @@ export class AgentTalkView extends LitElement {
       if (this.sessionId) await this.loadEvents(this.sessionId);
     } catch (error) {
       if (generation !== this.sessionGeneration) return;
+      this.sessionLoadFailed = true;
       this.error =
         error instanceof Error ? error.message : 'Failed to load agent';
     } finally {
@@ -549,6 +552,8 @@ export class AgentTalkView extends LitElement {
     for (const item of activity) {
       const metadata = (item.metadata || {}) as Record<string, unknown>;
       if (typeof metadata.command_id === 'string') ids.add(metadata.command_id);
+      // A delivered note is echoed by its note id.
+      if (typeof metadata.note_id === 'string') ids.add(metadata.note_id);
     }
     return ids;
   }
@@ -584,8 +589,10 @@ export class AgentTalkView extends LitElement {
         events.pagination?.next_offset ?? (events.logs || []).length;
       // Anything the server has now echoed back is in the thread already.
       this.composer?.clearSentPending(this.echoedCommandIds(this.activity));
+      this.sessionLoadFailed = false;
     } catch (error) {
       if (generation !== this.sessionGeneration) return;
+      this.sessionLoadFailed = true;
       this.error =
         error instanceof Error ? error.message : 'Failed to load conversation';
     } finally {
@@ -693,6 +700,8 @@ export class AgentTalkView extends LitElement {
       this.offerSession(sessionId);
       return;
     }
+    // The composer marks a note read, or re-reads how this session is routed.
+    this.composer?.handleRealtime(message);
     this.noteAgentTurn();
     this.scheduleReload();
   }
@@ -973,6 +982,12 @@ export class AgentTalkView extends LitElement {
         .agent=${this.agent}
         .sessionId=${this.sessionId}
         .sessionEnded=${Boolean(this.currentSession?.ended_at)}
+        .sessionIdle=${Boolean(
+          this.currentSession &&
+          !this.currentSession.ended_at &&
+          !this.currentSession.is_active_now
+        )}
+        .sessionLoadFailed=${Boolean(this.sessionId && this.sessionLoadFailed)}
         .liveAlternative=${this.liveAlternative}
         sourceContext=${this.composerSourceContext}
       ></talk-composer>
