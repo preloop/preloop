@@ -98,8 +98,8 @@ After a 1.0.0 RC is actually published, resolve its tag from release metadata:
 
 ```bash
 export PRELOOP_DISABLE_TELEMETRY=true
-gh api --paginate --slurp 'repos/preloop/preloop/releases?per_page=100' \
-  --jq '.[][] | select(.draft == false and .prerelease == true) | .tag_name'
+gh api --paginate 'repos/preloop/preloop/releases?per_page=100' \
+  --jq '.[] | select(.draft == false and .prerelease == true and .published_at != null and (.tag_name | test("^v?1[.]0[.]0-rc([.-][0-9]+)?$"))) | .tag_name'
 ```
 
 Use the exact published `v1.0.0-rc…` tag shown by that command:
