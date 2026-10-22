@@ -85,14 +85,17 @@ Flow execution detail also includes a **Gateway Events** tab for execution-scope
 
 ## Following live work and decisions
 
-Talk, Conversation and Transcript share a live activity line and inline approval
+Talk, Conversation and Requests share a live activity line and inline approval
 cards. `Model processing` describes an observed request with a stable request ID;
 `Tool requested` describes a model-emitted call, and `Running` requires executor
 start evidence. Transport reconnection is displayed separately. A stale unmatched
 start becomes `Activity unavailable` rather than claiming continuous processing.
 
-Captured tools appear by name with a readable command, path or arguments summary.
-Expand a card to inspect formatted Arguments and Result. Missing, redacted and
+Conversation reads like the terminal: each turn shows the prompt, then agent
+prose and one row per tool call in order, then a "Worked for" footer. A tool row
+names the command, path or arguments, previews three lines of the result (`+ N
+lines` shows the rest), renders a diff for edits and marks a failed exit with a
+danger pill. Open "Arguments & result" on a row to inspect the formatted payloads. Missing, redacted and
 truncated captures remain marked; a completed model request does not imply that
 its requested tool ran successfully.
 

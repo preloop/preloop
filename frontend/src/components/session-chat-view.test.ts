@@ -1257,6 +1257,11 @@ describe('session-chat-view terminal-ordered turns', () => {
     );
     const found = await cards(el);
     expect(found[0].shadowRoot!.textContent).to.contain('(No output)');
+    expect(
+      found[0]
+        .shadowRoot!.querySelector('[data-testid="session-tool-card"]')!
+        .getAttribute('data-state')
+    ).to.equal('completed');
   });
 
   it('developer and AGENTS.md messages collapse into Session context', async () => {
@@ -1303,12 +1308,12 @@ describe('session-chat-view terminal-ordered turns', () => {
               kind: 'call',
               call_id: 'call_2',
               name: 'exec_command',
-              text: '{"cmd": "cat missing.txt"}',
+              text: '{"cmd": "npm test"}',
             },
             {
               kind: 'result',
               call_id: 'call_2',
-              text: 'Process exited with code 1\ncat: missing.txt: No such file',
+              text: 'Process exited with code 1\n1 test failed',
             },
           ]),
         ]}
@@ -1318,6 +1323,13 @@ describe('session-chat-view terminal-ordered turns', () => {
     const pill = card.shadowRoot!.querySelector('[data-testid="tool-failed"]')!;
     expect(pill.textContent!.trim()).to.equal('Failed (exit 1)');
     expect(pill.getAttribute('variant')).to.equal('danger');
+    // The failure is named once, in the pill; the head keeps the action.
+    expect(
+      card.shadowRoot!.textContent!.split('Failed (exit 1)').length - 1
+    ).to.equal(1);
+    expect(card.shadowRoot!.querySelector('.verb')!.textContent).to.equal(
+      'Ran'
+    );
     expect(
       card
         .shadowRoot!.querySelector('[data-testid="session-tool-card"]')!
@@ -1440,5 +1452,70 @@ describe('session-chat-view terminal-ordered turns', () => {
     expect(failed).to.exist;
     expect(failed.textContent).to.contain('model_not_authorized');
     expect(failed.textContent).to.contain('Failed');
+  });
+
+  it('a read result that quotes an exit code stays completed', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .events=${[
+          toolsEvent('e1', '2026-08-06T10:00:05Z', [
+            {
+              kind: 'call',
+              call_id: 'call_r',
+              name: 'Read',
+              text: '{"file_path": "fixture.json"}',
+            },
+            { kind: 'result', call_id: 'call_r', text: '{"exit_code": 1}' },
+          ]),
+        ]}
+      ></session-chat-view>
+    `);
+    const [card] = await cards(el);
+    expect(
+      card
+        .shadowRoot!.querySelector('[data-testid="session-tool-card"]')!
+        .getAttribute('data-state')
+    ).to.equal('completed');
+    expect(card.shadowRoot!.querySelector('[data-testid="tool-failed"]')).to.be
+      .null;
+  });
+
+  it('claude sessions use the Claude glyph and footer', async () => {
+    const el = await fixture<SessionChatView>(html`
+      <session-chat-view
+        .runtime=${'claude'}
+        .events=${[
+          previewEvent('e1', '2026-08-06T10:00:00Z', [
+            { role: 'user', text: 'fix it' },
+          ]),
+          toolsEvent('e2', '2026-08-06T10:00:05Z', [
+            {
+              kind: 'call',
+              call_id: 'call_c',
+              name: 'Bash',
+              text: '{"command": "ls"}',
+            },
+            { kind: 'result', call_id: 'call_c', text: 'a.ts' },
+          ]),
+        ]}
+        .activity=${[
+          activityItem({
+            activity_type: 'turn_end',
+            timestamp: '2026-08-06T10:00:42Z',
+            title: 'Turn ended',
+          }),
+        ]}
+      ></session-chat-view>
+    `);
+    const [card] = await cards(el);
+    const root = card.shadowRoot!;
+    expect(root.querySelector('.glyph')!.textContent!.trim()).to.equal('⏺');
+    expect(root.textContent).to.contain('Bash');
+    expect(root.textContent).to.contain('(ls)');
+    expect(
+      root.querySelector('[data-testid="tool-preview"]')!.textContent
+    ).to.contain('⎿');
+    const footer = el.shadowRoot!.querySelector('[data-testid="turn-footer"]')!;
+    expect(footer.textContent!.trim()).to.match(/^Worked for 42s · done /);
   });
 });

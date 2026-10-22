@@ -3,6 +3,7 @@ import { formatElapsedCompact } from './duration';
 import {
   buildSessionTurns,
   parseExitCode,
+  runtimeFromSourceType,
   stripWrapperTags,
   toolDiff,
 } from './session-turns';
@@ -36,6 +37,13 @@ describe('session-turns', () => {
       'add',
       'ctx',
     ]);
+  });
+
+  it('maps session source types to a runtime', () => {
+    expect(runtimeFromSourceType('claude_code')).to.equal('claude');
+    expect(runtimeFromSourceType('codex_cli')).to.equal('codex');
+    expect(runtimeFromSourceType('hermes')).to.equal('');
+    expect(runtimeFromSourceType(null)).to.equal('');
   });
 
   it('strips session wrapper tags only', () => {

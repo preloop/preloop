@@ -218,7 +218,7 @@ post their steps through the API above.
 ## In the console
 
 Open the session in **Sessions**. Every browser step renders inline in the
-Conversation and Transcript views, in time order between the model turns
+Conversation and Requests views, in time order between the model turns
 and tool calls around it: an action icon, the action and URL, the target,
 the step index and the agent's reasoning (collapsed). A step with a
 screenshot shows a thumbnail; click it for the full-size viewer, where the

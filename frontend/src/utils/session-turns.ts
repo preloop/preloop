@@ -55,7 +55,7 @@ export interface ToolRow {
   name: string;
   /** Leading glyph: `•` (Codex), `⏺` (Claude), `•` otherwise. */
   glyph: string;
-  /** Codex verb (`Ran`, `Edited`, `Explored`, `Called`, `Failed (exit 1)`). */
+  /** Action verb (`Ran`, `Edited`, `Explored`, `Called`); a failure lives in the pill. */
   verb: string;
   /** The deciding argument: command, path, url or query. */
   target: string;
@@ -140,6 +140,16 @@ export function isSessionContextMessage(item: TranscriptMessageItem): boolean {
 }
 
 const NO_OUTPUT_RESULT = /^\(\w[\w .-]* completed with no output\)$/i;
+
+/** Runtime for a session source type (`claude_code`, `codex_cli`, ...). */
+export function runtimeFromSourceType(
+  sourceType: string | null
+): SessionRuntime | '' {
+  const value = (sourceType || '').toLowerCase();
+  if (value.includes('codex')) return 'codex';
+  if (value.includes('claude')) return 'claude';
+  return '';
+}
 
 /** Infer the runtime from hook metadata on the activity rows. */
 export function inferRuntime(
@@ -334,9 +344,16 @@ export function finishRow(seed: RowSeed, runtime: SessionRuntime): ToolRow {
   const args = parseArgs(seed.argumentsText);
   const lower = seed.name.toLowerCase();
   const isEdit = EDIT_TOOLS.has(lower);
+  const isExec = EXEC_TOOLS.has(lower) || commandOf(args) !== null;
+  // Only an exec tool has an exit code. A file read or a web page that
+  // merely quotes "exit code 1" says nothing about the call itself.
   const metaExit = seed.repositoryArgs?.exit_code;
   const exitCode =
-    typeof metaExit === 'number' ? metaExit : parseExitCode(seed.resultText);
+    typeof metaExit === 'number'
+      ? metaExit
+      : isExec
+        ? parseExitCode(seed.resultText)
+        : null;
   const failed =
     seed.state === 'failed' || (exitCode !== null && exitCode !== 0);
   let target = isEdit
@@ -347,11 +364,10 @@ export function finishRow(seed: RowSeed, runtime: SessionRuntime): ToolRow {
   let verb = 'Called';
   let detail: string | null = null;
   if (isEdit) verb = 'Edited';
-  else if (EXEC_TOOLS.has(lower) || commandOf(args)) {
+  else if (isExec) {
     detail = runtime === 'codex' ? exploredDetail(target) : null;
     verb = detail ? 'Explored' : 'Ran';
   }
-  if (failed) verb = exitCode !== null ? `Failed (exit ${exitCode})` : 'Failed';
   const result = (seed.resultText ?? '').replace(/\s+$/, '');
   const allLines = result ? result.split('\n') : [];
   return {
@@ -474,8 +490,6 @@ function mergeNativeRows(rows: ToolRow[]): ToolRow[] {
     if (native.failed && !best.failed) {
       best.failed = true;
       best.state = 'failed';
-      best.verb =
-        best.exitCode !== null ? `Failed (exit ${best.exitCode})` : 'Failed';
     } else if (best.state === 'requested' || best.state === 'unknown') {
       best.state = native.state === 'unknown' ? best.state : native.state;
     }
@@ -582,6 +596,8 @@ export function buildSessionTurns(
         if (previous) {
           previous.resultText = '(No output)';
           previous.previewLines = ['(No output)'];
+          // The harness reported the call finished.
+          if (!previous.failed) previous.state = 'completed';
         }
         continue;
       }

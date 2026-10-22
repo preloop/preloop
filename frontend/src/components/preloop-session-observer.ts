@@ -93,6 +93,7 @@ import './talk-button';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
+import { runtimeFromSourceType } from '../utils/session-turns';
 import './similar-sessions-panel';
 import './browser-step-strip';
 import './artifact-image-viewer';
@@ -2514,6 +2515,7 @@ export class PreloopSessionObserver extends LitElement {
         style=${this.replayMode === 'conversation' ? '' : 'display:none'}
         .liveEnabled=${this.replayMode === 'conversation'}
         .sessionId=${this.activeSessionId || ''}
+        .runtime=${runtimeFromSourceType(this.activeSession?.sourceType ?? null)}
         .ended=${Boolean(this.activeSession?.endedAt)}
         @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
