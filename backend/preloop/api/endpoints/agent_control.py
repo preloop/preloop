@@ -73,6 +73,7 @@ from preloop.services.agent_control_dispatch import (
     dispatch_operator_message,
     persist_and_deliver_command,
     resolve_session_control_mode,
+    session_managed_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -1119,6 +1120,143 @@ def _persist_agent_control_progress(
     )
 
 
+#: Live events a sidecar forwards for a session it can drive but did not
+#: start through a command (a Codex TUI thread on the shared app-server
+#: daemon). They are broadcast, not stored: deltas arrive per token.
+SESSION_PROGRESS_KINDS = frozenset(
+    {
+        "turn_started",
+        "turn_completed",
+        "assistant_delta",
+        "status_title",
+        "tool_start",
+        "tool_end",
+        "usage",
+    }
+)
+_SESSION_PROGRESS_TEXT_FIELDS = {
+    "turn_id": 200,
+    "item_id": 200,
+    "call_id": 200,
+    "tool_name": 100,
+    "status": 40,
+    "delta": 2000,
+    "command": 400,
+}
+_SESSION_PROGRESS_INT_FIELDS = ("exit_code", "duration_ms")
+_SESSION_PROGRESS_USAGE_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+)
+
+
+def _session_progress_payload(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Keep only the known, bounded fields of a ``session_progress`` event.
+
+    Args:
+        payload: Inbound envelope payload from the sidecar.
+
+    Returns:
+        The allow-listed, redacted payload, or None when the kind is unknown.
+    """
+    kind = payload.get("kind")
+    if kind not in SESSION_PROGRESS_KINDS:
+        return None
+    clean: dict[str, Any] = {"kind": kind}
+    for field, limit in _SESSION_PROGRESS_TEXT_FIELDS.items():
+        value = payload.get(field)
+        if isinstance(value, str):
+            clean[field] = value[:limit]
+    for field in _SESSION_PROGRESS_INT_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, int) and not isinstance(value, bool):
+            clean[field] = value
+    clean = _sanitize_agent_control_payload(clean)
+    usage = payload.get("usage")
+    if kind == "usage" and isinstance(usage, dict):
+        # Integers only, added after redaction: the redactor masks any key
+        # that contains "token", which would blank the token counters.
+        clean["usage"] = {
+            key: usage[key]
+            for key in _SESSION_PROGRESS_USAGE_FIELDS
+            if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+        }
+    return clean
+
+
+def _resolve_session_progress_target(
+    db: Session,
+    connection: AgentControlConnectionContext,
+    session_source_id: str,
+) -> Optional[str]:
+    """Map a native session id to a runtime session this agent owns.
+
+    Args:
+        db: Database session.
+        connection: The authenticated sidecar connection.
+        session_source_id: Native id the sidecar reported (a Codex thread id).
+
+    Returns:
+        The runtime session id, or None when the session is unknown, ended or
+        belongs to another agent. Account isolation comes from the
+        connection's account; agent isolation from the ownership check.
+    """
+    session = crud_runtime_session.get_open_by_source_id(
+        db,
+        account_id=connection.account_id,
+        session_source_id=session_source_id,
+    )
+    if session is None:
+        return None
+    agent = session_managed_agent(db, account_id=connection.account_id, session=session)
+    if agent is None or str(agent.id) != str(connection.managed_agent_id):
+        return None
+    return str(session.id)
+
+
+async def _emit_session_progress(
+    database: Any,
+    connection: AgentControlConnectionContext,
+    inbound: AgentControlInboundEnvelope,
+) -> None:
+    """Broadcast one ``session_progress`` event scoped to its runtime session."""
+    source_id = inbound.payload.get("session_source_id")
+    if not isinstance(source_id, str) or not 0 < len(source_id) <= 200:
+        return
+    payload = _session_progress_payload(inbound.payload)
+    if payload is None:
+        return
+    try:
+        runtime_session_id = await database.run(
+            partial(
+                _resolve_session_progress_target,
+                connection=connection,
+                session_source_id=source_id,
+            )
+        )
+    except _DB_DELIVERY_ERRORS:
+        # Live progress is best effort; never drop the control socket for it.
+        logger.warning("Could not scope session progress", exc_info=True)
+        return
+    if runtime_session_id is None:
+        return
+    emit_account_event(
+        build_account_event(
+            account_id=connection.account_id,
+            topic=ACCOUNT_TOPIC_AGENT_CONTROL,
+            event_type="managed_agent_session_progress",
+            payload={**payload, "message_id": inbound.message_id},
+            managed_agent_id=connection.managed_agent_id,
+            runtime_session_id=runtime_session_id,
+            session_source_type=connection.session_source_type,
+            session_source_id=source_id,
+        )
+    )
+
+
 async def _emit_agent_message(
     connection: AgentControlConnectionContext,
     inbound: AgentControlInboundEnvelope,
@@ -1126,7 +1264,11 @@ async def _emit_agent_message(
     # Progress is delivered through the consuming execution/session's stored
     # activity stream. The generic topic belongs to the agent owner, which can
     # be a different account for a shared agent, and must not receive its text.
-    if inbound.type == "heartbeat" or inbound.name == "command_progress":
+    # Session progress is emitted scoped to its own session instead.
+    if inbound.type == "heartbeat" or inbound.name in {
+        "command_progress",
+        "session_progress",
+    }:
         return
     event_type = f"agent_control_{inbound.type}"
     emit_account_event(
@@ -1350,6 +1492,8 @@ async def managed_agent_control_websocket(
                 await websocket.close(code=1013, reason="Database busy; reconnect")
                 break
             await _emit_agent_message(connection, inbound)
+            if inbound.type == "event" and inbound.name == "session_progress":
+                await _emit_session_progress(database, connection, inbound)
             if inbound.type == "heartbeat":
                 ack = _connection_envelope(
                     connection,

@@ -37,6 +37,7 @@ import {
   sdkCodexClientFactory,
 } from "./sessions.js";
 import { SessionActivity, TranscriptObserver } from "./observer.js";
+import { AppServerDriver, AppServerEvent } from "./app-server-client.js";
 import { LauncherBridge, OwnershipMode } from "./mode.js";
 import {
   WorkspaceError,
@@ -64,6 +65,8 @@ export type { SessionActivity } from "./observer.js";
 export { LauncherBridge, defaultSocketPath } from "./mode.js";
 export type { OwnershipMode, IpcMessage } from "./mode.js";
 export { WorkspaceManager } from "./workspace.js";
+export { AppServerDriver, mapNotification } from "./app-server-client.js";
+export type { AppServerEvent, AppServerTransport } from "./app-server-client.js";
 export type { WorkspaceSpec } from "./workspace.js";
 
 export type OperatorCommand = {
@@ -123,6 +126,8 @@ export class PreloopCodexSidecar {
   private workspaces?: WorkspaceManager;
   private readonly workspaceByMessage = new Map<string, string>();
   private launcher: LauncherBridge;
+  /** Live TUI sessions on the shared `codex app-server` daemon. */
+  private appServer?: AppServerDriver;
   private stopped = false;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -191,9 +196,12 @@ export class PreloopCodexSidecar {
     private readonly clientFactory: CodexClientFactory = sdkCodexClientFactory,
     socketPath?: string,
     workspaces?: WorkspaceManager,
+    appServer?: AppServerDriver,
   ) {
     this.launcher = new LauncherBridge(socketPath);
     this.workspaces = workspaces;
+    this.appServer = appServer;
+    if (appServer) this.attachAppServer(appServer);
   }
 
   setLogger(logger: (message: string) => void): void {
@@ -270,6 +278,16 @@ export class PreloopCodexSidecar {
       );
       this.observer.start();
     }
+    if (config.codex_app_server_enabled !== false) {
+      this.appServer ??= new AppServerDriver({
+        codexPath: config.codex_path,
+        codexHome: config.codex_home,
+        pollMs: config.codex_app_server_poll_ms,
+        log: (message) => this.log(message),
+      });
+      this.attachAppServer(this.appServer);
+      this.appServer.start();
+    }
     this.connect();
   }
 
@@ -284,6 +302,7 @@ export class PreloopCodexSidecar {
     this.observer = undefined;
     this.sessions?.stop();
     this.sessions = undefined;
+    this.appServer?.stop();
     this.launcher.stop();
     this.socket?.close();
     this.socket = undefined;
@@ -342,6 +361,7 @@ export class PreloopCodexSidecar {
             tool_approval: true,
           },
           session_mode: this.currentMode(),
+          reachable_session_ids: this.reachableSessionIds(),
           queued_count: 0,
           runtime_principal_id: config.runtime_principal_id,
           runtime_principal_name: config.runtime_principal_name,
@@ -527,16 +547,39 @@ export class PreloopCodexSidecar {
       if (payload.session_mode === "existing" && !targetSessionId && !resumeSessionId && typeof targetCommandId !== "string") {
         throw new Error("Existing-session interrupt requires an owned command or session");
       }
+      const liveThread = this.appServerThread(targetSessionId, resumeSessionId);
+      if (liveThread && typeof targetCommandId !== "string") {
+        await this.appServer!.interrupt(liveThread);
+        return "interrupted";
+      }
       await this.sessions.interrupt(targetSessionId ?? resumeSessionId,
         typeof targetCommandId === "string" ? targetCommandId : undefined);
       return "interrupted";
+    }
+
+    const text = payload.text ?? payload.message ?? "";
+    const liveThread = payload.start_new_session === true
+      ? undefined
+      : this.appServerThread(targetSessionId, resumeSessionId);
+    if (liveThread) {
+      // A TUI on the shared daemon: type into it. Never resume it through
+      // the SDK (that would fork the user's session) and never take over.
+      if (!text.trim()) {
+        throw new Error("send_message requires non-empty text");
+      }
+      const turn = await this.appServer!.sendTurn(liveThread, text);
+      return {
+        reply_text: turn.finalResponse,
+        session_id: liveThread,
+        usage: turn.usage,
+        ...(turn.steered ? { steered: true } : {}),
+      } satisfies TurnOutcome;
     }
 
     if (this.launcher.mode === "local") {
       await this.takeOver(targetSessionId ?? resumeSessionId);
     }
 
-    const text = payload.text ?? payload.message ?? "";
     if (!text.trim()) {
       throw new Error("send_message requires non-empty text");
     }
@@ -590,6 +633,54 @@ export class PreloopCodexSidecar {
     }
   }
 
+  /**
+   * Native session ids this sidecar can drive: sessions it owns through the
+   * SDK, the launcher's session while that launcher holds it locally, and
+   * interactive TUI threads loaded on the shared app-server daemon. The
+   * server routes Talk for any other session of this agent as a note.
+   */
+  reachableSessionIds(): string[] {
+    const ids = [...(this.sessions?.ownedSessionIds() ?? [])];
+    const launcherId = this.launcher.lastSessionId;
+    if (
+      launcherId &&
+      this.launcher.mode === "local" &&
+      this.launcher.hasLauncher() &&
+      !ids.includes(launcherId)
+    ) {
+      ids.push(launcherId);
+    }
+    for (const id of this.appServer?.reachableThreadIds() ?? []) {
+      if (!ids.includes(id)) ids.push(id);
+    }
+    return ids;
+  }
+
+  /** The daemon thread a command targets, when it is a reachable TUI. */
+  private appServerThread(...candidates: (string | undefined)[]): string | undefined {
+    if (!this.appServer) return undefined;
+    if (candidates.some((id) => id && this.sessions?.ownedSessionIds().includes(id))) {
+      return undefined;
+    }
+    return candidates.find((id) => this.appServer!.isReachable(id));
+  }
+
+  private attachAppServer(driver: AppServerDriver): void {
+    driver.setListeners({
+      onEvent: (threadId, event) => this.sendSessionProgress(threadId, event),
+      onReachableChanged: () => this.broadcastMode(),
+    });
+  }
+
+  private sendSessionProgress(threadId: string, event: AppServerEvent): void {
+    this.sendEnvelope({
+      type: "event",
+      name: "session_progress",
+      message_id: randomUUID(),
+      payload: { ...event, session_source_id: threadId, runtime: this.runtime },
+    });
+  }
+
   currentMode(): OwnershipMode {
     if (this.sessions && this.sessions.ownedSessionIds().length > 0) {
       return "remote";
@@ -632,6 +723,7 @@ export class PreloopCodexSidecar {
         session_mode: this.currentMode(),
         session_id: this.launcher.lastSessionId,
         owned_session_ids: this.sessions?.ownedSessionIds() ?? [],
+        reachable_session_ids: this.reachableSessionIds(),
       },
     });
     this.launcher.notifyStatus();
@@ -719,6 +811,7 @@ export class PreloopCodexSidecar {
           status: "online",
           runtime_principal_id: config.runtime_principal_id,
           session_mode: this.currentMode(),
+          reachable_session_ids: this.reachableSessionIds(),
         },
       });
     }, HEARTBEAT_INTERVAL_MS);

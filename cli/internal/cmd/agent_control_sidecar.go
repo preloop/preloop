@@ -323,7 +323,7 @@ func findAgentControlSidecarPackageEntry(
 }
 
 func runAgentControlSidecarEnable(spec agentControlSidecarSpec, cmd *cobra.Command, _ []string) error {
-	err := installAgentControlSidecarService(spec, cmd.OutOrStdout())
+	err := agentControlSidecarServiceInstaller(spec, cmd.OutOrStdout())
 	if errors.Is(err, errAgentControlSidecarServiceStart) {
 		// The unit file is written; a re-enable of an already loaded service
 		// can fail here too, so warn instead of failing the command.
