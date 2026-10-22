@@ -21,7 +21,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, Optional
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
@@ -177,13 +177,17 @@ def _export(request: Request, signal: str, raw: RawBody, db: Session) -> Respons
     key = _authenticate(db, token)
     if key is None:
         return _error(status.HTTP_401_UNAUTHORIZED, "Invalid API key")
-    enforce_api_key_route_scope(key, request)
     scopes = key.scopes if isinstance(key.scopes, (list, tuple)) else []
     if TELEMETRY_INGEST_SCOPE not in scopes:
         return _error(
             status.HTTP_403_FORBIDDEN,
             f"API key lacks the {TELEMETRY_INGEST_SCOPE} scope",
         )
+    try:
+        enforce_api_key_route_scope(key, request)
+    except HTTPException as exc:
+        # Keep scope denials in the receiver's existing OTLP error envelope.
+        return _error(exc.status_code, exc.detail["message"])
     retry_after = _rate_limited(str(key.id))
     if retry_after is not None:
         return _error(

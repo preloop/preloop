@@ -92,6 +92,15 @@ def test_telemetry_requires_explicit_ingest_and_preserves_enrollment_confinement
         json={},
     )
     assert response.status_code == (200 if allowed else 403), response.text
+    if not allowed:
+        assert response.json() == {
+            "code": 403,
+            "message": (
+                "Enrollment exchange only"
+                if "enrollment:provision" in scopes
+                else "API key lacks the telemetry:ingest scope"
+            ),
+        }
 
 
 @pytest.mark.parametrize(
