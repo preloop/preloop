@@ -1356,3 +1356,9 @@ a finite value from 0 to 1 after validating profiling with their runtime and
 native extensions. Invalid values disable profiling and log a configuration
 warning. Profiling is independent of the request-level `PROFILING_ENABLED`
 middleware option.
+
+API liveness-triggered restarts use a separate 60-second termination grace
+(`api.livenessTerminationGracePeriodSeconds`, including the preStop sleep).
+Planned rollouts retain the 900-second stream drain. This prevents an unhealthy
+replica from spending the full rollout window draining before replacement.
+Probe-level grace requires Kubernetes 1.28 or newer; production runs 1.30.

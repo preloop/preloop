@@ -424,6 +424,7 @@ spec:
               exec:
                 command: ["sleep", "10"]
           livenessProbe:
+            terminationGracePeriodSeconds: {{ .Values.api.livenessTerminationGracePeriodSeconds }}
             httpGet:
               path: /api/v1/ping
               port: 8000

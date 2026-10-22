@@ -111,3 +111,25 @@ def test_grace_period_outlives_the_prestop_sleep(template: str, component: str) 
         f"drain window ({grace - sleep_seconds}s) is shorter than the minimum "
         "streaming window the proxy guards insist on"
     )
+
+
+def test_api_liveness_failure_recovers_without_full_rollout_drain() -> None:
+    """A failed replica must restart promptly while deployments drain streams."""
+    spec = _rendered_pod_spec("templates/api-deployment.yaml")
+    container = spec["containers"][0]
+    grace = container["livenessProbe"].get("terminationGracePeriodSeconds")
+    assert grace is not None
+    prestop = int(container["lifecycle"]["preStop"]["exec"]["command"][-1])
+    assert prestop < grace <= 60
+    assert spec["terminationGracePeriodSeconds"] >= MIN_STREAMING_TIMEOUT_SECONDS
+    assert "terminationGracePeriodSeconds" not in container["readinessProbe"]
+
+
+def test_api_liveness_recovery_grace_is_overridable() -> None:
+    """Operators can tune recovery independently of deployment streaming grace."""
+    spec = _rendered_pod_spec(
+        "templates/api-deployment.yaml",
+        ["api.livenessTerminationGracePeriodSeconds=45"],
+    )
+    assert spec["containers"][0]["livenessProbe"]["terminationGracePeriodSeconds"] == 45
+    assert spec["terminationGracePeriodSeconds"] == 900
