@@ -110,6 +110,22 @@ describe('agent-talk-view', () => {
     return el;
   }
 
+  it('provides a page heading with the current conversation as its accessible description', async () => {
+    const el = await mount();
+    const heading = el.shadowRoot!.querySelector('h1');
+    expect(heading?.textContent?.trim()).to.equal('Hermes');
+    const subject = el.shadowRoot!.getElementById(
+      heading!.getAttribute('aria-describedby')!
+    );
+    expect(subject?.textContent?.trim()).to.equal(SESSION.title);
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-testid="open-in-console"]')
+        ?.getAttribute('href')
+    ).to.equal('/console/agents/agent-1?session=sess-1');
+    el.remove();
+  });
+
   it('fills the viewport and never scrolls the page', async () => {
     const el = await mount();
     const styles = getComputedStyle(el);

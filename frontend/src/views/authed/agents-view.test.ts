@@ -1,3 +1,4 @@
+import { Router } from '../../router';
 import { expect, fixture, html, nextFrame, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
@@ -92,6 +93,7 @@ function makeRow(overrides: Partial<AgentListRow>): AgentListRow {
 }
 
 describe('AgentsView', () => {
+  const originalUrl = window.location.href;
   let fetchStub: sinon.SinonStub;
   let agentItems: Array<Record<string, unknown>>;
   let flowItems: Array<Record<string, unknown>>;
@@ -175,8 +177,168 @@ describe('AgentsView', () => {
   });
 
   afterEach(() => {
+    window.history.replaceState(null, '', originalUrl);
     fetchStub.restore();
     localStorage.clear();
+  });
+
+  it('restores multiple pages and shell scroll after an actual browser Back navigation', async () => {
+    agentItems = Array.from({ length: 75 }, (_, i) =>
+      makeAgent(`agent-${i}`, `Example agent ${i}`, 'claude_code')
+    );
+    const pageOffsets: number[] = [];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/api/v1/agents/discovery-candidates') {
+        return new Response(
+          JSON.stringify({ items: [], total: 0, truncated: false })
+        );
+      }
+      if (url.pathname === '/api/v1/agents') {
+        const offset = Number(url.searchParams.get('offset') || 0);
+        const limit = Number(url.searchParams.get('limit') || 50);
+        pageOffsets.push(offset);
+        return new Response(
+          JSON.stringify({
+            items: agentItems.slice(offset, offset + limit),
+            total: agentItems.length,
+            offset,
+            limit,
+          })
+        );
+      }
+      return defaultFetch(input);
+    });
+    const shell = document.createElement('console-shell');
+    const shadow = shell.attachShadow({ mode: 'open' });
+    shadow.innerHTML =
+      '<div class="main-content" style="height:300px;overflow:auto"><slot></slot></div>';
+    const scroll = shadow.querySelector('.main-content') as HTMLElement;
+    const outlet = document.createElement('div');
+    shell.append(outlet);
+    document.body.append(shell);
+    const router = new Router(outlet);
+    try {
+      await router.setRoutes(
+        [
+          { path: '/console/agents', component: 'agents-view' },
+          { path: '/console/agents/:agentId', component: 'div' },
+        ],
+        true
+      );
+      await router.render(
+        '/console/agents?q=Example&seen=last_7_days&kinds=claude_code&table.sort=agent',
+        { history: 'push' }
+      );
+      const el = outlet.querySelector('agents-view') as AgentsView;
+      await waitForAgents(el);
+      expect((el as any).agents.items).to.have.length(50);
+      await (el as any).loadMoreAgents();
+      await el.updateComplete;
+      expect((el as any).agents.items).to.have.length(75);
+      scroll.scrollTop = 250;
+      expect(scroll.scrollTop).to.equal(250);
+      await router.render('/console/agents/agent-1', { history: 'push' });
+      window.history.back();
+      await waitUntil(() => !!outlet.querySelector('agents-view'));
+      const restored = outlet.querySelector('agents-view') as AgentsView;
+      await waitForAgents(restored);
+      await waitUntil(
+        () => scroll.scrollTop === 250,
+        `Scroll restoration: ${JSON.stringify(window.history.state)} / ${scroll.scrollTop}`
+      );
+      expect((restored as any).agents.items).to.have.length(75);
+      expect(pageOffsets).to.deep.equal([0, 50, 0, 50]);
+      expect((restored as any).searchQuery).to.equal('Example');
+      expect((restored as any).lastSeenAfter).to.equal('last_7_days');
+      expect(restored.agentTable.sorting).to.deep.equal([
+        { id: 'agent', desc: false },
+      ]);
+    } finally {
+      router.unsubscribe();
+      shell.remove();
+    }
+  });
+
+  it('does not restore an old scroll position after the user changes filters', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const port = { scrollTop: 0 };
+    const stub = sinon.stub(el as any, 'scrollPort').returns(port);
+    try {
+      (el as any).restoreListPosition = { top: 250, count: 0 };
+      const restoring = (el as any).restorePosition();
+      (el as any).searchQuery = 'new search';
+      (el as any).syncListFilters();
+      await restoring;
+      expect(port.scrollTop).to.equal(0);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('round trips investigation filters, sorting and position through the URL and Back state', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    (el as any).handleSearchChange(
+      new CustomEvent('search-change', { detail: { value: 'demo agent' } })
+    );
+    (el as any).handleLastSeenAfterChange({ target: { value: 'last_7_days' } });
+    (el as any).handleAgentKindChange('all', false);
+    (el as any).handleAgentKindChange('claude_code', true);
+    el.agentTable.setSorting([{ id: 'agent', desc: false }]);
+    (el as any).onBeforeLeave();
+    expect(new URLSearchParams(location.search).get('q')).to.equal(
+      'demo agent'
+    );
+    expect(new URLSearchParams(location.search).get('seen')).to.equal(
+      'last_7_days'
+    );
+    expect(window.history.state.agentsPosition).to.have.property('top');
+    el.remove();
+    const restored = await fixture<AgentsView>(
+      html`<agents-view></agents-view>`
+    );
+    await waitForAgents(restored);
+    expect((restored as any).searchQuery).to.equal('demo agent');
+    expect((restored as any).lastSeenAfter).to.equal('last_7_days');
+    expect((restored as any).agentKinds).to.deep.equal(['claude_code']);
+    expect(restored.agentTable.sorting).to.deep.equal([
+      { id: 'agent', desc: false },
+    ]);
+  });
+
+  it('links only known model IDs in cards and keeps alias-only models readable', async () => {
+    agentItems = [
+      {
+        ...makeAgent('known', 'Known model', 'claude_code'),
+        configured_model_id: 'model-1',
+        configured_model_alias: 'provider/long-model-alias',
+      },
+      {
+        ...makeAgent('alias', 'Alias only', 'claude_code'),
+        configured_model_alias: 'provider/alias-only',
+      },
+      {
+        ...makeAgent('missing', 'No metadata', 'claude_code'),
+        latest_model_alias: null,
+      },
+    ];
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const links = Array.from(
+      el.shadowRoot!.querySelectorAll<HTMLAnchorElement>(
+        'a[href*="/ai-models/"]'
+      )
+    );
+    expect(links.map((link) => link.getAttribute('href'))).to.deep.equal([
+      '/console/ai-models/model-1',
+    ]);
+    expect(el.shadowRoot?.textContent).to.contain('provider/alias-only');
+    const cards = el.shadowRoot!.querySelectorAll('.agent-card');
+    expect(cards[1].querySelector('details')?.open).to.equal(false);
+    expect(cards[1].textContent).to.contain('Last seen');
   });
 
   it('renders agents while flows and editor catalogs are still pending', async () => {
@@ -380,9 +542,9 @@ describe('AgentsView', () => {
 
     // The section description renders inside the shared view-header.
     const header = el.shadowRoot?.querySelector('view-header');
-    expect(header?.getAttribute('description')).to.contain(
-      'Onboard agents you already run with the CLI, or deploy new ones.'
-    );
+    expect(
+      el.shadowRoot?.querySelector('view-header')?.getAttribute('description')
+    ).to.equal('');
 
     // Nothing persisted means the table, not the canvas.
     const table = el.shadowRoot?.querySelector('table.agents-table');

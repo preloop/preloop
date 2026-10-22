@@ -377,13 +377,15 @@ describe('FlowExecutionsView', () => {
     const subject = table.querySelector('td.subject-cell') as HTMLElement;
     expect(subject, 'subject cell').to.exist;
     expect(subject.clientWidth).to.be.at.least(120);
-    // The subject is the flexible column and still ellipsizes inside its
-    // floor rather than widening the table.
+    // The subject wraps inside its floor so the distinguishing reference
+    // remains readable without hovering or widening the table.
     const subjectText = subject.querySelector(
       '.execution-subject-text'
     ) as HTMLElement;
     expect(subjectText, 'subject text').to.exist;
-    expect(subjectText.scrollWidth).to.be.greaterThan(subjectText.clientWidth);
+    expect(subjectText.scrollWidth).to.be.at.most(subjectText.clientWidth + 1);
+    expect(getComputedStyle(subjectText).whiteSpace).to.equal('normal');
+    expect(subjectText.textContent).to.contain('#138');
 
     const durationText = table.querySelector(
       'td.duration-cell .duration-text'

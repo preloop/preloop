@@ -2366,9 +2366,9 @@ describe('DashboardView', () => {
       const line = inventory.shadowRoot.querySelector(
         '[data-testid="without-subscriptions"]'
       );
-      expect(line.textContent.replace(/\s+/g, ' ').trim()).to.equal(
-        '$2.34 w/o subs.'
-      );
+      expect(
+        line.querySelector('summary').textContent.replace(/\s+/g, ' ').trim()
+      ).to.equal('$2.34 w/o subs.');
     });
 
     it('reads each tab from a fetch the page already made', async () => {
