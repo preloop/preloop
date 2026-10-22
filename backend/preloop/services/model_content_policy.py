@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.models.crud import crud_account, crud_approval_workflow
+from preloop.services.audit.async_writer import outbox_enabled
 from preloop.services.approval_rule_context import (
     SOURCE_MODEL_IO_RULE,
     build_rule_context,
@@ -160,6 +161,8 @@ class ModelIODecision:
     #: Redact rules that matched (#1123): rule id, counts by type and
     #: whether the upstream payload is rewritten too. Never blocking.
     redactions: List["RedactionHit"] = field(default_factory=list)
+
+    audit_fields: Optional[Dict[str, Any]] = field(default=None, repr=False)
 
     def upstream_redaction_types(self) -> List[str]:
         """Types to strip from the upstream payload, if any hit asks for it."""
@@ -718,7 +721,9 @@ def _emit_notices(
     for notice in notices:
         stamped = replace(notice, audit_event_id=notice.audit_event_id or uuid4())
         try:
-            _audit_notice(stamped, rules_by_id.get(stamped.rule_id))
+            fields = _audit_notice(stamped, rules_by_id.get(stamped.rule_id))
+            if outbox_enabled():
+                stamped = replace(stamped, audit_fields=fields)
         except Exception:  # noqa: BLE001 - notify must never fail the call
             logger.warning("Policy notice audit failed", exc_info=True)
         schedule_policy_notice(stamped)
@@ -965,7 +970,7 @@ def _audit_redaction(
     if account_uuid is None:
         return
     try:
-        _log_policy_decision_async(
+        fields = dict(
             account_id=account_uuid,
             tool_name=target,
             action=REDACT_ACTION,
@@ -980,6 +985,14 @@ def _audit_redaction(
                 "text_sha256": digest,
             },
         )
+        if outbox_enabled():
+            from preloop.models.db.session import get_session_factory
+
+            with get_session_factory()() as db:
+                _log_policy_decision_async(db=db, **fields)
+                db.commit()
+        else:
+            _log_policy_decision_async(**fields)
     except Exception:  # noqa: BLE001 - audit must not change the decision
         logger.warning("Redaction audit failed", exc_info=True)
 
@@ -1102,6 +1115,7 @@ def _record_blocking_hit(
         agent_ref=agent_ref,
         runtime_session_id=runtime_session_id,
         audit_event_id=event_id or uuid4(),
+        audit_fields=decision.audit_fields,
     )
     schedule_policy_match_hit(notice)
 
@@ -1134,7 +1148,7 @@ def _audit_decision(
         "text_sha256": decision.text_sha256,
         "audit_event_id": str(event_id),
     }
-    _log_policy_decision_async(
+    fields = dict(
         account_id=account_uuid,
         tool_name=target,
         action=decision.action,
@@ -1146,10 +1160,14 @@ def _audit_decision(
         user_id=user_uuid,
         extra_details=extra,
     )
+    if not outbox_enabled():
+        _log_policy_decision_async(**fields)
+    else:
+        decision.audit_fields = fields
     return event_id
 
 
-def _audit_notice(notice: PolicyNotice, rule: Optional[ModelIORule]) -> None:
+def _audit_notice(notice: PolicyNotice, rule: Optional[ModelIORule]) -> Dict[str, Any]:
     """One audit row per notify hit: action ``notify``, rule id and hash.
 
     Written separately from :func:`_audit_decision`, whose ``allow`` early
@@ -1162,7 +1180,7 @@ def _audit_notice(notice: PolicyNotice, rule: Optional[ModelIORule]) -> None:
     }
     if notice.audit_event_id is not None:
         extra["audit_event_id"] = str(notice.audit_event_id)
-    _log_policy_decision_async(
+    fields = dict(
         account_id=notice.account_id,
         tool_name=notice.target,
         action=NOTIFY_ACTION,
@@ -1173,6 +1191,10 @@ def _audit_notice(notice: PolicyNotice, rule: Optional[ModelIORule]) -> None:
         user_id=notice.user_id,
         extra_details=extra,
     )
+
+    if not outbox_enabled():
+        _log_policy_decision_async(**fields)
+    return fields
 
 
 def _gateway_error(provider: str, decision: ModelIODecision) -> ModelGatewayAPIError:
