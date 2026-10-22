@@ -1343,3 +1343,9 @@ provider alias. Custom model discovery applies the operator endpoint CIDR policy
 and pins each request to a checked IP while preserving Host/TLS identity.
 Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
+
+Residual credential storage uses the existing SecretReference backend for model
+and webhook values, and hash-only storage for all Preloop API keys. Separate
+backfill and removal revisions retire the three legacy columns; see the
+[credential storage upgrade guide](docs/operations/credential-storage-upgrade.md)
+for the maintenance window, encryption-key continuity and rollback limits.

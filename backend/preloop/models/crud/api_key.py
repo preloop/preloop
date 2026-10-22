@@ -9,10 +9,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Query, Session
 
-from ..models.api_key import ApiKey
-from ..models.managed_agent_credential import ManagedAgentCredential
-from ..models.user import User
+from preloop.models import models
 from .base import CRUDBase
+
+ApiKey = models.ApiKey
+ManagedAgentCredential = models.ManagedAgentCredential
+User = models.User
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,41 @@ class CRUDApiKey(CRUDBase[ApiKey]):
     def build_key_prefix(key_value: str, prefix_len: int = 12) -> str:
         """Build a non-sensitive prefix used for key lookups."""
         return key_value[:prefix_len]
+
+    def issue(
+        self,
+        db: Session,
+        *,
+        obj_in: Dict[str, Any],
+        key_value: Optional[str] = None,
+        commit: bool = True,
+    ) -> tuple[ApiKey, str]:
+        """Persist a fingerprint and return the token once, separately from the row."""
+        token = key_value or secrets.token_urlsafe(32)
+        data = dict(obj_in)
+        data.pop("key", None)
+        data["key_hash"] = self.build_key_hash(token)
+        data["key_prefix"] = self.build_key_prefix(token)
+        return super().create(db, obj_in=data, commit=commit), token
+
+    def update(
+        self,
+        db: Session,
+        *,
+        db_obj: ApiKey,
+        obj_in: Dict[str, Any],
+        commit: bool = True,
+    ) -> ApiKey:
+        """Hash legacy rotation input before updating persisted columns."""
+        data = dict(obj_in)
+        token = data.pop("key", None)
+        # Already-hashed callers used None to clear the retired plaintext field.
+        if token is not None:
+            if not isinstance(token, str) or not token:
+                raise ValueError("API key must not be empty")
+            data["key_hash"] = self.build_key_hash(token)
+            data["key_prefix"] = self.build_key_prefix(token)
+        return super().update(db, db_obj=db_obj, obj_in=data, commit=commit)
 
     def create_with_owner(
         self,
@@ -187,8 +224,7 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         key_prefix = self.build_key_prefix(key)
 
         query = db.query(ApiKey).filter(
-            (ApiKey.key == key)
-            | ((ApiKey.key_prefix == key_prefix) & (ApiKey.key_hash == key_hash))
+            ApiKey.key_prefix == key_prefix, ApiKey.key_hash == key_hash
         )
         if account_id:
             query = query.filter(ApiKey.account_id == account_id)

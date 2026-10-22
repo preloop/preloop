@@ -165,6 +165,8 @@ preloop agents discover
 
 Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/README.md#authentication). TLS, SMTP, upgrades and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), Helm chart [`helm/preloop`](helm/preloop), [compatibility policy](docs/compatibility.md). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules.
 
+Credential storage upgrades require a maintenance window and the existing encryption key; follow the [staged upgrade guide](docs/operations/credential-storage-upgrade.md) before upgrading an existing installation.
+
 Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
 
 ## Open-source alternative to AWS Bedrock AgentCore

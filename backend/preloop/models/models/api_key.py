@@ -1,5 +1,6 @@
 """API key model for storing API access keys."""
 
+import hashlib
 import uuid
 from datetime import datetime, timezone
 
@@ -26,8 +27,8 @@ class ApiKey(Base):
     Attributes:
         id: The unique identifier for the key.
         name: A user-friendly name for the key.
-        key: The plaintext key value for legacy/user-managed keys.
-        key_hash: Deterministic hash used for validating runtime-only keys.
+        key: Write-only compatibility input; reading always returns None.
+        key_hash: Deterministic hash used for validating all API keys.
         key_prefix: Non-sensitive prefix used to narrow hashed lookups.
         created_at: When the key was created.
         expires_at: When the key expires (optional).
@@ -44,9 +45,22 @@ class ApiKey(Base):
 
     # Key details
     name: Mapped[str] = mapped_column(String(100), nullable=False)
-    key: Mapped[Optional[str]] = mapped_column(
-        String(100), nullable=True, unique=True, index=True
-    )
+
+    @property
+    def key(self) -> None:
+        """Credentials are delivered once by issuance, never recovered from a row."""
+        return None
+
+    @key.setter
+    def key(self, value: Optional[str]) -> None:
+        """Hash compatibility constructor input without retaining the token."""
+        if value is not None:
+            if not value:
+                raise ValueError("API key must not be empty")
+            # codeql[py/weak-sensitive-data-hashing] High-entropy token fingerprint
+            self.key_hash = hashlib.sha256(value.encode("utf-8")).hexdigest()
+            self.key_prefix = value[:12]
+
     key_hash: Mapped[Optional[str]] = mapped_column(
         String(64), nullable=True, unique=True, index=True
     )
