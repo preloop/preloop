@@ -711,3 +711,80 @@ async def test_automated_decision_keeps_attribution_in_transaction(
         assert fields["reason"].startswith(
             "[BYPASS]" if decision == "bypass" else "[AI]"
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_policy_redacts_with_uncommitted_config_in_owning_session(
+    committed_data: Any, monkeypatch: Any, use_async: bool
+) -> None:
+    """Flush retains the server scope and never opens a second policy session."""
+    import os
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+    from preloop.models.crud import crud_account
+    from preloop.services.sensitive_data import storage
+    from preloop.services.sensitive_data.redact import redaction_token
+
+    data = committed_data
+    metadata = {
+        "sensitive_data": {
+            "rules": [
+                {
+                    "id": "scoped-redaction",
+                    "on": ["tool.args"],
+                    "scope": {"tools": ["unknown_tool"], "servers": ["example-server"]},
+                    "types": ["email"],
+                    "action": "redact",
+                }
+            ]
+        }
+    }
+    storage.invalidate_cache(data.account_id)
+    monkeypatch.setattr(
+        storage,
+        "_load_config",
+        MagicMock(side_effect=AssertionError("separate policy session")),
+    )
+    args = {"note": "Contact jane@example.com", "api_key": "example-test-secret"}
+
+    def change_config(db: Any) -> None:
+        account = crud_account.get(db, id=data.account_id)
+        account.meta_data = metadata
+        db.flush()
+
+    if use_async:
+        engine = create_async_engine(
+            os.environ["DATABASE_URL"].replace("postgresql://", "postgresql+asyncpg://")
+        )
+        try:
+            async with async_sessionmaker(engine)() as db:
+                await db.run_sync(change_config)
+                await policy_evaluator.evaluate_policy_async(
+                    db,
+                    "unknown_tool",
+                    args,
+                    data.account_id,
+                    server_name="example-server",
+                )
+                await db.commit()
+        finally:
+            await engine.dispose()
+    else:
+        with data.factory() as db:
+            change_config(db)
+            policy_evaluator.evaluate_policy(
+                db, "unknown_tool", args, data.account_id, server_name="example-server"
+            )
+            db.commit()
+    with data.factory() as observer:
+        row = (
+            observer.query(models.AuditOutbox)
+            .filter_by(account_id=data.account_id)
+            .one()
+        )
+        stored = row.payload["tool_args"]
+        assert stored["note"] == f"Contact {redaction_token('email')}"
+        assert "jane@example.com" not in str(row.payload)
+        assert "example-test-secret" not in str(row.payload)
+    assert args["note"] == "Contact jane@example.com"
+    storage._load_config.assert_not_called()
