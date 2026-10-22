@@ -25,8 +25,9 @@ class TestInitSentry:
                 if orig is not None:
                     os.environ["SENTRY_DSN"] = orig
 
-    def test_with_dsn_inits_sentry_production(self):
+    def test_with_dsn_inits_sentry_production(self, monkeypatch):
         """When SENTRY_DSN and preloop.ai URL, environment is production."""
+        monkeypatch.delenv("SENTRY_PROFILES_SAMPLE_RATE", raising=False)
         mock_sdk = MagicMock()
         with patch.dict(os.environ, {"SENTRY_DSN": "https://key@sentry.io/1"}):
             with patch.dict(sys.modules, {"sentry_sdk": mock_sdk}):

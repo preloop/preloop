@@ -1346,7 +1346,8 @@ models remain unpriced. See [local model operations](docs/guide/runner-local-mod
 
 ## API diagnostics
 
-The API entry point enables Python fatal-error tracebacks on stderr before
+The API entry point enables Python fatal-error tracebacks on stderr (including
+spawned Uvicorn reload/worker interpreters via `PYTHONFAULTHANDLER`) before
 application startup so native faults retain thread-stack evidence in container
 logs. These traces do not include frame locals. Setting `SENTRY_DSN` keeps error
 reporting and transaction tracing enabled, but background stack profiling is

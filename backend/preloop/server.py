@@ -42,6 +42,9 @@ def start_server(
     # Native faults bypass Python exception handling. Emit thread stacks to
     # stderr so container logs retain evidence even without a core dump.
     faulthandler.enable(all_threads=True)
+    # Uvicorn reload/workers spawn fresh interpreters rather than inheriting
+    # the parent handler. Enable diagnostics before their imports, too.
+    os.environ["PYTHONFAULTHANDLER"] = "1"
 
     # Configure logging first
     preloop_logging.configure_logging()
