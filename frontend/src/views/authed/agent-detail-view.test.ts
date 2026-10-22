@@ -1293,7 +1293,6 @@ describe('AgentDetailView', () => {
       element.shadowRoot?.querySelector('.agent-settings')?.textContent
     ).to.contain('Live check throttled, unverified');
     expect(getDeepText(element)).to.not.contain('Live check pending');
-    expect((element as any).getLiveValidationVariant()).to.equal('warning');
 
     (element as any).agent = {
       ...(element as any).agent,
@@ -1305,7 +1304,7 @@ describe('AgentDetailView', () => {
     ).to.contain('Upstream refused, unverified');
   });
 
-  it('labels a timed out live check as unverified with a warning', async () => {
+  it('renders a timed out live check as unverified in agent settings', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
     );
@@ -1322,7 +1321,6 @@ describe('AgentDetailView', () => {
     expect(
       element.shadowRoot?.querySelector('.agent-settings')?.textContent
     ).to.contain('Live check timed out, unverified');
-    expect((element as any).getLiveValidationVariant()).to.equal('warning');
   });
 
   describe('progressive load', () => {

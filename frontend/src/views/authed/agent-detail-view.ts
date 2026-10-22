@@ -1487,14 +1487,6 @@ export class AgentDetailView extends LitElement {
     return this.getUsageForDisplayedModel(model)?.ai_model_id?.trim() || null;
   }
 
-  private getLiveValidationVariant(): string {
-    if (!this.agent?.live_validation_supported) return 'neutral';
-    if (this.agent.live_validation_status === 'passed') return 'success';
-    if (this.agent.live_validation_status === 'failed') return 'danger';
-    if (this.agent.live_validation_status === 'not_run') return 'neutral';
-    return 'warning';
-  }
-
   private getLiveValidationLabel(): string {
     if (!this.agent?.live_validation_supported) return 'No live check';
     if (this.agent.live_validation_status === 'passed') return 'Live validated';

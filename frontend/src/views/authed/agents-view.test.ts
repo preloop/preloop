@@ -182,18 +182,41 @@ describe('AgentsView', () => {
     localStorage.clear();
   });
 
-  it('restores filtered results and scroll after an actual browser Back navigation', async () => {
-    agentItems = Array.from({ length: 20 }, (_, i) =>
+  it('restores multiple pages and shell scroll after an actual browser Back navigation', async () => {
+    agentItems = Array.from({ length: 75 }, (_, i) =>
       makeAgent(`agent-${i}`, `Example agent ${i}`, 'claude_code')
     );
-    const scroll = document.createElement('div');
-    scroll.style.cssText = 'height:300px;overflow:auto';
+    const pageOffsets: number[] = [];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/api/v1/agents/discovery-candidates') {
+        return new Response(
+          JSON.stringify({ items: [], total: 0, truncated: false })
+        );
+      }
+      if (url.pathname === '/api/v1/agents') {
+        const offset = Number(url.searchParams.get('offset') || 0);
+        const limit = Number(url.searchParams.get('limit') || 50);
+        pageOffsets.push(offset);
+        return new Response(
+          JSON.stringify({
+            items: agentItems.slice(offset, offset + limit),
+            total: agentItems.length,
+            offset,
+            limit,
+          })
+        );
+      }
+      return defaultFetch(input);
+    });
+    const shell = document.createElement('console-shell');
+    const shadow = shell.attachShadow({ mode: 'open' });
+    shadow.innerHTML =
+      '<div class="main-content" style="height:300px;overflow:auto"><slot></slot></div>';
+    const scroll = shadow.querySelector('.main-content') as HTMLElement;
     const outlet = document.createElement('div');
-    scroll.append(outlet);
-    document.body.append(scroll);
-    const port = sinon
-      .stub((customElements.get('agents-view') as any).prototype, 'scrollPort')
-      .returns(scroll);
+    shell.append(outlet);
+    document.body.append(shell);
     const router = new Router(outlet);
     try {
       await router.setRoutes(
@@ -209,6 +232,10 @@ describe('AgentsView', () => {
       );
       const el = outlet.querySelector('agents-view') as AgentsView;
       await waitForAgents(el);
+      expect((el as any).agents.items).to.have.length(50);
+      await (el as any).loadMoreAgents();
+      await el.updateComplete;
+      expect((el as any).agents.items).to.have.length(75);
       scroll.scrollTop = 250;
       expect(scroll.scrollTop).to.equal(250);
       await router.render('/console/agents/agent-1', { history: 'push' });
@@ -220,6 +247,8 @@ describe('AgentsView', () => {
         () => scroll.scrollTop === 250,
         `Scroll restoration: ${JSON.stringify(window.history.state)} / ${scroll.scrollTop}`
       );
+      expect((restored as any).agents.items).to.have.length(75);
+      expect(pageOffsets).to.deep.equal([0, 50, 0, 50]);
       expect((restored as any).searchQuery).to.equal('Example');
       expect((restored as any).lastSeenAfter).to.equal('last_7_days');
       expect(restored.agentTable.sorting).to.deep.equal([
@@ -227,8 +256,7 @@ describe('AgentsView', () => {
       ]);
     } finally {
       router.unsubscribe();
-      port.restore();
-      scroll.remove();
+      shell.remove();
     }
   });
 

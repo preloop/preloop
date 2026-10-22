@@ -885,15 +885,31 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   willUpdate(changed: Map<string | number | symbol, unknown>): void {
+    if (
+      changed.has('selectedSessionId') &&
+      changed.get('selectedSessionId') !== undefined
+    ) {
+      ++this.pinnedSessionRequest;
+      this.pinnedSessionPending = null;
+      this.pinnedSessionError = null;
+      this.failedPinnedSessionId = null;
+      if (this.selectedSessionId === null) this.activeSessionId = null;
+    }
     if (changed.has('scopeId') && changed.get('scopeId') !== undefined) {
       ++this.pinnedSessionRequest;
       this.pinnedSessionPending = null;
       this.pinnedSessionError = null;
+      this.failedPinnedSessionId = null;
       this.observedSessions = [];
       this.activeSessionId = null;
     }
     if (changed.has('sessions') || changed.has('scopeId')) {
       this.applySessions(this.sessions || []);
+    } else if (
+      changed.has('selectedSessionId') &&
+      this.selectedSessionId === null
+    ) {
+      this.applySessions(null);
     }
     if (
       changed.has('selectedSessionId') &&
@@ -1204,14 +1220,18 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   private pinnedSessionRequest = 0;
+  private failedPinnedSessionId: string | null = null;
   @state() private pinnedSessionPending: string | null = null;
   @state() private pinnedSessionError: string | null = null;
 
-  private applySessions(rows: SessionInput[], preserveSelection = true): void {
+  private applySessions(
+    rows: SessionInput[] | null,
+    preserveSelection = true
+  ): void {
     const pinned = this.observedSessions.find(
       (session) => session.id === this.selectedSessionId
     );
-    this.observedSessions = normalizeObservedSessions(rows);
+    if (rows !== null) this.observedSessions = normalizeObservedSessions(rows);
     if (
       pinned &&
       !this.observedSessions.some((session) => session.id === pinned.id)
@@ -1251,7 +1271,11 @@ export class PreloopSessionObserver extends LitElement {
 
   /** Resolve a pinned session outside the list page through the authorized API. */
   private async loadPinnedSession(sessionId: string): Promise<void> {
-    if (this.pinnedSessionPending === sessionId) return;
+    if (
+      this.pinnedSessionPending === sessionId ||
+      this.failedPinnedSessionId === sessionId
+    )
+      return;
     const request = ++this.pinnedSessionRequest;
     const scopeId = this.scopeId;
     this.pinnedSessionPending = sessionId;
@@ -1285,6 +1309,7 @@ export class PreloopSessionObserver extends LitElement {
         this.selectedSessionId === sessionId &&
         this.isConnected
       ) {
+        this.failedPinnedSessionId = sessionId;
         this.pinnedSessionError =
           'This session is unavailable or does not belong to this agent. Select another session from the list.';
         this.activeSessionId = null;

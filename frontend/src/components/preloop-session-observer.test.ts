@@ -346,6 +346,92 @@ describe('PreloopSessionObserver', () => {
     });
   }
 
+  it('clears an unavailable pin and resumes auto-selection when the host removes it', async () => {
+    fetchStub
+      .withArgs('/api/v1/runtime-sessions/missing-session')
+      .callsFake(async () => new Response('{}', { status: 404 }));
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'missing-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.equal(null);
+    expect((el as any).pinnedSessionPending).to.equal(null);
+  });
+
+  it('does not retry an unavailable pin on refresh until the requested id changes', async () => {
+    const missing = fetchStub.withArgs(
+      '/api/v1/runtime-sessions/missing-session'
+    );
+    missing.callsFake(async () => new Response('{}', { status: 404 }));
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'missing-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    const calls = missing.callCount;
+    for (let i = 0; i < 3; i++) {
+      el.sessions = [{ ...session }];
+      await el.updateComplete;
+      await el.reload();
+    }
+    expect(missing.callCount).to.equal(calls);
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.exist;
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    el.selectedSessionId = 'missing-session';
+    await waitUntil(() => missing.callCount > calls);
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    expect(missing.callCount).to.equal(calls + 1);
+  });
+
+  it('invalidates an in-flight pinned read when the host removes the pin', async () => {
+    let release!: (response: Response) => void;
+    fetchStub.withArgs('/api/v1/runtime-sessions/older-session').returns(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      })
+    );
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'older-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!release);
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    expect((el as any).pinnedSessionPending).to.equal(null);
+    release(
+      new Response(
+        JSON.stringify({
+          session: { ...session, id: 'older-session', agent_id: 'agent-1' },
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((el as any).activeSessionId).to.equal(session.id);
+    expect(
+      (el as any).observedSessions.map((row: any) => row.id)
+    ).not.to.include('older-session');
+  });
+
   it('ignores an older pinned read after the user chooses another session', async () => {
     let release!: (response: Response) => void;
     fetchStub.withArgs('/api/v1/runtime-sessions/older-session').returns(
