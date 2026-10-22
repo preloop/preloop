@@ -1291,12 +1291,17 @@ describe('AgentDetailView', () => {
       const element = await mount();
       await waitUntil(() => (element as any).loadedSections.has('sessions'));
       const calls = agentCalls();
-      expect(calls[0].searchParams.get('include')).to.equal('');
-      const sections = calls
-        .slice(1)
-        .map((url) => url.searchParams.get('include'));
-      expect(sections).to.deep.equal(['sessions']);
-      expect(calls[1].searchParams.has('start_date')).to.equal(false);
+      expect(
+        calls.map((url) => url.searchParams.get('include')).sort()
+      ).to.deep.equal(['', 'aggregate', 'sessions']);
+      expect(
+        calls.every((url) => url.searchParams.get('lightweight') === 'true')
+      ).to.equal(true);
+      expect(
+        calls
+          .find((url) => url.searchParams.get('include') === 'sessions')!
+          .searchParams.has('start_date')
+      ).to.equal(false);
 
       (element as any).activeTab = 'models';
       await (element as any).loadActiveTabData();
@@ -1305,7 +1310,128 @@ describe('AgentDetailView', () => {
       expect(models.searchParams.has('start_date')).to.equal(true);
       // Opening it again does not read it again.
       await (element as any).loadActiveTabData();
-      expect(agentCalls()).to.have.length(3);
+      expect(agentCalls()).to.have.length(4);
+    });
+
+    it('keeps identity and the selected transcript mounted during a slow range read', async () => {
+      const element = await mount();
+      await waitUntil(
+        () =>
+          (element as any).loadedSections.has('sessions') &&
+          !(element as any).spendLoading
+      );
+      await element.updateComplete;
+      const heading = element.shadowRoot!.querySelector('view-header');
+      expect(heading).to.exist;
+      const observer = element.shadowRoot!.querySelector(
+        'preloop-session-observer'
+      );
+      expect(observer).to.exist;
+      const previous = (element as any).aggregate;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).includes('include=aggregate')) await gate;
+          return defaultFetch(input, init);
+        }
+      );
+      const before = agentCalls().length;
+      (element as any).budgetTimeRange = 'week';
+      (element as any).refreshSpendRange();
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('view-header')).to.equal(
+        heading
+      );
+      expect(
+        element.shadowRoot!.querySelector('preloop-session-observer')
+      ).to.equal(observer);
+      expect((element as any).aggregate).to.equal(previous);
+      expect((element as any).loading).to.equal(false);
+      expect(
+        element
+          .shadowRoot!.querySelector('.strip-spend')!
+          .getAttribute('aria-busy')
+      ).to.equal('true');
+      expect(element.shadowRoot!.textContent).to.contain('Updating spend');
+      expect(
+        agentCalls()
+          .slice(before)
+          .map((url) => url.searchParams.get('include'))
+      ).to.deep.equal(['aggregate']);
+      release();
+      await waitUntil(() => !(element as any).spendLoading);
+    });
+
+    it('ignores unrelated realtime bursts and refreshes only matching sessions', async () => {
+      const element = await mount();
+      await waitUntil(() => (element as any).loadedSections.has('sessions'));
+      const clock = sinon.useFakeTimers({
+        now: Date.now(),
+        toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      });
+      const full = sinon.stub(element as any, 'loadData').resolves();
+      const sessions = sinon.stub(element as any, 'loadSessions').resolves();
+      const spend = sinon.stub(element as any, 'loadSpend').resolves();
+      try {
+        for (let i = 0; i < 100; i++)
+          (element as any).handleResourceEvent(
+            {
+              payload: {
+                managed_agent_id: 'another-agent',
+                runtime_session_id: 'another-session',
+              },
+            },
+            true
+          );
+        await clock.tickAsync(1000);
+        expect(full.callCount + sessions.callCount + spend.callCount).to.equal(
+          0
+        );
+        for (let i = 0; i < 100; i++)
+          (element as any).handleResourceEvent(
+            { payload: { managed_agent_id: 'agent-1' } },
+            true
+          );
+        await clock.tickAsync(300);
+        expect(sessions.callCount).to.equal(1);
+        expect(full.callCount + spend.callCount).to.equal(0);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('defers hidden-view invalidations and reconciles once when visible', async () => {
+      const element = await mount();
+      await waitUntil(() => (element as any).loadedSections.has('sessions'));
+      let hidden = true;
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => hidden,
+      });
+      const clock = sinon.useFakeTimers({
+        now: Date.now(),
+        toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      });
+      const load = sinon.stub(element as any, 'loadData').resolves();
+      try {
+        for (let i = 0; i < 100; i++)
+          (element as any).handleResourceEvent(
+            { payload: { managed_agent_id: 'agent-1' } },
+            false
+          );
+        await clock.tickAsync(30000);
+        expect(load.callCount).to.equal(0);
+        hidden = false;
+        document.dispatchEvent(new Event('visibilitychange'));
+        await clock.tickAsync(300);
+        expect(load.callCount).to.equal(1);
+      } finally {
+        delete (document as unknown as { hidden?: boolean }).hidden;
+        clock.restore();
+      }
     });
 
     it('shows skeleton rows until the first session page arrives', async () => {
@@ -1590,13 +1716,13 @@ describe('AgentDetailView', () => {
       const load = sinon.stub(element as any, 'loadData').resolves();
       try {
         for (let i = 0; i < 10; i++) (element as any).scheduleRefresh();
-        clock.tick(300);
+        await clock.tickAsync(300);
         expect(load.callCount, 'one refresh for a burst').to.equal(1);
         expect(load.firstCall.args[0]).to.equal(true);
         (element as any).scheduleRefresh();
-        clock.tick(5_000);
+        await clock.tickAsync(5_000);
         expect(load.callCount, 'not again within the interval').to.equal(1);
-        clock.tick(10_100);
+        await clock.tickAsync(10_100);
         expect(load.callCount, 'the trailing refresh lands').to.equal(2);
       } finally {
         load.restore();

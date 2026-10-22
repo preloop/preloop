@@ -110,6 +110,104 @@ describe('agent-talk-view', () => {
     return el;
   }
 
+  it('bounds history on the initial and older transcript pages', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events'))
+        return jsonResponse({
+          logs: [],
+          pagination: { has_more: true, next_offset: 50 },
+        });
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      if (url.includes('/approval-requests')) return jsonResponse([]);
+      if (url.includes('/api/v1/agents/agent-1'))
+        return jsonResponse({ agent: AGENT, sessions: [SESSION] });
+      return jsonResponse({});
+    });
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    await (el as any).loadMoreEvents();
+    const reads = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/gateway-events'));
+    expect(reads).to.have.length(2);
+    for (const read of reads) {
+      const params = new URL(read, location.origin).searchParams;
+      expect(params.get('history')).to.equal('delta');
+      expect(params.get('history_window')).to.equal('40');
+    }
+    expect(
+      new URL(reads[1], location.origin).searchParams.get('offset')
+    ).to.equal('50');
+    el.remove();
+  });
+
+  it('uses the refreshed server offset instead of retained row count after a burst', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    (el as any).events = Array.from({ length: 100 }, (_, i) => ({
+      id: `old-${i}`,
+      timestamp: '2026-01-01T00:00:00Z',
+      payload: {},
+    }));
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/gateway-events'))
+        return jsonResponse({
+          logs: [{ id: 'new', timestamp: '2026-02-01T00:00:00Z', payload: {} }],
+          pagination: { has_more: true, next_offset: 50 },
+        });
+      if (String(input).includes('/activity'))
+        return jsonResponse({ items: [] });
+      return jsonResponse([]);
+    });
+    await (el as any).loadEvents('sess-1');
+    expect((el as any).events).to.have.length(101);
+    expect((el as any).nextEventOffset).to.equal(50);
+    await (el as any).loadMoreEvents();
+    const last = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/gateway-events'))
+      .at(-1)!;
+    expect(new URL(last, location.origin).searchParams.get('offset')).to.equal(
+      '50'
+    );
+    expect((el as any).events).to.have.length(101);
+    el.remove();
+  });
+
+  it('coalesces in-flight refresh bursts into one trailing transcript read', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    let finish!: (response: Response) => void;
+    let reads = 0;
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events')) {
+        reads += 1;
+        if (reads === 1)
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        return jsonResponse({ logs: [], pagination: { has_more: false } });
+      }
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      return jsonResponse([]);
+    });
+    const first = (el as any).loadEvents('sess-1');
+    await waitUntil(() => Boolean(finish));
+    for (let i = 0; i < 100; i++) void (el as any).loadEvents('sess-1');
+    await aTimeout(20);
+    expect(reads).to.equal(1);
+    finish(jsonResponse({ logs: [], pagination: { has_more: false } }));
+    await first;
+    await waitUntil(() => reads === 2);
+    await aTimeout(20);
+    expect(reads).to.equal(2);
+    el.remove();
+  });
+
   it('fills the viewport and never scrolls the page', async () => {
     const el = await mount();
     const styles = getComputedStyle(el);
@@ -800,13 +898,19 @@ describe('agent-talk-view session integrity', () => {
     el.remove();
   });
 
-  it('only fetches the sessions section of the agent detail', async () => {
+  it('fetches independent lightweight identity and sessions', async () => {
     const el = await mount();
-    const agentCall = fetchStub
+    const agentCalls = fetchStub
       .getCalls()
       .map((call) => String(call.args[0]))
-      .find((url) => url.includes('/api/v1/agents/agent-1'));
-    expect(agentCall).to.contain('include=sessions');
+      .filter((url) => url.includes('/api/v1/agents/agent-1'));
+    expect(agentCalls).to.have.length(2);
+    expect(
+      agentCalls.every((url) => url.includes('lightweight=true'))
+    ).to.equal(true);
+    expect(agentCalls.some((url) => url.includes('include=sessions'))).to.equal(
+      true
+    );
     el.remove();
   });
 

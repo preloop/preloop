@@ -4722,20 +4722,24 @@ export class AgentsView extends LitElement {
           }}
           style="--width: 650px;"
         >
-          <preloop-agent-deployer
-            .aiModels=${this.aiModels}
-            .computeFeatureEnabled=${this.computeFeatureEnabled}
-            .edition=${this.edition}
-            .isAdmin=${this.isAdmin}
-            hide-back-button
-            @deploy-agent-success=${(e: CustomEvent) => {
-              this.handleDeployAgentSuccess(e);
-              this.showDeployDialog = false;
-            }}
-            @deploy-cancel=${() => {
-              this.showDeployDialog = false;
-            }}
-          ></preloop-agent-deployer>
+          ${
+            this.showDeployDialog
+              ? html`<preloop-agent-deployer
+                  .aiModels=${this.aiModels}
+                  .computeFeatureEnabled=${this.computeFeatureEnabled}
+                  .edition=${this.edition}
+                  .isAdmin=${this.isAdmin}
+                  hide-back-button
+                  @deploy-agent-success=${(e: CustomEvent) => {
+                    this.handleDeployAgentSuccess(e);
+                    this.showDeployDialog = false;
+                  }}
+                  @deploy-cancel=${() => {
+                    this.showDeployDialog = false;
+                  }}
+                ></preloop-agent-deployer>`
+              : nothing
+          }
         </sl-dialog>
 
         <div class="content-bounds ${this.pageBoxClass}">

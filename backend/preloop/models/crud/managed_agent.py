@@ -1823,23 +1823,46 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         account_id: str,
         agent_id: str,
         ownership: Optional[_AgentSessionOwnership] = None,
+        include_usage: bool = True,
     ) -> Optional[dict[str, Any]]:
         """Return one managed agent summary with runtime and usage aggregates."""
-        row = (
+        query = (
             db.query(self.model)
             .outerjoin(
                 RuntimeSession, self.model.runtime_session_id == RuntimeSession.id
             )
             .outerjoin(User, self.model.owner_user_id == User.id)
-            .outerjoin(
+            .filter(self.model.account_id == account_id, self.model.id == agent_id)
+        )
+        if include_usage:
+            query = query.outerjoin(
                 ApiUsage,
                 and_(
                     ApiUsage.runtime_session_id == self.model.runtime_session_id,
                     ApiUsage.action_type == "model_gateway",
                 ),
             )
-            .filter(self.model.account_id == account_id, self.model.id == agent_id)
-            .with_entities(
+        usage_columns = (
+            [
+                func.count(ApiUsage.id).label("request_count"),
+                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                    "estimated_cost"
+                ),
+                func.max(ApiUsage.model_alias).label("latest_model_alias"),
+                func.max(ApiUsage.provider_name).label("latest_provider_name"),
+                func.max(ApiUsage.timestamp).label("last_request_at"),
+            ]
+            if include_usage
+            else [
+                literal_column("0").label("request_count"),
+                literal_column("0.0").label("estimated_cost"),
+                literal_column("NULL").label("latest_model_alias"),
+                literal_column("NULL").label("latest_provider_name"),
+                literal_column("NULL").label("last_request_at"),
+            ]
+        )
+        row = (
+            query.with_entities(
                 self.model.id,
                 self.model.runtime_session_id,
                 self.model.owner_user_id,
@@ -1869,13 +1892,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 RuntimeSession.turn_started_at,
                 RuntimeSession.turn_ended_at,
                 RuntimeSession.turn_interrupted,
-                func.count(ApiUsage.id).label("request_count"),
-                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                    "estimated_cost"
-                ),
-                func.max(ApiUsage.model_alias).label("latest_model_alias"),
-                func.max(ApiUsage.provider_name).label("latest_provider_name"),
-                func.max(ApiUsage.timestamp).label("last_request_at"),
+                *usage_columns,
             )
             .group_by(
                 self.model.id,
@@ -1912,6 +1929,61 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         )
         if row is None:
             return None
+        if not include_usage:
+            # Identity requires recency, not historical totals. Read only the
+            # latest matching usage, preserving the same attribution rule as
+            # aggregates (including per-run and unlabelled session traffic).
+            ownership = ownership or _agent_session_ownership(
+                db,
+                account_id=account_id,
+                principals=[(row.session_source_type, row.session_source_id)],
+            )
+            latest = _latest_gateway_usage_for_principal(
+                db,
+                account_id=account_id,
+                principal_type=row.session_source_type,
+                principal_id=row.session_source_id,
+            )
+            session_ids = ownership.sessions_by_principal.get(
+                (row.session_source_type, row.session_source_id), []
+            )
+            session_latest = None
+            if session_ids:
+                session_latest = (
+                    db.query(
+                        ApiUsage.model_alias.label("latest_model_alias"),
+                        ApiUsage.provider_name.label("latest_provider_name"),
+                        ApiUsage.timestamp.label("last_request_at"),
+                    )
+                    .filter(
+                        ApiUsage.runtime_session_id.in_(session_ids),
+                        *_session_usage_filter(
+                            account_id=account_id,
+                            known_principals=ownership.known_principals,
+                            start_date=None,
+                            end_date=None,
+                        ),
+                    )
+                    .order_by(ApiUsage.timestamp.desc(), ApiUsage.id.desc())
+                    .first()
+                )
+            if session_latest and (
+                latest is None
+                or session_latest.last_request_at > latest.last_request_at
+            ):
+                latest = session_latest
+            identity = _PageRow(
+                **{
+                    **row._asdict(),
+                    "request_count": int(latest is not None),
+                    **(latest._asdict() if latest else {}),
+                }
+            )
+            summary = self._row_to_summary(identity)
+            # Recency's existence flag is not a request total.
+            summary["total_requests"] = 0
+            summary["usage_computed"] = False
+            return summary
         aggregate = _usage_aggregate_for_principal(
             db,
             account_id=account_id,

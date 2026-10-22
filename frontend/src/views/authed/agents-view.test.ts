@@ -179,6 +179,36 @@ describe('AgentsView', () => {
     localStorage.clear();
   });
 
+  it('does not mount or fetch deployment-only catalogs until the dialog opens', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    expect(el.shadowRoot!.querySelector('preloop-agent-deployer')).to.equal(
+      null
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/agent-deployments/capabilities')
+        )
+    ).to.have.length(0);
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => String(call.args[0]) === '/api/v1/ai-models')
+    ).to.have.length(1);
+    (el as any).showDeployDialog = true;
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('preloop-agent-deployer')).to.exist;
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).includes('/agent-deployments/capabilities')
+        )
+    );
+  });
+
   it('renders agents while flows and editor catalogs are still pending', async () => {
     let release!: () => void;
     const pending = new Promise<void>((resolve) => {
