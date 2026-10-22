@@ -400,6 +400,20 @@ class ApiUsage(Base):
                 "action_type = 'model_gateway' AND cost_source = 'subscription'"
             ),
         ),
+        # The agents list reads subscription totals once per principal. The
+        # account-wide subscription index cannot narrow that LATERAL lookup,
+        # while the general principal index must visit every gateway row and
+        # filter cost_source from the heap.
+        Index(
+            "ix_api_usage_principal_subscription",
+            "account_id",
+            "runtime_principal_type",
+            "runtime_principal_id",
+            "timestamp",
+            postgresql_where=text(
+                "action_type = 'model_gateway' AND cost_source = 'subscription'"
+            ),
+        ),
         # Latest rate-limit header snapshot per (provider, model): a skip
         # scan walks one entry per pair instead of every gateway row of the
         # account's history (#1582). NULL names are coalesced so the pairs

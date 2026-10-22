@@ -1,10 +1,12 @@
-"""The agents list reads per-principal usage totals from a covering index.
+"""The agents list reads each principal's usage from the right indexes.
 
 ``GET /agents`` sums each listed principal's gateway usage and reads its
 latest request. With only ``ix_api_usage_account_principal_ts`` every usage
 row was a heap fetch: 175k buffers and 2.2 s on a cold prod cache (#1694).
 ``ix_api_usage_principal_totals`` carries the summed columns, so both LATERAL
 reads must plan as index-only scans. The assertion is the plan.
+Subscription totals use a separate partial index so each principal does not
+filter its entire gateway history from heap rows.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud.managed_agent import _usage_aggregates_for_principals
 
 INDEX = "ix_api_usage_principal_totals"
+SUBSCRIPTION_INDEX = "ix_api_usage_principal_subscription"
 ACCOUNT = "00000000-0000-0000-0000-0000000000a1"
 PRINCIPALS = [("claude_code", "principal-1"), ("codex", "principal-2")]
 
@@ -76,6 +79,7 @@ def test_principal_totals_plan_is_index_only(
             INSERT INTO api_usage (
                 id, account_id, endpoint, method, status_code, duration,
                 action_type, runtime_principal_type, runtime_principal_id,
+                cost_source,
                 prompt_tokens, completion_tokens, total_tokens,
                 estimated_cost, model_alias, provider_name, timestamp
             )
@@ -84,6 +88,7 @@ def test_principal_totals_plan_is_index_only(
                    CASE WHEN n % 5 = 0 THEN 'api_request' ELSE 'model_gateway' END,
                    (ARRAY['claude_code', 'codex', 'flow_execution'])[n % 3 + 1],
                    'principal-' || (n % 7),
+                   CASE WHEN n % 4 = 0 THEN 'subscription' ELSE NULL END,
                    10, 5, 15, 0.001, 'model', 'provider',
                    now() - n * interval '1 minute'
             FROM generate_series(1, 5000) AS n
@@ -101,3 +106,25 @@ def test_principal_totals_plan_is_index_only(
     rows = db_session.connection().exec_driver_sql("EXPLAIN " + inlined)
     plan = "\n".join(row[0] for row in rows)
     assert plan.count(f"Index Only Scan using {INDEX}") == 2, plan
+    assert f"Index Scan using {SUBSCRIPTION_INDEX}" in plan, plan
+    subscription = plan.split(f"Index Scan using {SUBSCRIPTION_INDEX}", 1)[1]
+    assert "Index Cond:" in subscription, plan
+    assert "runtime_principal_type" in subscription.split("Index Cond:", 1)[1], plan
+    assert "runtime_principal_id" in subscription.split("Index Cond:", 1)[1], plan
+
+    # The app also uses prepared statements. Their generic plan must still
+    # recognize the literal partial-index predicates, even with unknown
+    # account and principal parameter values.
+    placeholders: dict[str, int] = {}
+    generic_sql = re.sub(
+        r"%\(([^)]+)\)s",
+        lambda match: f"${placeholders.setdefault(match.group(1), len(placeholders) + 1)}",
+        statement,
+    )
+    generic_plan = "\n".join(
+        row[0]
+        for row in db_session.connection().exec_driver_sql(
+            "EXPLAIN (GENERIC_PLAN TRUE) " + generic_sql
+        )
+    )
+    assert f"Index Scan using {SUBSCRIPTION_INDEX}" in generic_plan, generic_plan
