@@ -723,8 +723,19 @@ export class TalkComposer extends LitElement {
 
   /** Retry a failed turn, keeping its place in the thread. */
   public async retry(id: string): Promise<void> {
-    const message = this.pending.find((item) => item.id === id);
-    if (!message) return;
+    const found = this.pending.find((item) => item.id === id);
+    if (!found) return;
+    // Route by what the server says now, not by the shape the turn had when
+    // it failed: the session's mode may have been learned since.
+    let message = found;
+    if (
+      found.targetSessionId &&
+      found.targetSessionId === this.sessionId &&
+      found.noteId === undefined &&
+      this.noteMode
+    ) {
+      message = { ...found, noteId: '' };
+    }
     this.setPending(
       this.pending.map((item) =>
         item.id === id ? { ...item, state: 'sending', error: undefined } : item
@@ -747,6 +758,12 @@ export class TalkComposer extends LitElement {
     if (this.sessionId && this.sessionEnded) {
       this.endedGuardVisible = true;
       return;
+    }
+
+    // The route is the server's per-session answer. A line typed before
+    // that answer arrived waits for it rather than guessing "command".
+    if (this.sessionId && !this.sessionControl && !this.sessionControlLegacy) {
+      await this.loadSessionControl();
     }
 
     const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -919,6 +936,25 @@ export class TalkComposer extends LitElement {
         )
       );
       this.statusMessage = null;
+      // The server refused a command because this session is a terminal it
+      // cannot type into: resend the same line as a note, and learn the mode.
+      if (
+        (error as { code?: string } | null)?.code === 'terminal_session' &&
+        targetSessionId &&
+        !startNewSession
+      ) {
+        void this.loadSessionControl();
+        this.setPending(
+          this.pending.map((item) =>
+            item.id === id
+              ? { ...item, state: 'sending', error: undefined, noteId: '' }
+              : item
+          )
+        );
+        this.sending = false;
+        await this.deliverNote({ ...turn, noteId: '' });
+        return;
+      }
     } finally {
       this.sending = false;
     }

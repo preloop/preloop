@@ -623,6 +623,67 @@ describe('talk-composer per-session routing', () => {
     ).to.contain('Read at turn end');
   });
 
+  it('a line typed before the mode is known still goes as a note', async () => {
+    let releaseControl: () => void = () => {};
+    const controlReady = new Promise<void>((resolve) => {
+      releaseControl = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/control') && url.includes('/runtime-sessions/')) {
+        await controlReady;
+        return json(terminalControl());
+      }
+      if (url.endsWith('/api/v1/operator-notes')) {
+        return json({ note_id: 'note-early', state: 'pending' }, 201);
+      }
+      if (url.includes('/control/')) {
+        return json({ status: 'delivered', published: true });
+      }
+      return new Response('', { status: 200 });
+    });
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer .agent=${agent()} sessionId="sess-1"></talk-composer>`
+    );
+    await el.updateComplete;
+    await type(el, 'early line');
+    releaseControl();
+    await waitUntil(() => el.pendingMessages[0]?.state === 'waiting');
+
+    expect(el.pendingMessages[0].noteId).to.equal('note-early');
+    expect(controlCalls(fetchStub)).to.have.length(0);
+  });
+
+  it('a command refused as terminal_session is resent as a note', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/control') && url.includes('/runtime-sessions/')) {
+        // An older answer said command; the server has since learned better.
+        return json({
+          ...terminalControl(),
+          mode: 'command',
+          reason_code: null,
+        });
+      }
+      if (url.endsWith('/api/v1/operator-notes')) {
+        return json({ note_id: 'note-409', state: 'pending' }, 201);
+      }
+      if (url.includes('/control/')) {
+        return json(
+          { detail: { code: 'terminal_session', message: 'terminal' } },
+          409
+        );
+      }
+      return new Response('', { status: 200 });
+    });
+    const el = await mountRouted();
+    await type(el, 'refused line');
+    await waitUntil(() => el.pendingMessages[0]?.state === 'waiting');
+
+    expect(el.pendingMessages).to.have.length(1);
+    expect(el.pendingMessages[0].noteId).to.equal('note-409');
+  });
+
   it('no Interrupt or Release for a note-mode session', async () => {
     route(terminalControl());
     const el = await mountRouted();

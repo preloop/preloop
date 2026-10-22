@@ -2673,9 +2673,17 @@ export async function sendAgentControlCommand(
   }
 
   const errorData = await response.json().catch(() => ({}));
-  throw new Error(
+  const error = new Error(
     extractErrorMessage(errorData, 'Failed to send Agent Control command')
-  );
+  ) as Error & { code?: string };
+  // A routing refusal names its reason (`terminal_session`), so the caller
+  // can resend the line by the route the server asked for.
+  const detail = (errorData as { detail?: unknown }).detail;
+  if (detail && typeof detail === 'object') {
+    const code = (detail as { code?: unknown }).code;
+    if (typeof code === 'string') error.code = code;
+  }
+  throw error;
 }
 
 /**

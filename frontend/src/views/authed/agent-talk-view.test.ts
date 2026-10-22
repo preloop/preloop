@@ -691,6 +691,29 @@ describe('agent-talk-view session integrity', () => {
     el.remove();
   });
 
+  it('a failed load-more page does not mark the session as failed to load', async () => {
+    eventPages.set('sess-1:0', async () =>
+      eventsFor('sess-1', ['sess-1-e1'], true)
+    );
+    eventPages.set(
+      'sess-1:1',
+      async () => new Response('down', { status: 500 })
+    );
+    const el = await mount();
+    chat(el).dispatchEvent(
+      new CustomEvent('session-events-page-requested', { bubbles: true })
+    );
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('offset=1'))
+    );
+    await aTimeout(50);
+    await el.updateComplete;
+    expect(composer(el).sessionLoadFailed).to.equal(false);
+    el.remove();
+  });
+
   it('refetches the open session on socket reconnect', async () => {
     // Other parts of the page listen too; tell every listener.
     const listeners: Array<(state: ConnectionState) => void> = [];
