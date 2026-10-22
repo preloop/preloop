@@ -5,6 +5,7 @@ import type {
   RuntimeSessionActivityItem,
 } from '../types';
 import type { LiveSessionState } from '../utils/live-session';
+import type { AgentTurnInfo } from '../utils/agent-status';
 import {
   retainSessionApprovalForms,
   type SessionApprovalState,
@@ -45,13 +46,15 @@ export function renderSessionActivity(
   ended: boolean,
   state: SessionApprovalState,
   setState: (state: SessionApprovalState) => void,
-  liveLine?: { state: LiveSessionState | null; now: number } | null
+  liveLine?: { state: LiveSessionState | null; now: number } | null,
+  turn: AgentTurnInfo | null = null
 ) {
   return html`<session-live-activity
     .sessionId=${sessionId}
     .events=${events}
     .activity=${activity}
     .ended=${ended}
+    .turn=${turn}
     .state=${liveLine?.state ?? null}
     .now=${liveLine?.now ?? 0}
     @session-approvals-changed=${(event: CustomEvent<SessionApprovalState>) => setState(retainSessionApprovalForms(state, event.detail))}

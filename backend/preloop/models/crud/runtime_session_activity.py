@@ -30,6 +30,12 @@ TOOL_CALL_SUCCESS_STATUSES = ("success", "succeeded")
 
 # Timestamps the harness hooks report (#1889). They carry no content.
 HOOK_TURN_ACTIVITY_TYPES = ("user_prompt", "turn_end", "session_end")
+# Content-light hook signals that move the session's turn state: a tool
+# call finished (PostToolUse, PostToolUseFailure) and the harness waits for
+# the operator (Notification idle_prompt). Kept out of the history list
+# like the turn timestamps.
+HOOK_SIGNAL_ACTIVITY_TYPES = ("tool_end", "waiting_for_input")
+HOOK_ACTIVITY_TYPES = HOOK_TURN_ACTIVITY_TYPES + HOOK_SIGNAL_ACTIVITY_TYPES
 HOOK_EVENT_DEDUPE_SECONDS = 2.0
 
 
@@ -633,7 +639,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             db: Database session.
             account_id: Owning account.
             runtime_session_id: Session the event belongs to.
-            activity_type: One of :data:`HOOK_TURN_ACTIVITY_TYPES`.
+            activity_type: One of :data:`HOOK_ACTIVITY_TYPES`.
             api_key_id: Hook credential that reported it.
             metadata: Source, hook event name and actor; never content.
             timestamp: Server receive time; defaults to now.
@@ -646,7 +652,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         Raises:
             ValueError: When ``activity_type`` is not a hook turn type.
         """
-        if activity_type not in HOOK_TURN_ACTIVITY_TYPES:
+        if activity_type not in HOOK_ACTIVITY_TYPES:
             raise ValueError(f"Unsupported hook activity type: {activity_type}")
         activity_timestamp = timestamp or datetime.now(timezone.utc)
         # Serialize the check and the insert per session and kind, so two
@@ -682,6 +688,15 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if session is not None and activity_type != "session_end":
             session.last_activity_at = activity_timestamp
             db.add(session)
+        if session is not None:
+            from .runtime_session_turn_state import apply_activity
+
+            apply_activity(
+                session,
+                activity_type,
+                activity_timestamp,
+                interrupted=bool((metadata or {}).get("interrupted")),
+            )
         if commit:
             db.commit()
             db.refresh(db_obj)
@@ -971,7 +986,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         base_filters = (
             self.model.account_id == account_id,
             self.model.runtime_session_id == runtime_session_id,
-            self.model.activity_type.notin_(HOOK_TURN_ACTIVITY_TYPES),
+            self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES),
         )
         # Pick the newest ids first (the runtime_session_id index finds the
         # rows; the sort reads only id and timestamp), then project (and

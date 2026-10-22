@@ -70,6 +70,11 @@ def _aware(value: Optional[datetime]) -> Optional[datetime]:
     return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    aware = _aware(value)
+    return aware.isoformat() if aware else None
+
+
 def _parse_since(value: Optional[str]) -> Optional[datetime]:
     if value in (None, ""):
         return None
@@ -99,6 +104,10 @@ def _row(session: RuntimeSession, now: datetime) -> Dict[str, Any]:
         "alias": session.alias,
         "title": title[:MAX_TITLE_CHARS] if title else None,
         "is_active_now": active,
+        "turn_state": session.turn_state,
+        "turn_started_at": _iso(session.turn_started_at),
+        "turn_ended_at": _iso(session.turn_ended_at),
+        "turn_interrupted": session.turn_interrupted,
         "ended": session.ended_at is not None,
     }
 

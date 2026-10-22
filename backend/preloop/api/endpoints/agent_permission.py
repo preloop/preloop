@@ -1168,9 +1168,27 @@ class AgentSessionEventRequest(BaseModel):
     session_id: str = Field(
         ..., min_length=1, max_length=200, description="The harness's own session id"
     )
-    hook_event_name: Literal["Stop", "SubagentStop", "SessionEnd", "stop", "sessionEnd"]
+    hook_event_name: Literal[
+        "Stop",
+        "SubagentStop",
+        "SessionEnd",
+        "stop",
+        "sessionEnd",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Notification",
+    ]
     source: Optional[str] = Field(
         None, max_length=64, description="Agent adapter, e.g. 'claude_code'"
+    )
+    tool_use_id: Optional[str] = Field(None, max_length=200)
+    tool_name: Optional[str] = Field(None, max_length=100)
+    exit_code: Optional[int] = None
+    is_error: Optional[bool] = None
+    duration_ms: Optional[int] = Field(None, ge=0)
+    notification_type: Optional[str] = Field(None, max_length=64)
+    interrupted: Optional[bool] = Field(
+        None, description="Stop only: the user interrupted the turn"
     )
 
 
@@ -1223,6 +1241,18 @@ def _record_session_event(
             source=payload.source,
             hook_event_name=payload.hook_event_name,
             managed_agent_id=identity.managed_agent_id,
+            details=payload.model_dump(
+                include={
+                    "tool_use_id",
+                    "tool_name",
+                    "exit_code",
+                    "is_error",
+                    "duration_ms",
+                    "notification_type",
+                    "interrupted",
+                },
+                exclude_none=True,
+            ),
         )
         return True
 

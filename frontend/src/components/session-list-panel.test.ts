@@ -62,7 +62,11 @@ describe('session-list-panel status chips', () => {
 
   it('keeps live and failing sessions on their own tones', async () => {
     const el = await renderPanel([
-      makeSession({ id: 'a', status: 'active_now' }),
+      makeSession({
+        id: 'a',
+        status: 'active_now',
+        raw: { turn_state: 'working' },
+      }),
       makeSession({ id: 'b', status: 'idle', failedRequests: 2 }),
     ]);
 

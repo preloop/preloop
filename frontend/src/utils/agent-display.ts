@@ -1,6 +1,7 @@
 import { html, type TemplateResult } from 'lit';
 import type { ManagedAgentSummary, RuntimeSessionSummary } from '../types';
 import { getAgentKindPresentation } from './agent-kinds';
+import { agentStateChip } from './agent-status';
 
 /**
  * Does a runtime session belong to this managed agent?
@@ -37,22 +38,21 @@ export function getAgentSourceLabel(
   return getAgentKindPresentation(sourceType)?.label || sourceType || 'Unknown';
 }
 
+/**
+ * Lifecycle first, then the one agent state (Working, Needs approval, Your
+ * turn, Idle, Ended). "Active now" is recency, not work: it lives only in
+ * the Last seen column.
+ */
 export function getAgentLifecycleVariant(agent: ManagedAgentSummary): string {
   if (agent.lifecycle_state === 'decommissioned') return 'danger';
   if (agent.lifecycle_state === 'suspended') return 'warning';
-  if (agent.activity_status === 'active_now') return 'success';
-  if (agent.activity_status === 'recently_active') return 'primary';
-  if (agent.ended_at) return 'neutral';
-  return 'primary';
+  return agentStateChip(agent).variant;
 }
 
 export function getAgentLifecycleLabel(agent: ManagedAgentSummary): string {
   if (agent.lifecycle_state === 'decommissioned') return 'Decommissioned';
   if (agent.lifecycle_state === 'suspended') return 'Paused';
-  if (agent.activity_status === 'active_now') return 'Active now';
-  if (agent.activity_status === 'recently_active') return 'Recently active';
-  if (agent.ended_at) return 'Ended';
-  return 'Idle';
+  return agentStateChip(agent).label;
 }
 
 /**
@@ -128,13 +128,7 @@ export function getAgentStatusChip(
       tooltip: partial.tooltip,
     };
   }
-  if (agent.is_active_now) {
-    return { label: 'Active now', variant: 'success' };
-  }
-  if (agent.activity_status === 'recently_active') {
-    return { label: 'Recently active', variant: 'success', outline: true };
-  }
-  return { label: 'Idle', variant: 'neutral' };
+  return agentStateChip(agent);
 }
 
 /**

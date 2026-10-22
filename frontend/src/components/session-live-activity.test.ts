@@ -20,6 +20,15 @@ function state(overrides: Partial<LiveSessionState> = {}): LiveSessionState {
   };
 }
 
+function labelText(el: SessionLiveActivity): string {
+  return (
+    el
+      .shadowRoot!.querySelector('[data-testid="live-activity-label"]')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim() ?? ''
+  );
+}
+
 async function renderLine(
   value: LiveSessionState,
   now = SINCE + 12_000
@@ -35,34 +44,81 @@ async function renderLine(
 }
 
 describe('session-live-activity', () => {
-  it('shows model, status and elapsed time in one line', async () => {
+  it('shows the status and turn elapsed time in one line', async () => {
     const el = await renderLine(state());
 
     const line = el.shadowRoot!.querySelector('[data-testid="live-activity"]')!;
     expect(line.getAttribute('data-status')).to.equal('model_processing');
-    expect(
-      line
-        .querySelector('[data-testid="live-activity-label"]')
-        ?.textContent?.trim()
-    ).to.equal('Model processing');
-    expect(line.textContent).to.contain('openai/gpt-5');
-    expect(line.querySelector('.elapsed')?.textContent?.trim()).to.equal(
-      '· 12s'
+    expect(line.getAttribute('data-phase')).to.equal('thinking');
+    expect(labelText(el)).to.equal('Working (12s)');
+    expect(line.querySelector('agent-status-line')).to.not.equal(null);
+  });
+
+  it("speaks the runtime's words for a Claude Code turn", async () => {
+    const el = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .state=${state()}
+        .now=${SINCE + 12_000}
+        .turn=${{
+          sourceType: 'claude_code',
+          turnState: 'working',
+          turnStartedAt: '2026-10-02T09:00:00',
+        }}
+      ></session-live-activity>`
     );
+    expect(labelText(el)).to.match(/^\S+… \(12s · thinking\)$/);
+  });
+
+  it('shows the turn footer once the turn ended', async () => {
+    const el = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .state=${state({ status: 'idle', label: 'Idle', since: null })}
+        .now=${SINCE + 600_000}
+        .turn=${{
+          sourceType: 'codex',
+          turnState: 'your_turn',
+          turnStartedAt: '2026-10-02T09:00:00',
+          turnEndedAt: '2026-10-02T09:03:24',
+        }}
+      ></session-live-activity>`
+    );
+    const footer = el.shadowRoot!.querySelector('[data-testid="turn-footer"]');
+    expect(footer?.textContent).to.match(/^Worked for 3m 24s • /);
+  });
+
+  it('announces a turn end that arrives while the host still says idle', async () => {
+    const idle = state({ status: 'idle', label: 'Idle', since: null });
+    const el = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .state=${idle}
+        .now=${SINCE + 600_000}
+        .turn=${{
+          sourceType: 'codex',
+          turnState: 'working',
+          turnStartedAt: '2026-10-02T09:00:00',
+        }}
+      ></session-live-activity>`
+    );
+    el.turn = {
+      sourceType: 'codex',
+      turnState: 'your_turn',
+      turnStartedAt: '2026-10-02T09:00:00',
+      turnEndedAt: '2026-10-02T09:03:24',
+    };
+    await el.updateComplete;
+    await el.updateComplete;
+    const live = el.shadowRoot!.querySelector('.live-region')!;
+    expect(live.textContent).to.contain('Worked for 3m 24s');
   });
 
   it('keeps the elapsed readout anchored to when the status began', async () => {
     const first = await renderLine(state(), SINCE + 12_000);
-    expect(
-      first.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
-    ).to.equal('· 12s');
+    expect(labelText(first)).to.equal('Working (12s)');
 
     // A re-render at a later clock must advance the same status, never restart it.
     first.now = SINCE + 45_000;
     await first.updateComplete;
-    expect(
-      first.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
-    ).to.equal('· 45s');
+    expect(labelText(first)).to.equal('Working (45s)');
   });
 
   it('shows the pending count and offers an in-place jump', async () => {
@@ -113,20 +169,15 @@ describe('session-live-activity', () => {
   it('announces a state change once, not every elapsed second', async () => {
     const el = await renderLine(state());
     const live = el.shadowRoot!.querySelector('[aria-live="polite"]')!;
-    expect(live.textContent).to.contain('Model processing');
-    // The ticking number is presentational only.
-    expect(
-      el.shadowRoot!.querySelector('.elapsed')?.getAttribute('aria-hidden')
-    ).to.equal('true');
+    expect(live.textContent).to.contain('Working, 12s elapsed');
 
     el.now = SINCE + 30_000;
     await el.updateComplete;
+    // The announcement does not follow the ticking number.
     expect(
       el.shadowRoot!.querySelector('[aria-live="polite"]')!.textContent
-    ).to.contain('Model processing');
-    expect(
-      el.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
-    ).to.equal('· 30s');
+    ).to.contain('Working, 12s elapsed');
+    expect(labelText(el)).to.equal('Working (30s)');
   });
 
   it('re-announces when the status actually changes', async () => {
@@ -179,9 +230,7 @@ describe('session-live-activity approval age', () => {
     });
     expect(value.since).to.equal(requestedAt);
     const el = await renderLine(value, now);
-    expect(
-      el.shadowRoot!.querySelector('.elapsed')?.textContent?.trim()
-    ).to.equal('· 30s');
+    expect(labelText(el)).to.equal('Waiting for approval (30s)');
   });
 });
 
@@ -218,16 +267,12 @@ describe('session-live-activity ticking', () => {
   it('keeps counting up instead of freezing on the last event', async () => {
     const el = await mountBusy(1_000_000);
 
-    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
-      '12s'
-    );
+    expect(labelText(el)).to.contain('12s');
 
     await clock.tickAsync(5000);
     await el.updateComplete;
 
-    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
-      '17s'
-    );
+    expect(labelText(el)).to.contain('17s');
   });
 
   it('stops the tick once the agent is no longer busy', async () => {
@@ -253,9 +298,7 @@ describe('session-live-activity ticking', () => {
     await el.updateComplete;
 
     // 6s of ticking on top of the 12s already elapsed, not 6s total.
-    expect(el.shadowRoot!.querySelector('.elapsed')!.textContent).to.contain(
-      '18s'
-    );
+    expect(labelText(el)).to.contain('18s');
   });
 });
 
@@ -595,10 +638,11 @@ describe('shared session approval controller', () => {
       },
     });
     await element.updateComplete;
-    expect(element.shadowRoot!.textContent).to.include('Model processing');
+    expect(element.shadowRoot!.textContent).to.include('Working (');
     stateCallback(ConnectionState.DISCONNECTED);
     await element.updateComplete;
-    expect(element.shadowRoot!.textContent).to.include('Activity unavailable');
+    // Only whole events can arrive now: the line says it is catching up.
+    expect(element.shadowRoot!.textContent).to.include('Catching up');
     expect(element.shadowRoot!.textContent).to.include('Reconnecting');
     let reconciled = false;
     element.addEventListener(
@@ -608,6 +652,113 @@ describe('shared session approval controller', () => {
     stateCallback(ConnectionState.CONNECTED);
     await element.updateComplete;
     expect(reconciled).to.equal(true);
+  });
+  it('uses the refreshed server turn after reconnecting', async () => {
+    rows = [];
+    const started = '2026-10-02T09:00:00Z';
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .state=${state({ status: 'idle', label: 'Idle', since: null })}
+        .now=${SINCE + 240_000}
+        .turn=${{ sourceType: 'codex', turnState: 'working', turnStartedAt: started }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('runtime_sessions'));
+    callbacks.get('runtime_sessions')!({
+      type: 'runtime_session_prompt',
+      timestamp: started,
+      payload: { runtime_session_id: 'session-a' },
+    });
+    await element.updateComplete;
+    expect(labelText(element)).to.include('Working (');
+    stateCallback(ConnectionState.DISCONNECTED);
+    element.turn = {
+      sourceType: 'codex',
+      turnState: 'your_turn',
+      turnStartedAt: started,
+      turnEndedAt: '2026-10-02T09:03:24Z',
+    };
+    stateCallback(ConnectionState.CONNECTED);
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.include('Worked for 3m 24s');
+  });
+  it('keeps a working turn fresh when progress arrives after ten minutes', async () => {
+    rows = [];
+    const started = '2026-10-02T09:00:00Z';
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .state=${state({ status: 'idle', label: 'Idle', since: null })}
+        .now=${SINCE + 660_000}
+        .turn=${{ sourceType: 'codex', turnState: 'working', turnStartedAt: started }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('runtime_sessions'));
+    expect(labelText(element)).to.equal('Idle');
+    callbacks.get('runtime_sessions')!({
+      type: 'runtime_session_tool_ended',
+      timestamp: '2026-10-02T09:11:00Z',
+      payload: { runtime_session_id: 'session-a' },
+    });
+    await element.updateComplete;
+    expect(labelText(element)).to.include('Working (');
+  });
+  it('omits event age while reconnecting with no observed activity', async () => {
+    rows = [];
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .state=${state({
+          status: 'idle',
+          label: 'Idle',
+          since: null,
+          lastUpdateAt: null,
+        })}
+        .now=${SINCE + 60_000}
+        .turn=${{
+          sourceType: 'codex',
+          turnState: 'working',
+          turnStartedAt: '2026-10-02T09:00:00Z',
+        }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('runtime_sessions'));
+    stateCallback(ConnectionState.DISCONNECTED);
+    await element.updateComplete;
+    expect(labelText(element)).to.equal('Catching up');
+  });
+  it('updates the line live from session_progress for its own session only', async () => {
+    rows = [];
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .turn=${{ sourceType: 'codex' }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('session_progress'));
+    const now = new Date().toISOString();
+    const push = (payload: Record<string, unknown>) =>
+      callbacks.get('session_progress')!({
+        type: 'managed_agent_session_progress',
+        timestamp: now,
+        payload: { runtime_session_id: 'session-a', ...payload },
+      });
+    push({ kind: 'turn_started' });
+    push({ kind: 'tool_start', tool_name: 'exec_command', command: 'ls' });
+    callbacks.get('session_progress')!({
+      type: 'managed_agent_session_progress',
+      timestamp: now,
+      payload: { runtime_session_id: 'session-b', kind: 'turn_completed' },
+    });
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.include(
+      '· Running exec_command'
+    );
+    push({ kind: 'tool_end' });
+    push({ kind: 'turn_completed', status: 'completed' });
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.include('Worked for');
   });
   it('rejects late session A history after switching to session B', async () => {
     let finishA!: (response: Response) => void;

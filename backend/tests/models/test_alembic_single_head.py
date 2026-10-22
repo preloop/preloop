@@ -480,4 +480,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert capture_retry.down_revision == "20261107_mcp_tool_annotations"
     subscription_principal = script.get_revision("20261108_agent_sub_principal")
     assert subscription_principal.down_revision == "20261107_gov_capture_retry"
-    assert script.get_heads() == ["20261108_agent_sub_principal"]
+    turn_state = script.get_revision("20261107_session_turn_state")
+    assert turn_state.down_revision == "20261108_agent_sub_principal"
+    assert script.get_heads() == ["20261107_session_turn_state"]

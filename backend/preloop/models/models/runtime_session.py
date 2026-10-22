@@ -106,6 +106,20 @@ class RuntimeSession(Base):
     started_at: Mapped[datetime] = mapped_column(nullable=False)
     last_activity_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
     ended_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    #: What the agent is doing in this session, derived on write from the
+    #: prompt, tool end, turn end, approval and session end rows:
+    #: ``working``, ``waiting_for_approval``, ``your_turn`` or ``ended``.
+    #: NULL until the first hook row arrives; lists then fall back to
+    #: recency. See ``preloop.models.crud.runtime_session_turn_state``.
+    turn_state: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    #: Start of the current or last turn (the prompt row), for the live
+    #: line's turn elapsed time, which never restarts per model request.
+    turn_started_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    #: End of the last turn (turn end or wait for input); NULL while a turn
+    #: runs. Drives the "Worked for 3m 24s" footer.
+    turn_ended_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    #: True when the last turn ended because the operator interrupted it.
+    turn_interrupted: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     #: Derived enforcement state for a legal hold, the same column shape the
     #: other held classes carry. The retention purge tests this boolean, so a
     #: held session and its activity rows survive a pass whose cutoff would

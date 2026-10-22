@@ -15,6 +15,9 @@
     --console-text-meta: 0.8125rem; /* 13px */
     --console-text-eyebrow: 0.6875rem; /* 11px */
     --console-stat-value: 1.375rem; /* 22px */
+    /* Commands, tool rows and the agent status line. Generic stack until a
+       real mono face is chosen; switching it is this one line. */
+    --console-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
     /* The page box. One width and one side inset for every console page. */
     --console-page-max-width: 80rem; /* 1280px */

@@ -274,15 +274,41 @@ def test_crud_dedupe_is_per_kind_and_window(
 def test_request_schemas_carry_no_prompt_field_for_events() -> None:
     """Privacy: the event route has no field that could carry content."""
     fields = set(endpoint.AgentSessionEventRequest.model_fields)
-    assert fields == {"session_id", "hook_event_name", "source"}
-    for banned in ("prompt", "first_prompt", "summary", "tool_args"):
+    assert fields == {
+        "session_id",
+        "hook_event_name",
+        "source",
+        "tool_use_id",
+        "tool_name",
+        "exit_code",
+        "is_error",
+        "duration_ms",
+        "notification_type",
+        "interrupted",
+    }
+    for banned in (
+        "prompt",
+        "first_prompt",
+        "summary",
+        "tool_args",
+        "output_preview",
+    ):
         assert banned not in fields
     names = set(
         get_args(
             endpoint.AgentSessionEventRequest.model_fields["hook_event_name"].annotation
         )
     )
-    assert names == {"Stop", "SubagentStop", "SessionEnd", "stop", "sessionEnd"}
+    assert names == {
+        "Stop",
+        "SubagentStop",
+        "SessionEnd",
+        "stop",
+        "sessionEnd",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Notification",
+    }
 
 
 def test_mark_ended_by_hook_stamps_only_an_open_session(

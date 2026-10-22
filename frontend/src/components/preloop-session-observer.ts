@@ -74,6 +74,7 @@ import type {
   SessionObserverScope,
   SessionReplayMode,
 } from '../utils/session-observer';
+import { turnInfoFromSession } from '../utils/agent-status';
 import {
   formatCost,
   formatNumber,
@@ -518,9 +519,6 @@ export class PreloopSessionObserver extends LitElement {
   private summarizeVisibleContent = false;
 
   @state()
-  private livePulse = false;
-
-  @state()
   private searchQuery = '';
 
   @state()
@@ -532,7 +530,6 @@ export class PreloopSessionObserver extends LitElement {
   @state()
   private realtimeState: ConnectionState | null = null;
   private refreshTimer: number | null = null;
-  private livePulseTimer: number | null = null;
 
   static styles = [
     consoleDialogStyles,
@@ -879,7 +876,6 @@ export class PreloopSessionObserver extends LitElement {
     );
     this.removeEventListener('session-create-budget', this.handleCreateBudget);
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
-    if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
     this.clearSidebarAnimationTimer();
     for (const sessionId of Object.keys(this.optimizationJobPollTimers)) {
       this.clearOptimizationJobPollTimer(sessionId);
@@ -1010,7 +1006,6 @@ export class PreloopSessionObserver extends LitElement {
   private handleRuntimeSessionActivity(message: any): void {
     const payload = message?.payload ?? {};
     if (!this.matchesScope(payload)) return;
-    this.pulseLive();
     // The runner may have gone offline or come back: re-read the control
     // mode of the open runner session (debounced in the element).
     if (
@@ -1065,7 +1060,6 @@ export class PreloopSessionObserver extends LitElement {
   private handleGatewayActivity(message: any): void {
     const payload = message?.payload ?? {};
     if (!this.matchesScope(payload)) return;
-    this.pulseLive();
 
     const sessionId = payload.runtime_session_id;
     if (!sessionId) {
@@ -1131,15 +1125,6 @@ export class PreloopSessionObserver extends LitElement {
       return payload.ai_model_id === this.scopeId;
     }
     return true;
-  }
-
-  private pulseLive(): void {
-    this.livePulse = true;
-    if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
-    this.livePulseTimer = window.setTimeout(() => {
-      this.livePulse = false;
-      this.livePulseTimer = null;
-    }, 1400);
   }
 
   private scheduleScopeRefresh(): void {
@@ -2517,6 +2502,9 @@ export class PreloopSessionObserver extends LitElement {
         .sessionId=${this.activeSessionId || ''}
         .runtime=${runtimeFromSourceType(this.activeSession?.sourceType ?? null)}
         .ended=${Boolean(this.activeSession?.endedAt)}
+        .turn=${turnInfoFromSession(
+          this.activeSession?.raw as Record<string, unknown> | undefined
+        )}
         @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
@@ -2780,7 +2768,7 @@ export class PreloopSessionObserver extends LitElement {
             ${
               live
                 ? html`<span
-                    class="live-indicator ${this.livePulse ? 'pulsing' : ''}"
+                    class="live-indicator"
                     title="Realtime session updates"
                   >
                     <span class="live-dot"></span>
