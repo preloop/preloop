@@ -57,6 +57,7 @@ def dns_answers(monkeypatch: pytest.MonkeyPatch, addresses: list[str]) -> list[s
     [
         "127.0.0.1",
         "::1",
+        "fec0::1",
         "10.0.0.1",
         "169.254.1.1",
         "::ffff:127.0.0.1",

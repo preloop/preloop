@@ -28,6 +28,9 @@ def _blocked_reason_for_address(raw: str) -> Optional[str]:
         return "loopback"
     if address.is_link_local:
         return "link-local"
+    # ipaddress treats deprecated IPv6 site-local space as globally reachable.
+    if isinstance(address, ipaddress.IPv6Address) and address.is_site_local:
+        return "site-local"
     if address.is_private:
         return "private"
     if address.is_reserved or address.is_multicast or address.is_unspecified:
