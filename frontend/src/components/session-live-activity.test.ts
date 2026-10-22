@@ -704,6 +704,30 @@ describe('shared session approval controller', () => {
     await element.updateComplete;
     expect(labelText(element)).to.include('Working (');
   });
+  it('omits event age while reconnecting with no observed activity', async () => {
+    rows = [];
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .state=${state({
+          status: 'idle',
+          label: 'Idle',
+          since: null,
+          lastUpdateAt: null,
+        })}
+        .now=${SINCE + 60_000}
+        .turn=${{
+          sourceType: 'codex',
+          turnState: 'working',
+          turnStartedAt: '2026-10-02T09:00:00Z',
+        }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('runtime_sessions'));
+    stateCallback(ConnectionState.DISCONNECTED);
+    await element.updateComplete;
+    expect(labelText(element)).to.equal('Catching up');
+  });
   it('updates the line live from session_progress for its own session only', async () => {
     rows = [];
     const element = await fixture<SessionLiveActivity>(

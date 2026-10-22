@@ -346,7 +346,10 @@ export class SessionLiveActivity extends LitElement {
         turn.outputTokens ?? 0
       ),
       catchingUp: this.sessionId ? !this.connected : false,
-      lastEventAt: Math.max(live.lastEventAt ?? 0, this.lastTurnEventAt ?? 0),
+      lastEventAt:
+        live.lastEventAt === null && this.lastTurnEventAt === null
+          ? null
+          : Math.max(live.lastEventAt ?? 0, this.lastTurnEventAt ?? 0),
       canInterrupt: this.canInterrupt,
       now,
     });
