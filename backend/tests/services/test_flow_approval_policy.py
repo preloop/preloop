@@ -544,7 +544,7 @@ async def test_endpoint_applies_flow_policy_to_bound_session(
     monkeypatch.setattr(
         endpoint,
         "run_db_off_loop",
-        AsyncMock(side_effect=[identity, None, None, grant, None]),
+        AsyncMock(side_effect=[identity, None, None, grant, None, None]),
     )
     monkeypatch.setattr(endpoint, "_permission_check_base_url", lambda: "https://e")
     service = AsyncMock(return_value=("allow", "policy", "req-1", False))

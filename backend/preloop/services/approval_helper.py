@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from fastmcp import Context
 from preloop.config import settings
 from preloop.models import models
+from preloop.models.schemas.approval_request import utc_isoformat
 from preloop.models.crud.approval_request import NoteApprovalLimitError
 from preloop.tools.builtin_defs import TOOL_NAME_ALIASES
 
@@ -1204,7 +1205,7 @@ async def require_approval(
                                     fresh_request,
                                     "escalated",
                                     extra_data={
-                                        "new_expires_at": new_expires_at.isoformat()
+                                        "new_expires_at": utc_isoformat(new_expires_at)
                                     },
                                 )
 

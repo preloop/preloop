@@ -543,6 +543,7 @@ async def request_agent_permission(
     evaluation_phase: str = "permission_request",
     flow_id: Optional[uuid.UUID] = None,
     flow_policy_label: Optional[str] = None,
+    approval_request_id: Optional[uuid.UUID] = None,
 ) -> Tuple[str, str, Optional[str], bool]:
     """Decide whether an agent's native tool call may proceed.
 
@@ -588,6 +589,8 @@ async def request_agent_permission(
             ``auto_approved_reason='flow_approval_policy'`` instead of
             waiting for a human. Deny rules and require-approval rules still
             win.
+        approval_request_id: Id the hook proposed for an approval this call
+            creates, so the hook can expire it on its own deadline.
         evaluation_phase: ``pre_tool_use`` checks central native rules before
             the host permission decision, skipping no-rule automatic escalation.
             The default ``permission_request`` preserves remote host prompts.
@@ -712,6 +715,7 @@ async def request_agent_permission(
                 runtime_session_id=runtime_session_id,
                 managed_agent_name=managed_agent_name,
                 api_key_id=api_key_id,
+                request_id=approval_request_id,
                 standing_bypass_reason=(
                     models.AutoApprovedReason.NATIVE_TOOL_APPROVALS_OFF
                     if approvals_off and matched_require is None

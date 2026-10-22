@@ -3,8 +3,9 @@ import { SessionRegistrar } from "./session-registration.js";
 // runtime-plugins/claude-preloop/src/index.ts; this file is the runtime-
 // specific half and is the only place that talks to @openai/codex-sdk.
 //
-// `CodexClient` is the seam a future `codex app-server` driver can replace.
-// The SDK implementation below is the only one shipped today.
+// `CodexClient` is the seam between the sidecar and a Codex driver. The SDK
+// implementation below runs threads the sidecar owns; src/app-server-client.ts
+// drives interactive TUI threads on the shared `codex app-server` daemon.
 
 import os from "node:os";
 import { employeeClientOptionsFor } from "./employee.js";
@@ -64,6 +65,8 @@ export type TurnOutcome = {
   usage?: CodexUsage | null;
   /** Set when the in-flight run was aborted by interrupt. */
   stopped?: boolean;
+  /** Set when the line steered a TUI turn that was already running. */
+  steered?: boolean;
 };
 
 export type SendMessageParams = {

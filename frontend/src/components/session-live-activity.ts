@@ -22,6 +22,7 @@ import { sessionWork, sessionTools } from '../utils/session-live';
 import type { LiveSessionState } from '../utils/live-session';
 import { formatElapsed } from '../utils/live-session';
 import { isUnexpiredPendingRequest } from '../utils/approvals';
+import { parseUtc } from '../utils/date';
 
 export interface SessionApprovalState {
   requests: ApprovalRequest[];
@@ -551,7 +552,7 @@ export class SessionLiveActivity extends LitElement {
     const requested = tools.filter((t) => t.phase === 'requested');
     const runningEvidence = tools.filter((t) => t.phase === 'running');
     const running = runningEvidence.filter(
-      (t) => this.clock - Date.parse(t.timestamp || '') < 120000
+      (t) => this.clock - (parseUtc(t.timestamp) ?? 0) < 120000
     );
     const label = this.ended
       ? 'Ended'

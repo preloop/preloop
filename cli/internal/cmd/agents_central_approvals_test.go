@@ -179,8 +179,13 @@ func TestInstallApprovalHookDeadlines(t *testing.T) {
 			if tc.source != permissionSourceCursor {
 				entry = entry["hooks"].([]interface{})[0].(map[string]interface{})
 			}
-			if entry["timeout"] != float64(86430) {
-				t.Errorf("host timeout=%v want86430", entry["timeout"])
+			wantHost := float64(86430)
+			if tc.source == permissionSourceClaudeCode {
+				// Capped below Claude Code's 600 s default hook timeout.
+				wantHost = 600
+			}
+			if entry["timeout"] != wantHost {
+				t.Errorf("host timeout=%v want %v", entry["timeout"], wantHost)
 			}
 			credPath, err := permissionHookCredentialPath(agent)
 			if err != nil {
