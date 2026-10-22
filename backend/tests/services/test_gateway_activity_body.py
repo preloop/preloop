@@ -99,7 +99,7 @@ def test_slim_is_idempotent_and_does_not_mutate():
 def test_byte_cap_bounds_the_row():
     payload = _call_payload(3, text_size=200_000)
     slim = slim_gateway_payload(payload, max_bytes=16384)
-    assert payload_bytes(slim) <= 16384 + 512  # marker added after fitting
+    assert payload_bytes(slim) <= 16384
     marker = slim[COMPACTION_KEY]
     assert marker["request_messages_omitted"] is True
     assert "strings_capped_at" in marker
@@ -152,3 +152,31 @@ def test_reader_window_reports_original_positions():
     metadata = event["payload"]["conversation_preview"]["metadata"]
     assert metadata["history_window_start"] == 22
     assert metadata["history_window_elided_count"] >= 20
+
+
+def test_byte_cap_holds_with_many_tool_entries():
+    """Short strings alone cannot fit hundreds of entries; keys go instead."""
+    payload = _call_payload(1)
+    payload["tool_activity"] = {
+        "entries": [
+            {"id": None, "direction": "call", "arguments": "a" * 2000}
+            for _ in range(400)
+        ]
+    }
+    payload["tools"] = [
+        {"kind": "call", "source": "response", "text": "t" * 2000} for _ in range(400)
+    ]
+    slim = slim_gateway_payload(payload, max_bytes=32768)
+    assert payload_bytes(slim) <= 32768
+    assert "tool_activity" in slim["body_compaction"]["keys_omitted"]
+    assert slim["total_tokens"] == 120
+
+
+def test_reader_window_wider_than_slim_row_keeps_stored_boundary():
+    payload = slim_gateway_payload(_call_payload(10), max_bytes=0)
+    [event] = elide_replayed_history(
+        [{"id": "1", "timestamp": "t", "type": "x", "payload": payload}], window=40
+    )
+    metadata = event["payload"]["conversation_preview"]["metadata"]
+    assert metadata["history_window_start"] == 21
+    assert metadata["history_window_elided_count"] == 20

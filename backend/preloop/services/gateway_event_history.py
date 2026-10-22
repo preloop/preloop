@@ -167,11 +167,15 @@ def elide_replayed_history(
                 first_position = (
                     first.get("position") if isinstance(first, dict) else None
                 )
-                new_metadata["history_window_start"] = (
-                    first_position
-                    if isinstance(first_position, int)
-                    else max(window_start, stored_start or 0)
-                )
+                if window_start == 0 and isinstance(stored_start, int):
+                    # The read-time window dropped nothing: the stored
+                    # boundary is the one the elided count refers to.
+                    reported_start = stored_start
+                elif isinstance(first_position, int):
+                    reported_start = first_position
+                else:
+                    reported_start = max(window_start, stored_start or 0)
+                new_metadata["history_window_start"] = reported_start
                 new_metadata["history_window_elided_count"] = window_elided + (
                     stored_elided if isinstance(stored_elided, int) else 0
                 )

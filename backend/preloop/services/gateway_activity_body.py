@@ -55,6 +55,8 @@ BODY_KEYS: tuple[str, ...] = (
 )
 
 _MIN_STRING_CHARS = 256
+# Bytes kept free for the ``body_compaction`` marker itself.
+_MARKER_RESERVE = 512
 
 
 def payload_bytes(payload: Any) -> int:
@@ -250,14 +252,21 @@ def slim_gateway_payload(payload: Any, *, max_bytes: int) -> Any:
         }
 
     if max_bytes > 0:
-        result = _fit(result, marker, max_bytes=max_bytes)
+        result = _fit(result, marker, max_bytes=max(1, max_bytes - _MARKER_RESERVE))
     marker["original_bytes"] = original_bytes
+    marker["stored_bytes"] = 0
     result[COMPACTION_KEY] = marker
     marker["stored_bytes"] = payload_bytes(result)
     return result
 
 
 def _fit(result: dict[str, Any], marker: dict[str, Any], *, max_bytes: int) -> Any:
+    """Shrink ``result`` until it serializes to at most ``max_bytes``.
+
+    Steps, cheapest loss first: tool definitions to names, drop the raw
+    message arrays, cut long strings, then drop whole content keys. The last
+    step always fits, because what is left is accounting fields.
+    """
     if payload_bytes(result) <= max_bytes:
         return result
     request = result.get("request")
@@ -281,8 +290,36 @@ def _fit(result: dict[str, Any], marker: dict[str, Any], *, max_bytes: int) -> A
         candidate = sanitize_for_jsonb(result, max_string_chars=limit)
         if payload_bytes(candidate) <= max_bytes or limit <= _MIN_STRING_CHARS:
             marker["strings_capped_at"] = limit
-            return candidate
+            break
         limit = max(_MIN_STRING_CHARS, limit // 2)
+    if payload_bytes(candidate) <= max_bytes:
+        return candidate
+    # Still over at the shortest strings: too many entries. Drop whole
+    # content keys, least useful to a reader first, until it fits.
+    omitted: list[str] = []
+    for key in ("tool_activity", "tools", "request", "response"):
+        if key in candidate:
+            candidate = {k: v for k, v in candidate.items() if k != key}
+            omitted.append(key)
+            if payload_bytes(candidate) <= max_bytes:
+                marker["keys_omitted"] = omitted
+                return candidate
+    preview = candidate.get("conversation_preview")
+    if isinstance(preview, dict) and isinstance(preview.get("messages"), list):
+        messages = list(preview["messages"])
+        while messages and payload_bytes(candidate) > max_bytes:
+            messages.pop(0)
+            candidate = {
+                **candidate,
+                "conversation_preview": {**preview, "messages": messages},
+            }
+        marker["preview_messages_dropped"] = len(preview["messages"]) - len(messages)
+    if payload_bytes(candidate) > max_bytes:
+        candidate = {k: v for k, v in candidate.items() if k not in BODY_KEYS}
+        omitted.append("conversation_preview")
+    if omitted:
+        marker["keys_omitted"] = omitted
+    return candidate
 
 
 def strip_gateway_bodies(payload: Any) -> Any:

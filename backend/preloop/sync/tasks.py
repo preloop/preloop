@@ -557,7 +557,7 @@ async def cleanup_flow_workspaces() -> dict[str, int] | None:
         db.close()
 
 
-def maintain_gateway_activity() -> dict[str, Any] | None:
+async def maintain_gateway_activity() -> dict[str, Any] | None:
     """Hourly bounded pass over stored model gateway call rows.
 
     Compacts rows stored before slim storage and, when
@@ -571,7 +571,9 @@ def maintain_gateway_activity() -> dict[str, Any] | None:
 
     db = next(get_db_session())
     try:
-        return run_gateway_activity_maintenance(db)
+        # Batches commit and wait on Postgres; keep them off the worker loop
+        # so acks and other tasks are not held up for the whole pass.
+        return await run_db_off_loop(lambda: run_gateway_activity_maintenance(db))
     except Exception as e:
         logger.error("Gateway activity maintenance failed: %s", e, exc_info=True)
         return None

@@ -1,5 +1,7 @@
 # Gateway activity storage
 
+Editions: OSS, Cloud, Enterprise. Unless stated otherwise, everything on this page ships in OSS.
+
 Every model call that goes through the Preloop gateway inside a runtime
 session is stored as one row in the `runtime_session_activity` table. The
 row holds usage, cost and timing, plus the conversation content that the
@@ -43,7 +45,10 @@ compacted. A maintenance pass does this in the background:
 - Each pass rewrites at most `GATEWAY_ACTIVITY_MAINTENANCE_MAX_BATCHES`
   batches (default 50) of `GATEWAY_ACTIVITY_MAINTENANCE_BATCH_SIZE` rows
   (default 200). Each batch is its own transaction, so stopping a pass loses
-  nothing; the next pass continues with the rows still left.
+  nothing; the next pass continues with the rows still left. Each worker
+  remembers how far it got, so once the backlog is drained an hourly pass
+  only looks at rows it has not seen. After a worker restart the first pass
+  walks the table once more and finds nothing to rewrite.
 - It is not part of a schema migration, so it never holds up an upgrade.
 - Sessions under legal hold are skipped.
 
@@ -70,8 +75,8 @@ which you schedule in your own maintenance window.
 ## Retention of conversation content
 
 With `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED=true`, the same hourly pass also
-removes conversation content from gateway call rows older than the account's
-plan history window. Usage, tokens, cost and timing stay, so reports over
+removes conversation content from every gateway call row older than the
+account's plan history window, whatever its size. Usage, tokens, cost and timing stay, so reports over
 old periods still add up. Accounts with unlimited history are skipped, and
 so are sessions under legal hold. This is off by default because removed
 content cannot be restored. Run it by hand with `--retention`.

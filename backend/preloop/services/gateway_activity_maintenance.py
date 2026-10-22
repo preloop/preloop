@@ -50,6 +50,19 @@ logger = logging.getLogger(__name__)
 # under this, and a row this small costs little whatever it holds.
 _MIN_STORED_BYTES = 2048
 
+# Where this process's compaction walk got to. Rows written by this release
+# are slim when inserted, so the backlog only shrinks: once a walk has passed
+# a row it never needs to look at it again, and the next hourly pass resumes
+# here instead of re-walking the compacted prefix. Kept in memory on purpose
+# (no schema change): a restarted worker walks the table once more, which
+# finds nothing to rewrite and costs one index scan.
+_compaction_cursor: dict[str, Any] = {}
+
+
+def reset_compaction_cursor() -> None:
+    """Forget the in-process compaction cursor (tests and operators)."""
+    _compaction_cursor.clear()
+
 
 @dataclass
 class MaintenanceResult:
@@ -121,7 +134,7 @@ def compact_existing_rows(
         else max_bytes
     )
     result = result or MaintenanceResult(dry_run=dry_run)
-    after: Optional[tuple[datetime, Any]] = None
+    after: Optional[tuple[datetime, Any]] = _compaction_cursor.get("after")
     for _ in range(max(0, max_batches)):
         rows = crud_runtime_session_activity.gateway_call_batch(
             db, min_stored_bytes=_MIN_STORED_BYTES, limit=batch_size, after=after
@@ -130,6 +143,8 @@ def compact_existing_rows(
             result.exhausted = True
             break
         after = (rows[-1].timestamp, rows[-1].id)
+        if not dry_run:
+            _compaction_cursor["after"] = after
         changed = _rewrite_batch(
             db,
             rows,
@@ -178,9 +193,11 @@ def strip_expired_bodies(
         cutoff = current - timedelta(days=days)
         after: Optional[tuple[datetime, Any]] = None
         while budget > 0:
+            # No size floor here: retention promises that old content is
+            # gone, however short it was. The marker bounds repeat work.
             rows = crud_runtime_session_activity.gateway_call_batch(
                 db,
-                min_stored_bytes=_MIN_STORED_BYTES,
+                min_stored_bytes=0,
                 limit=batch_size,
                 after=after,
                 account_id=account.id,

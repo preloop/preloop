@@ -56,6 +56,14 @@ def _row(db_session, session, *, turns: int, age_days: int = 0):
     return row
 
 
+@pytest.fixture(autouse=True)
+def fresh_cursor():
+    """The compaction walk position is per process; start every test clean."""
+    maintenance.reset_compaction_cursor()
+    yield
+    maintenance.reset_compaction_cursor()
+
+
 @pytest.fixture
 def cap(monkeypatch):
     monkeypatch.setattr(settings, "model_gateway_activity_max_stored_bytes", 32768)
@@ -139,3 +147,53 @@ def test_run_respects_disabled_halves(db_session, monkeypatch):
     monkeypatch.setattr(settings, "gateway_activity_body_retention_enabled", False)
     summary = maintenance.run_gateway_activity_maintenance(db_session)
     assert summary["compaction"] is None and summary["retention"] is None
+
+
+def test_retention_strips_small_rows_too(db_session, test_user, monkeypatch):
+    """A short old exchange is content too; no size floor applies."""
+    monkeypatch.setattr(
+        "preloop.services.analytics_history.storage_history_days",
+        lambda db, account: 30,
+    )
+    session = _session(db_session, test_user.account_id)
+    row = models.RuntimeSessionActivity(
+        account_id=session.account_id,
+        runtime_session_id=session.id,
+        activity_type="model_gateway_call",
+        status="success",
+        metadata_={
+            "total_tokens": 3,
+            "request": {"messages": [{"role": "user", "content": "hi"}]},
+            "response": {"output_text": "hello"},
+            "conversation_preview": {"messages": [{"role": "user", "text": "hi"}]},
+        },
+        timestamp=datetime.now(UTC) - timedelta(days=60),
+    )
+    db_session.add(row)
+    db_session.flush()
+
+    result = maintenance.strip_expired_bodies(db_session, batch_size=10, max_batches=5)
+    assert result.stripped_rows == 1
+    db_session.refresh(row)
+    assert set(row.metadata_) == {"total_tokens", COMPACTION_KEY}
+
+
+def test_next_pass_resumes_after_the_last_row_walked(db_session, test_user, cap):
+    session = _session(db_session, test_user.account_id)
+    for n in range(4):
+        _row(db_session, session, turns=5 + n)
+    maintenance.compact_existing_rows(db_session, batch_size=10, max_batches=5)
+    calls = []
+    original = maintenance.crud_runtime_session_activity.gateway_call_batch
+
+    def spy(db, **kwargs):
+        calls.append(kwargs.get("after"))
+        return original(db, **kwargs)
+
+    monkeypatch_target = maintenance.crud_runtime_session_activity
+    monkeypatch_target.gateway_call_batch = spy  # type: ignore[method-assign]
+    try:
+        maintenance.compact_existing_rows(db_session, batch_size=10, max_batches=5)
+    finally:
+        del monkeypatch_target.gateway_call_batch
+    assert calls and calls[0] is not None
