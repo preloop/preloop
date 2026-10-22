@@ -478,4 +478,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert annotations.down_revision == "20261106_fleet_work_ref_idx"
     capture_retry = script.get_revision("20261107_gov_capture_retry")
     assert capture_retry.down_revision == "20261107_mcp_tool_annotations"
-    assert script.get_heads() == ["20261107_gov_capture_retry"]
+    reachable = script.get_revision("20261108_control_reachable")
+    assert reachable.down_revision == "20261107_gov_capture_retry"
+    assert script.get_heads() == ["20261108_control_reachable"]
