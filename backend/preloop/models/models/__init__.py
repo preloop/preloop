@@ -197,6 +197,8 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "UpstreamMCPOAuthConnection",
+    "UpstreamMCPOAuthTransaction",
     "AgentUsageTotal",
     "AgentUsageCounted",
     "AgentUsageBackfill",
@@ -442,3 +444,4 @@ from .support import (
 from .observation_verification import ObservationVerification
 
 from .agent_usage_total import AgentUsageTotal, AgentUsageCounted, AgentUsageBackfill
+from .upstream_mcp_oauth import UpstreamMCPOAuthConnection, UpstreamMCPOAuthTransaction

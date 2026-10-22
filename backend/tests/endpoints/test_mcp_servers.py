@@ -527,3 +527,154 @@ def test_create_mcp_server_authentication_error_is_actionable_and_safe(
     assert "authentication" in result.json()["last_error"]
     assert "private" not in result.json()["last_error"]
     assert "TaskGroup" not in result.json()["last_error"]
+
+
+@pytest.fixture
+def synthetic_oauth(monkeypatch):
+    """A complete synthetic public-client provider, including separate issuer."""
+    import httpx
+    from preloop.services.upstream_mcp_oauth import OAuthHTTP
+    from preloop.api.endpoints import mcp_servers
+
+    requests = []
+    resource = "https://ext.example/mcp"
+    issuer = "https://identity.example.com"
+
+    async def resolve(host, port):
+        return ["93.184.216.34"]
+
+    def handle(request):
+        requests.append(request)
+        path = request.url.path
+        if path == "/mcp":
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://ext.example/metadata"'
+                },
+            )
+        if path == "/metadata":
+            return httpx.Response(
+                200, json={"resource": resource, "authorization_servers": [issuer]}
+            )
+        if path == "/.well-known/oauth-authorization-server":
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": issuer,
+                    "authorization_endpoint": issuer + "/authorize",
+                    "token_endpoint": issuer + "/token",
+                    "registration_endpoint": issuer + "/register",
+                },
+            )
+        if path == "/register":
+            return httpx.Response(201, json={"client_id": "synthetic-public-client"})
+        if path == "/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "synthetic-access-token",
+                    "refresh_token": "synthetic-refresh-token",
+                    "expires_in": 3600,
+                },
+            )
+        return httpx.Response(404)
+
+    monkeypatch.setattr(
+        mcp_servers,
+        "OAuthHTTP",
+        lambda: OAuthHTTP(transport=httpx.MockTransport(handle), resolver=resolve),
+    )
+    return requests
+
+
+def test_oauth_durable_callback_and_disconnect(
+    client, db_session, test_user, synthetic_oauth
+):
+    from urllib.parse import parse_qs, urlsplit
+    from preloop.models import models
+
+    server = _oauth_server(db_session, test_user)
+    ticket = client.post(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token"
+    ).json()["authorize_token"]
+    authorization = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
+        params={"code": ticket},
+        follow_redirects=False,
+    )
+    assert authorization.status_code == 302
+    assert authorization.headers["referrer-policy"] == "no-referrer"
+    state = parse_qs(urlsplit(authorization.headers["location"]).query)["state"][0]
+    assert (
+        client.get(f"/api/v1/mcp-servers/{server.id}").json()["connection_state"]
+        == "connecting"
+    )
+    callback = client.get(
+        "/api/v1/mcp-servers/oauth/callback",
+        params={"code": "synthetic-code", "state": state},
+        follow_redirects=False,
+    )
+    assert callback.status_code == 302
+    assert callback.headers["location"].endswith("setup_mcp=success")
+    read = client.get(f"/api/v1/mcp-servers/{server.id}").json()
+    assert read["connection_state"] == "connected"
+    assert read["auth_config"]["access_token"] == "***REDACTED***"
+    assert "synthetic-access-token" not in str(read)
+    assert "synthetic-refresh-token" not in str(read)
+    # Echoed write-only markers must preserve the encrypted grant.
+    edit = client.put(
+        f"/api/v1/mcp-servers/{server.id}",
+        json={"auth_config": read["auth_config"], "name": "Renamed"},
+    )
+    assert edit.status_code == 200
+    assert edit.json()["connection_state"] == "connected"
+    assert (
+        client.get(
+            "/api/v1/mcp-servers/oauth/callback",
+            params={"code": "synthetic-code", "state": state},
+        ).status_code
+        == 400
+    )
+    assert sum(request.url.path == "/token" for request in synthetic_oauth) == 1
+    disconnected = client.post(f"/api/v1/mcp-servers/{server.id}/oauth/disconnect")
+    assert disconnected.status_code == 200
+    assert disconnected.json()["connection_state"] == "disconnected"
+    assert "access_token" not in disconnected.json()["auth_config"]
+    assert db_session.query(models.UpstreamMCPOAuthTransaction).count() == 0
+
+
+def test_callback_wrong_browser_and_provider_denial_do_not_exchange(
+    client, db_session, test_user, synthetic_oauth
+):
+    from urllib.parse import parse_qs, urlsplit
+
+    server = _oauth_server(db_session, test_user)
+    ticket = client.post(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize-token"
+    ).json()["authorize_token"]
+    authorization = client.get(
+        f"/api/v1/mcp-servers/{server.id}/oauth/authorize",
+        params={"code": ticket},
+        follow_redirects=False,
+    )
+    state = parse_qs(urlsplit(authorization.headers["location"]).query)["state"][0]
+    cookies = dict(client.cookies)
+    client.cookies.clear()
+    bad = client.get(
+        "/api/v1/mcp-servers/oauth/callback",
+        params={"state": state, "code": "synthetic-code"},
+    )
+    assert bad.status_code == 400
+    client.cookies.update(cookies)
+    denied = client.get(
+        "/api/v1/mcp-servers/oauth/callback",
+        params={"state": state, "error": "access_denied"},
+        follow_redirects=False,
+    )
+    assert denied.headers["location"].endswith("setup_mcp=error")
+    assert not any(request.url.path == "/token" for request in synthetic_oauth)
+    assert (
+        client.get(f"/api/v1/mcp-servers/{server.id}").json()["connection_state"]
+        == "reconnect_required"
+    )
