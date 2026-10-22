@@ -190,6 +190,9 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "AgentUsageTotal",
+    "AgentUsageCounted",
+    "AgentUsageBackfill",
     "ObservationVerification",
     "ChatSetupDraft",
     "ChatListener",
@@ -427,3 +430,5 @@ from .support import (
 )
 
 from .observation_verification import ObservationVerification
+
+from .agent_usage_total import AgentUsageTotal, AgentUsageCounted, AgentUsageBackfill

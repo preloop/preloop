@@ -572,8 +572,12 @@ class ManagedAgentSummary(BaseModel):
         None,
         description=(
             "Subscription-routed requests: $0 spend, with an API-equivalent "
-            "estimate and its coverage. Null without any."
+            "estimate and its coverage. Null when pricing was not computed or there are no subscription requests. See subscription_usage_computed for list responses."
         ),
+    )
+    subscription_usage_computed: bool = Field(
+        False,
+        description="Whether subscription usage was computed. List responses require complete stored totals.",
     )
     configured_model_alias: Optional[str] = None
     configured_model_id: Optional[str] = None

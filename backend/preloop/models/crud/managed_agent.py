@@ -482,6 +482,137 @@ def _add_subscription(aggregate: dict[str, Any], row: Any) -> None:
     aggregate["subscription_usage"] = block
 
 
+def _read_stored_usage(
+    db: Session,
+    *,
+    account_id: str,
+    principals: list[tuple[str, str]],
+    ownership: _AgentSessionOwnership,
+    results: dict[tuple[str, str], dict[str, Any]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Read compact counters using the same principal/session ownership rules."""
+    total = models.AgentUsageTotal
+    fields = (
+        "request_count",
+        "success_count",
+        "error_count",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "estimated_cost",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "covered_prompt_tokens",
+        "sub_requests",
+        "sub_prompt",
+        "sub_completion",
+        "sub_total",
+        "sub_covered",
+        "sub_equivalent",
+    )
+
+    def sums() -> list[Any]:
+        return [
+            func.coalesce(func.sum(getattr(total, name)), 0).label(name)
+            for name in fields
+        ]
+
+    direct_filter = [
+        total.account_id == account_id,
+        tuple_(total.principal_type, total.principal_id).in_(principals),
+    ]
+    direct = (
+        select(
+            total.principal_type.label("owner_type"),
+            total.principal_id.label("owner_id"),
+            *sums(),
+        )
+        .where(*direct_filter)
+        .group_by(total.principal_type, total.principal_id)
+    )
+    latest = select(
+        total.principal_type.label("owner_type"),
+        total.principal_id.label("owner_id"),
+        total.last_request_at,
+        total.last_usage_id,
+        total.latest_model_alias,
+        total.latest_provider_name,
+    ).where(*direct_filter)
+    aggregate_queries = [direct]
+    owned_pairs = [
+        (session_id, principal[0], principal[1])
+        for principal, session_ids in ownership.sessions_by_principal.items()
+        for session_id in session_ids
+    ]
+    if owned_pairs:
+        owned = values(
+            column("session_id", PG_UUID(as_uuid=True)),
+            column("owner_type", String),
+            column("owner_id", String),
+            name="stored_owned_sessions",
+        ).data(owned_pairs)
+        session_filter = [total.account_id == account_id]
+        if ownership.known_principals:
+            session_filter.append(
+                or_(
+                    total.principal_type.is_(None),
+                    total.principal_id.is_(None),
+                    tuple_(total.principal_type, total.principal_id).notin_(
+                        ownership.known_principals
+                    ),
+                )
+            )
+        joined = owned.join(total, total.session_id == owned.c.session_id)
+        aggregate_queries.append(
+            select(
+                owned.c.owner_type,
+                owned.c.owner_id,
+                *sums(),
+            )
+            .select_from(joined)
+            .where(*session_filter)
+            .group_by(owned.c.owner_type, owned.c.owner_id)
+        )
+        latest = latest.union_all(
+            select(
+                owned.c.owner_type,
+                owned.c.owner_id,
+                total.last_request_at,
+                total.last_usage_id,
+                total.latest_model_alias,
+                total.latest_provider_name,
+            )
+            .select_from(joined)
+            .where(*session_filter)
+        )
+    for query in aggregate_queries:
+        for row in db.execute(query):
+            key = (row.owner_type, row.owner_id)
+            _add_usage_totals(results[key], row)
+            _add_subscription(results[key], row)
+    candidates = latest.subquery()
+    for row in db.execute(
+        select(candidates)
+        .distinct(
+            candidates.c.owner_type,
+            candidates.c.owner_id,
+        )
+        .order_by(
+            candidates.c.owner_type,
+            candidates.c.owner_id,
+            candidates.c.last_request_at.desc(),
+            candidates.c.last_usage_id.desc(),
+        )
+    ):
+        result = results[(row.owner_type, row.owner_id)]
+        result["last_request_at"] = row.last_request_at
+        result["latest_model_alias"] = row.latest_model_alias
+        result["latest_provider_name"] = row.latest_provider_name
+    for result in results.values():
+        result["_stored_totals"] = True
+    return results
+
+
 def _usage_aggregates_for_principals(
     db: Session,
     *,
@@ -491,6 +622,7 @@ def _usage_aggregates_for_principals(
     end_date: Optional[datetime] = None,
     ownership: Optional[_AgentSessionOwnership] = None,
     include_subscription_usage: bool = True,
+    use_stored_totals: bool = False,
 ) -> dict[tuple[str, str], dict[str, Any]]:
     """Return principal-scoped usage totals for many agents in few queries.
 
@@ -504,6 +636,7 @@ def _usage_aggregates_for_principals(
             request that reads several windows resolves them once.
         include_subscription_usage: Read API-equivalent subscription pricing.
             Disable for list reads to avoid parsing historical request metadata.
+        use_stored_totals: Use complete stored counters for an all-time list.
 
     Returns:
         Mapping from principal tuple to the same aggregate shape produced by
@@ -530,6 +663,15 @@ def _usage_aggregates_for_principals(
             for started_at in started
             if (lower is None or (started_at is not None and started_at >= lower))
             and (upper is None or (started_at is not None and started_at <= upper))
+        )
+
+    if use_stored_totals and start_date is None and end_date is None:
+        return _read_stored_usage(
+            db,
+            account_id=account_id,
+            principals=unique_principals,
+            ownership=ownership,
+            results=results,
         )
 
     # One LATERAL pair per principal: its totals (a plain aggregate over its
@@ -1443,6 +1585,8 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
                 )
             )
 
+        backfill = db.get(models.AgentUsageBackfill, "agents")
+        stored_ready = backfill is not None and backfill.ready is True
         total = base_query.count()
 
         # Rank with one index-bounded max() per agent, then count the page's
@@ -1458,6 +1602,17 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             .correlate(self.model)
             .scalar_subquery()
         )
+        if stored_ready:
+            stored = models.AgentUsageTotal
+            last_request = (
+                db.query(func.max(stored.last_request_at))
+                .filter(
+                    stored.account_id == self.model.account_id,
+                    stored.session_id == self.model.runtime_session_id,
+                )
+                .correlate(self.model)
+                .scalar_subquery()
+            )
         page = (
             base_query.with_entities(
                 self.model.id,
@@ -1506,7 +1661,20 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         )
         session_ids = [row.runtime_session_id for row in page if row.runtime_session_id]
         request_counts: dict[Any, int] = {}
-        if session_ids:
+        if session_ids and stored_ready:
+            stored = models.AgentUsageTotal
+            request_counts = {
+                session_id: int(count or 0)
+                for session_id, count in db.query(
+                    stored.session_id, func.sum(stored.request_count)
+                )
+                .filter(
+                    stored.session_id.in_(session_ids), stored.account_id == account_id
+                )
+                .group_by(stored.session_id)
+                .all()
+            }
+        elif session_ids:
             request_counts = {
                 session_id: int(count or 0)
                 for session_id, count in db.query(
@@ -1536,10 +1704,10 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             db,
             account_id=account_id,
             principals=principals,
-            # The optional estimate parses wide JSON for every subscription
-            # request. Keep list reads on the covering usage index; detailed
-            # pricing remains available on the agent and Spend pages.
+            # Until the online backfill is complete, keep the hotfix path:
+            # metered totals without parsing historical subscription JSON.
             include_subscription_usage=False,
+            use_stored_totals=stored_ready,
         )
 
         items = []
@@ -1578,6 +1746,9 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
             summary["token_usage"] = _token_usage_from_aggregate(aggregate)
             summary["estimated_cost"] = aggregate["estimated_cost"]
             summary["subscription_usage"] = aggregate["subscription_usage"]
+            summary["subscription_usage_computed"] = bool(
+                aggregate.get("_stored_totals")
+            )
             summary["latest_model_alias"] = aggregate["latest_model_alias"]
             summary["latest_provider_name"] = aggregate["latest_provider_name"]
             summary["last_request_at"] = aggregate["last_request_at"]
@@ -1721,6 +1892,7 @@ class CRUDManagedAgent(CRUDBase[ManagedAgent]):
         summary["token_usage"] = _token_usage_from_aggregate(aggregate)
         summary["estimated_cost"] = aggregate["estimated_cost"]
         summary["subscription_usage"] = aggregate["subscription_usage"]
+        summary["subscription_usage_computed"] = True
         summary["latest_model_alias"] = aggregate["latest_model_alias"]
         summary["latest_provider_name"] = aggregate["latest_provider_name"]
         summary["last_request_at"] = aggregate["last_request_at"]

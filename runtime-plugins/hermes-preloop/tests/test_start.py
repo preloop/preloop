@@ -72,8 +72,10 @@ async def test_start_wires_native_commands_and_preserves_manifest(
     assert [e["name"] for e in sent[1:]] == [
         "command_ack",
         "command_result",
+        "heartbeat",
         "agent_reply",
         "command_ack",
         "command_error",
+        "heartbeat",
     ]
-    assert sent[-1]["payload"]["command_id"] == "example-existing"
+    assert sent[-2]["payload"]["command_id"] == "example-existing"
