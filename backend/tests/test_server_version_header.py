@@ -181,3 +181,34 @@ def test_unhandled_exception_still_propagates(client: TestClient) -> None:
             raising_client.get("/api/v1/_diagnostics/unhandled")
     finally:
         raising_client.close()
+
+
+@pytest.mark.parametrize(
+    "response_headers",
+    [None, [], [(b"preloop-server-version", b"stale"), (b"x-example", b"kept")]],
+)
+def test_asgi_response_headers_are_optional(
+    response_headers: list[tuple[bytes, bytes]] | None,
+) -> None:
+    """A valid ASGI response may omit headers; existing fields stay intact."""
+    from starlette.types import Message
+
+    from preloop.api.middleware.server_version import ServerVersionMiddleware
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        start: Message = {"type": "http.response.start", "status": 200}
+        if response_headers is not None:
+            start["headers"] = response_headers
+        await send(start)
+        await send({"type": "http.response.body", "body": b"example body"})
+
+    client = TestClient(ServerVersionMiddleware(app))
+    try:
+        response = client.get("/api/v1/example")
+        assert response.status_code == 200
+        assert response.content == b"example body"
+        assert response.headers.get_list(HEADER) == [SERVER_VERSION]
+        if response_headers:
+            assert response.headers["x-example"] == "kept"
+    finally:
+        client.close()

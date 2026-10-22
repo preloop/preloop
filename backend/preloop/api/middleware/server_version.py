@@ -29,6 +29,7 @@ class ServerVersionMiddleware:
 
         async def send_with_version(message: Message) -> None:
             if message["type"] == "http.response.start":
+                message.setdefault("headers", [])
                 MutableHeaders(scope=message)["Preloop-Server-Version"] = SERVER_VERSION
             await send(message)
 
