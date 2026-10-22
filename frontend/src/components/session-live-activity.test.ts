@@ -601,6 +601,38 @@ describe('shared session approval controller', () => {
     await element.updateComplete;
     expect(reconciled).to.equal(true);
   });
+  it('updates the line live from session_progress for its own session only', async () => {
+    rows = [];
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .turn=${{ sourceType: 'codex' }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('session_progress'));
+    const now = new Date().toISOString();
+    const push = (payload: Record<string, unknown>) =>
+      callbacks.get('session_progress')!({
+        type: 'managed_agent_session_progress',
+        timestamp: now,
+        payload: { runtime_session_id: 'session-a', ...payload },
+      });
+    push({ kind: 'turn_started' });
+    push({ kind: 'tool_start', tool_name: 'exec_command', command: 'ls' });
+    callbacks.get('session_progress')!({
+      type: 'managed_agent_session_progress',
+      timestamp: now,
+      payload: { runtime_session_id: 'session-b', kind: 'turn_completed' },
+    });
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.include(
+      '· Running exec_command'
+    );
+    push({ kind: 'tool_end' });
+    push({ kind: 'turn_completed', status: 'completed' });
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.include('Worked for');
+  });
   it('rejects late session A history after switching to session B', async () => {
     let finishA!: (response: Response) => void;
     fetchStub.callsFake(async (input) => {

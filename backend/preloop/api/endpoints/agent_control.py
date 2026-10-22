@@ -56,6 +56,7 @@ from preloop.schemas.agent_control import (
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AGENT_CONTROL,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+    ACCOUNT_TOPIC_SESSION_PROGRESS,
     build_account_event,
     emit_account_event,
 )
@@ -1140,9 +1141,11 @@ def _broadcast_command_progress(
     """Tell the consuming session's viewers that an SDK turn moved.
 
     Scoped to the consuming account and the progress row's runtime session,
-    like ``runtime_session_turn_ended``. The payload says what kind of step
-    it was and which tool, never the summary text: viewers read text from
-    the stored activity stream, which applies its own access checks.
+    like ``runtime_session_turn_ended``, on the ``session_progress`` topic so
+    views that reload on any ``agent_control`` event are not woken by every
+    step. The payload says what kind of step it was and which tool, never the
+    summary text: viewers read text from the stored activity stream, which
+    applies its own access checks.
     """
     runtime_session_id = getattr(activity, "runtime_session_id", None)
     if activity is None or runtime_session_id is None:
@@ -1151,7 +1154,7 @@ def _broadcast_command_progress(
         emit_account_event(
             build_account_event(
                 account_id=str(account_id),
-                topic=ACCOUNT_TOPIC_AGENT_CONTROL,
+                topic=ACCOUNT_TOPIC_SESSION_PROGRESS,
                 event_type="managed_agent_command_progress",
                 payload={
                     "runtime_session_id": str(runtime_session_id),

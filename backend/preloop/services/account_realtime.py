@@ -31,6 +31,10 @@ ACCOUNT_TOPIC_PRESENCE = "presence"
 PRESENCE_PERSON_SUBJECTS = frozenset({"person", "device", "person_device"})
 #: Pull and merge requests opened, commented on, reviewed or merged.
 ACCOUNT_TOPIC_CODE_ACTIVITY = "code_activity"
+#: Live turn progress (reply deltas, tool rows, turn bounds) of a terminal
+#: session a sidecar can drive. Its own topic so views that reload on any
+#: agent_control event are not woken several times a second.
+ACCOUNT_TOPIC_SESSION_PROGRESS = "session_progress"
 MAX_NATS_PAYLOAD_BYTES = 1_000_000
 
 ACCOUNT_REALTIME_TOPICS = {
@@ -47,6 +51,7 @@ ACCOUNT_REALTIME_TOPICS = {
     ACCOUNT_TOPIC_ACTIVITY_METRICS,
     ACCOUNT_TOPIC_PRESENCE,
     ACCOUNT_TOPIC_CODE_ACTIVITY,
+    ACCOUNT_TOPIC_SESSION_PROGRESS,
 }
 
 

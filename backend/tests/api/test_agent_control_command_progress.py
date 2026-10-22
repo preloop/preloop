@@ -47,7 +47,8 @@ def test_command_progress_broadcast_scoped_by_runtime_session() -> None:
     assert len(events) == 1
     event = events[0]
     assert event["type"] == "managed_agent_command_progress"
-    assert event["topic"] == agent_control.ACCOUNT_TOPIC_AGENT_CONTROL
+    # Its own topic: views that reload on any agent_control event stay quiet.
+    assert event["topic"] == "session_progress"
     # The consuming account, never the agent owner's account.
     assert event["account_id"] == str(consuming_account)
     assert event["runtime_session_id"] == str(session_id)

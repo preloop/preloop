@@ -251,10 +251,11 @@ export class SessionLiveActivity extends LitElement {
       unifiedWebSocketManager.subscribe('runtime_sessions', (message) =>
         this.handleTurnEvent(message)
       ),
-      unifiedWebSocketManager.subscribe('agent_control', (message) => {
-        if (message?.type === 'managed_agent_command_progress')
-          this.handleTurnEvent(message);
-      }),
+      // Live turn progress (Codex TUI threads and SDK commands) has its own
+      // topic, so it updates this line without waking list views.
+      unifiedWebSocketManager.subscribe('session_progress', (message) =>
+        this.handleTurnEvent(message)
+      ),
     ];
     this.timer = setInterval(() => {
       this.clock = Date.now();
@@ -324,10 +325,14 @@ export class SessionLiveActivity extends LitElement {
       turnState: turn.turnState ?? null,
       modelBusy: live.busyModel,
       runningTool: live.runningTool || turn.runningTool || null,
+      reasoningTitle: turn.reasoningTitle ?? null,
       pendingApprovals: pending.length,
       pendingSince: pendingSince ?? null,
       queued: live.queued,
-      outputTokens: turnOutputTokens(events, turnStartedAt),
+      outputTokens: Math.max(
+        turnOutputTokens(events, turnStartedAt),
+        turn.outputTokens ?? 0
+      ),
       catchingUp: this.sessionId ? !this.connected : false,
       lastEventAt: live.lastEventAt,
       canInterrupt: this.canInterrupt,

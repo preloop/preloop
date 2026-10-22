@@ -12,6 +12,7 @@
  */
 
 import { parseUTCDate } from './date';
+import { formatElapsedCompact } from './duration';
 
 export type AgentRuntime = 'codex' | 'claude' | 'other';
 
@@ -139,17 +140,12 @@ export const PRELOOP_CLAUDE_DONE_VERBS = [
 export const CLAUDE_INTERRUPTED =
   'Interrupted · What should Claude do instead?';
 
-/** `Ns`, then `Nm SSs`, then `Nh MMm SSs` (Codex `fmt_elapsed_compact`). */
+/**
+ * `Ns`, then `Nm SSs`, then `Nh MMm SSs`, from seconds. One formatter for the
+ * console: this delegates to `utils/duration.ts`.
+ */
 export function fmtElapsedCompact(seconds: number): string {
-  const total = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-  if (total < 60) return `${total}s`;
-  if (total < 3600) {
-    const minutes = Math.floor(total / 60);
-    return `${minutes}m ${String(total % 60).padStart(2, '0')}s`;
-  }
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(total % 60).padStart(2, '0')}s`;
+  return formatElapsedCompact((Number.isFinite(seconds) ? seconds : 0) * 1000);
 }
 
 /** `512`, `1.2k`, `12k`, `1.4M`: the CLI token counter. */
@@ -480,8 +476,14 @@ export interface AgentTurnInfo {
   turnStartedAt?: string | null;
   turnEndedAt?: string | null;
   turnInterrupted?: boolean | null;
-  /** Tool reported running by an SDK session's progress events. */
+  /** Tool reported running by live progress events. */
   runningTool?: string | null;
+  /** Codex: the first bold span of this turn's reasoning summary. */
+  reasoningTitle?: string | null;
+  /** Reasoning summary text streamed so far in this turn (bounded). */
+  reasoningText?: string | null;
+  /** Output tokens of this turn reported by live progress. */
+  outputTokens?: number | null;
 }
 
 /** Turn facts from a runtime session summary or agent session row. */
@@ -555,6 +557,8 @@ export function applyTurnEvent(
       };
     case 'runtime_session_hook_ended':
       return { ...turn, turnState: 'ended', runningTool: null };
+    case 'managed_agent_session_progress':
+      return applySessionProgress(turn, payload, at);
     case 'managed_agent_command_progress':
       return {
         ...turn,
@@ -567,6 +571,96 @@ export function applyTurnEvent(
             ? payload.tool_name
             : null,
       };
+    default:
+      return turn;
+  }
+}
+
+/** The first `**bold**` span of a reasoning summary, trimmed; null if none. */
+export function extractFirstBold(text: string): string | null {
+  const match = /\*\*([^*]+?)\*\*/.exec(text);
+  const title = match?.[1].trim();
+  return title ? title.slice(0, 120) : null;
+}
+
+/**
+ * One `session_progress` event of a terminal session a sidecar drives (turn
+ * bounds, the reasoning title, tool rows, token usage). Reply deltas only
+ * say the turn is working; their text belongs to the transcript.
+ */
+function applySessionProgress(
+  turn: AgentTurnInfo,
+  payload: Record<string, unknown>,
+  at: string
+): AgentTurnInfo {
+  const str = (value: unknown): string | null =>
+    typeof value === 'string' && value ? value : null;
+  const open: AgentTurnInfo =
+    turn.turnState === 'ended'
+      ? turn
+      : {
+          ...turn,
+          turnState:
+            turn.turnState === 'waiting_for_approval'
+              ? turn.turnState
+              : 'working',
+          turnStartedAt:
+            turn.turnEndedAt || !turn.turnStartedAt ? at : turn.turnStartedAt,
+          turnEndedAt: null,
+        };
+  switch (payload.kind) {
+    case 'turn_started':
+      return {
+        ...turn,
+        turnState: 'working',
+        turnStartedAt: at,
+        turnEndedAt: null,
+        turnInterrupted: null,
+        runningTool: null,
+        reasoningTitle: null,
+        reasoningText: null,
+        outputTokens: null,
+      };
+    case 'turn_completed':
+      return {
+        ...turn,
+        turnState:
+          turn.turnState === 'waiting_for_approval'
+            ? turn.turnState
+            : 'your_turn',
+        turnEndedAt: at,
+        turnInterrupted: payload.status === 'interrupted',
+        runningTool: null,
+      };
+    case 'status_title': {
+      // Reasoning summary deltas: the header is the first bold span of the
+      // text so far, Codex's `extract_first_bold` rule.
+      const text =
+        `${open.reasoningText ?? ''}${str(payload.delta) ?? ''}`.slice(0, 4000);
+      return {
+        ...open,
+        reasoningText: text,
+        reasoningTitle: extractFirstBold(text) ?? open.reasoningTitle ?? null,
+      };
+    }
+    case 'tool_start':
+      return {
+        ...open,
+        runningTool: str(payload.tool_name) || str(payload.command) || 'tool',
+      };
+    case 'tool_end':
+      return { ...open, runningTool: null };
+    case 'usage': {
+      const usage = (payload.usage ?? {}) as Record<string, unknown>;
+      // Each usage event is one model request (`tokenUsage.last`): the
+      // turn's count is their sum.
+      const output = usage.output_tokens;
+      return typeof output === 'number' && Number.isFinite(output)
+        ? { ...open, outputTokens: (open.outputTokens ?? 0) + output }
+        : open;
+    }
+    case 'assistant_delta':
+      return open;
     default:
       return turn;
   }

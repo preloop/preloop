@@ -1,7 +1,9 @@
 import { expect } from '@open-wc/testing';
 
+import { formatElapsedCompact } from './duration';
 import {
   agentStateChip,
+  applyTurnEvent,
   CLAUDE_INTERRUPTED,
   deriveAgentStatus,
   fmtElapsedCompact,
@@ -220,5 +222,61 @@ describe('agent status vocabulary', () => {
     expect(agentStateChip({ ended_at: '2026-10-21T19:00:00' }).label).to.equal(
       'Ended'
     );
+  });
+});
+
+describe('live session progress', () => {
+  const ev = (
+    kind: string,
+    extra: Record<string, unknown> = {},
+    timestamp = '2026-10-21T20:00:00Z'
+  ) => ({
+    type: 'managed_agent_session_progress',
+    timestamp,
+    payload: { kind, runtime_session_id: 's1', ...extra },
+  });
+
+  it('folds turn bounds, the reasoning title, tools and usage from session_progress', () => {
+    let turn = applyTurnEvent({ sourceType: 'codex' }, ev('turn_started'));
+    expect(turn.turnState).to.equal('working');
+    expect(turn.turnStartedAt).to.equal('2026-10-21T20:00:00Z');
+    turn = applyTurnEvent(turn, ev('status_title', { delta: 'I will **Map' }));
+    turn = applyTurnEvent(
+      turn,
+      ev('status_title', { delta: 'ping the app**' })
+    );
+    expect(turn.reasoningTitle).to.equal('Mapping the app');
+    turn = applyTurnEvent(
+      turn,
+      ev('tool_start', { tool_name: 'exec_command', command: 'ls' })
+    );
+    expect(turn.runningTool).to.equal('exec_command');
+    turn = applyTurnEvent(turn, ev('usage', { usage: { output_tokens: 900 } }));
+    turn = applyTurnEvent(turn, ev('usage', { usage: { output_tokens: 300 } }));
+    expect(turn.outputTokens).to.equal(1200);
+    turn = applyTurnEvent(turn, ev('tool_end'));
+    expect(turn.runningTool).to.equal(null);
+
+    const line = deriveAgentStatus({
+      runtime: 'codex',
+      turnStartedAt: Date.parse('2026-10-21T20:00:00Z'),
+      turnState: turn.turnState,
+      reasoningTitle: turn.reasoningTitle,
+      modelBusy: true,
+      now: Date.parse('2026-10-21T20:00:42Z'),
+    }).line;
+    expect(line).to.equal('Mapping the app (42s)');
+
+    turn = applyTurnEvent(
+      turn,
+      ev('turn_completed', { status: 'interrupted' }, '2026-10-21T20:01:00Z')
+    );
+    expect(turn.turnState).to.equal('your_turn');
+    expect(turn.turnEndedAt).to.equal('2026-10-21T20:01:00Z');
+    expect(turn.turnInterrupted).to.equal(true);
+  });
+
+  it('delegates elapsed formatting to the shared duration formatter', () => {
+    expect(fmtElapsedCompact(158)).to.equal(formatElapsedCompact(158_000));
   });
 });
