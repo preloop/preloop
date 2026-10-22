@@ -11,6 +11,7 @@ name: CodeQL
 on:
   push:
     branches: [main]
+    tags: ['v*']
   # No base-branch filter: stacked PRs must still be scanned.
   pull_request:
   schedule:

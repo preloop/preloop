@@ -767,6 +767,11 @@ def expected_release_assets(version: str, extra: list[str] | None = None) -> set
         "preloop-windows-amd64.exe",
         "preloop-windows-arm64.exe",
     }
+    for image in ("backend", "frontend", "scanner", "universal"):
+        names.add(f"preloop-image-{image}-{version}.json")
+        for arch in ("amd64", "arm64"):
+            names.add(f"preloop-sbom-image-{image}-linux-{arch}-{version}.spdx.json")
+    names.update({"release-audit.json", "release-audit-runs.json"})
     names.update(extra or [])
     return names
 
