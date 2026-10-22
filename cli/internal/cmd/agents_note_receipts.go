@@ -3,12 +3,13 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/preloop/preloop/cli/internal/api"
 	"io"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/preloop/preloop/cli/internal/api"
 )
 
 // IDs come from server-rendered elements, never from the operator's escaped body.

@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/preloop/preloop/cli/internal/api"
 	"io"
 	"net"
 	"net/http"
@@ -27,6 +26,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/preloop/preloop/cli/internal/api"
 )
 
 const (
