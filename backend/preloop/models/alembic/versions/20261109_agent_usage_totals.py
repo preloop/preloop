@@ -135,30 +135,315 @@ BEGIN
   END IF;
  END IF;
 END $$;
-CREATE OR REPLACE FUNCTION agent_usage_track() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE counted uuid;
+-- A batch writes each counter once. Row-by-row upserts of a shared scope
+-- repeatedly rewrite its tuple and become quadratic for bulk imports.
+CREATE OR REPLACE FUNCTION agent_usage_track_insert() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF TG_OP <> 'INSERT' THEN
-  DELETE FROM agent_usage_counted WHERE usage_id=OLD.id RETURNING usage_id INTO counted;
-  IF counted IS NOT NULL THEN
-   -- Same-key price/token corrections retain their latest-row position.
-   -- Avoid rescanning history on the ingestion path for these updates.
-   PERFORM agent_usage_apply(OLD,-1,
-    TG_OP='UPDATE' AND COALESCE(NEW.action_type='model_gateway',false) AND OLD.account_id IS NOT DISTINCT FROM NEW.account_id
-    AND OLD.runtime_principal_type IS NOT DISTINCT FROM NEW.runtime_principal_type
-    AND OLD.runtime_principal_id IS NOT DISTINCT FROM NEW.runtime_principal_id
-    AND OLD.runtime_session_id IS NOT DISTINCT FROM NEW.runtime_session_id
-    AND OLD.timestamp IS NOT DISTINCT FROM NEW.timestamp);
-  END IF;
- END IF;
- IF TG_OP <> 'DELETE' AND NEW.action_type='model_gateway' AND NEW.account_id IS NOT NULL
-    AND EXISTS(SELECT 1 FROM account WHERE id=NEW.account_id) THEN
-  INSERT INTO agent_usage_counted(usage_id) VALUES(NEW.id) ON CONFLICT DO NOTHING RETURNING usage_id INTO counted;
-  IF counted IS NOT NULL THEN PERFORM agent_usage_apply(NEW,1); END IF;
- END IF;
+ WITH claimed AS (
+  INSERT INTO agent_usage_counted(usage_id)
+  SELECT u.id FROM inserted_usage u
+  WHERE u.action_type='model_gateway' AND u.account_id IS NOT NULL
+  AND EXISTS(SELECT 1 FROM account WHERE id=u.account_id)
+  ON CONFLICT DO NOTHING RETURNING usage_id
+ )
+  INSERT INTO agent_usage_total(account_id,principal_type,principal_id,session_id,request_count,
+       success_count,
+       error_count,
+       prompt_tokens,
+       completion_tokens,
+       total_tokens,
+       cache_read_tokens,
+       cache_write_tokens,
+       covered_prompt_tokens,
+       estimated_cost,
+       sub_requests,
+       sub_prompt,
+       sub_completion,
+       sub_total,
+       sub_covered,
+       sub_equivalent,last_request_at,last_usage_id,latest_model_alias,latest_provider_name)
+  SELECT u.account_id,
+       u.runtime_principal_type,
+       u.runtime_principal_id,
+       u.runtime_session_id,
+       count(*),
+       SUM(CASE WHEN u.status_code < 400 THEN 1 ELSE 0 END),
+       SUM(CASE WHEN u.status_code >= 400 THEN 1 ELSE 0 END),
+       SUM(COALESCE(u.prompt_tokens,0)),
+       SUM(COALESCE(u.completion_tokens,0)),
+       SUM(COALESCE(u.total_tokens,0)),
+       SUM(COALESCE(u.cache_read_tokens,0)),
+       SUM(COALESCE(u.cache_creation_tokens,0)),
+       SUM(CASE WHEN u.cache_read_tokens IS NOT NULL OR u.cache_creation_tokens IS NOT NULL THEN COALESCE(u.prompt_tokens,0) ELSE 0 END),
+       SUM(COALESCE(u.estimated_cost,0)::numeric),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.prompt_tokens,0) ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.completion_tokens,0) ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.total_tokens,0) ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN (u.meta_data->>'api_equivalent_cost')::numeric ELSE 0 END),
+       max(u.timestamp),
+       (array_agg(u.id ORDER BY u.timestamp DESC,u.id DESC))[1],
+       (array_agg(u.model_alias ORDER BY u.timestamp DESC,u.id DESC))[1],
+       (array_agg(u.provider_name ORDER BY u.timestamp DESC,u.id DESC))[1]
+  FROM inserted_usage u JOIN claimed c ON c.usage_id=u.id
+  GROUP BY u.account_id,u.runtime_principal_type,u.runtime_principal_id,u.runtime_session_id
+  ON CONFLICT ON CONSTRAINT uq_agent_usage_total_scope DO UPDATE SET
+  request_count=agent_usage_total.request_count+excluded.request_count,
+       success_count=agent_usage_total.success_count+excluded.success_count,
+       error_count=agent_usage_total.error_count+excluded.error_count,
+       prompt_tokens=agent_usage_total.prompt_tokens+excluded.prompt_tokens,
+       completion_tokens=agent_usage_total.completion_tokens+excluded.completion_tokens,
+       total_tokens=agent_usage_total.total_tokens+excluded.total_tokens,
+       cache_read_tokens=agent_usage_total.cache_read_tokens+excluded.cache_read_tokens,
+       cache_write_tokens=agent_usage_total.cache_write_tokens+excluded.cache_write_tokens,
+       covered_prompt_tokens=agent_usage_total.covered_prompt_tokens+excluded.covered_prompt_tokens,
+       estimated_cost=agent_usage_total.estimated_cost+excluded.estimated_cost,
+       sub_requests=agent_usage_total.sub_requests+excluded.sub_requests,
+       sub_prompt=agent_usage_total.sub_prompt+excluded.sub_prompt,
+       sub_completion=agent_usage_total.sub_completion+excluded.sub_completion,
+       sub_total=agent_usage_total.sub_total+excluded.sub_total,
+       sub_covered=agent_usage_total.sub_covered+excluded.sub_covered,
+       sub_equivalent=agent_usage_total.sub_equivalent+excluded.sub_equivalent,
+  last_request_at=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) > (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.last_request_at ELSE agent_usage_total.last_request_at END,
+  last_usage_id=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) > (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.last_usage_id ELSE agent_usage_total.last_usage_id END,
+  latest_model_alias=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) >= (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.latest_model_alias ELSE agent_usage_total.latest_model_alias END,
+  latest_provider_name=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) >= (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.latest_provider_name ELSE agent_usage_total.latest_provider_name END;
  RETURN NULL;
 END $$;
-CREATE OR REPLACE TRIGGER agent_usage_track AFTER INSERT OR UPDATE OR DELETE ON api_usage FOR EACH ROW EXECUTE FUNCTION agent_usage_track();
+CREATE OR REPLACE TRIGGER agent_usage_track_insert AFTER INSERT ON api_usage
+ REFERENCING NEW TABLE AS inserted_usage FOR EACH STATEMENT
+ EXECUTE FUNCTION agent_usage_track_insert();
+
+CREATE OR REPLACE FUNCTION agent_usage_track_delete() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ WITH claimed AS (
+  DELETE FROM agent_usage_counted c USING deleted_usage u
+  WHERE c.usage_id=u.id RETURNING c.usage_id
+ ), removed AS MATERIALIZED (
+  SELECT u.account_id AS account_id,
+       u.runtime_principal_type AS principal_type,
+       u.runtime_principal_id AS principal_id,
+       u.runtime_session_id AS session_id,
+       count(*) AS request_count,
+       SUM(CASE WHEN u.status_code < 400 THEN 1 ELSE 0 END) AS success_count,
+       SUM(CASE WHEN u.status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
+       SUM(COALESCE(u.prompt_tokens,0)) AS prompt_tokens,
+       SUM(COALESCE(u.completion_tokens,0)) AS completion_tokens,
+       SUM(COALESCE(u.total_tokens,0)) AS total_tokens,
+       SUM(COALESCE(u.cache_read_tokens,0)) AS cache_read_tokens,
+       SUM(COALESCE(u.cache_creation_tokens,0)) AS cache_write_tokens,
+       SUM(CASE WHEN u.cache_read_tokens IS NOT NULL OR u.cache_creation_tokens IS NOT NULL THEN COALESCE(u.prompt_tokens,0) ELSE 0 END) AS covered_prompt_tokens,
+       SUM(COALESCE(u.estimated_cost,0)::numeric) AS estimated_cost,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN 1 ELSE 0 END) AS sub_requests,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.prompt_tokens,0) ELSE 0 END) AS sub_prompt,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.completion_tokens,0) ELSE 0 END) AS sub_completion,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.total_tokens,0) ELSE 0 END) AS sub_total,
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN 1 ELSE 0 END) AS sub_covered,
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN (u.meta_data->>'api_equivalent_cost')::numeric ELSE 0 END) AS sub_equivalent
+  FROM deleted_usage u JOIN claimed c ON c.usage_id=u.id
+  GROUP BY u.account_id,u.runtime_principal_type,u.runtime_principal_id,u.runtime_session_id
+ )
+ UPDATE agent_usage_total t SET
+ request_count=t.request_count-r.request_count,
+ success_count=t.success_count-r.success_count,
+ error_count=t.error_count-r.error_count,
+ prompt_tokens=t.prompt_tokens-r.prompt_tokens,
+ completion_tokens=t.completion_tokens-r.completion_tokens,
+ total_tokens=t.total_tokens-r.total_tokens,
+ cache_read_tokens=t.cache_read_tokens-r.cache_read_tokens,
+ cache_write_tokens=t.cache_write_tokens-r.cache_write_tokens,
+ covered_prompt_tokens=t.covered_prompt_tokens-r.covered_prompt_tokens,
+ estimated_cost=t.estimated_cost-r.estimated_cost,
+ sub_requests=t.sub_requests-r.sub_requests,
+ sub_prompt=t.sub_prompt-r.sub_prompt,
+ sub_completion=t.sub_completion-r.sub_completion,
+ sub_total=t.sub_total-r.sub_total,
+ sub_covered=t.sub_covered-r.sub_covered,
+ sub_equivalent=t.sub_equivalent-r.sub_equivalent
+ FROM removed r WHERE t.account_id=r.account_id
+ AND t.principal_type IS NOT DISTINCT FROM r.principal_type
+ AND t.principal_id IS NOT DISTINCT FROM r.principal_id
+ AND t.session_id IS NOT DISTINCT FROM r.session_id;
+ DELETE FROM agent_usage_total t USING deleted_usage d
+ WHERE t.request_count=0 AND t.account_id=d.account_id
+ AND t.principal_type IS NOT DISTINCT FROM d.runtime_principal_type
+ AND t.principal_id IS NOT DISTINCT FROM d.runtime_principal_id
+ AND t.session_id IS NOT DISTINCT FROM d.runtime_session_id;
+ -- Only scopes whose latest request was removed need a metadata repair.
+ WITH affected AS MATERIALIZED (
+  SELECT t.id,t.account_id,t.principal_type,t.principal_id,t.session_id
+  FROM agent_usage_total t JOIN deleted_usage d
+   ON t.account_id=d.account_id AND d.id=t.last_usage_id
+ ), latest AS (
+  SELECT a.id AS total_id, u.timestamp,u.id,u.model_alias,u.provider_name
+  FROM affected a CROSS JOIN LATERAL (
+   SELECT u.timestamp,u.id,u.model_alias,u.provider_name FROM api_usage u
+   WHERE u.account_id=a.account_id AND u.action_type='model_gateway'
+   AND u.runtime_principal_type IS NOT DISTINCT FROM a.principal_type
+   AND u.runtime_principal_id IS NOT DISTINCT FROM a.principal_id
+   AND u.runtime_session_id IS NOT DISTINCT FROM a.session_id
+   ORDER BY u.timestamp DESC,u.id DESC LIMIT 1
+  ) u
+ )
+ UPDATE agent_usage_total t SET last_request_at=l.timestamp,last_usage_id=l.id,
+ latest_model_alias=l.model_alias,latest_provider_name=l.provider_name
+ FROM latest l WHERE t.id=l.total_id;
+ RETURN NULL;
+END $$;
+CREATE OR REPLACE FUNCTION agent_usage_track_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ WITH claimed AS (
+  DELETE FROM agent_usage_counted c USING deleted_usage u
+  WHERE c.usage_id=u.id RETURNING c.usage_id
+ ), removed AS MATERIALIZED (
+  SELECT u.account_id AS account_id,
+       u.runtime_principal_type AS principal_type,
+       u.runtime_principal_id AS principal_id,
+       u.runtime_session_id AS session_id,
+       count(*) AS request_count,
+       SUM(CASE WHEN u.status_code < 400 THEN 1 ELSE 0 END) AS success_count,
+       SUM(CASE WHEN u.status_code >= 400 THEN 1 ELSE 0 END) AS error_count,
+       SUM(COALESCE(u.prompt_tokens,0)) AS prompt_tokens,
+       SUM(COALESCE(u.completion_tokens,0)) AS completion_tokens,
+       SUM(COALESCE(u.total_tokens,0)) AS total_tokens,
+       SUM(COALESCE(u.cache_read_tokens,0)) AS cache_read_tokens,
+       SUM(COALESCE(u.cache_creation_tokens,0)) AS cache_write_tokens,
+       SUM(CASE WHEN u.cache_read_tokens IS NOT NULL OR u.cache_creation_tokens IS NOT NULL THEN COALESCE(u.prompt_tokens,0) ELSE 0 END) AS covered_prompt_tokens,
+       SUM(COALESCE(u.estimated_cost,0)::numeric) AS estimated_cost,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN 1 ELSE 0 END) AS sub_requests,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.prompt_tokens,0) ELSE 0 END) AS sub_prompt,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.completion_tokens,0) ELSE 0 END) AS sub_completion,
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.total_tokens,0) ELSE 0 END) AS sub_total,
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN 1 ELSE 0 END) AS sub_covered,
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN (u.meta_data->>'api_equivalent_cost')::numeric ELSE 0 END) AS sub_equivalent
+  FROM deleted_usage u JOIN claimed c ON c.usage_id=u.id
+  GROUP BY u.account_id,u.runtime_principal_type,u.runtime_principal_id,u.runtime_session_id
+ )
+ UPDATE agent_usage_total t SET
+ request_count=t.request_count-r.request_count,
+ success_count=t.success_count-r.success_count,
+ error_count=t.error_count-r.error_count,
+ prompt_tokens=t.prompt_tokens-r.prompt_tokens,
+ completion_tokens=t.completion_tokens-r.completion_tokens,
+ total_tokens=t.total_tokens-r.total_tokens,
+ cache_read_tokens=t.cache_read_tokens-r.cache_read_tokens,
+ cache_write_tokens=t.cache_write_tokens-r.cache_write_tokens,
+ covered_prompt_tokens=t.covered_prompt_tokens-r.covered_prompt_tokens,
+ estimated_cost=t.estimated_cost-r.estimated_cost,
+ sub_requests=t.sub_requests-r.sub_requests,
+ sub_prompt=t.sub_prompt-r.sub_prompt,
+ sub_completion=t.sub_completion-r.sub_completion,
+ sub_total=t.sub_total-r.sub_total,
+ sub_covered=t.sub_covered-r.sub_covered,
+ sub_equivalent=t.sub_equivalent-r.sub_equivalent
+ FROM removed r WHERE t.account_id=r.account_id
+ AND t.principal_type IS NOT DISTINCT FROM r.principal_type
+ AND t.principal_id IS NOT DISTINCT FROM r.principal_id
+ AND t.session_id IS NOT DISTINCT FROM r.session_id;
+ DELETE FROM agent_usage_total t USING deleted_usage d
+ WHERE t.request_count=0 AND t.account_id=d.account_id
+ AND t.principal_type IS NOT DISTINCT FROM d.runtime_principal_type
+ AND t.principal_id IS NOT DISTINCT FROM d.runtime_principal_id
+ AND t.session_id IS NOT DISTINCT FROM d.runtime_session_id;
+ -- Only scopes whose latest request was removed need a metadata repair.
+ WITH affected AS MATERIALIZED (
+  SELECT t.id,t.account_id,t.principal_type,t.principal_id,t.session_id
+  FROM agent_usage_total t JOIN deleted_usage d
+   ON t.account_id=d.account_id AND d.id=t.last_usage_id
+ ), latest AS (
+  SELECT a.id AS total_id, u.timestamp,u.id,u.model_alias,u.provider_name
+  FROM affected a CROSS JOIN LATERAL (
+   SELECT u.timestamp,u.id,u.model_alias,u.provider_name FROM api_usage u
+   WHERE u.account_id=a.account_id AND u.action_type='model_gateway'
+   AND u.runtime_principal_type IS NOT DISTINCT FROM a.principal_type
+   AND u.runtime_principal_id IS NOT DISTINCT FROM a.principal_id
+   AND u.runtime_session_id IS NOT DISTINCT FROM a.session_id
+   ORDER BY u.timestamp DESC,u.id DESC LIMIT 1
+  ) u
+ )
+ UPDATE agent_usage_total t SET last_request_at=l.timestamp,last_usage_id=l.id,
+ latest_model_alias=l.model_alias,latest_provider_name=l.provider_name
+ FROM latest l WHERE t.id=l.total_id;
+ WITH claimed AS (
+  INSERT INTO agent_usage_counted(usage_id)
+  SELECT u.id FROM inserted_usage u
+  WHERE u.action_type='model_gateway' AND u.account_id IS NOT NULL
+  AND EXISTS(SELECT 1 FROM account WHERE id=u.account_id)
+  ON CONFLICT DO NOTHING RETURNING usage_id
+ )
+  INSERT INTO agent_usage_total(account_id,principal_type,principal_id,session_id,request_count,
+       success_count,
+       error_count,
+       prompt_tokens,
+       completion_tokens,
+       total_tokens,
+       cache_read_tokens,
+       cache_write_tokens,
+       covered_prompt_tokens,
+       estimated_cost,
+       sub_requests,
+       sub_prompt,
+       sub_completion,
+       sub_total,
+       sub_covered,
+       sub_equivalent,last_request_at,last_usage_id,latest_model_alias,latest_provider_name)
+  SELECT u.account_id,
+       u.runtime_principal_type,
+       u.runtime_principal_id,
+       u.runtime_session_id,
+       count(*),
+       SUM(CASE WHEN u.status_code < 400 THEN 1 ELSE 0 END),
+       SUM(CASE WHEN u.status_code >= 400 THEN 1 ELSE 0 END),
+       SUM(COALESCE(u.prompt_tokens,0)),
+       SUM(COALESCE(u.completion_tokens,0)),
+       SUM(COALESCE(u.total_tokens,0)),
+       SUM(COALESCE(u.cache_read_tokens,0)),
+       SUM(COALESCE(u.cache_creation_tokens,0)),
+       SUM(CASE WHEN u.cache_read_tokens IS NOT NULL OR u.cache_creation_tokens IS NOT NULL THEN COALESCE(u.prompt_tokens,0) ELSE 0 END),
+       SUM(COALESCE(u.estimated_cost,0)::numeric),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.prompt_tokens,0) ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.completion_tokens,0) ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' THEN COALESCE(u.total_tokens,0) ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN u.cost_source = 'subscription' AND jsonb_typeof(u.meta_data->'api_equivalent_cost') = 'number' THEN (u.meta_data->>'api_equivalent_cost')::numeric ELSE 0 END),
+       max(u.timestamp),
+       (array_agg(u.id ORDER BY u.timestamp DESC,u.id DESC))[1],
+       (array_agg(u.model_alias ORDER BY u.timestamp DESC,u.id DESC))[1],
+       (array_agg(u.provider_name ORDER BY u.timestamp DESC,u.id DESC))[1]
+  FROM inserted_usage u JOIN claimed c ON c.usage_id=u.id
+  GROUP BY u.account_id,u.runtime_principal_type,u.runtime_principal_id,u.runtime_session_id
+  ON CONFLICT ON CONSTRAINT uq_agent_usage_total_scope DO UPDATE SET
+  request_count=agent_usage_total.request_count+excluded.request_count,
+       success_count=agent_usage_total.success_count+excluded.success_count,
+       error_count=agent_usage_total.error_count+excluded.error_count,
+       prompt_tokens=agent_usage_total.prompt_tokens+excluded.prompt_tokens,
+       completion_tokens=agent_usage_total.completion_tokens+excluded.completion_tokens,
+       total_tokens=agent_usage_total.total_tokens+excluded.total_tokens,
+       cache_read_tokens=agent_usage_total.cache_read_tokens+excluded.cache_read_tokens,
+       cache_write_tokens=agent_usage_total.cache_write_tokens+excluded.cache_write_tokens,
+       covered_prompt_tokens=agent_usage_total.covered_prompt_tokens+excluded.covered_prompt_tokens,
+       estimated_cost=agent_usage_total.estimated_cost+excluded.estimated_cost,
+       sub_requests=agent_usage_total.sub_requests+excluded.sub_requests,
+       sub_prompt=agent_usage_total.sub_prompt+excluded.sub_prompt,
+       sub_completion=agent_usage_total.sub_completion+excluded.sub_completion,
+       sub_total=agent_usage_total.sub_total+excluded.sub_total,
+       sub_covered=agent_usage_total.sub_covered+excluded.sub_covered,
+       sub_equivalent=agent_usage_total.sub_equivalent+excluded.sub_equivalent,
+  last_request_at=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) > (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.last_request_at ELSE agent_usage_total.last_request_at END,
+  last_usage_id=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) > (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.last_usage_id ELSE agent_usage_total.last_usage_id END,
+  latest_model_alias=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) >= (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.latest_model_alias ELSE agent_usage_total.latest_model_alias END,
+  latest_provider_name=CASE WHEN (excluded.last_request_at,excluded.last_usage_id) >= (agent_usage_total.last_request_at,agent_usage_total.last_usage_id) THEN excluded.latest_provider_name ELSE agent_usage_total.latest_provider_name END;
+ RETURN NULL;
+END $$;
+DROP TRIGGER IF EXISTS agent_usage_track ON api_usage;
+CREATE OR REPLACE TRIGGER agent_usage_track_delete AFTER DELETE ON api_usage
+ REFERENCING OLD TABLE AS deleted_usage FOR EACH STATEMENT
+ EXECUTE FUNCTION agent_usage_track_delete();
+CREATE OR REPLACE TRIGGER agent_usage_track_update AFTER UPDATE ON api_usage
+ REFERENCING OLD TABLE AS deleted_usage NEW TABLE AS inserted_usage FOR EACH STATEMENT
+ EXECUTE FUNCTION agent_usage_track_update();
 """
 
 BACKFILL = """
@@ -196,6 +481,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove derived totals; retain all source usage records."""
+    op.execute("DROP TRIGGER IF EXISTS agent_usage_track_insert ON api_usage")
+    op.execute("DROP FUNCTION IF EXISTS agent_usage_track_insert()")
+    op.execute("DROP TRIGGER IF EXISTS agent_usage_track_update ON api_usage")
+    op.execute("DROP TRIGGER IF EXISTS agent_usage_track_delete ON api_usage")
+    op.execute("DROP FUNCTION IF EXISTS agent_usage_track_update()")
+    op.execute("DROP FUNCTION IF EXISTS agent_usage_track_delete()")
     op.execute("DROP TRIGGER IF EXISTS agent_usage_track ON api_usage")
     op.execute("DROP FUNCTION IF EXISTS agent_usage_track()")
     op.execute("DROP FUNCTION IF EXISTS agent_usage_apply(api_usage, integer, boolean)")

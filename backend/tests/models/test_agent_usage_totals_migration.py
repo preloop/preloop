@@ -220,3 +220,71 @@ def test_reclassifying_latest_request_restores_previous_model(
         assert row.request_count == 501
         assert row.latest_model_alias is None
         assert row.last_usage_id != usage_id
+
+
+def test_bulk_writes_update_each_scope_once(
+    db_engine: Engine, totals_schema: MigrationFixture
+) -> None:
+    """Bulk import/reprice/delete must not rewrite one counter per request."""
+    schema, account, migration = totals_schema
+    with db_engine.begin() as connection:
+        connection.execute(text(f"SET LOCAL search_path TO {schema}"))
+        while not connection.execute(text(migration.BACKFILL)).scalar_one():
+            pass
+        connection.execute(
+            text("""
+            CREATE TABLE counter_writes(id serial);
+            CREATE FUNCTION count_counter_write() RETURNS trigger LANGUAGE plpgsql AS $$
+            BEGIN INSERT INTO counter_writes DEFAULT VALUES; RETURN NULL; END $$;
+            CREATE TRIGGER count_counter_write AFTER INSERT OR UPDATE ON agent_usage_total
+            FOR EACH ROW EXECUTE FUNCTION count_counter_write();
+            INSERT INTO api_usage(account_id,runtime_principal_type,runtime_principal_id,
+                action_type,estimated_cost)
+            SELECT account_id,'codex','bulk','model_gateway',0.25
+            FROM api_usage LIMIT 1
+        """)
+        )
+        connection.execute(text("TRUNCATE counter_writes"))
+        connection.execute(
+            text("""
+            INSERT INTO api_usage(account_id,runtime_principal_type,runtime_principal_id,
+                action_type,estimated_cost)
+            SELECT :account,'codex','bulk','model_gateway',0.25 FROM generate_series(1,2000)
+        """),
+            {"account": account},
+        )
+        assert (
+            connection.execute(text("SELECT count(*) FROM counter_writes")).scalar_one()
+            == 1
+        )
+        connection.execute(text("TRUNCATE counter_writes"))
+        connection.execute(
+            text(
+                "UPDATE api_usage SET estimated_cost=0.5 WHERE runtime_principal_id='bulk'"
+            )
+        )
+        assert (
+            connection.execute(text("SELECT count(*) FROM counter_writes")).scalar_one()
+            <= 3
+        )
+        row = connection.execute(
+            text(
+                "SELECT request_count,estimated_cost FROM agent_usage_total WHERE principal_id='bulk'"
+            )
+        ).one()
+        assert row.request_count == 2001
+        assert float(row.estimated_cost) == 1000.5
+        connection.execute(text("TRUNCATE counter_writes"))
+        connection.execute(
+            text("DELETE FROM api_usage WHERE runtime_principal_id='bulk'")
+        )
+        assert (
+            connection.execute(text("SELECT count(*) FROM counter_writes")).scalar_one()
+            == 1
+        )
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM agent_usage_total WHERE principal_id='bulk'")
+            ).scalar_one()
+            == 0
+        )

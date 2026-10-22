@@ -548,7 +548,9 @@ The Agents list reads all-time figures from `agent_usage_total`, grouped by
 account, source principal and runtime session. PostgreSQL triggers apply
 transactional deltas on usage insert, update and delete, so corrections and
 rollbacks affect requests, tokens, metered cost and subscription pricing
-together. Monetary counters use decimal arithmetic. Agent ownership is resolved
+together. Statement triggers group transition rows by scope before updating
+counters, so bulk imports, repricing and deletes do not rewrite a shared counter
+once per request. Monetary counters use decimal arithmetic. Agent ownership is resolved
 at read time from these source dimensions, so reassigning a session does not
 require rewriting historical usage or counters. Date-window detail and Overview
 readers retain their existing source aggregates.
