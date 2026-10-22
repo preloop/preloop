@@ -1,0 +1,8 @@
+Preloop
+Copyright (c) 2025 Spacecode AI Inc.
+
+This product includes software and text from third parties:
+
+- Status strings from openai/codex codex-rs/tui (Apache-2.0), tag
+  rust-v0.163.0, https://github.com/openai/codex. Copyright 2025 OpenAI.
+  Used in frontend/src/utils/agent-status.ts.

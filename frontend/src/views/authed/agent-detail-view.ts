@@ -114,6 +114,8 @@ import {
 import { hasInAppHistory } from '../../utils/in-app-history';
 import {
   REMOVE_AGENT_CONSEQUENCE,
+  getAgentLifecycleLabel,
+  getAgentLifecycleVariant,
   getAgentSourceLabel,
   getAgentStatusChip,
   getSystemAgentTags,
@@ -1307,24 +1309,13 @@ export class AgentDetailView extends LitElement {
 
   private getLifecycleVariant(): string {
     if (!this.agent) return 'neutral';
-    if (this.agent.lifecycle_state === 'decommissioned') return 'danger';
-    if (this.agent.lifecycle_state === 'suspended') return 'warning';
-    if (this.agent.activity_status === 'active_now') return 'success';
-    if (this.agent.activity_status === 'recently_active') return 'primary';
-    if (this.agent.ended_at) return 'neutral';
-    return 'primary';
+    return getAgentLifecycleVariant(this.agent);
   }
 
+  /** Lifecycle, then the one agent state; never "Active now" (recency). */
   private getLifecycleLabel(): string {
     if (!this.agent) return 'Unknown';
-    if (this.agent.lifecycle_state === 'decommissioned')
-      return 'Decommissioned';
-    if (this.agent.lifecycle_state === 'suspended') return 'Paused';
-    if (this.agent.activity_status === 'active_now') return 'Active now';
-    if (this.agent.activity_status === 'recently_active')
-      return 'Recently active';
-    if (this.agent.ended_at) return 'Ended';
-    return 'Idle';
+    return getAgentLifecycleLabel(this.agent);
   }
 
   private getOnboardingVariant(): string {

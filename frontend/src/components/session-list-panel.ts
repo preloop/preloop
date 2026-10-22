@@ -1,4 +1,5 @@
 import { parseUTCDate } from '../utils/date';
+import { agentStateChip } from '../utils/agent-status';
 import { LitElement, css, html, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -377,17 +378,27 @@ export class SessionListPanel extends LitElement {
    * means "needs a person" (DESIGN.md), and a finished run does not.
    */
   private getVariant(session: ObservedSession) {
-    if (session.status === 'active_now') return 'success';
-    if (session.status === 'ended') return 'neutral';
-    if (session.failedRequests > 0) return 'warning';
-    return 'neutral';
+    const chip = this.getChip(session);
+    if (chip.label === 'Idle' && session.failedRequests > 0) return 'warning';
+    return chip.variant;
+  }
+
+  /**
+   * The one agent state (Working, Needs approval, Your turn, Idle, Ended)
+   * from the row's server `turn_state`; recency alone is not "working".
+   */
+  private getChip(session: ObservedSession) {
+    const raw = (session.raw ?? {}) as Record<string, unknown>;
+    return agentStateChip({
+      turn_state: typeof raw.turn_state === 'string' ? raw.turn_state : null,
+      ended_at:
+        session.endedAt || (session.status === 'ended' ? 'ended' : null),
+      last_activity_at: session.lastActivityAt,
+    });
   }
 
   private getLabel(session: ObservedSession): string {
-    if (session.status === 'active_now') return 'Active now';
-    if (session.status === 'ended') return 'Ended';
-    if (session.status === 'recently_active') return 'Recently active';
-    return 'Idle';
+    return this.getChip(session).label;
   }
 
   /** "Oct 12, 7:45 PM": short enough to share a line with the subtitle. */

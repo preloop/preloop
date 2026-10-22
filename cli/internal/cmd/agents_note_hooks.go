@@ -254,6 +254,13 @@ func runAgentsStopHook(cmd *cobra.Command, _ []string) error {
 	if sessionID == "" {
 		return nil
 	}
+	// Unless a note continues the turn, this Stop ends it: tell the console.
+	blocked := false
+	defer func() {
+		if !blocked {
+			reportTurnEnd(cmd, raw, event.HookEventName, sessionID)
+		}
+	}()
 	// Respect the harness's own loop guard: `stop_hook_active` means this
 	// Stop already follows a block, so blocking again would spin.
 	if event.StopHookActive || event.LoopCount >= stopBlockSessionMax {
@@ -280,6 +287,7 @@ func runAgentsStopHook(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	recordStopBlock(sessionID)
+	blocked = true
 	payload := map[string]interface{}{"decision": "block", "reason": text}
 	if cred.Source == permissionSourceCursor {
 		payload = map[string]interface{}{"followup_message": text}

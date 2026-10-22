@@ -128,7 +128,10 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
                 strip_sealed_original,
             )
 
-            for row in pending.all():
+            from .runtime_session_turn_state import release_approval_wait
+
+            pending_rows = pending.all()
+            for row in pending_rows:
                 cleaned, removed = strip_sealed_original(
                     getattr(row, "tool_args", None)
                 )
@@ -138,6 +141,9 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             expired += pending.update(
                 {"status": "expired", "resolved_at": self.model.expires_at},
                 synchronize_session="fetch",
+            )
+            release_approval_wait(
+                db, [getattr(row, "runtime_session_id", None) for row in pending_rows]
             )
         if commit:
             db.commit()
@@ -426,7 +432,19 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         Returns:
             How many requests were cancelled.
         """
+        from .runtime_session_turn_state import release_approval_wait
+
         now = datetime.utcnow()
+        session_ids = [
+            row[0]
+            for row in db.query(self.model.runtime_session_id)
+            .filter(
+                self.model.execution_id == str(execution_id),
+                self.model.status == "pending",
+                self.model.runtime_session_id.isnot(None),
+            )
+            .all()
+        ]
         cancelled = (
             db.query(self.model)
             .filter(
@@ -442,6 +460,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
                 synchronize_session="fetch",
             )
         )
+        release_approval_wait(db, session_ids)
         if commit:
             db.commit()
         return int(cancelled)

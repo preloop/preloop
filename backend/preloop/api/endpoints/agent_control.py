@@ -1113,9 +1113,10 @@ def _persist_agent_control_progress(
         and 0 < len(tool_name) <= 100
     ):
         return
-    crud_runtime_session_activity.log_agent_control_progress(
+    consuming_account_id = command.consuming_account_id or context.account_id
+    activity = crud_runtime_session_activity.log_agent_control_progress(
         db,
-        account_id=command.consuming_account_id or context.account_id,
+        account_id=consuming_account_id,
         command_id=command_id,
         event_id=str(inbound.message_id),
         kind=kind,
@@ -1124,6 +1125,55 @@ def _persist_agent_control_progress(
         tool_name=tool_name if isinstance(tool_name, str) else None,
         commit=False,
     )
+    _broadcast_command_progress(
+        consuming_account_id,
+        activity,
+        command_id=command_id,
+        kind=kind,
+        call_id=call_id if isinstance(call_id, str) else None,
+        tool_name=tool_name if isinstance(tool_name, str) else None,
+    )
+
+
+def _broadcast_command_progress(
+    account_id: Any,
+    activity: Any,
+    *,
+    command_id: str,
+    kind: str,
+    call_id: Optional[str],
+    tool_name: Optional[str],
+) -> None:
+    """Tell the consuming session's viewers that an SDK turn moved.
+
+    Scoped to the consuming account and the progress row's runtime session,
+    like ``runtime_session_turn_ended``, on the ``session_progress`` topic so
+    views that reload on any ``agent_control`` event are not woken by every
+    step. The payload says what kind of step it was and which tool, never the
+    summary text: viewers read text from the stored activity stream, which
+    applies its own access checks.
+    """
+    runtime_session_id = getattr(activity, "runtime_session_id", None)
+    if activity is None or runtime_session_id is None:
+        return
+    try:
+        emit_account_event(
+            build_account_event(
+                account_id=str(account_id),
+                topic=ACCOUNT_TOPIC_SESSION_PROGRESS,
+                event_type="managed_agent_command_progress",
+                payload={
+                    "runtime_session_id": str(runtime_session_id),
+                    "command_id": command_id,
+                    "kind": kind,
+                    "call_id": call_id,
+                    "tool_name": tool_name,
+                },
+                runtime_session_id=str(runtime_session_id),
+            )
+        )
+    except Exception:
+        logger.warning("Failed to emit command progress", exc_info=True)
 
 
 #: Live events a sidecar forwards for a session it can drive but did not

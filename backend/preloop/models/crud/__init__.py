@@ -48,6 +48,7 @@ from ..models import (
 from . import restricted_runtime as crud_restricted_runtime
 from . import notification_preferences
 from . import runtime_session_artifact as crud_runtime_session_artifact
+from . import runtime_session_turn_state  # noqa: F401
 from . import tool_approval_condition
 from .access_rule import crud_access_rule
 from .account import CRUDAccount

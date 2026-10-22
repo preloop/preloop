@@ -1,11 +1,14 @@
-"""Prompt, turn-end and session-end timestamps from harness hooks (#1889).
+"""Prompt, tool-end, turn-end and session-end signals from harness hooks.
 
-The SessionStart/UserPromptSubmit, Stop and SessionEnd hooks already run on
-every onboarded harness. This module persists *when* they fired as
-``runtime_session_activity`` rows (``user_prompt``, ``turn_end``,
-``session_end``) and announces them on the ``runtime_sessions`` realtime
-topic. It never stores what was typed: the rows carry a kind, a time, the
-source and the credential's user, nothing else.
+The SessionStart/UserPromptSubmit, Stop and SessionEnd hooks run on every
+onboarded harness (#1889); PostToolUse, PostToolUseFailure and Notification
+add tool ends and waits for input. This module persists *when* they fired
+as ``runtime_session_activity`` rows (``user_prompt``, ``tool_end``,
+``turn_end``, ``waiting_for_input``, ``session_end``), moves the session's
+``turn_state``, and announces them on the ``runtime_sessions`` realtime
+topic. It never stores what was typed or what a tool printed: the rows
+carry a kind, a time, the source, the credential's user and, for a tool
+end, its id, name, exit code, error flag and duration.
 """
 
 from __future__ import annotations
@@ -29,10 +32,16 @@ logger = logging.getLogger(__name__)
 PROMPT_HOOK_EVENTS = frozenset({"UserPromptSubmit", "beforeSubmitPrompt"})
 TURN_END_HOOK_EVENTS = frozenset({"Stop", "SubagentStop", "stop"})
 SESSION_END_HOOK_EVENTS = frozenset({"SessionEnd", "sessionEnd"})
+TOOL_END_HOOK_EVENTS = frozenset({"PostToolUse", "PostToolUseFailure"})
+NOTIFICATION_HOOK_EVENTS = frozenset({"Notification"})
+#: Notification types that mean the harness is waiting for the operator.
+WAITING_NOTIFICATION_TYPES = frozenset({"idle_prompt"})
 
 EVENT_PROMPT = "runtime_session_prompt"
 EVENT_TURN_ENDED = "runtime_session_turn_ended"
 EVENT_SESSION_ENDED = "runtime_session_hook_ended"
+EVENT_TOOL_ENDED = "runtime_session_tool_ended"
+EVENT_WAITING_FOR_INPUT = "runtime_session_waiting_for_input"
 
 
 def is_prompt_event(hook_event_name: Optional[str]) -> bool:
@@ -64,6 +73,7 @@ def _emit(
     session: Optional[RuntimeSession],
     event_type: str,
     actor_user_id: Any,
+    extra: Optional[dict[str, Any]] = None,
 ) -> None:
     """Announce one hook timestamp; realtime never fails the hook."""
     try:
@@ -79,6 +89,8 @@ def _emit(
                     ),
                     "actor_user_id": str(actor_user_id) if actor_user_id else None,
                     "timestamp": activity.timestamp.isoformat(),
+                    "turn_state": session.turn_state if session else None,
+                    **(extra or {}),
                 },
                 runtime_session_id=str(activity.runtime_session_id),
             )
@@ -136,6 +148,25 @@ def record_prompt(
     return activity
 
 
+def _tool_end_details(details: dict[str, Any]) -> dict[str, Any]:
+    """Keep the bounded tool-end fields: ids, outcome and duration, no text."""
+    out: dict[str, Any] = {}
+    for key, limit in (("tool_use_id", 200), ("tool_name", 100)):
+        value = details.get(key)
+        if isinstance(value, str) and value.strip():
+            out[key] = value.strip()[:limit]
+    exit_code = details.get("exit_code")
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+        out["exit_code"] = exit_code
+    duration = details.get("duration_ms")
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool):
+        out["duration_ms"] = max(0, int(duration))
+    is_error = details.get("is_error")
+    if isinstance(is_error, bool):
+        out["is_error"] = is_error
+    return out
+
+
 def record_session_event(
     db: Session,
     *,
@@ -145,6 +176,7 @@ def record_session_event(
     source: Optional[str],
     hook_event_name: str,
     managed_agent_id: Any = None,
+    details: Optional[dict[str, Any]] = None,
 ) -> Optional[RuntimeSessionActivity]:
     """Write a ``turn_end`` or ``session_end`` row for a resolved session.
 
@@ -157,17 +189,69 @@ def record_session_event(
         api_key_id: Hook credential.
         actor_user_id: The credential's user.
         source: Agent adapter.
-        hook_event_name: One of the Stop or SessionEnd hook names.
+        hook_event_name: One of the Stop, SessionEnd, PostToolUse,
+            PostToolUseFailure or Notification hook names.
         managed_agent_id: The credential's managed agent, when it has one.
+        details: Optional hook fields: tool end details, the notification
+            type, or ``interrupted`` for a Stop.
 
     Returns:
-        The row, or None when it was a duplicate.
+        The row, or None when it was a duplicate or carried nothing to record
+        (a Notification that is not a wait for input).
 
     Raises:
         ValueError: For a hook name that is neither a turn end nor a session end.
     """
     now = datetime.now(timezone.utc)
+    details = details or {}
+    base = _metadata(
+        source=source,
+        hook_event_name=hook_event_name,
+        actor_user_id=actor_user_id,
+        managed_agent_id=managed_agent_id,
+    )
+    if hook_event_name in TOOL_END_HOOK_EVENTS:
+        tool = _tool_end_details(details)
+        if hook_event_name == "PostToolUseFailure":
+            tool["is_error"] = True
+        activity = crud_runtime_session_activity.log_hook_turn_event(
+            db,
+            account_id=session.account_id,
+            runtime_session_id=session.id,
+            activity_type="tool_end",
+            api_key_id=api_key_id,
+            timestamp=now,
+            metadata={**base, **tool},
+            # Tool calls end in quick succession; each one is its own row.
+            dedupe_seconds=0,
+        )
+        if activity is not None:
+            _emit(activity, session, EVENT_TOOL_ENDED, actor_user_id, tool)
+        return activity
+    if hook_event_name in NOTIFICATION_HOOK_EVENTS:
+        kind = details.get("notification_type")
+        if kind not in WAITING_NOTIFICATION_TYPES:
+            return None
+        activity = crud_runtime_session_activity.log_hook_turn_event(
+            db,
+            account_id=session.account_id,
+            runtime_session_id=session.id,
+            activity_type="waiting_for_input",
+            api_key_id=api_key_id,
+            timestamp=now,
+            metadata={**base, "notification_type": kind},
+        )
+        if activity is not None:
+            _emit(
+                activity,
+                session,
+                EVENT_WAITING_FOR_INPUT,
+                actor_user_id,
+                {"notification_type": kind},
+            )
+        return activity
     if hook_event_name in TURN_END_HOOK_EVENTS:
+        interrupted = details.get("interrupted") is True
         activity = crud_runtime_session_activity.log_hook_turn_event(
             db,
             account_id=session.account_id,
@@ -181,10 +265,17 @@ def record_session_event(
                 actor_user_id=actor_user_id,
                 managed_agent_id=managed_agent_id,
                 subagent=hook_event_name == "SubagentStop",
-            ),
+            )
+            | ({"interrupted": True} if interrupted else {}),
         )
         if activity is not None:
-            _emit(activity, session, EVENT_TURN_ENDED, actor_user_id)
+            _emit(
+                activity,
+                session,
+                EVENT_TURN_ENDED,
+                actor_user_id,
+                {"interrupted": True} if interrupted else None,
+            )
         return activity
     if hook_event_name not in SESSION_END_HOOK_EVENTS:
         raise ValueError(f"Unsupported hook event: {hook_event_name}")

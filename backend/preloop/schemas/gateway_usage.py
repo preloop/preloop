@@ -393,6 +393,10 @@ class RuntimeSessionSummary(BaseModel):
     latest_provider_name: Optional[str] = None
     is_active_now: bool = False
     activity_status: str = "idle"
+    turn_state: Optional[str] = None
+    turn_started_at: Optional[datetime] = None
+    turn_ended_at: Optional[datetime] = None
+    turn_interrupted: Optional[bool] = None
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
@@ -548,6 +552,10 @@ class ManagedAgentSummary(BaseModel):
     lifecycle_updated_at: Optional[datetime] = None
     is_active_now: bool = False
     activity_status: str = "idle"
+    turn_state: Optional[str] = None
+    turn_started_at: Optional[datetime] = None
+    turn_ended_at: Optional[datetime] = None
+    turn_interrupted: Optional[bool] = None
     last_seen_at: datetime
     started_at: Optional[datetime] = None
     last_activity_at: Optional[datetime] = None

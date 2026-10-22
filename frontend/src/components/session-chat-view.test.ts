@@ -897,7 +897,7 @@ describe('session-chat-view live tools and activity', () => {
       '[data-testid="live-activity"]'
     )!;
     expect(host.getAttribute('data-status')).to.equal('waiting_for_approval');
-    expect(host.textContent).to.contain('1 pending');
+    expect(host.textContent).to.contain('Waiting for approval (');
   });
 
   it('reports an in-flight model request instead of a generic active badge', async () => {
@@ -932,8 +932,7 @@ describe('session-chat-view live tools and activity', () => {
       '[data-testid="live-activity"]'
     )!;
     expect(host.getAttribute('data-status')).to.equal('model_processing');
-    expect(host.textContent).to.contain('openai/gpt-5');
-    expect(host.textContent).to.contain('12s');
+    expect(host.textContent).to.contain('Working (12s)');
   });
 
   it('reports reconnecting separately from the work status', async () => {

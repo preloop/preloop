@@ -53,6 +53,30 @@ a session activity with a time and a kind only: the prompt text is never
 stored (the first prompt still feeds the redacted 120-character session
 title). A session end also marks the session ended.
 
+Claude Code onboarding also installs `PostToolUse`, `PostToolUseFailure` and
+`Notification` hooks, and the `Stop` hook reports the end of each turn. A tool
+end is recorded with the tool's id, name, exit code, error flag and duration,
+never its output. A `Notification` that says the agent is waiting for input is
+recorded as the turn's end. These hooks run with a 5 second timeout and never
+block the agent when Preloop is unreachable.
+
+## Agent state
+
+Each session carries one agent state, derived when these rows are written:
+
+| State | Set by |
+| --- | --- |
+| `working` | a prompt, or a tool end while the turn is open |
+| `waiting_for_approval` | a pending approval for the session, until the last one is resolved |
+| `your_turn` | a turn end or a wait for input |
+| `ended` | a session end (cleared again if the session is resumed) |
+
+The session also keeps the current turn's start and end and whether the turn
+was interrupted. Session and agent summaries expose them as `turn_state`,
+`turn_started_at`, `turn_ended_at` and `turn_interrupted`. The console uses one
+chip for this state everywhere: **Working**, **Needs approval**, **Your turn**,
+**Idle** or **Ended**. "Active now" only means the session was seen recently.
+
 ## Presence
 
 Optional Cloud and Enterprise extensions can derive presence from these

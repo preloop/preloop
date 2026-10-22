@@ -72,6 +72,7 @@ import {
   type ArtifactKindGroup,
 } from '../utils/session-artifacts';
 import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
+import type { AgentTurnInfo } from '../utils/agent-status';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
 const STEP_PREVIEW_CHARS = 600;
@@ -168,7 +169,8 @@ export class SessionChatView extends LitElement {
       },
       this.hideLiveActivity
         ? null
-        : { state: this.liveState, now: this.now || Date.now() }
+        : { state: this.liveState, now: this.now || Date.now() },
+      this.turn
     );
   }
   private get displayItems(): Array<
@@ -356,6 +358,13 @@ export class SessionChatView extends LitElement {
    */
   @property({ type: Boolean })
   hideLiveActivity = false;
+
+  /**
+   * The session's runtime and server turn facts, for the status line in the
+   * runtime's own words and the turn footer.
+   */
+  @property({ attribute: false })
+  turn: AgentTurnInfo | null = null;
 
   /**
    * Derived live status, recomputed in `willUpdate` and read during render.
@@ -1515,6 +1524,7 @@ ${
     if (this.liveEnabled || this.hideLiveActivity || !this.liveState)
       return nothing;
     return html`<session-live-activity
+      .turn=${this.turn}
       .state=${this.liveState}
       .now=${this.now || Date.now()}
     ></session-live-activity>`;

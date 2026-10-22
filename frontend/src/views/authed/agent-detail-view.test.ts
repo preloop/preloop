@@ -60,6 +60,7 @@ describe('AgentDetailView', () => {
               lifecycle_updated_at: '2026-03-10T10:00:00Z',
               is_active_now: true,
               activity_status: 'active_now',
+              turn_state: 'your_turn',
               last_seen_at: '2026-03-10T10:00:00Z',
               started_at: '2026-03-10T09:00:00Z',
               last_activity_at: '2026-03-10T10:00:00Z',
@@ -1173,7 +1174,7 @@ describe('AgentDetailView', () => {
     const chips = Array.from(
       element.shadowRoot?.querySelectorAll('.badge-row sl-badge') || []
     ).map((chip) => chip.textContent?.replace(/\s+/g, ' ').trim());
-    expect(chips).to.deep.equal(['Active now']);
+    expect(chips).to.deep.equal(['Your turn']);
     expect(content).to.not.contain('Live check: off');
     expect(content).to.not.contain('Live validated');
     // Enrolment method is plumbing, not a feature: no blue chip for it.
@@ -2014,7 +2015,7 @@ describe('AgentDetailView', () => {
     expect(stripText).to.contain('claude-session-2');
     expect(
       strip?.querySelector('.badge-row sl-badge.status-chip')?.textContent
-    ).to.contain('Active now');
+    ).to.contain('Your turn');
 
     // The spend is stated with the window it covers and what it is based on.
     expect(stripText).to.contain('Estimated spend · 30d');

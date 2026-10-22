@@ -3,6 +3,7 @@ import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { validFilterDate } from '../../utils/list-filter-url';
+import { agentStateChip } from '../../utils/agent-status';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -1777,26 +1778,15 @@ export class RuntimeSessionsView extends LitElement {
     );
   }
 
+  /** The one agent state from the server's `turn_state` (D35). */
   private getSessionVariant(
     session: RuntimeSessionSummary
-  ): 'success' | 'primary' | 'neutral' {
-    if (session.activity_status === 'active_now') {
-      return 'success';
-    }
-    if (session.activity_status === 'ended') {
-      return 'neutral';
-    }
-    return 'primary';
+  ): 'success' | 'warning' | 'neutral' {
+    return agentStateChip(session).variant;
   }
 
   private getSessionLabel(session: RuntimeSessionSummary): string {
-    if (session.activity_status === 'active_now') {
-      return 'Active now';
-    }
-    if (session.activity_status === 'ended') {
-      return 'Ended';
-    }
-    return 'Idle';
+    return agentStateChip(session).label;
   }
 
   private getSourceLabel(sourceType: string | null | undefined): string {

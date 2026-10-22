@@ -24682,6 +24682,9 @@ components:
           - SessionEnd
           - stop
           - sessionEnd
+          - PostToolUse
+          - PostToolUseFailure
+          - Notification
           title: Hook Event Name
         source:
           anyOf:
@@ -24690,6 +24693,46 @@ components:
           - type: 'null'
           title: Source
           description: Agent adapter, e.g. 'claude_code'
+        tool_use_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Tool Use Id
+        tool_name:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Tool Name
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exit Code
+        is_error:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Error
+        duration_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Duration Ms
+        notification_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Notification Type
+        interrupted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Interrupted
+          description: 'Stop only: the user interrupted the turn'
       type: object
       required:
       - session_id
@@ -39248,6 +39291,28 @@ components:
           type: string
           title: Activity Status
           default: idle
+        turn_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Turn State
+        turn_started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Started At
+        turn_ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Ended At
+        turn_interrupted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Turn Interrupted
         last_seen_at:
           type: string
           format: date-time
@@ -45004,6 +45069,28 @@ components:
           type: string
           title: Activity Status
           default: idle
+        turn_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Turn State
+        turn_started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Started At
+        turn_ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Ended At
+        turn_interrupted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Turn Interrupted
         total_requests:
           type: integer
           title: Total Requests

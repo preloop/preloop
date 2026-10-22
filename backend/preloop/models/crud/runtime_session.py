@@ -454,7 +454,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.id == runtime_session_id,
                 self.model.ended_at.is_(None),
             )
-            .values(ended_at=ended_at, last_activity_at=ended_at)
+            .values(ended_at=ended_at, last_activity_at=ended_at, turn_state="ended")
             .returning(self.model.id)
             .execution_options(synchronize_session=False)
         ).first()
@@ -514,6 +514,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             return db_obj
         now = datetime.now(UTC)
         db_obj.ended_at = None
+        from .runtime_session_turn_state import reset_turn
+
+        reset_turn(db_obj)
         # started_at is NOT NULL, so it is left alone: reopening continues the
         # original session rather than pretending it began now.
         db_obj.last_activity_at = now
@@ -685,7 +688,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if db_obj.alias:
                 db_obj.alias_namespace = f"parent:{parent_session_id}"
         if reopen_if_ended and db_obj.ended_at is not None and ended_at is None:
+            from .runtime_session_turn_state import reset_turn
+
             db_obj.ended_at = None
+            reset_turn(db_obj)
             db_obj.started_at = started_at or last_activity_at
         elif started_at is not None and db_obj.started_at is None:
             db_obj.started_at = started_at
@@ -1746,6 +1752,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
                 func.max(cast(usage_model.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
@@ -1801,6 +1811,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
             )
         )
@@ -2121,6 +2135,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
                 func.max(cast(ApiUsage.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
@@ -2179,6 +2197,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
             )
             .first()
@@ -2360,6 +2382,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "latest_provider_name": row.latest_provider_name,
             "is_active_now": is_active_now,
             "activity_status": activity_status,
+            "turn_state": getattr(row, "turn_state", None),
+            "turn_started_at": getattr(row, "turn_started_at", None),
+            "turn_ended_at": getattr(row, "turn_ended_at", None),
+            "turn_interrupted": getattr(row, "turn_interrupted", None),
             "total_requests": int(row.request_count or 0),
             "successful_requests": int(row.success_count or 0),
             "failed_requests": int(row.error_count or 0),

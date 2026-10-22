@@ -461,7 +461,10 @@ def sync_runtime_session_for_record(
             session.ended_at = ended_at
         elif record.event_type == "session_start" and session.ended_at is not None:
             # The same conversation was resumed after it ended.
+            from preloop.models.crud.runtime_session_turn_state import reset_turn
+
             session.ended_at = None
+            reset_turn(session)
         if not session.runtime_principal_id:
             session.runtime_principal_type = agent.session_source_type
             session.runtime_principal_id = agent.session_source_id
