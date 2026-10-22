@@ -3815,7 +3815,9 @@ class ApprovalService:
                         await poll_service._broadcast_approval_update(
                             approval_request,
                             "escalated",
-                            extra_data={"new_expires_at": new_expires_at.isoformat()},
+                            extra_data={
+                                "new_expires_at": utc_isoformat(new_expires_at)
+                            },
                         )
 
                         # Continue polling - don't expire yet (the shared
