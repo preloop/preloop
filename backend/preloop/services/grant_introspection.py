@@ -7,8 +7,9 @@ within the configured TTL (at most five minutes for active grants).
 
 from __future__ import annotations
 
-import hashlib
+import hmac
 import json
+import secrets
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -79,22 +80,25 @@ class GrantIntrospector:
         self._monotonic = monotonic_clock
         self._max_entries = max_entries
         self._cache: OrderedDict[tuple[str, str], _CacheEntry] = OrderedDict()
+        self._fingerprint_key = secrets.token_bytes(32)
 
-    @staticmethod
     def _cache_key(
-        token: str, config: IntrospectionConfig, server_id: str
+        self, token: str, config: IntrospectionConfig, server_id: str
     ) -> tuple[str, str]:
         # A token may be shared by servers with distinct issuers/client credentials.
-        # Hash the complete context separately; neither token nor secret is retained.
+        # Key fingerprints with a per-cache random value so cache keys alone cannot
+        # verify guesses of a client secret. These are never persisted verifiers.
         context = config.model_dump(mode="json", exclude={"client_secret"})
-        context["client_secret_digest"] = hashlib.sha256(
-            config.client_secret.get_secret_value().encode()
-        ).hexdigest()
+        context["client_secret"] = config.client_secret.get_secret_value()
         context["server_id"] = server_id
-        namespace = hashlib.sha256(
-            json.dumps(context, sort_keys=True).encode()
-        ).hexdigest()
-        return namespace, hashlib.sha256(token.encode()).hexdigest()
+        namespace = hmac.digest(
+            self._fingerprint_key,
+            json.dumps(context, sort_keys=True).encode(),
+            "sha256",
+        ).hex()
+        return namespace, hmac.digest(
+            self._fingerprint_key, token.encode(), "sha256"
+        ).hex()
 
     @staticmethod
     def _unavailable() -> dict[str, Any]:

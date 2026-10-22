@@ -80,7 +80,7 @@ async def test_exact_upstream_bearer_and_client_auth(client_auth: str) -> None:
     assert result.binding["cached"] is False
     assert TOKEN not in repr(client._cache)
     assert SECRET not in repr(client._cache)
-    assert next(iter(client._cache))[1] == hashlib.sha256(TOKEN.encode()).hexdigest()
+    assert next(iter(client._cache))[1] != hashlib.sha256(TOKEN.encode()).hexdigest()
 
 
 @pytest.mark.asyncio
@@ -220,6 +220,29 @@ async def test_shared_token_isolated_by_server_issuer_and_credentials() -> None:
     assert len(calls) == 4
     assert len(client._cache) == 4
     assert TOKEN not in json.dumps(list(client._cache))
+
+
+@pytest.mark.asyncio
+async def test_cache_fingerprints_are_private_to_each_introspector() -> None:
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"active": True})
+
+    first, second = client_for(handler), client_for(handler)
+    cfg = config()
+    for client in (first, second):
+        initial = await client.evaluate(TOKEN, cfg, server_id="server-example")
+        cached = await client.evaluate(TOKEN, cfg, server_id="server-example")
+        assert initial.binding["cached"] is False
+        assert cached.binding["cached"] is True
+    assert len(requests) == 2
+    first_key, second_key = next(iter(first._cache)), next(iter(second._cache))
+    assert first_key[0] != second_key[0]
+    assert first_key[1] != second_key[1]
+    assert TOKEN not in repr(first._cache)
+    assert SECRET not in repr(first._cache)
 
 
 @pytest.mark.asyncio
