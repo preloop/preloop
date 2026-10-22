@@ -668,3 +668,42 @@ def test_derive_outcome_treats_budget_429_as_budget_denied():
     assert ModelGatewayEventEmitter._derive_outcome(429, hosted) == "budget_denied"
     assert ModelGatewayEventEmitter._derive_outcome(403, budget) == "budget_denied"
     assert ModelGatewayEventEmitter._derive_outcome(429, "slow down") == "error"
+
+
+def test_emit_for_usage_stores_slim_row_but_publishes_full_event():
+    """The activity row keeps only this call's messages; the live event all."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage(flow_execution_id=None, flow_id=None)
+    history = []
+    for turn in range(40):
+        history.append({"role": "user", "content": f"question {turn} " + "q" * 2000})
+        history.append({"role": "assistant", "content": f"answer {turn}"})
+    history.append({"role": "user", "content": "latest question"})
+
+    with (
+        patch(
+            "preloop.services.model_gateway_events.crud_runtime_session_activity"
+            ".log_model_gateway_call"
+        ) as mock_log,
+        patch("preloop.services.model_gateway_events.emit_account_event") as live,
+        patch.object(settings, "model_gateway_capture_content", True),
+    ):
+        emitter.emit_for_usage(
+            usage=usage,
+            request_payload={"model": "m", "messages": history},
+            response_payload={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+            },
+        )
+
+    stored = mock_log.call_args.kwargs["metadata"]
+    assert stored["request"]["messages"] == [
+        {"role": "user", "content": "latest question"}
+    ]
+    texts = [m["text"] for m in stored["conversation_preview"]["messages"]]
+    assert texts == ["latest question", "ok"]
+    assert stored["total_tokens"] == 18
+    assert stored["body_compaction"]["original_bytes"] > 80_000
+    assert stored["body_compaction"]["stored_bytes"] < 4096
+    live_payload = live.call_args_list[0].args[0]
+    assert "body_compaction" not in str(live_payload)
