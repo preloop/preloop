@@ -85,8 +85,8 @@ def _drop_async_pool():
 
 
 @contextlib.asynccontextmanager
-async def _mcp(app, token, *, modern=False):
-    """An MCP client session against /mcp/v1 of the in-process app."""
+async def _mcp(app, token, *, modern=False, path="/mcp/v1"):
+    """An MCP client session against either alias of the in-process app."""
 
     def _client(headers=None, timeout=None, auth=None):
         return httpx.AsyncClient(
@@ -101,7 +101,7 @@ async def _mcp(app, token, *, modern=False):
         async with (
             _client(headers={"Authorization": f"Bearer {token}"}) as http_client,
             streamable_http_client(
-                "http://localhost/mcp/v1", http_client=http_client
+                f"http://localhost{path}", http_client=http_client
             ) as (read, write),
         ):
             async with ClientSession(read, write) as session:
@@ -145,6 +145,36 @@ def test_catalog_entry_is_compact_and_default_off():
     schema = DEPOSIT_ARTIFACT_TOOL["schema"]
     assert schema["required"] == ["content", "name"]
     assert schema["properties"]["name"]["maxLength"] == 255
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modern", [False, True])
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/v1"])
+async def test_document_larger_than_four_mib_through_mcp(
+    app, shared_db, test_user, monkeypatch, modern, path
+) -> None:
+    """The protocol guard must retain the existing artifact size contract."""
+    db = shared_db
+    runtime = _session(db, test_user.account_id, "large-mcp-document")
+    token = _token(db, test_user, runtime_session_id=runtime.id)
+    _enable(db, test_user.account_id)
+    monkeypatch.setattr(artifact_deposit, "ON_STORED", [])
+    text = "sample document\n" * (4 * 1024**2 // 16 + 1)
+    assert len(text.encode()) > 4 * 1024**2
+
+    async with _mcp(app, token, modern=modern, path=path) as mcp:
+        result = await mcp.call_tool(
+            TOOL,
+            {
+                "name": "large-document.txt",
+                "kind": "document",
+                "content": {"type": "text", "text": text},
+            },
+        )
+    assert not result.is_error, result.content
+    assert result.structured_content["size_bytes"] == len(text.encode())
+    assert result.structured_content["kind"] == "document"
+    assert result.content[0].type == "resource_link"
 
 
 @pytest.mark.asyncio

@@ -28,8 +28,8 @@ AI client -> Preloop MCP endpoint -> policy evaluation -> allow / deny / require
 The preferred endpoint is `https://YOUR_PRELOOP_URL/mcp` over Streamable HTTP.
 Existing `/mcp/v1` configurations remain supported. Both accept modern discovery
 and legacy initialization; see the [protocol compatibility matrix](mcp-protocol-compatibility.md).
-`preloop agents onboard` writes this entry for supported agents; by hand it
-looks like this:
+`preloop agents onboard` currently writes the compatible `/mcp/v1` alias for
+supported agents. To configure the preferred endpoint by hand:
 
 ```bash
 claude mcp add \

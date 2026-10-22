@@ -469,55 +469,6 @@ class DynamicMCPServer:
             "tools/call", types.CallToolRequestParams, call_adapter
         )
 
-    def _extract_user_context(self, request_context) -> Optional[UserContext]:
-        """Extract user context from MCP request metadata.
-
-        The middleware should inject user data into request_context.session.meta
-        which is accessible here.
-
-        Args:
-            request_context: MCP request context from server.request_context
-
-        Returns:
-            UserContext if available, None otherwise
-        """
-        try:
-            # Try to get user context from session metadata
-            if hasattr(request_context, "session") and hasattr(
-                request_context.session, "meta"
-            ):
-                user_data = request_context.session.meta
-                logger.info(f"Found user context in session.meta: {user_data}")
-            elif hasattr(request_context, "meta"):
-                user_data = request_context.meta
-                logger.info(f"Found user context in meta: {user_data}")
-            else:
-                logger.warning(
-                    f"Request context has no session.meta or meta. Attributes: {dir(request_context)}"
-                )
-                return None
-
-            if not user_data:
-                return None
-
-            return UserContext(
-                user_id=user_data.get("user_id", "unknown"),
-                account_id=user_data.get("account_id", "unknown"),
-                username=user_data.get("username", "unknown"),
-                has_tracker=user_data.get("has_tracker", False),
-                enabled_default_tools=user_data.get("enabled_default_tools", []),
-                enabled_proxied_tools=user_data.get("enabled_proxied_tools", []),
-                runtime_session_id=user_data.get("runtime_session_id"),
-                runtime_principal_type=user_data.get("runtime_principal_type"),
-                runtime_principal_id=user_data.get("runtime_principal_id"),
-                runtime_principal_name=user_data.get("runtime_principal_name"),
-                api_key_id=user_data.get("api_key_id"),
-                api_key_name=user_data.get("api_key_name"),
-            )
-        except Exception as e:
-            logger.error(f"Error extracting user context: {e}", exc_info=True)
-            return None
-
     async def _evaluate_policy(
         self, user_context: UserContext, tool_name: str, tool_args: dict
     ) -> tuple:

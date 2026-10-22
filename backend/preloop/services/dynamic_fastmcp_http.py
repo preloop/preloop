@@ -22,7 +22,10 @@ from preloop.services.dynamic_fastmcp import (
     create_user_context_from_scope,
 )
 from preloop.services.mcp_http import PreloopBearerAuthBackend
-from preloop.services.mcp_protocol import MCPProtocolMiddleware
+from preloop.services.mcp_protocol import (
+    MCPProtocolMiddleware,
+    configure_mcp_request_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +192,7 @@ def setup_dynamic_mcp_http(mcp: DynamicFastMCP):
         http_app_kwargs["allowed_origins"] = allowed_origins
 
     base_app = mcp.http_app(**http_app_kwargs)
+    configure_mcp_request_limit(base_app)
     logger.info(
         "Got FastMCP's http_app with streamable-http transport for path /v1 "
         f"(allowed_hosts={allowed_hosts or 'default'})"

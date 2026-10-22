@@ -140,10 +140,9 @@ an endpoint under the
 [MCP compatibility specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
 The [tested Preloop matrix](architecture/mcp-protocol-compatibility.md) records
 SDK/FastMCP versions, supported transports, and migration details.
-Support for the modern revision, the Python SDK v2 migration, and the tested
-interoperability matrix are pending in
-[#1629](https://github.com/preloop/preloop/issues/1629); this policy does not
-claim those upgrades have already shipped.
+Preloop supports the modern revision with Python SDK v2 and FastMCP 4, while
+retaining the legacy revisions documented in that matrix
+([#1629](https://github.com/preloop/preloop/issues/1629)).
 
 Browser pages such as `/approval/{id}`, `/invitations/accept`,
 `/mcp/authorize/consent` and `/docs/*` are console HTML, not public API,

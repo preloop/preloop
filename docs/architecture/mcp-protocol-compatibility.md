@@ -50,6 +50,11 @@ enabled, including for deployments where FastMCP's default would disable it.
 SDK 2.3 routes eras by the HTTP version header. Preloop adds a bounded ASGI
 guard so modern body metadata with a missing, duplicated, or legacy header
 cannot enter the legacy handler. Authentication remains outside this guard.
+The guard inspects only requests that could enter the legacy handler, uses
+the existing artifact request ceiling, and spools large bodies to disk. It
+releases its parsed tree before SDK dispatch; modern requests go directly to
+the SDK. FastMCP 4.1.3 does not expose the SDK's request-size option, so a lifespan
+adapter sets the SDK manager's body limit to that same artifact ceiling.
 The SDK owns the remaining schema validation and request dispatch.
 
 Outbound negotiation uses `ClientSession.discover()` before any operation.

@@ -124,6 +124,45 @@ async def test_modern_metadata_cannot_enter_legacy_handler(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("header_version", [None, "2025-11-25"])
+async def test_large_body_with_trailing_modern_metadata_cannot_dispatch(
+    wire: httpx.AsyncClient, header_version: str | None
+) -> None:
+    """Spooling must inspect metadata even after a large artifact argument."""
+    body = message("tools/call", name="echo", arguments={"value": "x" * (4 * 1024**2)})
+    meta = body["params"].pop("_meta")
+    body["params"]["_meta"] = meta
+    request_headers = headers("tools/call", name="echo")
+    if header_version is None:
+        request_headers.pop("MCP-Protocol-Version")
+    else:
+        request_headers["MCP-Protocol-Version"] = header_version
+    response = await wire.post("/mcp", headers=request_headers, json=body)
+    assert response.status_code == 400
+    assert rpc(response)["error"]["code"] == -32020
+
+
+@pytest.mark.asyncio
+async def test_chunked_legacy_request_obeys_artifact_request_ceiling(
+    wire: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.services import mcp_protocol
+
+    monkeypatch.setattr(mcp_protocol, "max_request_bytes", lambda: 1024)
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b" " * 512
+        yield b" " * 513
+
+    response = await wire.post(
+        "/mcp",
+        headers={"Accept": "application/json, text/event-stream"},
+        content=chunks(),
+    )
+    assert response.status_code == 413
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/mcp", "/mcp/v1"])
 async def test_modern_discovery_list_and_call_without_handshake(
     wire: httpx.AsyncClient, path: str
