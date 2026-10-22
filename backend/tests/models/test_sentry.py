@@ -4,6 +4,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from preloop.models.sentry import init_sentry
 
 
@@ -36,6 +38,34 @@ class TestInitSentry:
                     assert call_kw["dsn"] == "https://key@sentry.io/1"
                     assert call_kw["environment"] == "production"
                     assert call_kw["before_send"] is not None
+                    assert call_kw["profiles_sample_rate"] == 0.0
+                    assert call_kw["traces_sample_rate"] == 1.0
+
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [
+            ("0", 0.0),
+            ("0.2", 0.2),
+            ("1", 1.0),
+            ("bad", 0.0),
+            ("-1", 0.0),
+            ("1.1", 0.0),
+            ("nan", 0.0),
+            ("inf", 0.0),
+        ],
+    )
+    def test_profiling_requires_valid_explicit_opt_in(
+        self, monkeypatch: pytest.MonkeyPatch, configured: str, expected: float
+    ) -> None:
+        monkeypatch.setenv("SENTRY_DSN", "https://key@example.com/1")
+        monkeypatch.setenv("SENTRY_PROFILES_SAMPLE_RATE", configured)
+        sdk = MagicMock()
+        with patch.dict(sys.modules, {"sentry_sdk": sdk}):
+            with patch("preloop.config.settings") as settings:
+                settings.preloop_url = "https://preloop.ai"
+                init_sentry()
+        assert sdk.init.call_args.kwargs["profiles_sample_rate"] == expected
+        assert sdk.init.call_args.kwargs["before_send"] is not None
 
     def test_staging_env_detected(self):
         """Staging URL sets environment to staging."""
