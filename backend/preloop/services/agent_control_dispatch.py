@@ -568,6 +568,54 @@ class SessionControlMode:
     kind: Optional[str] = None
     send_path: Optional[str] = None
 
+    @property
+    def delivery(self) -> str:
+        """``turn`` when a line starts an agent turn, ``note`` otherwise."""
+        return "turn" if self.mode == "command" else "note"
+
+
+#: Note-mode reason for a live session the agent's plugin cannot type into.
+TERMINAL_SESSION_REASON_CODE = "terminal_session"
+TERMINAL_SESSION_REASON = (
+    "this session runs in a terminal that Preloop cannot type into; a line is "
+    "a note it reads at its next tool call, at the end of this turn, or with "
+    "your next prompt in the terminal"
+)
+
+
+def session_reachable_by_control(agent: Any, session: Any) -> bool:
+    """Say whether the agent's control plugin can drive ``session`` itself.
+
+    A plugin reports the native session ids it can drive (sessions it owns
+    through its SDK, and a launcher session it holds locally) in every
+    presence frame. A session outside that list is a plain terminal session:
+    sending it a command would make the plugin resume the same native
+    session in a second process and fork the user's transcript.
+
+    Args:
+        agent: The managed agent that owns the session.
+        session: ``RuntimeSession`` row.
+
+    Returns:
+        True when a command can reach this session.
+    """
+    reachable = getattr(agent, "control_reachable_session_ids", None)
+    if reachable is None:
+        # The plugin predates the list; keep the earlier behaviour.
+        return True
+    if agent.runtime_session_id is not None and str(session.id) == str(
+        agent.runtime_session_id
+    ):
+        return True
+    if (
+        session.session_source_type == agent.session_source_type
+        and session.session_source_id == agent.session_source_id
+    ):
+        return True
+    return bool(session.session_source_id) and session.session_source_id in set(
+        str(item) for item in reachable
+    )
+
 
 def session_managed_agent(db: Session, *, account_id: str, session: Any) -> Any:
     """Return the managed agent that owns ``session``, or None.
@@ -727,6 +775,13 @@ def resolve_session_control_mode(
             "control_offline",
             f"{name} has no live Agent Control connection (no heartbeat in the "
             f"last {seconds}s); a line is a note until it reconnects",
+            agent,
+        )
+    if not session_reachable_by_control(agent, session):
+        return SessionControlMode(
+            "note",
+            TERMINAL_SESSION_REASON_CODE,
+            TERMINAL_SESSION_REASON,
             agent,
         )
     return SessionControlMode("command", None, None, agent)

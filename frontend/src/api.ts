@@ -5831,8 +5831,11 @@ export interface RuntimeSessionControl {
     | 'agent_inactive'
     | 'no_control_plugin'
     | 'control_offline'
+    | 'terminal_session'
     | null;
   reason: string | null;
+  /** `turn` when a line starts an agent turn, `note` when it is a note. */
+  delivery?: 'turn' | 'note';
   send_path: string | null;
   managed_agent_id: string | null;
   agent_name: string | null;

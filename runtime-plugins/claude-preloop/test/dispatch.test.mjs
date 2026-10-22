@@ -358,3 +358,35 @@ test("stop() clears sessions so a later dispatch recreates the manager", async (
   assert.deepEqual(state.texts, ["first", "after-stop"]);
   sidecar.stop();
 });
+
+test("presence lists sdk-owned and launcher sessions as reachable", async () => {
+  const { sidecar } = makeSidecar();
+  assert.deepEqual(sidecar.reachableSessionIds(), []);
+  await sidecar.dispatch({
+    type: "command",
+    name: "send_message",
+    payload: { text: "start work" },
+  });
+  assert.deepEqual(sidecar.reachableSessionIds(), ["session-1"]);
+
+  // A launcher TUI held locally is reachable; a released one is not.
+  sidecar.launcher.hasLauncher = () => true;
+  sidecar.launcher.mode = "local";
+  sidecar.launcher.lastSessionId = "launcher-tui";
+  assert.deepEqual(sidecar.reachableSessionIds(), ["session-1", "launcher-tui"]);
+  sidecar.launcher.mode = "offline";
+  assert.deepEqual(sidecar.reachableSessionIds(), ["session-1"]);
+
+  // The presence frame carries the list for the server.
+  sidecar.launcher.mode = "local";
+  const sent = [];
+  sidecar.sendEnvelope = (envelope) => sent.push(envelope);
+  sidecar.launcher.notifyStatus = () => {};
+  sidecar.broadcastMode();
+  assert.equal(sent[0].name, "session_mode");
+  assert.deepEqual(sent[0].payload.reachable_session_ids, [
+    "session-1",
+    "launcher-tui",
+  ]);
+  sidecar.stop();
+});

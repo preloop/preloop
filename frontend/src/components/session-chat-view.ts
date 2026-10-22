@@ -103,8 +103,20 @@ export interface PendingTalkMessage {
   id: string;
   text: string;
   at: string;
-  state: 'sending' | 'sent' | 'failed';
+  /**
+   * `sending` until the server answers. A command turn is then `sent`. A
+   * note is `waiting` until the session's hook reads it, then `read`.
+   */
+  state: 'sending' | 'sent' | 'waiting' | 'read' | 'failed';
   error?: string;
+  /** Operator note id, when the line went as a note. */
+  noteId?: string;
+  /** Where the note was read: "tool call", "turn end", "next prompt". */
+  readPoint?: string;
+  /** When the note was read (ISO). */
+  readAt?: string;
+  /** The note is still unread after the wait the window allows an idle session. */
+  stale?: boolean;
   inputMode?: 'text' | 'voice_transcript';
   /**
    * The session the turn was typed in, captured at send. Delivery and Retry
@@ -1410,8 +1422,36 @@ ${
               ? html`<sl-badge variant="danger" pill>Not sent</sl-badge>`
               : nothing
           }
+          ${
+            message.state === 'waiting'
+              ? html`<sl-badge
+                  variant="neutral"
+                  pill
+                  data-testid="pending-note-state"
+                  >Waiting for the agent</sl-badge
+                >`
+              : nothing
+          }
+          ${
+            message.state === 'read'
+              ? html`<span
+                  data-testid="pending-note-state"
+                  title=${message.readAt || ''}
+                  >Read at ${message.readPoint || 'model call'}
+                  ${message.readAt ? this.formatTime(message.readAt) : ''}</span
+                >`
+              : nothing
+          }
         </div>
         <pre class="bubble-text">${message.text}</pre>
+        ${
+          message.state === 'waiting' && message.stale
+            ? html`<div class="pending-error" data-testid="pending-note-stale">
+                Not read yet after 10 minutes. The session is idle: it reads
+                this with the next prompt typed in its terminal.
+              </div>`
+            : nothing
+        }
         ${
           message.state === 'failed'
             ? html`

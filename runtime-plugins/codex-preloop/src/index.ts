@@ -342,6 +342,7 @@ export class PreloopCodexSidecar {
             tool_approval: true,
           },
           session_mode: this.currentMode(),
+          reachable_session_ids: this.reachableSessionIds(),
           queued_count: 0,
           runtime_principal_id: config.runtime_principal_id,
           runtime_principal_name: config.runtime_principal_name,
@@ -590,6 +591,26 @@ export class PreloopCodexSidecar {
     }
   }
 
+  /**
+   * Native session ids this sidecar can drive: sessions it owns through the
+   * SDK, plus the launcher's session while that launcher holds it locally.
+   * The server routes Talk for any other session of this agent (a plain
+   * terminal session) as a note, because resuming it here would fork it.
+   */
+  reachableSessionIds(): string[] {
+    const ids = [...(this.sessions?.ownedSessionIds() ?? [])];
+    const launcherId = this.launcher.lastSessionId;
+    if (
+      launcherId &&
+      this.launcher.mode === "local" &&
+      this.launcher.hasLauncher() &&
+      !ids.includes(launcherId)
+    ) {
+      ids.push(launcherId);
+    }
+    return ids;
+  }
+
   currentMode(): OwnershipMode {
     if (this.sessions && this.sessions.ownedSessionIds().length > 0) {
       return "remote";
@@ -632,6 +653,7 @@ export class PreloopCodexSidecar {
         session_mode: this.currentMode(),
         session_id: this.launcher.lastSessionId,
         owned_session_ids: this.sessions?.ownedSessionIds() ?? [],
+        reachable_session_ids: this.reachableSessionIds(),
       },
     });
     this.launcher.notifyStatus();
@@ -719,6 +741,7 @@ export class PreloopCodexSidecar {
           status: "online",
           runtime_principal_id: config.runtime_principal_id,
           session_mode: this.currentMode(),
+          reachable_session_ids: this.reachableSessionIds(),
         },
       });
     }, HEARTBEAT_INTERVAL_MS);

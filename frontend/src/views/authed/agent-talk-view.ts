@@ -669,6 +669,8 @@ export class AgentTalkView extends LitElement {
       this.offerSession(sessionId);
       return;
     }
+    // The composer marks a note read, or re-reads how this session is routed.
+    this.composer?.handleRealtime(message);
     this.noteAgentTurn();
     this.scheduleReload();
   }
@@ -946,6 +948,12 @@ export class AgentTalkView extends LitElement {
         .agent=${this.agent}
         .sessionId=${this.sessionId}
         .sessionEnded=${Boolean(this.currentSession?.ended_at)}
+        .sessionIdle=${Boolean(
+          this.currentSession &&
+          !this.currentSession.ended_at &&
+          !this.currentSession.is_active_now
+        )}
+        .sessionLoadFailed=${Boolean(this.sessionId && this.error)}
         .liveAlternative=${this.liveAlternative}
         sourceContext=${this.composerSourceContext}
       ></talk-composer>
