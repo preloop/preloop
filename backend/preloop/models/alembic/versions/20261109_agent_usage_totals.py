@@ -37,7 +37,6 @@ sub_equivalent numeric NOT NULL DEFAULT 0,
  latest_model_alias varchar(255), latest_provider_name varchar(255),
  CONSTRAINT uq_agent_usage_total_scope UNIQUE NULLS NOT DISTINCT (account_id, principal_type, principal_id, session_id)
 );
-CREATE INDEX IF NOT EXISTS ix_agent_usage_total_principal ON agent_usage_total(account_id,principal_type,principal_id);
 CREATE INDEX IF NOT EXISTS ix_agent_usage_total_session ON agent_usage_total(account_id,session_id);
 CREATE TABLE IF NOT EXISTS agent_usage_counted (usage_id uuid PRIMARY KEY, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS agent_usage_backfill (name varchar(32) PRIMARY KEY, created_at timestamp NOT NULL DEFAULT now(), updated_at timestamp NOT NULL DEFAULT now(), last_usage_id uuid, ready boolean NOT NULL DEFAULT false);
@@ -145,7 +144,7 @@ BEGIN
    -- Same-key price/token corrections retain their latest-row position.
    -- Avoid rescanning history on the ingestion path for these updates.
    PERFORM agent_usage_apply(OLD,-1,
-    TG_OP='UPDATE' AND NEW.action_type='model_gateway' AND OLD.account_id IS NOT DISTINCT FROM NEW.account_id
+    TG_OP='UPDATE' AND COALESCE(NEW.action_type='model_gateway',false) AND OLD.account_id IS NOT DISTINCT FROM NEW.account_id
     AND OLD.runtime_principal_type IS NOT DISTINCT FROM NEW.runtime_principal_type
     AND OLD.runtime_principal_id IS NOT DISTINCT FROM NEW.runtime_principal_id
     AND OLD.runtime_session_id IS NOT DISTINCT FROM NEW.runtime_session_id

@@ -189,8 +189,9 @@ def test_actual_upgrade_and_downgrade_preserve_usage(
         connection.commit()
 
 
+@pytest.mark.parametrize("action_type", ["other", None])
 def test_reclassifying_latest_request_restores_previous_model(
-    db_engine: Engine, totals_schema: MigrationFixture
+    db_engine: Engine, totals_schema: MigrationFixture, action_type: str | None
 ) -> None:
     """Removing a request from gateway usage also repairs latest metadata."""
     schema, account, migration = totals_schema
@@ -208,8 +209,8 @@ def test_reclassifying_latest_request_restores_previous_model(
             {"account": account},
         ).scalar_one()
         connection.execute(
-            text("UPDATE api_usage SET action_type='other' WHERE id=:id"),
-            {"id": usage_id},
+            text("UPDATE api_usage SET action_type=:action_type WHERE id=:id"),
+            {"id": usage_id, "action_type": action_type},
         )
         row = connection.execute(
             text(

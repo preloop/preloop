@@ -590,6 +590,11 @@ def _read_stored_usage(
             key = (row.owner_type, row.owner_id)
             _add_usage_totals(results[key], row)
             _add_subscription(results[key], row)
+    # This sorts compact principal/session counters, not raw requests. The
+    # sums above already visit these scopes. Keep the write path free of an
+    # additional timestamp index (updated on every request); this read remains
+    # dependent on session count, so very high cardinality may warrant a
+    # separately maintained principal-latest projection after profiling.
     candidates = latest.subquery()
     for row in db.execute(
         select(candidates)

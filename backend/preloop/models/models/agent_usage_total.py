@@ -35,12 +35,6 @@ class AgentUsageTotal(Base):
             name="uq_agent_usage_total_scope",
             postgresql_nulls_not_distinct=True,
         ),
-        Index(
-            "ix_agent_usage_total_principal",
-            "account_id",
-            "principal_type",
-            "principal_id",
-        ),
         Index("ix_agent_usage_total_session", "account_id", "session_id"),
     )
     id: Mapped[uuid.UUID] = mapped_column(

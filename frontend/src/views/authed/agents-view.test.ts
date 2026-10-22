@@ -540,7 +540,7 @@ describe('AgentsView', () => {
       'table.agents-table thead th'
     );
     expect(after?.[1].getAttribute('aria-sort')).to.equal('ascending');
-    expect(after?.[6].getAttribute('aria-sort')).to.equal('none');
+    expect(after?.[7].getAttribute('aria-sort')).to.equal('none');
 
     // The picker offers the two hidden columns back.
     const picker = el.agentTable.pickerColumns;
