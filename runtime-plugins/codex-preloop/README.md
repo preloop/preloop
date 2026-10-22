@@ -60,7 +60,8 @@ driver can replace the SDK without changing the WebSocket protocol.
   `interrupt` becomes `turn/interrupt`. While subscribed, command starts and
   ends (with exit code), reply deltas, reasoning titles, turn bounds and
   token usage are sent as `event/session_progress` with the thread id as
-  `session_source_id`. Such a thread is never resumed through the SDK, and
+  `session_source_id`; per-token deltas are merged and sent at most every
+  250 ms. Such a thread is never resumed through the SDK, and
   the sidecar never answers its approval prompts. See
   [docs/app-server-spike.md](docs/app-server-spike.md).
 - **Observed sessions (presence).** The sidecar tails

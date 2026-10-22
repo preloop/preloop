@@ -1,15 +1,29 @@
 """Live progress from a Codex TUI thread is broadcast only to its own session."""
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
 from preloop.api.endpoints import agent_control
+from preloop.models import models
+from preloop.models.crud import crud_runtime_session
 from preloop.schemas.agent_control import AgentControlInboundEnvelope
-from preloop.services.account_realtime import ACCOUNT_TOPIC_AGENT_CONTROL
+from preloop.services.account_realtime import (
+    ACCOUNT_REALTIME_TOPICS,
+    ACCOUNT_TOPIC_SESSION_PROGRESS,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_target_cache() -> Iterator[None]:
+    agent_control._session_progress_targets.clear()
+    yield
+    agent_control._session_progress_targets.clear()
 
 
 class _FakeDatabase:
@@ -85,7 +99,8 @@ async def test_codex_assistant_delta_broadcast_scoped() -> None:
     emit.assert_called_once()
     event = emit.call_args.args[0]
     assert event["account_id"] == account_id
-    assert event["topic"] == ACCOUNT_TOPIC_AGENT_CONTROL
+    assert event["topic"] == ACCOUNT_TOPIC_SESSION_PROGRESS
+    assert ACCOUNT_TOPIC_SESSION_PROGRESS in ACCOUNT_REALTIME_TOPICS
     assert event["type"] == "managed_agent_session_progress"
     assert event["runtime_session_id"] == str(session.id)
     assert event["session_source_id"] == "thread-tui"
@@ -132,6 +147,8 @@ def test_session_progress_payload_allow_lists_and_bounds_fields() -> None:
     assert len(clean["command"]) == 400
     assert "api_key" not in clean
     assert agent_control._session_progress_payload({"kind": "rm -rf"}) is None
+    assert agent_control._session_progress_payload({"kind": []}) is None
+    assert agent_control._session_progress_payload({"kind": {}}) is None
     usage = agent_control._session_progress_payload(
         {"kind": "usage", "usage": {"input_tokens": 3, "output_tokens": True}}
     )
@@ -144,3 +161,94 @@ async def test_generic_agent_control_topic_does_not_carry_session_progress() -> 
     with patch.object(agent_control, "emit_account_event") as emit:
         await agent_control._emit_agent_message(connection, _delta("thread-tui"))
     emit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_session_progress_target_is_resolved_once_per_session() -> None:
+    account_id, agent_id = str(uuid4()), str(uuid4())
+    connection = _connection(account_id, agent_id)
+    session = SimpleNamespace(id=uuid4())
+    with (
+        patch.object(
+            agent_control.crud_runtime_session,
+            "get_open_by_source_id",
+            return_value=session,
+        ) as lookup,
+        patch.object(
+            agent_control,
+            "session_managed_agent",
+            return_value=SimpleNamespace(id=agent_id),
+        ),
+        patch.object(agent_control, "emit_account_event") as emit,
+    ):
+        for _ in range(5):
+            await agent_control._emit_session_progress(
+                _FakeDatabase(), connection, _delta("thread-tui")
+            )
+        # Another agent never reuses this agent's cached mapping.
+        other = _connection(account_id, str(uuid4()))
+        await agent_control._emit_session_progress(
+            _FakeDatabase(), other, _delta("thread-tui")
+        )
+    assert lookup.call_count == 2
+    assert emit.call_count == 5
+
+
+def _runtime_session(
+    db: Session,
+    account_id: Any,
+    source_id: str,
+    *,
+    age_minutes: int,
+    ended: bool,
+    source_type: str = "codex",
+) -> models.RuntimeSession:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    row = models.RuntimeSession(
+        account_id=account_id,
+        session_source_type=source_type,
+        session_source_id=source_id,
+        started_at=now - timedelta(minutes=age_minutes),
+        ended_at=now if ended else None,
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def test_get_open_by_source_id_scopes_account_and_skips_ended(
+    db_session: Session,
+) -> None:
+    mine = models.Account(organization_name="Progress owner")
+    theirs = models.Account(organization_name="Progress other")
+    db_session.add_all([mine, theirs])
+    db_session.flush()
+    source_id = f"thread-{uuid4().hex[:8]}"
+    # One row per source type: the source identity is unique per type.
+    _runtime_session(
+        db_session, mine.id, source_id, age_minutes=30, ended=False, source_type="a"
+    )
+    newest_open = _runtime_session(
+        db_session, mine.id, source_id, age_minutes=5, ended=False, source_type="b"
+    )
+    _runtime_session(
+        db_session, mine.id, source_id, age_minutes=1, ended=True, source_type="c"
+    )
+    foreign = _runtime_session(
+        db_session, theirs.id, source_id, age_minutes=0, ended=False
+    )
+
+    found = crud_runtime_session.get_open_by_source_id(
+        db_session, account_id=mine.id, session_source_id=source_id
+    )
+    assert found is not None and found.id == newest_open.id
+    other = crud_runtime_session.get_open_by_source_id(
+        db_session, account_id=theirs.id, session_source_id=source_id
+    )
+    assert other is not None and other.id == foreign.id
+    assert (
+        crud_runtime_session.get_open_by_source_id(
+            db_session, account_id=mine.id, session_source_id="thread-unknown"
+        )
+        is None
+    )

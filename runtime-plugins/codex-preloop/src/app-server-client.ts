@@ -533,6 +533,7 @@ export class AppServerDriver implements CodexClient {
     this.pending.clear();
     for (const state of this.threads.values()) {
       state.subscribed = false;
+      state.activeTurnId = undefined;
       for (const waiter of state.waiters) waiter.reject(new Error(reason));
       state.waiters = [];
     }
@@ -590,7 +591,9 @@ export class AppServerDriver implements CodexClient {
     if (method === "turn/started") {
       state.activeTurnId = asString(asObject(p?.turn)?.id);
     } else if (method === "turn/completed") {
-      state.activeTurnId = undefined;
+      const completed = asString(asObject(p?.turn)?.id);
+      if (completed) this.turnRecord(state, completed).done = true;
+      if (!completed || state.activeTurnId === completed) state.activeTurnId = undefined;
     } else if (method === "item/completed") {
       const item = asObject(p?.item);
       const turnId = asString(p?.turnId);
@@ -642,9 +645,34 @@ export class AppServerDriver implements CodexClient {
     const result = asObject(
       await this.request("thread/resume", { threadId, excludeTurns: true }),
     );
-    const status = asObject(asObject(result?.thread)?.status);
-    if (status?.type !== "active") state.activeTurnId = undefined;
     state.subscribed = true;
+    const status = asObject(asObject(result?.thread)?.status);
+    if (status?.type !== "active") {
+      state.activeTurnId = undefined;
+      return;
+    }
+    // Resumed mid-turn (the user typed in the TUI before we subscribed):
+    // the resume result carries no turn id, so read the newest turn. A
+    // turn/started seen meanwhile wins over this read.
+    if (state.activeTurnId) return;
+    const turns = asObject(
+      await this.request("thread/turns/list", {
+        threadId,
+        limit: 1,
+        sortDirection: "desc",
+        itemsView: "notLoaded",
+      }),
+    );
+    const latest = asObject(Array.isArray(turns?.data) ? turns.data[0] : undefined);
+    const latestId = asString(latest?.id);
+    if (
+      !state.activeTurnId &&
+      latestId &&
+      latest?.status === "inProgress" &&
+      !state.turns.get(latestId)?.done
+    ) {
+      state.activeTurnId = latestId;
+    }
   }
 
   /**
@@ -675,7 +703,9 @@ export class AppServerDriver implements CodexClient {
       const result = asObject(await this.request("turn/start", { threadId, input }));
       turnId = asString(asObject(result?.turn)?.id) ?? "";
       if (!turnId) throw new Error("turn/start returned no turn id");
-      state.activeTurnId = turnId;
+      // A fast turn can complete before this response arrives; never
+      // resurrect a finished turn as the active one.
+      if (!state.turns.get(turnId)?.done) state.activeTurnId = turnId;
     }
     const turn = await new Promise<CodexTurn>((resolve, reject) => {
       const seen = state.turns.get(turnId);

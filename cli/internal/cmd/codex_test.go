@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func stubCodexEnable(t *testing.T, daemonErr error) (daemonCalls *int, installCalls *int, order *[]string) {
@@ -78,5 +80,25 @@ func TestCodexSidecarEnableReportsAppServerDaemonFailure(t *testing.T) {
 	}
 	if *daemon != 1 || *install != 0 {
 		t.Fatalf("a failed daemon start must not install the sidecar: daemon=%d install=%d", *daemon, *install)
+	}
+}
+
+func TestCodexAppServerDaemonStartTimesOut(t *testing.T) {
+	if _, err := exec.LookPath("sleep"); err != nil {
+		t.Skip("needs sleep")
+	}
+	origArgv, origTimeout := codexAppServerDaemonStartArgv, codexAppServerDaemonStartTimeout
+	t.Cleanup(func() {
+		codexAppServerDaemonStartArgv, codexAppServerDaemonStartTimeout = origArgv, origTimeout
+	})
+	codexAppServerDaemonStartArgv = []string{"sleep", "5"}
+	codexAppServerDaemonStartTimeout = 100 * time.Millisecond
+	started := time.Now()
+	_, err := runCodexAppServerDaemonStart()
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected a timeout error, got %v", err)
+	}
+	if time.Since(started) > 3*time.Second {
+		t.Fatalf("the daemon start was not bounded")
 	}
 }

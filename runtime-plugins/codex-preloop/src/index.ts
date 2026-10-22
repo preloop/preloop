@@ -105,6 +105,8 @@ const EVICTION_CLOSE_CODE = 4000;
 const RECONNECT_BASE_DELAY_MS = 2_000;
 const RECONNECT_MAX_DELAY_MS = 30_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+/** Longest a merged reply delta from a TUI session waits before it is sent. */
+const PROGRESS_FLUSH_MS = 250;
 /**
  * Cap on retained command receipts.
  * Employee ledgers refuse new work at this size so a receipt is never evicted.
@@ -128,6 +130,11 @@ export class PreloopCodexSidecar {
   private launcher: LauncherBridge;
   /** Live TUI sessions on the shared `codex app-server` daemon. */
   private appServer?: AppServerDriver;
+  private pendingDeltas = new Map<
+    string,
+    Extract<AppServerEvent, { kind: "assistant_delta" | "status_title" }>
+  >();
+  private progressTimer?: ReturnType<typeof setTimeout>;
   private stopped = false;
   private reconnectAttempts = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -303,6 +310,9 @@ export class PreloopCodexSidecar {
     this.sessions?.stop();
     this.sessions = undefined;
     this.appServer?.stop();
+    if (this.progressTimer) clearTimeout(this.progressTimer);
+    this.progressTimer = undefined;
+    this.pendingDeltas.clear();
     this.launcher.stop();
     this.socket?.close();
     this.socket = undefined;
@@ -672,7 +682,45 @@ export class PreloopCodexSidecar {
     });
   }
 
+  /**
+   * Forward one TUI event. Reply and reasoning deltas arrive per token, so
+   * consecutive deltas of one item are merged and sent at most every
+   * PROGRESS_FLUSH_MS; any other event of the thread flushes them first so
+   * the order is kept.
+   */
   private sendSessionProgress(threadId: string, event: AppServerEvent): void {
+    const pending = this.pendingDeltas.get(threadId);
+    if (event.kind === "assistant_delta" || event.kind === "status_title") {
+      const sameItem =
+        pending &&
+        pending.kind === event.kind &&
+        pending.turn_id === event.turn_id &&
+        (event.kind !== "assistant_delta" ||
+          (pending.kind === "assistant_delta" && pending.item_id === event.item_id));
+      if (sameItem) {
+        pending.delta += event.delta;
+        return;
+      }
+      this.flushDeltas(threadId);
+      this.pendingDeltas.set(threadId, { ...event });
+      this.progressTimer ??= setTimeout(() => {
+        this.progressTimer = undefined;
+        for (const id of [...this.pendingDeltas.keys()]) this.flushDeltas(id);
+      }, PROGRESS_FLUSH_MS);
+      return;
+    }
+    this.flushDeltas(threadId);
+    this.emitSessionProgress(threadId, event);
+  }
+
+  private flushDeltas(threadId: string): void {
+    const pending = this.pendingDeltas.get(threadId);
+    if (!pending) return;
+    this.pendingDeltas.delete(threadId);
+    this.emitSessionProgress(threadId, pending);
+  }
+
+  private emitSessionProgress(threadId: string, event: AppServerEvent): void {
     this.sendEnvelope({
       type: "event",
       name: "session_progress",

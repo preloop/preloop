@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -47,10 +50,24 @@ terminal exits), so it is only started when you ask for it. Codex CLI
 // codexSidecarAppServerDaemon is the --app-server-daemon flag.
 var codexSidecarAppServerDaemon bool
 
+// codexAppServerDaemonStartTimeout bounds "codex app-server daemon start" so
+// a wedged daemon or a held lock cannot hang the enable command. Variables so
+// tests can exercise the timeout without a codex binary.
+var (
+	codexAppServerDaemonStartTimeout = 60 * time.Second
+	codexAppServerDaemonStartArgv    = []string{"codex", "app-server", "daemon", "start"}
+)
+
 // runCodexAppServerDaemonStart runs "codex app-server daemon start". It is a
 // variable so tests never start a real daemon.
 var runCodexAppServerDaemonStart = func() (string, error) {
-	output, err := exec.Command("codex", "app-server", "daemon", "start").CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), codexAppServerDaemonStartTimeout)
+	defer cancel()
+	argv := codexAppServerDaemonStartArgv
+	output, err := exec.CommandContext(ctx, argv[0], argv[1:]...).CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return strings.TrimSpace(string(output)), fmt.Errorf("timed out after %s", codexAppServerDaemonStartTimeout)
+	}
 	return strings.TrimSpace(string(output)), err
 }
 

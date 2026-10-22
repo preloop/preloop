@@ -50,6 +50,10 @@ function fakeDaemon({ threads = { [TUI]: { ephemeral: false }, [HELPER]: { ephem
           return reply(id, { thread: { id: params.threadId, ephemeral: threads[params.threadId]?.ephemeral ?? true } });
         case "thread/resume":
           return reply(id, { thread: { id: params.threadId, status: { type: threads[params.threadId]?.active ? "active" : "idle" } } });
+        case "thread/turns/list": {
+          const active = threads[params.threadId]?.active;
+          return reply(id, { data: active ? [{ id: active, status: "inProgress" }] : [{ id: "old", status: "completed" }], nextCursor: null });
+        }
         case "turn/start": {
           turnSeq += 1;
           return reply(id, { turn: { id: `turn-${turnSeq}`, status: "inProgress" } });
@@ -257,4 +261,60 @@ test("websocket frames round-trip through the proxy codec", () => {
     assert.equal(decoded.fin, true);
   }
   assert.equal(decodeServerFrame(Buffer.from([0x81])), undefined);
+});
+
+test("a thread resumed mid-turn is steered, not started", async () => {
+  const daemon = fakeDaemon({ threads: { [TUI]: { ephemeral: false, active: "turn-typed-before-subscribe" } } });
+  const { driver } = makeDriver(daemon);
+  await driver.refresh();
+  const pending = driver.sendTurn(TUI, "and add a test");
+  await until(() => daemon.peer.calls.some((c) => c.method === "turn/steer"));
+  const steer = daemon.peer.calls.find((c) => c.method === "turn/steer");
+  assert.equal(steer.params.expectedTurnId, "turn-typed-before-subscribe");
+  assert.equal(daemon.peer.calls.some((c) => c.method === "turn/start"), false);
+  daemon.peer.notify("turn/completed", { threadId: TUI, turn: { id: "turn-typed-before-subscribe", status: "completed" } });
+  assert.equal((await pending).steered, true);
+  driver.stop();
+});
+
+test("a turn that completes before the turn/start reply is not left active", async () => {
+  const daemon = fakeDaemon();
+  const { driver } = makeDriver(daemon);
+  await driver.refresh();
+  await driver.subscribe(TUI);
+  // The completion is pushed before the turn/start reply (setImmediate) lands.
+  const original = daemon.peer.notify;
+  const pending = driver.sendTurn(TUI, "quick");
+  await until(() => daemon.peer.calls.some((c) => c.method === "turn/start"));
+  original("turn/started", { threadId: TUI, turn: { id: "turn-1" } });
+  original("item/completed", { threadId: TUI, turnId: "turn-1", item: { type: "agentMessage", id: "m1", text: "done" } });
+  original("turn/completed", { threadId: TUI, turn: { id: "turn-1", status: "completed" } });
+  const turn = await pending;
+  assert.equal(turn.finalResponse, "done");
+  assert.equal(driver.activeTurnId(TUI), undefined);
+  const next = driver.sendTurn(TUI, "again");
+  await until(() => daemon.peer.calls.filter((c) => c.method === "turn/start").length === 2);
+  assert.equal(daemon.peer.calls.some((c) => c.method === "turn/steer"), false);
+  daemon.peer.notify("turn/completed", { threadId: TUI, turn: { id: "turn-2", status: "completed" } });
+  await next;
+  driver.stop();
+});
+
+test("a dropped daemon connection forgets the active turn", async () => {
+  let close;
+  const daemon = fakeDaemon();
+  const factory = async () => {
+    const transport = await daemon.factory();
+    const onClose = transport.onClose;
+    transport.onClose = (listener) => { close = listener; onClose(listener); };
+    return transport;
+  };
+  const { driver } = makeDriver({ factory });
+  await driver.refresh();
+  await driver.subscribe(TUI);
+  daemon.peer.notify("turn/started", { threadId: TUI, turn: { id: "turn-5" } });
+  assert.equal(driver.activeTurnId(TUI), "turn-5");
+  close("daemon restarted");
+  assert.equal(driver.activeTurnId(TUI), undefined);
+  driver.stop();
 });

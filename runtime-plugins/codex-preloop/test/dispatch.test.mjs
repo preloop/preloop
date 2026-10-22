@@ -693,10 +693,17 @@ test("presence lists loaded app-server TUI threads as reachable and forwards the
   assert.equal(sent[0].name, "session_mode");
   assert.deepEqual(sent[0].payload.reachable_session_ids, ["tui-thread"]);
   appServer.listeners.onEvent("tui-thread", { kind: "assistant_delta", turn_id: "t1", item_id: "m1", delta: "Hi" });
+  appServer.listeners.onEvent("tui-thread", { kind: "assistant_delta", turn_id: "t1", item_id: "m1", delta: " there" });
+  assert.equal(sent.length, 1, "per-token deltas are merged, not sent one by one");
+  appServer.listeners.onEvent("tui-thread", { kind: "tool_start", turn_id: "t1", call_id: "c1", tool_name: "exec_command", command: "ls" });
   assert.equal(sent[1].type, "event");
   assert.equal(sent[1].name, "session_progress");
   assert.equal(sent[1].payload.session_source_id, "tui-thread");
   assert.equal(sent[1].payload.kind, "assistant_delta");
-  assert.equal(sent[1].payload.delta, "Hi");
+  assert.equal(sent[1].payload.delta, "Hi there");
+  assert.equal(sent[2].payload.kind, "tool_start", "order is kept: the delta flushes before the tool row");
+  appServer.listeners.onEvent("tui-thread", { kind: "assistant_delta", turn_id: "t1", item_id: "m2", delta: "Done" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(sent[3].payload.delta, "Done", "a lone delta is flushed by the timer");
   sidecar.stop();
 });

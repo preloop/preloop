@@ -56,6 +56,7 @@ from preloop.schemas.agent_control import (
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AGENT_CONTROL,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+    ACCOUNT_TOPIC_SESSION_PROGRESS,
     build_account_event,
     emit_account_event,
 )
@@ -1122,7 +1123,8 @@ def _persist_agent_control_progress(
 
 #: Live events a sidecar forwards for a session it can drive but did not
 #: start through a command (a Codex TUI thread on the shared app-server
-#: daemon). They are broadcast, not stored: deltas arrive per token.
+#: daemon). They are broadcast on their own topic, not stored; the sidecar
+#: merges per-token deltas into at most four events a second.
 SESSION_PROGRESS_KINDS = frozenset(
     {
         "turn_started",
@@ -1163,7 +1165,7 @@ def _session_progress_payload(payload: dict[str, Any]) -> Optional[dict[str, Any
         The allow-listed, redacted payload, or None when the kind is unknown.
     """
     kind = payload.get("kind")
-    if kind not in SESSION_PROGRESS_KINDS:
+    if not isinstance(kind, str) or kind not in SESSION_PROGRESS_KINDS:
         return None
     clean: dict[str, Any] = {"kind": kind}
     for field, limit in _SESSION_PROGRESS_TEXT_FIELDS.items():
@@ -1185,6 +1187,55 @@ def _session_progress_payload(payload: dict[str, Any]) -> Optional[dict[str, Any
             if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
         }
     return clean
+
+
+#: How long a native id to runtime session mapping is trusted. Reply deltas
+#: arrive several times a second; the mapping does not change within a turn.
+_SESSION_PROGRESS_TARGET_TTL = timedelta(seconds=30)
+#: Unknown or foreign ids are re-checked sooner, so a session that registers
+#: a moment after its first event is picked up quickly.
+_SESSION_PROGRESS_MISS_TTL = timedelta(seconds=5)
+_SESSION_PROGRESS_TARGET_CACHE_MAX = 2048
+_session_progress_targets: dict[
+    tuple[str, str, str], tuple[Optional[str], datetime]
+] = {}
+
+
+def _cached_session_progress_target(
+    connection: AgentControlConnectionContext, session_source_id: str
+) -> tuple[bool, Optional[str]]:
+    """Return ``(hit, runtime_session_id)`` from the per-agent cache."""
+    key = (
+        str(connection.account_id),
+        str(connection.managed_agent_id),
+        session_source_id,
+    )
+    entry = _session_progress_targets.get(key)
+    if entry is None or entry[1] <= datetime.now(UTC):
+        _session_progress_targets.pop(key, None)
+        return False, None
+    return True, entry[0]
+
+
+def _remember_session_progress_target(
+    connection: AgentControlConnectionContext,
+    session_source_id: str,
+    runtime_session_id: Optional[str],
+) -> None:
+    if len(_session_progress_targets) >= _SESSION_PROGRESS_TARGET_CACHE_MAX:
+        _session_progress_targets.clear()
+    ttl = (
+        _SESSION_PROGRESS_TARGET_TTL
+        if runtime_session_id
+        else _SESSION_PROGRESS_MISS_TTL
+    )
+    _session_progress_targets[
+        (
+            str(connection.account_id),
+            str(connection.managed_agent_id),
+            session_source_id,
+        )
+    ] = (runtime_session_id, datetime.now(UTC) + ttl)
 
 
 def _resolve_session_progress_target(
@@ -1229,24 +1280,27 @@ async def _emit_session_progress(
     payload = _session_progress_payload(inbound.payload)
     if payload is None:
         return
-    try:
-        runtime_session_id = await database.run(
-            partial(
-                _resolve_session_progress_target,
-                connection=connection,
-                session_source_id=source_id,
+    hit, runtime_session_id = _cached_session_progress_target(connection, source_id)
+    if not hit:
+        try:
+            runtime_session_id = await database.run(
+                partial(
+                    _resolve_session_progress_target,
+                    connection=connection,
+                    session_source_id=source_id,
+                )
             )
-        )
-    except _DB_DELIVERY_ERRORS:
-        # Live progress is best effort; never drop the control socket for it.
-        logger.warning("Could not scope session progress", exc_info=True)
-        return
+        except _DB_DELIVERY_ERRORS:
+            # Live progress is best effort; never drop the control socket.
+            logger.warning("Could not scope session progress", exc_info=True)
+            return
+        _remember_session_progress_target(connection, source_id, runtime_session_id)
     if runtime_session_id is None:
         return
     emit_account_event(
         build_account_event(
             account_id=connection.account_id,
-            topic=ACCOUNT_TOPIC_AGENT_CONTROL,
+            topic=ACCOUNT_TOPIC_SESSION_PROGRESS,
             event_type="managed_agent_session_progress",
             payload={**payload, "message_id": inbound.message_id},
             managed_agent_id=connection.managed_agent_id,
