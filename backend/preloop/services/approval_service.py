@@ -18,6 +18,7 @@ from preloop.models.models import (
 )
 from preloop.models.schemas.approval_request import (
     ApprovalRequestUpdate,
+    utc_isoformat,
 )
 from preloop.models.crud.approval_request import (
     crud_approval_request,
@@ -543,6 +544,8 @@ class ApprovalService:
         approval_request: ApprovalRequest,
         event_type: str,
         extra_data: Optional[Dict[str, Any]] = None,
+        *,
+        webhook: bool = True,
     ):
         """Broadcast approval request update via NATS/WebSocket.
 
@@ -550,13 +553,16 @@ class ApprovalService:
             approval_request: The approval request
             event_type: Type of event (created, approved, declined, expired, vote_received)
             extra_data: Optional additional data to include in the broadcast
+            webhook: Also enqueue the outbound webhook. False only when the
+                webhook for this event was already enqueued separately.
         """
         # Outbound webhooks ride the same chokepoint as the websocket
         # broadcast: every creation and every resolution already passes
         # through here, so subscribers cannot silently miss a path. Enqueued
         # first because the NATS block below returns early when the broker is
         # down, and a missing broker is no reason to skip an integration.
-        await self._enqueue_approval_webhook(approval_request, event_type)
+        if webhook:
+            await self._enqueue_approval_webhook(approval_request, event_type)
 
         try:
             task_publisher = await get_task_publisher()
@@ -603,18 +609,10 @@ class ApprovalService:
                 # are not redacted; tool_args above still are.
                 "rule_context": approval_request.rule_context,
                 "status": approval_request.status,
-                "requested_at": approval_request.requested_at.isoformat(),
-                "resolved_at": (
-                    approval_request.resolved_at.isoformat()
-                    if approval_request.resolved_at
-                    else None
-                ),
-                "expires_at": (
-                    approval_request.expires_at.isoformat()
-                    if approval_request.expires_at
-                    else None
-                ),
-                "timestamp": datetime.utcnow().isoformat(),
+                "requested_at": utc_isoformat(approval_request.requested_at),
+                "resolved_at": utc_isoformat(approval_request.resolved_at),
+                "expires_at": utc_isoformat(approval_request.expires_at),
+                "timestamp": utc_isoformat(datetime.utcnow()),
             }
 
             # Include extra data if provided (for quorum progress, etc.)
@@ -650,8 +648,17 @@ class ApprovalService:
         api_key_id: Optional[uuid.UUID] = None,
         rule_context: Optional[Dict[str, Any]] = None,
         server_name: Optional[str] = None,
+        request_id: Optional[uuid.UUID] = None,
+        broadcast_created: bool = True,
     ) -> ApprovalRequest:
         """Create a new approval request.
+
+        ``request_id`` lets a caller that must refer to the request before the
+        call returns (the native permission hook, which may have to expire it
+        on its own deadline) propose the id. A taken id is ignored and a fresh
+        one is used. ``broadcast_created=False`` enqueues the creation webhook
+        but leaves the live "created" broadcast to the caller, which sends it
+        only when the request is still pending after policy ran.
 
         Args:
             account_id: The account creating the request
@@ -749,8 +756,14 @@ class ApprovalService:
         )
 
         # Create approval request
+        new_id = uuid.uuid4()
+        if (
+            request_id is not None
+            and await self.db.get(ApprovalRequest, request_id) is None
+        ):
+            new_id = request_id
         approval_request = ApprovalRequest(
-            id=uuid.uuid4(),
+            id=new_id,
             account_id=account_id,
             tool_configuration_id=tool_configuration_id,
             approval_workflow_id=approval_workflow_id,
@@ -788,8 +801,13 @@ class ApprovalService:
         )
         await self.db.commit()
 
-        # Broadcast creation event
-        await self._broadcast_approval_update(approval_request, "created")
+        # Broadcast creation event. A deferred caller still gets the webhook
+        # now; the live broadcast waits until the request is known to be
+        # waiting for a person.
+        if broadcast_created:
+            await self._broadcast_approval_update(approval_request, "created")
+        else:
+            await self._enqueue_approval_webhook(approval_request, "created")
 
         # Log to audit trail (fire-and-forget)
         # Read correlation_id from context var if available (set by _call_tool)
@@ -2021,12 +2039,8 @@ class ApprovalService:
                 "tool_args": tool_args_redacted,
                 "agent_reasoning": approval_request.agent_reasoning,
                 "status": approval_request.status,
-                "requested_at": approval_request.requested_at.isoformat(),
-                "expires_at": (
-                    approval_request.expires_at.isoformat()
-                    if approval_request.expires_at
-                    else None
-                ),
+                "requested_at": utc_isoformat(approval_request.requested_at),
+                "expires_at": utc_isoformat(approval_request.expires_at),
                 # "review" is the honest name: the link opens the approval
                 # page, it does not decide anything. A receiving system decides
                 # with the token URLs under "decision" below, or with
@@ -2176,6 +2190,7 @@ class ApprovalService:
         timeout_seconds: Optional[int] = None,
         server_name: Optional[str] = None,
         standing_bypass_text: Optional[str] = None,
+        request_id: Optional[uuid.UUID] = None,
     ) -> ApprovalRequest:
         """Create approval request and send notifications through configured channels.
 
@@ -2226,6 +2241,11 @@ class ApprovalService:
             api_key_id=api_key_id,
             rule_context=rule_context,
             server_name=server_name,
+            request_id=request_id,
+            # Policy may resolve this request below without a person (standing
+            # or time-boxed bypass, AI decision). Live surfaces must never see
+            # it as pending, so "created" is broadcast only once it waits.
+            broadcast_created=False,
         )
 
         # Generate user-facing summary before any notifications fire.
@@ -2303,6 +2323,7 @@ class ApprovalService:
         if tool_name == "send_note" and (approval_workflow.approval_config or {}).get(
             "note_caller_user_id"
         ):
+            await self._broadcast_pending(approval_request)
             await self.send_notifications(approval_request, approval_workflow)
             return approval_request
 
@@ -2474,14 +2495,72 @@ class ApprovalService:
                 approval_request = await self.get_approval_request(approval_request.id)
 
                 # Send notifications for human review using the appropriate workflow
+                await self._broadcast_pending(approval_request)
                 await self.send_notifications(approval_request, notification_workflow)
 
                 return approval_request
 
         # Standard (human) approval - send notifications
+        await self._broadcast_pending(approval_request)
         await self.send_notifications(approval_request, approval_workflow)
 
         return approval_request
+
+    async def _broadcast_pending(self, approval_request: ApprovalRequest) -> None:
+        """Send the deferred live "created" broadcast for a waiting request."""
+        await self._broadcast_approval_update(
+            approval_request, "created", webhook=False
+        )
+
+    async def expire_request(
+        self, request_id: uuid.UUID, *, reason: str, detail: str
+    ) -> Optional[ApprovalRequest]:
+        """Expire a pending request whose waiter is gone, and broadcast it.
+
+        A terminal request is returned unchanged, so a decision that landed
+        first wins and the caller can honour it.
+
+        Args:
+            request_id: The request to expire.
+            reason: Short machine reason, e.g. ``hook_deadline``.
+            detail: Timeline text shown to operators.
+
+        Returns:
+            The request after the call, or None when it does not exist.
+        """
+        approval_request = await self.get_approval_request_for_update(request_id)
+        if approval_request is None:
+            return None
+        if approval_request.status in self._TERMINAL_STATUSES:
+            return approval_request
+        await self._record_event(
+            approval_request_id=approval_request.id,
+            account_id=approval_request.account_id,
+            event_type="expired",
+            detail=detail,
+        )
+        updated = await self.update_approval_request(
+            approval_request.id,
+            ApprovalRequestUpdate(
+                status="expired",
+                resolved_at=datetime.utcnow(),
+                approver_comment=detail,
+            ),
+        )
+        if updated is None:  # pragma: no cover - defensive
+            return approval_request
+        await self._broadcast_approval_update(
+            updated, "expired", {"expired_reason": reason}
+        )
+        _log_approval_lifecycle_async(
+            account_id=str(updated.account_id),
+            approval_id=updated.id,
+            event="expired",
+            tool_name=updated.tool_name,
+            reason=detail,
+            execution_id=updated.execution_id,
+        )
+        return updated
 
     async def send_notifications(
         self,
@@ -3736,7 +3815,9 @@ class ApprovalService:
                         await poll_service._broadcast_approval_update(
                             approval_request,
                             "escalated",
-                            extra_data={"new_expires_at": new_expires_at.isoformat()},
+                            extra_data={
+                                "new_expires_at": utc_isoformat(new_expires_at)
+                            },
                         )
 
                         # Continue polling - don't expire yet (the shared

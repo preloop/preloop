@@ -32,6 +32,7 @@ import {
   type AgentTurnInfo,
 } from '../utils/agent-status';
 import './agent-status-line';
+import { parseUtc } from '../utils/date';
 
 export interface SessionApprovalState {
   requests: ApprovalRequest[];
@@ -98,6 +99,7 @@ export class SessionLiveActivity extends LitElement {
   private unsubscribe: Array<() => void> = [];
   private timer?: ReturnType<typeof setInterval>;
   private lastUpdate = Date.now();
+  private lastTurnEventAt: number | null = null;
   private refreshInFlight: Promise<void> | null = null;
   private refreshDirty = false;
   private controllerStarted = false;
@@ -218,6 +220,8 @@ export class SessionLiveActivity extends LitElement {
         this.connected = state === ConnectionState.CONNECTED;
         if (this.connected) {
           this.transient = [];
+          this.liveTurn = null;
+          this.lastTurnEventAt = null;
           void this.refresh();
           this.dispatchEvent(
             new CustomEvent('session-live-reconcile', {
@@ -281,6 +285,14 @@ export class SessionLiveActivity extends LitElement {
       this.sessionId
     )
       return;
+    this.lastTurnEventAt = Math.max(
+      this.lastTurnEventAt ?? 0,
+      utcMs(
+        typeof payload.timestamp === 'string'
+          ? payload.timestamp
+          : message.timestamp
+      ) ?? Date.now()
+    );
     this.liveTurn = applyTurnEvent(
       this.liveTurn ?? { ...(this.turn ?? {}) },
       message
@@ -334,7 +346,7 @@ export class SessionLiveActivity extends LitElement {
         turn.outputTokens ?? 0
       ),
       catchingUp: this.sessionId ? !this.connected : false,
-      lastEventAt: live.lastEventAt,
+      lastEventAt: Math.max(live.lastEventAt ?? 0, this.lastTurnEventAt ?? 0),
       canInterrupt: this.canInterrupt,
       now,
     });
@@ -444,6 +456,7 @@ export class SessionLiveActivity extends LitElement {
     this.requests = [];
     this.transient = [];
     this.liveTurn = null;
+    this.lastTurnEventAt = null;
     this.canView = false;
     this.canDecide = false;
     this.author = '';
@@ -716,7 +729,7 @@ export class SessionLiveActivity extends LitElement {
     const requested = tools.filter((t) => t.phase === 'requested');
     const runningEvidence = tools.filter((t) => t.phase === 'running');
     const running = runningEvidence.filter(
-      (t) => this.clock - Date.parse(t.timestamp || '') < 120000
+      (t) => this.clock - (parseUtc(t.timestamp) ?? 0) < 120000
     );
     const status = this.agentStatus(
       {

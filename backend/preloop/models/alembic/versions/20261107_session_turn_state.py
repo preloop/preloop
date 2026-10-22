@@ -1,14 +1,14 @@
 """Add runtime_session.turn_state and the current turn's bounds.
 
 Revision ID: 20261107_session_turn_state
-Revises: 20261107_gov_capture_retry
+Revises: 20261108_agent_sub_principal
 """
 
 import sqlalchemy as sa
 from alembic import op
 
 revision = "20261107_session_turn_state"
-down_revision = "20261107_gov_capture_retry"
+down_revision = "20261108_agent_sub_principal"
 branch_labels = None
 depends_on = None
 

@@ -2534,7 +2534,7 @@ class TestEscalationBehavior:
                     ApprovalService,
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
-                ):
+                ) as mock_broadcast:
                     result = await approval_service.wait_for_approval(
                         sample_approval_request.id, poll_interval=0.1
                     )
@@ -2542,6 +2542,17 @@ class TestEscalationBehavior:
                     # Escalation should have been triggered
                     assert mock_escalation.called
                     assert result.status == "approved"
+                    # The new deadline travels with a UTC offset, like expires_at.
+                    escalated = [
+                        call
+                        for call in mock_broadcast.call_args_list
+                        if call.args[1] == "escalated"
+                    ]
+                    assert escalated
+                    assert all(
+                        call.kwargs["extra_data"]["new_expires_at"].endswith("+00:00")
+                        for call in escalated
+                    )
 
     async def test_wait_for_approval_no_escalation_when_already_triggered(
         self, approval_service, sample_approval_request, sample_approval_workflow

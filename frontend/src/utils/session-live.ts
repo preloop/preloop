@@ -1,4 +1,4 @@
-import { parseUTCDate } from './date';
+import { parseUTCDate, parseUtc } from './date';
 import { isHarnessSideRequestEvent } from './harness-side-request';
 import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
 
@@ -31,7 +31,7 @@ export function sessionTools(
 ): SessionTool[] {
   const tools = new Map<string, SessionTool>();
   for (const event of [...events].sort(
-    (a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || '')
+    (a, b) => (parseUtc(a.timestamp) ?? NaN) - (parseUtc(b.timestamp) ?? NaN)
   )) {
     const entries: Record<string, unknown>[] = [];
     if (Array.isArray(event.payload?.tools)) {
@@ -186,7 +186,7 @@ export function sessionWork(
   }
   const active = [...requests].filter(
     ([id, event]) =>
-      !finished.has(id) && now - Date.parse(event.timestamp || '') < 120000
+      !finished.has(id) && now - (parseUtc(event.timestamp) ?? 0) < 120000
   );
   if (active.length)
     return {
@@ -194,7 +194,7 @@ export function sessionWork(
       count: active.length,
       model: String(active[0][1].payload?.model_alias || ''),
       startedAt: Math.min(
-        ...active.map(([, event]) => Date.parse(event.timestamp || ''))
+        ...active.map(([, event]) => parseUtc(event.timestamp) ?? 0)
       ),
     };
   if ([...requests].some(([id]) => !finished.has(id)))
@@ -232,7 +232,7 @@ export function lastFinishReason(
     if (isHarnessSideRequestEvent(event)) continue;
     const reason = event.payload?.finish_reason;
     if (typeof reason !== 'string' || !reason) continue;
-    const at = Date.parse(event.timestamp || '') || 0;
+    const at = parseUtc(event.timestamp) ?? 0;
     if (!newest || at >= newest.at) newest = { at, reason };
   }
   if (!newest) return null;

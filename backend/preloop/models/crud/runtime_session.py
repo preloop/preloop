@@ -280,6 +280,29 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             .first()
         )
 
+    def get_open_by_source_id(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        session_source_id: str,
+    ) -> Optional[RuntimeSession]:
+        """Return the newest open session in the account with this native id.
+
+        Used to scope live progress that a runtime plugin reports by native
+        session id (for example a Codex thread id) to its runtime session.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.session_source_id == session_source_id,
+                self.model.ended_at.is_(None),
+            )
+            .order_by(self.model.started_at.desc())
+            .first()
+        )
+
     def get_latest_idle_generation(
         self,
         db: Session,

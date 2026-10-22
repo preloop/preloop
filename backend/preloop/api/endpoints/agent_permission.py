@@ -618,6 +618,15 @@ class AgentPermissionCheckRequest(BaseModel):
         ),
     )
 
+    approval_request_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "Id the hook proposes for an approval this call may create, so it "
+            "can expire that approval through POST /approvals/{id}/expire when "
+            "its own deadline passes. Ignored when the id is taken."
+        ),
+    )
+
     evaluation_phase: Literal["permission_request", "pre_tool_use"] = Field(
         "permission_request",
         description=(
@@ -643,6 +652,14 @@ class AgentPermissionCheckResponse(BaseModel):
             "none, which is almost always: the PreToolUse call the agent was "
             "making anyway carries the note, so a note costs no extra round "
             "trip and no note costs nothing at all."
+        ),
+    )
+    decided_by: Optional[str] = Field(
+        None,
+        description=(
+            "Who decided an approval this call waited on: a person's username, "
+            "'AI review' or 'policy'. Null when no approval was involved or it "
+            "expired. Hooks show it in the terminal."
         ),
     )
     timed_out: bool = Field(
@@ -781,6 +798,7 @@ async def agent_permission_check(
         evaluation_phase=payload.evaluation_phase,
         flow_id=identity.flow_id,
         flow_policy_label=flow_policy_label,
+        approval_request_id=payload.approval_request_id,
     )
     # Claim after the decision, so a Cursor ask response is never called delivered.
     # Copilot has no note carrier. Codex PermissionRequest and Cursor before*
@@ -835,12 +853,137 @@ async def agent_permission_check(
                 elapsed_ms=elapsed_ms,
             )
         )
+    decided_by = None
+    if request_id and not timed_out:
+        decided_by = await run_db_off_loop(
+            lambda: _approval_decided_by(identity, request_id)
+        )
     return AgentPermissionCheckResponse(
         decision=decision,
         reason=reason,
         request_id=request_id,
         timed_out=timed_out,
         operator_note=operator_note,
+        decided_by=decided_by,
+    )
+
+
+def _approval_decided_by(
+    identity: PermissionIdentity, request_id: str
+) -> Optional[str]:
+    """Name who decided the approval, for the terminal; never raises."""
+    try:
+        from preloop.models.crud import crud_user
+        from preloop.models.crud.approval_request import crud_approval_request
+
+        with get_session_factory()() as db:
+            row = crud_approval_request.get(
+                db, id=UUID(str(request_id)), account_id=identity.account_id
+            )
+            if row is None or row.status not in ("approved", "declined"):
+                return None
+            if row.decided_by_ai:
+                return "AI review"
+            if row.auto_approved_reason:
+                return "policy"
+            wanted = row.status
+            for vote in reversed(row.responses or []):
+                if vote.get("decision") != wanted:
+                    continue
+                try:
+                    user = crud_user.get(db, id=UUID(str(vote.get("user_id"))))
+                except ValueError:
+                    return None
+                return getattr(user, "username", None) if user else None
+            return None
+    except Exception:
+        logger.warning("Could not resolve the approval decider", exc_info=True)
+        return None
+
+
+class ApprovalExpireRequest(BaseModel):
+    """Why the waiter gave up on an approval."""
+
+    reason: Literal["hook_deadline"] = "hook_deadline"
+    waited_seconds: Optional[int] = Field(None, ge=0, le=86400)
+
+
+class ApprovalExpireResponse(BaseModel):
+    """The approval's status after the call; a decision that landed first wins."""
+
+    approval_request_id: str
+    status: str
+    approver_comment: Optional[str] = None
+    decided_by: Optional[str] = Field(
+        None, description="Who decided, when a decision landed before the expiry"
+    )
+
+
+def _owned_approval_exists(identity: PermissionIdentity, approval_id: UUID) -> bool:
+    """True when the approval belongs to the caller's account and agent or key."""
+    from preloop.models.crud.approval_request import crud_approval_request
+
+    with get_session_factory()() as db:
+        row = crud_approval_request.get(db, id=approval_id)
+        if row is None or str(row.account_id) != identity.account_id:
+            return False
+        if identity.managed_agent_id is not None:
+            return row.managed_agent_id == identity.managed_agent_id
+        return row.api_key_id == identity.api_key_id
+
+
+@router.post(
+    "/approvals/{approval_id}/expire",
+    response_model=ApprovalExpireResponse,
+    tags=["Agent Permissions"],
+)
+async def expire_approval_by_hook(
+    approval_id: UUID,
+    payload: ApprovalExpireRequest,
+    authorization: Optional[str] = Header(None),
+) -> ApprovalExpireResponse:
+    """Expire an approval whose permission hook stopped waiting.
+
+    The hook proposes the approval id on permission-check, so it can name the
+    request even while that call is still held. Only the agent (or key) that
+    raised the approval may expire it. A pending request becomes ``expired``
+    and is broadcast, so no surface keeps offering Approve or Deny.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Runtime bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    if not await run_db_off_loop(lambda: _owned_approval_exists(identity, approval_id)):
+        raise HTTPException(status_code=404, detail="Approval request not found")
+
+    from preloop.models.db.session import get_async_db_session
+    from preloop.services.approval_service import ApprovalService
+
+    minutes = ""
+    if payload.waited_seconds:
+        minutes = f" within {max(1, round(payload.waited_seconds / 60))} min"
+    detail = f"Expired: the agent's permission hook stopped waiting{minutes}"
+    async with get_async_db_session() as db:
+        service = ApprovalService(db, _permission_check_base_url())
+        updated = await service.expire_request(
+            approval_id, reason=payload.reason, detail=detail
+        )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    decided_by = None
+    if updated.status in ("approved", "declined"):
+        decided_by = await run_db_off_loop(
+            lambda: _approval_decided_by(identity, str(updated.id))
+        )
+    return ApprovalExpireResponse(
+        approval_request_id=str(updated.id),
+        status=updated.status,
+        approver_comment=updated.approver_comment,
+        decided_by=decided_by,
     )
 
 

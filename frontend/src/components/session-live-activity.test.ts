@@ -3,6 +3,7 @@ import sinon from 'sinon';
 import './session-live-activity';
 import type { SessionLiveActivity } from './session-live-activity';
 import type { LiveSessionState } from '../utils/live-session';
+import { deriveLiveSessionState } from '../utils/live-session';
 
 const SINCE = Date.parse('2026-10-02T09:00:00Z');
 
@@ -208,6 +209,28 @@ describe('session-live-activity', () => {
         .shadowRoot!.querySelector('[data-testid="live-activity-label"]')!
         .textContent?.trim()
     ).to.equal('Activity unavailable');
+  });
+});
+
+describe('session-live-activity approval age', () => {
+  it('approval age is seconds, not hours, for an offset-less UTC timestamp', async () => {
+    const requestedAt = Date.UTC(2026, 9, 2, 10, 0, 0);
+    const now = requestedAt + 30_000;
+    const value = deriveLiveSessionState({
+      events: [],
+      pendingApprovals: [
+        // The backend used to emit naive UTC; a local parse shifted the age
+        // by the viewer's timezone offset.
+        { status: 'pending', requested_at: '2026-10-02T10:00:00' } as {
+          status: string;
+        },
+      ],
+      connected: true,
+      now,
+    });
+    expect(value.since).to.equal(requestedAt);
+    const el = await renderLine(value, now);
+    expect(labelText(el)).to.equal('Waiting for approval (30s)');
   });
 });
 
@@ -525,6 +548,35 @@ describe('shared session approval controller', () => {
         .textContent
     ).not.to.include('Waiting for approval');
   });
+  it('expired approval removes Approve and Deny', async () => {
+    const element = await chat();
+    const card = () =>
+      element.shadowRoot!.querySelector('session-approval-card')!.shadowRoot!;
+    const buttons = () =>
+      [...card().querySelectorAll('sl-button')].map((b) =>
+        (b.textContent || '').trim()
+      );
+    await waitUntil(() => buttons().includes('Approve'));
+    expect(buttons()).to.include('Deny');
+    // The hook holding the approval gave up: the server marks it expired and
+    // broadcasts that, and nobody may decide it any more.
+    rows[0] = {
+      ...rows[0],
+      status: 'expired',
+      resolved_at: '2026-10-02T10:09:00Z',
+    };
+    callbacks.get('approvals')!({
+      type: 'approval_expired',
+      approval_request_id: rows[0].id,
+      runtime_session_id: 'session-a',
+    });
+    await waitUntil(() => !buttons().includes('Approve'));
+    expect(buttons()).not.to.include('Deny');
+    expect(
+      element.shadowRoot!.querySelector('session-live-activity')!.shadowRoot!
+        .textContent
+    ).not.to.include('Waiting for approval');
+  });
   it('ignores another session and does not regress a resolved request with stale pending detail', async () => {
     const element = await chat();
     const controller = element.shadowRoot!.querySelector<SessionLiveActivity>(
@@ -600,6 +652,57 @@ describe('shared session approval controller', () => {
     stateCallback(ConnectionState.CONNECTED);
     await element.updateComplete;
     expect(reconciled).to.equal(true);
+  });
+  it('uses the refreshed server turn after reconnecting', async () => {
+    rows = [];
+    const started = '2026-10-02T09:00:00Z';
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .state=${state({ status: 'idle', label: 'Idle', since: null })}
+        .now=${SINCE + 240_000}
+        .turn=${{ sourceType: 'codex', turnState: 'working', turnStartedAt: started }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('runtime_sessions'));
+    callbacks.get('runtime_sessions')!({
+      type: 'runtime_session_prompt',
+      timestamp: started,
+      payload: { runtime_session_id: 'session-a' },
+    });
+    await element.updateComplete;
+    expect(labelText(element)).to.include('Working (');
+    stateCallback(ConnectionState.DISCONNECTED);
+    element.turn = {
+      sourceType: 'codex',
+      turnState: 'your_turn',
+      turnStartedAt: started,
+      turnEndedAt: '2026-10-02T09:03:24Z',
+    };
+    stateCallback(ConnectionState.CONNECTED);
+    await element.updateComplete;
+    expect(element.shadowRoot!.textContent).to.include('Worked for 3m 24s');
+  });
+  it('keeps a working turn fresh when progress arrives after ten minutes', async () => {
+    rows = [];
+    const started = '2026-10-02T09:00:00Z';
+    const element = await fixture<SessionLiveActivity>(
+      html`<session-live-activity
+        .sessionId=${'session-a'}
+        .state=${state({ status: 'idle', label: 'Idle', since: null })}
+        .now=${SINCE + 660_000}
+        .turn=${{ sourceType: 'codex', turnState: 'working', turnStartedAt: started }}
+      ></session-live-activity>`
+    );
+    await waitUntil(() => callbacks.has('runtime_sessions'));
+    expect(labelText(element)).to.equal('Idle');
+    callbacks.get('runtime_sessions')!({
+      type: 'runtime_session_tool_ended',
+      timestamp: '2026-10-02T09:11:00Z',
+      payload: { runtime_session_id: 'session-a' },
+    });
+    await element.updateComplete;
+    expect(labelText(element)).to.include('Working (');
   });
   it('updates the line live from session_progress for its own session only', async () => {
     rows = [];
