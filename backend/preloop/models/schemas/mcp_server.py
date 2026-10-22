@@ -1,7 +1,7 @@
 """Pydantic schemas for MCP server configuration."""
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
 from pydantic import (
@@ -21,6 +21,12 @@ from preloop.utils.redaction import REDACTED_STRING, _is_sensitive_key
 NON_SECRET_AUTH_CONFIG_KEYS = frozenset(
     {
         "authorization_endpoint",
+        "authorization_response_iss_parameter_supported",
+        "issuer",
+        "resource",
+        "redirect_uri",
+        "revocation_endpoint",
+        "token_endpoint_auth_method",
         "client_id",
         "expires_at",
         "key_name",
@@ -37,6 +43,8 @@ def _is_secret_auth_key(key: Any) -> bool:
     """Return True when an auth_config key holds a secret value."""
     if not isinstance(key, str):
         return False
+    if key.lower().strip() in {"code", "state", "code_verifier", "pkce_verifier"}:
+        return True
     if key.lower().strip() in NON_SECRET_AUTH_CONFIG_KEYS:
         return False
     return _is_sensitive_key(key)
@@ -225,6 +233,12 @@ class MCPServerResponse(MCPServerBase):
     last_error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    connection_state: (
+        Literal["disconnected", "connecting", "connected", "reconnect_required"] | None
+    ) = Field(
+        None,
+        description="OAuth state: disconnected, connecting, connected, reconnect_required",
+    )
     warnings: List[str] = Field(
         default_factory=list,
         description=(

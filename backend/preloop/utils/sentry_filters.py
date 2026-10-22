@@ -68,9 +68,14 @@ def _callback_paths(event: dict[str, Any]) -> list[str]:
 
 def is_private_callback_event(event: dict[str, Any]) -> bool:
     """Recognize private callback requests without reading their bodies."""
+    paths = _callback_paths(event)
+    if any(
+        path.startswith("/api/v1/mcp-servers/") and "/oauth/" in path for path in paths
+    ):
+        return True
     return any(
         path == prefix.rstrip("/") or path.startswith(prefix)
-        for path in _callback_paths(event)
+        for path in paths
         for prefix in _PRIVATE_CALLBACK_PREFIXES
     )
 

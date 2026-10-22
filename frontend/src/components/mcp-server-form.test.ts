@@ -376,4 +376,57 @@ describe('MCPServerForm', () => {
       expect((prefix as any)?.value).to.equal('');
     });
   });
+  it('keeps saved secrets write-only and saves explicit OAuth setup without reconnecting an unchanged grant', async () => {
+    const server = {
+      id: 'synthetic-oauth',
+      name: 'Synthetic OAuth',
+      url: 'https://resource.example.com/mcp',
+      auth_type: 'oauth',
+      connection_state: 'connected',
+      auth_config: {
+        client_id: 'synthetic-client',
+        client_secret: '***REDACTED***',
+        issuer: 'https://identity.example.com',
+        scope: 'read write',
+      },
+    };
+    const el = await createForm(server);
+    expect((el as any).oauthClientSecret).to.equal('');
+    const update = sinon.stub().resolves(server);
+    (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+    const connect = sinon.stub(el as any, '_startOAuthFlow').resolves();
+    await el.handleSave();
+    expect(connect.called).to.equal(false);
+    const config = update.firstCall.args[1].auth_config;
+    expect(config.client_id).to.equal('synthetic-client');
+    expect(config.client_secret).to.equal('***REDACTED***');
+    expect(config.issuer).to.equal('https://identity.example.com');
+    expect(config.scope).to.equal('read write');
+  });
+
+  it('saves an edited OAuth client configuration before opening consent', async () => {
+    const server = {
+      id: 'synthetic-oauth',
+      name: 'Synthetic OAuth',
+      url: 'https://resource.example.com/mcp',
+      auth_type: 'oauth',
+      connection_state: 'disconnected',
+    };
+    const el = await createForm(server);
+    Object.assign(el, {
+      oauthClientId: 'registered-client',
+      oauthIssuer: 'https://identity.example.com',
+      oauthScope: 'read write',
+      oauthClientSecret: 'synthetic-new-secret',
+    });
+    const update = sinon.stub().resolves(server);
+    (el as any)._api = { ...(el as any)._api, updateMCPServer: update };
+    const connect = sinon.stub(el as any, '_startOAuthFlow').resolves();
+    await el.handleSave(true);
+    expect(update.firstCall.args[1].auth_config.client_secret).to.equal(
+      'synthetic-new-secret'
+    );
+    expect(update.calledBefore(connect)).to.equal(true);
+    expect(connect.calledOnceWithExactly(server.id)).to.equal(true);
+  });
 });

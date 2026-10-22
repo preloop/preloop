@@ -5368,6 +5368,43 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/mcp-servers/{server_id}/oauth/disconnect:
+    post:
+      tags:
+      - MCP Servers
+      summary: Disconnect Mcp Oauth
+      description: Remove local grants and pending transactions. No upstream revocation.
+      operationId: disconnect_mcp_oauth_api_v1_mcp_servers__server_id__oauth_disconnect_post
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: server_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Server Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MCPServerResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/mcp-servers/{server_id}/oauth/authorize:
     get:
       tags:
@@ -5385,13 +5422,11 @@ paths:
         never the reusable access token.
 
 
-        1. Fetches the server''s /.well-known/oauth-authorization-server metadata.
+        Discovers the protected resource and selected issuer, configures a public
 
-        2. Dynamically registers as an OAuth client (RFC 7591) if needed.
+        or pre-registered client, and stores a durable browser-bound PKCE
 
-        3. Generates PKCE code_challenge / code_verifier.
-
-        4. Redirects the user to the external server''s authorization endpoint.'
+        transaction before redirecting to provider consent.'
       operationId: mcp_server_oauth_authorize_api_v1_mcp_servers__server_id__oauth_authorize_get
       parameters:
       - name: server_id
@@ -5434,26 +5469,42 @@ paths:
       tags:
       - MCP Servers OAuth
       summary: Mcp Server Oauth Callback
-      description: 'Handle the OAuth callback from an external MCP server.
-
-
-        Exchanges the authorization code for access/refresh tokens using PKCE,
-
-        saves them in the MCP server''s auth_config, and redirects to the frontend.'
+      description: Consume a durable browser-bound transaction before any token exchange.
       operationId: mcp_server_oauth_callback_api_v1_mcp_servers_oauth_callback_get
       parameters:
-      - name: code
-        in: query
-        required: true
-        schema:
-          type: string
-          title: Code
       - name: state
         in: query
         required: true
         schema:
           type: string
+          maxLength: 512
           title: State
+      - name: code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Code
+      - name: error
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 256
+          - type: 'null'
+          title: Error
+      - name: iss
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2048
+          - type: 'null'
+          title: Iss
       responses:
         '200':
           description: Successful Response
@@ -38344,6 +38395,17 @@ components:
           type: string
           format: date-time
           title: Updated At
+        connection_state:
+          anyOf:
+          - type: string
+            enum:
+            - disconnected
+            - connecting
+            - connected
+            - reconnect_required
+          - type: 'null'
+          title: Connection State
+          description: 'OAuth state: disconnected, connecting, connected, reconnect_required'
         warnings:
           items:
             type: string
@@ -49759,7 +49821,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
