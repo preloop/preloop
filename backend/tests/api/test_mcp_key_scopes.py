@@ -68,7 +68,13 @@ async def test_discovery_requires_read_even_with_cached_tools(
     scopes: list[str],
 ) -> None:
     context = _context(scopes)
-    context.mcp_tools_cache = [Tool(name="example", description="", parameters={})]
+    context.mcp_tools_cache = [
+        Tool(
+            name="example",
+            description="",
+            parameters={"type": "object", "properties": {}},
+        )
+    ]
     server = DynamicFastMCP("scope-test")
     server.set_user_context_provider(lambda: context)
     assert await server.list_tools() == []
@@ -100,7 +106,13 @@ async def test_invocation_requires_write_before_dispatch(
 @pytest.mark.parametrize("scopes", [["mcp:read"], ["mcp:read", "mcp:write"], [], ["*"]])
 async def test_read_scope_lists_permitted_tools(scopes: list[str]) -> None:
     context = _context(scopes)
-    context.mcp_tools_cache = [Tool(name="example", description="", parameters={})]
+    context.mcp_tools_cache = [
+        Tool(
+            name="example",
+            description="",
+            parameters={"type": "object", "properties": {}},
+        )
+    ]
     server = DynamicFastMCP("scope-test")
     server.set_user_context_provider(lambda: context)
     assert [tool.name for tool in await server.list_tools()] == ["example"]
@@ -151,7 +163,13 @@ async def test_write_scope_executes_without_granting_discovery(
         calls.append("executed")
         return "ok"
 
-    context.mcp_tools_cache = [Tool(name="example", description="", parameters={})]
+    context.mcp_tools_cache = [
+        Tool(
+            name="example",
+            description="",
+            parameters={"type": "object", "properties": {}},
+        )
+    ]
     async_db = MagicMock()
     async_db.__aenter__ = AsyncMock(return_value=MagicMock())
     async_db.__aexit__ = AsyncMock(return_value=False)
@@ -352,7 +370,9 @@ def test_http_transport_keeps_the_presented_key_scopes(
     )
     server = DynamicFastMCP("scope-http-test")
     transport = setup_dynamic_mcp_http(server)
-    base_app = transport.app.app
+    base_app = transport
+    while not hasattr(base_app, "lifespan"):
+        base_app = base_app.app
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -366,7 +386,13 @@ def test_http_transport_keeps_the_presented_key_scopes(
     def cached_context(scope: dict) -> UserContext:
         context = create_user_context_from_scope(scope)
         assert context is not None
-        context.mcp_tools_cache = [Tool(name="example", description="", parameters={})]
+        context.mcp_tools_cache = [
+            Tool(
+                name="example",
+                description="",
+                parameters={"type": "object", "properties": {}},
+            )
+        ]
         return context
 
     with (
