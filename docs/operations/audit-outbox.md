@@ -20,6 +20,11 @@ Dynamic MCP tool outcomes and their audit intents commit with the local runtime
 activity row. Calls without a runtime session use a short standalone intent
 transaction. Remote tool execution is outside the database transaction: a
 rollback of the local outcome cannot undo an upstream tool's side effects.
+Legacy MCP calls preserve the tool's result if standalone audit admission fails,
+and count that failure for alerting. Notification fan-out finishes delivery before
+recording each channel's timeline and intent in a separate transaction. Failed
+channel admissions roll back together, are returned in `audit_errors`, and count
+as failures without suppressing other channels or expiring the approval request.
 Model-content policy hit workers commit the hit and its audit intent together;
 notification delivery follows that commit. Redaction-only events have no hit
 row and use their own short intent transaction. Work that has not committed
@@ -44,8 +49,10 @@ Monitor these OpenTelemetry instruments:
 - `preloop.audit.outbox.oldest_pending_age` (seconds gauge): current age of the
   oldest due intent; zero after the due backlog drains. The existing
   `preloop.audit.outbox.lag_seconds` histogram remains available for trends.
-- `preloop.audit.outbox.attempts_failed` (counter): failed deliveries and relay
-  database/health-query failures, with a bounded `reason` attribute.
+- `preloop.audit.outbox.attempts_failed` (counter): failed deliveries, relay
+  database/health-query failures, and standalone admissions after external tool
+  or notification effects, with a bounded `reason` attribute. Failed admissions
+  have no stored intent and cannot be replayed.
 - `preloop.audit.outbox.parked` (gauge): retained failed intents requiring replay.
   It is read from the database on each relay pass and survives process restart.
   Parked intents and intents waiting for retry backoff are excluded from due lag.

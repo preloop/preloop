@@ -90,3 +90,8 @@ def test_metrics_keep_histogram_and_publish_current_values(monkeypatch: Any) -> 
     meter.create_counter.return_value.add.assert_called_once_with(
         1, {"reason": "relay_pass"}
     )
+    outbox.record_admission_failure("notification_admission")
+    assert meter.create_counter.return_value.add.call_count == 2
+    meter.create_counter.return_value.add.assert_called_with(
+        1, {"reason": "notification_admission"}
+    )

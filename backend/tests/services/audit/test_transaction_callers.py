@@ -104,6 +104,9 @@ def committed_data(db_engine: Any, monkeypatch: Any) -> Any:
 
     factory = sessionmaker(db_engine, expire_on_commit=False)
     monkeypatch.setenv("PRELOOP_AUDIT_OUTBOX_ENABLED", "true")
+    # Lifecycle tests elsewhere can disable the process singleton. These
+    # transaction tests own an enabled service regardless of collection order.
+    monkeypatch.setattr(audit, "_audit_service", audit.AuditService())
     monkeypatch.setattr(policy_evaluator, "submit_off_loop", lambda fn: None)
     with factory() as db:
         account = models.Account(organization_name="Outbox example", is_active=True)
@@ -788,3 +791,260 @@ async def test_policy_redacts_with_uncommitted_config_in_owning_session(
         assert "example-test-secret" not in str(row.payload)
     assert args["note"] == "Contact jane@example.com"
     storage._load_config.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_note_prepare_intent_survives_declined_approval(
+    committed_data: Any, monkeypatch: Any
+) -> None:
+    from preloop.services import agent_send_note, initialize_mcp
+    from preloop.services.dynamic_mcp_server import UserContext
+    from preloop.services import dynamic_fastmcp_http
+    from preloop.models.db import session
+
+    data = committed_data
+    caller = UserContext(
+        user_id=str(data.user_id), account_id=str(data.account_id), username="example"
+    )
+    monkeypatch.setattr(
+        dynamic_fastmcp_http, "get_current_user_context", lambda: caller
+    )
+    monkeypatch.setattr(initialize_mcp, "_mcp_caller_session_ids", lambda *a: [])
+    monkeypatch.setattr(session, "get_db_session", lambda: iter([data.factory()]))
+    monkeypatch.setattr(
+        initialize_mcp, "require_approval", AsyncMock(return_value=(False, "declined"))
+    )
+
+    def prepare(db: Any, **fields: Any) -> dict:
+        assert fields["prepare_only"] is True
+        policy_evaluator._log_policy_decision_async(
+            db=db,
+            account_id=data.account_id,
+            tool_name="send_note",
+            action="require_approval",
+            rule_description="Scope approval required",
+        )
+        return {
+            "status": "requires_approval",
+            "approval": {
+                "workflow_id": str(data.workflow_id),
+                "rule_context": {},
+                "facts": {},
+                "arguments": {"text": "Example note"},
+            },
+        }
+
+    monkeypatch.setattr(agent_send_note, "send_note_from_agent", prepare)
+    server = initialize_mcp.initialize_mcp_with_tools()
+    tool = await server.get_tool("send_note")
+    assert await tool.fn(text="Example note") == "declined"
+    with data.factory() as observer:
+        row = (
+            observer.query(models.AuditOutbox)
+            .filter_by(account_id=data.account_id)
+            .one()
+        )
+        assert row.payload["action"] == "require_approval"
+        assert (
+            observer.query(models.AgentControlCommand)
+            .filter_by(account_id=data.account_id)
+            .count()
+            == 0
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler_fails", [False, True])
+async def test_legacy_mcp_audit_failure_preserves_tool_outcome(
+    monkeypatch: Any, handler_fails: bool
+) -> None:
+    from preloop.services import dynamic_mcp_server as module
+    from preloop.services.audit import outbox
+    from preloop.services import db_executor
+
+    monkeypatch.setenv("PRELOOP_AUDIT_OUTBOX_ENABLED", "true")
+    fake_server = MagicMock()
+    handlers = []
+    fake_server.call_tool.return_value = lambda fn: handlers.append(fn) or fn
+    monkeypatch.setattr(module, "Server", lambda *a, **kw: fake_server)
+    server = module.DynamicMCPServer()
+    caller = module.UserContext(
+        user_id=str(uuid4()), account_id=str(uuid4()), username="example"
+    )
+    monkeypatch.setattr(server, "_extract_user_context", lambda ctx: caller)
+    tool = MagicMock()
+    tool.name = "example_tool"
+    monkeypatch.setattr(server, "_get_tools_for_user", lambda ctx: [tool])
+    monkeypatch.setattr(
+        server, "_evaluate_policy", AsyncMock(return_value=("allow", None, "allowed"))
+    )
+    handler = AsyncMock(return_value="completed")
+    if handler_fails:
+        handler.side_effect = ValueError("original tool failure")
+    server._tool_handlers["example_tool"] = handler
+    admissions = []
+
+    async def fail_admission(fn: Any) -> None:
+        db = MagicMock()
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(
+                module,
+                "_log_tool_execution_async",
+                lambda **fields: admissions.append(fields),
+            )
+            fn(db)
+        raise RuntimeError("outbox unavailable")
+
+    monkeypatch.setattr(db_executor, "run_db_async", fail_admission)
+    metric = MagicMock()
+    monkeypatch.setattr(outbox, "record_admission_failure", metric, raising=False)
+    result = await handlers[0]("example_tool", {})
+    assert result[0].text == (
+        "Error executing tool: original tool failure" if handler_fails else "completed"
+    )
+    handler.assert_awaited_once()
+    assert [fields["status"] for fields in admissions] == [
+        "failed" if handler_fails else "executed"
+    ]
+    metric.assert_called_once_with("tool_outcome_admission")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_channel", ["mobile_push", "slack"])
+async def test_notification_admission_failure_does_not_abort_fanout(
+    committed_data: Any, monkeypatch: Any, failed_channel: str
+) -> None:
+    from contextlib import asynccontextmanager
+    from sqlalchemy import inspect
+    from preloop.models.db import session
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.services.audit import outbox
+    from preloop.services import chat_worker
+
+    data = committed_data
+    service_audit = audit.AuditService()
+    monkeypatch.setattr(approval_service, "_get_audit_service", lambda: service_audit)
+    enqueue = service_audit.enqueue_in_transaction
+    admissions = []
+
+    def admit(db: Any, operation: str, **fields: Any) -> None:
+        if operation == "log_approval_notification":
+            admissions.append(fields["channel"])
+            if fields["channel"] == failed_channel:
+                raise RuntimeError("outbox unavailable")
+        enqueue(db, operation, **fields)
+
+    monkeypatch.setattr(service_audit, "enqueue_in_transaction", admit)
+
+    @asynccontextmanager
+    async def audit_session() -> Any:
+        with data.factory() as db:
+            yield SyncApprovalSession(db)
+
+    monkeypatch.setattr(session, "get_async_db_session", audit_session)
+    monkeypatch.setattr(chat_worker, "enqueue_approval_notifications", lambda *a: 0)
+    metric = MagicMock()
+    monkeypatch.setattr(outbox, "record_admission_failure", metric, raising=False)
+    with data.factory() as db:
+        service = approval_for(db, monkeypatch)
+        request = await create_request(service, data)
+        workflow = db.get(models.ApprovalWorkflow, data.workflow_id)
+        workflow.approval_type = "slack"
+        workflow.approval_config = {"webhook_url": "https://example.com/hook"}
+        db.commit()
+        service._resolve_bypass = AsyncMock(return_value=None)
+        service._get_all_approver_user_ids = AsyncMock(return_value=[data.user_id])
+        service._partition_approvers_for_stagger = AsyncMock(
+            return_value={
+                "push_capable": [data.user_id],
+                "all_email": [data.user_id],
+                "email_only": [data.user_id],
+                "both_immediate": [],
+                "both_stagger": [],
+            }
+        )
+        service._send_push_notification = AsyncMock(
+            return_value={"success": True, "sent": 1}
+        )
+        service._send_email_notification = AsyncMock(
+            return_value={"success": True, "sent": 1}
+        )
+        service.post_webhook_notification = AsyncMock(return_value=True)
+        expired_before = set(inspect(request).expired_attributes)
+        results = await service.send_notifications(request, workflow)
+        service._send_email_notification.assert_awaited_once()
+        service.post_webhook_notification.assert_awaited_once()
+        assert results["audit_errors"] == [failed_channel]
+        assert results["email"]["success"] is True
+        assert admissions == ["mobile_push", "email", "slack"]
+        assert inspect(request).expired_attributes == expired_before
+    metric.assert_called_once_with("notification_admission")
+    with data.factory() as observer:
+        intents = (
+            observer.query(models.AuditOutbox)
+            .filter_by(
+                account_id=data.account_id, operation="log_approval_notification"
+            )
+            .all()
+        )
+        assert sorted(row.payload["channel"] for row in intents) == sorted(
+            {"email", "mobile_push", "slack"} - {failed_channel}
+        )
+        assert (
+            observer.query(models.ApprovalEvent)
+            .filter_by(account_id=data.account_id, event_type="notification_sent")
+            .count()
+            == 2
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("expiry_path", ["late_decision", "poll"])
+async def test_expiry_paths_retain_timeout_reason(
+    committed_data: Any, monkeypatch: Any, expiry_path: str
+) -> None:
+    from contextlib import asynccontextmanager
+    from datetime import timedelta
+    from preloop.models.db import session
+    from preloop.models.db.session import SyncApprovalSession
+
+    data = committed_data
+    monkeypatch.setattr(
+        approval_service.ApprovalService,
+        "_approvals_frozen",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        approval_service.ApprovalService, "_broadcast_approval_update", AsyncMock()
+    )
+    monkeypatch.setattr(
+        approval_service.ApprovalService, "_release_parked_executions", AsyncMock()
+    )
+
+    @asynccontextmanager
+    async def poll_session() -> Any:
+        with data.factory() as db:
+            yield SyncApprovalSession(db)
+
+    monkeypatch.setattr(session, "get_async_db_session", poll_session)
+    with data.factory() as db:
+        service = approval_for(db, monkeypatch)
+        request = await create_request(service, data)
+        request.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        db.commit()
+        if expiry_path == "late_decision":
+            result = await service._reject_if_not_actionable(request)
+            assert result.status == "expired"
+        else:
+            with pytest.raises(TimeoutError, match="expired without response"):
+                await service.wait_for_approval(request.id, poll_interval=0.01)
+    with data.factory() as observer:
+        rows = (
+            observer.query(models.AuditOutbox)
+            .filter_by(account_id=data.account_id)
+            .order_by(models.AuditOutbox.seq)
+            .all()
+        )
+        assert len(rows) == 2
+        assert rows[-1].payload["event"] == "expired"
+        assert rows[-1].payload["reason"] == "Request timed out without response"

@@ -132,7 +132,15 @@ async def _enqueue_tool_execution(**fields: Any) -> None:
         _log_tool_execution_async(db=db, **fields)
         db.commit()
 
-    await run_db_async(persist)
+    try:
+        await run_db_async(persist)
+    except Exception:
+        # The tool's external effects have already happened. Preserve its
+        # outcome so an audit outage cannot turn success into a retry request.
+        from preloop.services.audit.outbox import record_admission_failure
+
+        record_admission_failure("tool_outcome_admission")
+        logger.error("Could not admit the tool outcome audit intent")
 
 
 class UserContext:

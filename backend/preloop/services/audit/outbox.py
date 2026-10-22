@@ -229,7 +229,7 @@ def _record_metric(kind: str, value: float, attributes: dict[str, str]) -> None:
                 _attempt_failure_counter = meter.create_counter(
                     "preloop.audit.outbox.attempts_failed",
                     unit="{attempt}",
-                    description="Audit outbox deliveries that failed and will retry",
+                    description="Audit outbox admission, delivery and relay failures",
                 )
             _attempt_failure_counter.add(int(value), attributes)
         elif kind == "parked":
@@ -256,6 +256,11 @@ def _record_metric(kind: str, value: float, attributes: dict[str, str]) -> None:
             _lag_gauge.set(value, attributes)
     except Exception:
         _metrics_failed = True
+
+
+def record_admission_failure(reason: str) -> None:
+    """Alert on local admission lost after an irreversible external effect."""
+    _record_metric("failed", 1, {"reason": reason})
 
 
 class AuditOutboxRelay:

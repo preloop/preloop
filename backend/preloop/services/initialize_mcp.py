@@ -15,6 +15,7 @@ from fastmcp.tools import FunctionTool
 from fastmcp.tools.tool import ToolResult
 
 from preloop.services.approval_helper import require_approval
+from preloop.services.audit.async_writer import outbox_enabled
 from preloop.services.dynamic_fastmcp import (
     DynamicFastMCP,
     _rule_workflow_id_var,
@@ -1046,6 +1047,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                         ),
                     },
                 )
+                # A declined approval never reaches the delivery transaction.
+                if outbox_enabled():
+                    db.commit()
                 return prepared, author_sessions
             finally:
                 db.close()

@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import uuid
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Set
 from urllib.parse import urljoin
@@ -43,6 +44,15 @@ from preloop.services.event_webhooks.events import (
 logger = logging.getLogger(__name__)
 
 _LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
+
+
+@dataclass(frozen=True)
+class _NotificationAuditSubject:
+    """Identifiers that remain readable after a channel transaction rolls back."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID | str
+    tool_name: str
 
 
 def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
@@ -1152,7 +1162,11 @@ class ApprovalService:
             update = ApprovalRequestUpdate(
                 status="expired", resolved_at=datetime.utcnow()
             )
-            expired = await self.update_approval_request(approval_request.id, update)
+            expired = await self.update_approval_request(
+                approval_request.id,
+                update,
+                audit_reason="Request timed out without response",
+            )
             return expired or approval_request
         return None
 
@@ -2663,6 +2677,10 @@ class ApprovalService:
         # Recover correlation_id from the originating MCP context so the audit
         # entries we emit below land in the same timeline group.
         correlation_id = _current_correlation_id()
+        audit_subject = _NotificationAuditSubject(
+            approval_request.id, approval_request.account_id, approval_request.tool_name
+        )
+        notification_audits: list[dict[str, Any]] = []
         approver_user_ids: List[uuid.UUID] = []
         try:
             approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
@@ -2701,12 +2719,13 @@ class ApprovalService:
             logger.error(f"Failed to send push notifications: {str(e)}")
             results["mobile_push"] = {"success": False, "error": str(e)}
 
-        await self._audit_notification_result(
-            approval_request=approval_request,
-            channel="mobile_push",
-            channel_result=results["mobile_push"],
-            recipient_user_ids=partition["push_capable"] or approver_user_ids,
-            correlation_id=correlation_id,
+        notification_audits.append(
+            dict(
+                channel="mobile_push",
+                channel_result=results["mobile_push"],
+                recipient_user_ids=partition["push_capable"] or approver_user_ids,
+                correlation_id=correlation_id,
+            )
         )
 
         push_unavailable = results["mobile_push"].get("success") is False or bool(
@@ -2746,12 +2765,13 @@ class ApprovalService:
                 logger.error(f"Failed to send email notifications: {str(e)}")
                 results["email"] = {"success": False, "error": str(e)}
 
-            await self._audit_notification_result(
-                approval_request=approval_request,
-                channel="email",
-                channel_result=results["email"],
-                recipient_user_ids=immediate_email_ids or approver_user_ids,
-                correlation_id=correlation_id,
+            notification_audits.append(
+                dict(
+                    channel="email",
+                    channel_result=results["email"],
+                    recipient_user_ids=immediate_email_ids or approver_user_ids,
+                    correlation_id=correlation_id,
+                )
             )
 
         if delayed_email_ids:
@@ -2772,12 +2792,13 @@ class ApprovalService:
                 "scheduled": len(delayed_email_ids),
                 "delay_seconds": delay_seconds,
             }
-            await self._audit_notification_result(
-                approval_request=approval_request,
-                channel="email",
-                channel_result=results["email_delayed"],
-                recipient_user_ids=delayed_email_ids,
-                correlation_id=correlation_id,
+            notification_audits.append(
+                dict(
+                    channel="email",
+                    channel_result=results["email_delayed"],
+                    recipient_user_ids=delayed_email_ids,
+                    correlation_id=correlation_id,
+                )
             )
 
         # Handle webhook-based notifications (these are workflow-level, not per-user).
@@ -2801,14 +2822,45 @@ class ApprovalService:
                     logger.error(f"Failed to send {channel} notification: {str(e)}")
                     results[channel] = {"success": False, "error": str(e)}
 
-                await self._audit_notification_result(
-                    approval_request=approval_request,
-                    channel=channel,
-                    channel_result=results[channel],
-                    recipient_user_ids=None,
-                    correlation_id=correlation_id,
+                notification_audits.append(
+                    dict(
+                        channel=channel,
+                        channel_result=results[channel],
+                        recipient_user_ids=None,
+                        correlation_id=correlation_id,
+                    )
                 )
 
+        # Complete external delivery first. A channel's audit rollback must not
+        # expire the ORM data needed to notify the remaining channels.
+        audit_errors: list[str] = []
+        for fields in notification_audits:
+            try:
+                if outbox_enabled():
+                    from preloop.models.db.session import get_async_db_session
+
+                    # These timeline writes follow the request's commit. Give
+                    # each its own session so a failed channel cannot expire
+                    # the request returned by create_and_notify.
+                    async with get_async_db_session() as audit_db:
+                        audit_owner = ApprovalService(audit_db, self.base_url)
+                        await audit_owner._audit_notification_result(
+                            approval_request=audit_subject, **fields
+                        )
+                else:
+                    await self._audit_notification_result(
+                        approval_request=audit_subject, **fields
+                    )
+            except Exception:
+                from preloop.services.audit.outbox import record_admission_failure
+
+                record_admission_failure("notification_admission")
+                audit_errors.append(fields["channel"])
+                logger.error(
+                    "Could not admit notification audit for %s", fields["channel"]
+                )
+        if audit_errors:
+            results["audit_errors"] = audit_errors
         return results
 
     async def _partition_approvers_for_stagger(
@@ -2911,7 +2963,7 @@ class ApprovalService:
 
     async def _audit_notification_result(
         self,
-        approval_request: ApprovalRequest,
+        approval_request: ApprovalRequest | _NotificationAuditSubject,
         channel: str,
         channel_result: Dict[str, Any],
         recipient_user_ids: Optional[List[uuid.UUID]],
@@ -2991,6 +3043,8 @@ class ApprovalService:
             await self.db.commit()
         except Exception as exc:  # pragma: no cover - defensive
             await self.db.rollback()
+            if outbox_enabled():
+                raise
             logger.debug(
                 f"Failed to record notification timeline event for {channel}: {exc}"
             )
@@ -3868,7 +3922,9 @@ class ApprovalService:
                             detail=("Expired: no response within the approval window"),
                         )
                         expired_request = await poll_service.update_approval_request(
-                            request_id, ApprovalRequestUpdate(status="expired")
+                            request_id,
+                            ApprovalRequestUpdate(status="expired"),
+                            audit_reason="Request timed out without response",
                         )
                         # Broadcast expiration event
                         if expired_request:
