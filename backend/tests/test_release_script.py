@@ -163,6 +163,15 @@ def test_prerelease_asset_names_use_pep440_packages() -> None:
     assert "preloop-0.8.0-beta.1.tgz" in names
 
 
+def test_release_requires_every_image_sbom_and_audit_evidence() -> None:
+    names = release_script.expected_release_assets("1.2.3")
+    for image in ("backend", "frontend", "scanner", "universal"):
+        assert f"preloop-image-{image}-1.2.3.json" in names
+        for arch in ("amd64", "arm64"):
+            assert f"preloop-sbom-image-{image}-linux-{arch}-1.2.3.spdx.json" in names
+    assert {"release-audit.json", "release-audit-runs.json"} <= names
+
+
 def test_published_release_must_include_provenance() -> None:
     """Missing the bundle is a failed release even when every binary is there."""
     version = "1.2.3"
