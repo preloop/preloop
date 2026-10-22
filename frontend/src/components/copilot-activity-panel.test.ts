@@ -179,6 +179,46 @@ describe('Copilot vendor activity', () => {
     expect(el.shadowRoot!.querySelector('table')).to.equal(null);
   });
 
+  for (const malformed of [
+    { ...activity, seats: [null] },
+    { ...activity, gaps: [null] },
+    {
+      ...activity,
+      seats: [{ ...activity.seats[0], premium_net_amount: 'invalid' }],
+    },
+  ]) {
+    it('rejects malformed seat and gap items before rendering', async () => {
+      fetchStub.callsFake(async () => json(malformed));
+      const el = await fixture<CopilotActivityPanel>(
+        html`<copilot-activity-panel enabled></copilot-activity-panel>`
+      );
+      await waitUntil(() => !!el.shadowRoot!.querySelector('[role="alert"]'));
+      expect(el.shadowRoot!.querySelector('table')).to.equal(null);
+    });
+  }
+  for (const days of [
+    [null],
+    [{ ...metrics.days[0], feature_usage: null }],
+    [{ ...metrics.days[0], editor_usage: [null] }],
+  ]) {
+    it('rejects malformed nested daily metrics', async () => {
+      fetchStub.callsFake(async (url) =>
+        json(
+          String(url).includes('organization-metrics')
+            ? { ...metrics, days }
+            : activity
+        )
+      );
+      const el = await fixture<CopilotActivityPanel>(
+        html`<copilot-activity-panel enabled></copilot-activity-panel>`
+      );
+      await waitUntil(() => !!el.shadowRoot!.querySelector('[role="alert"]'));
+      expect(
+        el.shadowRoot!.querySelector('[data-testid="copilot-daily"]')
+      ).to.equal(null);
+    });
+  }
+
   it('reports a failed import read and allows a retry', async () => {
     fetchStub.callsFake(async () => json({}, 500));
     const el = await fixture<CopilotActivityPanel>(

@@ -136,7 +136,11 @@ Per-developer premium-request spend is tried in this order:
 
 If billing access is refused on every route, the tab shows a warning
 (which route refused, and which role it needs). Seats and usage metrics
-continue importing; unavailable premium data remains unknown. A missing usage
+continue importing; unavailable premium data remains unknown. A durable
+per-day marker replaces any stale figures and queues the day for backfill,
+even after newer adoption days import. Each run retries up to seven old
+billing days in addition to its normal catch-up window. Totals for ranges
+containing an unavailable day remain unknown until the backfill succeeds. A missing usage
 metrics report does not fail the import: the tab explains why it is missing
 and the model mix then has no request-count fallback for that window.
 

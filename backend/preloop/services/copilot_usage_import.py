@@ -44,6 +44,7 @@ from preloop.models.crud import (
 from preloop.models.crud.copilot_import import (
     COPILOT_PROVIDER,
     LINE_ITEM_PREMIUM_REQUEST,
+    LINE_ITEM_PREMIUM_STATUS,
     LINE_ITEM_SEAT,
     LINE_ITEM_SEAT_SUMMARY,
     LINE_ITEM_USAGE_METRICS,
@@ -1131,6 +1132,14 @@ def sync_connection(
     available_day = latest_available_day(now)
     days = days_to_sync(connection.last_synced_day, available_day)
     org = connection.organization
+    retry_days = crud_copilot_usage.unavailable_premium_days(
+        db,
+        account_id=connection.account_id,
+        organization=org,
+        end=day_start(available_day + timedelta(days=1)),
+        limit=MAX_CATCHUP_DAYS,
+    )
+    days = sorted(set(days) | set(retry_days))
     synced: List[date] = []
     per_user_status: Optional[str] = None
     per_user_reason: Optional[str] = None
@@ -1182,9 +1191,25 @@ def sync_connection(
                     "copilot_organization_metrics"
                 )
                 if extension is not None:
-                    extension.sync_day(
-                        db, connection=connection, client=org_client, day=day, now=now
-                    )
+                    try:
+                        extension.sync_day(
+                            db,
+                            connection=connection,
+                            client=org_client,
+                            day=day,
+                            now=now,
+                        )
+                    except Exception:
+                        # A plugin may leave its transaction failed. Clear only
+                        # its uncommitted work; core snapshots commit separately.
+                        crud_copilot_usage.discard_pending_import(db)
+                        warning = "Optional organization metrics import failed; core usage continues."
+                        if warning not in warnings:
+                            warnings.append(warning)
+                        logger.warning(
+                            "Optional Copilot organization metrics import failed for account %s",
+                            connection.account_id,
+                        )
                 premium = fetch_premium_requests(
                     org_client=org_client,
                     enterprise_client=enterprise_client,
@@ -1200,14 +1225,28 @@ def sync_connection(
                 metrics = fetch_user_metrics(
                     org_client, org=org, day=day, fetched_at=now
                 )
-                if premium.available:
-                    crud_copilot_usage.replace_day_rows(
-                        db,
-                        account_id=connection.account_id,
-                        bucket_start=day_start(day),
-                        line_items=(LINE_ITEM_PREMIUM_REQUEST,),
-                        rows=premium.rows,
-                    )
+                # A refusal is a durable unknown day, not an empty successful
+                # import. Replace old figures and retain a retry marker even
+                # after the adoption cursor advances to newer days.
+                premium_status = {
+                    "provider": COPILOT_PROVIDER,
+                    "granularity": "1d",
+                    "bucket_start": day_start(day),
+                    "bucket_end": day_start(day + timedelta(days=1)),
+                    "line_item": LINE_ITEM_PREMIUM_STATUS,
+                    "project_or_workspace_id": org,
+                    "usage_source": IMPORTED_USAGE_SOURCE,
+                    "cost_amount": None,
+                    "raw": {"available": premium.available, "reason": premium.reason},
+                    "fetched_at": now,
+                }
+                crud_copilot_usage.replace_day_rows(
+                    db,
+                    account_id=connection.account_id,
+                    bucket_start=day_start(day),
+                    line_items=(LINE_ITEM_PREMIUM_REQUEST, LINE_ITEM_PREMIUM_STATUS),
+                    rows=[*premium.rows, premium_status],
+                )
                 if metrics.available:
                     crud_copilot_usage.replace_day_rows(
                         db,
@@ -1349,6 +1388,13 @@ def build_copilot_summary(
         db, account_id=account_id
     )
     organization = connection.organization if connection else None
+    unavailable_days = crud_copilot_usage.unavailable_premium_days(
+        db,
+        account_id=account_id,
+        organization=organization,
+        start=start,
+        end=end,
+    )
     totals = crud_copilot_usage.premium_request_totals(
         db,
         account_id=account_id,
@@ -1409,6 +1455,11 @@ def build_copilot_summary(
                 amount_by_user_model.get(login, {}).get(model, 0.0) + amount
             )
 
+    if unavailable_days:
+        total_amount = org_aggregate_amount = unattributed_amount = None
+        for entry in [*by_developer.values(), *by_model.values()]:
+            entry["net_amount"] = entry["net_quantity"] = None
+
     metrics_rows = crud_copilot_usage.list_rows(
         db,
         account_id=account_id,
@@ -1432,7 +1483,13 @@ def build_copilot_summary(
         if shares:
             model_mix.append({"login": login, "basis": basis, "models": shares})
 
-    if aggregate_rows:
+    if unavailable_days:
+        per_user_status = STATUS_UNAVAILABLE
+        per_user_reason = (
+            f"Premium usage is unknown for {len(unavailable_days)} day(s) in this range. "
+            "Unavailable billing days will be retried when access is restored."
+        )
+    elif aggregate_rows:
         per_user_status = STATUS_UNAVAILABLE
         latest = max(aggregate_rows, key=lambda row: row.bucket_start)
         per_user_reason = (latest.raw or {}).get("per_user_unavailable_reason")

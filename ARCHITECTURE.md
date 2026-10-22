@@ -1355,4 +1355,7 @@ outside core. Account-scoped snapshots and governed-owner lookups remain in
 and Agents only when `copilot_seat_activity` is enabled, and hides data when
 the extension denies permissions or entitlement. Vendor counters never enter
 gateway token totals. Nullable premium fields preserve unknown values through
-parsing, aggregation, API schemas and display.
+parsing, aggregation, API schemas and display. Durable per-day billing status
+snapshots retain retry work independently of the adoption cursor; unavailable
+days replace stale spend and make incomplete range totals unknown. Optional
+extension failures are isolated from core imports with a sanitized warning.

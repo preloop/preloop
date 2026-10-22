@@ -1039,3 +1039,119 @@ def test_daily_import_invokes_optional_organization_extension(
     extension.sync_day.assert_called_once()
     assert extension.sync_day.call_args.kwargs["connection"] is connection
     assert extension.sync_day.call_args.kwargs["day"] == DAY
+
+
+def test_refused_premium_day_is_backfilled_after_available_day_advances(
+    db_session: Session, test_user: models.User
+) -> None:
+    connection = _make_connection(db_session, test_user.account_id)
+    refused = FakeGitHub(org_premium_status=403, org_aggregate_status=403)
+    svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=refused.factory()
+    )
+    restored = FakeGitHub()
+    result = svc.sync_connection(
+        db_session,
+        connection,
+        now=NOW + timedelta(days=2),
+        http_client_factory=restored.factory(),
+    )
+    assert DAY.isoformat() in result["days"]
+    assert any(
+        dict(request.url.params).get("day") == str(DAY.day)
+        for request in restored.requests
+        if request.url.path == ORG_PREMIUM
+    )
+    assert any(
+        row.bucket_start.date() == DAY
+        for row in _rows(db_session, test_user.account_id, LINE_ITEM_PREMIUM_REQUEST)
+    )
+
+
+def test_refused_reread_clears_stale_spend_and_keeps_window_total_unknown(
+    db_session: Session, test_user: models.User
+) -> None:
+    connection = _make_connection(db_session, test_user.account_id)
+    svc.sync_connection(
+        db_session, connection, now=NOW, http_client_factory=FakeGitHub().factory()
+    )
+    svc.sync_connection(
+        db_session,
+        connection,
+        now=NOW,
+        http_client_factory=FakeGitHub(
+            org_premium_status=403, org_aggregate_status=403
+        ).factory(),
+    )
+    assert _rows(db_session, test_user.account_id, LINE_ITEM_PREMIUM_REQUEST) == []
+    summary = svc.build_copilot_summary(
+        db_session, account_id=str(test_user.account_id), **_window()
+    )
+    assert summary["premium_requests"]["total_net_amount"] is None
+    assert summary["premium_requests"]["per_user_status"] == "unavailable"
+
+
+def test_optional_extension_failure_does_not_block_core_import(
+    db_session: Session, test_user: models.User
+) -> None:
+    from unittest.mock import MagicMock, patch
+
+    connection = _make_connection(db_session, test_user.account_id)
+    extension = MagicMock()
+    extension.sync_day.side_effect = ValueError("sensitive upstream detail")
+    with patch.object(svc, "get_plugin_manager") as manager:
+        manager.return_value.get_service.return_value = extension
+        result = svc.sync_connection(
+            db_session, connection, now=NOW, http_client_factory=FakeGitHub().factory()
+        )
+    assert result["error"] is None
+    assert result["days"] == [DAY.isoformat()]
+    assert "sensitive" not in result["warning"]
+    assert _rows(db_session, test_user.account_id, LINE_ITEM_PREMIUM_REQUEST)
+    assert _rows(db_session, test_user.account_id, LINE_ITEM_USAGE_METRICS)
+    assert connection.last_synced_day == DAY
+
+
+def test_unknown_day_keeps_partial_window_totals_unknown(
+    db_session: Session, test_user: models.User
+) -> None:
+    connection = _make_connection(db_session, test_user.account_id)
+    github = FakeGitHub()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == ORG_PREMIUM and request.url.params.get("day") == str(
+            DAY.day
+        ):
+            return httpx.Response(403)
+        return github.handler(request)
+
+    def factory() -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    svc.sync_connection(db_session, connection, now=NOW, http_client_factory=factory)
+    svc.sync_connection(
+        db_session, connection, now=NOW + timedelta(days=1), http_client_factory=factory
+    )
+    assert connection.per_user_billing_status == "available"
+    summary = svc.build_copilot_summary(
+        db_session, account_id=str(test_user.account_id), **_window()
+    )["premium_requests"]
+    assert summary["total_net_amount"] is None
+    assert summary["per_user_status"] == "unavailable"
+    assert summary["by_developer"]
+    assert all(
+        row["net_amount"] is None and row["net_quantity"] is None
+        for row in summary["by_developer"]
+    )
+    assert crud_copilot_usage.unavailable_premium_days(
+        db_session, account_id=test_user.account_id, organization=ORG, end=NOW
+    ) == [DAY]
+    assert (
+        crud_copilot_usage.unavailable_premium_days(
+            db_session,
+            account_id=test_user.account_id,
+            organization="other-org",
+            end=NOW,
+        )
+        == []
+    )

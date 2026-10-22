@@ -44,6 +44,7 @@ def test_summary_preserves_unknown_amounts_and_quantities() -> None:
             {"user_login": "jane", "model": "b", "net_amount": 1, "net_quantity": None},
         ]
         usage.list_rows.return_value = []
+        usage.unavailable_premium_days.return_value = []
         usage.latest_seat_snapshot.return_value = {"summary": None, "seats": []}
         result = svc.build_copilot_summary(
             MagicMock(),
