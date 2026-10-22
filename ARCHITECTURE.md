@@ -1343,3 +1343,5 @@ provider alias. Custom model discovery applies the operator endpoint CIDR policy
 and pins each request to a checked IP while preserving Host/TLS identity.
 Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
+
+[Upstream MCP OAuth](docs/architecture/upstream-mcp-oauth.md) discovers protected resources and their selected authorization server, stores encrypted single-use authorization transactions, and coordinates token refresh across workers. The Lit tools setup exposes connection state and local disconnect; transport recovery never replays a dispatched tool call.

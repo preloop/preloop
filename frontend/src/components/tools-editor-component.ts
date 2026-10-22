@@ -484,6 +484,17 @@ export class ToolsEditorComponent extends LitElement {
                   >`
                 : ''
             }
+            ${
+              group.type === 'mcp' && group.server?.auth_type === 'oauth'
+                ? html`<sl-badge
+                    data-testid="oauth-connection-state"
+                    role="status"
+                    variant=${group.server.connection_state === 'connected' ? 'success' : group.server.connection_state === 'reconnect_required' ? 'warning' : 'neutral'}
+                  >
+                    ${({ disconnected: 'Disconnected', connecting: 'Connecting', connected: 'Connected', reconnect_required: 'Reconnect required' } as Record<string, string>)[group.server.connection_state || 'disconnected']}
+                  </sl-badge>`
+                : ''
+            }
             <span class="section-meta">
               ${
                 group.type === 'agent'
@@ -503,6 +514,32 @@ export class ToolsEditorComponent extends LitElement {
                     class="section-actions"
                     @click=${(e: Event) => e.stopPropagation()}
                   >
+                    ${
+                      group.server.auth_type === 'oauth'
+                        ? html`
+                            <sl-button
+                              size="small"
+                              data-testid="oauth-connect"
+                              ?disabled=${group.server.connection_state === 'connecting'}
+                              @click=${() => this.dispatchEvent(new CustomEvent('connect-oauth', { detail: group.server.id }))}
+                            >
+                              ${group.server.connection_state === 'connecting' ? 'Connecting…' : group.server.connection_state === 'reconnect_required' || group.server.connection_state === 'connected' ? 'Reconnect' : 'Connect'}
+                            </sl-button>
+                            ${
+                              group.server.connection_state &&
+                              group.server.connection_state !== 'disconnected'
+                                ? html` <sl-button
+                                    size="small"
+                                    data-testid="oauth-disconnect"
+                                    @click=${() => this.dispatchEvent(new CustomEvent('disconnect-oauth', { detail: group.server.id }))}
+                                  >
+                                    ${group.server.connection_state === 'connecting' ? 'Cancel connection' : 'Disconnect'}
+                                  </sl-button>`
+                                : ''
+                            }
+                          `
+                        : ''
+                    }
                     <sl-tooltip content="Scan for new tools">
                       <sl-icon-button
                         name="arrow-clockwise"

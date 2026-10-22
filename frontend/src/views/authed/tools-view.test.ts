@@ -2580,3 +2580,120 @@ describe('ToolsView – starter policy suggestions', () => {
     });
   });
 });
+
+describe('ToolsView upstream OAuth lifecycle', () => {
+  let fetchStub: sinon.SinonStub;
+  let loadStub: sinon.SinonStub;
+  const server = {
+    id: 'synthetic-oauth',
+    name: 'Synthetic OAuth',
+    url: 'https://resource.example.com/mcp',
+    transport: 'http-streaming',
+    auth_type: 'oauth',
+    status: 'active',
+    created_at: '',
+    updated_at: '',
+    connection_state: 'disconnected',
+  };
+
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'synthetic-session');
+    loadStub = sinon
+      .stub((customElements.get('tools-view') as any).prototype, 'loadData')
+      .resolves();
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .resolves(
+        new Response(
+          JSON.stringify({ ...server, connection_state: 'disconnected' }),
+          { status: 200 }
+        )
+      );
+  });
+  afterEach(() => {
+    fetchStub.restore();
+    loadStub.restore();
+    localStorage.clear();
+  });
+
+  async function view(state: string) {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    Object.assign(el, {
+      loading: false,
+      toolsContextLoading: false,
+      toolsSchemasLoading: false,
+      mcpServers: [{ ...server, connection_state: state }],
+      activeTab: 'mcp',
+    });
+    await el.updateComplete;
+    const editor = el.shadowRoot!.querySelector(
+      'tools-editor-component'
+    ) as LitElement;
+    await editor.updateComplete;
+    return { el, editor };
+  }
+
+  for (const [state, label] of Object.entries({
+    disconnected: 'Disconnected',
+    connecting: 'Connecting',
+    connected: 'Connected',
+    reconnect_required: 'Reconnect required',
+  })) {
+    it(`renders ${state} with the appropriate connection controls`, async () => {
+      const { editor } = await view(state);
+      expect(
+        editor.shadowRoot!.querySelector(
+          '[data-testid="oauth-connection-state"]'
+        )?.textContent
+      ).to.contain(label);
+      const connect = editor.shadowRoot!.querySelector(
+        '[data-testid="oauth-connect"]'
+      ) as any;
+      expect(connect.disabled).to.equal(state === 'connecting');
+      expect(
+        !!editor.shadowRoot!.querySelector('[data-testid="oauth-disconnect"]')
+      ).to.equal(state !== 'disconnected');
+    });
+  }
+
+  it('disconnects through the API and renders the returned state', async () => {
+    const { el, editor } = await view('connected');
+    (
+      editor.shadowRoot!.querySelector(
+        '[data-testid="oauth-disconnect"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(
+      () => (el as any).mcpServers[0].connection_state === 'disconnected'
+    );
+    const request = fetchStub
+      .getCalls()
+      .find((call) => String(call.args[0]).endsWith('/oauth/disconnect'));
+    expect(request).to.exist;
+    expect(request!.args[1].method).to.equal('POST');
+  });
+
+  it('shows connecting while authorization starts, then surfaces a redacted failure', async () => {
+    let finish: (response: Response) => void = () => {};
+    fetchStub.callsFake(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        })
+    );
+    const { el, editor } = await view('disconnected');
+    (
+      editor.shadowRoot!.querySelector(
+        '[data-testid="oauth-connect"]'
+      ) as HTMLElement
+    ).click();
+    await waitUntil(
+      () => (el as any).mcpServers[0].connection_state === 'connecting'
+    );
+    finish(new Response('synthetic-provider-secret', { status: 400 }));
+    await waitUntil(() => (el as any).oauthAlert === 'error');
+    expect(el.shadowRoot!.textContent).not.to.contain(
+      'synthetic-provider-secret'
+    );
+  });
+});

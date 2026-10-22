@@ -393,7 +393,10 @@ class TestMCPClientCallTool:
         call_tool must raise the leaf (actionable) rather than the opaque
         "unhandled errors in a TaskGroup" wrapper.
         """
-        from preloop.services.mcp_client_pool import _unwrap_exception_group
+        from preloop.services.mcp_client_pool import (
+            _unwrap_exception_group,
+            MCPToolOutcomeUnknownError,
+        )
 
         leaf = RuntimeError("Session terminated")
         nested = ExceptionGroup(
@@ -426,7 +429,7 @@ class TestMCPClientCallTool:
                 return_value=mock_session,
             ),
         ):
-            with pytest.raises(RuntimeError, match="Session terminated"):
+            with pytest.raises(MCPToolOutcomeUnknownError, match="outcome is unknown"):
                 await client.call_tool("pay", {"amount": 500})
 
     async def test_call_tool_success_image_content(self):
@@ -903,3 +906,160 @@ class TestPoolRebuildsOnConfigChange:
         await pool.get_client("s1", "http://up/mcp")
         await pool.close_client("s1")
         assert "s1" not in pool._clients
+
+
+@pytest.mark.asyncio
+async def test_mutating_dispatch_timeout_has_unknown_outcome_and_no_replay(caplog):
+    from contextlib import asynccontextmanager
+    from preloop.services.mcp_client_pool import MCPToolOutcomeUnknownError
+    import httpx
+
+    session = AsyncMock()
+    session.call_tool.side_effect = httpx.ReadTimeout("synthetic-secret-provider-error")
+
+    @asynccontextmanager
+    async def context(**kwargs):
+        yield session, MagicMock()
+
+    client = MCPClient("https://resource.example.com/mcp")
+    client._connected = True
+    with patch.object(client, "_raw_session_context", context):
+        with pytest.raises(
+            MCPToolOutcomeUnknownError, match="may have executed"
+        ) as error:
+            await client.call_tool("mutate", {"value": "synthetic"})
+    session.call_tool.assert_awaited_once()
+    assert "synthetic-secret-provider-error" not in str(error.value) + caplog.text
+
+
+@pytest.mark.asyncio
+async def test_pooled_handle_reads_current_credentials_before_every_session():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+    from preloop.models.crud.upstream_mcp_oauth import OAuthContextError
+
+    seen = []
+    session = AsyncMock()
+    session.list_tools.return_value.tools = []
+    client = MCPClient("https://resource.example.com/mcp", auth_type="oauth")
+    client.oauth_server_id = uuid4()
+
+    @asynccontextmanager
+    async def context(**kwargs):
+        seen.append(client._build_auth()[0]["Authorization"])
+        yield session, MagicMock()
+
+    def snapshot(version):
+        return SimpleNamespace(
+            url=client.url,
+            transport="http-streaming",
+            version=version,
+            config={"access_token": f"synthetic-{version}"},
+        )
+
+    with (
+        patch("preloop.services.upstream_mcp_oauth.UpstreamMCPOAuthService") as service,
+        patch.object(client, "_raw_session_context", context),
+    ):
+        service.return_value.credentials = AsyncMock(
+            side_effect=[snapshot(1), snapshot(2), OAuthContextError("Reconnect")]
+        )
+        await client.connect()
+        await client.list_tools()
+        with pytest.raises(PermissionError, match="Reconnect"):
+            await client.list_tools()
+    assert seen == ["Bearer synthetic-1", "Bearer synthetic-2"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_setup_auth_rejection_recovers_once_before_dispatch():
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from uuid import uuid4
+    import httpx
+
+    client = MCPClient("https://resource.example.com/mcp", auth_type="oauth")
+    client.oauth_server_id = uuid4()
+    client._connected = True
+    session = AsyncMock()
+    session.call_tool.return_value.content = []
+    attempts = []
+
+    @asynccontextmanager
+    async def context(**kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            response = httpx.Response(401, request=httpx.Request("POST", client.url))
+            raise httpx.HTTPStatusError(
+                "synthetic", request=response.request, response=response
+            )
+        yield session, MagicMock()
+
+    snapshot = SimpleNamespace(
+        url=client.url,
+        transport="http-streaming",
+        version=1,
+        config={"access_token": "synthetic"},
+    )
+    with (
+        patch("preloop.services.upstream_mcp_oauth.UpstreamMCPOAuthService") as service,
+        patch.object(client, "_raw_session_context", context),
+    ):
+        service.return_value.credentials = AsyncMock(return_value=snapshot)
+        await client.call_tool("mutate", {})
+        assert service.return_value.credentials.await_count == 2
+        assert service.return_value.credentials.await_args.kwargs["force_version"] == 1
+    assert len(attempts) == 2
+    session.call_tool.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_real_sdk_transport_never_replays_a_mutation_after_lost_response():
+    """Exercise MCP 1.x itself against a synthetic HTTP provider, not a session mock."""
+    import json
+    import httpx
+    from preloop.services.mcp_client_pool import MCPToolOutcomeUnknownError
+
+    mutations = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        if request.method != "POST":
+            return httpx.Response(405)
+        message = json.loads(request.content)
+        if message["method"] == "initialize":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "Synthetic provider", "version": "1"},
+                    },
+                },
+            )
+        if message["method"].startswith("notifications/"):
+            return httpx.Response(202)
+        if message["method"] == "tools/call":
+            mutations.append(message["params"])
+            # The mutation happened; only its response was lost.
+            raise httpx.ReadTimeout("Synthetic lost response", request=request)
+        return httpx.Response(400)
+
+    def factory(**kwargs):
+        return httpx.AsyncClient(transport=httpx.MockTransport(provider), **kwargs)
+
+    client = MCPClient(
+        "https://resource.example.com/mcp",
+        auth_type="bearer",
+        auth_config={"token": "synthetic-token"},
+    )
+    with patch(
+        "preloop.services.mcp_client_pool.create_streamable_mcp_http_client", factory
+    ):
+        await client.connect()
+        with pytest.raises(MCPToolOutcomeUnknownError, match="may have executed"):
+            await client.call_tool("mutate", {"value": "synthetic"})
+    assert mutations == [{"name": "mutate", "arguments": {"value": "synthetic"}}]

@@ -66,7 +66,7 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 
 | Capability | What it does | Alternatives |
 |---|---|---|
-| **MCP Firewall** | Govern every tool call. Allow, deny, require approval, require justification. YAML + CEL. | MintMCP, Lunar.dev MCPX, TrueFoundry |
+| **MCP Firewall** | Govern every tool call. Allow, deny, require approval, require justification. YAML + CEL. [Connect OAuth MCP servers](docs/guide/tools/external-mcp.md#oauth-connections) with automatic token refresh. | MintMCP, Lunar.dev MCPX, TrueFoundry |
 | **AI Model Gateway** | OpenAI-, Anthropic- and Gemini-compatible. Budgets, allowed-model lists, token accounting, attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Flows** | Start an agent when a tracker, webhook, or CI job fires, with the same firewall, approvals, and cost. `preloop flow trigger`. | Custom CI glue, AgentCore Runtime |
 | **Private runners** | Run flow agents on your own machines over an outbound WebSocket, no inbound ports. | Self-managed CI runners |

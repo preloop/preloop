@@ -48,6 +48,12 @@ export class MCPServerForm extends LitElement {
   @state()
   private errorMessage = '';
 
+  @state() private oauthClientId = '';
+  @state() private oauthClientSecret = '';
+  @state() private oauthIssuer = '';
+  @state() private oauthScope = '';
+  @state() private oauthConnecting = false;
+
   static styles = [
     consoleDialogStyles,
     css`
@@ -89,6 +95,11 @@ export class MCPServerForm extends LitElement {
       this.authType = this.server.auth_type || 'none';
       this.bearerToken = this.server.auth_config?.token || '';
       this.toolPrefix = this.server.tool_prefix || '';
+      this.oauthClientId = this.server.auth_config?.client_id || '';
+      this.oauthIssuer = this.server.auth_config?.issuer || '';
+      const scope =
+        this.server.auth_config?.scope ?? this.server.auth_config?.scopes ?? '';
+      this.oauthScope = Array.isArray(scope) ? scope.join(' ') : scope;
     }
   }
 
@@ -198,13 +209,41 @@ export class MCPServerForm extends LitElement {
                   standard discovery flow. After saving, click "Connect OAuth
                   Account" to authorize.
                 </div>
+                <sl-input
+                  label="Client ID (optional)"
+                  .value=${this.oauthClientId}
+                  @sl-input=${(e: any) => (this.oauthClientId = e.target.value)}
+                  help-text="Leave empty to use public client registration when supported."
+                ></sl-input>
+                <sl-input
+                  label="Client secret (optional)"
+                  type="password"
+                  .value=${this.oauthClientSecret}
+                  @sl-input=${(e: any) => (this.oauthClientSecret = e.target.value)}
+                  help-text="Leave empty to keep a saved secret. Public clients do not need one."
+                ></sl-input>
+                <sl-input
+                  label="Authorization server issuer (optional)"
+                  .value=${this.oauthIssuer}
+                  @sl-input=${(e: any) => (this.oauthIssuer = e.target.value)}
+                  help-text="Required when the MCP server advertises several authorization servers."
+                ></sl-input>
+                <sl-input
+                  label="Scopes (optional)"
+                  .value=${this.oauthScope}
+                  @sl-input=${(e: any) => (this.oauthScope = e.target.value)}
+                ></sl-input>
+                <p role="status">
+                  ${this.oauthConnecting ? 'Connecting…' : ({ disconnected: 'Disconnected', connecting: 'Connecting…', connected: 'Connected', reconnect_required: 'Reconnect required' } as Record<string, string>)[this.server?.connection_state || 'disconnected']}
+                </p>
                 ${
                   this.server
                     ? html`
                         <sl-button
                           variant="primary"
                           outline
-                          @click=${() => this._startOAuthFlow()}
+                          ?disabled=${this.oauthConnecting}
+                          @click=${() => this.handleSave(true)}
                         >
                           <sl-icon
                             slot="prefix"
@@ -246,7 +285,7 @@ export class MCPServerForm extends LitElement {
           <sl-button @click=${() => this.closeModal()}>Cancel</sl-button>
           <sl-button
             variant="primary"
-            @click=${this.handleSave}
+            @click=${() => this.handleSave()}
             .loading=${this.isLoading}
           >
             ${this.server ? 'Save' : 'Add'}
@@ -256,7 +295,8 @@ export class MCPServerForm extends LitElement {
     `;
   }
 
-  async handleSave() {
+  async handleSave(connect = false) {
+    const connectRequested = connect === true;
     this.isLoading = true;
     this.errorMessage = '';
 
@@ -292,9 +332,31 @@ export class MCPServerForm extends LitElement {
     let authConfigObj = null;
     if (this.authType === 'bearer' && this.bearerToken.trim()) {
       authConfigObj = { token: this.bearerToken };
-    } else if (this.authType === 'oauth' && this.server?.auth_config) {
-      // Preserve existing OAuth auth_config (tokens, client_id, etc.)
-      authConfigObj = this.server.auth_config;
+    } else if (this.authType === 'oauth') {
+      const saved = this.server?.auth_config || {};
+      authConfigObj = { ...saved };
+      const clientId = this.oauthClientId.trim();
+      if (clientId !== (saved.client_id || '')) {
+        if (clientId) authConfigObj.client_id = clientId;
+        else delete authConfigObj.client_id;
+      }
+      const issuer = this.oauthIssuer.trim();
+      if (issuer !== (saved.issuer || '')) {
+        if (issuer) authConfigObj.issuer = issuer;
+        else delete authConfigObj.issuer;
+      }
+      // Preserve optional fields and the stored scope representation when only
+      // other form fields changed; changing consent bindings invalidates grants.
+      const savedScope = saved.scope ?? saved.scopes ?? '';
+      const originalScope = Array.isArray(savedScope)
+        ? savedScope.join(' ')
+        : savedScope;
+      if (this.oauthScope.trim() !== originalScope.trim()) {
+        authConfigObj.scope = this.oauthScope.trim();
+        delete authConfigObj.scopes;
+      }
+      if (this.oauthClientSecret)
+        authConfigObj.client_secret = this.oauthClientSecret;
     }
 
     const serverData = {
@@ -314,7 +376,10 @@ export class MCPServerForm extends LitElement {
           serverData
         );
         // If editing an OAuth server, redirect immediately (keep modal open)
-        if (this.authType === 'oauth') {
+        if (
+          this.authType === 'oauth' &&
+          (connectRequested || updatedServer.connection_state !== 'connected')
+        ) {
           this._startOAuthFlow(updatedServer.id);
           return;
         }
@@ -351,12 +416,14 @@ export class MCPServerForm extends LitElement {
     // the reusable access token never lands in the URL (browser history, server
     // logs, Referer). The browser then does a full-page redirect that the
     // backend 302s to the external consent form.
+    this.oauthConnecting = true;
     try {
-      const response = await api.fetchWithAuth(
+      const response = await this._api.fetchWithAuth(
         `/api/v1/mcp-servers/${id}/oauth/authorize-token`,
         { method: 'POST' }
       );
       if (!response.ok) {
+        this.oauthConnecting = false;
         this.errorMessage = 'Could not start the OAuth flow. Please try again.';
         return;
       }
@@ -365,7 +432,9 @@ export class MCPServerForm extends LitElement {
         authorizeToken
       )}`;
     } catch (error) {
-      this.errorMessage = 'Not authenticated. Please log in again.';
+      this.oauthConnecting = false;
+      this.errorMessage =
+        'Could not connect. Check your sign-in and try again.';
     }
   }
 

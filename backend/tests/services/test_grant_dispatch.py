@@ -4,6 +4,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, Callable
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import httpx
 import pytest
@@ -94,23 +95,41 @@ async def test_introspection_uses_exact_forwarded_auth_token(
     auth_type: str, key: str
 ) -> None:
     row = server()
+    row.id = "00000000-0000-0000-0000-000000000123"
     row.auth_type = auth_type
     row.auth_config = {
-        key: "actual-forwarded",
+        key: "stale-stored" if auth_type == "oauth" else "actual-forwarded",
         "token" if key != "token" else "access_token": "other",
         "introspection": CONFIG,
     }
     db = MagicMock()
+
+    async def current_credentials(server_id: UUID) -> SimpleNamespace:
+        db.close.assert_called_once()
+        assert server_id == UUID(row.id)
+        return SimpleNamespace(
+            config={**row.auth_config, "access_token": "actual-forwarded"}
+        )
+
     with (
         patch.object(gateway, "get_db", return_value=iter([db])),
         patch.object(gateway, "_resolve_proxied_tool_server", return_value=row),
         patch.object(
             gateway.grant_introspector, "evaluate", new_callable=AsyncMock
         ) as evaluate,
+        patch(
+            "preloop.services.upstream_mcp_oauth.UpstreamMCPOAuthService.credentials",
+            side_effect=current_credentials,
+        ) as credentials,
     ):
         evaluate.return_value = GrantResult(deepcopy(BINDING))
-        await gateway._prepare_grant_dispatch("account", "first_read")
+        snapshot, _ = await gateway._prepare_grant_dispatch("account", "first_read")
     assert evaluate.await_args.args[0] == "actual-forwarded"
+    assert snapshot.client_config["auth_config"][key] == "actual-forwarded"
+    if auth_type == "oauth":
+        credentials.assert_awaited_once_with(UUID(row.id))
+    else:
+        credentials.assert_not_awaited()
 
 
 @pytest.mark.asyncio

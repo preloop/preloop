@@ -17,6 +17,8 @@ export interface MCPServer {
   transport: string;
   auth_type: string;
   status: string;
+  connection_state?:
+    'disconnected' | 'connecting' | 'connected' | 'reconnect_required';
   created_at: string;
   updated_at: string;
   tool_count?: number;
