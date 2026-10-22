@@ -914,6 +914,9 @@ class ApprovalExpireResponse(BaseModel):
     approval_request_id: str
     status: str
     approver_comment: Optional[str] = None
+    decided_by: Optional[str] = Field(
+        None, description="Who decided, when a decision landed before the expiry"
+    )
 
 
 def _owned_approval_exists(identity: PermissionIdentity, approval_id: UUID) -> bool:
@@ -971,10 +974,16 @@ async def expire_approval_by_hook(
         )
     if updated is None:
         raise HTTPException(status_code=404, detail="Approval request not found")
+    decided_by = None
+    if updated.status in ("approved", "declined"):
+        decided_by = await run_db_off_loop(
+            lambda: _approval_decided_by(identity, str(updated.id))
+        )
     return ApprovalExpireResponse(
         approval_request_id=str(updated.id),
         status=updated.status,
         approver_comment=updated.approver_comment,
+        decided_by=decided_by,
     )
 
 

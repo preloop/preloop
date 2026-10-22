@@ -284,6 +284,56 @@ def test_approval_created_at_serialised_with_utc_offset():
         decided_by_ai=False,
     )
     body = ApprovalRequestResponse.model_validate(row).model_dump(mode="json")
-    assert body["requested_at"] == "2026-10-21T19:59:51+00:00"
-    assert body["expires_at"] == "2026-10-21T20:09:51+00:00"
+    assert body["requested_at"] == "2026-10-21T19:59:51Z"
+    assert body["expires_at"] == "2026-10-21T20:09:51Z"
     assert body["resolved_at"] is None
+    # The contract stays a required date-time, not a nullable string.
+    schema = ApprovalRequestResponse.model_json_schema(mode="serialization")
+    assert schema["properties"]["requested_at"] == {
+        "format": "date-time",
+        "title": "Requested At",
+        "type": "string",
+    }
+    assert "requested_at" in schema["required"]
+
+
+def test_expire_by_hook_reports_a_decision_that_landed_first(
+    client: Any, db_session: Session
+):
+    """A denial that beat the hook's deadline is returned with its decider."""
+    from preloop.api.auth.jwt import _managed_agent_for_api_key
+    from preloop.models.crud import crud_api_key
+
+    token = _runtime_token(client)
+    key = crud_api_key.get_by_key(db_session, key=token)
+    agent = _managed_agent_for_api_key(db_session, key)
+    row = _pending_row(db_session, key.account_id, agent.id)
+    declined = MagicMock(id=row.id, status="declined", approver_comment="not on main")
+
+    @asynccontextmanager
+    async def fake_db() -> AsyncIterator[Any]:
+        yield MagicMock()
+
+    with (
+        patch("preloop.models.db.session.get_async_db_session", fake_db),
+        patch.object(
+            ApprovalService, "expire_request", AsyncMock(return_value=declined)
+        ),
+        patch(
+            "preloop.api.endpoints.agent_permission._approval_decided_by",
+            return_value="jane",
+        ),
+    ):
+        response = client.post(
+            f"/api/v1/approvals/{row.id}/expire",
+            json={"reason": "hook_deadline", "waited_seconds": 86400},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "approval_request_id": str(row.id),
+        "status": "declined",
+        "approver_comment": "not on main",
+        "decided_by": "jane",
+    }

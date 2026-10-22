@@ -35,6 +35,10 @@ func TestApprovalHookDeadlineBelowHostTimeout(t *testing.T) {
 // deadlineServer holds permission-check past the hook's deadline and records
 // the expire call.
 func deadlineServer(t *testing.T, expireStatus string) (*httptest.Server, *string, *string, *sync.Mutex) {
+	return deadlineServerWith(t, map[string]interface{}{"approval_request_id": "x", "status": expireStatus}, nil)
+}
+
+func deadlineServerWith(t *testing.T, expireBody map[string]interface{}, gotWaited *float64) (*httptest.Server, *string, *string, *sync.Mutex) {
 	t.Helper()
 	var mu sync.Mutex
 	var proposedID, expiredPath string
@@ -51,10 +55,15 @@ func deadlineServer(t *testing.T, expireStatus string) (*httptest.Server, *strin
 			case <-time.After(2 * time.Second):
 			}
 		case strings.HasSuffix(r.URL.Path, "/expire"):
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
 			mu.Lock()
 			expiredPath = r.URL.Path
+			if gotWaited != nil {
+				*gotWaited, _ = body["waited_seconds"].(float64)
+			}
 			mu.Unlock()
-			_ = json.NewEncoder(w).Encode(map[string]string{"approval_request_id": "x", "status": expireStatus})
+			_ = json.NewEncoder(w).Encode(expireBody)
 		default:
 			http.NotFound(w, r)
 		}
@@ -178,5 +187,59 @@ func TestClaudeApprovalHookEntryCarriesStatusMessage(t *testing.T) {
 	inner := entry["hooks"].([]interface{})[0].(map[string]interface{})
 	if inner["statusMessage"] != "Waiting for Preloop approval" {
 		t.Errorf("statusMessage=%v", inner["statusMessage"])
+	}
+}
+
+func TestApprovalHookDeadlineHonoursDecisionThatLandedFirst(t *testing.T) {
+	for _, tc := range []struct {
+		status, behavior, message string
+	}{
+		{"approved", "allow", "Approved in Preloop by jane"},
+		{"declined", "deny", "Denied in Preloop by jane: not on main"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			home := t.TempDir()
+			testenv.SetHome(t, home)
+			shortHookDeadline(t)
+			comment := ""
+			if tc.status == "declined" {
+				comment = "not on main"
+			}
+			server, _, _, _ := deadlineServerWith(t, map[string]interface{}{
+				"approval_request_id": "x", "status": tc.status,
+				"approver_comment": comment, "decided_by": "jane",
+			}, nil)
+			writeTestPermissionCredential(t, home, "codex-agent", permissionHookCredential{
+				BaseURL: server.URL, Token: "agt_test", Source: permissionSourceCodexCLI,
+			})
+			decision := resolvePermissionDecision(permissionSourceCodexCLI, []byte(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`), false)
+			if decision.Behavior != tc.behavior || decision.SystemMessage != tc.message {
+				t.Fatalf("decision=%+v", decision)
+			}
+			if strings.Contains(decision.Reason, "not answered") {
+				t.Errorf("answered approval reported as a timeout: %q", decision.Reason)
+			}
+		})
+	}
+}
+
+func TestApprovalHookExpireSendsWaitBudgetWithinServerBound(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	previous := permissionHookDeadline
+	// The default 24 h budget plus HTTP headroom; the deadline fires at once.
+	permissionHookDeadline = func(permissionHookCredential) time.Duration { return 150 * time.Millisecond }
+	t.Cleanup(func() { permissionHookDeadline = previous })
+	var waited float64
+	server, _, _, mu := deadlineServerWith(t, map[string]interface{}{"status": "expired"}, &waited)
+	decision := hookDeadlineDecision(server.URL, "agt_test", "00000000-0000-4000-8000-000000000000",
+		time.Duration(maxApprovalWorkflowTimeoutSeconds)*time.Second+permissionCheckHTTPHeadroom)
+	mu.Lock()
+	defer mu.Unlock()
+	if waited != float64(maxApprovalWorkflowTimeoutSeconds) {
+		t.Errorf("waited_seconds=%v, want the %d s budget", waited, maxApprovalWorkflowTimeoutSeconds)
+	}
+	if decision.Behavior != "deny" {
+		t.Errorf("decision=%+v", decision)
 	}
 }

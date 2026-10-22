@@ -34,6 +34,13 @@ def utc_isoformat(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _as_utc(value: datetime) -> datetime:
+    """Attach UTC to a naive value; convert an aware one to UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def _recipient_count(recipients: str) -> int:
     """Count listed recipients, including a trailing '(+N more)' suffix."""
     extra_match = _MORE_RECIPIENTS.search(recipients)
@@ -381,14 +388,20 @@ class ApprovalRequestResponse(ApprovalRequestBase):
         """Serialize UUID to string."""
         return str(value) if value else None
 
-    @field_serializer("requested_at", "resolved_at", "expires_at")
-    def serialize_utc(self, value: Optional[datetime]) -> Optional[str]:
-        """Emit stored naive UTC times with an explicit UTC offset.
+    @field_serializer("requested_at")
+    def serialize_requested_at(self, value: datetime) -> datetime:
+        """Emit the stored naive UTC time as an aware UTC date-time.
 
         Without the offset, browsers parse the value as local time and an
-        approval seconds old reads as hours old in any non-UTC timezone.
+        approval seconds old reads as hours old in any non-UTC timezone. The
+        model keeps the naive value, so server-side arithmetic is unchanged.
         """
-        return utc_isoformat(value)
+        return _as_utc(value)
+
+    @field_serializer("resolved_at", "expires_at")
+    def serialize_optional_utc(self, value: Optional[datetime]) -> Optional[datetime]:
+        """Same as ``requested_at`` for the optional timestamps."""
+        return _as_utc(value) if value is not None else None
 
 
 class ApprovalEventResponse(BaseModel):

@@ -25717,6 +25717,12 @@ components:
           - type: string
           - type: 'null'
           title: Approver Comment
+        decided_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decided By
+          description: Who decided, when a decision landed before the expiry
       type: object
       required:
       - approval_request_id
@@ -25797,18 +25803,19 @@ components:
           type: string
           title: Status
         requested_at:
-          anyOf:
-          - type: string
-          - type: 'null'
+          type: string
+          format: date-time
           title: Requested At
         resolved_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Resolved At
         expires_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Expires At
         approver_comment:

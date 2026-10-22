@@ -2040,11 +2040,7 @@ class ApprovalService:
                 "agent_reasoning": approval_request.agent_reasoning,
                 "status": approval_request.status,
                 "requested_at": utc_isoformat(approval_request.requested_at),
-                "expires_at": (
-                    approval_request.expires_at.isoformat()
-                    if approval_request.expires_at
-                    else None
-                ),
+                "expires_at": utc_isoformat(approval_request.expires_at),
                 # "review" is the honest name: the link opens the approval
                 # page, it does not decide anything. A receiving system decides
                 # with the token URLs under "decision" below, or with

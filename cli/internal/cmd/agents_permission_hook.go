@@ -510,13 +510,25 @@ var approvalExpireTimeout = 5 * time.Second
 // timeout. A decision that landed just before the expire still wins.
 func hookDeadlineDecision(baseURL, token, approvalID string, deadline time.Duration) hookDecision {
 	base := strings.TrimRight(baseURL, "/")
-	status, by := expireApprovalOnServer(base, token, approvalID, int(deadline/time.Second))
-	if status == "approved" {
-		message := ""
-		if by != "" {
-			message = "Approved in Preloop by " + by
+	waited := int((deadline - permissionCheckHTTPHeadroom) / time.Second)
+	if waited < 0 {
+		waited = 0
+	}
+	if waited > maxApprovalWorkflowTimeoutSeconds {
+		waited = maxApprovalWorkflowTimeoutSeconds
+	}
+	expired := expireApprovalOnServer(base, token, approvalID, waited)
+	switch expired.Status {
+	case "approved", "declined":
+		// Answered just before the expiry: the decision wins.
+		behavior := "deny"
+		reason := firstNonEmptyString(strings.TrimSpace(expired.Comment), "Denied via Preloop.")
+		if expired.Status == "approved" {
+			behavior = "allow"
+			reason = firstNonEmptyString(strings.TrimSpace(expired.Comment), "Approved via Preloop.")
 		}
-		return hookDecision{Behavior: "allow", Reason: "Approved via Preloop.", SystemMessage: message}
+		resp := permissionCheckResponse{Decision: behavior, Reason: strings.TrimSpace(expired.Comment), DecidedBy: expired.DecidedBy}
+		return hookDecision{Behavior: behavior, Reason: reason, SystemMessage: approvalDecidedMessage(behavior, resp)}
 	}
 	short := approvalID
 	if len(short) > 8 {
@@ -535,13 +547,21 @@ func hookDeadlineDecision(baseURL, token, approvalID string, deadline time.Durat
 	}
 }
 
-// expireApprovalOnServer posts the expiry and returns the approval's status
-// afterwards ("expired", or the decision that landed first). Errors return "".
-func expireApprovalOnServer(baseURL, token, approvalID string, waitedSeconds int) (string, string) {
+// approvalExpireResult is the approval as the expire call left it.
+type approvalExpireResult struct {
+	Status    string `json:"status"`
+	Comment   string `json:"approver_comment"`
+	DecidedBy string `json:"decided_by"`
+}
+
+// expireApprovalOnServer posts the expiry and returns the approval afterwards
+// (status "expired", or the decision that landed first). Errors return a
+// zero result.
+func expireApprovalOnServer(baseURL, token, approvalID string, waitedSeconds int) approvalExpireResult {
 	body, _ := json.Marshal(map[string]interface{}{"reason": "hook_deadline", "waited_seconds": waitedSeconds})
 	httpReq, err := http.NewRequest(http.MethodPost, baseURL+fmt.Sprintf(approvalHookExpirePathFormat, url.PathEscape(approvalID)), bytes.NewReader(body))
 	if err != nil {
-		return "", ""
+		return approvalExpireResult{}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "application/json")
@@ -549,20 +569,17 @@ func expireApprovalOnServer(baseURL, token, approvalID string, waitedSeconds int
 	httpReq.Header.Set("Authorization", "Bearer "+token)
 	resp, err := (&http.Client{Timeout: approvalExpireTimeout}).Do(httpReq)
 	if err != nil {
-		return "", ""
+		return approvalExpireResult{}
 	}
 	defer resp.Body.Close() //nolint:errcheck
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", ""
+		return approvalExpireResult{}
 	}
-	var decoded struct {
-		Status    string `json:"status"`
-		DecidedBy string `json:"decided_by"`
-	}
+	var decoded approvalExpireResult
 	if json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&decoded) != nil {
-		return "", ""
+		return approvalExpireResult{}
 	}
-	return decoded.Status, decoded.DecidedBy
+	return decoded
 }
 
 // cursorPreToolUseDuplicateReason is the allow reason for a Cursor preToolUse
