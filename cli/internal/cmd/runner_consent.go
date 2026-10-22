@@ -153,7 +153,7 @@ func updateRegisteredRunnerConsent(choice string) error {
 		return err
 	}
 	if err := client.Patch(
-		"/api/v1/runners/"+url.PathEscape(state.ID)+"/consent",
+		api.RESTPrefix+"/runners/"+url.PathEscape(state.ID)+"/consent",
 		map[string]string{"flow_execution_consent": choice}, nil,
 	); err != nil {
 		return fmt.Errorf("update runner consent: %w", err)

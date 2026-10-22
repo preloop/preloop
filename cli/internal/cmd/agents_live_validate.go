@@ -604,7 +604,7 @@ func listManagedValidationAIModels(client *api.Client) []aiModelResponse {
 		return nil
 	}
 	var models []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
 		return nil
 	}
 	return models

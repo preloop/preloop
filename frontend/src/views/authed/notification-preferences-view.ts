@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css, unsafeCSS } from 'lit';
@@ -510,7 +511,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
     try {
       const data = await this.fetchData(
-        '/api/v1/notification-preferences/me/test-push',
+        REST_API_PREFIX + '/notification-preferences/me/test-push',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -676,7 +677,9 @@ export class NotificationPreferencesView extends AuthedElement {
   private async loadPreferences(options: { background?: boolean } = {}) {
     try {
       if (!options.background) this.isLoading = true;
-      const data = await this.fetchData('/api/v1/notification-preferences/me');
+      const data = await this.fetchData(
+        REST_API_PREFIX + '/notification-preferences/me'
+      );
 
       if (!data) {
         throw new Error('Failed to load preferences');
@@ -702,11 +705,14 @@ export class NotificationPreferencesView extends AuthedElement {
 
     try {
       this.isSaving = true;
-      const data = await this.fetchData('/api/v1/notification-preferences/me', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: value }),
-      });
+      const data = await this.fetchData(
+        REST_API_PREFIX + '/notification-preferences/me',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [field]: value }),
+        }
+      );
 
       if (!data) {
         throw new Error(`Failed to update ${label}`);
@@ -763,7 +769,7 @@ export class NotificationPreferencesView extends AuthedElement {
   private async handleShowQRCode() {
     try {
       const data = await this.fetchData(
-        '/api/v1/notification-preferences/me/qr-code'
+        REST_API_PREFIX + '/notification-preferences/me/qr-code'
       );
 
       if (!data) {
@@ -803,7 +809,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
     try {
       const data = await this.fetchData(
-        `/api/v1/notification-preferences/me/device/${encodeURIComponent(token)}`,
+        `${REST_API_PREFIX}/notification-preferences/me/device/${encodeURIComponent(token)}`,
         {
           method: 'DELETE',
         }

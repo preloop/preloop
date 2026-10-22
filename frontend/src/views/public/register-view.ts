@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { Router } from '../../router';
@@ -293,7 +294,10 @@ export class RegisterView extends LitElement {
         // even after they follow a verification link in another browser.
         payload.plan_choice = this.planChoice;
       }
-      const registerResult = await post('/api/v1/auth/register', payload);
+      const registerResult = await post(
+        REST_API_PREFIX + '/auth/register',
+        payload
+      );
 
       // If the backend returns an error in the payload instead of throwing an HTTP error
       if (registerResult && registerResult.error) {
@@ -314,7 +318,7 @@ export class RegisterView extends LitElement {
       // page. This is the seamless path for new users running
       // `curl ... | sh` -> `preloop signup` -> sign up -> back to CLI.
       try {
-        const authData = await post('/api/v1/auth/token/json', {
+        const authData = await post(REST_API_PREFIX + '/auth/token/json', {
           username,
           password,
         });

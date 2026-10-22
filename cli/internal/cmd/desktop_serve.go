@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/preloop/preloop/cli/internal/api"
 	"io"
 	"net"
 	"net/http"
@@ -354,7 +355,7 @@ func (s *desktopServer) openView(ctx context.Context, control *websocket.Conn, m
 
 	viewURL, err := desktopWSURL(
 		s.opts.BaseURL,
-		"/api/v1/desktop/endpoints/"+url.PathEscape(s.endpointID)+"/views/"+url.PathEscape(message.ViewID),
+		api.RESTPrefix+"/desktop/endpoints/"+url.PathEscape(s.endpointID)+"/views/"+url.PathEscape(message.ViewID),
 	)
 	if err != nil {
 		fail("display_unavailable", err)

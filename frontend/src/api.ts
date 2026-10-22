@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 import { LitElement } from 'lit';
 import { ownerConsentRequest } from './utils/owner-consent-request';
 import { withSafeIcon } from './utils/icon-name';
@@ -164,8 +165,8 @@ export function invalidateUserProfileCache(): void {
   userProfileCache = null;
   userProfileInflight = null;
   userProfileEpoch += 1;
-  inFlightGets.delete(coalesceKey('/api/v1/auth/users/me'));
-  inFlightGets.delete(coalesceKey('/api/v1/auth/users/me', true));
+  inFlightGets.delete(coalesceKey(REST_API_PREFIX + '/auth/users/me'));
+  inFlightGets.delete(coalesceKey(REST_API_PREFIX + '/auth/users/me', true));
 }
 
 /**
@@ -278,7 +279,7 @@ export function extractErrorMessage(
 }
 
 async function attemptRefresh(refreshTokenValue: string): Promise<Response> {
-  return fetch(`/api/v1/auth/refresh`, {
+  return fetch(`${REST_API_PREFIX}/auth/refresh`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -471,7 +472,7 @@ async function requestServerSignOut(token: string): Promise<string | null> {
     : null;
   try {
     const response = await Promise.resolve(
-      fetch('/api/v1/auth/logout', {
+      fetch(REST_API_PREFIX + '/auth/logout', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         signal: controller?.signal,
@@ -841,8 +842,14 @@ async function runCheckout(
       }),
     };
     const response = anonymous
-      ? await fetchPublic('/api/v1/billing/create-checkout-session', request)
-      : await fetchWithAuth('/api/v1/billing/create-checkout-session', request);
+      ? await fetchPublic(
+          REST_API_PREFIX + '/billing/create-checkout-session',
+          request
+        )
+      : await fetchWithAuth(
+          REST_API_PREFIX + '/billing/create-checkout-session',
+          request
+        );
     if (!response.ok) {
       const body = await response.json().catch(() => ({}));
       const detail = body.detail;
@@ -905,7 +912,9 @@ export interface Entitlements {
 
 /** Authed boot-time entitlement state (passive UI only; 402s are the gate). */
 export async function getEntitlements(): Promise<Entitlements> {
-  const response = await fetchWithAuth('/api/v1/billing/entitlements');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/billing/entitlements'
+  );
   if (!response.ok) {
     // Fail-open for UI purposes: never degrade the console over a hint.
     return { premium: true, reason: 'unavailable' };
@@ -969,9 +978,12 @@ let planChoiceSettled: PlanChoiceState | null = null;
 export async function getPlanChoice(): Promise<PlanChoiceState> {
   if (planChoiceSettled) return planChoiceSettled;
   try {
-    const response = await fetchWithAuth('/api/v1/billing/plan-choice', {
-      passive: true,
-    });
+    const response = await fetchWithAuth(
+      REST_API_PREFIX + '/billing/plan-choice',
+      {
+        passive: true,
+      }
+    );
     if (!response.ok) return NO_PLAN_CHOICE;
     const body = await response.json();
     const state: PlanChoiceState = {
@@ -1001,9 +1013,12 @@ export async function getPlanChoice(): Promise<PlanChoiceState> {
  * load, which reads as a bug rather than as onboarding.
  */
 export async function recordFreePlanChoice(): Promise<void> {
-  const response = await fetchWithAuth('/api/v1/billing/plan-choice', {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/billing/plan-choice',
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     throw new Error('Could not record your choice. Try again.');
   }
@@ -1105,7 +1120,7 @@ export function invalidateUsageNudges(): void {
 
 async function fetchUsageNudges(): Promise<UsageNudges> {
   try {
-    const response = await fetchWithAuth('/api/v1/billing/nudges', {
+    const response = await fetchWithAuth(REST_API_PREFIX + '/billing/nudges', {
       passive: true,
     });
     if (!response.ok) {
@@ -1185,7 +1200,7 @@ export class AuthedElement extends LitElement {
 }
 
 export async function getApiUsageStats() {
-  const response = await fetchWithAuth('/api/v1/auth/api-usage');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/auth/api-usage');
   if (!response.ok) {
     throw new Error('Failed to fetch API usage stats');
   }
@@ -1427,7 +1442,7 @@ export async function getAccountGatewayUsageSummary(
   appendSessionPage(query, params.sessionPage);
   const queryString = query.size ? `?${query.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/account/gateway-usage/summary${queryString}`
+    `${REST_API_PREFIX}/account/gateway-usage/summary${queryString}`
   );
   if (!response.ok) {
     // A period outside the plan's analytics window is a plan fact, not a
@@ -1443,7 +1458,7 @@ export async function getAccountRateLimitReport(
   params: GatewayUsageSummaryParams = {}
 ): Promise<AccountRateLimitReportResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/account/gateway-usage/rate-limits${buildGatewayUsageQuery(params)}`
+    `${REST_API_PREFIX}/account/gateway-usage/rate-limits${buildGatewayUsageQuery(params)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch rate limit report');
@@ -1479,7 +1494,9 @@ export const DISMISSALS_UNSUPPORTED = 'unsupported' as const;
 export async function getAttentionDismissals(): Promise<
   AttentionDismissal[] | typeof DISMISSALS_UNSUPPORTED
 > {
-  const response = await fetchWithAuth('/api/v1/attention/dismissals');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/attention/dismissals'
+  );
   if (response.status === 404 || response.status === 405) {
     return DISMISSALS_UNSUPPORTED;
   }
@@ -1515,7 +1532,7 @@ export async function getPolicyNoticeSummary(
   days = 7
 ): Promise<PolicyNoticeSummary> {
   const response = await fetchWithAuth(
-    `/api/v1/policies/notices/summary?days=${encodeURIComponent(String(days))}`
+    `${REST_API_PREFIX}/policies/notices/summary?days=${encodeURIComponent(String(days))}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch policy notices');
@@ -1532,7 +1549,7 @@ export async function dismissAttentionItem(
   }
 ): Promise<AttentionDismissal> {
   const response = await fetchWithAuth(
-    `/api/v1/attention/dismissals/${encodeURIComponent(itemId)}`,
+    `${REST_API_PREFIX}/attention/dismissals/${encodeURIComponent(itemId)}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1547,7 +1564,7 @@ export async function dismissAttentionItem(
 
 export async function restoreAttentionItem(itemId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/attention/dismissals/${encodeURIComponent(itemId)}`,
+    `${REST_API_PREFIX}/attention/dismissals/${encodeURIComponent(itemId)}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -1574,7 +1591,9 @@ export async function getCostAnalyticsSummary(
     query.set('compare_start_date', params.compareStartDate);
     query.set('compare_end_date', params.compareEndDate);
   }
-  const response = await fetchWithAuth(`/api/v1/cost/summary?${query}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/cost/summary?${query}`
+  );
   if (!response.ok) {
     const refused = await historyUnavailableError(response);
     if (refused) throw refused;
@@ -1609,7 +1628,9 @@ export async function getCostTimeseries(params: {
     end_date: params.endDate,
     granularity: params.granularity,
   });
-  const response = await fetchWithAuth(`/api/v1/cost/timeseries?${query}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/cost/timeseries?${query}`
+  );
   if (!response.ok) throw new Error('Failed to fetch spend over time');
   return response.json();
 }
@@ -1617,7 +1638,7 @@ export async function getCostTimeseries(params: {
 /** Gateway accounting self-check for the account (last `hours` hours). */
 export async function getCostHealth(hours = 24): Promise<CostHealthResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/cost/health?hours=${encodeURIComponent(String(hours))}`
+    `${REST_API_PREFIX}/cost/health?hours=${encodeURIComponent(String(hours))}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch accounting health');
@@ -1797,7 +1818,9 @@ export async function getIssueCosts(
   }
   const query = params.toString();
   const response = await fetchWithAuth(
-    query ? `/api/v1/cost/by-issue?${query}` : '/api/v1/cost/by-issue'
+    query
+      ? `${REST_API_PREFIX}/cost/by-issue?${query}`
+      : REST_API_PREFIX + '/cost/by-issue'
   );
   if (!response.ok) {
     throw new Error('Failed to fetch cost per issue');
@@ -1812,7 +1835,7 @@ export async function getIssueCostExecutions(
 ): Promise<IssueCostExecution[]> {
   const query = flowId ? `?flow_id=${encodeURIComponent(flowId)}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/cost/by-issue/${encodeURIComponent(rollupId)}/executions${query}`
+    `${REST_API_PREFIX}/cost/by-issue/${encodeURIComponent(rollupId)}/executions${query}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch the executions of this issue');
@@ -1826,7 +1849,7 @@ export async function getUnassignedIssueCostExecutions(
 ): Promise<IssueCostExecution[]> {
   const query = issueCostQuery(filter).toString();
   const response = await fetchWithAuth(
-    `/api/v1/cost/by-issue/unassigned/executions${query ? `?${query}` : ''}`
+    `${REST_API_PREFIX}/cost/by-issue/unassigned/executions${query ? `?${query}` : ''}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch the unassigned executions');
@@ -1842,7 +1865,7 @@ export async function exportIssueCosts(
   const query = issueCostQuery(filter);
   query.set('format', format);
   const response = await fetchWithAuth(
-    `/api/v1/cost/by-issue/export?${query.toString()}`
+    `${REST_API_PREFIX}/cost/by-issue/export?${query.toString()}`
   );
   if (!response.ok) {
     throw new Error('Failed to export cost per issue');
@@ -1864,7 +1887,9 @@ export async function getToolUsageStats(
   if (options.includeAgents === false) {
     query += `${query ? '&' : '?'}include_agents=false`;
   }
-  const response = await fetchWithAuth(`/api/v1/tools/stats${query}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/tools/stats${query}`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch tool usage stats');
   }
@@ -1874,7 +1899,9 @@ export async function getToolUsageStats(
 export async function getAIModelPricing(
   modelId: string
 ): Promise<AIModelPricingResponse> {
-  const response = await fetchWithAuth(`/api/v1/ai-models/${modelId}/pricing`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/ai-models/${modelId}/pricing`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch model pricing');
   }
@@ -1889,7 +1916,7 @@ export async function fetchAIModelPricingFromProvider(
   modelId: string
 ): Promise<AIModelPriceQuote> {
   const response = await fetchWithAuth(
-    `/api/v1/ai-models/${modelId}/pricing/fetch`,
+    `${REST_API_PREFIX}/ai-models/${modelId}/pricing/fetch`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -1925,7 +1952,7 @@ export async function getModelPriceOverrides(options?: {
   if (options?.activeOnly) params.set('active_only', 'true');
   const query = params.toString();
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/pricing-overrides${query ? `?${query}` : ''}`,
+    `${REST_API_PREFIX}/billing/cost/pricing-overrides${query ? `?${query}` : ''}`,
     { passive: options?.passive === true }
   );
   if (response.status === 402 && options?.passive) return [];
@@ -1939,7 +1966,7 @@ export async function createModelPriceOverride(
   data: ModelPriceOverrideCreate
 ): Promise<ModelPriceOverride> {
   const response = await fetchWithAuth(
-    '/api/v1/billing/cost/pricing-overrides',
+    REST_API_PREFIX + '/billing/cost/pricing-overrides',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1960,7 +1987,7 @@ export async function updateModelPriceOverride(
   data: ModelPriceOverrideUpdate
 ): Promise<ModelPriceOverride> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/pricing-overrides/${id}`,
+    `${REST_API_PREFIX}/billing/cost/pricing-overrides/${id}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -1978,7 +2005,7 @@ export async function updateModelPriceOverride(
 
 export async function deleteModelPriceOverride(id: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/pricing-overrides/${id}`,
+    `${REST_API_PREFIX}/billing/cost/pricing-overrides/${id}`,
     {
       method: 'DELETE',
     }
@@ -2000,11 +2027,14 @@ export async function repriceCost(data: {
   only_unpriced?: boolean;
   dry_run?: boolean;
 }): Promise<RepriceResponse> {
-  const response = await fetchWithAuth('/api/v1/billing/cost/reprice', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/billing/cost/reprice',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(extractErrorMessage(errorData, 'Failed to reprice usage'));
@@ -2016,7 +2046,7 @@ export async function getRepriceJobStatus(
   jobId: string
 ): Promise<RepriceJobStatus> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/reprice/${encodeURIComponent(jobId)}`
+    `${REST_API_PREFIX}/billing/cost/reprice/${encodeURIComponent(jobId)}`
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -2031,7 +2061,7 @@ export async function getProviderBillingConnections(options?: {
   passive?: boolean;
 }): Promise<ProviderBillingConnection[]> {
   const response = await fetchWithAuth(
-    '/api/v1/billing/provider-billing/connections',
+    REST_API_PREFIX + '/billing/provider-billing/connections',
     { passive: options?.passive === true }
   );
   if (!response.ok) {
@@ -2045,7 +2075,7 @@ export async function createProviderBillingConnection(data: {
   admin_api_key: string;
 }): Promise<ProviderBillingConnection> {
   const response = await fetchWithAuth(
-    '/api/v1/billing/provider-billing/connections',
+    REST_API_PREFIX + '/billing/provider-billing/connections',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2068,7 +2098,7 @@ export async function deleteProviderBillingConnection(
   id: string
 ): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/provider-billing/connections/${id}`,
+    `${REST_API_PREFIX}/billing/provider-billing/connections/${id}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -2080,7 +2110,7 @@ export async function syncProviderBillingConnection(
   id: string
 ): Promise<unknown> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/provider-billing/connections/${id}/sync`,
+    `${REST_API_PREFIX}/billing/provider-billing/connections/${id}/sync`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -2103,7 +2133,7 @@ export async function getCostReconciliation(params: {
   if (params.provider) query.set('provider', params.provider);
   const suffix = query.toString();
   const response = await fetchWithAuth(
-    `/api/v1/billing/provider-billing/reconciliation${suffix ? `?${suffix}` : ''}`
+    `${REST_API_PREFIX}/billing/provider-billing/reconciliation${suffix ? `?${suffix}` : ''}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch cost reconciliation');
@@ -2120,7 +2150,7 @@ export async function getAnthropicUsage(params: {
   if (params.endDate) query.set('end_date', params.endDate);
   const suffix = query.toString();
   const response = await fetchWithAuth(
-    `/api/v1/anthropic-usage${suffix ? `?${suffix}` : ''}`
+    `${REST_API_PREFIX}/anthropic-usage${suffix ? `?${suffix}` : ''}`
   );
   if (response.status === 403) {
     throw await permissionErrorFromResponse(response);
@@ -2134,11 +2164,14 @@ export async function getAnthropicUsage(params: {
 export async function saveAnthropicConnection(
   payload: AnthropicConnectionUpsert
 ): Promise<AnthropicConnection> {
-  const response = await fetchWithAuth('/api/v1/anthropic-usage/connection', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/anthropic-usage/connection',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -2149,18 +2182,24 @@ export async function saveAnthropicConnection(
 }
 
 export async function deleteAnthropicConnection(): Promise<void> {
-  const response = await fetchWithAuth('/api/v1/anthropic-usage/connection', {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/anthropic-usage/connection',
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to remove the Anthropic connection');
   }
 }
 
 export async function syncAnthropicUsage(): Promise<void> {
-  const response = await fetchWithAuth('/api/v1/anthropic-usage/sync', {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/anthropic-usage/sync',
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -2178,7 +2217,7 @@ export async function getCopilotUsage(params: {
   if (params.endDate) query.set('end_date', params.endDate);
   const suffix = query.toString();
   const response = await fetchWithAuth(
-    `/api/v1/cost/copilot${suffix ? `?${suffix}` : ''}`
+    `${REST_API_PREFIX}/cost/copilot${suffix ? `?${suffix}` : ''}`
   );
   if (response.status === 403) {
     throw await permissionErrorFromResponse(response);
@@ -2192,11 +2231,14 @@ export async function getCopilotUsage(params: {
 export async function saveCopilotConnection(
   payload: CopilotConnectionUpsert
 ): Promise<CopilotConnection> {
-  const response = await fetchWithAuth('/api/v1/cost/copilot/connection', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/cost/copilot/connection',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -2207,18 +2249,24 @@ export async function saveCopilotConnection(
 }
 
 export async function deleteCopilotConnection(): Promise<void> {
-  const response = await fetchWithAuth('/api/v1/cost/copilot/connection', {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/cost/copilot/connection',
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to remove the Copilot connection');
   }
 }
 
 export async function syncCopilotConnection(): Promise<void> {
-  const response = await fetchWithAuth('/api/v1/cost/copilot/connection/sync', {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/cost/copilot/connection/sync',
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -2253,7 +2301,9 @@ export interface ToolCostFlag {
  * and normalize to an array. Dismissed flags are excluded by the default GET.
  */
 export async function getToolCostFlags(): Promise<ToolCostFlag[]> {
-  const response = await fetchWithAuth('/api/v1/billing/cost/tool-flags');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/billing/cost/tool-flags'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch tool cost flags');
   }
@@ -2268,7 +2318,7 @@ export async function getToolCostFlags(): Promise<ToolCostFlag[]> {
 /** Dismiss a single tool cost flag. */
 export async function dismissToolCostFlag(id: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/tool-flags/${id}/dismiss`,
+    `${REST_API_PREFIX}/billing/cost/tool-flags/${id}/dismiss`,
     {
       method: 'POST',
     }
@@ -2288,7 +2338,7 @@ export async function dismissToolCostFlag(id: string): Promise<void> {
  */
 export async function refreshToolCostFlags(): Promise<ToolCostFlag[]> {
   const response = await fetchWithAuth(
-    '/api/v1/billing/cost/tool-flags/refresh',
+    REST_API_PREFIX + '/billing/cost/tool-flags/refresh',
     {
       method: 'POST',
     }
@@ -2308,7 +2358,7 @@ export async function getFlowGatewayUsageSummary(
   params: GatewayUsageSummaryParams = {}
 ): Promise<FlowGatewayUsageSummaryResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/${flowId}/gateway-usage/summary${buildGatewayUsageQuery(params)}`
+    `${REST_API_PREFIX}/flows/${flowId}/gateway-usage/summary${buildGatewayUsageQuery(params)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch flow gateway usage summary');
@@ -2322,7 +2372,7 @@ export async function getAccountGatewayUsageSearch(
   const query = new URLSearchParams(buildGatewayUsageQuery(params));
   if (params.includeTotal !== true) query.set('include_total', 'false');
   const response = await fetchWithAuth(
-    `/api/v1/account/gateway-usage/search?${query}`
+    `${REST_API_PREFIX}/account/gateway-usage/search?${query}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch account gateway usage search results');
@@ -2334,7 +2384,7 @@ export async function getAccountRuntimeSessions(
   params: RuntimeSessionListParams = {}
 ): Promise<AccountRuntimeSessionListResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions${buildRuntimeSessionListQuery(params)}`
+    `${REST_API_PREFIX}/runtime-sessions${buildRuntimeSessionListQuery(params)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch sessions');
@@ -2390,12 +2440,15 @@ export async function searchRuntimeSessions(
     body.max_snippets_per_session = params.maxSnippetsPerSession;
   }
 
-  const response = await fetchWithAuth('/api/v1/runtime-sessions/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: params.signal,
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/runtime-sessions/search',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: params.signal,
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -2409,7 +2462,7 @@ export async function getAccountAgents(
   params: ManagedAgentListParams = {}
 ): Promise<AccountManagedAgentListResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/agents${buildManagedAgentListQuery(params)}`
+    `${REST_API_PREFIX}/agents${buildManagedAgentListQuery(params)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch managed agents');
@@ -2441,7 +2494,7 @@ export async function getAccountAgent(
     queryParams.set('session_offset', String(params.session_offset));
   const queryStr = queryParams.toString();
   const response = await fetchWithAuth(
-    `/api/v1/agents/${agentId}${queryStr ? `?${queryStr}` : ''}`
+    `${REST_API_PREFIX}/agents/${agentId}${queryStr ? `?${queryStr}` : ''}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch managed agent');
@@ -2453,7 +2506,7 @@ export async function updateAccountAgent(
   agentId: string,
   payload: ManagedAgentUpdateRequest
 ): Promise<ManagedAgentSummary> {
-  const response = await fetchWithAuth(`/api/v1/agents/${agentId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/agents/${agentId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -2467,7 +2520,7 @@ export async function updateAccountAgent(
 export async function removeAccountAgent(
   agentId: string
 ): Promise<{ message: string }> {
-  const response = await fetchWithAuth(`/api/v1/agents/${agentId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/agents/${agentId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -2489,7 +2542,7 @@ export interface CreateManagedAgentRequest {
 export async function createManagedAgent(
   payload: CreateManagedAgentRequest
 ): Promise<ManagedAgentSummary> {
-  const response = await fetchWithAuth('/api/v1/agents', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/agents', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -2521,7 +2574,7 @@ export async function updateManagedAgent(
   agentId: string,
   payload: UpdateManagedAgentRequest
 ): Promise<ManagedAgentSummary> {
-  const response = await fetchWithAuth(`/api/v1/agents/${agentId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/agents/${agentId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -2565,7 +2618,7 @@ export async function createManagedAgentCredential(
   payload: ManagedAgentCredentialCreateRequest
 ): Promise<ManagedAgentCredentialCreateResult> {
   const response = await fetchWithAuth(
-    `/api/v1/agents/${agentId}/credentials`,
+    `${REST_API_PREFIX}/agents/${agentId}/credentials`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2605,7 +2658,7 @@ export async function replaceManagedAgentModelBindings(
   payload: ManagedAgentModelBindingSyncRequest
 ): Promise<ManagedAgentModelBindingSummary[]> {
   const response = await fetchWithAuth(
-    `/api/v1/agents/${agentId}/model-bindings`,
+    `${REST_API_PREFIX}/agents/${agentId}/model-bindings`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -2626,7 +2679,7 @@ export async function sendAgentControlCommand(
   payload: AgentControlCommandRequest,
   signal?: AbortSignal
 ): Promise<AgentControlCommandResponse> {
-  const url = `/api/v1/agents/${agentId}/control/commands`;
+  const url = `${REST_API_PREFIX}/agents/${agentId}/control/commands`;
   const response = await ownerConsentRequest(fetchWithAuth, url, {
     signal,
     method: 'POST',
@@ -2694,7 +2747,7 @@ export async function sendAgentControlCommand(
 export async function sendOperatorNote(
   payload: OperatorNoteCreateRequest
 ): Promise<OperatorNote> {
-  const response = await fetchWithAuth('/api/v1/operator-notes', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/operator-notes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -2732,7 +2785,7 @@ export async function listOperatorNotesPage(params: {
   if (params.limit) query.set('limit', String(params.limit));
   if (params.offset) query.set('offset', String(params.offset));
   const response = await fetchWithAuth(
-    `/api/v1/operator-notes?${query.toString()}`
+    `${REST_API_PREFIX}/operator-notes?${query.toString()}`
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -2779,7 +2832,7 @@ export async function listOperatorNoteSessionTargets(
     offset: String(offset),
   });
   const response = await fetchWithAuth(
-    `/api/v1/operator-notes/session-targets?${query.toString()}`
+    `${REST_API_PREFIX}/operator-notes/session-targets?${query.toString()}`
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -2795,7 +2848,7 @@ export async function cancelOperatorNote(
   noteId: string
 ): Promise<OperatorNote> {
   const response = await fetchWithAuth(
-    `/api/v1/operator-notes/${encodeURIComponent(noteId)}/cancel`,
+    `${REST_API_PREFIX}/operator-notes/${encodeURIComponent(noteId)}/cancel`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -2814,7 +2867,7 @@ export async function sendAgentControlVoiceTranscript(
 ): Promise<AgentControlCommandResponse> {
   const response = await ownerConsentRequest(
     fetchWithAuth,
-    `/api/v1/agents/${agentId}/control/voice-transcripts`,
+    `${REST_API_PREFIX}/agents/${agentId}/control/voice-transcripts`,
     {
       signal,
       method: 'POST',
@@ -2847,7 +2900,7 @@ export async function sendAgentControlTakeover(
 ): Promise<AgentControlCommandResponse> {
   const response = await ownerConsentRequest(
     fetchWithAuth,
-    `/api/v1/agents/${agentId}/control/takeover`,
+    `${REST_API_PREFIX}/agents/${agentId}/control/takeover`,
     {
       signal,
       method: 'POST',
@@ -2871,7 +2924,7 @@ export async function sendAgentControlRelease(
 ): Promise<AgentControlCommandResponse> {
   const response = await ownerConsentRequest(
     fetchWithAuth,
-    `/api/v1/agents/${agentId}/control/release`,
+    `${REST_API_PREFIX}/agents/${agentId}/control/release`,
     {
       signal,
       method: 'POST',
@@ -2889,7 +2942,9 @@ export async function sendAgentControlRelease(
 }
 
 export async function getAccountGovernanceDefaults(): Promise<AccountGovernanceDefaultsResponse> {
-  const response = await fetchWithAuth('/api/v1/account/governance-defaults');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/account/governance-defaults'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch account governance defaults');
   }
@@ -2899,11 +2954,14 @@ export async function getAccountGovernanceDefaults(): Promise<AccountGovernanceD
 export async function updateAccountGovernanceDefaults(
   defaults: AccountGovernanceDefaults
 ): Promise<AccountGovernanceDefaultsResponse> {
-  const response = await fetchWithAuth('/api/v1/account/governance-defaults', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(defaults),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/account/governance-defaults',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(defaults),
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to update account governance defaults');
   }
@@ -2913,7 +2971,9 @@ export async function updateAccountGovernanceDefaults(
 export async function getAgentGovernance(
   agentId: string
 ): Promise<SubjectGovernanceResponse> {
-  const response = await fetchWithAuth(`/api/v1/agents/${agentId}/governance`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${agentId}/governance`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch agent governance');
   }
@@ -2924,11 +2984,14 @@ export async function updateAgentGovernance(
   agentId: string,
   config: SubjectGovernanceConfig
 ): Promise<SubjectGovernanceResponse> {
-  const response = await fetchWithAuth(`/api/v1/agents/${agentId}/governance`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/agents/${agentId}/governance`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to update agent governance');
   }
@@ -2936,7 +2999,7 @@ export async function updateAgentGovernance(
 }
 
 function flowGovernanceUrl(flowId: string): string {
-  return `/api/v1/account/governance/flows/${encodeURIComponent(flowId)}`;
+  return `${REST_API_PREFIX}/account/governance/flows/${encodeURIComponent(flowId)}`;
 }
 
 export async function getFlowGovernance(
@@ -2982,7 +3045,7 @@ export async function getAccountRuntimeSessionDetail(
   _params: RuntimeSessionDetailParams = {}
 ): Promise<AccountRuntimeSessionDetailResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${runtimeSessionId}`
+    `${REST_API_PREFIX}/runtime-sessions/${runtimeSessionId}`
   );
   if (!response.ok) {
     const refused = await historyUnavailableError(response);
@@ -3010,7 +3073,7 @@ export async function getAccountRuntimeSessionInteractions(
 
   const queryString = queryParams.toString();
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${runtimeSessionId}/interactions${queryString ? `?${queryString}` : ''}`
+    `${REST_API_PREFIX}/runtime-sessions/${runtimeSessionId}/interactions${queryString ? `?${queryString}` : ''}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch session interactions');
@@ -3036,7 +3099,7 @@ export async function getAccountRuntimeSessionActivityTimeline(
     query.set('operator_note_id', options.operatorNoteId);
   }
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${runtimeSessionId}/activity?${query.toString()}`
+    `${REST_API_PREFIX}/runtime-sessions/${runtimeSessionId}/activity?${query.toString()}`
   );
   if (!response.ok) {
     // This is the call that refuses when a session's whole activity sits
@@ -3060,7 +3123,7 @@ export async function searchAccountArtifacts(
 ): Promise<ArtifactSearchResponse> {
   const query = params.toString();
   const response = await fetchWithAuth(
-    `/api/v1/artifacts${query ? `?${query}` : ''}`
+    `${REST_API_PREFIX}/artifacts${query ? `?${query}` : ''}`
   );
   if (response.status === 403) {
     throw await permissionErrorFromResponse(response);
@@ -3091,7 +3154,7 @@ export async function listRuntimeSessionArtifacts(
     const query = new URLSearchParams({ limit: '200' });
     if (cursor) query.set('cursor', cursor);
     const response = await fetchWithAuth(
-      `/api/v1/runtime-sessions/${encodeURIComponent(
+      `${REST_API_PREFIX}/runtime-sessions/${encodeURIComponent(
         runtimeSessionId
       )}/artifacts?${query.toString()}`
     );
@@ -3142,7 +3205,7 @@ export async function getSimilarSessions(
 
   const queryString = queryParams.toString();
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${runtimeSessionId}/similar${queryString ? `?${queryString}` : ''}`
+    `${REST_API_PREFIX}/runtime-sessions/${runtimeSessionId}/similar${queryString ? `?${queryString}` : ''}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch similar sessions');
@@ -3154,7 +3217,7 @@ export async function summarizeRuntimeSession(
   runtimeSessionId: string
 ): Promise<RuntimeSessionSummaryInsight> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${runtimeSessionId}/summaries`,
+    `${REST_API_PREFIX}/runtime-sessions/${runtimeSessionId}/summaries`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -3176,7 +3239,7 @@ export async function optimizeRuntimeSession(
   } = {}
 ): Promise<RuntimeSessionOptimizationResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations`,
+    `${REST_API_PREFIX}/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3216,7 +3279,7 @@ export async function submitRuntimeSessionOptimizationJob(
   } = {}
 ): Promise<RuntimeSessionOptimizationJobSubmitResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/jobs`,
+    `${REST_API_PREFIX}/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/jobs`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3245,7 +3308,7 @@ export async function getRuntimeSessionOptimizationJob(
   jobId: string
 ): Promise<RuntimeSessionOptimizationJobStatusResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/jobs/${jobId}`
+    `${REST_API_PREFIX}/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/jobs/${jobId}`
   );
   if (!response.ok) {
     throw new Error(`Failed to load optimization job (${response.status})`);
@@ -3263,7 +3326,7 @@ export async function getRuntimeSessionOptimizationJob(
  */
 export async function getExampleSessionOptimization(): Promise<RuntimeSessionOptimizationResponse> {
   const response = await fetchWithAuth(
-    '/api/v1/billing/cost/runtime-sessions/example/optimization'
+    REST_API_PREFIX + '/billing/cost/runtime-sessions/example/optimization'
   );
   if (!response.ok) {
     throw new Error('Failed to load example session optimization');
@@ -3280,7 +3343,7 @@ export async function applyRuntimeSessionOptimization(
   }
 ): Promise<RuntimeSessionOptimizationAppliedAction> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/apply`,
+    `${REST_API_PREFIX}/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/apply`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3308,7 +3371,7 @@ export async function listRuntimeSessionOptimizationActions(
   runtimeSessionId: string
 ): Promise<RuntimeSessionOptimizationActionListResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/actions`,
+    `${REST_API_PREFIX}/billing/cost/runtime-sessions/${runtimeSessionId}/optimizations/actions`,
     { method: 'GET' }
   );
   if (!response.ok) {
@@ -3336,7 +3399,7 @@ export async function replayRuntimeSession(
   }
 ): Promise<RuntimeSessionReplayResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/runtime-sessions/${runtimeSessionId}/replay`,
+    `${REST_API_PREFIX}/billing/cost/runtime-sessions/${runtimeSessionId}/replay`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3371,7 +3434,9 @@ export async function replayRuntimeSession(
  * GET /api/v1/billing/cost/output-filters → { items: ToolOutputFilter[] }
  */
 export async function listToolOutputFilters(): Promise<ToolOutputFilter[]> {
-  const response = await fetchWithAuth('/api/v1/billing/cost/output-filters');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/billing/cost/output-filters'
+  );
   if (!response.ok) {
     throw new Error('Failed to load tool output filters');
   }
@@ -3386,16 +3451,19 @@ export async function listToolOutputFilters(): Promise<ToolOutputFilter[]> {
 export async function createToolOutputFilter(
   payload: ToolOutputFilterCreateRequest
 ): Promise<ToolOutputFilter> {
-  const response = await fetchWithAuth('/api/v1/billing/cost/output-filters', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      server_name: payload.server_name ?? null,
-      tool_name: payload.tool_name,
-      dropped_fields: payload.dropped_fields,
-      managed_agent_id: payload.managed_agent_id ?? null,
-    }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/billing/cost/output-filters',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        server_name: payload.server_name ?? null,
+        tool_name: payload.tool_name,
+        dropped_fields: payload.dropped_fields,
+        managed_agent_id: payload.managed_agent_id ?? null,
+      }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -3411,7 +3479,7 @@ export async function createToolOutputFilter(
  */
 export async function deleteToolOutputFilter(id: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/billing/cost/output-filters/${id}`,
+    `${REST_API_PREFIX}/billing/cost/output-filters/${id}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -3424,7 +3492,7 @@ export async function updateAccountRuntimeSession(
   payload: RuntimeSessionUpdateRequest
 ): Promise<RuntimeSessionSummary> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${runtimeSessionId}`,
+    `${REST_API_PREFIX}/runtime-sessions/${runtimeSessionId}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -3476,7 +3544,7 @@ export async function getRuntimeSessionGatewayEvents(
   }
   const params = searchParams.toString() ? `?${searchParams.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${sessionId}/gateway-events${params}`
+    `${REST_API_PREFIX}/runtime-sessions/${sessionId}/gateway-events${params}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch runtime session gateway events');
@@ -3504,7 +3572,7 @@ export async function getRuntimeSessionRequests(
   }
   const params = searchParams.toString() ? `?${searchParams.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${sessionId}/requests${params}`
+    `${REST_API_PREFIX}/runtime-sessions/${sessionId}/requests${params}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch runtime session requests');
@@ -3517,7 +3585,7 @@ export async function getRuntimeSessionGatewayEventDetail(
   eventId: string
 ): Promise<FlowGatewayEvent> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${sessionId}/gateway-events/${eventId}`
+    `${REST_API_PREFIX}/runtime-sessions/${sessionId}/gateway-events/${eventId}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch runtime session gateway event detail');
@@ -3530,7 +3598,7 @@ export async function summarizeRuntimeSessionGatewayEvent(
   eventId: string
 ): Promise<RuntimeSessionInteractionSummary> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${sessionId}/gateway-events/${eventId}/summary`,
+    `${REST_API_PREFIX}/runtime-sessions/${sessionId}/gateway-events/${eventId}/summary`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -3540,7 +3608,7 @@ export async function summarizeRuntimeSessionGatewayEvent(
 }
 
 export async function getTrackers() {
-  const response = await fetchWithAuth('/api/v1/trackers');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/trackers');
   if (!response.ok) {
     throw new Error('Failed to fetch trackers');
   }
@@ -3566,7 +3634,7 @@ export interface TrackerConnectionOptions {
 }
 
 export async function addTracker(trackerData: any) {
-  const response = await fetchWithAuth('/api/v1/trackers', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/trackers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(trackerData),
@@ -3579,11 +3647,14 @@ export async function addTracker(trackerData: any) {
 }
 
 export async function updateTracker(trackerId: string, trackerData: any) {
-  const response = await fetchWithAuth(`/api/v1/trackers/${trackerId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(trackerData),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/trackers/${trackerId}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(trackerData),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(trackerErrorDetail(errorData, 'Failed to update tracker'));
@@ -3592,9 +3663,12 @@ export async function updateTracker(trackerId: string, trackerData: any) {
 }
 
 export async function deleteTracker(trackerId: string): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/trackers/${trackerId}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/trackers/${trackerId}`,
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to delete tracker');
   }
@@ -3638,11 +3712,14 @@ export async function validateTrackerToken(
     payload.auth_type = options.authType;
   }
 
-  const response = await fetchWithAuth('/api/v1/trackers/test-and-list-orgs', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/trackers/test-and-list-orgs',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }
+  );
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -3687,7 +3764,7 @@ export async function listProjectsForOrg(
   }
 
   const response = await fetchWithAuth(
-    '/api/v1/trackers/list-projects-for-org',
+    REST_API_PREFIX + '/trackers/list-projects-for-org',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -3712,7 +3789,7 @@ export async function getDuplicateIssues(
   // Exact path, no trailing slash: "/issue-duplicates/" answers with a
   // redirect that a TLS-terminating proxy turns into a blocked http:// URL.
   const response = await fetchWithAuth(
-    `/api/v1/issue-duplicates?status=${status}`
+    `${REST_API_PREFIX}/issue-duplicates?status=${status}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch duplicate issues');
@@ -3722,7 +3799,7 @@ export async function getDuplicateIssues(
 }
 
 export async function getIssueCount(): Promise<{ total_issues: number }> {
-  const response = await fetchWithAuth('/api/v1/issues-count');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/issues-count');
   if (!response.ok) {
     throw new Error('Failed to fetch issue count');
   }
@@ -3746,7 +3823,9 @@ export async function listIssues(params: {
   if (params.skip !== undefined) query.set('skip', String(params.skip));
   if (params.limit !== undefined) query.set('limit', String(params.limit));
   if (params.sort) query.set('sort', params.sort);
-  const response = await fetchWithAuth(`/api/v1/issues?${query.toString()}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/issues?${query.toString()}`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch issues');
   }
@@ -3768,7 +3847,7 @@ export async function listProjectPullRequests(
   if (params?.page !== undefined) query.set('page', String(params.page));
   if (params?.refresh) query.set('refresh', '1');
   const response = await fetchWithAuth(
-    `/api/v1/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
+    `${REST_API_PREFIX}/projects/${encodeURIComponent(projectId)}/pull-requests?${query.toString()}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch pull requests');
@@ -3778,7 +3857,7 @@ export async function listProjectPullRequests(
 
 export async function getIssue(issueId: string): Promise<IssueListItem> {
   const response = await fetchWithAuth(
-    `/api/v1/issues/${encodeURIComponent(issueId)}`
+    `${REST_API_PREFIX}/issues/${encodeURIComponent(issueId)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch issue');
@@ -3790,7 +3869,9 @@ export async function getIssueDuplicateAiStatus(): Promise<{
   configured: boolean;
   model_name: string | null;
 }> {
-  const response = await fetchWithAuth('/api/v1/issue-duplicates/ai-status');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/issue-duplicates/ai-status'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch AI status');
   }
@@ -3831,7 +3912,7 @@ export async function searchIssues(
   }
 
   const response = await fetchWithAuth(
-    `/api/v1/search?${queryParams.toString()}`
+    `${REST_API_PREFIX}/search?${queryParams.toString()}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch issues list');
@@ -3910,7 +3991,9 @@ export async function post(url: string, body: any) {
  * comes back as its own sentence.
  */
 export async function resendVerificationEmail(email: string): Promise<string> {
-  const data = await post('/api/v1/auth/resend-verification', { email });
+  const data = await post(REST_API_PREFIX + '/auth/resend-verification', {
+    email,
+  });
   return typeof data?.message === 'string'
     ? data.message
     : 'If that address needs verifying, a new link is on its way.';
@@ -3919,11 +4002,14 @@ export async function resendVerificationEmail(email: string): Promise<string> {
 export async function detectIssueDependencies(
   issueIds: string[]
 ): Promise<DependencyResponse> {
-  const response = await fetchWithAuth('/api/v1/issue-dependencies/detect', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_ids: issueIds }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/issue-dependencies/detect',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue_ids: issueIds }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -3937,11 +4023,14 @@ export async function extendIssueDependencyScan(
   issueIds: string[],
   extendBy: number
 ): Promise<DependencyResponse> {
-  const response = await fetchWithAuth('/api/v1/issue-dependencies/extend', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_ids: issueIds, extend_by: extendBy }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/issue-dependencies/extend',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue_ids: issueIds, extend_by: extendBy }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -3954,11 +4043,14 @@ export async function extendIssueDependencyScan(
 export async function commitIssueDependencies(
   dependencies: DependencyPair[]
 ): Promise<DependencyResponse> {
-  const response = await fetchWithAuth('/api/v1/issue-dependencies/commit', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dependencies }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/issue-dependencies/commit',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dependencies }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -4012,7 +4104,7 @@ export interface AvatarResponse {
 export async function uploadAvatar(file: File): Promise<AvatarResponse> {
   const formData = new FormData();
   formData.append('file', file);
-  const response = await fetchWithAuth('/api/v1/users/me/avatar', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/users/me/avatar', {
     method: 'PUT',
     body: formData,
   });
@@ -4032,7 +4124,7 @@ export async function uploadAvatar(file: File): Promise<AvatarResponse> {
 }
 
 export async function deleteAvatar(): Promise<AvatarResponse> {
-  const response = await fetchWithAuth('/api/v1/users/me/avatar', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/users/me/avatar', {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -4055,7 +4147,7 @@ export async function getUserProfile(): Promise<UserProfile> {
   const epoch = userProfileEpoch;
   userProfileInflight = (async () => {
     try {
-      const response = await fetchWithAuth('/api/v1/auth/users/me');
+      const response = await fetchWithAuth(REST_API_PREFIX + '/auth/users/me');
       if (!response.ok) {
         throw new Error('Failed to fetch user profile');
       }
@@ -4078,7 +4170,7 @@ export async function getUserProfile(): Promise<UserProfile> {
 }
 
 export async function getAccountDetails() {
-  const response = await fetchWithAuth('/api/v1/account/details');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/account/details');
   if (!response.ok) {
     throw new Error('Failed to fetch account details');
   }
@@ -4090,7 +4182,7 @@ export async function updateUserProfile(details: {
   username?: string;
   email?: string;
 }): Promise<UserProfile> {
-  const response = await fetchWithAuth('/api/v1/auth/users/me', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/auth/users/me', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(details),
@@ -4111,11 +4203,14 @@ export async function changePassword(passwords: {
   current_password: string;
   new_password: string;
 }) {
-  const response = await fetchWithAuth('/api/v1/auth/users/me/password', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(passwords),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/auth/users/me/password',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(passwords),
+    }
+  );
   if (response.status === 204) {
     return;
   }
@@ -4140,7 +4235,7 @@ export interface CliSession {
 
 /** List the signed-in user's active CLI logins. */
 export async function listCliSessions(): Promise<CliSession[]> {
-  const response = await fetchWithAuth('/api/v1/auth/sessions/cli');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/auth/sessions/cli');
   if (!response.ok) {
     throw new Error('Failed to load CLI sessions');
   }
@@ -4150,7 +4245,7 @@ export async function listCliSessions(): Promise<CliSession[]> {
 /** Revoke one CLI login; its access and refresh tokens stop working. */
 export async function revokeCliSession(sessionId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/sessions/cli/${encodeURIComponent(sessionId)}`,
+    `${REST_API_PREFIX}/auth/sessions/cli/${encodeURIComponent(sessionId)}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -4163,7 +4258,7 @@ export async function revokeCliSession(sessionId: string): Promise<void> {
 
 // API Keys
 export async function getApiKeys(): Promise<ApiKey[]> {
-  const response = await fetchWithAuth('/api/v1/auth/api-keys');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/auth/api-keys');
   if (!response.ok) {
     throw new Error('Failed to fetch API keys');
   }
@@ -4197,7 +4292,9 @@ export async function getApiKeysPage(params: {
     sort: params.sort || '-created',
   });
   if (params.search) query.set('q', params.search);
-  const response = await fetchWithAuth(`/api/v1/auth/api-keys?${query}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/auth/api-keys?${query}`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch API keys');
   }
@@ -4219,7 +4316,9 @@ export async function getApiKeysPage(params: {
  * Overview reads this instead of the whole key list (#1694).
  */
 export async function getApiKeyCount(): Promise<{ active: number }> {
-  const response = await fetchWithAuth('/api/v1/auth/api-keys/count');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/auth/api-keys/count'
+  );
   if (!response.ok) {
     throw new Error('Failed to count API keys');
   }
@@ -4231,7 +4330,7 @@ export async function createApiKey(
   expires_at: string | null
 ): Promise<ApiKey> {
   const body = { name, expires_at };
-  const response = await fetchWithAuth('/api/v1/auth/api-keys', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/auth/api-keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -4244,16 +4343,21 @@ export async function createApiKey(
 }
 
 export async function deleteApiKey(keyId: string) {
-  const response = await fetchWithAuth(`/api/v1/auth/api-keys/${keyId}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/auth/api-keys/${keyId}`,
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to delete API key');
   }
 }
 
 export async function getApiKey(keyId: string): Promise<ApiKey> {
-  const response = await fetchWithAuth(`/api/v1/auth/api-keys/${keyId}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/auth/api-keys/${keyId}`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch API key');
   }
@@ -4262,7 +4366,7 @@ export async function getApiKey(keyId: string): Promise<ApiKey> {
 
 export async function getApiKeyActivity(keyId: string): Promise<any[]> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/api-keys/${keyId}/activity`
+    `${REST_API_PREFIX}/auth/api-keys/${keyId}/activity`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch API key activity');
@@ -4274,7 +4378,7 @@ export async function getApiKeyGovernance(
   keyId: string
 ): Promise<SubjectGovernanceResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/api-keys/${keyId}/governance`
+    `${REST_API_PREFIX}/auth/api-keys/${keyId}/governance`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch API key governance');
@@ -4287,7 +4391,7 @@ export async function updateApiKeyGovernance(
   config: SubjectGovernanceConfig
 ): Promise<SubjectGovernanceResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/api-keys/${keyId}/governance`,
+    `${REST_API_PREFIX}/auth/api-keys/${keyId}/governance`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -4309,7 +4413,7 @@ export async function getApiKeyGatewayUsageSummary(
   if (params.endDate) query.append('end_date', params.endDate);
 
   const queryString = query.toString();
-  const url = `/api/v1/auth/api-keys/${keyId}/gateway-usage/summary${queryString ? `?${queryString}` : ''}`;
+  const url = `${REST_API_PREFIX}/auth/api-keys/${keyId}/gateway-usage/summary${queryString ? `?${queryString}` : ''}`;
 
   const response = await fetchWithAuth(url);
   if (!response.ok) {
@@ -4327,8 +4431,8 @@ export async function getAIModels(
 ): Promise<AIModel[]> {
   const response = await fetchWithAuth(
     options.defaultOnly
-      ? '/api/v1/ai-models?default_only=true'
-      : '/api/v1/ai-models'
+      ? REST_API_PREFIX + '/ai-models?default_only=true'
+      : REST_API_PREFIX + '/ai-models'
   );
   if (!response.ok) {
     throw new Error('Failed to fetch AI models');
@@ -4337,7 +4441,9 @@ export async function getAIModels(
 }
 
 export async function getAIModel(modelId: string): Promise<AIModel> {
-  const response = await fetchWithAuth(`/api/v1/ai-models/${modelId}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/ai-models/${modelId}`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch AI model');
   }
@@ -4345,7 +4451,7 @@ export async function getAIModel(modelId: string): Promise<AIModel> {
 }
 
 export async function createAIModel(model: any) {
-  const response = await fetchWithAuth('/api/v1/ai-models', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/ai-models', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(model),
@@ -4360,11 +4466,14 @@ export async function createAIModel(model: any) {
 }
 
 export async function updateAIModel(modelId: string, model: any) {
-  const response = await fetchWithAuth(`/api/v1/ai-models/${modelId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(model),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/ai-models/${modelId}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(model),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -4383,10 +4492,13 @@ export async function transcribeAudio(
   if (options.aiModelId) {
     formData.append('ai_model_id', options.aiModelId);
   }
-  const response = await fetchWithAuth('/api/v1/audio/transcriptions', {
-    method: 'POST',
-    body: formData,
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/audio/transcriptions',
+    {
+      method: 'POST',
+      body: formData,
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -4399,7 +4511,7 @@ export async function transcribeAudio(
 export async function synthesizeSpeech(
   request: TextToSpeechRequest
 ): Promise<Blob> {
-  const response = await fetchWithAuth('/api/v1/audio/speech', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/audio/speech', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
@@ -4414,9 +4526,12 @@ export async function synthesizeSpeech(
 }
 
 export async function deleteAIModel(modelId: string) {
-  const response = await fetchWithAuth(`/api/v1/ai-models/${modelId}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/ai-models/${modelId}`,
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -4498,7 +4613,7 @@ export async function getAvailableModelsForProvider(
   awsAuth?: AwsDiscoveryAuth,
   aiModelId?: string
 ): Promise<AvailableModelsResult> {
-  const url = `/api/v1/ai-models/providers/${provider}/available-models`;
+  const url = `${REST_API_PREFIX}/ai-models/providers/${provider}/available-models`;
   const response = await fetchWithAuth(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -4564,7 +4679,9 @@ export async function getAIModelsOverview(
   if (includePriorPeriod) {
     query += `${query ? '&' : '?'}include_prior_period=true`;
   }
-  const response = await fetchWithAuth(`/api/v1/ai-models/overview${query}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/ai-models/overview${query}`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch AI models overview');
   }
@@ -4576,7 +4693,7 @@ export async function getAIModelGatewayUsageSummary(
   params: GatewayUsageSummaryParams = {}
 ): Promise<AIModelGatewayUsageSummaryResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/ai-models/${modelId}/summary${buildGatewayUsageQuery(params)}`
+    `${REST_API_PREFIX}/ai-models/${modelId}/summary${buildGatewayUsageQuery(params)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch AI model usage summary');
@@ -4589,7 +4706,7 @@ export async function getAIModelRuntimeSessions(
   params: RuntimeSessionListParams = {}
 ): Promise<AIModelRuntimeSessionListResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/ai-models/${modelId}/runtime-sessions${buildRuntimeSessionListQuery(params)}`
+    `${REST_API_PREFIX}/ai-models/${modelId}/runtime-sessions${buildRuntimeSessionListQuery(params)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch AI model runtime sessions');
@@ -4603,7 +4720,7 @@ export async function getAIModelUsedBy(
   signal?: AbortSignal
 ): Promise<AIModelUsedByResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/ai-models/${encodeURIComponent(modelId)}/used-by`,
+    `${REST_API_PREFIX}/ai-models/${encodeURIComponent(modelId)}/used-by`,
     { signal }
   );
   if (!response.ok) {
@@ -4622,7 +4739,7 @@ export async function getAIModelGatewayUsageSearch(
   params: GatewayUsageSearchParams = {}
 ): Promise<AIModelGatewayUsageSearchResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/ai-models/${modelId}/interactions${buildGatewayUsageQuery(params)}`
+    `${REST_API_PREFIX}/ai-models/${modelId}/interactions${buildGatewayUsageQuery(params)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch AI model interactions');
@@ -4708,7 +4825,9 @@ export async function getFlowSummaries(
   if (options.skip !== undefined) params.set('skip', String(options.skip));
   if (options.limit !== undefined) params.set('limit', String(options.limit));
   const query = params.toString() ? `?${params.toString()}` : '';
-  const response = await fetchWithAuth(`/api/v1/flows/summary${query}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/summary${query}`
+  );
   if (!response.ok) throw new Error('Failed to fetch flow summaries');
   const rows = await response.json();
   return Array.isArray(rows) ? rows.map(withSafeIcon) : rows;
@@ -4740,7 +4859,7 @@ export async function getFlows(
     params.set('limit', String(options.limit));
   }
   const query = params.toString() ? `?${params.toString()}` : '';
-  const response = await fetchWithAuth(`/api/v1/flows${query}`);
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/flows${query}`);
   if (!response.ok) {
     throw new Error('Failed to fetch flows');
   }
@@ -4808,7 +4927,7 @@ export async function getAllFlowSummaries(
 }
 
 export async function getFlow(flowId: string): Promise<any> {
-  const response = await fetchWithAuth(`/api/v1/flows/${flowId}`);
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/flows/${flowId}`);
   if (!response.ok) {
     throw new Error('Failed to fetch flow');
   }
@@ -4861,7 +4980,7 @@ export interface FlowWrite {
 }
 
 export async function createFlow(flow: FlowWrite): Promise<any> {
-  const response = await fetchWithAuth('/api/v1/flows', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/flows', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(flow),
@@ -4877,7 +4996,7 @@ export async function updateFlow(
   flowId: string,
   flow: FlowWrite
 ): Promise<any> {
-  const response = await fetchWithAuth(`/api/v1/flows/${flowId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/flows/${flowId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(flow),
@@ -4890,7 +5009,7 @@ export async function updateFlow(
 }
 
 export async function deleteFlow(flowId: string) {
-  const response = await fetchWithAuth(`/api/v1/flows/${flowId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/flows/${flowId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -4919,11 +5038,14 @@ export interface SchedulePreview {
 export async function previewFlowSchedule(
   scheduleConfig: unknown
 ): Promise<SchedulePreview> {
-  const response = await fetchWithAuth('/api/v1/flows/schedule/preview', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ schedule_config: scheduleConfig }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/flows/schedule/preview',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ schedule_config: scheduleConfig }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(extractValidationMessage(errorData));
@@ -4953,7 +5075,7 @@ function extractValidationMessage(errorData: any): string {
 }
 
 export async function getFlowPresets(): Promise<any[]> {
-  const response = await fetchWithAuth('/api/v1/flows/presets');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/flows/presets');
   if (!response.ok) {
     throw new Error('Failed to fetch flow presets');
   }
@@ -5005,7 +5127,7 @@ export async function getFlowExecutionsPage(options?: {
     params.set('started_after', options.startedAfter);
   }
   const queryString = params.toString();
-  const url = `/api/v1/flows/executions${queryString ? `?${queryString}` : ''}`;
+  const url = `${REST_API_PREFIX}/flows/executions${queryString ? `?${queryString}` : ''}`;
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch flow executions');
@@ -5079,7 +5201,7 @@ export async function getExecutionTree(
   executionId: string
 ): Promise<ExecutionTree> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/tree`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/tree`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch the execution tree');
@@ -5089,7 +5211,7 @@ export async function getExecutionTree(
 
 export async function getFlowExecution(executionId: string): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}`
+    `${REST_API_PREFIX}/flows/executions/${executionId}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch flow execution');
@@ -5155,7 +5277,7 @@ export async function previewFlowContinuation(
   const query = publication ? `?${new URLSearchParams(publication)}` : '';
   return continuationResponse(
     await fetchWithAuth(
-      `/api/v1/flows/executions/${encodeURIComponent(executionId)}/continuation${query}`
+      `${REST_API_PREFIX}/flows/executions/${encodeURIComponent(executionId)}/continuation${query}`
     )
   );
 }
@@ -5172,7 +5294,7 @@ export async function adoptFlowContinuation(
 ): Promise<FlowContinuationResult> {
   return continuationResponse(
     await fetchWithAuth(
-      `/api/v1/flows/executions/${encodeURIComponent(executionId)}/continuation`,
+      `${REST_API_PREFIX}/flows/executions/${encodeURIComponent(executionId)}/continuation`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5194,7 +5316,7 @@ export async function getFlowExecutionMetrics(executionId: string): Promise<{
   has_pricing: boolean;
 }> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/metrics`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/metrics`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch execution metrics');
@@ -5226,7 +5348,7 @@ export async function getFlowExecutionLogs(
   if (options?.excludeModelCalls) params.append('exclude_model_calls', 'true');
 
   const queryString = params.toString();
-  const url = `/api/v1/flows/executions/${executionId}/logs${queryString ? `?${queryString}` : ''}`;
+  const url = `${REST_API_PREFIX}/flows/executions/${executionId}/logs${queryString ? `?${queryString}` : ''}`;
 
   const response = await fetchWithAuth(url);
   if (!response.ok) {
@@ -5260,7 +5382,7 @@ export async function getFlowExecutionHostSessions(
   executionId: string
 ): Promise<HostExecSessionsResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/host-sessions`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/host-sessions`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch host execution sessions');
@@ -5281,7 +5403,7 @@ export async function getFlowExecutionGatewayEvents(
   const paramsStr = params.toString() ? `?${params.toString()}` : '';
 
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/gateway-events${paramsStr}`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/gateway-events${paramsStr}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch execution gateway events');
@@ -5294,7 +5416,7 @@ export async function getFlowExecutionGatewayEvent(
   eventId: string
 ): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/gateway-events/${eventId}`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/gateway-events/${eventId}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch execution gateway event');
@@ -5306,13 +5428,16 @@ export async function triggerFlowExecution(
   flowId: string,
   triggerEventData?: Record<string, any>
 ): Promise<any> {
-  const response = await fetchWithAuth(`/api/v1/flows/${flowId}/trigger`, {
-    method: 'POST',
-    headers: triggerEventData
-      ? { 'Content-Type': 'application/json' }
-      : undefined,
-    body: triggerEventData ? JSON.stringify(triggerEventData) : undefined,
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/flows/${flowId}/trigger`,
+    {
+      method: 'POST',
+      headers: triggerEventData
+        ? { 'Content-Type': 'application/json' }
+        : undefined,
+      body: triggerEventData ? JSON.stringify(triggerEventData) : undefined,
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to trigger flow execution');
   }
@@ -5393,7 +5518,7 @@ export async function runPresetOnTarget(body: {
   } else {
     payload.target = body.target;
   }
-  const response = await fetchWithAuth('/api/v1/flows/run-preset', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/flows/run-preset', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -5423,7 +5548,7 @@ export async function runPresetOnTarget(body: {
 }
 
 export async function getRunners(): Promise<RunnerRecord[]> {
-  const response = await fetchWithAuth('/api/v1/runners');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/runners');
   if (!response.ok) {
     throw new Error('Failed to fetch runners');
   }
@@ -5433,7 +5558,7 @@ export async function getRunners(): Promise<RunnerRecord[]> {
 /** One runner as the caller may see it (owner and admins get host details). */
 export async function getRunner(runnerId: string): Promise<RunnerRecord> {
   const response = await fetchWithAuth(
-    `/api/v1/runners/${encodeURIComponent(runnerId)}`
+    `${REST_API_PREFIX}/runners/${encodeURIComponent(runnerId)}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch runner');
@@ -5541,7 +5666,9 @@ export interface HarnessOption {
 
 /** Harness + model choices for the flow editor, from runner inventories. */
 export async function getFlowHarnessOptions(): Promise<HarnessOption[]> {
-  const response = await fetchWithAuth('/api/v1/flows/harness-options');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/flows/harness-options'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch harness options');
   }
@@ -5555,7 +5682,7 @@ export async function updateRunnerScheduling(
   settings: { paused?: boolean; accept_untagged?: boolean }
 ): Promise<RunnerRecord> {
   const response = await fetchWithAuth(
-    `/api/v1/runners/${runnerId}/scheduling`,
+    `${REST_API_PREFIX}/runners/${runnerId}/scheduling`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -5576,11 +5703,14 @@ export async function updateRunnerConsent(
   runnerId: string,
   flowExecutionConsent: 'ask_me' | 'always' | 'never'
 ): Promise<RunnerRecord> {
-  const response = await fetchWithAuth(`/api/v1/runners/${runnerId}/consent`, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ flow_execution_consent: flowExecutionConsent }),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/runners/${runnerId}/consent`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ flow_execution_consent: flowExecutionConsent }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -5596,7 +5726,7 @@ export async function updateRunnerConcurrency(
   concurrency: number
 ): Promise<RunnerRecord> {
   const response = await fetchWithAuth(
-    `/api/v1/runners/${runnerId}/concurrency`,
+    `${REST_API_PREFIX}/runners/${runnerId}/concurrency`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -5636,7 +5766,7 @@ export async function deleteRunner(
 ): Promise<RunnerDeleteResult> {
   const query = force ? '?force=true' : '';
   const response = await fetchWithAuth(
-    `/api/v1/runners/${encodeURIComponent(runnerId)}${query}`,
+    `${REST_API_PREFIX}/runners/${encodeURIComponent(runnerId)}${query}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -5659,7 +5789,7 @@ export async function rotateRunnerToken(
   runnerId: string
 ): Promise<RunnerRecord & { token: string }> {
   const response = await fetchWithAuth(
-    `/api/v1/runners/${encodeURIComponent(runnerId)}/token`,
+    `${REST_API_PREFIX}/runners/${encodeURIComponent(runnerId)}/token`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -5775,7 +5905,7 @@ export function getRunnerSessionOptions(
   runnerId: string
 ): Promise<RunnerSessionOptions> {
   return runnerSessionRequest(
-    `/api/v1/runners/${encodeURIComponent(runnerId)}/session-options`,
+    `${REST_API_PREFIX}/runners/${encodeURIComponent(runnerId)}/session-options`,
     'Failed to load session options'
   );
 }
@@ -5786,7 +5916,7 @@ export function startRunnerSession(
   signal?: AbortSignal
 ): Promise<RunnerSessionStarted> {
   return runnerSessionRequest(
-    `/api/v1/runners/${encodeURIComponent(runnerId)}/sessions`,
+    `${REST_API_PREFIX}/runners/${encodeURIComponent(runnerId)}/sessions`,
     'Failed to start the session',
     {
       signal,
@@ -5803,7 +5933,7 @@ export function sendRunnerSessionTurn(
   text: string
 ): Promise<{ turn_id: string; state: string }> {
   return runnerSessionRequest(
-    `/api/v1/runner-sessions/${encodeURIComponent(sessionId)}/turns`,
+    `${REST_API_PREFIX}/runner-sessions/${encodeURIComponent(sessionId)}/turns`,
     'Failed to send the message',
     {
       method: 'POST',
@@ -5818,7 +5948,7 @@ export function stopRunnerSession(
   mode: 'graceful' | 'kill' = 'graceful'
 ): Promise<{ session_id: string; state: string }> {
   return runnerSessionRequest(
-    `/api/v1/runner-sessions/${encodeURIComponent(sessionId)}/stop`,
+    `${REST_API_PREFIX}/runner-sessions/${encodeURIComponent(sessionId)}/stop`,
     'Failed to stop the session',
     {
       method: 'POST',
@@ -5854,7 +5984,7 @@ export async function getRuntimeSessionControl(
   runtimeSessionId: string
 ): Promise<RuntimeSessionControl> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${encodeURIComponent(runtimeSessionId)}/control`
+    `${REST_API_PREFIX}/runtime-sessions/${encodeURIComponent(runtimeSessionId)}/control`
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -5887,7 +6017,7 @@ export async function sendCommandToExecution(
   payload?: any
 ): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/command`,
+    `${REST_API_PREFIX}/flows/executions/${executionId}/command`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -5901,7 +6031,7 @@ export async function sendCommandToExecution(
 
 export async function retryFlowExecution(executionId: string): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/retry`,
+    `${REST_API_PREFIX}/flows/executions/${executionId}/retry`,
     {
       method: 'POST',
     }
@@ -5915,7 +6045,7 @@ export async function retryFlowExecution(executionId: string): Promise<any> {
 
 export async function cloneFlowPreset(presetId: string): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/presets/${presetId}/clone`,
+    `${REST_API_PREFIX}/flows/presets/${presetId}/clone`,
     {
       method: 'POST',
     }
@@ -5941,7 +6071,9 @@ export async function listProjects(options?: {
   }
   const query = params.toString();
   const response = await fetchWithAuth(
-    query ? `/api/v1/projects?${query}` : '/api/v1/projects'
+    query
+      ? `${REST_API_PREFIX}/projects?${query}`
+      : REST_API_PREFIX + '/projects'
   );
   if (!response.ok) {
     throw new Error('Failed to fetch projects');
@@ -5956,9 +6088,12 @@ export async function listProjects(options?: {
 export async function syncTracker(
   trackerId: string
 ): Promise<{ status: string }> {
-  const response = await fetchWithAuth(`/api/v1/trackers/${trackerId}/sync`, {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/trackers/${trackerId}/sync`,
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     let detail = 'Failed to queue tracker sync';
     try {
@@ -5985,8 +6120,8 @@ export async function getEmbeddingsForProjects(
 
   const queryString = params.toString();
   const url = queryString
-    ? `/api/v1/embeddings?${queryString}`
-    : '/api/v1/embeddings';
+    ? `${REST_API_PREFIX}/embeddings?${queryString}`
+    : REST_API_PREFIX + '/embeddings';
 
   try {
     const response = await fetchWithAuth(url);
@@ -6002,7 +6137,7 @@ export async function getEmbeddingsForProjects(
 }
 
 export async function listOrganizations(): Promise<Organization[]> {
-  const response = await fetchWithAuth('/api/v1/organizations');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/organizations');
   if (!response.ok) {
     throw new Error('Failed to fetch organizations');
   }
@@ -6045,7 +6180,7 @@ export async function listIssueDuplicates(
   }
 
   const response = await fetchWithAuth(
-    `/api/v1/issue-duplicates?${params.toString()}`
+    `${REST_API_PREFIX}/issue-duplicates?${params.toString()}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch duplicate issues');
@@ -6116,7 +6251,7 @@ export async function getAIVerdicts(
   let response: Response;
   try {
     response = await fetchWithTimeout(
-      '/api/v1/issue-duplicates/verdicts',
+      REST_API_PREFIX + '/issue-duplicates/verdicts',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -6156,7 +6291,7 @@ export async function getProjectDuplicateStats(options: {
   project_ids.forEach((id) => params.append('project_ids', id));
   params.append('status', status);
   params.append('similarity_threshold', similarity_threshold.toString());
-  const url = `/api/v1/project-duplicate-stats?${params.toString()}`;
+  const url = `${REST_API_PREFIX}/project-duplicate-stats?${params.toString()}`;
   const response = await fetchWithAuth(url);
   if (!response.ok) {
     throw new Error('Failed to fetch project duplicate stats');
@@ -6182,7 +6317,7 @@ export async function getResolutionSuggestion(
   issue2_id: string,
   resolution: 'merged' | 'deconflicted'
 ): Promise<any> {
-  const response = await fetchWithAuth('/api/v1/ai-suggestion', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/ai-suggestion', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -6201,7 +6336,7 @@ export async function executeIssueDuplicateResolution(
   resolutionData: any
 ): Promise<any> {
   const response = await fetchWithAuth(
-    '/api/v1/issue-duplicates/execute-resolution',
+    REST_API_PREFIX + '/issue-duplicates/execute-resolution',
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -6225,7 +6360,7 @@ export async function getIssueCompliance(
   promptName: string
 ): Promise<IssueComplianceResult> {
   const response = await fetchWithAuth(
-    `/api/v1/issue_compliance/${issueId}?prompt_name=${promptName}`,
+    `${REST_API_PREFIX}/issue_compliance/${issueId}?prompt_name=${promptName}`,
     {
       method: 'GET',
     }
@@ -6245,11 +6380,14 @@ export async function getIssueComplianceBatch(
   promptName: string
 ): Promise<Record<string, IssueComplianceResult>> {
   if (issueIds.length === 0) return {};
-  const response = await fetchWithAuth('/api/v1/issue_compliance/batch', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_ids: issueIds, prompt_name: promptName }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/issue_compliance/batch',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ issue_ids: issueIds, prompt_name: promptName }),
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch issue compliance');
   }
@@ -6262,7 +6400,7 @@ export async function getComplianceImprovementSuggestion(
   promptName: string
 ): Promise<ComplianceSuggestion> {
   const response = await fetchWithAuth(
-    `/api/v1/issue_compliance_suggestion/${issueId}?prompt_name=${promptName}`
+    `${REST_API_PREFIX}/issue_compliance_suggestion/${issueId}?prompt_name=${promptName}`
   );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
@@ -6277,10 +6415,13 @@ export async function getComplianceImprovementSuggestion(
 }
 
 export async function proposeResolution(resolutionData: any) {
-  return await fetchWithAuth('/api/v1/issue-duplicates/propose-resolution', {
-    method: 'PATCH',
-    body: JSON.stringify(resolutionData),
-  });
+  return await fetchWithAuth(
+    REST_API_PREFIX + '/issue-duplicates/propose-resolution',
+    {
+      method: 'PATCH',
+      body: JSON.stringify(resolutionData),
+    }
+  );
 }
 
 export async function updateIssueContent(
@@ -6290,7 +6431,7 @@ export async function updateIssueContent(
   changes: string
 ): Promise<Issue> {
   const response = await fetchWithAuth(
-    `/api/v1/issue_compliance_update/${issueId}`,
+    `${REST_API_PREFIX}/issue_compliance_update/${issueId}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -6311,7 +6452,9 @@ export async function updateIssueContent(
 export async function getCompliancePrompts(): Promise<
   CompliancePromptMetadata[]
 > {
-  const response = await fetchWithAuth('/api/v1/issue_compliance_prompts');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/issue_compliance_prompts'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch compliance prompts');
   }
@@ -6320,7 +6463,7 @@ export async function getCompliancePrompts(): Promise<
 
 // Billing
 export async function fetchPlans() {
-  const response = await fetchWithAuth('/api/v1/billing/plans');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/billing/plans');
   if (!response.ok) {
     throw new Error('Failed to fetch plans');
   }
@@ -6328,7 +6471,9 @@ export async function fetchPlans() {
 }
 
 export async function getCurrentSubscription() {
-  const response = await fetchWithAuth('/api/v1/billing/subscription');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/billing/subscription'
+  );
   if (!response.ok) {
     if (response.status === 404) {
       return null; // No subscription found
@@ -6366,7 +6511,7 @@ export interface ToolSummary {
 
 /** List metadata and policy state; input definitions stay on the full route. */
 export async function getToolsSummary(): Promise<ToolSummary[]> {
-  const response = await fetchWithAuth('/api/v1/tools/summary');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/tools/summary');
   if (!response.ok) {
     throw new Error('Failed to fetch tool summaries');
   }
@@ -6391,7 +6536,7 @@ export interface ToolRuleIndexRow {
  * schemas, a fraction of the full `/tools` catalogue (#1695).
  */
 export async function getToolRules(): Promise<ToolRuleIndexRow[]> {
-  const response = await fetchWithAuth('/api/v1/tools/rules');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/tools/rules');
   if (!response.ok) {
     throw new Error('Failed to fetch tool rules');
   }
@@ -6399,7 +6544,7 @@ export async function getToolRules(): Promise<ToolRuleIndexRow[]> {
 }
 
 export async function getTools(): Promise<any[]> {
-  const response = await fetchWithAuth('/api/v1/tools');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/tools');
   if (!response.ok) {
     throw new Error('Failed to fetch tools');
   }
@@ -6407,11 +6552,14 @@ export async function getTools(): Promise<any[]> {
 }
 
 export async function createToolConfiguration(config: any): Promise<any> {
-  const response = await fetchWithAuth('/api/v1/tool-configurations', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/tool-configurations',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -6423,7 +6571,7 @@ export async function createToolConfiguration(config: any): Promise<any> {
 
 export async function getToolConfiguration(configId: string): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/tool-configurations/${configId}`
+    `${REST_API_PREFIX}/tool-configurations/${configId}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch tool configuration');
@@ -6436,7 +6584,7 @@ export async function updateToolConfiguration(
   config: any
 ): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/tool-configurations/${configId}`,
+    `${REST_API_PREFIX}/tool-configurations/${configId}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -6454,7 +6602,7 @@ export async function updateToolConfiguration(
 
 export async function deleteToolConfiguration(configId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/tool-configurations/${configId}`,
+    `${REST_API_PREFIX}/tool-configurations/${configId}`,
     {
       method: 'DELETE',
     }
@@ -6467,7 +6615,7 @@ export async function deleteToolConfiguration(configId: string): Promise<void> {
 // Tool Approval Condition API
 export async function getToolApprovalCondition(configId: string): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/tool-configurations/${configId}/approval-condition`
+    `${REST_API_PREFIX}/tool-configurations/${configId}/approval-condition`
   );
   if (!response.ok) {
     // 404 is expected if no condition exists yet
@@ -6484,7 +6632,7 @@ export async function updateToolApprovalCondition(
   condition: string | null
 ): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/tool-configurations/${configId}/condition`,
+    `${REST_API_PREFIX}/tool-configurations/${configId}/condition`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -6536,7 +6684,7 @@ export interface AccessRuleUpdate {
 
 export async function listAccessRules(configId: string): Promise<AccessRule[]> {
   const response = await fetchWithAuth(
-    `/api/v1/tool-configurations/${configId}/access-rules`
+    `${REST_API_PREFIX}/tool-configurations/${configId}/access-rules`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch access rules');
@@ -6549,7 +6697,7 @@ export async function createAccessRule(
   rule: AccessRuleCreate
 ): Promise<AccessRule> {
   const response = await fetchWithAuth(
-    `/api/v1/tool-configurations/${configId}/access-rules`,
+    `${REST_API_PREFIX}/tool-configurations/${configId}/access-rules`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -6569,11 +6717,14 @@ export async function updateAccessRule(
   ruleId: string,
   rule: AccessRuleUpdate
 ): Promise<AccessRule> {
-  const response = await fetchWithAuth(`/api/v1/access-rules/${ruleId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rule),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/access-rules/${ruleId}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -6584,9 +6735,12 @@ export async function updateAccessRule(
 }
 
 export async function deleteAccessRule(ruleId: string): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/access-rules/${ruleId}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/access-rules/${ruleId}`,
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to delete access rule');
   }
@@ -6648,7 +6802,9 @@ export interface SensitiveDataTestResponse {
 }
 
 export async function getSensitiveDataTypes(): Promise<SensitiveDataTypesResponse> {
-  const response = await fetchWithAuth('/api/v1/policies/sensitive-data/types');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/policies/sensitive-data/types'
+  );
   if (!response.ok) {
     throw new Error('Failed to load sensitive data types');
   }
@@ -6661,11 +6817,14 @@ export async function testSensitiveData(body: {
   types?: string[];
   config?: Record<string, unknown>;
 }): Promise<SensitiveDataTestResponse> {
-  const response = await fetchWithAuth('/api/v1/policies/sensitive-data/test', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/policies/sensitive-data/test',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -6676,7 +6835,9 @@ export async function testSensitiveData(body: {
 }
 
 export async function listModelIORules(): Promise<ModelIORule[]> {
-  const response = await fetchWithAuth('/api/v1/policies/model-io-rules');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/policies/model-io-rules'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch model I/O rules');
   }
@@ -6687,11 +6848,14 @@ export async function listModelIORules(): Promise<ModelIORule[]> {
 export async function createModelIORule(
   rule: ModelIORule
 ): Promise<ModelIORule> {
-  const response = await fetchWithAuth('/api/v1/policies/model-io-rules', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(rule),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/policies/model-io-rules',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(rule),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -6706,7 +6870,7 @@ export async function updateModelIORule(
   rule: ModelIORule
 ): Promise<ModelIORule> {
   const response = await fetchWithAuth(
-    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    `${REST_API_PREFIX}/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -6727,7 +6891,7 @@ export async function patchModelIORule(
   patch: { enabled: boolean }
 ): Promise<ModelIORule> {
   const response = await fetchWithAuth(
-    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    `${REST_API_PREFIX}/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -6745,7 +6909,7 @@ export async function patchModelIORule(
 
 export async function deleteModelIORule(ruleId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
+    `${REST_API_PREFIX}/policies/model-io-rules/${encodeURIComponent(ruleId)}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -6846,7 +7010,7 @@ export function normalizePolicyVersions(payload: unknown): PolicyVersion[] {
 
 export async function listPolicyVersions(limit = 50): Promise<PolicyVersion[]> {
   const response = await fetchWithAuth(
-    `/api/v1/policies/versions?limit=${limit}`
+    `${REST_API_PREFIX}/policies/versions?limit=${limit}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch versions');
@@ -7089,7 +7253,7 @@ export function normalizePolicyRollback(
 
 // Approval Workflows API
 export async function getApprovalWorkflows(): Promise<any[]> {
-  const response = await fetchWithAuth('/api/v1/approval-workflows');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/approval-workflows');
   if (!response.ok) {
     throw new Error('Failed to fetch approval workflows');
   }
@@ -7097,11 +7261,14 @@ export async function getApprovalWorkflows(): Promise<any[]> {
 }
 
 export async function createApprovalWorkflow(workflow: any): Promise<any> {
-  const response = await fetchWithAuth('/api/v1/approval-workflows', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(workflow),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/approval-workflows',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(workflow),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -7113,7 +7280,7 @@ export async function createApprovalWorkflow(workflow: any): Promise<any> {
 
 export async function getApprovalWorkflow(workflowId: string): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/approval-workflows/${workflowId}`
+    `${REST_API_PREFIX}/approval-workflows/${workflowId}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch approval workflow');
@@ -7126,7 +7293,7 @@ export async function updateApprovalWorkflow(
   workflow: any
 ): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/approval-workflows/${workflowId}`,
+    `${REST_API_PREFIX}/approval-workflows/${workflowId}`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -7146,7 +7313,7 @@ export async function deleteApprovalWorkflow(
   workflowId: string
 ): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/approval-workflows/${workflowId}`,
+    `${REST_API_PREFIX}/approval-workflows/${workflowId}`,
     {
       method: 'DELETE',
     }
@@ -7158,7 +7325,7 @@ export async function deleteApprovalWorkflow(
 
 // MCP Servers API
 export async function getMCPServers(): Promise<any[]> {
-  const response = await fetchWithAuth('/api/v1/mcp-servers');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/mcp-servers');
   if (!response.ok) {
     throw new Error('Failed to fetch MCP servers');
   }
@@ -7166,7 +7333,7 @@ export async function getMCPServers(): Promise<any[]> {
 }
 
 export async function createMCPServer(server: any): Promise<any> {
-  const response = await fetchWithAuth('/api/v1/mcp-servers', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/mcp-servers', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(server),
@@ -7181,7 +7348,9 @@ export async function createMCPServer(server: any): Promise<any> {
 }
 
 export async function getMCPServer(serverId: string): Promise<any> {
-  const response = await fetchWithAuth(`/api/v1/mcp-servers/${serverId}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/mcp-servers/${serverId}`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch MCP server');
   }
@@ -7192,11 +7361,14 @@ export async function updateMCPServer(
   serverId: string,
   server: any
 ): Promise<any> {
-  const response = await fetchWithAuth(`/api/v1/mcp-servers/${serverId}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(server),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/mcp-servers/${serverId}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(server),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -7207,18 +7379,24 @@ export async function updateMCPServer(
 }
 
 export async function deleteMCPServer(serverId: string): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/mcp-servers/${serverId}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/mcp-servers/${serverId}`,
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to delete MCP server');
   }
 }
 
 export async function scanMCPServer(serverId: string): Promise<any> {
-  const response = await fetchWithAuth(`/api/v1/mcp-servers/${serverId}/scan`, {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/mcp-servers/${serverId}/scan`,
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -7229,7 +7407,9 @@ export async function scanMCPServer(serverId: string): Promise<any> {
 }
 
 export async function getMCPServerTools(serverId: string): Promise<any[]> {
-  const response = await fetchWithAuth(`/api/v1/mcp-servers/${serverId}/tools`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/mcp-servers/${serverId}/tools`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch MCP server tools');
   }
@@ -7238,7 +7418,7 @@ export async function getMCPServerTools(serverId: string): Promise<any[]> {
 
 // Tools API - Get all available tools (built-in and external)
 export async function getAllTools(): Promise<any[]> {
-  const response = await fetchWithAuth('/api/v1/tools');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/tools');
   if (!response.ok) {
     throw new Error('Failed to fetch tools');
   }
@@ -7248,7 +7428,7 @@ export async function getAllTools(): Promise<any[]> {
 // Approval Requests API
 export async function getApprovalRequest(requestId: string): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/approval-requests/${requestId}`
+    `${REST_API_PREFIX}/approval-requests/${requestId}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch approval request');
@@ -7280,7 +7460,7 @@ export async function listApprovalRequests(params?: {
   if (params?.skip) queryParams.append('skip', params.skip.toString());
 
   const response = await fetchWithAuth(
-    `/api/v1/approval-requests?${queryParams.toString()}`
+    `${REST_API_PREFIX}/approval-requests?${queryParams.toString()}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch approval requests');
@@ -7328,7 +7508,7 @@ export async function approveRequest(
   commentOrOptions?: string | ApprovalDecisionOptions
 ): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/approval-requests/${requestId}/approve`,
+    `${REST_API_PREFIX}/approval-requests/${requestId}/approve`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7350,7 +7530,7 @@ export async function declineRequest(
   commentOrOptions?: string | ApprovalDecisionOptions
 ): Promise<any> {
   const response = await fetchWithAuth(
-    `/api/v1/approval-requests/${requestId}/decline`,
+    `${REST_API_PREFIX}/approval-requests/${requestId}/decline`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7394,7 +7574,7 @@ export async function decideApprovalsBatch(
   comment?: string
 ): Promise<ApprovalBatchResponse> {
   const response = await fetchWithAuth(
-    '/api/v1/approval-requests/decide-batch',
+    REST_API_PREFIX + '/approval-requests/decide-batch',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -7419,7 +7599,7 @@ export async function getUsers(
   limit = 100
 ): Promise<import('./types').UserListResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/users?skip=${skip}&limit=${limit}`
+    `${REST_API_PREFIX}/users?skip=${skip}&limit=${limit}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch users');
@@ -7428,7 +7608,7 @@ export async function getUsers(
 }
 
 export async function getUser(userId: string): Promise<import('./types').User> {
-  const response = await fetchWithAuth(`/api/v1/users/${userId}`);
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/users/${userId}`);
   if (!response.ok) {
     throw new Error('Failed to fetch user');
   }
@@ -7438,7 +7618,7 @@ export async function getUser(userId: string): Promise<import('./types').User> {
 export async function createUser(
   userData: import('./types').UserCreate
 ): Promise<import('./types').User> {
-  const response = await fetchWithAuth('/api/v1/users', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(userData),
@@ -7454,7 +7634,7 @@ export async function updateUser(
   userId: string,
   userData: import('./types').UserUpdate
 ): Promise<import('./types').User> {
-  const response = await fetchWithAuth(`/api/v1/users/${userId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/users/${userId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(userData),
@@ -7467,9 +7647,12 @@ export async function updateUser(
 }
 
 export async function deactivateUser(userId: string): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/users/${userId}/deactivate`, {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/users/${userId}/deactivate`,
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -7487,7 +7670,7 @@ export async function getTeams(
   limit = 100
 ): Promise<import('./types').TeamListResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/teams?skip=${skip}&limit=${limit}`
+    `${REST_API_PREFIX}/teams?skip=${skip}&limit=${limit}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch teams');
@@ -7496,7 +7679,7 @@ export async function getTeams(
 }
 
 export async function getTeam(teamId: string): Promise<import('./types').Team> {
-  const response = await fetchWithAuth(`/api/v1/teams/${teamId}`);
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/teams/${teamId}`);
   if (!response.ok) {
     throw new Error('Failed to fetch team');
   }
@@ -7506,7 +7689,7 @@ export async function getTeam(teamId: string): Promise<import('./types').Team> {
 export async function createTeam(
   teamData: import('./types').TeamCreate
 ): Promise<import('./types').Team> {
-  const response = await fetchWithAuth('/api/v1/teams', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/teams', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(teamData),
@@ -7522,7 +7705,7 @@ export async function updateTeam(
   teamId: string,
   teamData: import('./types').TeamUpdate
 ): Promise<import('./types').Team> {
-  const response = await fetchWithAuth(`/api/v1/teams/${teamId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/teams/${teamId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(teamData),
@@ -7535,7 +7718,7 @@ export async function updateTeam(
 }
 
 export async function deleteTeam(teamId: string): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/teams/${teamId}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/teams/${teamId}`, {
     method: 'DELETE',
   });
   if (!response.ok) {
@@ -7547,7 +7730,9 @@ export async function deleteTeam(teamId: string): Promise<void> {
 export async function getTeamMembers(
   teamId: string
 ): Promise<import('./types').TeamMember[]> {
-  const response = await fetchWithAuth(`/api/v1/teams/${teamId}/members`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/teams/${teamId}/members`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch team members');
   }
@@ -7559,11 +7744,14 @@ export async function addTeamMember(
   userId: string,
   roleId?: string
 ): Promise<import('./types').TeamMember> {
-  const response = await fetchWithAuth(`/api/v1/teams/${teamId}/members`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user_id: userId, role_id: roleId }),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/teams/${teamId}/members`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId, role_id: roleId }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -7578,7 +7766,7 @@ export async function removeTeamMember(
   userId: string
 ): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/teams/${teamId}/members/${userId}`,
+    `${REST_API_PREFIX}/teams/${teamId}/members/${userId}`,
     {
       method: 'DELETE',
     }
@@ -7594,7 +7782,9 @@ export async function removeTeamMember(
 export async function getTeamRoles(
   teamId: string
 ): Promise<import('./types').Role[]> {
-  const response = await fetchWithAuth(`/api/v1/teams/${teamId}/roles`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/teams/${teamId}/roles`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch team roles');
   }
@@ -7605,11 +7795,14 @@ export async function assignTeamRole(
   teamId: string,
   roleId: string
 ): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/teams/${teamId}/roles`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ role_id: roleId }),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/teams/${teamId}/roles`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role_id: roleId }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -7623,7 +7816,7 @@ export async function removeTeamRole(
   roleId: string
 ): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/teams/${teamId}/roles/${roleId}`,
+    `${REST_API_PREFIX}/teams/${teamId}/roles/${roleId}`,
     {
       method: 'DELETE',
     }
@@ -7645,7 +7838,7 @@ export async function getInvitations(
   limit = 100,
   status?: 'pending' | 'accepted' | 'expired' | 'cancelled'
 ): Promise<import('./types').InvitationListResponse> {
-  let url = `/api/v1/invitations?skip=${skip}&limit=${limit}`;
+  let url = `${REST_API_PREFIX}/invitations?skip=${skip}&limit=${limit}`;
   if (status) {
     url += `&status=${status}`;
   }
@@ -7659,7 +7852,7 @@ export async function getInvitations(
 export async function createInvitation(
   invitationData: import('./types').InvitationCreate
 ): Promise<import('./types').UserInvitation> {
-  const response = await fetchWithAuth('/api/v1/invitations', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/invitations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(invitationData),
@@ -7675,7 +7868,7 @@ export async function createInvitation(
 
 export async function resendInvitation(invitationId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/invitations/${invitationId}/resend`,
+    `${REST_API_PREFIX}/invitations/${invitationId}/resend`,
     {
       method: 'POST',
     }
@@ -7689,9 +7882,12 @@ export async function resendInvitation(invitationId: string): Promise<void> {
 }
 
 export async function cancelInvitation(invitationId: string): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/invitations/${invitationId}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/invitations/${invitationId}`,
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -7705,7 +7901,7 @@ export async function cancelInvitation(invitationId: string): Promise<void> {
 // ============================================================================
 
 export async function getRoles(): Promise<import('./types').RoleListResponse> {
-  const response = await fetchWithAuth('/api/v1/roles');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/roles');
   if (!response.ok) {
     throw new Error('Failed to fetch roles');
   }
@@ -7715,7 +7911,9 @@ export async function getRoles(): Promise<import('./types').RoleListResponse> {
 export async function getUserRoles(
   userId: string
 ): Promise<import('./types').Role[]> {
-  const response = await fetchWithAuth(`/api/v1/users/${userId}/roles`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/users/${userId}/roles`
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch user roles');
   }
@@ -7726,11 +7924,14 @@ export async function assignUserRole(
   userId: string,
   roleId: string
 ): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/users/${userId}/roles`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ role_id: roleId }),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/users/${userId}/roles`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role_id: roleId }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(extractErrorMessage(errorData, 'Failed to assign role'));
@@ -7742,7 +7943,7 @@ export async function removeUserRole(
   roleId: string
 ): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/users/${userId}/roles/${roleId}`,
+    `${REST_API_PREFIX}/users/${userId}/roles/${roleId}`,
     {
       method: 'DELETE',
     }
@@ -7781,7 +7982,7 @@ export async function getFeatures(): Promise<FeaturesResponse> {
   const epoch = featuresEpoch;
   featuresInflight = (async () => {
     try {
-      const response = await fetchPublic('/api/v1/features');
+      const response = await fetchPublic(REST_API_PREFIX + '/features');
       if (!response.ok) {
         throw new Error('Failed to fetch features');
       }
@@ -7814,7 +8015,7 @@ export interface AccountOrganization {
 }
 
 export async function getAccountOrganization(): Promise<AccountOrganization> {
-  const response = await fetchWithAuth('/api/v1/account/details');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/account/details');
   if (!response.ok) {
     throw new Error('Failed to fetch account organization');
   }
@@ -7824,7 +8025,7 @@ export async function getAccountOrganization(): Promise<AccountOrganization> {
 export async function updateAccountOrganization(
   details: Partial<AccountOrganization>
 ): Promise<AccountOrganization> {
-  const response = await fetchWithAuth('/api/v1/account/details', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/account/details', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(details),
@@ -7937,7 +8138,7 @@ export async function startBitbucketConnect(
     ? `?return_path=${encodeURIComponent(returnPath)}`
     : '';
   const response = await fetchWithAuth(
-    `/api/v1/auth/bitbucket/authorize${query}`,
+    `${REST_API_PREFIX}/auth/bitbucket/authorize${query}`,
     { credentials: 'include' }
   );
   if (!response.ok) {
@@ -7955,12 +8156,15 @@ export async function completeBitbucketConnect(body: {
   workspace?: string;
   repository?: string;
 }): Promise<BitbucketConnectionStatus> {
-  const response = await fetchWithAuth('/api/v1/auth/bitbucket/complete', {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/auth/bitbucket/complete',
+    {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
   if (!response.ok) {
     throw await bitbucketConnectError(
       response,
@@ -7974,7 +8178,7 @@ export async function getBitbucketConnectionStatus(
   trackerId: string
 ): Promise<BitbucketConnectionStatus> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/status`
+    `${REST_API_PREFIX}/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/status`
   );
   if (!response.ok) {
     throw await bitbucketConnectError(
@@ -7991,7 +8195,7 @@ export async function getBitbucketDiscovery(
 ): Promise<BitbucketDiscovery> {
   const query = workspace ? `?workspace=${encodeURIComponent(workspace)}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/discovery${query}`
+    `${REST_API_PREFIX}/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/discovery${query}`
   );
   if (!response.ok) {
     throw await bitbucketConnectError(
@@ -8007,7 +8211,7 @@ export async function bindBitbucketRepository(
   body: { workspace: string; repository?: string }
 ): Promise<BitbucketConnectionStatus> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/binding`,
+    `${REST_API_PREFIX}/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/binding`,
     {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -8031,7 +8235,7 @@ export async function startBitbucketReconnect(
     ? `?return_path=${encodeURIComponent(returnPath)}`
     : '';
   const response = await fetchWithAuth(
-    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/reconnect${query}`,
+    `${REST_API_PREFIX}/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/reconnect${query}`,
     { method: 'POST', credentials: 'include' }
   );
   if (!response.ok) {
@@ -8048,7 +8252,7 @@ export async function completeBitbucketReconnect(
   handle: string
 ): Promise<BitbucketConnectionStatus> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/reconnect/complete`,
+    `${REST_API_PREFIX}/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/reconnect/complete`,
     {
       method: 'POST',
       credentials: 'include',
@@ -8067,7 +8271,7 @@ export async function completeBitbucketReconnect(
 
 export async function disconnectBitbucket(trackerId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/disconnect`,
+    `${REST_API_PREFIX}/auth/bitbucket/trackers/${encodeURIComponent(trackerId)}/disconnect`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -8151,7 +8355,10 @@ async function jiraConnectRequest<T>(
   fallback: string,
   init?: RequestInit
 ): Promise<T> {
-  const response = await fetchWithAuth(`/api/v1/auth/jira${path}`, init);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/auth/jira${path}`,
+    init
+  );
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     const detail = body?.detail ?? body?.message;
@@ -8270,7 +8477,9 @@ export interface TrackerAuthMethodsResponse {
 }
 
 export async function getTrackerAuthMethods(): Promise<TrackerAuthMethodsResponse> {
-  const response = await fetchWithAuth('/api/v1/trackers/auth-methods');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/trackers/auth-methods'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch tracker auth methods');
   }
@@ -8283,7 +8492,9 @@ export interface GitHubAuthUrlResponse {
 }
 
 export async function getGitHubAuthUrl(): Promise<GitHubAuthUrlResponse> {
-  const response = await fetchWithAuth('/api/v1/auth/github/authorize');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/auth/github/authorize'
+  );
   if (!response.ok) {
     throw new Error('Failed to get GitHub authorization URL');
   }
@@ -8303,7 +8514,9 @@ export interface GitHubInstallation {
 }
 
 export async function getGitHubInstallations(): Promise<GitHubInstallation[]> {
-  const response = await fetchWithAuth('/api/v1/github/installations');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/github/installations'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch GitHub installations');
   }
@@ -8315,7 +8528,7 @@ export async function getGitHubInstallation(
   installationId: string
 ): Promise<GitHubInstallation> {
   const response = await fetchWithAuth(
-    `/api/v1/github/installations/${installationId}`
+    `${REST_API_PREFIX}/github/installations/${installationId}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch GitHub installation');
@@ -8327,7 +8540,7 @@ export async function unlinkGitHubInstallation(
   installationId: string
 ): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/github/installations/${installationId}`,
+    `${REST_API_PREFIX}/github/installations/${installationId}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -8351,7 +8564,7 @@ export async function completeGitHubInstallation(
   }
 
   const response = await fetchWithAuth(
-    `/api/v1/auth/github/complete-installation?${params.toString()}`,
+    `${REST_API_PREFIX}/auth/github/complete-installation?${params.toString()}`,
     {
       method: 'POST',
     }
@@ -8371,7 +8584,7 @@ export async function generatePolicy(options: {
   includeCurrentConfig?: boolean;
   scopeMcpServerName?: string;
 }): Promise<{ yaml: string; warnings: string[] }> {
-  const response = await fetchWithAuth('/api/v1/policies/generate', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/policies/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -8395,14 +8608,17 @@ export async function generatePolicyFromAudit(options?: {
   startDate?: string;
   endDate?: string;
 }): Promise<{ yaml: string; warnings: string[] }> {
-  const response = await fetchWithAuth('/api/v1/policies/generate-from-audit', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      start_date: options?.startDate || null,
-      end_date: options?.endDate || null,
-    }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/policies/generate-from-audit',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        start_date: options?.startDate || null,
+        end_date: options?.endDate || null,
+      }),
+    }
+  );
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
     throw new Error(
@@ -8459,7 +8675,7 @@ export async function getBudgetPolicies(
   if (subject_id) params.append('subject_id', subject_id);
   const q = params.toString();
   const response = await fetchWithAuth(
-    `/api/v1/budget/policies${q ? '?' + q : ''}`
+    `${REST_API_PREFIX}/budget/policies${q ? '?' + q : ''}`
   );
   if (!response.ok) throw new Error('Failed to fetch budget policies');
   return response.json();
@@ -8468,7 +8684,7 @@ export async function getBudgetPolicies(
 export async function createBudgetPolicy(
   data: BudgetPolicyCreate
 ): Promise<BudgetPolicy> {
-  const response = await fetchWithAuth('/api/v1/budget/policies', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/budget/policies', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
@@ -8481,19 +8697,25 @@ export async function updateBudgetPolicy(
   id: string,
   data: Partial<BudgetPolicyCreate>
 ): Promise<BudgetPolicy> {
-  const response = await fetchWithAuth(`/api/v1/budget/policies/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/budget/policies/${id}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }
+  );
   if (!response.ok) throw new Error('Failed to update budget policy');
   return response.json();
 }
 
 export async function deleteBudgetPolicy(id: string): Promise<void> {
-  const response = await fetchWithAuth(`/api/v1/budget/policies/${id}`, {
-    method: 'DELETE',
-  });
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/budget/policies/${id}`,
+    {
+      method: 'DELETE',
+    }
+  );
   if (!response.ok) throw new Error('Failed to delete budget policy');
 }
 
@@ -8505,7 +8727,9 @@ export async function deleteBudgetPolicy(id: string): Promise<void> {
  * Drives the console warning banner. Deliberately cheap so it can be polled.
  */
 export async function getApprovalBypassStatus(): Promise<ApprovalBypassStatus> {
-  const response = await fetchWithAuth('/api/v1/approval-bypasses/status');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/approval-bypasses/status'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch approval bypass status');
   }
@@ -8514,7 +8738,7 @@ export async function getApprovalBypassStatus(): Promise<ApprovalBypassStatus> {
 
 /** List every active bypass in the account (including teammates'). */
 export async function listApprovalBypasses(): Promise<ApprovalBypass[]> {
-  const response = await fetchWithAuth('/api/v1/approval-bypasses');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/approval-bypasses');
   if (!response.ok) {
     throw new Error('Failed to fetch approval bypasses');
   }
@@ -8533,7 +8757,7 @@ export async function createApprovalBypass(params: {
   managedAgentId?: string | null;
   reason?: string | null;
 }): Promise<ApprovalBypass> {
-  const response = await fetchWithAuth('/api/v1/approval-bypasses', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/approval-bypasses', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -8555,7 +8779,7 @@ export async function revokeApprovalBypass(
   bypassId: string
 ): Promise<ApprovalBypass> {
   const response = await fetchWithAuth(
-    `/api/v1/approval-bypasses/${bypassId}`,
+    `${REST_API_PREFIX}/approval-bypasses/${bypassId}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -8566,9 +8790,12 @@ export async function revokeApprovalBypass(
 
 /** Revoke every active bypass in the account - the "panic off" button. */
 export async function revokeAllApprovalBypasses(): Promise<ApprovalBypass[]> {
-  const response = await fetchWithAuth('/api/v1/approval-bypasses/revoke-all', {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/approval-bypasses/revoke-all',
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     throw new Error('Failed to revoke approval bypasses');
   }
@@ -8583,7 +8810,9 @@ export async function revokeAllApprovalBypasses(): Promise<ApprovalBypass[]> {
  * Drives the halted-state banner; deliberately cheap so it can be polled.
  */
 export async function getKillSwitchStatus(): Promise<KillSwitchStatus> {
-  const response = await fetchWithAuth('/api/v1/account/kill-switch/status');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/account/kill-switch/status'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch kill switch status');
   }
@@ -8600,14 +8829,17 @@ export async function activateKillSwitch(params: {
   scopes?: KillSwitchScope[];
   reason?: string | null;
 }): Promise<KillSwitchStatus> {
-  const response = await fetchWithAuth('/api/v1/account/kill-switch/activate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      scopes: params.scopes,
-      reason: params.reason ?? null,
-    }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/account/kill-switch/activate',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        scopes: params.scopes,
+        reason: params.reason ?? null,
+      }),
+    }
+  );
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail ?? 'Failed to activate the kill switch');
@@ -8626,7 +8858,7 @@ export async function deactivateKillSwitch(params: {
   reason?: string | null;
 }): Promise<KillSwitchStatus> {
   const response = await fetchWithAuth(
-    '/api/v1/account/kill-switch/deactivate',
+    REST_API_PREFIX + '/account/kill-switch/deactivate',
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -8645,7 +8877,9 @@ export async function deactivateKillSwitch(params: {
 
 /** The event types an endpoint can subscribe to, and the delivery contract. */
 export async function getWebhookCatalogue(): Promise<WebhookCatalogue> {
-  const response = await fetchWithAuth('/api/v1/event-webhooks/catalogue');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/event-webhooks/catalogue'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch the webhook catalogue');
   }
@@ -8654,7 +8888,9 @@ export async function getWebhookCatalogue(): Promise<WebhookCatalogue> {
 
 /** List this account's outbound webhook endpoints, newest first. */
 export async function getWebhookEndpoints(): Promise<WebhookEndpoint[]> {
-  const response = await fetchWithAuth('/api/v1/event-webhooks/endpoints');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/event-webhooks/endpoints'
+  );
   if (!response.ok) {
     throw new Error('Failed to fetch webhook endpoints');
   }
@@ -8672,15 +8908,18 @@ export async function createWebhookEndpoint(params: {
   description?: string | null;
   event_types: string[];
 }): Promise<WebhookEndpointCreated> {
-  const response = await fetchWithAuth('/api/v1/event-webhooks/endpoints', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: params.url,
-      description: params.description ?? null,
-      event_types: params.event_types,
-    }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/event-webhooks/endpoints',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url: params.url,
+        description: params.description ?? null,
+        event_types: params.event_types,
+      }),
+    }
+  );
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail ?? 'Failed to create the webhook endpoint');
@@ -8699,7 +8938,7 @@ export async function updateWebhookEndpoint(
   }
 ): Promise<WebhookEndpoint> {
   const response = await fetchWithAuth(
-    `/api/v1/event-webhooks/endpoints/${endpointId}`,
+    `${REST_API_PREFIX}/event-webhooks/endpoints/${endpointId}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -8716,7 +8955,7 @@ export async function updateWebhookEndpoint(
 /** Delete an endpoint and its delivery history. */
 export async function deleteWebhookEndpoint(endpointId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/event-webhooks/endpoints/${endpointId}`,
+    `${REST_API_PREFIX}/event-webhooks/endpoints/${endpointId}`,
     { method: 'DELETE' }
   );
   if (!response.ok) {
@@ -8730,7 +8969,7 @@ export async function sendWebhookTest(
   endpointId: string
 ): Promise<{ event_id: string | null; queued: number }> {
   const response = await fetchWithAuth(
-    `/api/v1/event-webhooks/endpoints/${endpointId}/test`,
+    `${REST_API_PREFIX}/event-webhooks/endpoints/${endpointId}/test`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -8752,7 +8991,7 @@ export async function getWebhookDeliveries(params?: {
   if (params?.limit) query.set('limit', String(params.limit));
   const suffix = query.toString() ? `?${query.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/event-webhooks/deliveries${suffix}`
+    `${REST_API_PREFIX}/event-webhooks/deliveries${suffix}`
   );
   if (!response.ok) {
     throw new Error('Failed to fetch webhook deliveries');
@@ -8770,7 +9009,7 @@ export async function replayWebhookEvent(
   eventId: string
 ): Promise<{ event_id: string; queued: number }> {
   const response = await fetchWithAuth(
-    `/api/v1/event-webhooks/deliveries/${eventId}/replay`,
+    `${REST_API_PREFIX}/event-webhooks/deliveries/${eventId}/replay`,
     { method: 'POST' }
   );
   if (!response.ok) {
@@ -8788,7 +9027,9 @@ export interface ConfigurationCapabilities {
 }
 
 export async function getConfigurationCapabilities(): Promise<ConfigurationCapabilities> {
-  const response = await fetchWithAuth('/api/v1/configuration-capabilities');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/configuration-capabilities'
+  );
   if (!response.ok)
     throw new Error('Configuration capabilities are unavailable');
   return response.json();
@@ -8869,7 +9110,7 @@ export async function getDiscoveryCandidates(
   statuses.forEach((status) => params.append('status', status));
   const query = params.toString();
   const response = await fetchWithAuth(
-    `/api/v1/agents/discovery-candidates${query ? `?${query}` : ''}`
+    `${REST_API_PREFIX}/agents/discovery-candidates${query ? `?${query}` : ''}`
   );
   if (!response.ok) {
     throw new Error('Failed to load discovered agents');
@@ -8886,7 +9127,7 @@ export async function updateDiscoveryCandidate(
   status: 'new' | 'ignored'
 ): Promise<DiscoveredAgentCandidate> {
   const response = await fetchWithAuth(
-    `/api/v1/agents/discovery-candidates/${encodeURIComponent(candidateId)}`,
+    `${REST_API_PREFIX}/agents/discovery-candidates/${encodeURIComponent(candidateId)}`,
     {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -8929,7 +9170,9 @@ export interface HostedModelCatalog {
 
 /** Account-bound, authenticated hosted inventory; absent on OSS backends. */
 export async function getHostedModels(): Promise<HostedModelCatalog> {
-  const response = await fetchWithAuth('/api/v1/account/hosted-models');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/account/hosted-models'
+  );
   if (!response.ok) throw new Error('Could not load built-in hosted models.');
   return response.json();
 }
@@ -8950,7 +9193,7 @@ export interface PolicyEvaluationResult {
 export async function evaluatePolicy(
   body: Record<string, unknown>
 ): Promise<PolicyEvaluationResult> {
-  const response = await fetchWithAuth('/api/v1/policies/evaluate', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/policies/evaluate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -9056,7 +9299,7 @@ export type GovernanceThresholdOverrides = Record<
   Record<string, number | string>
 > | null;
 
-const GOVERNANCE_BASE = '/api/v1/governance-review';
+const GOVERNANCE_BASE = REST_API_PREFIX + '/governance-review';
 
 async function governanceJson<T>(
   path: string,

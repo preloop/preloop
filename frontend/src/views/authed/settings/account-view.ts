@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../../api-path';
 import '../../../components/runner-policy-settings';
 import '../../../components/weekly-report-settings';
 import { hasPermission, type UserPermissions } from '../../../permissions';
@@ -106,7 +107,7 @@ export class AccountView extends LitElement {
 
       try {
         const usageRes = await fetchWithAuth(
-          '/api/v1/account/session-artifacts/usage'
+          REST_API_PREFIX + '/account/session-artifacts/usage'
         );
         if (usageRes.ok) {
           const body = await usageRes.json();
@@ -130,7 +131,9 @@ export class AccountView extends LitElement {
       const isProprietary = features.features['billing'] === true;
 
       if (isProprietary) {
-        const summaryRes = await fetchWithAuth('/api/v1/billing/summary');
+        const summaryRes = await fetchWithAuth(
+          REST_API_PREFIX + '/billing/summary'
+        );
         if (!summaryRes.ok) throw new Error('Failed to load billing summary.');
         this._billingSummary = await summaryRes.json();
         this.subscription = this._billingSummary?.subscription ?? null;
@@ -213,7 +216,7 @@ export class AccountView extends LitElement {
   private async _loadArtifactSettings(): Promise<void> {
     try {
       const res = await fetchWithAuth(
-        '/api/v1/account/session-artifacts/settings'
+        REST_API_PREFIX + '/account/session-artifacts/settings'
       );
       if (!res.ok) return;
       const body = await res.json();
@@ -239,7 +242,7 @@ export class AccountView extends LitElement {
     this._artifactSettingsError = '';
     try {
       const res = await fetchWithAuth(
-        '/api/v1/account/session-artifacts/settings',
+        REST_API_PREFIX + '/account/session-artifacts/settings',
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -423,9 +426,12 @@ export class AccountView extends LitElement {
 
   private async _refreshBillingSummary(): Promise<void> {
     try {
-      const response = await fetchWithAuth('/api/v1/billing/summary', {
-        cache: 'no-store',
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/billing/summary',
+        {
+          cache: 'no-store',
+        }
+      );
       if (response.ok) {
         this._billingSummary = await response.json();
         this.subscription = this._billingSummary?.subscription ?? null;

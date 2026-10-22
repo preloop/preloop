@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { randomUuid } from './random-uuid';
 
 /** Retry one immutable start intent after its owner grants permission. */
@@ -32,7 +33,7 @@ export async function ownerConsentRequest(
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     const statusResponse = await fetcher(
-      `/api/v1/approval-requests/${encodeURIComponent(pending.approval_id)}/consent-status`,
+      `${REST_API_PREFIX}/approval-requests/${encodeURIComponent(pending.approval_id)}/consent-status`,
       { signal, cache: 'no-store' }
     );
     if (!statusResponse.ok) return statusResponse;

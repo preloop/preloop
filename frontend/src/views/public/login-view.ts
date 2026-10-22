@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { consumeLoginReturn } from '../../utils/login-return';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -238,7 +239,7 @@ export class LoginView extends LitElement {
 
     this.submitting = true;
     try {
-      const data = await post('/api/v1/auth/token/json', {
+      const data = await post(REST_API_PREFIX + '/auth/token/json', {
         username,
         password,
       });

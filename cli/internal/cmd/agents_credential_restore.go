@@ -94,7 +94,7 @@ func restoreSubscriptionLoginOnOffboard(client *api.Client, agent AgentConfig, d
 	}
 	// This endpoint returns safe model metadata, never the credential bundle.
 	var models []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
 		return fail("cannot resolve bound credential types")
 	}
 	applicable := []string{}
@@ -119,7 +119,7 @@ func restoreSubscriptionLoginOnOffboard(client *api.Client, agent AgentConfig, d
 		return fail("multiple subscription bindings are unsupported for one local login")
 	}
 	var bundle exportedModelCredential
-	if err := client.Post("/api/v1/ai-models/"+url.PathEscape(applicable[0])+"/credentials/export", nil, &bundle); err != nil {
+	if err := client.Post(api.RESTPrefix+"/ai-models/"+url.PathEscape(applicable[0])+"/credentials/export", nil, &bundle); err != nil {
 		return fail("required subscription credential export failed")
 	}
 	// Claude Code accepts a long-lived access-only bundle (access, no refresh or

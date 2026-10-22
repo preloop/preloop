@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	operatorNotesPath = "/api/v1/operator-notes"
+	operatorNotesPath = api.RESTPrefix + "/operator-notes"
 	// Same bounds as OperatorNoteCreate.expires_in_seconds (ge=60, le=7d).
 	noteExpiresInMinSeconds = 60
 	noteExpiresInMaxSeconds = 7 * 24 * 60 * 60

@@ -64,7 +64,7 @@ func executeModelsCodexWS(client *api.Client, out io.Writer, modelID, mode strin
 		Name     string                 `json:"name"`
 		MetaData map[string]interface{} `json:"meta_data"`
 	}
-	path := "/api/v1/ai-models/" + url.PathEscape(strings.TrimSpace(modelID))
+	path := api.RESTPrefix + "/ai-models/" + url.PathEscape(strings.TrimSpace(modelID))
 	if err := client.Put(path, body, &result); err != nil {
 		return fmt.Errorf("update model: %w", err)
 	}

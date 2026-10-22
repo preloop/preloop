@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth, extractErrorMessage } from '../api';
 
 export type RunnerRequirement = 'optional' | 'required' | 'forbidden';
@@ -64,7 +65,10 @@ export async function runnerPolicyRequest<T>(
   path: string,
   init?: RequestInit
 ): Promise<T> {
-  const response = await fetchWithAuth(`/api/v1/account/${path}`, init);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/account/${path}`,
+    init
+  );
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(

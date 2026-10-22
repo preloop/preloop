@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /**
  * Console client for the audit chain, signing keys, retention and evidence.
  *
@@ -192,7 +193,7 @@ async function fail(response: Response, fallback: string): Promise<never> {
 }
 
 export async function getAuditChainStatus(): Promise<ChainStatus> {
-  const response = await fetchWithAuth('/api/v1/audit/chain/status');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/audit/chain/status');
   if (!response.ok) {
     return fail(response, 'Could not load audit chain status');
   }
@@ -215,7 +216,9 @@ export async function verifyAuditChain(params: {
     query.set('max_rows', String(params.maxRows));
   }
   const suffix = query.toString() ? `?${query.toString()}` : '';
-  const response = await fetchWithAuth(`/api/v1/audit/chain/verify${suffix}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/audit/chain/verify${suffix}`
+  );
   if (!response.ok) {
     return fail(response, 'Could not verify the audit chain');
   }
@@ -234,7 +237,9 @@ export async function getAuditChainSegment(params?: {
     query.set('limit', String(params.limit));
   }
   const suffix = query.toString() ? `?${query.toString()}` : '';
-  const response = await fetchWithAuth(`/api/v1/audit/chain/segment${suffix}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/audit/chain/segment${suffix}`
+  );
   if (!response.ok) {
     return fail(response, 'Could not load the audit chain segment');
   }
@@ -254,7 +259,7 @@ export async function listAuditChainCheckpoints(params?: {
   }
   const suffix = query.toString() ? `?${query.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/audit/chain/checkpoints${suffix}`
+    `${REST_API_PREFIX}/audit/chain/checkpoints${suffix}`
   );
   if (!response.ok) {
     return fail(response, 'Could not load checkpoints');
@@ -263,7 +268,7 @@ export async function listAuditChainCheckpoints(params?: {
 }
 
 export async function listSigningKeys(): Promise<SigningKeyList> {
-  const response = await fetchWithAuth('/api/v1/signing/keys');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/signing/keys');
   if (!response.ok) {
     return fail(response, 'Could not load signing keys');
   }
@@ -271,9 +276,12 @@ export async function listSigningKeys(): Promise<SigningKeyList> {
 }
 
 export async function rotateSigningKey(): Promise<SigningKeyRotateResult> {
-  const response = await fetchWithAuth('/api/v1/signing/keys/rotate', {
-    method: 'POST',
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/signing/keys/rotate',
+    {
+      method: 'POST',
+    }
+  );
   if (!response.ok) {
     return fail(response, 'Could not rotate the signing key');
   }
@@ -281,7 +289,7 @@ export async function rotateSigningKey(): Promise<SigningKeyRotateResult> {
 }
 
 export async function getRetentionSettings(): Promise<RetentionSettings> {
-  const response = await fetchWithAuth('/api/v1/retention/settings');
+  const response = await fetchWithAuth(REST_API_PREFIX + '/retention/settings');
   if (!response.ok) {
     return fail(response, 'Could not load retention settings');
   }
@@ -291,11 +299,14 @@ export async function getRetentionSettings(): Promise<RetentionSettings> {
 export async function updateRetentionSettings(
   classes: Record<string, number | null>
 ): Promise<RetentionSettings> {
-  const response = await fetchWithAuth('/api/v1/retention/settings', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ classes }),
-  });
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/retention/settings',
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ classes }),
+    }
+  );
   if (!response.ok) {
     return fail(response, 'Could not save retention settings');
   }
@@ -303,7 +314,9 @@ export async function updateRetentionSettings(
 }
 
 export async function previewRetentionPurge(): Promise<PurgePreview> {
-  const response = await fetchWithAuth('/api/v1/retention/purge-preview');
+  const response = await fetchWithAuth(
+    REST_API_PREFIX + '/retention/purge-preview'
+  );
   if (!response.ok) {
     return fail(response, 'Could not preview the purge');
   }
@@ -330,7 +343,9 @@ export async function listLegalHolds(params?: {
     query.set('limit', String(params.limit));
   }
   const suffix = query.toString() ? `?${query.toString()}` : '';
-  const response = await fetchWithAuth(`/api/v1/retention/holds${suffix}`);
+  const response = await fetchWithAuth(
+    `${REST_API_PREFIX}/retention/holds${suffix}`
+  );
   if (!response.ok) {
     return fail(response, 'Could not load legal holds');
   }
@@ -342,7 +357,7 @@ export async function createLegalHold(body: {
   resource_id: string;
   reason: string;
 }): Promise<LegalHold> {
-  const response = await fetchWithAuth('/api/v1/retention/holds', {
+  const response = await fetchWithAuth(REST_API_PREFIX + '/retention/holds', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -358,7 +373,7 @@ export async function releaseLegalHold(
   reason: string
 ): Promise<LegalHold> {
   const response = await fetchWithAuth(
-    `/api/v1/retention/holds/${holdId}/release`,
+    `${REST_API_PREFIX}/retention/holds/${holdId}/release`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -418,7 +433,7 @@ export async function createPeriodExport(
     query.set('runtime_session_id', runtimeSessionId);
   }
   const response = await fetchWithAuth(
-    `/api/v1/retention/exports?${query.toString()}`,
+    `${REST_API_PREFIX}/retention/exports?${query.toString()}`,
     { method: 'POST' }
   );
   return readBinary(
@@ -432,7 +447,7 @@ export async function getEvidenceStatus(
   executionId: string
 ): Promise<EvidenceStatus> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/evidence-status`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/evidence-status`
   );
   if (!response.ok) {
     return fail(response, 'Could not load evidence status');
@@ -444,7 +459,7 @@ export async function downloadEvidence(
   executionId: string
 ): Promise<BinaryDownload> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/evidence`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/evidence`
   );
   return readBinary(
     response,
@@ -474,7 +489,7 @@ export async function listEvidenceMembers(
   executionId: string
 ): Promise<EvidenceMemberList> {
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/evidence/members`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/evidence/members`
   );
   if (!response.ok) {
     return fail(response, 'Could not list evidence pack members');
@@ -488,7 +503,7 @@ export async function readEvidenceMember(
 ): Promise<string> {
   const query = new URLSearchParams({ path });
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/evidence/members?${query.toString()}`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/evidence/members?${query.toString()}`
   );
   if (!response.ok) {
     return fail(response, 'Could not read the evidence member');
@@ -502,7 +517,7 @@ export async function downloadEvidenceMember(
 ): Promise<BinaryDownload> {
   const query = new URLSearchParams({ path });
   const response = await fetchWithAuth(
-    `/api/v1/flows/executions/${executionId}/evidence/members?${query.toString()}`
+    `${REST_API_PREFIX}/flows/executions/${executionId}/evidence/members?${query.toString()}`
   );
   const leaf = path.split('/').pop() || 'member';
   return readBinary(response, leaf, 'Could not download the evidence member');

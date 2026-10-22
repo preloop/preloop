@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"github.com/preloop/preloop/cli/internal/api"
 	"io"
 	"net/http"
 	"regexp"
@@ -44,7 +45,7 @@ func sendNoteReceipt(source, sessionID, block, reason string) {
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cred.BaseURL, "/")+"/api/v1/agents/notes/ack", bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cred.BaseURL, "/")+api.RESTPrefix+"/agents/notes/ack", bytes.NewReader(data))
 	if err != nil {
 		return
 	}

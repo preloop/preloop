@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 import { fetchWithAuth, getFeatures } from './api';
 
 /** Metadata only. Registry names, URLs and tool payloads never cross this API. */
@@ -21,7 +22,7 @@ export async function loadMCPFindings(): Promise<MCPFinding[]> {
   try {
     const features = await getFeatures();
     if (features?.features?.mcp_findings !== true) return [];
-    const response = await fetchWithAuth('/api/v1/mcp-findings', {
+    const response = await fetchWithAuth(REST_API_PREFIX + '/mcp-findings', {
       passive: true,
     });
     if (!response.ok) return [];
@@ -44,7 +45,7 @@ export async function decideMCPFinding(
           expires_at: new Date(Date.now() + 7 * 86400000).toISOString(),
         };
   const response = await fetchWithAuth(
-    `/api/v1/mcp-findings/${encodeURIComponent(id)}/${action}`,
+    `${REST_API_PREFIX}/mcp-findings/${encodeURIComponent(id)}/${action}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

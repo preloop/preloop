@@ -149,7 +149,7 @@ and may change in any release.
 
 ### Version discovery
 
-The accepted design adds a diagnostics-only header to every response under
+The server emits a diagnostics-only header on every response under
 `/api/v1/`, including errors:
 
 ```text
@@ -161,7 +161,9 @@ needs no authentication. It identifies the software release that answered,
 not the REST contract version, and has no request-side meaning. Clients do
 not send a header to select REST behavior.
 
-The header is not emitted yet. Implementation and client REST-prefix
-centralization are tracked in
-[#1630](https://github.com/preloop/preloop/issues/1630), linked from the
-[1.0.0 readiness checklist](https://github.com/preloop/preloop/issues/978).
+The Go CLI and console share their respective REST prefix constants
+(`api.RESTPrefix` in Go, `REST_API_PREFIX` in the console). These preserve
+current URLs and prepare clients for deliberate future version selection;
+changing a constant is not an automatic migration of all clients to a new
+REST contract. OAuth, MCP, WebSocket and provider gateway URLs retain their
+own protocol contracts.
