@@ -760,33 +760,58 @@ export class TalkComposer extends LitElement {
       return;
     }
 
-    // The route is the server's per-session answer. A line typed before
-    // that answer arrived waits for it rather than guessing "command".
-    if (this.sessionId && !this.sessionControl && !this.sessionControlLegacy) {
-      await this.loadSessionControl();
-    }
-
     const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const inputMode = this.lastInputMode;
+    const targetSessionId = this.sessionId ?? null;
     // The target is fixed here, at Enter. Anything that moves the window
-    // after this point (a takeover round trip, a session switch) must not
-    // move the turn with it.
+    // after this point (a control read, a takeover round trip, a session
+    // switch) must not move the turn with it.
     const pending: PendingTalkMessage = {
       id,
       text,
       at: new Date().toISOString(),
       state: 'sending',
       inputMode,
-      targetSessionId: this.sessionId ?? null,
+      targetSessionId,
       startNewSession: this.startsNewSession,
-      ...(this.noteMode ? { noteId: '' } : {}),
     };
     // The turn shows in the thread before the server has seen it: a chat that
     // swallows what you typed until a round trip finishes reads as broken.
+    // Clearing the box now also means a second Enter cannot resend it.
     this.setPending([...this.pending, pending]);
     this.message = '';
     this.lastInputMode = 'text';
-    await this.deliver(pending);
+    const asNote = targetSessionId
+      ? await this.sessionTakesNotes(targetSessionId)
+      : false;
+    const routed: PendingTalkMessage = asNote
+      ? { ...pending, noteId: '' }
+      : pending;
+    if (asNote) {
+      this.setPending(
+        this.pending.map((item) => (item.id === id ? routed : item))
+      );
+    }
+    await this.deliver(routed);
+  }
+
+  /**
+   * Whether a line typed on ``sessionId`` goes as a note. Uses the known
+   * answer for the open session, otherwise asks the server for that session.
+   * A failed read routes as a command; a terminal session then answers 409
+   * and the line is resent as a note.
+   */
+  private async sessionTakesNotes(sessionId: string): Promise<boolean> {
+    if (sessionId === this.sessionId) {
+      if (this.sessionControlLegacy) return false;
+      if (this.sessionControl) return this.sessionControl.mode === 'note';
+    }
+    try {
+      const control = await getRuntimeSessionControl(sessionId);
+      return control?.mode === 'note';
+    } catch {
+      return false;
+    }
   }
 
   /** Send one line as an operator note the session reads at its next hook. */

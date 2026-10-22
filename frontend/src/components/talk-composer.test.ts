@@ -684,6 +684,127 @@ describe('talk-composer per-session routing', () => {
     expect(el.pendingMessages[0].noteId).to.equal('note-409');
   });
 
+  it('two Enters before the mode is known send one note to the typed session', async () => {
+    let releaseControl: () => void = () => {};
+    const controlReady = new Promise<void>((resolve) => {
+      releaseControl = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/control') && url.includes('/runtime-sessions/')) {
+        await controlReady;
+        return json(terminalControl());
+      }
+      if (url.endsWith('/api/v1/operator-notes')) {
+        return json({ note_id: 'note-once', state: 'pending' }, 201);
+      }
+      if (url.includes('/control/')) {
+        return json({ status: 'delivered', published: true });
+      }
+      return new Response('', { status: 200 });
+    });
+    const el = await fixture<TalkComposer>(
+      html`<talk-composer .agent=${agent()} sessionId="sess-1"></talk-composer>`
+    );
+    await el.updateComplete;
+    await type(el, 'only once');
+    textarea(el).dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })
+    );
+    // The operator switches sessions while the read is in flight.
+    el.sessionId = 'sess-2';
+    await el.updateComplete;
+    releaseControl();
+    await waitUntil(() => el.pendingMessages[0]?.state === 'waiting');
+
+    expect(el.pendingMessages).to.have.length(1);
+    expect(el.pendingMessages[0].targetSessionId).to.equal('sess-1');
+    const notes = fetchStub
+      .getCalls()
+      .filter((call) =>
+        String(call.args[0]).endsWith('/api/v1/operator-notes')
+      );
+    expect(notes).to.have.length(1);
+    expect(
+      JSON.parse(String((notes[0].args[1] as RequestInit).body))
+        .runtime_session_id
+    ).to.equal('sess-1');
+  });
+
+  it('retry re-routes a failed command as a note once the mode is note', async () => {
+    let commandStatus = 500;
+    let mode = 'command';
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/control') && url.includes('/runtime-sessions/')) {
+        return json({ ...terminalControl(), mode });
+      }
+      if (url.endsWith('/api/v1/operator-notes')) {
+        return json({ note_id: 'note-retry', state: 'pending' }, 201);
+      }
+      if (url.includes('/control/')) {
+        return json({ detail: 'boom' }, commandStatus);
+      }
+      return new Response('', { status: 200 });
+    });
+    const el = await mountRouted();
+    await type(el, 'retry me');
+    await waitUntil(() => el.pendingMessages[0]?.state === 'failed');
+    const commandsBefore = controlCalls(fetchStub).length;
+
+    mode = 'note';
+    el.handleRealtime({ payload: { runtime_session_id: 'sess-1' } });
+    await waitUntil(
+      () =>
+        el
+          .shadowRoot!.querySelector('[data-testid="composer-mode"]')
+          ?.textContent?.includes('Terminal session'),
+      'mode never became note'
+    );
+    await el.retry(el.pendingMessages[0].id);
+
+    expect(el.pendingMessages[0].state).to.equal('waiting');
+    expect(el.pendingMessages[0].noteId).to.equal('note-retry');
+    expect(controlCalls(fetchStub).length).to.equal(commandsBefore);
+    commandStatus = 200;
+  });
+
+  it('retry stays a command when the session still takes commands', async () => {
+    let commandStatus = 500;
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/control') && url.includes('/runtime-sessions/')) {
+        return json({
+          ...terminalControl(),
+          mode: 'command',
+          reason_code: null,
+        });
+      }
+      if (url.endsWith('/api/v1/operator-notes')) {
+        return json({ note_id: 'never', state: 'pending' }, 201);
+      }
+      if (url.includes('/control/')) {
+        return commandStatus === 200
+          ? json({ status: 'delivered', published: true })
+          : json({ detail: 'boom' }, commandStatus);
+      }
+      return new Response('', { status: 200 });
+    });
+    const el = await mountRouted();
+    await type(el, 'retry as command');
+    await waitUntil(() => el.pendingMessages[0]?.state === 'failed');
+
+    commandStatus = 200;
+    await el.retry(el.pendingMessages[0].id);
+
+    expect(el.pendingMessages[0].state).to.equal('sent');
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).endsWith('/api/v1/operator-notes'))
+    ).to.equal(false);
+  });
+
   it('no Interrupt or Release for a note-mode session', async () => {
     route(terminalControl());
     const el = await mountRouted();
