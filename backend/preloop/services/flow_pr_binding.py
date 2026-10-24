@@ -32,6 +32,15 @@ _GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
 PR_OPENED_MARKER = "PRELOOP_PR_OPENED"
 MAX_PUBLISHED_PRS = 32
 
+# One line per non-trivial choice the agent made, printed by the agent itself:
+#   PRELOOP_DECISION {"summary": "...", "reason": "...", "alternatives": ["..."]}
+# These are the agent's own claims, kept for reports to cite, never trusted
+# for control flow.
+DECISION_MARKER = "PRELOOP_DECISION"
+MAX_DECISIONS = 50
+MAX_DECISION_TEXT = 1000
+MAX_DECISION_ALTERNATIVES = 10
+
 # Comment marker written by the PR reviewer flow, e.g.
 #   <!-- preloop-review:flow-id:pr-reviewer:severity:HIGH -->
 REVIEW_MARKER_RE = re.compile(
@@ -168,6 +177,99 @@ def parse_pr_opened_marker(line: str) -> Optional[Dict[str, str]]:
     if isinstance(provider, str) and provider.strip():
         out["provider"] = provider.strip()
     return out
+
+
+def _decision_text(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()[:MAX_DECISION_TEXT]
+
+
+def parse_decision_marker(line: str) -> Optional[Dict[str, Any]]:
+    """Parse an agent's ``PRELOOP_DECISION {...}`` log line.
+
+    Args:
+        line: One log line.
+
+    Returns:
+        ``{"summary": str, "reason": str, "alternatives": [str, ...]}``, or
+        None when the line is not the marker. A marker line that is not a JSON
+        object with a non-empty summary and reason is logged and ignored.
+    """
+
+    if not line or not isinstance(line, str):
+        return None
+    idx = line.find(DECISION_MARKER)
+    if idx < 0:
+        return None
+    payload = line[idx + len(DECISION_MARKER) :].strip()
+    start = payload.find("{")
+    parsed: Any = None
+    if start >= 0:
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(payload[start:])
+        except ValueError:
+            parsed = None
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "Ignoring malformed %s line (%d chars)", DECISION_MARKER, len(line)
+        )
+        return None
+    summary = _decision_text(parsed.get("summary"))
+    reason = _decision_text(parsed.get("reason"))
+    if summary is None or reason is None:
+        logger.warning(
+            "Ignoring %s line without a summary and a reason", DECISION_MARKER
+        )
+        return None
+    raw_alternatives = parsed.get("alternatives")
+    alternatives: List[str] = []
+    if isinstance(raw_alternatives, list):
+        for item in raw_alternatives:
+            text = _decision_text(item)
+            if text is not None:
+                alternatives.append(text)
+            if len(alternatives) >= MAX_DECISION_ALTERNATIVES:
+                break
+    return {"summary": summary, "reason": reason, "alternatives": alternatives}
+
+
+def parse_decisions(transcript: Optional[str]) -> List[Dict[str, Any]]:
+    """Return every well-formed decision marker in ``transcript``, in order."""
+
+    if not transcript:
+        return []
+    decisions: List[Dict[str, Any]] = []
+    for line in transcript.splitlines():
+        if DECISION_MARKER not in line:
+            continue
+        decision = parse_decision_marker(line)
+        if decision is not None:
+            decisions.append(decision)
+    return decisions
+
+
+def record_decision(
+    db: Session,
+    execution_id: Any,
+    decision: Dict[str, Any],
+    *,
+    raise_errors: bool = False,
+) -> None:
+    """Append one parsed decision to ``result["decisions"]`` once."""
+
+    try:
+        if execution_id:
+            crud_flow_execution.add_decision(
+                db, execution_id=execution_id, decision=decision
+            )
+    except Exception:
+        logger.warning(
+            "Failed to record decision on execution %s", execution_id, exc_info=True
+        )
+        db.rollback()
+        if raise_errors:
+            raise
 
 
 def parse_review_marker(body: Optional[str]) -> Optional[str]:
@@ -427,7 +529,8 @@ def take_pending_followup(db: Session, execution: Any) -> Optional[Dict[str, Any
 def merge_result_preserving_pr_binding(
     existing: Optional[Any], incoming: Optional[Any]
 ) -> Optional[Any]:
-    """Keep ``pr_url`` / ``pr_source_branch`` when the agent result overwrites."""
+    """Keep ``pr_url`` / ``pr_source_branch`` and recorded decisions when the
+    agent result overwrites."""
 
     if incoming is None:
         return existing
@@ -447,6 +550,9 @@ def merge_result_preserving_pr_binding(
         merged["published_prs"] = existing["published_prs"]
     if "published_prs_truncated" in existing:
         merged["published_prs_truncated"] = existing["published_prs_truncated"]
+    for key in ("decisions", "decisions_truncated"):
+        if key in existing:
+            merged[key] = existing[key]
     return merged
 
 
@@ -744,6 +850,10 @@ def record_runner_handoff_markers(
     from preloop.agents.cli_session import parse_agent_session_marker, valid_session_id
     from preloop.agents.session_runtime import parse_native_artifact_marker
 
+    if DECISION_MARKER in line:
+        decision = parse_decision_marker(line)
+        if decision is not None:
+            record_decision(db, execution.id, decision, raise_errors=True)
     if not isolated_publication:
         opened = parse_pr_opened_marker(line)
         if opened:

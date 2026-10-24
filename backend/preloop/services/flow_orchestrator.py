@@ -82,14 +82,17 @@ from preloop.services.flow_execution_notifications import (
 )
 from preloop.config import settings
 from preloop.services.flow_pr_binding import (
+    DECISION_MARKER,
     PR_OPENED_MARKER,
     MAX_PUBLISHED_PRS,
     find_bound_execution,
     max_resumes_per_pr,
     merge_result_preserving_pr_binding,
     note_resume_started,
+    parse_decision_marker,
     parse_pr_opened_marker,
     record_cli_session,
+    record_decision,
     record_opened_pr,
     record_published_pr,
     resume_cli_session_of,
@@ -3742,6 +3745,10 @@ class FlowExecutionOrchestrator:
         if PR_OPENED_MARKER in stripped_line:
             self._note_opened_pr(stripped_line)
 
+        # A non-trivial choice the agent reported about its own work.
+        if DECISION_MARKER in stripped_line:
+            self._note_decision(stripped_line)
+
         # Native CLI session id reported by the agent script, so a
         # later PR-comment resume can invoke the CLI resume flag.
         if any(
@@ -5004,6 +5011,20 @@ class FlowExecutionOrchestrator:
             return []
         return [line for line in logs if isinstance(line, str)]
 
+    def _note_decision(self, line: str) -> None:
+        """Record an agent decision marker on this execution's result once."""
+        decision = parse_decision_marker(line)
+        if decision is None or self.execution_log is None:
+            return
+        seen = getattr(self, "_recorded_decisions", None)
+        if seen is None:
+            seen = []
+            self._recorded_decisions = seen
+        if decision in seen:
+            return
+        seen.append(decision)
+        record_decision(self.db, self.execution_log.id, decision)
+
     def _note_opened_pr(self, line: str) -> None:
         """Remember each wrapper publication; retain the first as the follow-up binding."""
         if getattr(self, "_isolated_publication_policy", None) is not None:
@@ -5498,6 +5519,8 @@ class FlowExecutionOrchestrator:
             for line in output_summary.splitlines():
                 if PR_OPENED_MARKER in line:
                     self._note_opened_pr(line)
+                if DECISION_MARKER in line:
+                    self._note_decision(line)
         if getattr(self, "_opened_pr_bound", False):
             return
         if self._opened_pr is None or self.execution_log is None:

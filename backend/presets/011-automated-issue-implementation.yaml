@@ -285,6 +285,15 @@ prompt_template: |
   when you could not implement the issue, and say why. Never report
   success for work you did not do.
 
+  **Decision record.** For each non-trivial choice you make (a design or
+  approach picked over a real alternative, a scope cut, a dependency, a
+  trade-off), print one line to your output, for example with `echo`, in the
+  form `PRELOOP_DECISION {"summary": <one line: what you chose>, "reason":
+  <why>, "alternatives": [<options you rejected>]}` with JSON strings in
+  place of the angle brackets, all on a single line. Emit one marker per
+  decision, none for routine edits, and never put secrets in them. Preloop
+  records them on this execution so reports can cite your reasons.
+
   One closing comment on the issue is welcome and optional: use
   `add_comment` with the same summary, decisions, and skipped items. On a
   resume, update your earlier comment with `update_comment` rather than

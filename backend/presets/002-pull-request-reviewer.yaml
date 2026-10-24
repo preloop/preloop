@@ -1220,6 +1220,16 @@ prompt_template: |
     MEDIUM "code quality". Trace the consumer first (Step 2.3, Checks A and B).
   - Fewer, correctly-severitied, verified findings are worth more than a long list.
 
+  **Decision record.** For each non-trivial choice you make (a design or
+  approach picked over a real alternative, a severity you
+  assigned on a close call, approving or requesting changes when it was not
+  clear-cut), print one line to your output, for example with `echo`, in the
+  form `PRELOOP_DECISION {"summary": <one line: what you chose>, "reason":
+  <why>, "alternatives": [<options you rejected>]}` with JSON strings in
+  place of the angle brackets, all on a single line. Emit one marker per
+  decision, none for routine edits, and never put secrets in them. Preloop
+  records them on this execution so reports can cite your reasons.
+
   DO NOT SWITCH BRANCHES. Your working copy is on a branch that was cut from the source branch of the PR. Any commits you make should be on that branch.
 
 agent_type: codex

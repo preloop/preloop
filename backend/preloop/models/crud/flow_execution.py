@@ -305,6 +305,35 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         execution.result = {**current, "published_prs": [*items, publication]}
         db.commit()
 
+    def add_decision(
+        self, db: Session, *, execution_id: uuid.UUID, decision: dict[str, Any]
+    ) -> None:
+        """Append an agent decision once, up to ``MAX_DECISIONS`` per execution."""
+        with db.no_autoflush:
+            execution = (
+                db.query(FlowExecution)
+                .filter(FlowExecution.id == execution_id)
+                .populate_existing()
+                .with_for_update()
+                .one_or_none()
+            )
+        if execution is None:
+            return
+        current = execution.result if isinstance(execution.result, dict) else {}
+        existing = current.get("decisions")
+        items = list(existing) if isinstance(existing, list) else []
+        from preloop.services.flow_pr_binding import MAX_DECISIONS
+
+        if decision in items:
+            return
+        if len(items) >= MAX_DECISIONS:
+            if not current.get("decisions_truncated"):
+                execution.result = {**current, "decisions_truncated": True}
+                db.commit()
+            return
+        execution.result = {**current, "decisions": [*items, decision]}
+        db.commit()
+
     def get_continuation_navigation(
         self, db: Session, *, root_id: uuid.UUID, account_id: uuid.UUID
     ) -> List[FlowExecutionNavigationRow]:
