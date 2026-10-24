@@ -67,7 +67,7 @@ holds the defaults:
 | Scope | every linked project |
 | Report mode | `assessed`; `deterministic` makes no model call |
 | Per-run budget | $5, applied as `agent_config.limits.max_usd` |
-| Monthly budget | $25; at the limit the run reports without assessments |
+| Monthly budget | $25 |
 | Drop first when short of budget | risk detail, then assessments beyond 25 changes; the shipped list is never dropped |
 | Open PR window | 7 days |
 | Inactive issue window | 14 days |
@@ -77,10 +77,14 @@ holds the defaults:
 
 The deterministic report (shipped, closed, open, the delta and the
 deterministic risk flags) costs nothing. The assessed report adds the model
-pass under the per-run and monthly budgets. The defaults come from a measured
-run on a heavy week. The gateway enforces the per-run budget the same way as
-any other [execution limit](flow-execution.md). When assessments are skipped
-for budget, the report still goes out and says so in one line
+pass, which the budgets are meant to cap. The defaults come from a measured
+run on a heavy week. Today the gateway enforces only the per-run budget, the
+same way as any other [execution limit](flow-execution.md). The report mode
+and the monthly budget are recorded in the policy
+(`DeliveryReportPolicy.assessments_allowed()`) but nothing reads them yet:
+there is no policy UI and no month-to-date spend check, so the preset always
+runs assessed under its per-run ceiling. When the run skips assessments for
+budget, the report still goes out and says so in one line
 (`summary.assessments_skipped_for_budget`).
 
 Tracker writes start off. Follow-up issues and reopen requests are proposals

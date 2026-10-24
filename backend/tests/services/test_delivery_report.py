@@ -996,3 +996,73 @@ class TestMeasuredRunRules:
         assert change["purpose"]["source"] == dr.SOURCE_METADATA
         assert change["purpose"]["verdict"] == dr.PURPOSE_NO_CRITERIA
         assert "dependabot, reported from metadata" in report["report_markdown"]
+
+
+class TestReviewFindings:
+    def test_shipped_change_ignores_an_audit_at_another_revision(self) -> None:
+        report = dr.finalize_delivery_report(
+            {
+                "shipped": [
+                    {
+                        "ref": "acme/app#102",
+                        "project": "acme/app",
+                        "issues": ["#12"],
+                        "merge_sha": "9" * 40,
+                        "purpose": {"criteria": ["CSV export includes headers"]},
+                    }
+                ]
+            },
+            merge_audits=_audits(),
+        )
+        assert report["shipped"][0]["purpose"]["source"] == dr.SOURCE_NONE
+
+    def test_a_copied_cache_key_is_recomputed(self) -> None:
+        previous = {
+            "schema": dr.REPORT_SCHEMA,
+            "closed_issues": [
+                {
+                    "ref": "acme/app#5",
+                    "cache_key": "old",
+                    "purpose": {"verdict": "covered", "source": "report"},
+                }
+            ],
+        }
+        current = {
+            "closed_issues": [
+                {
+                    "ref": "acme/app#5",
+                    "cache_key": "old",
+                    "updated_at": "2026-10-20T00:00:00Z",
+                    "closing_head_sha": "c" * 40,
+                    "purpose": {"criteria": ["x"]},
+                }
+            ]
+        }
+        issue = dr.finalize_delivery_report(current, previous=previous)[
+            "closed_issues"
+        ][0]
+        assert issue["cache_key"] != "old"
+        assert issue["purpose"]["source"] == dr.SOURCE_NONE
+
+    @pytest.mark.parametrize("payload", [["x"], "text", 3])
+    def test_a_non_mapping_payload_is_left_alone(self, payload: Any) -> None:
+        trigger = {"payload": payload}
+        assert dr.with_merge_audits_seed(trigger, {"audits": []}) is trigger
+
+    def test_closed_issue_carries_the_latest_comment(self) -> None:
+        issues = _load("issues.json")
+        issues[0]["comments"] = [
+            {"author": "jane-doe", "created_at": "2026-10-13T10:00:00Z", "body": "ok"},
+            {
+                "author": "john-doe",
+                "created_at": "2026-10-13T11:00:00Z",
+                "body": "measured: title search misses prefixes",
+            },
+        ]
+        report = dr.assemble_report(
+            window=WINDOW, pull_requests=_load("pull_requests.json"), issues=issues
+        )
+        closed = {i["ref"]: i for i in report["closed_issues"]}
+        latest = closed["acme/app#11"]["latest_comment"]
+        assert latest["body"] == "measured: title search misses prefixes"
+        assert closed["acme/app#12"]["latest_comment"] is None

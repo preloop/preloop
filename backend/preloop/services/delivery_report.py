@@ -92,10 +92,6 @@ ASSESSMENT_SOURCES = (
 MERGE_AUDITS_WORKSPACE_PATH = "previous/merge_audits.json"
 MERGE_AUDITS_SCHEMA = "preloop.merge_audits/v1"
 
-#: Forge file lists stop at 100 entries per page; at or above this the
-#: list must have been read with pagination to be trusted.
-FILE_LIST_PAGE_LIMIT = 100
-
 #: Report sections in rendering order (the design's console layout).
 SECTIONS = (
     "summary",
@@ -1132,6 +1128,7 @@ def assemble_report(
                     met.setdefault(c["text"], c)
         closing = [c for c in shipped if c["ref"] in prs]
         closing_pr = closing[-1] if closing else {}
+        recent = comments_after_last_criteria_edit(issue, source=policy.criteria_source)
         closed.append(
             {
                 "ref": key,
@@ -1140,6 +1137,17 @@ def assemble_report(
                 "updated_at": issue.get("updated_at"),
                 "closing_sha": closing_pr.get("merge_sha"),
                 "closing_head_sha": closing_pr.get("head_sha"),
+                # The measurement a reopen rule reads: the newest comment
+                # after the last criteria edit, when the issue has criteria.
+                "latest_comment": (
+                    {
+                        "author": recent[-1].get("author"),
+                        "created_at": recent[-1].get("created_at"),
+                        "body": str(recent[-1].get("body") or "")[:2000],
+                    }
+                    if recent
+                    else None
+                ),
                 "closed_by": prs,
                 "purpose": {
                     "criteria": [
@@ -1514,7 +1522,13 @@ def finalize_delivery_report(
             f"{project}{ref}" if ref.startswith("#") and project else ref
             for ref in _strs(change.get("issues"))
         ]
-        audit = _audit_for({"ref": linked[0]}, audits) if len(linked) == 1 else None
+        audit = (
+            _audit_for(
+                {"ref": linked[0], "closing_sha": change.get("merge_sha")}, audits
+            )
+            if len(linked) == 1
+            else None
+        )
         metadata_only = change.get("metadata_only")
         if audit is not None:
             change["purpose"] = normalize_purpose(_audited_purpose(audit))
@@ -1532,7 +1546,9 @@ def finalize_delivery_report(
         if not isinstance(issue, Mapping):
             continue
         issue = dict(issue)
-        issue["cache_key"] = issue.get("cache_key") or assessment_cache_key(
+        # Platform-owned: a key the run copied from an old row must not
+        # carry an edited issue's previous assessment forward.
+        issue["cache_key"] = assessment_cache_key(
             issue.get("updated_at"), issue.get("closing_head_sha")
         )
         audit = _audit_for(issue, audits)
@@ -1809,6 +1825,8 @@ def with_merge_audits_seed(
     except WorkspaceSeedError:
         return trigger_event_data
     if target is None:
+        if "payload" in data and not isinstance(data["payload"], dict):
+            return trigger_event_data
         target = data.setdefault("payload", {})
     seeds = target.get(WORKSPACE_FILES_KEY)
     seeds = list(seeds) if isinstance(seeds, list) else []
