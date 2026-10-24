@@ -228,7 +228,10 @@ def test_tag_flag_without_value_fails() -> None:
         ),
         ("Error: cannot publish duplicate version", True),
         ("Error: publish failed: HTTP 409 Conflict", True),
-        ("Publishing io.github.preloop/preloop@0.409.0\nError: 401 unauthorized", False),
+        (
+            "Publishing io.github.preloop/preloop@0.409.0\nError: 401 unauthorized",
+            False,
+        ),
         ("Error: publish failed: status 500: internal error", False),
         ("", False),
     ],
