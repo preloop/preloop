@@ -19,6 +19,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql import sqltypes
 
 from preloop.models import models
+from preloop.models.models.issue_cost import (
+    PULL_REQUEST_ORIGINS,
+    PULL_REQUEST_STATES,
+)
 
 #: Terminal statuses that count as a failed run. STOPPED and CANCELLED are
 #: operator decisions, not failures, so they count as runs but not here.
@@ -534,6 +538,106 @@ class CRUDIssueCost:
         )
         assert row is not None
         return row
+
+    def record_pull_request_identity(
+        self,
+        db: Session,
+        *,
+        row: models.IssueCostPullRequest,
+        origin: Optional[str] = None,
+        author_id: Optional[str] = None,
+        head_sha: Optional[str] = None,
+        state: Optional[str] = None,
+    ) -> models.IssueCostPullRequest:
+        """Record who produced a pull request and what the forge last reported.
+
+        ``None`` leaves a field unchanged. Merge time stays in ``merged_at``;
+        ``state`` only mirrors the forge.
+
+        Args:
+            db: Database session.
+            row: The pull request row.
+            origin: One of ``PULL_REQUEST_ORIGINS``.
+            author_id: Immutable forge user id of the author.
+            head_sha: Current head commit.
+            state: One of ``PULL_REQUEST_STATES``.
+
+        Returns:
+            The flushed row.
+
+        Raises:
+            ValueError: Unknown origin or state, or a different author id
+                than the one already recorded.
+        """
+        if origin is not None and origin not in PULL_REQUEST_ORIGINS:
+            raise ValueError(f"unknown pull request origin {origin!r}")
+        if state is not None and state not in PULL_REQUEST_STATES:
+            raise ValueError(f"unknown pull request state {state!r}")
+        if author_id is not None:
+            if row.author_id is not None and row.author_id != author_id:
+                raise ValueError("pull request author id is immutable")
+            row.author_id = author_id
+        if origin is not None:
+            row.origin = origin
+        if head_sha is not None:
+            row.head_sha = head_sha
+        if state is not None:
+            row.state = state
+        db.flush()
+        return row
+
+    def link_pull_request_issue(
+        self,
+        db: Session,
+        *,
+        row: models.IssueCostPullRequest,
+        issue_id: uuid.UUID,
+    ) -> None:
+        """Record that a pull request claims an issue; repeat calls are no-ops.
+
+        This does not touch ``rollup_id`` or ``ambiguous``: cost attribution
+        keeps its single-issue rule.
+        """
+        db.execute(
+            pg_insert(models.IssueCostPullRequestIssue)
+            .values(
+                id=uuid.uuid4(),
+                account_id=row.account_id,
+                pull_request_id=row.id,
+                issue_id=issue_id,
+            )
+            .on_conflict_do_nothing(constraint="uq_issue_cost_pull_request_issue")
+        )
+
+    def issue_ids_for_pull_request(
+        self, db: Session, *, account_id: uuid.UUID, pull_request_id: uuid.UUID
+    ) -> list[uuid.UUID]:
+        """Every issue the pull request claims, oldest link first."""
+        link = models.IssueCostPullRequestIssue
+        return list(
+            db.scalars(
+                select(link.issue_id)
+                .where(
+                    link.account_id == account_id,
+                    link.pull_request_id == pull_request_id,
+                )
+                .order_by(link.created_at, link.id)
+            )
+        )
+
+    def pull_requests_for_issue(
+        self, db: Session, *, account_id: uuid.UUID, issue_id: uuid.UUID
+    ) -> list[models.IssueCostPullRequest]:
+        """Every pull request that claims the issue, oldest link first."""
+        link = models.IssueCostPullRequestIssue
+        return list(
+            db.scalars(
+                select(models.IssueCostPullRequest)
+                .join(link, link.pull_request_id == models.IssueCostPullRequest.id)
+                .where(link.account_id == account_id, link.issue_id == issue_id)
+                .order_by(link.created_at, link.id)
+            )
+        )
 
     # --- reads for the report ----------------------------------------------
 
