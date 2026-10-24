@@ -10,6 +10,7 @@ import pytest
 
 from preloop.config import settings
 from preloop.services.event_webhooks import targets, worker
+from preloop.services.event_webhooks import transport as transport_module
 from preloop.services.event_webhooks.transport import WebhookTransport
 
 
@@ -379,3 +380,62 @@ async def test_slow_resolution_obeys_connect_timeout_without_opening_socket(
         assert not finished.is_set()
     finally:
         release.set()
+
+
+@pytest.mark.asyncio
+async def test_failover_is_capped_and_shares_one_connect_budget(
+    blocking: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dns_answers(monkeypatch, [f"93.184.216.{n}" for n in range(10, 20)])
+    budgets: list[float] = []
+
+    async def blackhole(self: Any, request: httpx.Request) -> httpx.Response:
+        connect = request.extensions["timeout"]["connect"]
+        budgets.append(connect)
+        await asyncio.sleep(connect / 2)
+        raise httpx.ConnectTimeout("Synthetic blackholed address")
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", blackhole)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    async with httpx.AsyncClient(transport=WebhookTransport(), timeout=0.4) as client:
+        result = await worker.post_delivery(
+            client, delivery("https://collector.example/hook")
+        )
+    assert not result.success
+    assert loop.time() - started < 0.4 + 0.2
+    assert 1 <= len(budgets) <= transport_module.MAX_ADDRESS_ATTEMPTS
+    assert all(
+        later < earlier for earlier, later in zip(budgets, budgets[1:], strict=False)
+    )
+    assert budgets[0] <= 0.4
+
+
+@pytest.mark.asyncio
+async def test_resolution_does_not_use_the_default_executor(
+    blocking: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    dns_answers(monkeypatch, ["93.184.216.34"])
+    original = targets.checked_target_addresses
+    threads: list[str] = []
+
+    def record(host: str) -> list[str]:
+        threads.append(threading.current_thread().name)
+        return original(host)
+
+    async def ok(self: Any, request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)
+
+    monkeypatch.setattr(transport_module, "checked_target_addresses", record)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", ok)
+    async with httpx.AsyncClient(transport=WebhookTransport()) as client:
+        assert (
+            await worker.post_delivery(
+                client, delivery("https://collector.example/hook")
+            )
+        ).success
+    assert threads and threads[0].startswith("webhook-resolve")

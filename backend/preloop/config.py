@@ -1298,8 +1298,9 @@ class Settings(BaseSettings):
     webhook_block_private_targets: bool = Field(
         False,
         description=(
-            "Refuse webhook URLs that resolve to loopback, link-local or "
-            "private address space. Off by default because self-hosted "
+            "Refuse webhook URLs that resolve to loopback, link-local, "
+            "private, site-local, reserved or otherwise non-global address "
+            "space. Off by default because self-hosted "
             "deployments legitimately post to internal collectors."
         ),
     )
