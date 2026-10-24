@@ -782,6 +782,8 @@ export interface ManagedAgentSummary {
   started_at: string | null;
   last_activity_at: string | null;
   ended_at: string | null;
+  /** False on identity reads; historical totals are unavailable. */
+  usage_computed?: boolean;
   total_requests: number;
   successful_requests?: number;
   failed_requests?: number;
@@ -1001,7 +1003,7 @@ export interface AccountManagedAgentListResponse {
 
 export interface ManagedAgentDetailResponse {
   agent: ManagedAgentSummary;
-  aggregate: ManagedAgentUsageAggregate;
+  aggregate: ManagedAgentUsageAggregate | null;
   usage_by_model: GatewayUsageByModel[];
   activity_by_server: ManagedAgentServerActivitySummary[];
   activity_by_tool: ManagedAgentToolActivitySummary[];
@@ -1986,8 +1988,16 @@ export interface CopilotUsageSummary {
     // Spend on per-developer days that no current seat holder explains.
     unattributed_net_amount: number | null;
     aggregate_days: number;
-    by_developer: { login: string; net_amount: number; net_quantity: number }[];
-    by_model: { model: string; net_amount: number; net_quantity: number }[];
+    by_developer: {
+      login: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
+    by_model: {
+      model: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
   };
   model_mix: {
     login: string;
