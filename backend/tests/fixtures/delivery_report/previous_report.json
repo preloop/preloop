@@ -1,0 +1,14 @@
+{
+  "status": "success",
+  "schema": "preloop.delivery_report/v1",
+  "window": {"from": "2026-10-05T07:00:00+00:00", "to": "2026-10-12T07:00:00+00:00"},
+  "summary": {"shipped": 3},
+  "shipped": [],
+  "closed_issues": [],
+  "open_past_window": [{"kind": "pull_request", "ref": "acme/app#90", "age_days": 11}],
+  "open_questions": [
+    {"question": "Does the export change cover the date filter?", "ref": "acme/app#102"},
+    {"question": "Who owns the stalled search PR?", "ref": "acme/app#90"}
+  ],
+  "spend": {"cost_usd": 1.1}
+}

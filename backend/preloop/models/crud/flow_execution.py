@@ -1066,8 +1066,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         flow_id: Any,
         account_id: Optional[str] = None,
         exclude_execution_id: Any = None,
+        succeeded_only: bool = False,
     ) -> Optional[FlowExecution]:
         """Newest execution of this flow that stored a result artifact.
+
+        ``succeeded_only`` skips runs that did not end SUCCEEDED, for a
+        caller whose baseline must be a completed report rather than a
+        failed run's error result.
 
         Backs the ``previous_result_execution_id: "last"`` payload
         sentinel, which is how a scheduled review run diffs against its own
@@ -1087,6 +1092,8 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         if exclude_execution_id:
             query = query.filter(FlowExecution.id != exclude_execution_id)
+        if succeeded_only:
+            query = query.filter(FlowExecution.status == "SUCCEEDED")
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.order_by(FlowExecution.start_time.desc()).first()
