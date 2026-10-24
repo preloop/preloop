@@ -220,3 +220,48 @@ def test_tool_activity_with_new_content_is_kept():
         if e.get("direction") == "result" and e.get("id") == "c0"
     ]
     assert results == ["a later, different result"]
+
+
+def test_talk_page_bounds_replayed_history_and_keeps_tool_pairs():
+    """A 50-event Talk page stays small without losing page-local turns."""
+    import gzip
+    import json
+    import random
+
+    random_source = random.Random(42)
+    history = [
+        {
+            "role": "assistant",
+            "source": "request",
+            "text": "".join(
+                random_source.choices("abcdefghijklmnopqrstuvwxyz", k=1000)
+            ),
+        }
+        for _ in range(1000)
+    ]
+    events = []
+    for index in range(50):
+        history = [
+            *history,
+            {"role": "user", "source": "request", "text": f"turn {index}"},
+        ]
+        tools = [
+            {"kind": kind, "call_id": f"c{index}", "name": "test", "text": kind}
+            for kind in ("call", "result")
+        ]
+        events.append(_event(index, history, f"response {index}", tools))
+    result = elide_replayed_history(list(reversed(events)), window=40)
+    encoded = json.dumps({"logs": result}).encode()
+    assert len(encoded) < 3_000_000
+    assert len(gzip.compress(encoded)) < 1_000_000
+    assert {
+        entry["call_id"] for event in result for entry in event["payload"]["tools"]
+    } == {f"c{i}" for i in range(50)}
+    for event in result:
+        assert {entry["kind"] for entry in event["payload"]["tools"]} == {
+            "call",
+            "result",
+        }
+        messages = event["payload"]["conversation_preview"]["messages"]
+        assert all("position" in message for message in messages)
+        assert any(message["source"] == "response" for message in messages)

@@ -336,3 +336,32 @@ class TestExplicitFileWins:
         )
 
         assert delivery is not None and delivery.delivered
+
+
+class TestLatestSucceededWithResult:
+    """``succeeded_only`` backs the Delivery Report's previous report (#2019)."""
+
+    def test_a_failed_run_is_not_the_previous_report(
+        self, db_session: Session, flow: Flow
+    ):
+        good = _execution(db_session, flow, result=BASELINE_RESULT)
+        crud_flow_execution.update(
+            db_session, db_obj=good, obj_in=FlowExecutionUpdate(status="SUCCEEDED")
+        )
+        failed = _execution(db_session, flow, result={"status": "error"})
+        crud_flow_execution.update(
+            db_session, db_obj=failed, obj_in=FlowExecutionUpdate(status="FAILED")
+        )
+
+        latest = crud_flow_execution.latest_with_result(
+            db_session, flow_id=flow.id, account_id=str(flow.account_id)
+        )
+        succeeded = crud_flow_execution.latest_with_result(
+            db_session,
+            flow_id=flow.id,
+            account_id=str(flow.account_id),
+            succeeded_only=True,
+        )
+
+        assert latest is not None and latest.id == failed.id
+        assert succeeded is not None and succeeded.id == good.id

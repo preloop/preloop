@@ -73,9 +73,34 @@ Overview keeps its initial refresh guard through the deferred data wave while
 rendering the first results as before. Realtime refreshes retain at most one
 pending follow-up per resource, and background refreshes skip runs while other
 refreshes are active.
-Agent detail likewise serializes reads and coalesces live events into one
-follow-up. The session observer owns session interaction loading; the parent
-uses the session list already returned by the agent endpoint.
+Agent detail reads identity, session pages and spend independently through
+`GET /agents/{id}?lightweight=true`. `include=` returns enriched identity and
+recency without historical usage totals (`agent.usage_computed=false`);
+`include=sessions` reads the session page without unrelated credentials,
+enrollments, identity enrichment or agent usage aggregates. `include=aggregate`
+reads one requested-window aggregate. Legacy callers retain the full response.
+Identity recency follows the same principal/session attribution as usage totals,
+using latest-row reads even while stored-counter backfill is incomplete.
+
+Spend range changes refresh only spend and visible model usage, keeping the
+identity and session observer mounted. Resource-scoped realtime invalidations
+coalesce while reads are pending; hidden details reconcile when visible. The
+session observer owns session interaction loading; the parent supplies its
+already loaded session list.
+
+Talk requests `history=delta&history_window=40` for initial and older gateway
+event pages. Transcript reads serialize within the selected session, a burst
+queues one trailing refresh, and session changes abort the old event request
+and ignore stale results. Live refreshes retain already displayed older rows;
+pagination resumes from the server offset, never the number of retained rows.
+Full event drill-in remains available from the existing detail endpoint.
+The Agents deployment dialog mounts its editor only when opened.
+The list retains each agent's last complete subscription estimate during
+refreshes and partial reads, visibly marked "previous". It keeps the complete
+calculation rather than mixing old subscription pricing with new metered spend.
+A computed null subscription block means no subscription traffic; an omitted
+block is unavailable. Fresh zero or unpriced results replace the previous value.
+These view-local snapshots clear on account cache invalidation and disposal.
 
 ### Capability-gated account views (`src/capabilities.ts`, `src/components/capability-extension.ts`)
 

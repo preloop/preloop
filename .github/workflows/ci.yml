@@ -412,7 +412,7 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
-      # server.json is what the founder publishes to the official MCP
+      # server.json is what the release workflow publishes to the official MCP
       # registry; validate it against the vendored registry schema.
       - name: Validate MCP registry server.json
         run: python scripts/validate_server_json.py
