@@ -5439,6 +5439,25 @@ class FlowExecutionOrchestrator:
             # turns that review into a failed execution.
             logger.exception("Filing the approved follow ups failed")
 
+    def _finalize_delivery_report(self, merged_result: Any) -> Any:
+        """Apply the Delivery Report pass to a marked flow's result (#2019).
+
+        Any other flow's result is returned unchanged. A failure here keeps
+        the agent's result rather than failing a run whose report exists.
+        """
+        if not is_delivery_report_flow(self.flow) or self.execution_log is None:
+            return merged_result
+        try:
+            return finalize_delivery_report_for_execution(
+                self.db,
+                flow=self.flow,
+                execution=self.execution_log,
+                result=merged_result,
+            )
+        except Exception:
+            logger.exception("Finalizing the delivery report failed")
+            return merged_result
+
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
         """Gate evidence from the live stream, or from the stored log tail.
 
@@ -9567,16 +9586,7 @@ class FlowExecutionOrchestrator:
             # Delivery Report (#2019): the platform applies the honesty
             # rules, the delta and the spend to the agent's report. The agent
             # cannot author what the run spent or what the last report asked.
-            if is_delivery_report_flow(self.flow) and self.execution_log is not None:
-                try:
-                    merged_result = finalize_delivery_report_for_execution(
-                        self.db,
-                        flow=self.flow,
-                        execution=self.execution_log,
-                        result=merged_result,
-                    )
-                except Exception:
-                    logger.exception("Finalizing the delivery report failed")
+            merged_result = self._finalize_delivery_report(merged_result)
 
             verification_evidence = self._resolve_verification_evidence()
             if verification_evidence is not None and isinstance(merged_result, dict):

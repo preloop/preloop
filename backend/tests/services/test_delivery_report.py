@@ -316,7 +316,136 @@ class TestSpendAndDelta:
             )
         assert latest.call_args.kwargs["exclude_execution_id"] == "exec-2"
         assert latest.call_args.kwargs["account_id"] == "acct-1"
+        assert latest.call_args.kwargs["succeeded_only"] is True
         assert report["spend"]["cost_usd"] == 0.5
         assert report["spend"]["limit_usd"] == 5.0
         statuses: List[str] = [q["status"] for q in report["delta"]["open_questions"]]
         assert statuses == ["still_open", "still_open"]
+
+
+class TestReviewFollowUps:
+    @pytest.mark.parametrize(
+        "purpose",
+        ["covered", 3, ["covered"], None, {"verdict": ["covered"], "criteria": "x"}],
+    )
+    def test_malformed_purpose_still_gets_the_honesty_pass(self, purpose: Any) -> None:
+        report = dr.finalize_delivery_report(
+            {
+                "status": "success",
+                "shipped": [{"ref": "acme/app#1", "purpose": purpose}],
+            }
+        )
+        assert report["shipped"][0]["purpose"]["verdict"] == dr.PURPOSE_NO_CRITERIA
+        assert "spend" in report and "report_markdown" in report
+
+    def test_this_periods_questions_are_rendered(self) -> None:
+        report = dr.finalize_delivery_report(
+            {
+                "status": "success",
+                "open_questions": [
+                    {"question": "Is the cache warmed?", "ref": "acme/app#7"}
+                ],
+            }
+        )
+        assert "Is the cache warmed? (acme/app#7)" in report["report_markdown"]
+
+    def test_still_open_questions_are_persisted_for_the_next_run(self) -> None:
+        previous = _load("previous_report.json")
+        report = dr.finalize_delivery_report(
+            {"status": "error", "reason": "budget"}, previous=previous
+        )
+        assert report["open_questions"] == [
+            {
+                "question": "Does the export change cover the date filter?",
+                "ref": "acme/app#102",
+            },
+            {"question": "Who owns the stalled search PR?", "ref": "acme/app#90"},
+        ]
+        # The failed run's result, used as the next baseline, keeps them.
+        following = dr.finalize_delivery_report({"status": "success"}, previous=report)
+        assert [q["status"] for q in following["delta"]["open_questions"]] == [
+            "still_open",
+            "still_open",
+        ]
+
+    def test_a_carried_question_is_not_duplicated(self) -> None:
+        previous = _load("previous_report.json")
+        report = dr.finalize_delivery_report(
+            {
+                "status": "success",
+                "open_questions": [
+                    {
+                        "question": "Who owns the stalled search PR?",
+                        "ref": "acme/app#90",
+                    }
+                ],
+            },
+            previous=previous,
+        )
+        texts = [q["question"] for q in report["open_questions"]]
+        assert texts.count("Who owns the stalled search PR?") == 1
+
+    def test_gitlab_file_shape_is_read(self) -> None:
+        pr = {
+            "description": "",
+            "changes": {
+                "changed_files": [
+                    {
+                        "new_path": "db/migrations/0001_init.py",
+                        "diff": "+def upgrade():\n+    pass\n",
+                    }
+                ]
+            },
+        }
+        flags = {f["flag"] for f in dr.detect_risk_flags(pr)}
+        assert dr.RISK_MIGRATION_WITHOUT_DOWNGRADE in flags
+
+    def test_missing_patch_is_not_a_missing_downgrade(self) -> None:
+        pr = {"changes": {"changed_files": [{"path": "db/migrations/0001_init.py"}]}}
+        flags = {f["flag"] for f in dr.detect_risk_flags(pr)}
+        assert dr.RISK_MIGRATION_WITHOUT_DOWNGRADE not in flags
+
+
+class TestOrchestratorHook:
+    def _orchestrator(self, agent_config: Dict[str, Any]) -> Any:
+        from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+        orchestrator = object.__new__(FlowExecutionOrchestrator)
+        orchestrator.db = object()
+        orchestrator.execution_log = SimpleNamespace(id="exec-1")
+        orchestrator.flow = SimpleNamespace(
+            id="flow-1", account_id="acct-1", agent_config=agent_config
+        )
+        return orchestrator
+
+    def test_marked_flow_result_is_finalized(self) -> None:
+        orchestrator = self._orchestrator({"report_kind": "delivery_report"})
+        with (
+            patch(
+                "preloop.models.crud.crud_flow_execution.latest_with_result",
+                return_value=None,
+            ),
+            patch(
+                "preloop.services.flow_execution_limits.get_execution_usage",
+                side_effect=RuntimeError("no db"),
+            ),
+        ):
+            result = orchestrator._finalize_delivery_report({"status": "success"})
+        assert result["schema"] == dr.REPORT_SCHEMA
+        for key in ("report_markdown", "delta", "spend", "summary"):
+            assert key in result
+        assert result["spend"]["cost_usd"] is None
+
+    def test_other_flows_are_untouched(self) -> None:
+        orchestrator = self._orchestrator({})
+        original = {"status": "success"}
+        assert orchestrator._finalize_delivery_report(original) is original
+
+    def test_a_failing_pass_keeps_the_agent_result(self) -> None:
+        orchestrator = self._orchestrator({"report_kind": "delivery_report"})
+        original = {"status": "success"}
+        with patch(
+            "preloop.services.flow_orchestrator.finalize_delivery_report_for_execution",
+            side_effect=RuntimeError("boom"),
+        ):
+            assert orchestrator._finalize_delivery_report(original) is original

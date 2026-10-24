@@ -294,7 +294,18 @@ def _changed_files(pr: Mapping[str, Any]) -> List[Dict[str, Any]]:
     files = changes.get("changed_files")
     if not isinstance(files, list):
         return []
-    return [dict(f) for f in files if isinstance(f, Mapping) and f.get("filename")]
+    normalized: List[Dict[str, Any]] = []
+    for f in files:
+        if not isinstance(f, Mapping):
+            continue
+        # GitHub: filename/patch. GitLab: new_path/diff. Bitbucket: path.
+        name = f.get("filename") or f.get("new_path") or f.get("path")
+        if not name:
+            continue
+        normalized.append(
+            {"filename": str(name), "patch": f.get("patch") or f.get("diff") or ""}
+        )
+    return normalized
 
 
 def detect_risk_flags(pr: Mapping[str, Any]) -> List[Dict[str, Any]]:
@@ -343,6 +354,9 @@ def detect_risk_flags(pr: Mapping[str, Any]) -> List[Dict[str, Any]]:
         if not _MIGRATION_PATH_RE.search(name):
             continue
         patch = str(f.get("patch") or "")
+        if not patch:
+            # No per-file diff (Bitbucket): cannot tell, so no flag.
+            continue
         downgrade = re.search(r"def downgrade\(\)[^:]*:\s*(.*)", patch, re.DOTALL)
         body = downgrade.group(1) if downgrade else ""
         body_lines = [
@@ -394,7 +408,7 @@ def _evidence(value: Any) -> List[str]:
     return _strs(value)
 
 
-def normalize_purpose(purpose: Mapping[str, Any] | None) -> Dict[str, Any]:
+def normalize_purpose(purpose: Any) -> Dict[str, Any]:
     """Apply the honesty rules to one purpose assessment.
 
     * No criteria: ``no_criteria``, whatever the claim.
@@ -403,7 +417,8 @@ def normalize_purpose(purpose: Mapping[str, Any] | None) -> Dict[str, Any]:
     * Anything else, or a claim the evidence does not carry, is
       ``unverified``. A verdict is never better than its evidence.
     """
-    purpose = dict(purpose or {})
+    # Untrusted agent JSON: anything but a mapping is no assessment at all.
+    purpose = dict(purpose) if isinstance(purpose, Mapping) else {}
     raw_criteria = purpose.get("criteria")
     criteria: List[Dict[str, Any]] = []
     for item in raw_criteria if isinstance(raw_criteria, list) else []:
@@ -435,7 +450,11 @@ def normalize_purpose(purpose: Mapping[str, Any] | None) -> Dict[str, Any]:
             verdict = PURPOSE_UNVERIFIED
         # The agent may be more cautious than the evidence, never less.
         rank = {PURPOSE_UNVERIFIED: 0, PURPOSE_PARTIAL: 1, PURPOSE_COVERED: 2}
-        if claimed in rank and rank[claimed] < rank[verdict]:
+        if (
+            isinstance(claimed, str)
+            and claimed in rank
+            and rank[claimed] < rank[verdict]
+        ):
             verdict = claimed
     normalized: Dict[str, Any] = {"verdict": verdict, "criteria": criteria}
     reason = purpose.get("reason")
@@ -443,7 +462,7 @@ def normalize_purpose(purpose: Mapping[str, Any] | None) -> Dict[str, Any]:
         normalized["reason"] = reason.strip()
     elif verdict == PURPOSE_NO_CRITERIA:
         normalized["reason"] = "no criteria stated"
-    if claimed is not None and claimed != verdict:
+    if isinstance(claimed, str) and claimed != verdict:
         normalized["claimed_verdict"] = claimed
     return normalized
 
@@ -665,6 +684,24 @@ def _needs_you(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
     return items
 
 
+def _questions(raw: Any) -> List[Dict[str, Any]]:
+    """Open questions as ``{"question", "ref"}`` rows; junk entries dropped."""
+    rows: List[Dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if isinstance(item, str):
+            item = {"question": item}
+        if not isinstance(item, Mapping):
+            continue
+        text = item.get("question")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        ref = item.get("ref")
+        rows.append(
+            {"question": text.strip(), "ref": ref if isinstance(ref, str) else None}
+        )
+    return rows
+
+
 def build_delta(
     current: Mapping[str, Any], previous: Optional[Mapping[str, Any]]
 ) -> Dict[str, Any]:
@@ -684,8 +721,7 @@ def build_delta(
         if (i.get("purpose") or {}).get("verdict") == PURPOSE_COVERED
     }
     questions: List[Dict[str, Any]] = []
-    for raw in previous.get("open_questions") or []:
-        question = raw if isinstance(raw, Mapping) else {"question": str(raw)}
+    for question in _questions(previous.get("open_questions")):
         ref = question.get("ref")
         answered = bool(ref) and str(ref) in resolved_refs
         questions.append(
@@ -758,8 +794,7 @@ def finalize_delivery_report(
     for key in ("shipped", "closed_issues", "open_past_window", "follow_ups"):
         if not isinstance(out.get(key), list):
             out[key] = []
-    if not isinstance(out.get("open_questions"), list):
-        out["open_questions"] = []
+    out["open_questions"] = _questions(out.get("open_questions"))
 
     shipped = []
     for change in out["shipped"]:
@@ -795,6 +830,16 @@ def finalize_delivery_report(
         },
     }
     out["delta"] = build_delta(out, previous)
+    # Persist every question still open, this period's and the previous
+    # report's, so the next report can carry them even if this run failed
+    # or the agent forgot to repeat one.
+    asked = {q["question"] for q in out["open_questions"]}
+    for carried in out["delta"]["open_questions"]:
+        if carried["status"] == "still_open" and carried["question"] not in asked:
+            out["open_questions"].append(
+                {"question": carried["question"], "ref": carried.get("ref")}
+            )
+            asked.add(carried["question"])
     record_spend(out, cost_usd=cost_usd, total_tokens=total_tokens, limit_usd=limit_usd)
     out["report_markdown"] = render_markdown(out)
     return out
@@ -886,6 +931,13 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     for q in delta.get("open_questions") or []:
         lines.append(f"- {q['status'].replace('_', ' ')}: {q.get('question')}")
 
+    lines += ["", "## Open questions", ""]
+    for q in report.get("open_questions") or []:
+        ref = f" ({q['ref']})" if q.get("ref") else ""
+        lines.append(f"- {q['question']}{ref}")
+    if not report.get("open_questions"):
+        lines.append("No open questions.")
+
     spend = report.get("spend") or {}
     cost = spend.get("cost_usd")
     lines += [
@@ -945,6 +997,9 @@ def finalize_for_execution(
                 flow_id=flow.id,
                 account_id=str(account_id),
                 exclude_execution_id=getattr(execution, "id", None),
+                # A failed run's error result is not a report to diff
+                # against; its questions are carried on the result anyway.
+                succeeded_only=True,
             )
             if row is not None and isinstance(row.result, Mapping):
                 previous = row.result
