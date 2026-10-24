@@ -1,7 +1,7 @@
 """Drop redundant and unused api_usage indexes.
 
 Revision ID: 20261110_prune_api_usage_idx
-Revises: 20261109_agent_usage_totals
+Revises: 20261110_assessment_pr_identity
 
 Every api_usage insert maintains each index on the table. Three carry no
 query that another index cannot serve:
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from preloop.models.concurrent_index_ddl import concurrent_index_ddl
 
 revision = "20261110_prune_api_usage_idx"
-down_revision = "20261109_agent_usage_totals"
+down_revision = "20261110_assessment_pr_identity"
 branch_labels = None
 depends_on = None
 

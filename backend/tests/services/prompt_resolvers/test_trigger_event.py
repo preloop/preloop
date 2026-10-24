@@ -114,7 +114,6 @@ class TestTriggerEventResolver:
         Note: The resolver normalizes GitHub events by adding object_attributes
         for cross-platform compatibility with GitLab.
         """
-        import json
 
         resolver = TriggerEventResolver()
 
@@ -137,7 +136,8 @@ class TestTriggerEventResolver:
         # Test with empty string path
         result = await resolver.resolve("", context)
         assert result is not None
-        parsed = json.loads(result)
+        assert isinstance(result, dict)
+        parsed = result
 
         # The resolver normalizes GitHub events by adding object_attributes
         assert parsed["source"] == "github"
@@ -152,14 +152,14 @@ class TestTriggerEventResolver:
         # Test with whitespace-only path
         result = await resolver.resolve("  ", context)
         assert result is not None
-        parsed = json.loads(result)
+        assert isinstance(result, dict)
+        parsed = result
         assert parsed["source"] == "github"
         assert "object_attributes" in parsed["payload"]
 
     @pytest.mark.asyncio
     async def test_resolve_entire_event_complex_structure(self):
         """Test resolving entire event with complex nested structure."""
-        import json
 
         resolver = TriggerEventResolver()
 
@@ -192,7 +192,8 @@ class TestTriggerEventResolver:
 
         result = await resolver.resolve("", context)
         assert result is not None
-        parsed = json.loads(result)
+        assert isinstance(result, dict)
+        parsed = result
         assert parsed["payload"]["object_attributes"]["title"] == "Add new feature"
         assert parsed["payload"]["object_attributes"]["labels"] == [
             "enhancement",
@@ -397,8 +398,9 @@ class TestWorkspaceFilesRedaction:
         )
 
         result = await resolver.resolve("", context)
-        assert content not in result
-        parsed = json.loads(result)
+        assert content not in json.dumps(result)
+        assert isinstance(result, dict)
+        parsed = result
         entry = parsed["payload"]["workspace_files"][0]
         assert entry["path"] == "fixtures/input.json"
         assert "omitted" in entry["content_base64"]
@@ -427,8 +429,9 @@ class TestWorkspaceFilesRedaction:
         )
 
         result = await resolver.resolve("", context)
-        assert content not in result
-        parsed = json.loads(result)
+        assert content not in json.dumps(result)
+        assert isinstance(result, dict)
+        parsed = result
         entry = parsed["workspace_files"][0]
         assert entry["path"] == "fixtures/input.json"
         assert "omitted" in entry["content_base64"]

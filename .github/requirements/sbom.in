@@ -1,2 +1,5 @@
 # Regenerate with: uv pip compile --universal --generate-hashes --python-version 3.11 sbom.in -o sbom.txt
 cyclonedx-bom==7.3.1
+# Direct: scripts/validate_server_json.py in release.yml's publish-mcp-registry
+# job installs this file for it.
+jsonschema

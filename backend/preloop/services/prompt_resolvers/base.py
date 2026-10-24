@@ -54,7 +54,7 @@ class PromptResolver(ABC):
         pass
 
     @abstractmethod
-    async def resolve(self, path: str, context: ResolverContext) -> Optional[str]:
+    async def resolve(self, path: str, context: ResolverContext) -> Any:
         """
         Resolve a placeholder to its value.
 
@@ -63,7 +63,9 @@ class PromptResolver(ABC):
             context: Resolver context with db, trigger data, etc.
 
         Returns:
-            Resolved value as string, or None if not found
+            Resolved value, usually a string; None if not found. The
+            orchestrator stringifies it, except that a trigger-event object or
+            list is serialized into the prompt's data block.
 
         Example:
             For placeholder {{project.name}}, path would be "name"
@@ -84,15 +86,25 @@ class PromptResolver(ABC):
         Returns:
             Value at path, or default if not found
         """
-        keys = path.split(".")
-        value = data
-
-        for key in keys:
-            if isinstance(value, dict):
-                value = value.get(key)
-                if value is None:
-                    return default
-            else:
-                return default
-
+        value = self._get_nested_raw(data, path)
         return str(value) if value is not None else default
+
+    @staticmethod
+    def _get_nested_raw(data: Dict[str, Any], path: str) -> Any:
+        """Like :meth:`_safe_get_nested`, but without stringifying the value.
+
+        Args:
+            data: Dictionary to query
+            path: Dot-separated path (e.g., "payload.issue")
+
+        Returns:
+            The value at path as stored, or None if not found
+        """
+        value: Any = data
+        for key in path.split("."):
+            if not isinstance(value, dict):
+                return None
+            value = value.get(key)
+            if value is None:
+                return None
+        return value
