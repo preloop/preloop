@@ -12,6 +12,7 @@ from preloop.models import models
 from preloop.models.models.assessment import ASSESSMENT_SOURCES, ASSESSMENT_VERDICTS
 
 from .base import CRUDBase
+from .issue_cost import issue_in_account
 
 
 class CRUDAssessment(CRUDBase[models.Assessment]):
@@ -42,29 +43,39 @@ class CRUDAssessment(CRUDBase[models.Assessment]):
             account_id: Owning account.
             source: One of ``ASSESSMENT_SOURCES``.
             purpose_verdict: One of ``ASSESSMENT_VERDICTS``.
-            issue_id: Assessed issue, if any.
-            issue_cost_pull_request_id: Assessed pull request, if any.
+            issue_id: Assessed issue; name it or the pull request, not both.
+            issue_cost_pull_request_id: Assessed pull request.
             flow_execution_id: The audit or report run that wrote it.
             revision: Commit SHA the assessment is pinned to.
             criteria_snapshot: The criteria as read at assessment time.
             risk_flags: Likely regression classes.
             evidence: Supporting evidence.
             evaluator_version: Version of the evaluator that produced it.
-            assessed_at: When it was assessed; defaults to the database time.
+            assessed_at: When it was assessed; defaults to the database clock
+                at insert, so later appends in one transaction sort later.
             cost: What the assessment cost, in USD.
 
         Returns:
             The flushed assessment.
 
         Raises:
-            ValueError: Unknown source or verdict, or no subject.
+            ValueError: Unknown source or verdict, not exactly one subject,
+                or a subject from another account.
         """
         if source not in ASSESSMENT_SOURCES:
             raise ValueError(f"unknown assessment source {source!r}")
         if purpose_verdict not in ASSESSMENT_VERDICTS:
             raise ValueError(f"unknown purpose verdict {purpose_verdict!r}")
-        if issue_id is None and issue_cost_pull_request_id is None:
-            raise ValueError("an assessment needs an issue or a pull request")
+        if (issue_id is None) == (issue_cost_pull_request_id is None):
+            raise ValueError("name exactly one of issue_id or pull request id")
+        if issue_id is not None and not issue_in_account(db, account_id, issue_id):
+            raise ValueError("issue belongs to another account")
+        if issue_cost_pull_request_id is not None:
+            pull_request = db.get(
+                models.IssueCostPullRequest, issue_cost_pull_request_id
+            )
+            if pull_request is None or pull_request.account_id != account_id:
+                raise ValueError("pull request belongs to another account")
         row = models.Assessment(
             account_id=account_id,
             issue_id=issue_id,

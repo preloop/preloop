@@ -80,6 +80,9 @@ class Assessment(Base):
     )
     evaluator_version: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     assessed_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        # clock_timestamp, not now(): rows appended in one transaction differ.
+        server_default=func.clock_timestamp(),
     )
     cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4), nullable=True)

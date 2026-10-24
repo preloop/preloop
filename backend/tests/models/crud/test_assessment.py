@@ -17,8 +17,15 @@ def account(create_account) -> models.Account:
 
 
 @pytest.fixture
-def issue(create_issue) -> models.Issue:
-    return create_issue()
+def new_issue(create_issue, create_tracker, account):
+    """Issues whose tracker belongs to ``account``."""
+    tracker = create_tracker(account=account)
+    return lambda: create_issue(tracker=tracker)
+
+
+@pytest.fixture
+def issue(new_issue) -> models.Issue:
+    return new_issue()
 
 
 def _pr(db: Session, account: models.Account, n: int = 1):
@@ -72,6 +79,52 @@ def test_record_rejects_bad_input(db_session, account, issue) -> None:
         crud_assessment.record(
             db_session, account_id=account.id, source="audit", purpose_verdict="covered"
         )
+    pr = _pr(db_session, account)
+    with pytest.raises(ValueError):
+        _record(
+            db_session,
+            account,
+            0,
+            "a",
+            issue_id=issue.id,
+            issue_cost_pull_request_id=pr.id,
+        )
+
+
+def test_record_rejects_subjects_of_another_account(
+    db_session, account, create_account, create_issue
+) -> None:
+    other = create_account()
+    with pytest.raises(ValueError):
+        _record(db_session, account, 0, "a", issue_id=create_issue().id)
+    with pytest.raises(ValueError):
+        _record(
+            db_session,
+            account,
+            0,
+            "a",
+            issue_cost_pull_request_id=_pr(db_session, other).id,
+        )
+
+
+def test_later_append_in_one_transaction_is_newest(db_session, account, issue) -> None:
+    for verdict in ("unverified", "partial", "covered"):
+        crud_assessment.record(
+            db_session,
+            account_id=account.id,
+            source="report",
+            purpose_verdict=verdict,
+            issue_id=issue.id,
+            revision="aaa",
+        )
+    newest = crud_assessment.newest(
+        db_session, account_id=account.id, issue_id=issue.id, revision="aaa"
+    )
+    assert newest.purpose_verdict == "covered"
+    rows = crud_assessment.newest_per_revision(
+        db_session, account_id=account.id, issue_id=issue.id
+    )
+    assert [row.purpose_verdict for row in rows] == ["covered"]
 
 
 def test_history_is_append_only_newest_per_revision(db_session, account, issue) -> None:
@@ -149,9 +202,9 @@ def test_pull_request_identity_rejects_bad_values(db_session, account) -> None:
 
 
 def test_pull_request_links_several_issues_without_touching_rollup(
-    db_session, account, create_issue
+    db_session, account, new_issue
 ) -> None:
-    first, second = create_issue(), create_issue()
+    first, second = new_issue(), new_issue()
     pr, other_pr = _pr(db_session, account, 1), _pr(db_session, account, 2)
     for issue in (first, second, first):
         crud_issue_cost.link_pull_request_issue(db_session, row=pr, issue_id=issue.id)
@@ -167,3 +220,12 @@ def test_pull_request_links_several_issues_without_touching_rollup(
         )
     } == {pr.id, other_pr.id}
     assert pr.rollup_id is None and pr.ambiguous is False
+
+
+def test_link_rejects_issue_of_another_account(
+    db_session, account, create_issue
+) -> None:
+    with pytest.raises(ValueError):
+        crud_issue_cost.link_pull_request_issue(
+            db_session, row=_pr(db_session, account), issue_id=create_issue().id
+        )

@@ -104,7 +104,7 @@ def upgrade() -> None:
         sa.Column(
             "assessed_at",
             sa.DateTime(timezone=True),
-            server_default=sa.func.now(),
+            server_default=sa.func.clock_timestamp(),
             nullable=False,
         ),
         sa.Column("cost", sa.Numeric(10, 4), nullable=True),

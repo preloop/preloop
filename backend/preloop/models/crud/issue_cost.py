@@ -597,7 +597,12 @@ class CRUDIssueCost:
 
         This does not touch ``rollup_id`` or ``ambiguous``: cost attribution
         keeps its single-issue rule.
+
+        Raises:
+            ValueError: The issue belongs to another account.
         """
+        if not issue_in_account(db, row.account_id, issue_id):
+            raise ValueError("issue belongs to another account")
         db.execute(
             pg_insert(models.IssueCostPullRequestIssue)
             .values(
@@ -612,7 +617,7 @@ class CRUDIssueCost:
     def issue_ids_for_pull_request(
         self, db: Session, *, account_id: uuid.UUID, pull_request_id: uuid.UUID
     ) -> list[uuid.UUID]:
-        """Every issue the pull request claims, oldest link first."""
+        """Every issue the pull request claims; a set, ordered by id."""
         link = models.IssueCostPullRequestIssue
         return list(
             db.scalars(
@@ -621,21 +626,21 @@ class CRUDIssueCost:
                     link.account_id == account_id,
                     link.pull_request_id == pull_request_id,
                 )
-                .order_by(link.created_at, link.id)
+                .order_by(link.issue_id)
             )
         )
 
     def pull_requests_for_issue(
         self, db: Session, *, account_id: uuid.UUID, issue_id: uuid.UUID
     ) -> list[models.IssueCostPullRequest]:
-        """Every pull request that claims the issue, oldest link first."""
+        """Every pull request that claims the issue; a set, ordered by id."""
         link = models.IssueCostPullRequestIssue
         return list(
             db.scalars(
                 select(models.IssueCostPullRequest)
                 .join(link, link.pull_request_id == models.IssueCostPullRequest.id)
                 .where(link.account_id == account_id, link.issue_id == issue_id)
-                .order_by(link.created_at, link.id)
+                .order_by(models.IssueCostPullRequest.id)
             )
         )
 
@@ -1113,6 +1118,21 @@ class CRUDIssueCost:
     def rollback(self, db: Session) -> None:
         """Discard a failed rollup write."""
         db.rollback()
+
+
+def issue_in_account(db: Session, account_id: uuid.UUID, issue_id: uuid.UUID) -> bool:
+    """Whether the issue's tracker belongs to the account."""
+    return bool(
+        db.scalar(
+            select(
+                exists().where(
+                    models.Issue.id == issue_id,
+                    models.Issue.tracker_id == models.Tracker.id,
+                    models.Tracker.account_id == account_id,
+                )
+            )
+        )
+    )
 
 
 def _earliest(values: Iterable[Optional[datetime]]) -> Optional[datetime]:
