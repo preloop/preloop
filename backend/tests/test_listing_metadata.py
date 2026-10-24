@@ -176,3 +176,43 @@ def test_artifacthub_metadata() -> None:
     assert annotations["artifacthub.io/license"] == "Apache-2.0"
     links = yaml.safe_load(annotations["artifacthub.io/links"])
     assert {link["name"] for link in links} >= {"Documentation", "Source"}
+
+
+@pytest.mark.parametrize(
+    ("tag", "publish", "fails"),
+    [
+        (f"v{VERSION}", True, False),
+        ("v0.0.1", False, True),
+        ("v0.0.1-rc.1", False, False),
+    ],
+)
+def test_release_tag_must_match_server_json_version(
+    tag: str,
+    publish: bool,
+    fails: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The registry publish job only runs for the tag server.json carries.
+
+    A stable tag that disagrees fails; a pre-release tag that disagrees is
+    skipped without failing.
+    """
+    output = tmp_path / "out"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+
+    assert validator.check_tag(VERSION, tag)[0] is publish
+    assert (validator.check_tag(VERSION, tag)[1] is not None) is fails
+    assert validator.main(["--tag", tag]) == (1 if fails else 0)
+    written = output.read_text() if output.exists() else ""
+    assert written == ("" if fails else f"publish={str(publish).lower()}\n")
+
+
+def test_prerelease_tag_carried_by_server_json_publishes() -> None:
+    """A pre-release is published when server.json was bumped to it."""
+    assert validator.check_tag("1.2.0-rc.1", "v1.2.0-rc.1") == (True, None)
+
+
+def test_tag_flag_without_value_fails() -> None:
+    """--tag with no value is a usage error, not a silent pass."""
+    assert validator.main(["--tag"]) == 1

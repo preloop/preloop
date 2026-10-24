@@ -7,13 +7,20 @@ static.modelcontextprotocol.io), and that its version matches VERSION. The
 registry rejects a re-publish of an existing version, so the two must move
 together (scripts/release.py bumps both).
 
+With ``--tag vX.Y.Z`` it also checks the release tag (the release workflow's
+MCP registry publish job runs it). A stable tag must equal the server.json
+version or the check fails. A pre-release tag (one with a ``-`` suffix) whose
+version server.json does not carry is skipped, not failed: pre-releases are
+not published to the registry unless server.json was bumped to them.
+
 Usage:
-    python scripts/validate_server_json.py [path/to/server.json]
+    python scripts/validate_server_json.py [--tag vX.Y.Z] [path/to/server.json]
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -83,18 +90,67 @@ def validate(server: dict[str, Any], version: str) -> list[str]:
     return problems
 
 
+def check_tag(server_version: object, tag: str) -> tuple[bool, str | None]:
+    """Decide whether a release tag should publish this server.json.
+
+    Args:
+        server_version: The ``version`` field of server.json.
+        tag: The git tag, e.g. ``v0.17.1`` or ``v0.18.0-rc.1``.
+
+    Returns:
+        ``(publish, problem)``. ``problem`` is set when the tag and the
+        version disagree on a stable tag, which must fail the job.
+        ``publish`` is False for a mismatch, including the pre-release case
+        where the mismatch is expected and is not a problem.
+    """
+    tag_version = tag[1:] if tag.startswith("v") else tag
+    if server_version == tag_version:
+        return True, None
+    if "-" in tag_version:
+        return False, None
+    return False, (
+        f"server.json version {server_version!r} does not match tag {tag!r} "
+        f"(expected {tag_version!r}); run scripts/release.sh {tag_version}"
+    )
+
+
 def main(argv: list[str]) -> int:
     """Validate the given (or repo-root) server.json.
 
     Args:
-        argv: Command-line arguments without the program name.
+        argv: Command-line arguments without the program name: an optional
+            ``--tag <tag>`` pair and an optional server.json path.
 
     Returns:
         Process exit code: 0 when valid, 1 otherwise.
     """
-    path = Path(argv[0]) if argv else ROOT_DIR / "server.json"
+    args = list(argv)
+    tag: str | None = None
+    if "--tag" in args:
+        index = args.index("--tag")
+        if index + 1 >= len(args):
+            print("--tag needs a value", file=sys.stderr)
+            return 1
+        tag = args[index + 1]
+        del args[index : index + 2]
+    path = Path(args[0]) if args else ROOT_DIR / "server.json"
     version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
-    problems = validate(json.loads(path.read_text(encoding="utf-8")), version)
+    server = json.loads(path.read_text(encoding="utf-8"))
+    problems = validate(server, version)
+    publish = False
+    if tag is not None:
+        publish, tag_problem = check_tag(server.get("version"), tag)
+        if tag_problem:
+            problems.append(tag_problem)
+        elif not publish:
+            print(
+                f"{path}: pre-release tag {tag} is not server.json version "
+                f"{server.get('version')!r}; not publishing"
+            )
+        output = os.environ.get("GITHUB_OUTPUT")
+        if output and not problems:
+            with open(output, "a", encoding="utf-8") as handle:
+                handle.write(f"publish={'true' if publish else 'false'}\n")
     for problem in problems:
         print(f"{path}: {problem}", file=sys.stderr)
     if not problems:
