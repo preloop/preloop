@@ -434,7 +434,7 @@ export class RegisterView extends LitElement {
               variant="default"
               size="large"
               @click=${() => {
-                window.location.href = `/api/v1/auth/oauth/${provider}/authorize`;
+                window.location.href = `${REST_API_PREFIX}/auth/oauth/${provider}/authorize`;
               }}
             >
               <sl-icon name="${config.icon}" slot="prefix"></sl-icon>
