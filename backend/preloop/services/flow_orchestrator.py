@@ -128,6 +128,10 @@ from preloop.services.follow_up_filing import (
     parse_platform_follow_up_gate,
     resolve_follow_up_filing,
 )
+from preloop.services.delivery_report import (
+    finalize_for_execution as finalize_delivery_report_for_execution,
+)
+from preloop.services.delivery_report import is_delivery_report_flow
 from preloop.services.report_publication import (
     REPORT_PUBLICATION_MARKER,
     REPORT_PUBLICATION_OUTCOMES,
@@ -9559,6 +9563,20 @@ class FlowExecutionOrchestrator:
                 if not isinstance(merged_result, dict):
                     merged_result = {}
                 merged_result[REPORT_PUBLICATION_RESULT_KEY] = dict(report_publication)
+
+            # Delivery Report (#2019): the platform applies the honesty
+            # rules, the delta and the spend to the agent's report. The agent
+            # cannot author what the run spent or what the last report asked.
+            if is_delivery_report_flow(self.flow) and self.execution_log is not None:
+                try:
+                    merged_result = finalize_delivery_report_for_execution(
+                        self.db,
+                        flow=self.flow,
+                        execution=self.execution_log,
+                        result=merged_result,
+                    )
+                except Exception:
+                    logger.exception("Finalizing the delivery report failed")
 
             verification_evidence = self._resolve_verification_evidence()
             if verification_evidence is not None and isinstance(merged_result, dict):

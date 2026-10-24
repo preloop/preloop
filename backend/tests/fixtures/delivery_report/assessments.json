@@ -1,0 +1,4 @@
+{
+  "acme/app#101": {"summary": "Title search with a test.", "purpose": {"verdict": "covered", "criteria": [{"text": "Search returns results by title", "met": true, "evidence": ["backend/app/search.py:12", "backend/tests/test_search.py::test_search_by_title passed"]}]}},
+  "acme/app#102": {"summary": "CSV export without the date filter.", "purpose": {"verdict": "covered", "criteria": [{"text": "CSV export includes headers", "met": true, "evidence": ["backend/app/export.py:40"]}, {"text": "Exports respect the date filter", "met": false, "evidence": ["backend/app/export.py:22 ignores the date range"]}]}}
+}
