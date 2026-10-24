@@ -5022,8 +5022,9 @@ class FlowExecutionOrchestrator:
             self._recorded_decisions = seen
         if decision in seen:
             return
-        seen.append(decision)
-        record_decision(self.db, self.execution_log.id, decision)
+        # Remember only stored decisions, so the rescan retries a failed write.
+        if record_decision(self.db, self.execution_log.id, decision):
+            seen.append(decision)
 
     def _note_opened_pr(self, line: str) -> None:
         """Remember each wrapper publication; retain the first as the follow-up binding."""

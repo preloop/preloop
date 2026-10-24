@@ -16,6 +16,8 @@ from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 from preloop.services.flow_pr_binding import (
+    MAX_DECISION_ALTERNATIVES,
+    MAX_DECISION_TEXT,
     MAX_DECISIONS,
     merge_result_preserving_pr_binding,
     parse_decision_marker,
@@ -61,6 +63,9 @@ def test_transcript_yields_two_decisions_and_logs_the_malformed_line() -> None:
         'PRELOOP_DECISION {"summary": "No reason"}',
         'PRELOOP_DECISION {"summary": " ", "reason": "blank summary"}',
         'PRELOOP_DECISION {"summary": <one line>, "reason": <why>}',
+        'PRELOOP_DECISION {"summary": "...", "reason": "...", "alternatives": ["..."]}',
+        'PRELOOP_DECISION {"summary": "<what>", "reason": "<why>"}',
+        'PRELOOP_DECISION {"summary": "\u2026", "reason": "___"}',
     ],
 )
 def test_incomplete_markers_are_ignored(line: str) -> None:
@@ -72,13 +77,26 @@ def test_non_marker_lines_are_not_decisions() -> None:
 
 
 def test_alternatives_drop_non_strings_and_text_is_bounded() -> None:
+    alternatives = [f'"alt{i}", 3, null, "..."' for i in range(12)]
     parsed = parse_decision_marker(
-        'PRELOOP_DECISION {"summary": "' + "x" * 5000 + '", "reason": "r", '
-        '"alternatives": ["a", 3, null, " b "]}'
+        f'PRELOOP_DECISION {{"summary": "{"x" * 5000}", "reason": "{"y" * 5000}", '
+        f'"alternatives": [{", ".join(alternatives)}]}}'
     )
     assert parsed is not None
-    assert len(parsed["summary"]) == 1000
-    assert parsed["alternatives"] == ["a", "b"]
+    assert parsed["summary"] == "x" * MAX_DECISION_TEXT
+    assert parsed["reason"] == "y" * MAX_DECISION_TEXT
+    assert parsed["alternatives"] == [
+        f"alt{i}" for i in range(MAX_DECISION_ALTERNATIVES)
+    ]
+
+
+def test_echoed_issue_or_pr_body_with_the_marker_shape_records_nothing() -> None:
+    body = (
+        "An agent prints one line per decision:\n\n"
+        'PRELOOP_DECISION {"summary": "...", "reason": "...", '
+        '"alternatives": ["..."]}\n'
+    )
+    assert parse_decisions(body) == []
 
 
 def test_decisions_survive_an_agent_result_overwrite() -> None:
@@ -135,6 +153,38 @@ def test_record_decision_appends_once_and_caps(
     db_session.refresh(execution)
     assert len(execution.result["decisions"]) == MAX_DECISIONS
     assert execution.result["decisions_truncated"] is True
+
+
+def test_runner_log_frame_survives_a_failed_decision_write(
+    db_session: Session, execution: models.FlowExecution
+) -> None:
+    db_session.commit()  # the failed write's rollback must not drop the row
+    line = TRANSCRIPT.read_text().splitlines()[1]
+    with patch.object(
+        crud_flow_execution, "add_decision", side_effect=RuntimeError("db down")
+    ):
+        record_runner_handoff_markers(
+            db_session, execution, line, isolated_publication=False
+        )
+
+
+def test_orchestrator_retries_a_decision_whose_write_failed(
+    db_session: Session, execution: models.FlowExecution
+) -> None:
+    orchestrator: Any = FlowExecutionOrchestrator.__new__(FlowExecutionOrchestrator)
+    orchestrator.db = db_session
+    orchestrator.execution_log = execution
+    db_session.commit()  # the failed write's rollback must not drop the row
+    line = TRANSCRIPT.read_text().splitlines()[1]
+
+    with patch.object(
+        crud_flow_execution, "add_decision", side_effect=RuntimeError("db down")
+    ):
+        orchestrator._note_decision(line)
+    orchestrator._note_decision(line)
+
+    db_session.refresh(execution)
+    assert execution.result["decisions"] == [FIRST]
 
 
 def test_runner_log_frames_record_decisions(

@@ -40,6 +40,9 @@ DECISION_MARKER = "PRELOOP_DECISION"
 MAX_DECISIONS = 50
 MAX_DECISION_TEXT = 1000
 MAX_DECISION_ALTERNATIVES = 10
+# Template filler such as "...", "<why>" or "___": an echoed prompt, issue or
+# PR body that shows the marker's shape must not record a decision.
+_DECISION_PLACEHOLDER_RE = re.compile(r"^(?:[\s.\u2026_\-]*|<[^<>]*>)$")
 
 # Comment marker written by the PR reviewer flow, e.g.
 #   <!-- preloop-review:flow-id:pr-reviewer:severity:HIGH -->
@@ -180,9 +183,12 @@ def parse_pr_opened_marker(line: str) -> Optional[Dict[str, str]]:
 
 
 def _decision_text(value: Any) -> Optional[str]:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str):
         return None
-    return value.strip()[:MAX_DECISION_TEXT]
+    text = value.strip()
+    if not text or _DECISION_PLACEHOLDER_RE.match(text):
+        return None
+    return text[:MAX_DECISION_TEXT]
 
 
 def parse_decision_marker(line: str) -> Optional[Dict[str, Any]]:
@@ -194,7 +200,8 @@ def parse_decision_marker(line: str) -> Optional[Dict[str, Any]]:
     Returns:
         ``{"summary": str, "reason": str, "alternatives": [str, ...]}``, or
         None when the line is not the marker. A marker line that is not a JSON
-        object with a non-empty summary and reason is logged and ignored.
+        object with a summary and a reason (neither empty nor a placeholder)
+        is logged and ignored.
     """
 
     if not line or not isinstance(line, str):
@@ -255,14 +262,19 @@ def record_decision(
     decision: Dict[str, Any],
     *,
     raise_errors: bool = False,
-) -> None:
-    """Append one parsed decision to ``result["decisions"]`` once."""
+) -> bool:
+    """Append one parsed decision to ``result["decisions"]`` once.
+
+    Returns:
+        False when the write failed, so a caller can retry it later.
+    """
 
     try:
         if execution_id:
             crud_flow_execution.add_decision(
                 db, execution_id=execution_id, decision=decision
             )
+        return True
     except Exception:
         logger.warning(
             "Failed to record decision on execution %s", execution_id, exc_info=True
@@ -270,6 +282,7 @@ def record_decision(
         db.rollback()
         if raise_errors:
             raise
+        return False
 
 
 def parse_review_marker(body: Optional[str]) -> Optional[str]:
@@ -853,7 +866,8 @@ def record_runner_handoff_markers(
     if DECISION_MARKER in line:
         decision = parse_decision_marker(line)
         if decision is not None:
-            record_decision(db, execution.id, decision, raise_errors=True)
+            # Report-only: a failed write must not fail the log batch's ack.
+            record_decision(db, execution.id, decision)
     if not isolated_publication:
         opened = parse_pr_opened_marker(line)
         if opened:
