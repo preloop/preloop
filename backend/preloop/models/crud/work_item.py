@@ -5,7 +5,8 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -16,6 +17,7 @@ from .base import CRUDBase
 # Every allowed (from, to) move. ``merged``, ``no_change`` and ``closed`` are
 # terminal; ``pr_open`` returns to ``open`` when a PR closes unmerged and
 # ``ready`` returns to ``pr_open`` when a new push invalidates readiness.
+# Either PR state returns to ``open`` when the PR closes unmerged.
 WORK_ITEM_TRANSITIONS: list[tuple[str, str]] = [
     ("open", "pr_open"),
     ("open", "no_change"),
@@ -24,6 +26,7 @@ WORK_ITEM_TRANSITIONS: list[tuple[str, str]] = [
     ("pr_open", "ready"),
     ("pr_open", "merged"),
     ("pr_open", "closed"),
+    ("ready", "open"),
     ("ready", "pr_open"),
     ("ready", "merged"),
     ("ready", "closed"),
@@ -231,6 +234,21 @@ class CRUDWorkItem(CRUDBase[models.WorkItem]):
         )
 
 
+# Forge-reported columns a caller may set; identity and link columns are not.
+_PR_UPDATABLE = frozenset(
+    {
+        "issue_cost_pull_request_id",
+        "head_sha",
+        "merged",
+        "merged_at",
+        "merger",
+        "last_read_at",
+        "etag",
+        "last_error",
+    }
+)
+
+
 class CRUDWorkItemPR(CRUDBase[models.WorkItemPR]):
     """Record what the forge reports for a work item's pull requests."""
 
@@ -252,34 +270,38 @@ class CRUDWorkItemPR(CRUDBase[models.WorkItemPR]):
             repo: Repository path; stored lower-cased.
             pr_number: Pull/merge request number.
             state: Forge state (open, closed, merged).
-            **fields: Other ``WorkItemPR`` columns to set.
+            **fields: Forge-reported ``WorkItemPR`` columns to set.
 
         Returns:
-            The flushed row.
+            The current row.
+
+        Raises:
+            ValueError: A field is not a forge-reported column.
         """
-        repo = repo.lower()
-        row = db.scalar(
-            select(models.WorkItemPR).where(
-                models.WorkItemPR.work_item_id == item.id,
-                models.WorkItemPR.repo == repo,
-                models.WorkItemPR.pr_number == pr_number,
-            )
-        )
-        if row is None:
-            row = models.WorkItemPR(
+        unknown = set(fields) - _PR_UPDATABLE
+        if unknown:
+            raise ValueError(f"unknown work item PR field {sorted(unknown)[0]!r}")
+        values = {"state": state, **fields}
+        # One atomic statement, so concurrent reconciliation passes on the
+        # same PR update the row instead of failing on the unique key.
+        statement = (
+            insert(models.WorkItemPR)
+            .values(
                 account_id=item.account_id,
                 work_item_id=item.id,
-                repo=repo,
+                repo=repo.lower(),
                 pr_number=pr_number,
-                state=state,
+                **values,
             )
-            db.add(row)
-        row.state = state
-        for name, value in fields.items():
-            if not hasattr(models.WorkItemPR, name):
-                raise ValueError(f"unknown work item PR field {name!r}")
-            setattr(row, name, value)
-        db.flush()
+            .on_conflict_do_update(
+                constraint="uq_work_item_pr_number",
+                set_={**values, "updated_at": func.now()},
+            )
+            .returning(models.WorkItemPR.id)
+        )
+        row_id = db.execute(statement).scalar_one()
+        row = db.get(models.WorkItemPR, row_id, populate_existing=True)
+        assert row is not None
         return row
 
     def list_for_work_item(

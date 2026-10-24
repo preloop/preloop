@@ -1,9 +1,13 @@
 """Work item state transitions, PR upserts and assessments (#2016)."""
 
+import threading
+import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy import Engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from preloop.models import models
 from preloop.models.crud import crud_assessment, crud_work_item, crud_work_item_pr
@@ -49,6 +53,11 @@ def test_happy_path_open_pr_open_ready_merged(db_session, account) -> None:
 
 def test_pr_closed_unmerged_returns_to_open(db_session, account) -> None:
     item = _item(db_session, account, "pr_open")
+    assert crud_work_item.reopen(db_session, item=item).state == "open"
+
+
+def test_ready_pr_closed_unmerged_returns_to_open(db_session, account) -> None:
+    item = _item(db_session, account, "ready")
     assert crud_work_item.reopen(db_session, item=item).state == "open"
 
 
@@ -131,6 +140,69 @@ def test_list_by_state_is_account_scoped(db_session, create_account) -> None:
     assert [item.id for item in found] == [mine.id]
 
 
+def _thread(db: Session, account: models.Account, tracker) -> models.FlowThread:
+    flow = models.Flow(
+        name=f"flow {uuid.uuid4().hex[:8]}",
+        account_id=account.id,
+        prompt_template="example",
+        agent_config={},
+    )
+    db.add(flow)
+    db.flush()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    thread = models.FlowThread(
+        account_id=account.id,
+        flow_id=flow.id,
+        tracker_id=tracker.id,
+        repository_id="42",
+        pr_number=uuid.uuid4().hex[:6],
+        pr_url="https://example.com/o/r/pull/1",
+        provider="github",
+        branch="feature/example",
+        context={},
+        policy={},
+        cursor={},
+        latest_execution_id=uuid.uuid4(),
+        due_at=now + timedelta(hours=1),
+        expires_at=now + timedelta(days=7),
+    )
+    db.add(thread)
+    db.flush()
+    return thread
+
+
+def test_get_for_thread_is_account_and_thread_scoped(
+    db_session, create_account, create_tracker
+) -> None:
+    first, second = create_account(), create_account()
+    first_tracker = create_tracker(account=first)
+    thread = _thread(db_session, first, first_tracker)
+    other_thread = _thread(db_session, first, first_tracker)
+    foreign_thread = _thread(db_session, second, create_tracker(account=second))
+    mine = crud_work_item.open(
+        db_session, account_id=first.id, source="flow", flow_thread_id=thread.id
+    )
+    crud_work_item.open(
+        db_session, account_id=first.id, source="flow", flow_thread_id=other_thread.id
+    )
+    crud_work_item.open(
+        db_session,
+        account_id=second.id,
+        source="flow",
+        flow_thread_id=foreign_thread.id,
+    )
+    found = crud_work_item.get_for_thread(
+        db_session, account_id=first.id, flow_thread_id=thread.id
+    )
+    assert [item.id for item in found] == [mine.id]
+    assert (
+        crud_work_item.get_for_thread(
+            db_session, account_id=second.id, flow_thread_id=thread.id
+        )
+        == []
+    )
+
+
 def test_pr_upsert_updates_one_row_per_number(db_session, account) -> None:
     item = _item(db_session, account, "pr_open")
     first = crud_work_item_pr.upsert(
@@ -162,12 +234,64 @@ def test_pr_upsert_updates_one_row_per_number(db_session, account) -> None:
     assert [row.id for row in rows] == [first.id]
 
 
-def test_pr_upsert_rejects_unknown_field(db_session, account) -> None:
+@pytest.mark.parametrize("field", ["cost", "metadata", "account_id", "id"])
+def test_pr_upsert_rejects_non_forge_field_before_writing(
+    db_session, account, field: str
+) -> None:
     item = _item(db_session, account)
     with pytest.raises(ValueError, match="unknown work item PR field"):
         crud_work_item_pr.upsert(
-            db_session, item=item, repo="o/r", pr_number=1, state="open", cost=1
+            db_session,
+            item=item,
+            repo="o/r",
+            pr_number=1,
+            state="open",
+            **{field: uuid.uuid4()},
         )
+    assert crud_work_item_pr.list_for_work_item(db_session, work_item_id=item.id) == []
+
+
+def test_concurrent_pr_upserts_converge_on_one_row(db_engine: Engine) -> None:
+    """Two sessions upserting the same new PR both succeed; one row remains."""
+    factory = sessionmaker(bind=db_engine)
+    with factory() as setup:
+        account = models.Account(organization_name=f"Org {uuid.uuid4().hex[:8]}")
+        setup.add(account)
+        setup.flush()
+        item = crud_work_item.open(setup, account_id=account.id, source="flow")
+        setup.commit()
+        account_id, item_id = account.id, item.id
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def upsert(sha: str) -> None:
+        try:
+            with factory() as db:
+                own = db.get(models.WorkItem, item_id)
+                assert own is not None
+                barrier.wait()
+                crud_work_item_pr.upsert(
+                    db, item=own, repo="o/r", pr_number=3, state="open", head_sha=sha
+                )
+                db.commit()
+        except BaseException as error:  # surfaced below
+            errors.append(error)
+
+    workers = [threading.Thread(target=upsert, args=(c * 40,)) for c in "ab"]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    try:
+        assert errors == []
+        with factory() as db:
+            rows = crud_work_item_pr.list_for_work_item(db, work_item_id=item_id)
+            assert len(rows) == 1
+            assert rows[0].head_sha in {"a" * 40, "b" * 40}
+    finally:
+        with factory() as db:
+            db.delete(db.get(models.Account, account_id))
+            db.commit()
 
 
 def test_pr_number_is_unique_per_work_item(db_session, account) -> None:

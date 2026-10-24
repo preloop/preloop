@@ -48,6 +48,8 @@ def schema_connection(db_engine: Engine) -> Generator[Connection, None, None]:
         finally:
             connection.rollback()
             connection.execute(text(f"DROP SCHEMA {schema} CASCADE"))
+            # The SET was committed; the pooled connection must not keep it.
+            connection.execute(text("RESET search_path"))
             connection.commit()
 
 
