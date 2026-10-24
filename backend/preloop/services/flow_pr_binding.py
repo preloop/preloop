@@ -21,6 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.models.crud import crud_flow_execution
 from preloop.models.models.flow_execution import FlowExecution
+from preloop.utils.pr_metadata import read_result_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -365,23 +366,19 @@ def parse_brief(body: Optional[str]) -> Optional[Dict[str, Any]]:
 def brief_from_result(result: Any) -> Optional[Dict[str, Any]]:
     """Parse the brief from the PR body an agent result carries, if any.
 
-    Reads the same aliases as the publisher (``pr_body`` first).
+    The body is chosen exactly as the publisher chooses it
+    (:func:`preloop.utils.pr_metadata.read_result_metadata`), so the stored
+    brief always describes the published body.
     """
 
     if not isinstance(result, dict):
         return None
-    nested = result.get("pull_request")
-    nested = nested if isinstance(nested, dict) else {}
-    for value in (
-        result.get("pr_body"),
-        result.get("pr_description"),
-        result.get("pull_request_description"),
-        nested.get("body"),
-        nested.get("description"),
-    ):
-        if isinstance(value, str) and value.strip():
-            return parse_brief(value)
-    return None
+    try:
+        raw = json.dumps(result).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    _title, body, _warnings = read_result_metadata(raw)
+    return parse_brief(body)
 
 
 def parse_review_marker(body: Optional[str]) -> Optional[str]:
@@ -648,6 +645,8 @@ def merge_result_preserving_pr_binding(
         return existing
     if not isinstance(incoming, dict):
         return incoming
+    # Only the parser writes ``brief``; an agent-authored key never lands.
+    incoming = {key: value for key, value in incoming.items() if key != "brief"}
     if not isinstance(existing, dict):
         return incoming
     merged = dict(existing)
@@ -665,11 +664,8 @@ def merge_result_preserving_pr_binding(
     for key in ("decisions", "decisions_truncated"):
         if key in existing:
             merged[key] = existing[key]
-    # Only the parser writes ``brief``; an agent-authored key never lands.
     if "brief" in existing:
         merged["brief"] = existing["brief"]
-    else:
-        merged.pop("brief", None)
     return merged
 
 

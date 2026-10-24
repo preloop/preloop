@@ -112,12 +112,29 @@ def test_brief_survives_an_agent_result_overwrite() -> None:
     assert merged["brief"] == stored
 
 
-def test_agent_cannot_author_the_brief_key_directly() -> None:
+@pytest.mark.parametrize("existing", [None, {"pr_url": "https://example.com/pr/1"}])
+def test_agent_cannot_author_the_brief_key_directly(
+    existing: dict[str, str] | None,
+) -> None:
     merged = merge_result_preserving_pr_binding(
-        {"pr_url": "https://example.com/pr/1"}, {"brief": {"why": ["forged"]}}
+        existing, {"status": "success", "brief": {"why": ["forged"]}}
     )
     assert merged is not None
     assert "brief" not in merged
+    assert merged["status"] == "success"
+
+
+def test_brief_comes_from_the_body_the_publisher_selects() -> None:
+    full = _fixture("full.md")
+    oversized = "x" * 60001 + "\n" + full
+    # The publisher skips an oversized pr_body and publishes pr_description.
+    assert brief_from_result(
+        {"pr_body": oversized, "pr_description": full}
+    ) == parse_brief(full)
+    assert brief_from_result({"pr_body": oversized}) is None
+    # A body the publisher rejects for a forged provenance region is skipped.
+    forged = full + "\n<!-- preloop:executions:start -->"
+    assert brief_from_result({"pr_body": forged}) is None
 
 
 def test_implementation_prompt_asks_for_the_brief_block() -> None:
