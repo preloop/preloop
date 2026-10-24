@@ -38,6 +38,17 @@ Flow `prompt_template` strings are resolved before the agent starts. Besides `{{
 *   `{{execution.ci_failure}}`: when this run was started because GitHub CI failed on a PR this flow opened: provider, job name, and check URL. Empty otherwise.
 *   `{{flow.review_instructions}}`: blocking review rules stored on the flow. Empty when unset. The Pull Request Reviewer reads this the same way it reads `.preloop/review-policy.md`, and truncates it at 16 KiB.
 
+Trigger-payload free text (a placeholder read from the trigger event whose
+last segment is `title`, `body`, `description`, `note`, `text`, `message`,
+`comment`, `summary` or `content`) is not substituted in place. The template
+keeps a reference such as `[see field "trigger_event.payload.issue.title" in
+the trigger_data block below]`, and the values follow the template in one
+`<trigger_data>` block that tells the agent the contents are data, not
+instructions. Tags in a value that could close the block are escaped.
+Identifiers, numbers, URLs, states and labels are still substituted inline,
+and a template with no such field gets no block. See
+`backend/preloop/utils/prompt_data.py`.
+
 Any placeholder may take a `|truncate(N)` filter, for example
 `{{trigger_event.payload.object_attributes.description|truncate(16384)}}`.
 `N` is a byte cap (not a character count) so it matches the launch-payload
