@@ -280,6 +280,34 @@ prompt_template: |
   bytes maximum) and the body below 60,000 UTF-8 bytes. The publisher adds
   trusted execution links and published SHAs; do not fabricate provenance.
 
+  **Change brief.** In `pr_body`, after the human-readable description and
+  before any `Closes` or `Refs` line, add this block. Keep the markers and
+  headings exactly as shown; they are how Preloop reads the brief back:
+
+      <!-- PRELOOP_BRIEF -->
+      ### What changed
+      - one bullet per component touched, each naming a path
+      ### Why
+      - the issue's ask in one or two bullets, or the stated intent when there is no issue
+      ### Assumptions
+      - each assumption the change relies on
+      ### Not verified
+      - each criterion or behaviour the run could not verify, and what would verify it (a test, a preview, a measurement)
+      ### Rollback
+      - one line: revert is clean | needs a data step: <which> | not reversible: <why>
+      ### Decisions
+      - one bullet per PRELOOP_DECISION marker emitted in this run: summary; reason; alternatives
+      <!-- /PRELOOP_BRIEF -->
+
+  Replace each line with your own content. Write "none" under a heading with
+  nothing to say rather than dropping it. The Decisions bullets come only
+  from the PRELOOP_DECISION markers you printed in this run (see the decision
+  record below), in the same order. Every bullet that can cite a path
+  (`path/to/file.py`) or a test (`tests/test_x.py::test_y`) does. The brief
+  counts toward the 60,000 byte body limit: keep each bullet to one line and
+  shorten the prose description first if the body would exceed it. On a
+  resume, rewrite the existing block in place; never add a second one.
+
   Use "success" when you committed a change you believe is correct, even
   if some checks could not run (list those under "skipped"). Use "failure"
   when you could not implement the issue, and say why. Never report

@@ -44,6 +44,24 @@ MAX_DECISION_ALTERNATIVES = 10
 # PR body that shows the marker's shape must not record a decision.
 _DECISION_PLACEHOLDER_RE = re.compile(r"^(?:[\s.\u2026_\-]*|<[^<>]*>)$")
 
+# Change brief the implementer writes into its PR body, between these markers:
+#   <!-- PRELOOP_BRIEF --> ### What changed ... <!-- /PRELOOP_BRIEF -->
+# Like decisions it is the author's claim, stored for reports to cite.
+BRIEF_START = "<!-- PRELOOP_BRIEF -->"
+BRIEF_END = "<!-- /PRELOOP_BRIEF -->"
+BRIEF_SECTIONS = {
+    "what changed": "what_changed",
+    "why": "why",
+    "assumptions": "assumptions",
+    "not verified": "not_verified",
+    "rollback": "rollback",
+    "decisions": "decisions",
+}
+MAX_BRIEF_SCAN_BYTES = 60000
+MAX_BRIEF_BULLETS = 50
+MAX_BRIEF_TEXT = 1000
+_BRIEF_NONE = frozenset({"none", "none.", "n/a", "-"})
+
 # Comment marker written by the PR reviewer flow, e.g.
 #   <!-- preloop-review:flow-id:pr-reviewer:severity:HIGH -->
 REVIEW_MARKER_RE = re.compile(
@@ -283,6 +301,87 @@ def record_decision(
         if raise_errors:
             raise
         return False
+
+
+def parse_brief(body: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse the ``PRELOOP_BRIEF`` block out of a pull request body.
+
+    Args:
+        body: Pull request description; only its first 60,000 bytes are read.
+
+    Returns:
+        None when there is no complete block. Otherwise one key per section
+        (``what_changed``, ``why``, ``assumptions``, ``not_verified``,
+        ``decisions`` as lists of bullets; ``rollback`` as one line or None),
+        ``missing`` listing sections the block does not have, and
+        ``truncated`` when a bullet or a section was cut to the caps.
+    """
+
+    if not body or not isinstance(body, str):
+        return None
+    text = body.encode("utf-8")[:MAX_BRIEF_SCAN_BYTES].decode("utf-8", "ignore")
+    start = text.find(BRIEF_START)
+    if start < 0:
+        return None
+    end = text.find(BRIEF_END, start + len(BRIEF_START))
+    if end < 0:
+        return None
+    sections: Dict[str, List[str]] = {}
+    current: Optional[List[str]] = None
+    truncated = False
+    for raw in text[start + len(BRIEF_START) : end].splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            key = BRIEF_SECTIONS.get(line.lstrip("#").strip().lower())
+            current = sections.setdefault(key, []) if key else None
+            continue
+        if current is None or not line:
+            continue
+        if line[:2] in ("- ", "* "):
+            line = line[2:].strip()
+        if not line or line.lower() in _BRIEF_NONE:
+            continue
+        if _DECISION_PLACEHOLDER_RE.match(line):
+            continue
+        if len(current) >= MAX_BRIEF_BULLETS:
+            truncated = True
+            continue
+        if len(line) > MAX_BRIEF_TEXT:
+            line = line[:MAX_BRIEF_TEXT]
+            truncated = True
+        current.append(line)
+    brief: Dict[str, Any] = {}
+    for key in BRIEF_SECTIONS.values():
+        if key == "rollback":
+            lines = sections.get(key) or []
+            brief[key] = lines[0] if lines else None
+        else:
+            brief[key] = sections.get(key, [])
+    brief["missing"] = [k for k in BRIEF_SECTIONS.values() if k not in sections]
+    brief["truncated"] = truncated
+    return brief
+
+
+def brief_from_result(result: Any) -> Optional[Dict[str, Any]]:
+    """Parse the brief from the PR body an agent result carries, if any.
+
+    Reads the same aliases as the publisher (``pr_body`` first).
+    """
+
+    if not isinstance(result, dict):
+        return None
+    nested = result.get("pull_request")
+    nested = nested if isinstance(nested, dict) else {}
+    for value in (
+        result.get("pr_body"),
+        result.get("pr_description"),
+        result.get("pull_request_description"),
+        nested.get("body"),
+        nested.get("description"),
+    ):
+        if isinstance(value, str) and value.strip():
+            return parse_brief(value)
+    return None
 
 
 def parse_review_marker(body: Optional[str]) -> Optional[str]:
@@ -542,8 +641,8 @@ def take_pending_followup(db: Session, execution: Any) -> Optional[Dict[str, Any
 def merge_result_preserving_pr_binding(
     existing: Optional[Any], incoming: Optional[Any]
 ) -> Optional[Any]:
-    """Keep ``pr_url`` / ``pr_source_branch`` and recorded decisions when the
-    agent result overwrites."""
+    """Keep ``pr_url`` / ``pr_source_branch``, recorded decisions and the
+    parsed brief when the agent result overwrites."""
 
     if incoming is None:
         return existing
@@ -566,6 +665,11 @@ def merge_result_preserving_pr_binding(
     for key in ("decisions", "decisions_truncated"):
         if key in existing:
             merged[key] = existing[key]
+    # Only the parser writes ``brief``; an agent-authored key never lands.
+    if "brief" in existing:
+        merged["brief"] = existing["brief"]
+    else:
+        merged.pop("brief", None)
     return merged
 
 
