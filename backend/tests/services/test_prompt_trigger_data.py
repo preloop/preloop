@@ -210,6 +210,48 @@ async def test_container_placeholder_goes_to_data_block_as_json() -> None:
 
 
 @pytest.mark.parametrize(
+    "template",
+    ["Event:\n{{trigger_event}}", "Labels: {{trigger_event.payload.issue.labels}}"],
+)
+@pytest.mark.asyncio
+async def test_whole_event_and_label_list_go_to_data_block(template: str) -> None:
+    """The whole-event placeholder and list fields are data, not template."""
+    from unittest.mock import patch
+
+    from preloop.services.prompt_resolvers.trigger_event import (
+        TriggerEventResolver,
+    )
+
+    event = {
+        "source": "github",
+        "type": "issue_created",
+        "payload": {
+            "issue": {
+                "number": 7,
+                "title": INSTRUCTION_TITLE,
+                "body": INSTRUCTION_BODY,
+                "labels": [INSTRUCTION_TITLE, "bug"],
+            }
+        },
+    }
+    orchestrator = _orchestrator(template, event)
+    resolvers = {"trigger_event": TriggerEventResolver()}
+    with (
+        patch.object(orchestrator, "_ensure_resolvers_registered"),
+        patch(
+            "preloop.services.flow_orchestrator.resolver_registry.get",
+            side_effect=resolvers.get,
+        ),
+    ):
+        prompt = await orchestrator._resolve_prompt()
+
+    block = _block(prompt)
+    assert INSTRUCTION_TITLE in block
+    assert INSTRUCTION_TITLE not in prompt.replace(block, "")
+    assert prompt.count(DATA_BLOCK_CLOSE) == 1
+
+
+@pytest.mark.parametrize(
     "preset_name",
     ["Automated Issue Implementation", "Issue Refinement and Readiness"],
 )

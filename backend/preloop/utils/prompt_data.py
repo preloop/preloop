@@ -10,7 +10,7 @@ So free-text fields (titles, bodies, descriptions, comment notes) are not
 substituted in place. Their placeholder becomes a short reference, and the
 value is carried in one delimited data block after the template, with an
 explicit statement that the block is input to act on, not instructions to
-follow. Identifiers, numbers, URLs, states and labels are still substituted
+follow. Scalar identifiers, numbers, URLs and states are still substituted
 inline: they are what an instruction like "label issue {{...number}}" needs,
 and none of them is prose. A placeholder that names a whole object or list
 from the trigger event (``{{trigger_event.payload.issue}}``) carries prose in
