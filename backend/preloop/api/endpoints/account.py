@@ -948,7 +948,9 @@ def _enrich_managed_agent_summaries(
             agent_kind=summary.get("agent_kind") or summary.get("session_source_type"),
             model_gateway_configured=bool(summary.get("model_gateway_configured")),
             control_enabled=bool(summary.get("control_enabled")),
-            total_requests=int(summary.get("total_requests") or 0),
+            total_requests=int(
+                summary.get("total_requests") or bool(summary.get("last_request_at"))
+            ),
         )
 
     if unresolved_model_summaries:
@@ -991,10 +993,12 @@ def _enrich_managed_agent_summary(
     )[0]
 
 
-#: Optional sections of the agent detail response. The page reads the header
-#: (agent, aggregate, credentials, enrollments) first and each tab's data when
-#: the tab opens, so a busy agent's header never waits for its session list.
-MANAGED_AGENT_DETAIL_SECTIONS = frozenset({"usage_by_model", "activity", "sessions"})
+#: Optional sections of the agent detail response. Lightweight reads let
+#: identity, session pages and range usage load independently. Legacy reads
+#: retain their all-time summary and always include the range aggregate.
+MANAGED_AGENT_DETAIL_SECTIONS = frozenset(
+    {"usage_by_model", "activity", "sessions", "aggregate"}
+)
 
 
 def _parse_detail_sections(include: Optional[str]) -> frozenset[str]:
@@ -1023,6 +1027,7 @@ def _build_managed_agent_detail_response(
     end_date: Optional[datetime] = None,
     background_tasks: Optional[BackgroundTasks] = None,
     sections: frozenset[str] = MANAGED_AGENT_DETAIL_SECTIONS,
+    lightweight: bool = False,
     session_limit: int = 20,
     session_offset: int = 0,
     current_user: Optional[UserModel] = None,
@@ -1042,7 +1047,11 @@ def _build_managed_agent_detail_response(
         db, account_id=account_id, agent=agent_row
     )
     summary = crud_managed_agent.get_summary_for_account(
-        db, account_id=account_id, agent_id=agent_id, ownership=ownership
+        db,
+        account_id=account_id,
+        agent_id=agent_id,
+        ownership=ownership,
+        include_usage=not lightweight,
     )
     if summary is None:
         return None
@@ -1050,14 +1059,22 @@ def _build_managed_agent_detail_response(
         db, current_user, VISIBLE_MANAGED_AGENT, [summary]
     ):
         raise HTTPException(404, "Managed agent not found")
-    summary = _enrich_managed_agent_summary(db, account_id=account_id, summary=summary)
-    aggregate = crud_managed_agent.get_usage_aggregate_for_account(
-        db,
-        account_id=account_id,
-        agent_id=agent_id,
-        start_date=start_date,
-        end_date=end_date,
-        ownership=ownership,
+    include_identity = not lightweight or not sections
+    if include_identity:
+        summary = _enrich_managed_agent_summary(
+            db, account_id=account_id, summary=summary
+        )
+    aggregate = (
+        crud_managed_agent.get_usage_aggregate_for_account(
+            db,
+            account_id=account_id,
+            agent_id=agent_id,
+            start_date=start_date,
+            end_date=end_date,
+            ownership=ownership,
+        )
+        if not lightweight or "aggregate" in sections
+        else None
     )
     usage_by_model = (
         crud_managed_agent.get_usage_by_model_for_account(
@@ -1109,22 +1126,34 @@ def _build_managed_agent_detail_response(
 
     return ManagedAgentDetailResponse(
         agent=ManagedAgentSummary(**summary),
-        devices=agent_device_links(db, user=current_user, agent_id=agent_id),
-        aggregate=ManagedAgentUsageAggregate(
-            session_count=aggregate["session_count"] if aggregate else 0,
-            total_requests=aggregate["total_requests"] if aggregate else 0,
-            successful_requests=aggregate["successful_requests"] if aggregate else 0,
-            failed_requests=aggregate["failed_requests"] if aggregate else 0,
-            token_usage=GatewayTokenUsage.from_row(aggregate),
-            estimated_cost=aggregate["estimated_cost"] if aggregate else 0.0,
-            latest_model_alias=aggregate["latest_model_alias"] if aggregate else None,
-            latest_provider_name=(
-                aggregate["latest_provider_name"] if aggregate else None
-            ),
-            last_request_at=aggregate["last_request_at"] if aggregate else None,
-            subscription_usage=(
-                aggregate.get("subscription_usage") if aggregate else None
-            ),
+        devices=(
+            agent_device_links(db, user=current_user, agent_id=agent_id)
+            if include_identity
+            else []
+        ),
+        aggregate=(
+            ManagedAgentUsageAggregate(
+                session_count=aggregate["session_count"] if aggregate else 0,
+                total_requests=aggregate["total_requests"] if aggregate else 0,
+                successful_requests=aggregate["successful_requests"]
+                if aggregate
+                else 0,
+                failed_requests=aggregate["failed_requests"] if aggregate else 0,
+                token_usage=GatewayTokenUsage.from_row(aggregate),
+                estimated_cost=aggregate["estimated_cost"] if aggregate else 0.0,
+                latest_model_alias=aggregate["latest_model_alias"]
+                if aggregate
+                else None,
+                latest_provider_name=(
+                    aggregate["latest_provider_name"] if aggregate else None
+                ),
+                last_request_at=aggregate["last_request_at"] if aggregate else None,
+                subscription_usage=(
+                    aggregate.get("subscription_usage") if aggregate else None
+                ),
+            )
+            if aggregate is not None
+            else None
         ),
         usage_by_model=[
             ModelGatewayUsageService._model_row_to_schema(row) for row in usage_by_model
@@ -1142,14 +1171,22 @@ def _build_managed_agent_detail_response(
         session_total=sessions.get("total"),
         credentials=[
             ManagedAgentCredentialSummary(**item)
-            for item in crud_managed_agent_credential.list_for_agent(
-                db, account_id=account_id, agent_id=agent_id
+            for item in (
+                crud_managed_agent_credential.list_for_agent(
+                    db, account_id=account_id, agent_id=agent_id
+                )
+                if include_identity
+                else []
             )
         ],
         enrollments=[
             ManagedAgentEnrollmentSummary(**item)
-            for item in crud_managed_agent_enrollment.list_for_agent(
-                db, account_id=account_id, agent_id=agent_id
+            for item in (
+                crud_managed_agent_enrollment.list_for_agent(
+                    db, account_id=account_id, agent_id=agent_id
+                )
+                if include_identity
+                else []
             )
         ],
     )
@@ -1816,8 +1853,18 @@ def get_account_managed_agent(
         None,
         description=(
             "Comma list of optional sections: usage_by_model, activity, "
-            "sessions. Omitted returns all of them; an empty value returns "
-            "the agent, its aggregate, credentials and enrollments only."
+            "sessions, aggregate. Omitted returns all sections; an empty value "
+            "returns identity. Legacy reads always include the aggregate. "
+            "Lightweight section reads omit unrelated identity enrichment, "
+            "devices, credentials and enrollments."
+        ),
+    ),
+    lightweight: bool = Query(
+        False,
+        description=(
+            "Return identity and recency without all-time usage totals. "
+            "Aggregate is null unless its section is included. Identity totals "
+            "are not computed (agent.usage_computed=false)."
         ),
     ),
     session_limit: int = Query(20, ge=1, le=100),
@@ -1845,6 +1892,7 @@ def get_account_managed_agent(
         end_date=end_date,
         background_tasks=background_tasks,
         sections=sections,
+        lightweight=lightweight,
         session_limit=session_limit,
         session_offset=session_offset,
         current_user=current_user,
