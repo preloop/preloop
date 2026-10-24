@@ -1331,6 +1331,58 @@ class FlowExecutionOrchestrator:
 
         return "the triggering repository"
 
+    def _describe_incomplete_review(
+        self, stored_status: str, merged_result: Any
+    ) -> Optional[str]:
+        """Describe a review this run submitted before ending unsuccessfully.
+
+        Args:
+            stored_status: The execution's terminal status.
+            merged_result: The result document the run stored.
+
+        Returns:
+            The commit status description, or None when the run submitted no
+            review (or its tool calls cannot be read).
+        """
+        if not self.execution_log or not self.flow:
+            return None
+        try:
+            from preloop.models.crud import crud_runtime_session_activity
+            from preloop.services.review_completion import (
+                describe_incomplete_review,
+                summarize_review_progress,
+            )
+
+            activities = crud_runtime_session_activity.list_tool_calls_for_flow_execution(
+                self.db,
+                account_id=self.flow.account_id,
+                flow_execution_id=self.execution_log.id,
+            )
+            confirmed = (
+                isinstance(merged_result, dict)
+                and str(merged_result.get("status") or "").lower() == "success"
+            )
+            progress = summarize_review_progress(
+                activities, result_confirmed=confirmed
+            )
+        except Exception:
+            logger.warning(
+                "Could not read the review progress of execution %s",
+                self.execution_log.id,
+                exc_info=True,
+            )
+            return None
+        if progress is None:
+            return None
+        logger.info(
+            "Execution %s ended %s after submitting a review (%s); remaining: %s",
+            self.execution_log.id,
+            stored_status,
+            progress.review_state,
+            ", ".join(progress.remaining) or "none",
+        )
+        return describe_incomplete_review(progress, stored_status)
+
     async def _update_commit_status(
         self,
         state: str,
@@ -9776,6 +9828,15 @@ class FlowExecutionOrchestrator:
             elif stored_status != "SUCCEEDED":
                 detail = agent_result.get("error_message") or "Unknown error"
                 status_description = f"Preloop review failed: {str(detail)[:80]}"
+            if stored_status != "SUCCEEDED":
+                # A run that already submitted its review says so, and names
+                # the post-review step it never completed (#1683). It still
+                # fails: the review alone is not a completed run.
+                incomplete = self._describe_incomplete_review(
+                    stored_status, merged_result
+                )
+                if incomplete:
+                    status_description = incomplete
             await self._update_commit_status(
                 state=status_state,
                 description=status_description,
