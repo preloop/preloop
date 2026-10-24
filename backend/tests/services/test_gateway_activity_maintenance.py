@@ -211,12 +211,8 @@ def test_failed_batch_is_retried_by_the_next_pass(
     with monkeypatch.context() as patched:
         patched.setattr(maintenance, "_rewrite_batch", boom)
         with pytest.raises(RuntimeError):
-            maintenance.compact_existing_rows(
-                db_session, batch_size=10, max_batches=1
-            )
-    result = maintenance.compact_existing_rows(
-        db_session, batch_size=10, max_batches=1
-    )
+            maintenance.compact_existing_rows(db_session, batch_size=10, max_batches=1)
+    result = maintenance.compact_existing_rows(db_session, batch_size=10, max_batches=1)
     assert result.compacted_rows == 1
     db_session.refresh(row)
     assert COMPACTION_KEY in row.metadata_
