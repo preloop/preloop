@@ -179,6 +179,7 @@ from .hosted_credit import (
 
 from .issue_cost import IssueCostExecution, IssueCostPullRequest, IssueCostRollup
 from .issue_lifecycle import IssueLifecycle
+from .work_item import Assessment, WorkItem, WorkItemPR
 from .security_maintenance import (
     SecurityMaintenanceBaseline,
     SecurityMaintenanceDecision,
@@ -241,6 +242,9 @@ __all__ = [
     "IssueCostPullRequest",
     "IssueCostRollup",
     "IssueLifecycle",
+    "Assessment",
+    "WorkItem",
+    "WorkItemPR",
     "SecurityMaintenanceRelease",
     "SecurityMaintenanceItem",
     "SecurityMaintenanceDecision",
