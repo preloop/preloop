@@ -799,6 +799,7 @@ export class AgentDetailView extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this.connectRealtime();
+    document.addEventListener('visibilitychange', this.handleVisibilityChange);
     if (!this.initialized) {
       this.initialized = true;
       if (this.agentId) {
@@ -826,6 +827,11 @@ export class AgentDetailView extends LitElement {
     ++this.associatedFlowsGeneration;
     this.associatedFlowsLoading = false;
     this.unsubscribeRealtime?.();
+    document.removeEventListener(
+      'visibilitychange',
+      this.handleVisibilityChange
+    );
+    ++this.spendGeneration;
     if (this.refreshTimer !== null) {
       window.clearTimeout(this.refreshTimer);
       this.refreshTimer = null;
@@ -833,17 +839,22 @@ export class AgentDetailView extends LitElement {
   }
 
   private connectRealtime(): void {
-    const scheduleRefresh = () => this.scheduleRefresh();
     const unsubscribers = [
-      unifiedWebSocketManager.subscribe('managed_agents', scheduleRefresh),
-      unifiedWebSocketManager.subscribe('runtime_sessions', scheduleRefresh),
+      unifiedWebSocketManager.subscribe('managed_agents', (message) =>
+        this.handleResourceEvent(message, false)
+      ),
+      unifiedWebSocketManager.subscribe('runtime_sessions', (message) =>
+        this.handleResourceEvent(message, true)
+      ),
       unifiedWebSocketManager.subscribe('agent_control', (message) =>
         this.handleAgentControlEvent(message)
       ),
       unifiedWebSocketManager.subscribe('gateway_activity', (message) =>
         this.handleGatewayActivity(message)
       ),
-      unifiedWebSocketManager.subscribe('audit', scheduleRefresh),
+      unifiedWebSocketManager.subscribe('audit', (message) =>
+        this.handleResourceEvent(message, false)
+      ),
     ];
     this.unsubscribeRealtime = () => {
       for (const unsubscribe of unsubscribers) {
@@ -853,13 +864,101 @@ export class AgentDetailView extends LitElement {
     void unifiedWebSocketManager.connect();
   }
 
+  private hiddenRefreshPending = false;
+  private pendingRefreshSections = new Set<'identity' | 'sessions' | 'spend'>();
+  private sectionRefreshInFlight: Promise<void> | null = null;
+
+  private handleResourceEvent(message: any, sessionOnly: boolean): void {
+    const payload = message?.payload ?? message ?? {};
+    const agentEvent =
+      message?.topic === 'managed_agents' ||
+      String(message?.type ?? '').startsWith('managed_agent_');
+    const agentIds = [
+      payload.managed_agent_id,
+      payload.agent_id,
+      message?.managed_agent_id,
+      message?.agent_id,
+      payload.resource_type === 'managed_agent'
+        ? payload.resource_id
+        : undefined,
+      ...(agentEvent
+        ? [payload.id, payload.survivor_id, payload.duplicate_id]
+        : []),
+    ].filter((id) => typeof id === 'string' && id);
+    const sessionId =
+      payload.runtime_session_id ??
+      message?.runtime_session_id ??
+      (payload.resource_type === 'runtime_session'
+        ? payload.resource_id
+        : undefined);
+    const matches = agentIds.length
+      ? agentIds.includes(this.agentId)
+      : (sessionId &&
+          (sessionId === this.agent?.runtime_session_id ||
+            this.sessions.some((session) => session.id === sessionId))) ||
+        (this.agent &&
+          payload.runtime_principal_id &&
+          payload.runtime_principal_type === this.agent.session_source_type &&
+          payload.runtime_principal_id === this.agent.session_source_id);
+    if (!matches) return;
+    this.scheduleRefresh(
+      sessionOnly ? ['sessions'] : ['identity', 'sessions', 'spend']
+    );
+  }
+
+  private handleVisibilityChange = (): void => {
+    if (document.hidden) {
+      if (this.refreshTimer !== null) {
+        window.clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+        this.hiddenRefreshPending = true;
+      }
+    } else if (this.hiddenRefreshPending) {
+      this.hiddenRefreshPending = false;
+      this.scheduleRefresh([]);
+    }
+  };
+
+  private async refreshPendingSections(): Promise<void> {
+    if (this.sectionRefreshInFlight) return;
+    const sections = this.pendingRefreshSections;
+    this.pendingRefreshSections = new Set();
+    const request = sections.has('identity')
+      ? this.loadData(true)
+      : Promise.all([
+          sections.has('sessions')
+            ? this.loadSessions({ refresh: true })
+            : Promise.resolve(),
+          sections.has('spend') ? this.loadSpend() : Promise.resolve(),
+        ]).then(() => undefined);
+    this.sectionRefreshInFlight = request;
+    try {
+      await request;
+    } finally {
+      this.sectionRefreshInFlight = null;
+      if (this.pendingRefreshSections.size && this.isConnected)
+        this.scheduleRefresh([]);
+    }
+  }
+
   /**
    * Live events re-read the header and the open tab, at most once per
    * LIVE_REFRESH_INTERVAL_MS. A busy agent emits audit and session events
    * several times a second; refetching on each kept the page permanently
    * loading and multiplied the server's work by the number of viewers.
    */
-  private scheduleRefresh(): void {
+  private scheduleRefresh(
+    sections: Array<'identity' | 'sessions' | 'spend'> = [
+      'identity',
+      'sessions',
+      'spend',
+    ]
+  ): void {
+    for (const section of sections) this.pendingRefreshSections.add(section);
+    if (document.hidden) {
+      this.hiddenRefreshPending = true;
+      return;
+    }
     if (!this.agentId || this.refreshTimer !== null) {
       return;
     }
@@ -870,7 +969,7 @@ export class AgentDetailView extends LitElement {
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
       this.lastLiveRefreshAt = Date.now();
-      void this.loadData(true);
+      void this.refreshPendingSections();
     }, wait);
   }
 
@@ -950,19 +1049,20 @@ export class AgentDetailView extends LitElement {
       ++this.sectionGeneration;
     }
 
-    const startDate = this.rangeStartDate();
+    // Identity, sessions and spend have independent critical paths.
+    void this.loadActiveTabData(isSoftRefresh);
+    void this.loadSpend();
     try {
       await Promise.all([
         // The header only: agent, aggregate, credentials, enrollments. The
         // session list and the per-model usage load with their tabs, so a
         // busy agent's header no longer waits for them.
         getAccountAgent(this.agentId, {
-          start_date: startDate,
           include: [],
+          lightweight: true,
         }).then((detail) => {
           if (generation !== this.detailLoadGeneration) return detail;
           this.agent = detail.agent;
-          this.aggregate = detail.aggregate;
           this.devices = detail.devices ?? [];
           this.selectedOwnerUserId = detail.agent.owner_user_id ?? '';
           if (!isSoftRefresh)
@@ -996,7 +1096,6 @@ export class AgentDetailView extends LitElement {
       }
       if (this.activeTab === 'tools' || this.activeTab === 'models')
         void this.ensureEditorContext(isSoftRefresh);
-      void this.loadActiveTabData(isSoftRefresh);
       if (this.activeTab === 'associated-flows')
         void this.loadAssociatedFlows(true);
       if (!isSoftRefresh) void this.loadDesktopEndpoints(generation);
@@ -1031,6 +1130,40 @@ export class AgentDetailView extends LitElement {
       year: 365 * day,
     }[this.budgetTimeRange];
     return span ? new Date(Date.now() - span).toISOString() : undefined;
+  }
+
+  @state() private spendLoading = false;
+  @state() private spendError: string | null = null;
+  private spendGeneration = 0;
+
+  private async loadSpend(): Promise<void> {
+    const generation = ++this.spendGeneration;
+    const agentId = this.agentId;
+    this.spendLoading = true;
+    this.spendError = null;
+    try {
+      const detail = await getAccountAgent(agentId, {
+        lightweight: true,
+        include: ['aggregate'],
+        start_date: this.rangeStartDate(),
+      });
+      if (generation !== this.spendGeneration || agentId !== this.agentId)
+        return;
+      this.aggregate = detail.aggregate;
+    } catch (error) {
+      if (generation !== this.spendGeneration || agentId !== this.agentId)
+        return;
+      this.spendError =
+        error instanceof Error ? error.message : 'Could not load spend';
+    } finally {
+      if (generation === this.spendGeneration) this.spendLoading = false;
+    }
+  }
+
+  private refreshSpendRange(): void {
+    void this.loadSpend();
+    this.loadedSections.delete('usage_by_model');
+    if (this.activeTab === 'models') void this.loadUsageByModel(true);
   }
 
   /** In-flight first reads, so a tab opened twice reads its section once. */
@@ -1068,7 +1201,13 @@ export class AgentDetailView extends LitElement {
   private loadSessions(
     options: { refresh?: boolean; more?: boolean } = {}
   ): Promise<void> {
-    const next = this.sessionsChain.then(() => this.readSessions(options));
+    const generation = this.sectionGeneration;
+    const agentId = this.agentId;
+    const next = this.sessionsChain.then(() => {
+      if (generation !== this.sectionGeneration || agentId !== this.agentId)
+        return;
+      return this.readSessions(options);
+    });
     this.sessionsChain = next.catch(() => undefined);
     return next;
   }
@@ -1104,6 +1243,7 @@ export class AgentDetailView extends LitElement {
     try {
       const detail = await getAccountAgent(agentId, {
         include: ['sessions'],
+        lightweight: true,
         session_limit: limit,
         session_offset: more ? this.sessions.length : 0,
       });
@@ -1147,6 +1287,7 @@ export class AgentDetailView extends LitElement {
     if (!agentId || (!refresh && this.loadedSections.has('usage_by_model')))
       return;
     const generation = this.sectionGeneration;
+    const range = this.budgetTimeRange;
     // Drop the previous failure as the read starts, so Retry does not
     // keep the old banner up while the new read is in flight.
     this.usageError = null;
@@ -1154,14 +1295,23 @@ export class AgentDetailView extends LitElement {
       const detail = await getAccountAgent(agentId, {
         start_date: this.rangeStartDate(),
         include: ['usage_by_model'],
+        lightweight: true,
       });
-      if (generation !== this.sectionGeneration || agentId !== this.agentId)
+      if (
+        generation !== this.sectionGeneration ||
+        agentId !== this.agentId ||
+        range !== this.budgetTimeRange
+      )
         return;
       this.usageByModel = detail.usage_by_model;
       this.usageError = null;
       this.loadedSections.add('usage_by_model');
     } catch (error) {
-      if (generation !== this.sectionGeneration) return;
+      if (
+        generation !== this.sectionGeneration ||
+        range !== this.budgetTimeRange
+      )
+        return;
       // Say so: with no usage rows the configured model would read as
       // "$0.00 spent", which is a claim, not a failed read.
       this.usageError =
@@ -1171,6 +1321,7 @@ export class AgentDetailView extends LitElement {
 
   /** Editor catalogs are needed only after opening Tools or Models. */
   private ensureEditorContext(refresh = false): Promise<void> {
+    if (!this.agent || this.agent.id !== this.agentId) return Promise.resolve();
     if (this.editorContextRequest) return this.editorContextRequest;
     if (this.editorContextReady && !refresh) return Promise.resolve();
     const generation = this.editorContextGeneration;
@@ -1538,26 +1689,36 @@ export class AgentDetailView extends LitElement {
           ${this.renderStripDevices()} ${this.renderStripOwner()}
           <span class="badge-row">${this.renderHeaderChips()}</span>
         </div>
-        <div class="strip-spend">
+        <div
+          class="strip-spend"
+          aria-busy=${this.spendLoading ? 'true' : 'false'}
+        >
+          ${this.spendLoading ? html`<span role="status">${this.aggregate ? 'Updating spend…' : 'Loading spend…'}</span>` : nothing}
+          ${this.spendError ? html`<span role="status">Spend unavailable${this.aggregate ? '; showing previous values' : ''}</span>` : nothing}
           <span class="strip-label"
             >Estimated spend · ${this.spendRangeLabel()}</span
           >
           <!-- Volume before money: the tokens are what the spend is made of,
                split in and out with the cache share of the input. -->
           <span class="strip-tokens" data-testid="agent-token-figures">
-            <token-figures
-              expanded
-              .usage=${aggregate?.token_usage ?? null}
-            ></token-figures>
+            ${
+              aggregate
+                ? html`<token-figures
+                    expanded
+                    .usage=${aggregate.token_usage ?? null}
+                  ></token-figures>`
+                : '— tokens'
+            }
           </span>
           <span class="strip-value"
-            >${html`<span title=${formatUsdExact(aggregate?.estimated_cost)}>${formatUsd(aggregate?.estimated_cost)}</span>`}</span
+            >${aggregate ? html`<span title=${formatUsdExact(aggregate.estimated_cost)}>${formatUsd(aggregate.estimated_cost)}</span>` : '—'}</span
           >
           ${this.renderWithoutSubscriptions(aggregate)}
           <span
             class="strip-requests"
-            title=${`${formatCountExact(requests)} request${requests === 1 ? '' : 's'}`}
-            >${formatCount(requests)} request${requests === 1 ? '' : 's'}</span
+            title=${aggregate ? `${formatCountExact(requests)} request${requests === 1 ? '' : 's'}` : 'Usage unavailable'}
+            >${aggregate ? formatCount(requests) : '—'}
+            request${requests === 1 ? '' : 's'}</span
           >
           <time-range-select
             ariaLabel="Estimated spend range"
@@ -1566,9 +1727,7 @@ export class AgentDetailView extends LitElement {
             @range-change=${(event: CustomEvent<{ value: string }>) => {
               this.budgetTimeRange = event.detail
                 .value as typeof this.budgetTimeRange;
-              // The window is applied server-side through `start_date` on the
-              // agent detail call, so the numbers reload with the range.
-              void this.loadData();
+              this.refreshSpendRange();
             }}
           ></time-range-select>
         </div>
@@ -1853,7 +2012,7 @@ export class AgentDetailView extends LitElement {
       };
     }
 
-    this.scheduleRefresh();
+    this.scheduleRefresh(['sessions', 'spend']);
   }
 
   private handleAgentControlEvent(message: any): void {

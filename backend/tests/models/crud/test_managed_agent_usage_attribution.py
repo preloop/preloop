@@ -784,6 +784,32 @@ def test_partial_backfill_does_not_publish_partial_totals(
     ] == pytest.approx(0.46)
 
 
+def test_repeated_ready_list_reads_distinguish_no_subscription_from_unavailable(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """Ready reads stay computed, including agents with no subscription traffic."""
+    state = db_session.get(models.AgentUsageBackfill, "agents")
+    assert state is not None and state.ready is True
+    agent = fleet["a"]
+    _subscription_usage(
+        db_session,
+        test_user,
+        session=db_session.get(models.RuntimeSession, agent.runtime_session_id),
+        principal_id=agent.session_source_id,
+        api_equivalent=0.5,
+    )
+    for _ in range(3):
+        listed = crud_managed_agent.list_for_account(
+            db_session, account_id=str(test_user.account_id), limit=100
+        )["items"]
+        assert all(item["subscription_usage_computed"] is True for item in listed)
+        by_id = {item["id"]: item for item in listed}
+        assert by_id[str(agent.id)]["subscription_usage"]["api_equivalent_cost"] == 0.5
+        assert by_id[str(fleet["b"].id)]["subscription_usage"] is None
+        db_session.expire_all()
+        assert db_session.get(models.AgentUsageBackfill, "agents").ready is True
+
+
 def test_totals_follow_session_ownership_changes_without_recounting(
     db_session: Session, fleet: dict[str, Any], test_user: Any
 ) -> None:

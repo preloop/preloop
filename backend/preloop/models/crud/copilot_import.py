@@ -19,7 +19,7 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, List, Optional, Union
 
-from sqlalchemy import Float, and_, cast, func
+from sqlalchemy import Float, and_, case, cast, func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Query, Session
 
@@ -37,6 +37,7 @@ from .provider_billing import (
 COPILOT_PROVIDER = "copilot"
 #: Snapshot ``line_item`` values written by the import.
 LINE_ITEM_PREMIUM_REQUEST = "premium_request"
+LINE_ITEM_PREMIUM_STATUS = "premium_request_status"
 LINE_ITEM_SEAT = "seat"
 LINE_ITEM_SEAT_SUMMARY = "seat_summary"
 LINE_ITEM_USAGE_METRICS = "usage_metrics"
@@ -163,6 +164,35 @@ class CRUDCopilotImportConnection(CRUDBase[CopilotImportConnection]):
 class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
     """Writes and reads of Copilot rows in ``provider_billing_snapshot``."""
 
+    def discard_pending_import(self, db: Session) -> None:
+        """Reset a failed extension transaction before continuing core imports."""
+        db.rollback()
+
+    def unavailable_premium_days(
+        self,
+        db: Session,
+        *,
+        account_id: Union[uuid.UUID, str],
+        end: datetime,
+        start: Optional[datetime] = None,
+        organization: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[date]:
+        """Read durable billing retry markers, scoped to account and organization."""
+        query = self._copilot_rows(
+            db, account_id=account_id, organization=organization
+        ).filter(
+            ProviderBillingSnapshot.line_item == LINE_ITEM_PREMIUM_STATUS,
+            ProviderBillingSnapshot.raw["available"].astext == "false",
+            ProviderBillingSnapshot.bucket_start < end,
+        )
+        if start is not None:
+            query = query.filter(ProviderBillingSnapshot.bucket_start >= start)
+        query = query.order_by(ProviderBillingSnapshot.bucket_start)
+        if limit is not None:
+            query = query.limit(limit)
+        return [row.bucket_start.date() for row in query.all()]
+
     def _copilot_rows(
         self,
         db: Session,
@@ -259,8 +289,17 @@ class CRUDCopilotUsage(CRUDProviderBillingSnapshot):
         query = db.query(
             ProviderBillingSnapshot.user_login.label("user_login"),
             ProviderBillingSnapshot.model.label("model"),
-            func.sum(ProviderBillingSnapshot.cost_amount).label("net_amount"),
-            func.sum(net_quantity).label("net_quantity"),
+            case(
+                (
+                    func.count(ProviderBillingSnapshot.cost_amount) == func.count(),
+                    func.sum(ProviderBillingSnapshot.cost_amount),
+                ),
+                else_=None,
+            ).label("net_amount"),
+            case(
+                (func.count(net_quantity) == func.count(), func.sum(net_quantity)),
+                else_=None,
+            ).label("net_quantity"),
             func.count(func.distinct(ProviderBillingSnapshot.bucket_start)).label(
                 "days"
             ),

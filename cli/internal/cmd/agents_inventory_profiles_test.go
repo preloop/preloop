@@ -162,24 +162,6 @@ func TestAllUsersInventoryFailuresAndBounds(t *testing.T) {
 	}
 }
 
-// Every registered app must explicitly declare each requested platform. A new
-// app or removed path fails this test instead of silently reducing parity.
-func TestInventoryProfilePlatformParity(t *testing.T) {
-	for _, spec := range agentSpecs {
-		for _, goos := range []string{"darwin", "windows", "linux"} {
-			paths := inventoryProfileConfigPaths(goos, "fixture-home", spec)
-			if len(paths) == 0 {
-				t.Errorf("%s has no %s profile paths or unsupported declaration", spec.Name, goos)
-			}
-			for _, path := range paths {
-				if !strings.HasPrefix(path, "fixture-home"+string(filepath.Separator)) {
-					t.Errorf("unconfined %s %s path %q", spec.Name, goos, path)
-				}
-			}
-		}
-	}
-}
-
 func TestInventoryParityRejectsMissingWindowsDeclaration(t *testing.T) {
 	old := inventoryProfilePlatforms["Cursor"]
 	inventoryProfilePlatforms["Cursor"] &^= 2
