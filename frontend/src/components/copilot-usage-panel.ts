@@ -153,7 +153,8 @@ export class CopilotUsagePanel extends AuthedElement {
     }
   }
 
-  private formatNumber(value: number): string {
+  private formatNumber(value: number | null): string {
+    if (value === null) return 'Unknown';
     return new Intl.NumberFormat(undefined, {
       maximumFractionDigits: 2,
     }).format(value);
@@ -603,7 +604,7 @@ export class CopilotUsagePanel extends AuthedElement {
                               ${this.formatNumber(row.net_quantity)}
                             </td>
                             <td class="num">
-                              ${html`<span title=${formatCurrencyAmountExact(row.net_amount, currency)}>${formatCurrencyAmount(row.net_amount, currency)}</span>`}
+                              ${row.net_amount === null ? 'Unknown' : html`<span title=${formatCurrencyAmountExact(row.net_amount, currency)}>${formatCurrencyAmount(row.net_amount, currency)}</span>`}
                             </td>
                           </tr>`
                       )}
@@ -633,7 +634,7 @@ export class CopilotUsagePanel extends AuthedElement {
                               ${this.formatNumber(row.net_quantity)}
                             </td>
                             <td class="num">
-                              ${html`<span title=${formatCurrencyAmountExact(row.net_amount, currency)}>${formatCurrencyAmount(row.net_amount, currency)}</span>`}
+                              ${row.net_amount === null ? 'Unknown' : html`<span title=${formatCurrencyAmountExact(row.net_amount, currency)}>${formatCurrencyAmount(row.net_amount, currency)}</span>`}
                             </td>
                           </tr>`
                       )}

@@ -64,7 +64,9 @@ estimate).
 Open **Cost > Copilot** and enter:
 
 - **GitHub organization**: the organization login.
-- **Organization token**: a token from an organization owner. A classic token
+- **Organization token**: a fine-grained token with read access to the
+  organization's **GitHub Copilot Business** and **View Organization Copilot
+  Metrics** permissions, or a token from an organization owner. A classic token
   needs `manage_billing:copilot` or `read:org`. Seats need an organization
   owner. Premium-request spend on the organization route needs an
   organization administrator. The usage metrics report needs an owner or a
@@ -132,8 +134,13 @@ Per-developer premium-request spend is tried in this order:
    shows the organization total and the reason per-developer spend is
    missing. Spend is never split across developers by guesswork.
 
-If none of these can be read, the import fails with an explicit message on
-the tab (which route refused, and which role it needs). A missing usage
+If billing access is refused on every route, the tab shows a warning
+(which route refused, and which role it needs). Seats and usage metrics
+continue importing; unavailable premium data remains unknown. A durable
+per-day marker replaces any stale figures and queues the day for backfill,
+even after newer adoption days import. Each run retries up to seven old
+billing days in addition to its normal catch-up window. Totals for ranges
+containing an unavailable day remain unknown until the backfill succeeds. A missing usage
 metrics report does not fail the import: the tab explains why it is missing
 and the model mix then has no request-count fallback for that window.
 
@@ -261,3 +268,32 @@ gateway spend, and logs the source and the error type (never a token).
 Daily reports cannot identify a session, so imported spend never feeds the
 expensive-session rule. Imported amounts are never written to gateway
 usage, budgets, quota, execution costs or per-issue cost rollups.
+
+
+## Optional organization activity and inventory
+
+When the server exposes `copilot_seat_activity`, the OSS console adds vendor
+activity in Cost and inventory gaps in Agents. Access requires `view_cost`
+and the installed billing service's `reconciliation` capability. An absent
+plugin or a denied entitlement hides this data without a background upgrade
+prompt. The original OSS connection and cost summary remain available.
+
+The extension reads `GET /orgs/{org}/copilot/metrics/reports/organization-1-day`
+using the existing connection's token and daily import schedule. It needs
+**View Organization Copilot Metrics** read access and the enterprise usage
+metrics policy enabled. No write permission is requested or used. See the
+[GitHub REST report documentation](https://docs.github.com/en/rest/copilot/copilot-usage-metrics#get-copilot-usage-metrics-for-an-organization-for-a-specific-day).
+
+Daily active users, editor interactions and code activity are shown as
+**vendor-reported**. Feature engagement has its own table labelled as a
+rolling 28-day window ending on the report date. Feature engagement overlaps and is
+never added into an engaged-user total. Missing premium fields, unavailable
+reports, and unsupported totals show **Unknown**; interactions and AI credits
+are never used as a proxy for premium requests. Reported zero remains zero.
+
+Seat activity uses the latest snapshot and a rolling 30-day window, labelled
+independently of the Cost date range. Explicit GitHub login mappings identify
+Preloop users; names are resolved within the account. An active seat without
+a mapped user or an active governed agent is an inventory gap. A seat report
+is vendor evidence, not proof of device enforcement. Paused imports and the
+snapshot date remain visible so stale evidence is distinguishable.

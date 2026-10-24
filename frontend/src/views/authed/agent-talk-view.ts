@@ -92,6 +92,7 @@ import {
 } from '../../components/talk-composer';
 
 const EVENT_PAGE_SIZE = 50;
+const TURN_HISTORY_WINDOW = 40;
 
 @customElement('agent-talk-view')
 export class AgentTalkView extends LitElement {
@@ -371,10 +372,17 @@ export class AgentTalkView extends LitElement {
   };
 
   disconnectedCallback(): void {
+    this.sessionGeneration += 1;
+    this.eventsAbort?.abort();
+    this.eventsRequest = null;
+    this.eventsAbort = null;
+    this.eventsRefreshQueued = false;
+    this.eventsMoreQueued = false;
     this.unsubscribeRealtime?.();
     this.unsubscribeRealtime = null;
     if (this.heartbeatTimer !== null) window.clearInterval(this.heartbeatTimer);
     if (this.reloadTimer !== null) window.clearTimeout(this.reloadTimer);
+    this.reloadTimer = null;
     this.postChannel('close');
     this.channel?.close();
     this.channel = null;
@@ -512,18 +520,22 @@ export class AgentTalkView extends LitElement {
    */
   private async load(): Promise<void> {
     if (!this.agentId) return;
-    this.loading = true;
+    this.loading = !this.agent;
     this.error = null;
     const generation = this.sessionGeneration;
     try {
       // Sessions only: usage by model and activity are for the agent page
       // and made every reload of a talk window several times heavier.
-      const detail = await getAccountAgent(this.agentId, {
-        include: ['sessions'],
-      });
+      const [detail, sessionPage] = await Promise.all([
+        getAccountAgent(this.agentId, { include: [], lightweight: true }),
+        getAccountAgent(this.agentId, {
+          include: ['sessions'],
+          lightweight: true,
+        }),
+      ]);
       if (generation !== this.sessionGeneration) return;
       this.agent = detail.agent;
-      this.sessions = detail.sessions || [];
+      this.sessions = sessionPage.sessions || [];
       if (!this.sessionResolved) {
         this.sessionResolved = true;
         if (!this.sessionId && !this.awaitingNewSession) {
@@ -539,7 +551,7 @@ export class AgentTalkView extends LitElement {
       this.error =
         error instanceof Error ? error.message : 'Failed to load agent';
     } finally {
-      this.loading = false;
+      if (generation === this.sessionGeneration) this.loading = false;
     }
   }
 
@@ -560,7 +572,43 @@ export class AgentTalkView extends LitElement {
     return ids;
   }
 
+  private eventsRequest: Promise<void> | null = null;
+  private eventsAbort: AbortController | null = null;
+  private eventsRefreshQueued = false;
+  @state() private eventsMoreQueued = false;
+
   private async loadEvents(sessionId: string): Promise<void> {
+    if (this.eventsRequest) {
+      this.eventsRefreshQueued = true;
+      await this.eventsRequest;
+      return;
+    }
+    await this.runEventsRead(() => this.readEvents(sessionId));
+  }
+
+  /** Serialize first/older pages; a burst requests one trailing current page. */
+  private async runEventsRead(read: () => Promise<void>): Promise<void> {
+    this.eventsAbort = new AbortController();
+    const request = read();
+    this.eventsRequest = request;
+    try {
+      await request;
+    } finally {
+      if (this.eventsRequest !== request) return;
+      this.eventsRequest = null;
+      this.eventsAbort = null;
+      if (this.eventsMoreQueued) {
+        this.eventsMoreQueued = false;
+        if (this.isConnected && this.sessionId) void this.loadMoreEvents();
+      } else if (this.eventsRefreshQueued) {
+        this.eventsRefreshQueued = false;
+        if (this.isConnected && this.sessionId)
+          void this.loadEvents(this.sessionId);
+      }
+    }
+  }
+
+  private async readEvents(sessionId: string): Promise<void> {
     const generation = this.sessionGeneration;
     this.loadingEvents = true;
     // Approvals are read with the transcript, not after it: whether the agent
@@ -571,6 +619,9 @@ export class AgentTalkView extends LitElement {
         getRuntimeSessionGatewayEvents(sessionId, {
           limit: EVENT_PAGE_SIZE,
           offset: 0,
+          history: 'delta',
+          historyWindow: TURN_HISTORY_WINDOW,
+          signal: this.eventsAbort?.signal,
         }),
         getAccountRuntimeSessionActivityTimeline(sessionId).catch(() => ({
           items: [] as RuntimeSessionActivityItem[],
@@ -582,11 +633,17 @@ export class AgentTalkView extends LitElement {
       ) {
         return;
       }
-      this.events = this.sortEvents(events.logs || []);
+      // Keep older pages the operator already opened when the live page moves.
+      const byId = new Map(this.events.map((event) => [event.id, event]));
+      for (const event of events.logs || []) byId.set(event.id, event);
+      this.events = this.sortEvents(Array.from(byId.values()));
       this.activity = activity.items || [];
       this.hasMoreEvents =
         events.pagination?.has_more ??
         (events.logs || []).length >= EVENT_PAGE_SIZE;
+      // Resume from the fresh page's cursor even when older pages remain
+      // mounted. A burst can add more than one page; retained row count is
+      // not an offset and would skip the gap between new and retained rows.
       this.nextEventOffset =
         events.pagination?.next_offset ?? (events.logs || []).length;
       // Anything the server has now echoed back is in the thread already.
@@ -603,6 +660,15 @@ export class AgentTalkView extends LitElement {
   }
 
   private async loadMoreEvents(): Promise<void> {
+    if (this.loadingMoreEvents) return;
+    if (this.eventsRequest) {
+      this.eventsMoreQueued = true;
+      return;
+    }
+    await this.runEventsRead(() => this.readMoreEvents());
+  }
+
+  private async readMoreEvents(): Promise<void> {
     if (
       !this.sessionId ||
       this.loadingMoreEvents ||
@@ -618,6 +684,9 @@ export class AgentTalkView extends LitElement {
       const page = await getRuntimeSessionGatewayEvents(sessionId, {
         limit: EVENT_PAGE_SIZE,
         offset: this.nextEventOffset,
+        history: 'delta',
+        historyWindow: TURN_HISTORY_WINDOW,
+        signal: this.eventsAbort?.signal,
       });
       // An older page of a session the operator has left is not this thread.
       if (
@@ -686,12 +755,22 @@ export class AgentTalkView extends LitElement {
     void unifiedWebSocketManager.connect();
   }
 
-  private handleActivity(message: { payload?: Record<string, unknown> }): void {
+  private handleActivity(message: {
+    payload?: Record<string, unknown>;
+    managed_agent_id?: string;
+    agent_id?: string;
+    runtime_session_id?: string;
+  }): void {
     const payload = message?.payload ?? {};
     const agentId =
-      (payload.managed_agent_id as string) || (payload.agent_id as string);
+      (payload.managed_agent_id as string) ||
+      (payload.agent_id as string) ||
+      message.managed_agent_id ||
+      message.agent_id;
     if (agentId && agentId !== this.agentId) return;
-    const sessionId = payload.runtime_session_id as string | undefined;
+    const sessionId = (payload.runtime_session_id ??
+      message.runtime_session_id) as string | undefined;
+    if (!agentId && !sessionId) return;
     if (!agentId && sessionId && sessionId !== this.sessionId) return;
     if (sessionId && sessionId !== this.sessionId && agentId === this.agentId) {
       // Any other session of the same agent is offered, never followed, also
@@ -720,10 +799,13 @@ export class AgentTalkView extends LitElement {
   }
 
   private async refreshSessions(): Promise<void> {
+    const generation = this.sessionGeneration;
     try {
       const detail = await getAccountAgent(this.agentId, {
         include: ['sessions'],
+        lightweight: true,
       });
+      if (generation !== this.sessionGeneration) return;
       this.sessions = detail.sessions || [];
     } catch (error) {
       // The notice still offers the switch, under a generic name.
@@ -796,6 +878,11 @@ export class AgentTalkView extends LitElement {
    */
   private switchSession(sessionId: string | null): void {
     this.sessionGeneration += 1;
+    this.eventsAbort?.abort();
+    this.eventsRequest = null;
+    this.eventsAbort = null;
+    this.eventsRefreshQueued = false;
+    this.eventsMoreQueued = false;
     this.sessionResolved = true;
     this.sessionId = sessionId;
     this.events = [];
@@ -965,7 +1052,7 @@ export class AgentTalkView extends LitElement {
         .pending=${this.pending}
         .loading=${this.loadingEvents && !this.events.length}
         .hasMoreEvents=${this.hasMoreEvents}
-        .loadingMoreEvents=${this.loadingMoreEvents}
+        .loadingMoreEvents=${this.loadingMoreEvents || this.eventsMoreQueued}
         emptyText=${
           this.sessionId
             ? 'Nothing has been said in this session yet.'

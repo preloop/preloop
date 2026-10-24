@@ -14,7 +14,13 @@ pull-request webhook arrives:
 * ``IssueCostPullRequest``: one row per pull/merge request, holding the
   publication, approval and merge times and the issue the pull request was
   attributed to. A pull request that points at more than one issue is marked
-  ambiguous and attributed to none.
+  ambiguous and attributed to none. It is also the one authoritative record of
+  a pull request for the Delivery Report, whoever opened it: ``origin``,
+  ``author_id``, ``head_sha`` and ``state`` identify it, ``merged_at`` stays
+  its only merge fact.
+* ``IssueCostPullRequestIssue``: every issue a pull request claims (#2016).
+  Cost attribution still follows ``rollup_id``; this link keeps all issues of
+  a pull request that addresses several, which ``rollup_id`` cannot.
 """
 
 import uuid
@@ -39,6 +45,9 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
+
+PULL_REQUEST_ORIGINS = ("preloop_flow", "copilot", "human", "unknown")
+PULL_REQUEST_STATES = ("open", "merged", "closed")
 
 
 class IssueCostRollup(Base):
@@ -240,4 +249,43 @@ class IssueCostPullRequest(Base):
     value_evidence: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     value_observed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+
+    # Who produced the pull request: one of ``PULL_REQUEST_ORIGINS``.
+    origin: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
+    # Immutable forge user id of the author, never the display name.
+    author_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    head_sha: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Forge state: one of ``PULL_REQUEST_STATES``; NULL until observed.
+    state: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+
+
+class IssueCostPullRequestIssue(Base):
+    """One issue a pull request claims; a pull request may claim several."""
+
+    __tablename__ = "issue_cost_pull_request_issue"
+    __table_args__ = (
+        UniqueConstraint(
+            "pull_request_id", "issue_id", name="uq_issue_cost_pull_request_issue"
+        ),
+    )
+
+    account_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("account.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    pull_request_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("issue_cost_pull_request.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    issue_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("issue.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
     )
