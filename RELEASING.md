@@ -59,7 +59,7 @@ by moving an existing tag.
 
 - [ ] The Helm chart is at `oci://ghcr.io/preloop/charts/preloop:<version>` and the `artifacthub.io` tag carries `helm/artifacthub-repo.yml` (Artifact Hub reindexes on its own).
 - [ ] On a stable tag with `PUSH_TO_DOCKERHUB=true`, the Docker Hub descriptions match `docker/dockerhub/`.
-- [ ] Publish the new `server.json` to the official MCP registry: `mcp-publisher login github` then `mcp-publisher publish` from the repo root (an Owner of the `preloop` GitHub org runs it).
+- [ ] `server.json` is published to the official MCP registry automatically by the `Publish to MCP Registry` job in `.github/workflows/release.yml` (GitHub OIDC, no secret; a version that is already published counts as success). Check the job is green and `curl -s 'https://registry.modelcontextprotocol.io/v0/servers?search=io.github.preloop/preloop'` lists the new version. Manual fallback, if the job fails: an Owner of the `preloop` GitHub org creates a classic PAT with only the `read:org` scope and runs, from the repo root, `mcp-publisher login github --token <PAT>` then `mcp-publisher publish`. Plain `mcp-publisher login github` (device flow) cannot read org roles and gets a 403 for `io.github.preloop`.
 
 ### SBOM
 
