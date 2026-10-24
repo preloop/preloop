@@ -44,7 +44,9 @@ last segment is `title`, `body`, `description`, `note`, `text`, `message`,
 keeps a reference such as `[see field "trigger_event.payload.issue.title" in
 the trigger_data block below]`, and the values follow the template in one
 `<trigger_data>` block that tells the agent the contents are data, not
-instructions. Tags in a value that could close the block are escaped.
+instructions. A placeholder that names a whole object or list from the trigger event, such
+as `{{trigger_event.payload.issue}}`, goes to the block as JSON for the same
+reason. Tags in a value that could close the block are escaped.
 Identifiers, numbers, URLs, states and labels are still substituted inline,
 and a template with no such field gets no block. See
 `backend/preloop/utils/prompt_data.py`.

@@ -12,7 +12,9 @@ value is carried in one delimited data block after the template, with an
 explicit statement that the block is input to act on, not instructions to
 follow. Identifiers, numbers, URLs, states and labels are still substituted
 inline: they are what an instruction like "label issue {{...number}}" needs,
-and none of them is prose.
+and none of them is prose. A placeholder that names a whole object or list
+from the trigger event (``{{trigger_event.payload.issue}}``) carries prose in
+its fields, so it goes to the block as JSON whatever its name.
 """
 
 from __future__ import annotations

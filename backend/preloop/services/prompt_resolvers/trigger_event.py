@@ -487,7 +487,7 @@ class TriggerEventResolver(PromptResolver):
                 container[WORKSPACE_FILES_KEY] = _redact_list(files)
         return event_data
 
-    async def resolve(self, path: str, context: ResolverContext) -> Optional[str]:
+    async def resolve(self, path: str, context: ResolverContext) -> Any:
         """
         Resolve trigger event placeholders.
 
@@ -525,9 +525,13 @@ class TriggerEventResolver(PromptResolver):
                 return None
 
         # Handle direct event fields using normalized data
-        value = self._safe_get_nested(normalized_data, path)
+        raw = self._get_nested_raw(normalized_data, path)
 
-        if value is None:
+        if raw is None:
             self.logger.debug(f"Could not resolve trigger_event.{path} in event data")
-
-        return value
+            return None
+        # An object or list is returned as is, so the orchestrator can tell it
+        # carries author-written fields and move it out of the template.
+        if isinstance(raw, (dict, list)):
+            return raw
+        return str(raw)

@@ -1758,7 +1758,7 @@ class FlowExecutionOrchestrator:
     @staticmethod
     def _stage_placeholder(
         item: Placeholder,
-        value: str,
+        value: Any,
         *,
         trigger_sourced: bool,
         replacements: Dict[str, str],
@@ -1767,22 +1767,35 @@ class FlowExecutionOrchestrator:
         """Record how one resolved placeholder enters the prompt.
 
         Trigger-payload prose goes to the data block and leaves a reference
-        in the template; anything else is substituted in place.
+        in the template; anything else is substituted in place. A whole
+        object or list from the trigger event (``{{trigger_event.payload.issue}}``)
+        carries the same prose in its fields, so it goes to the block too,
+        as JSON. The ``truncate`` filter applies to the text either way.
 
         Args:
             item: The parsed placeholder.
-            value: Its resolved, already truncated value.
+            value: Its resolved value, not yet stringified.
             trigger_sourced: Whether the value was read from the trigger event.
             replacements: Raw placeholder text to replacement, updated.
             data_fields: Data block entries, appended to.
         """
-        if is_free_text_field(item.name, trigger_sourced=trigger_sourced):
+        container = isinstance(value, (Mapping, list, tuple))
+        if trigger_sourced and container:
+            text = truncate_value(
+                json.dumps(value, indent=2, ensure_ascii=False, default=str),
+                item.limit,
+            )
+        else:
+            text = truncate_value(str(value), item.limit)
+        if (trigger_sourced and container) or is_free_text_field(
+            item.name, trigger_sourced=trigger_sourced
+        ):
             replacements[item.raw] = field_reference(item.name)
             # Two caps on one field are two entries; same name and value once.
-            if (item.name, value) not in data_fields:
-                data_fields.append((item.name, value))
+            if (item.name, text) not in data_fields:
+                data_fields.append((item.name, text))
         else:
-            replacements[item.raw] = value
+            replacements[item.raw] = text
 
     async def _resolve_prompt(self) -> str:
         """
@@ -1858,7 +1871,7 @@ class FlowExecutionOrchestrator:
                     if value is not None:
                         self._stage_placeholder(
                             item,
-                            truncate_value(str(value), item.limit),
+                            value,
                             trigger_sourced=prefix in TRIGGER_PREFIXES,
                             replacements=replacements,
                             data_fields=data_fields,
@@ -1879,7 +1892,7 @@ class FlowExecutionOrchestrator:
                 if value is not None:
                     self._stage_placeholder(
                         item,
-                        truncate_value(str(value), item.limit),
+                        value,
                         trigger_sourced=True,
                         replacements=replacements,
                         data_fields=data_fields,
@@ -2184,7 +2197,7 @@ class FlowExecutionOrchestrator:
 
         self._revoke_execution_runtime_tokens()
 
-    def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
+    def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Any:
         """
         Simple fallback resolver for backwards compatibility.
 
@@ -2193,7 +2206,9 @@ class FlowExecutionOrchestrator:
             data: Dictionary to resolve from
 
         Returns:
-            Resolved value or None
+            Resolved value or None. An object or list is returned as is, so
+            the caller can keep its fields out of the template; anything
+            else as a string.
         """
         keys = placeholder.split(".")
         value = data
@@ -2205,7 +2220,9 @@ class FlowExecutionOrchestrator:
                 else:
                     return None
 
-            return str(value) if value is not None else None
+            if value is None or isinstance(value, (dict, list)):
+                return value
+            return str(value)
         except Exception:
             return None
 
