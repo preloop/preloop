@@ -1028,8 +1028,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      # sbom.txt is hash-locked and carries jsonschema, the validator's only
-      # dependency.
+      # sbom.txt is hash-locked and lists jsonschema, the validator's only
+      # dependency, as a direct requirement (sbom.in).
       - name: Install validator dependencies
         run: pip install --require-hashes -r .github/requirements/sbom.txt
 
@@ -1065,15 +1065,17 @@ jobs:
       - name: Publish server.json
         if: steps.check.outputs.publish == 'true'
         run: |
+          out="$RUNNER_TEMP/mcp-publish.log"
           set +e
-          out="$(mcp-publisher publish server.json 2>&1)"
+          mcp-publisher publish server.json > "$out" 2>&1
           status=$?
           set -e
-          printf '%s\n' "$out"
+          cat "$out"
           if [ "$status" -eq 0 ]; then
             exit 0
           fi
-          if printf '%s' "$out" | grep -qiE 'already exists|duplicate version|409'; then
+          # Classification lives in the validator so it is unit-tested.
+          if python scripts/validate_server_json.py --is-duplicate-publish "$out"; then
             echo "::notice title=MCP registry::$(jq -r '.name + "@" + .version' server.json) is already published; nothing to do."
             exit 0
           fi

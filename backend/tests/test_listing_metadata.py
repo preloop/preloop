@@ -216,3 +216,36 @@ def test_prerelease_tag_carried_by_server_json_publishes() -> None:
 def test_tag_flag_without_value_fails() -> None:
     """--tag with no value is a usage error, not a silent pass."""
     assert validator.main(["--tag"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("output", "duplicate"),
+    [
+        (
+            "Error: publish failed: server returned status 400: invalid version: "
+            "io.github.preloop/preloop@0.17.1 already exists",
+            True,
+        ),
+        ("Error: cannot publish duplicate version", True),
+        ("Error: publish failed: HTTP 409 Conflict", True),
+        ("Publishing io.github.preloop/preloop@0.409.0\nError: 401 unauthorized", False),
+        ("Error: publish failed: status 500: internal error", False),
+        ("", False),
+    ],
+)
+def test_duplicate_publish_classification(
+    output: str, duplicate: bool, tmp_path: Path
+) -> None:
+    """Only an existing-version refusal is treated as an idempotent success."""
+    log = tmp_path / "publish.log"
+    log.write_text(output)
+
+    assert validator.is_duplicate_publish(output) is duplicate
+    assert validator.main(["--is-duplicate-publish", str(log)]) == (
+        0 if duplicate else 1
+    )
+
+
+def test_duplicate_publish_flag_without_file_fails() -> None:
+    """--is-duplicate-publish with no file is a usage error."""
+    assert validator.main(["--is-duplicate-publish"]) == 2

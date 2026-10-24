@@ -15,6 +15,7 @@ not published to the registry unless server.json was bumped to them.
 
 Usage:
     python scripts/validate_server_json.py [--tag vX.Y.Z] [path/to/server.json]
+    python scripts/validate_server_json.py --is-duplicate-publish <output-file>
 """
 
 from __future__ import annotations
@@ -90,6 +91,27 @@ def validate(server: dict[str, Any], version: str) -> list[str]:
     return problems
 
 
+#: How the registry reports a re-publish of an existing version
+#: (``<name>@<version> already exists``, a ``duplicate version`` error, or an
+#: HTTP 409). A bare ``409`` is not enough: it could be part of a version.
+DUPLICATE_PUBLISH = re.compile(
+    r"already exists|duplicate version|(?:status|HTTP)[^0-9\n]{0,10}409\b",
+    re.IGNORECASE,
+)
+
+
+def is_duplicate_publish(output: str) -> bool:
+    """Return whether ``mcp-publisher publish`` failed only on a duplicate.
+
+    Args:
+        output: Combined stdout and stderr of the failed publish.
+
+    Returns:
+        True when the registry refused because the version already exists.
+    """
+    return DUPLICATE_PUBLISH.search(output) is not None
+
+
 def check_tag(server_version: object, tag: str) -> tuple[bool, str | None]:
     """Decide whether a release tag should publish this server.json.
 
@@ -119,12 +141,20 @@ def main(argv: list[str]) -> int:
 
     Args:
         argv: Command-line arguments without the program name: an optional
-            ``--tag <tag>`` pair and an optional server.json path.
+            ``--tag <tag>`` pair and an optional server.json path, or
+            ``--is-duplicate-publish <file>`` to classify publish output.
 
     Returns:
-        Process exit code: 0 when valid, 1 otherwise.
+        Process exit code: 0 when valid (or a duplicate publish), 1 otherwise,
+        2 for a malformed ``--is-duplicate-publish`` call.
     """
     args = list(argv)
+    if args[:1] == ["--is-duplicate-publish"]:
+        if len(args) != 2:
+            print("--is-duplicate-publish needs a file", file=sys.stderr)
+            return 2
+        text = Path(args[1]).read_text(encoding="utf-8", errors="replace")
+        return 0 if is_duplicate_publish(text) else 1
     tag: str | None = None
     if "--tag" in args:
         index = args.index("--tag")
