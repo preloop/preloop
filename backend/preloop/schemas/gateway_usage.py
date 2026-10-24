@@ -560,6 +560,10 @@ class ManagedAgentSummary(BaseModel):
     started_at: Optional[datetime] = None
     last_activity_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    usage_computed: bool = Field(
+        True,
+        description="False for lightweight identity reads; usage totals are unavailable.",
+    )
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
@@ -862,7 +866,7 @@ class ManagedAgentDetailResponse(BaseModel):
 
     agent: ManagedAgentSummary
     devices: List[ManagedAgentDeviceSummary] = Field(default_factory=list)
-    aggregate: ManagedAgentUsageAggregate
+    aggregate: Optional[ManagedAgentUsageAggregate] = None
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
     activity_by_server: List[ManagedAgentServerActivitySummary] = Field(
         default_factory=list

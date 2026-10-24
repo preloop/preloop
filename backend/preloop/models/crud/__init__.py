@@ -136,6 +136,7 @@ from .issue_compliance_result import (
     CRUDIssueComplianceResult,
     issue_compliance_result,
 )
+from .assessment import crud_assessment
 from .issue_cost import crud_issue_cost
 from .issue_duplicate import CRUDIssueDuplicate, crud_issue_duplicate
 from .issue_lifecycle import crud_issue_lifecycle
@@ -335,6 +336,7 @@ __all__ = [
     "CRUDCliSession",
     "crud_cli_session",
     "crud_issue_lifecycle",
+    "crud_assessment",
     "crud_security_maintenance",
     "CRUDBase",
     "CRUDAccount",

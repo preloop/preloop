@@ -6,6 +6,7 @@ import {
   signOut,
   isSameOriginPath,
   invalidateApiCaches,
+  onApiCachesInvalidated,
   AuthedElement,
   getFlowExecutions,
   getFlowSummaries,
@@ -57,6 +58,19 @@ class TestAuthedElement extends AuthedElement {
 }
 
 describe('api', () => {
+  it('unregisters component cache resets after disposal', () => {
+    const reset = sinon.spy();
+    const unsubscribe = onApiCachesInvalidated(reset);
+    try {
+      invalidateApiCaches();
+      expect(reset.callCount).to.equal(1);
+      unsubscribe();
+      invalidateApiCaches();
+      expect(reset.callCount).to.equal(1);
+    } finally {
+      unsubscribe();
+    }
+  });
   let fetchStub: sinon.SinonStub;
   let routerGoStub: sinon.SinonStub;
 
