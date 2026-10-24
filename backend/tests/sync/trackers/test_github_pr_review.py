@@ -979,3 +979,47 @@ class TestGetReviewComments(IsolatedAsyncioTestCase):
 
         call_args = tracker._request.call_args
         self.assertIn("/pulls/42/", call_args[0][1])
+
+
+@pytest.mark.asyncio
+class TestGetPullRequestFiles(IsolatedAsyncioTestCase):
+    """The PR file list is read with pagination (#2029)."""
+
+    async def test_files_are_read_with_pagination(self):
+        connection_details = {"owner": "owner", "repo": "repo"}
+        tracker = GitHubTracker(str(uuid4()), "api-key", connection_details)
+        pr_data = {
+            "id": 1,
+            "number": 7,
+            "title": "Large change",
+            "body": "",
+            "state": "closed",
+            "user": {"login": "jane-doe"},
+            "html_url": "https://github.com/owner/repo/pull/7",
+            "head": {"ref": "feature", "sha": "a" * 40},
+            "base": {"ref": "main"},
+            "created_at": "2026-10-20T10:00:00Z",
+            "updated_at": "2026-10-21T10:00:00Z",
+            "merged_at": "2026-10-21T10:00:00Z",
+            "merge_commit_sha": "b" * 40,
+            "changed_files": 144,
+        }
+        files = [
+            {
+                "filename": f"src/f{i}.py",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 0,
+            }
+            for i in range(144)
+        ]
+        tracker._request = AsyncMock(side_effect=[pr_data, [], []])
+        tracker._make_request = AsyncMock(return_value=files)
+
+        result = await tracker.get_pull_request("7")
+
+        tracker._make_request.assert_awaited_once_with("repos/owner/repo/pulls/7/files")
+        assert len(result["changes"]["changed_files"]) == 144
+        assert result["changes"]["files_changed"] == 144
+        assert result["head_sha"] == "a" * 40
+        assert result["merge_commit_sha"] == "b" * 40

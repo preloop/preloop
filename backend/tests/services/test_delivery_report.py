@@ -59,7 +59,7 @@ class TestPresetRegistration:
         policy = dr.DeliveryReportPolicy()
         assert policy.schedule_config() == _preset()["schedule_config"]
         assert policy.execution_limits() == _preset()["agent_config"]["limits"]
-        assert policy.tracker_writes.create_follow_up == "allow"
+        assert policy.tracker_writes.create_follow_up == "deny"
         assert policy.tracker_writes.reopen == "approval"
         assert policy.tracker_writes.close == "deny"
 
@@ -126,8 +126,10 @@ class TestFixtureWindow:
             "versions/0042_add_column.py" in e
             for e in flags[dr.RISK_MIGRATION_WITHOUT_DOWNGRADE]["evidence"]
         )
+        # #104 is an 11-line logic change in one frontend module: under the
+        # threshold and no view or style file, so no screenshot is owed.
         ui = {f["flag"] for f in by_ref["acme/app#104"]["risk_flags"]}
-        assert dr.RISK_UI_WITHOUT_SCREENSHOT in ui
+        assert dr.RISK_UI_WITHOUT_SCREENSHOT not in ui
         assert by_ref["acme/app#101"]["risk_flags"] == []
 
     def test_closed_issues_and_the_unmet_criterion(self) -> None:
@@ -449,3 +451,548 @@ class TestOrchestratorHook:
             side_effect=RuntimeError("boom"),
         ):
             assert orchestrator._finalize_delivery_report(original) is original
+
+
+# ---------------------------------------------------------------------------
+# Alignment with audits, briefs and the measured run (#2029)
+# ---------------------------------------------------------------------------
+
+
+def _executions() -> List[SimpleNamespace]:
+    from datetime import datetime
+
+    rows = []
+    for raw in _load("merge_audit_executions.json"):
+        rows.append(
+            SimpleNamespace(
+                id=raw["id"],
+                start_time=datetime.fromisoformat(raw["start_time"]),
+                end_time=None,
+                trigger_event_details=raw["trigger_event_details"],
+                result=raw["result"],
+            )
+        )
+    return rows
+
+
+def _audits() -> List[Dict[str, Any]]:
+    return dr.merge_audits_document(_executions())["audits"]
+
+
+def _pr(files: List[Dict[str, Any]], **extra: Any) -> Dict[str, Any]:
+    return {"description": "", "changes": {"changed_files": files}, **extra}
+
+
+class TestMergeAuditReuse:
+    def test_only_audits_at_the_closing_revision_are_kept(self) -> None:
+        audits = _audits()
+        # The mismatched checkout and the deployment audit are dropped, and
+        # the newest audit per issue wins over the older one.
+        assert len(audits) == 1
+        audit = audits[0]
+        assert audit["issue_ref"] == "acme/app#12"
+        assert audit["merge_sha"] == "2" * 40
+        assert [c["met"] for c in audit["purpose"]["criteria"]] == [True, True]
+        assert audit["purpose"]["criteria"][0]["text"] == "CSV export includes headers"
+
+    def test_audited_closed_issue_takes_the_audit(self) -> None:
+        report = _window_report(merge_audits=_audits())
+        closed = {i["ref"]: i for i in report["closed_issues"]}
+        purpose = closed["acme/app#12"]["purpose"]
+        # The run's own pass said the date filter was not met; the audit at
+        # the closing revision decides instead.
+        assert purpose["verdict"] == dr.PURPOSE_COVERED
+        assert purpose["source"] == dr.SOURCE_AUDIT
+        assert purpose["revision"] == "2" * 40
+        shipped = {c["ref"]: c for c in report["shipped"]}
+        assert shipped["acme/app#102"]["purpose"]["source"] == dr.SOURCE_AUDIT
+        assert closed["acme/app#11"]["purpose"]["source"] != dr.SOURCE_AUDIT
+        assert report["summary"]["assessment_sources"][dr.SOURCE_AUDIT] == 1
+
+    def test_audit_at_another_revision_is_not_used(self) -> None:
+        report = dr.finalize_delivery_report(
+            {
+                "closed_issues": [
+                    {
+                        "ref": "acme/app#12",
+                        "closing_sha": "9" * 40,
+                        "purpose": {"criteria": ["CSV export includes headers"]},
+                    }
+                ]
+            },
+            merge_audits=_audits(),
+        )
+        purpose = report["closed_issues"][0]["purpose"]
+        assert purpose["source"] == dr.SOURCE_NONE
+        assert purpose["verdict"] == dr.PURPOSE_UNVERIFIED
+
+    def test_audits_are_seeded_beside_the_previous_report(self) -> None:
+        import base64
+
+        document = dr.merge_audits_document(_executions())
+        trigger = {"payload": {"previous_result_execution_id": "last"}}
+        seeded = dr.with_merge_audits_seed(trigger, document)
+        assert seeded is not None and "workspace_files" not in trigger["payload"]
+        (seed,) = seeded["payload"]["workspace_files"]
+        assert seed["path"] == "previous/merge_audits.json"
+        decoded = json.loads(base64.b64decode(seed["content_base64"]))
+        assert decoded["schema"] == dr.MERGE_AUDITS_SCHEMA
+        assert decoded["audits"][0]["issue_ref"] == "acme/app#12"
+
+    def test_a_declared_seed_at_the_path_wins(self) -> None:
+        trigger = {
+            "payload": {
+                "workspace_files": [
+                    {"path": "previous/merge_audits.json", "content_base64": "e30="}
+                ]
+            }
+        }
+        assert dr.with_merge_audits_seed(trigger, {"audits": []}) is trigger
+
+    def test_oversized_document_is_truncated(self) -> None:
+        many = _executions()[:1] * 1
+        document = dr.merge_audits_document(many, max_bytes=100)
+        assert document["truncated"] is True
+        assert document["audits"] == []
+
+    def test_finalize_for_execution_applies_the_audits(self) -> None:
+        flow = SimpleNamespace(id="flow-1", account_id="acct-1", agent_config={})
+        result = {
+            "window": WINDOW,
+            "closed_issues": [
+                {
+                    "ref": "acme/app#12",
+                    "url": "https://example.com/acme/app/issues/12",
+                    "purpose": {"criteria": []},
+                }
+            ],
+        }
+        with (
+            patch(
+                "preloop.models.crud.crud_flow_execution.latest_with_result",
+                return_value=None,
+            ),
+            patch(
+                "preloop.models.crud.crud_flow_execution.completed_merge_audits",
+                return_value=_executions(),
+            ) as audits,
+            patch(
+                "preloop.services.flow_execution_limits.get_execution_usage",
+                side_effect=RuntimeError("no db"),
+            ),
+        ):
+            report = dr.finalize_for_execution(
+                object(), flow=flow, execution=SimpleNamespace(id="e"), result=result
+            )
+        assert audits.call_args.kwargs["account_id"] == "acct-1"
+        assert audits.call_args.kwargs["since"].isoformat() == "2026-10-12T07:00:00"
+        assert report["closed_issues"][0]["purpose"]["source"] == dr.SOURCE_AUDIT
+
+    def test_orchestrator_seeds_audits_for_report_flows(self) -> None:
+        from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+        orchestrator = object.__new__(FlowExecutionOrchestrator)
+        orchestrator.db = object()
+        orchestrator.flow = SimpleNamespace(
+            id="flow-1", account_id="acct-1", agent_config={}
+        )
+        with patch(
+            "preloop.models.crud.crud_flow_execution.completed_merge_audits",
+            return_value=_executions(),
+        ):
+            data = orchestrator._delivery_report_inputs({"payload": {"window": WINDOW}})
+        assert data is not None
+        paths = [s["path"] for s in data["payload"]["workspace_files"]]
+        assert paths == ["previous/merge_audits.json"]
+
+    def test_a_failed_audit_read_keeps_the_trigger(self) -> None:
+        from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+        orchestrator = object.__new__(FlowExecutionOrchestrator)
+        orchestrator.db = object()
+        orchestrator.flow = SimpleNamespace(id="f", account_id="a", agent_config={})
+        trigger = {"payload": {}}
+        with patch(
+            "preloop.models.crud.crud_flow_execution.completed_merge_audits",
+            side_effect=RuntimeError("db down"),
+        ):
+            assert orchestrator._delivery_report_inputs(trigger) is trigger
+
+
+class TestBriefsAndSummaries:
+    def test_brief_sections_are_parsed(self) -> None:
+        brief = dr.parse_change_brief((FIXTURES / "pr_body_brief.md").read_text())
+        assert brief is not None
+        assert brief["what_changed"][0].startswith("backend/app/export.py")
+        assert brief["why"] == ["#12 asks for CSV export"]
+        assert len(brief["not_verified"]) == 2
+        assert brief["rollback"] == ["revert is clean"]
+        assert brief["decisions"][0].startswith("Stream rows")
+
+    def test_missing_sections_and_none_bullets_are_empty(self) -> None:
+        body = (
+            "<!-- PRELOOP_BRIEF -->\n### What changed\n- a.py: x\n"
+            "### Not verified\n- none\n<!-- /PRELOOP_BRIEF -->"
+        )
+        brief = dr.parse_change_brief(body)
+        assert brief is not None
+        assert brief["not_verified"] == []
+        assert brief["assumptions"] == []
+        assert brief["what_changed"] == ["a.py: x"]
+
+    def test_unterminated_brief_still_parses(self) -> None:
+        brief = dr.parse_change_brief(
+            "<!-- PRELOOP_BRIEF -->\n### Not verified\n- p95 after deploy\n"
+        )
+        assert brief is not None and brief["not_verified"] == ["p95 after deploy"]
+
+    def test_no_brief_is_none(self) -> None:
+        assert dr.parse_change_brief("Fixes #1") is None
+        assert dr.parse_change_brief(None) is None
+        assert dr.parse_review_summary("Fixes #1") is None
+
+    def test_review_summary_lines(self) -> None:
+        summary = dr.parse_review_summary((FIXTURES / "pr_body_summary.md").read_text())
+        assert summary == {
+            "risk_level": "low",
+            "not_verified": ["Rendering in the light theme"],
+            "must_know": ["frontend/src/report-card.ts now formats dates in UTC"],
+        }
+
+    def test_summary_without_the_new_lines(self) -> None:
+        summary = dr.parse_review_summary(
+            "<!-- PRELOOP_SUMMARY -->\n> **Medium**\n> x\n>\n> **Overview**\n"
+            "> y\n<!-- /PRELOOP_SUMMARY -->"
+        )
+        assert summary == {"risk_level": "medium", "not_verified": [], "must_know": []}
+
+    def test_not_verified_bullets_become_evidence_gaps(self) -> None:
+        prs = _load("pull_requests.json")
+        for pr in prs:
+            if pr["number"] == 102:
+                pr["description"] = (FIXTURES / "pr_body_brief.md").read_text()
+        report = dr.assemble_report(
+            window=WINDOW, pull_requests=prs, issues=_load("issues.json")
+        )
+        change = {c["ref"]: c for c in report["shipped"]}["acme/app#102"]
+        assert len(change["evidence_gaps"]) == 2
+        assert report["summary"]["evidence_gaps"] == 2
+        assert "Evidence gap (stated in the PR)" in report["report_markdown"]
+
+    def test_described_pr_skips_the_model_risk_pass(self) -> None:
+        body = (FIXTURES / "pr_body_summary.md").read_text()
+        quiet = _pr(
+            [{"filename": "backend/app/x.py"}, {"filename": "backend/tests/test_x.py"}],
+            description=body,
+        )
+        assert dr.detect_risk_flags(quiet) == []
+        assert dr.needs_model_risk_pass(quiet) is False
+        undescribed = dict(quiet, description="")
+        assert dr.needs_model_risk_pass(undescribed) is True
+
+    def test_a_deterministic_flag_brings_the_pass_back(self) -> None:
+        body = (FIXTURES / "pr_body_summary.md").read_text()
+        flagged = _pr([{"filename": "backend/app/auth/session.py"}], description=body)
+        assert dr.needs_model_risk_pass(flagged) is True
+
+
+class TestDeterministicRiskRules:
+    @pytest.mark.parametrize(
+        ("path", "label"),
+        [
+            ("backend/preloop/api/auth/jwt.py", "auth_session"),
+            ("backend/app/session_store.py", "auth_session"),
+            ("backend/alembic/versions/0042_add.py", "migration"),
+            ("backend/app/billing/stripe.py", "billing_payments"),
+            ("openapi.yaml", "public_api"),
+            ("backend/preloop/api/endpoints/flows.py", "public_api"),
+            (".github/workflows/release.yml", "ci_release"),
+            ("backend/app/secrets.py", "secrets"),
+        ],
+    )
+    def test_path_classes(self, path: str, label: str) -> None:
+        assert dr.path_class(path) == label
+        flags = {f["flag"]: f for f in dr.detect_risk_flags(_pr([{"filename": path}]))}
+        assert f"{label}: {path}" in flags[dr.RISK_SENSITIVE_PATH]["evidence"]
+
+    @pytest.mark.parametrize(
+        "path", ["backend/app/author.py", "frontend/src/keyboard.ts", "README.md"]
+    )
+    def test_ordinary_paths_have_no_class(self, path: str) -> None:
+        assert dr.path_class(path) is None
+
+    def test_logic_only_frontend_touch_needs_no_screenshot(self) -> None:
+        pr = _pr(
+            [
+                {"filename": "backend/app/auth.py", "additions": 80},
+                {"filename": "frontend/src/api/client.ts", "additions": 6},
+            ]
+        )
+        flags = {f["flag"] for f in dr.detect_risk_flags(pr)}
+        assert dr.RISK_UI_WITHOUT_SCREENSHOT not in flags
+
+    def test_style_or_view_change_needs_a_screenshot(self) -> None:
+        for name in ("frontend/src/styles/theme.css", "frontend/src/views/home.ts"):
+            pr = _pr([{"filename": name, "additions": 2}])
+            flags = {f["flag"] for f in dr.detect_risk_flags(pr)}
+            assert dr.RISK_UI_WITHOUT_SCREENSHOT in flags, name
+
+    def test_large_frontend_change_needs_a_screenshot(self) -> None:
+        pr = _pr([{"filename": "frontend/src/components/card.ts", "additions": 41}])
+        flags = {f["flag"]: f for f in dr.detect_risk_flags(pr)}
+        assert "threshold 40" in flags[dr.RISK_UI_WITHOUT_SCREENSHOT]["evidence"][0]
+        with_image = dict(pr, description="![after](https://example.com/a.png)")
+        assert dr.RISK_UI_WITHOUT_SCREENSHOT not in {
+            f["flag"] for f in dr.detect_risk_flags(with_image)
+        }
+
+    def test_merge_revision_raises_no_downgrade_flag(self) -> None:
+        patch_text = (
+            '+revision = "abc"\n+down_revision = ("def", "ghi")\n'
+            "+def upgrade():\n+    pass\n+\n+def downgrade():\n+    pass\n"
+        )
+        pr = _pr(
+            [{"filename": "backend/alembic/versions/abc_merge.py", "patch": patch_text}]
+        )
+        assert dr.RISK_MIGRATION_WITHOUT_DOWNGRADE not in {
+            f["flag"] for f in dr.detect_risk_flags(pr)
+        }
+        typed = patch_text.replace(
+            "down_revision =", "down_revision: Union[str, Sequence[str], None] ="
+        )
+        assert dr.is_merge_revision(typed)
+        single = patch_text.replace('("def", "ghi")', '"def"')
+        assert dr.RISK_MIGRATION_WITHOUT_DOWNGRADE in {
+            f["flag"]
+            for f in dr.detect_risk_flags(
+                _pr([{"filename": "backend/alembic/versions/x.py", "patch": single}])
+            )
+        }
+
+    def test_short_file_list_is_flagged(self) -> None:
+        files = [{"filename": f"src/f{i}.py"} for i in range(100)]
+        pr = {
+            "description": "",
+            "changes": {"files_changed": 144, "changed_files": files},
+        }
+        flags = {f["flag"]: f for f in dr.detect_risk_flags(pr)}
+        assert (
+            "144 files; 100 were listed"
+            in (flags[dr.RISK_FILE_LIST_INCOMPLETE]["evidence"][0])
+        )
+        complete = {
+            "description": "",
+            "changes": {"files_changed": 100, "changed_files": files},
+        }
+        assert dr.RISK_FILE_LIST_INCOMPLETE not in {
+            f["flag"] for f in dr.detect_risk_flags(complete)
+        }
+
+
+class TestDenominators:
+    def test_summary_carries_separate_numbers(self) -> None:
+        summary = _window_report()["summary"]
+        assert summary["linkage"] == {"linked": 3, "total": 4}
+        assert summary["criteria_availability"] == {"with_criteria": 2, "total": 2}
+        assert summary["evidence_availability"] == {"with_evidence": 2, "total": 3}
+        assert summary["closed_verdicts"] == {
+            "covered": 1,
+            "partial": 1,
+            "unverified": 0,
+            "no_criteria": 0,
+        }
+        assert "score" not in json.dumps(summary)
+
+    def test_markdown_counts_match_the_json(self) -> None:
+        report = _window_report()
+        summary = report["summary"]
+        text = report["report_markdown"]
+        assert f"Linkage: {summary['linkage']['linked']} of 4 shipped" in text
+        assert "Criteria available: 2 of 2 closed issues" in text
+        assert "Evidence available: 2 of 3 of their criteria" in text
+        verdicts = summary["closed_verdicts"]
+        assert (
+            f"{verdicts['covered']} covered, {verdicts['partial']} partial, "
+            f"{verdicts['unverified']} unverified, {verdicts['no_criteria']} with "
+            "no criteria" in text
+        )
+
+    def test_unverified_is_described_as_an_evidence_gap(self) -> None:
+        report = dr.finalize_delivery_report(
+            {"closed_issues": [{"ref": "acme/app#1", "purpose": {"criteria": ["x"]}}]}
+        )
+        text = report["report_markdown"]
+        assert "unverified (evidence gap)" in text
+        assert "Closed with an evidence gap" in text
+        assert "It is not a failure" in text
+        assert "failed" not in text.lower()
+
+    def test_assessments_skipped_for_budget_is_a_flag(self) -> None:
+        report = dr.finalize_delivery_report(
+            {"spend": {"skipped_for_budget": ["closed-issue assessments"]}}
+        )
+        assert report["summary"]["assessments_skipped_for_budget"] is True
+        assert "Assessments were skipped for budget" in report["report_markdown"]
+        assert (
+            dr.finalize_delivery_report({})["summary"]["assessments_skipped_for_budget"]
+            is False
+        )
+
+
+class TestPolicyDefaults:
+    def test_tracker_writes_start_off(self) -> None:
+        writes = dr.DeliveryReportPolicy().tracker_writes
+        assert (writes.create_follow_up, writes.reopen, writes.close) == (
+            "deny",
+            "approval",
+            "deny",
+        )
+
+    def test_budgets_and_modes(self) -> None:
+        policy = dr.DeliveryReportPolicy()
+        assert (policy.per_run_usd, policy.monthly_usd) == (5.0, 25.0)
+        assert policy.assessments_allowed(24.99) is True
+        assert policy.assessments_allowed(25.0) is False
+        assert policy.assessments_allowed(None) is True
+        deterministic = dr.DeliveryReportPolicy(report_mode="deterministic")
+        assert deterministic.assessments_allowed(0.0) is False
+
+    def test_preset_states_the_promise(self) -> None:
+        promise = (
+            "See what landed, what the available evidence supports against "
+            "stated criteria, and which gaps deserve investigation."
+        )
+        assert _preset()["description"].startswith(promise)
+
+
+class TestMeasuredRunRules:
+    def test_only_comments_after_the_last_criteria_edit(self) -> None:
+        issue = {
+            "description": "## Acceptance\n- p95 under 1.5 s\n",
+            "comments": [
+                {"created_at": "2026-10-10T09:00:00Z", "body": "measured 4 s"},
+                {
+                    "created_at": "2026-10-12T09:00:00Z",
+                    "body": "Revised.\n\n## Acceptance\n- p95 under 1.5 s grouped\n",
+                },
+                {"created_at": "2026-10-19T08:39:00Z", "body": "grouped p95 3.13 s"},
+            ],
+        }
+        comments = dr.comments_after_last_criteria_edit(issue)
+        assert [c["body"] for c in comments] == ["grouped p95 3.13 s"]
+
+    def test_no_criteria_needs_no_comments(self) -> None:
+        issue = {"description": "Make it faster", "comments": [{"body": "x"}]}
+        assert dr.comments_after_last_criteria_edit(issue) == []
+
+    def test_reopen_request_needs_a_revision_and_evidence(self) -> None:
+        report = dr.finalize_delivery_report(
+            {
+                "reopen_requests": [
+                    {
+                        "ref": "acme/app#7",
+                        "revision": "a" * 40,
+                        "reason": "last comment measures p95 3.13 s against 1.5 s",
+                        "evidence": ["https://example.com/acme/app/issues/7#c3"],
+                    },
+                    {"ref": "acme/app#8", "evidence": ["x"]},
+                ]
+            }
+        )
+        assert [r["ref"] for r in report["reopen_requests"]] == ["acme/app#7"]
+        assert report["needs_you"][0]["kind"] == "reopen_request"
+        assert "Proposed reopen (assessed at " in report["report_markdown"]
+
+    def test_prompt_states_the_measured_rules(self) -> None:
+        prompt = _preset()["prompt_template"]
+        for phrase in (
+            "previous/merge_audits.json",
+            "<!-- PRELOOP_BRIEF -->",
+            "the comments after the last comment that",
+            "reopen_requests",
+            "the parent commit (<merge>^1)",
+            "updated_at and closing PR head SHA",
+            "metadata_only",
+            "down_revision is a tuple",
+            "never count in prose",
+        ):
+            assert phrase in prompt, phrase
+
+    def test_unchanged_closed_issue_keeps_the_previous_assessment(self) -> None:
+        cached_purpose = {
+            "verdict": "covered",
+            "source": "report",
+            "criteria": [{"text": "x", "met": True, "evidence": ["a.py:1"]}],
+        }
+        previous = {
+            "schema": dr.REPORT_SCHEMA,
+            "closed_issues": [
+                {
+                    "ref": "acme/app#5",
+                    "cache_key": dr.assessment_cache_key(
+                        "2026-10-01T00:00:00Z", "c" * 40
+                    ),
+                    "purpose": cached_purpose,
+                }
+            ],
+        }
+        current = {
+            "closed_issues": [
+                {
+                    "ref": "acme/app#5",
+                    "updated_at": "2026-10-01T00:00:00+00:00",
+                    "closing_head_sha": "c" * 40,
+                    "purpose": {"criteria": ["x"]},
+                }
+            ]
+        }
+        report = dr.finalize_delivery_report(current, previous=previous)
+        purpose = report["closed_issues"][0]["purpose"]
+        assert (purpose["verdict"], purpose["source"]) == ("covered", "cache")
+        edited = json.loads(json.dumps(current))
+        edited["closed_issues"][0]["updated_at"] = "2026-10-20T00:00:00Z"
+        purpose = dr.finalize_delivery_report(edited, previous=previous)[
+            "closed_issues"
+        ][0]["purpose"]
+        assert purpose["source"] == "none"
+
+    def test_cache_key_needs_both_parts(self) -> None:
+        assert dr.assessment_cache_key(None, "c" * 40) is None
+        assert dr.assessment_cache_key("2026-10-01T00:00:00Z", "") is None
+
+    def test_dependabot_and_docs_prs_are_metadata_only(self) -> None:
+        bump = _pr([{"filename": "package-lock.json"}], author="dependabot[bot]")
+        docs = _pr([{"filename": "docs/guide.md"}, {"filename": "README.md"}])
+        code = _pr([{"filename": "backend/app/x.py"}])
+        assert dr.metadata_only_reason(bump) == "dependabot"
+        assert dr.metadata_only_reason(docs) == "docs_only"
+        assert dr.metadata_only_reason(code) is None
+        assert dr.needs_model_risk_pass(bump) is False
+
+    def test_metadata_only_pr_ignores_an_assessment(self) -> None:
+        prs = _load("pull_requests.json")
+        prs.append(
+            {
+                "number": 105,
+                "title": "Bump lodash",
+                "author": "dependabot[bot]",
+                "description": "",
+                "state": "closed",
+                "url": "https://example.com/acme/app/pull/105",
+                "merged_at": "2026-10-16T12:00:00+00:00",
+                "changes": {"changed_files": [{"filename": "package-lock.json"}]},
+            }
+        )
+        assessments = dict(_load("assessments.json"))
+        assessments["acme/app#105"] = {"purpose": {"verdict": "covered"}}
+        report = dr.assemble_report(
+            window=WINDOW,
+            pull_requests=prs,
+            issues=_load("issues.json"),
+            assessments=assessments,
+        )
+        change = {c["ref"]: c for c in report["shipped"]}["acme/app#105"]
+        assert change["metadata_only"] == "dependabot"
+        assert change["purpose"]["source"] == dr.SOURCE_METADATA
+        assert change["purpose"]["verdict"] == dr.PURPOSE_NO_CRITERIA
+        assert "dependabot, reported from metadata" in report["report_markdown"]
