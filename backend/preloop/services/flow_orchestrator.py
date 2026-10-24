@@ -1353,18 +1353,18 @@ class FlowExecutionOrchestrator:
                 summarize_review_progress,
             )
 
-            activities = crud_runtime_session_activity.list_tool_calls_for_flow_execution(
-                self.db,
-                account_id=self.flow.account_id,
-                flow_execution_id=self.execution_log.id,
+            activities = (
+                crud_runtime_session_activity.list_tool_calls_for_flow_execution(
+                    self.db,
+                    account_id=self.flow.account_id,
+                    flow_execution_id=self.execution_log.id,
+                )
             )
             confirmed = (
                 isinstance(merged_result, dict)
                 and str(merged_result.get("status") or "").lower() == "success"
             )
-            progress = summarize_review_progress(
-                activities, result_confirmed=confirmed
-            )
+            progress = summarize_review_progress(activities, result_confirmed=confirmed)
         except Exception:
             logger.warning(
                 "Could not read the review progress of execution %s",

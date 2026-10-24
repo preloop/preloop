@@ -341,7 +341,7 @@ def _run_trigger(
             'next=$(head -n1 "$f"); tail -n +2 "$f" > "$f.n"; mv "$f.n" "$f"\n'
             '[ -n "$next" ] || exit 7\n'
             '[ "$next" = ERR ] && exit 92\n'
-            "printf '{\"status\":\"%s\"}' \"$next\"\n"
+            'printf \'{"status":"%s"}\' "$next"\n'
         ),
     }
     for name, body in stubs.items():
