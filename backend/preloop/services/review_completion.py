@@ -15,8 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
-# Statuses a recorded gateway tool call carries when it ran.
-_EXECUTED_STATUSES = frozenset({"executed", "success", "completed"})
+# The status a recorded gateway tool call carries when it ran
+# (``TOOL_CALL_STATUS_SUCCEEDED`` in ``dynamic_fastmcp``); refused and failed
+# calls did nothing.
+_EXECUTED_STATUSES = frozenset({"succeeded"})
 
 # A JSON ``null`` serializes to four bytes, so a key whose recorded size is at
 # most this carried no value.

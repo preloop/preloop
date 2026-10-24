@@ -9,13 +9,18 @@ from typing import Any
 import pytest
 
 from preloop.services import review_completion as rc
+from preloop.services.dynamic_fastmcp import (
+    TOOL_CALL_STATUS_FAILED,
+    TOOL_CALL_STATUS_REFUSED,
+    TOOL_CALL_STATUS_SUCCEEDED,
+)
 from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
 
 def _call(
     tool: str = "update_pull_request",
     *,
-    status: str = "executed",
+    status: str = TOOL_CALL_STATUS_SUCCEEDED,
     work_ref: dict[str, Any] | None = None,
     summary: dict[str, int] | None = None,
 ) -> SimpleNamespace:
@@ -47,10 +52,23 @@ def test_no_review_means_no_progress() -> None:
     )
 
 
-def test_failed_review_call_is_not_a_submitted_review() -> None:
+@pytest.mark.parametrize("status", [TOOL_CALL_STATUS_FAILED, TOOL_CALL_STATUS_REFUSED])
+def test_failed_review_call_is_not_a_submitted_review(status: str) -> None:
     failed = _review()
-    failed.status = "error"
+    failed.status = status
     assert rc.summarize_review_progress([failed], result_confirmed=False) is None
+
+
+def test_a_later_review_supersedes_the_first_and_its_steps() -> None:
+    progress = rc.summarize_review_progress(
+        [_review("commented"), DESCRIPTION, EYES_REMOVED, _review("approved")],
+        result_confirmed=False,
+    )
+    assert progress is not None
+    assert progress.review_state == "approved"
+    assert not progress.description_updated
+    assert not progress.reaction_removed
+    assert progress.remaining == [rc.STEP_DESCRIPTION, rc.STEP_REACTION, rc.STEP_RESULT]
 
 
 def test_stalled_after_approval_names_every_remaining_step() -> None:
