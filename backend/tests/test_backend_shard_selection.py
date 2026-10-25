@@ -36,6 +36,60 @@ def test_discovery_obeys_patterns_without_importing_tests(tmp_path: Path) -> Non
     ]
 
 
+def test_discovery_honors_static_pytest_ignores(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[tool.pytest.ini_options]\n"
+        'testpaths = ["tests"]\n'
+        'python_files = "test_*.py"\n'
+        'norecursedirs = ["tests/path/skip"]\n'
+    )
+    for name in (
+        "test_keep.py",
+        "test_ignored.py",
+        "test_glob_ignored.py",
+        "nested/test_keep.py",
+        "path/skip/test_ignored.py",
+        "venv/pyvenv.cfg",
+        "venv/test_ignored.py",
+    ):
+        path = tmp_path / "tests" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("raise RuntimeError('must not import during selection')\n")
+    (tmp_path / "tests/conftest.py").write_text(
+        'collect_ignore = ["test_ignored.py"]\n'
+        'collect_ignore_glob = ["test_glob_*.py"]\n'
+    )
+    assert sharding.discover_files(tmp_path) == [
+        "tests/nested/test_keep.py",
+        "tests/test_keep.py",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("declaration", "message"),
+    [
+        (
+            "def pytest_ignore_collect(collection_path, config):\n"
+            "    return collection_path.name == 'test_example.py'\n",
+            "Dynamic pytest ignore hook",
+        ),
+        ("collect_ignore = list(['test_example.py'])\n", "Dynamic pytest ignore"),
+    ],
+)
+def test_discovery_rejects_dynamic_ignores(
+    tmp_path: Path, declaration: str, message: str
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.pytest.ini_options]\ntestpaths = ["tests"]\npython_files = "test_*.py"\n'
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_example.py").touch()
+    (tests / "conftest.py").write_text(declaration)
+    with pytest.raises(ValueError, match=message):
+        sharding.discover_files(tmp_path)
+
+
 @pytest.mark.parametrize("count", [1, 2, 3, 18])
 def test_partition_covers_every_file_once_in_order(count: int) -> None:
     files = [f"tests/test_{n:02}.py" for n in range(40)]

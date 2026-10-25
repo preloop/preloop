@@ -183,6 +183,11 @@ shards. New files receive an estimated weight and are always included. Pytest
 collects only the assigned files; tests within a file retain their normal order.
 The duration file is a balancing hint, not an allowlist. Coverage remains enabled
 on all shards and the combined job still enforces the coverage floor.
+Discovery honors static `collect_ignore` and `collect_ignore_glob` declarations in
+in-scope `conftest.py` files, path-qualified `norecursedirs`, and virtualenv
+directories. Dynamic `pytest_ignore_collect` hooks or computed ignore lists are
+unsupported and fail selection, because honoring them would require importing
+conftest code before sharding.
 
 Inspect a shard without running tests:
 

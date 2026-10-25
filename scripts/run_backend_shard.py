@@ -8,6 +8,7 @@ select deleted tests. Pytest still performs normal collection within each file.
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import math
@@ -19,6 +20,64 @@ import sys
 import tomllib
 
 
+def _conftest_ignores(directory: Path) -> tuple[list[str], list[str]]:
+    """Read static pytest ignore declarations without importing conftest."""
+    conftest = directory / "conftest.py"
+    if not conftest.is_file():
+        return [], []
+    ignored: list[str] = []
+    globs: list[str] = []
+    tree = ast.parse(conftest.read_text())
+    handled_targets: set[int] = set()
+    for node in tree.body:
+        target = None
+        value = None
+        if isinstance(node, ast.Assign):
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                target, value = node.targets[0].id, node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target, value = node.target.id, node.value
+        elif isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            target, value = node.target.id, node.value
+        if target not in {"collect_ignore", "collect_ignore_glob"}:
+            continue
+        if isinstance(node, ast.Assign):
+            handled_targets.add(id(node.targets[0]))
+        else:
+            handled_targets.add(id(node.target))
+        try:
+            entries = ast.literal_eval(value)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(
+                f"Dynamic pytest ignore is unsupported: {conftest}"
+            ) from exc
+        if not isinstance(entries, (list, tuple)) or not all(
+            isinstance(entry, str) for entry in entries
+        ):
+            raise ValueError(f"Pytest ignore must be a list of paths: {conftest}")
+        destination = ignored if target == "collect_ignore" else globs
+        if isinstance(node, ast.AugAssign):
+            if not isinstance(node.op, ast.Add):
+                raise ValueError(f"Unsupported pytest ignore update: {conftest}")
+            destination.extend(entries)
+        else:
+            destination[:] = entries
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node.name == "pytest_ignore_collect":
+                raise ValueError(
+                    f"Dynamic pytest ignore hook is unsupported: {conftest}"
+                )
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Store)
+            and node.id in {"collect_ignore", "collect_ignore_glob"}
+            and id(node) not in handled_targets
+        ):
+            raise ValueError(f"Dynamic pytest ignore is unsupported: {conftest}")
+    return ignored, globs
+
+
 def discover_files(root: Path) -> list[str]:
     """Discover configured test files without importing tests or fixtures."""
     config = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["pytest"][
@@ -28,17 +87,48 @@ def discover_files(root: Path) -> list[str]:
     if isinstance(patterns, str):
         patterns = patterns.split()
     excluded = config.get("norecursedirs", [])
+    ignores: dict[Path, tuple[list[str], list[str]]] = {}
+
+    def ignored(path: Path) -> bool:
+        for directory in (path.parent, *path.parent.parents):
+            if not directory.is_relative_to(root):
+                break
+            if directory not in ignores:
+                ignores[directory] = _conftest_ignores(directory)
+            rules, globs = ignores[directory]
+            relative = path.relative_to(directory).as_posix()
+            if any(
+                relative == rule or relative.startswith(f"{rule}/") for rule in rules
+            ):
+                return True
+            if any(fnmatch.fnmatch(relative, pattern) for pattern in globs):
+                return True
+        return False
+
     files: set[str] = set()
     for test_root in config["testpaths"]:
         for directory, dirs, names in os.walk(root / test_root):
             dirs[:] = sorted(
                 name
                 for name in dirs
-                if not any(fnmatch.fnmatch(name, rule) for rule in excluded)
+                if not (Path(directory) / name / "pyvenv.cfg").is_file()
+                and not any(
+                    fnmatch.fnmatch(
+                        (Path(directory) / name).relative_to(root).as_posix()
+                        if "/" in rule
+                        else name,
+                        rule,
+                    )
+                    for rule in excluded
+                )
+                and not ignored(Path(directory) / name)
             )
             for name in names:
-                if any(fnmatch.fnmatch(name, pattern) for pattern in patterns):
-                    files.add((Path(directory) / name).relative_to(root).as_posix())
+                path = Path(directory) / name
+                if any(
+                    fnmatch.fnmatch(name, pattern) for pattern in patterns
+                ) and not ignored(path):
+                    files.add(path.relative_to(root).as_posix())
     return sorted(files)
 
 
