@@ -87,6 +87,9 @@ metadata-only). Score a run's `result.json` against it with:
 cd backend && python -m preloop.services.delivery_report_eval result.json
 ```
 
+Add `--min-accuracy 0.9` to use it as a gate: the command exits 1 when
+verdict accuracy is below the value. Without it, it only prints the score.
+
 The score covers verdict accuracy and a confusion table, criterion
 agreement, reopen proposals (correct, false, missed) and the shipped rows.
 `baseline_spike_assessors.json` is the week's first assessor output: it
