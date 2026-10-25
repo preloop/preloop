@@ -488,6 +488,8 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert totals.down_revision == "20261108_control_reachable"
     assessment = script.get_revision("20261110_assessment_pr_identity")
     assert assessment.down_revision == "20261109_agent_usage_totals"
+    prune = script.get_revision("20261110_prune_api_usage_idx")
+    assert prune.down_revision == "20261110_assessment_pr_identity"
     media_timing = script.get_revision("20261110_media_timing")
-    assert media_timing.down_revision == "20261110_assessment_pr_identity"
+    assert media_timing.down_revision == "20261110_prune_api_usage_idx"
     assert script.get_heads() == ["20261110_media_timing"]

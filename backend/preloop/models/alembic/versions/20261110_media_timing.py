@@ -1,7 +1,7 @@
 """Recording timebases and browser-step server receipt timestamps.
 
 Revision ID: 20261110_media_timing
-Revises: 20261110_assessment_pr_identity
+Revises: 20261110_prune_api_usage_idx
 """
 
 import sqlalchemy as sa
@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "20261110_media_timing"
-down_revision = "20261110_assessment_pr_identity"
+down_revision = "20261110_prune_api_usage_idx"
 branch_labels = None
 depends_on = None
 

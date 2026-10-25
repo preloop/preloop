@@ -1346,6 +1346,25 @@ and pins each request to a checked IP while preserving Host/TLS identity.
 Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
 
+## API diagnostics
+
+The API entry point enables Python fatal-error tracebacks on stderr (including
+spawned Uvicorn reload/worker interpreters via `PYTHONFAULTHANDLER`) before
+application startup so native faults retain thread-stack evidence in container
+logs. These traces do not include frame locals. Setting `SENTRY_DSN` keeps error
+reporting and transaction tracing enabled, but background stack profiling is
+off by default. Operators may explicitly set `SENTRY_PROFILES_SAMPLE_RATE` to
+a finite value from 0 to 1 after validating profiling with their runtime and
+native extensions. Invalid values disable profiling and log a configuration
+warning. Profiling is independent of the request-level `PROFILING_ENABLED`
+middleware option.
+
+API liveness-triggered restarts use a separate 60-second termination grace
+(`api.livenessTerminationGracePeriodSeconds`, including the preStop sleep).
+Planned rollouts retain the 900-second stream drain. This prevents an unhealthy
+replica from spending the full rollout window draining before replacement.
+The chart renders probe-level grace on Kubernetes 1.28 or newer; older
+clusters retain the existing pod-level grace behavior.
 
 ## Recording timeline synchronization
 
