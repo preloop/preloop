@@ -1392,6 +1392,23 @@ replica from spending the full rollout window draining before replacement.
 The chart renders probe-level grace on Kubernetes 1.28 or newer; older
 clusters retain the existing pod-level grace behavior.
 
+## Recording timeline synchronization
+
+Session artifacts optionally store typed `media_timing` independently of labels.
+`services/media_sync.py` resolves exact step offsets, producer timestamps and
+median-corrected server timestamps using metadata-only CRUD reads. The same
+resolver feeds `GET /runtime-sessions/{id}/media-sync` and signed evidence
+exports. Browser-step receipt times are server-owned; the migration backfills
+existing rows from activity creation time. Timing PATCH writes and its audit
+record commit atomically under the artifact account/session authorization.
+
+The Lit `session-recording-player` lives in the session observer, outside Talk
+routing and transcript construction. It uses the existing authorized artifact
+cache, independent mappings per recording, and a default-on
+`syncedRecordingPlayer` host option. Unmapped moments never clamp; GIFs use a
+plain-image fallback. Browser Use and Skyvern producers emit timing through the
+existing deposit API. See [the recording contract](docs/guide/artifacts.md#recordings-synchronized-to-the-timeline).
+
 ### Optional vendor organization activity
 
 The Copilot daily importer exposes the `copilot_organization_metrics` service

@@ -106,6 +106,7 @@ class RuntimeSessionArtifact(Base):
         default=dict,
         server_default=text("'{}'::jsonb"),
     )
+    media_timing: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     ciphertext: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
     availability: Mapped[str] = mapped_column(
         String(20),
