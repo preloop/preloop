@@ -23,6 +23,8 @@ from ..models.enterprise_sso import (
     SsoGroupMapping,
     SsoReplayGuard,
 )
+from ..models.secret_reference import SecretReference
+from ..models.team import Team
 from .base import CRUDBase
 
 #: Connection fields an update may set directly.
@@ -48,6 +50,10 @@ CONNECTION_UPDATABLE_FIELDS = frozenset(
 )
 
 
+class CrossAccountReferenceError(ValueError):
+    """A referenced row (connection, team, secret) belongs to another account."""
+
+
 class DomainVerifiedElsewhereError(Exception):
     """The domain is already verified by a different account."""
 
@@ -60,6 +66,21 @@ def utc_now() -> datetime:
 def hash_scim_token(token: str) -> str:
     """Hex SHA-256 of a SCIM token; the only form that is stored."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _check_secret_refs(db: Session, account_id: Any, fields: dict[str, Any]) -> None:
+    """Secret references set on a connection must belong to its account.
+
+    Raises:
+        CrossAccountReferenceError: A reference points at another account.
+    """
+    for key in ("oidc_client_secret_ref_id", "saml_sp_signing_key_ref_id"):
+        secret_id = fields.get(key)
+        if secret_id is None:
+            continue
+        secret = db.get(SecretReference, secret_id)
+        if secret is None or str(secret.account_id) != str(account_id):
+            raise CrossAccountReferenceError(key)
 
 
 class CRUDAccountSsoConnection(CRUDBase[AccountSsoConnection]):
@@ -101,7 +122,9 @@ class CRUDAccountSsoConnection(CRUDBase[AccountSsoConnection]):
 
         Raises:
             IntegrityError: Name taken in the account, or a constraint failed.
+            CrossAccountReferenceError: A secret reference is not the account's.
         """
+        _check_secret_refs(db, account_id, fields)
         row = AccountSsoConnection(
             account_id=account_id,
             protocol=protocol,
@@ -121,7 +144,12 @@ class CRUDAccountSsoConnection(CRUDBase[AccountSsoConnection]):
         fields: dict[str, Any],
         user_id: Any = None,
     ) -> AccountSsoConnection:
-        """Set allowed fields; the caller commits."""
+        """Set allowed fields; the caller commits.
+
+        Raises:
+            CrossAccountReferenceError: A secret reference is not the account's.
+        """
+        _check_secret_refs(db, connection.account_id, fields)
         for key, value in fields.items():
             if key in CONNECTION_UPDATABLE_FIELDS:
                 setattr(connection, key, value)
@@ -205,15 +233,18 @@ class CRUDAccountVerifiedDomain(CRUDBase[AccountVerifiedDomain]):
         """
         now = utc_now()
         claim.last_checked_at = now
+        # Record the attempt outside the savepoint, whatever the outcome.
+        db.flush()
         if not verified:
-            db.flush()
             return claim
         holder = self.get_verified(db, domain=claim.domain)
         if holder is not None and holder.account_id != claim.account_id:
             raise DomainVerifiedElsewhereError(claim.domain)
-        claim.verified_at = now
         try:
+            # Assign inside the savepoint so the UPDATE that can violate the
+            # unique index is flushed after SAVEPOINT, not before it.
             with db.begin_nested():
+                claim.verified_at = now
                 db.flush()
         except IntegrityError as exc:
             # A concurrent verification by another account won the unique index.
@@ -255,28 +286,41 @@ class CRUDAccountSsoPolicy(CRUDBase[AccountSsoPolicy]):
 
 
 class CRUDSsoGroupMapping(CRUDBase[SsoGroupMapping]):
-    """Group mappings, always reached through their connection."""
+    """Group mappings, always reached through a connection of the account."""
 
     def list_for_connection(
-        self, db: Session, *, connection_id: Any
+        self, db: Session, *, connection_id: Any, account_id: Any
     ) -> list[SsoGroupMapping]:
-        """List a connection's mappings by group."""
+        """List a connection's mappings by group; empty for another account."""
         return list(
             db.execute(
                 select(SsoGroupMapping)
-                .where(SsoGroupMapping.connection_id == connection_id)
+                .join(
+                    AccountSsoConnection,
+                    AccountSsoConnection.id == SsoGroupMapping.connection_id,
+                )
+                .where(
+                    SsoGroupMapping.connection_id == connection_id,
+                    AccountSsoConnection.account_id == account_id,
+                )
                 .order_by(SsoGroupMapping.idp_group, SsoGroupMapping.created_at)
             ).scalars()
         )
 
     def get_in_connection(
-        self, db: Session, *, mapping_id: Any, connection_id: Any
+        self, db: Session, *, mapping_id: Any, connection_id: Any, account_id: Any
     ) -> Optional[SsoGroupMapping]:
-        """Return one mapping when it belongs to ``connection_id``."""
+        """Return one mapping of the account's connection ``connection_id``."""
         return db.execute(
-            select(SsoGroupMapping).where(
+            select(SsoGroupMapping)
+            .join(
+                AccountSsoConnection,
+                AccountSsoConnection.id == SsoGroupMapping.connection_id,
+            )
+            .where(
                 SsoGroupMapping.id == mapping_id,
                 SsoGroupMapping.connection_id == connection_id,
+                AccountSsoConnection.account_id == account_id,
             )
         ).scalar_one_or_none()
 
@@ -284,12 +328,25 @@ class CRUDSsoGroupMapping(CRUDBase[SsoGroupMapping]):
         self,
         db: Session,
         *,
+        account_id: Any,
         connection_id: Any,
         idp_group: str,
         team_id: Any = None,
         role: Optional[str] = None,
     ) -> SsoGroupMapping:
-        """Add a mapping; the caller commits."""
+        """Add a mapping; the caller commits.
+
+        Raises:
+            CrossAccountReferenceError: The connection or team is not the
+                account's.
+        """
+        connection = db.get(AccountSsoConnection, connection_id)
+        if connection is None or str(connection.account_id) != str(account_id):
+            raise CrossAccountReferenceError("connection_id")
+        if team_id is not None:
+            team = db.get(Team, team_id)
+            if team is None or str(team.account_id) != str(account_id):
+                raise CrossAccountReferenceError("team_id")
         row = SsoGroupMapping(
             connection_id=connection_id, idp_group=idp_group, team_id=team_id, role=role
         )

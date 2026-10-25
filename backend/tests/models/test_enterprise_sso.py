@@ -23,6 +23,7 @@ from preloop.models.crud import (
     crud_sso_replay_guard,
 )
 from preloop.models.crud.enterprise_sso import (
+    CrossAccountReferenceError,
     DomainVerifiedElsewhereError,
     hash_scim_token,
     utc_now,
@@ -76,7 +77,11 @@ def _seed(db, account_id):
     )
     crud_account_sso_policy.upsert(db, account_id=account_id, fields={"enforce": True})
     crud_sso_group_mapping.create_mapping(
-        db, connection_id=connection.id, idp_group="engineers", role="member"
+        db,
+        account_id=account_id,
+        connection_id=connection.id,
+        idp_group="engineers",
+        role="member",
     )
     crud_scim_token.create_token(
         db, account_id=account_id, name="scim", token="scim_secret", prefix="scim_se"
@@ -168,12 +173,19 @@ def test_owner_can_never_be_the_default_or_mapped_role(db_session, test_user):
     with pytest.raises(IntegrityError):
         with db_session.begin_nested():
             crud_sso_group_mapping.create_mapping(
-                db_session, connection_id=connection.id, idp_group="g", role="owner"
+                db_session,
+                account_id=test_user.account_id,
+                connection_id=connection.id,
+                idp_group="g",
+                role="owner",
             )
     with pytest.raises(IntegrityError):
         with db_session.begin_nested():
             crud_sso_group_mapping.create_mapping(
-                db_session, connection_id=connection.id, idp_group="g"
+                db_session,
+                account_id=test_user.account_id,
+                connection_id=connection.id,
+                idp_group="g",
             )
 
 
@@ -289,3 +301,108 @@ def test_replay_guard_accepts_an_id_once_and_purges_expired(db_session, test_use
     assert not claim(
         db_session, connection_id=connection.id, guard_id="n", expires_at=later
     )
+
+
+def test_verification_race_on_the_unique_index_keeps_the_session_usable(
+    db_session, test_user, monkeypatch
+):
+    """Another account verifies between the pre-check and the write."""
+    other = _other_account(db_session)
+    theirs = crud_account_verified_domain.create_claim(
+        db_session, account_id=other.id, domain="race.example", challenge_token="a"
+    )
+    mine = crud_account_verified_domain.create_claim(
+        db_session,
+        account_id=test_user.account_id,
+        domain="race.example",
+        challenge_token="b",
+    )
+    theirs.verified_at = utc_now()
+    db_session.flush()
+    # Simulate the pre-check running before the other account committed.
+    monkeypatch.setattr(
+        crud_account_verified_domain, "get_verified", lambda db, domain: None
+    )
+    with pytest.raises(DomainVerifiedElsewhereError):
+        crud_account_verified_domain.record_check(db_session, claim=mine, verified=True)
+    assert mine.verified_at is None
+    # The caller's transaction survived: the attempt is recorded and usable.
+    db_session.refresh(mine)
+    assert mine.verified_at is None
+    assert mine.last_checked_at is not None
+
+
+def test_group_mappings_stay_inside_the_account(db_session, test_user):
+    from preloop.models.crud import crud_team
+
+    other = _other_account(db_session)
+    mine = _connection(db_session, test_user.account_id)
+    theirs = _connection(db_session, other.id)
+    their_team = crud_team.create(
+        db_session, obj_in={"account_id": other.id, "name": "Theirs"}
+    )
+    with pytest.raises(CrossAccountReferenceError):
+        crud_sso_group_mapping.create_mapping(
+            db_session,
+            account_id=test_user.account_id,
+            connection_id=mine.id,
+            idp_group="eng",
+            team_id=their_team.id,
+        )
+    with pytest.raises(CrossAccountReferenceError):
+        crud_sso_group_mapping.create_mapping(
+            db_session,
+            account_id=test_user.account_id,
+            connection_id=theirs.id,
+            idp_group="eng",
+            role="viewer",
+        )
+    mapping = crud_sso_group_mapping.create_mapping(
+        db_session,
+        account_id=other.id,
+        connection_id=theirs.id,
+        idp_group="eng",
+        role="viewer",
+    )
+    assert (
+        crud_sso_group_mapping.list_for_connection(
+            db_session, connection_id=theirs.id, account_id=test_user.account_id
+        )
+        == []
+    )
+    assert (
+        crud_sso_group_mapping.get_in_connection(
+            db_session,
+            mapping_id=mapping.id,
+            connection_id=theirs.id,
+            account_id=test_user.account_id,
+        )
+        is None
+    )
+
+
+def test_connection_secret_refs_must_belong_to_the_account(db_session, test_user):
+    from preloop.services.secret_service import get_secret_service
+
+    other = _other_account(db_session)
+    their_secret = get_secret_service().create_local_secret_reference(
+        db_session,
+        account_id=other.id,
+        name="theirs",
+        secret_kind="sso_oidc_client_secret",
+        secret_value="unused-value",
+    )
+    with pytest.raises(CrossAccountReferenceError):
+        crud_account_sso_connection.create_for_account(
+            db_session,
+            account_id=test_user.account_id,
+            protocol="oidc",
+            fields={"name": "x", "oidc_client_secret_ref_id": their_secret.id},
+        )
+    connection = _connection(db_session, test_user.account_id)
+    with pytest.raises(CrossAccountReferenceError):
+        crud_account_sso_connection.apply_update(
+            db_session,
+            connection=connection,
+            fields={"saml_sp_signing_key_ref_id": their_secret.id},
+        )
