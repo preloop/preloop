@@ -1,0 +1,465 @@
+"""Tracker actions from the Delivery Report page and the run (#2021)."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from typing import Any, Dict, List
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy.orm import Session
+
+from preloop.api.endpoints import mcp
+from preloop.models.crud import (
+    crud_account,
+    crud_delivery_report_policy,
+    crud_flow_execution,
+)
+from preloop.models.models.audit_log import AuditLog
+from preloop.services import delivery_report_actions as actions
+from preloop.services import delivery_report_views as views
+from tests.endpoints.test_delivery_reports import _flow, _run
+
+BASE = "/api/v1/delivery-reports"
+ISSUE_URL = "https://github.com/example/app/issues/7"
+PR_URL = "https://github.com/example/app/pull/10"
+ASSESSED_AT = datetime(2026, 10, 20, 10, 0, tzinfo=timezone.utc)
+
+
+def _fixture_report() -> Dict[str, Any]:
+    """One follow-up proposal and one reopen request, as a run records them."""
+    return {
+        "status": "success",
+        "window": {"from": "2026-10-17T07:00:00Z", "to": "2026-10-24T07:00:00Z"},
+        "shipped": [
+            {
+                "ref": "example/app#10",
+                "url": PR_URL,
+                "project": "example/app",
+                "head_sha": "aaa111",
+                "issues": ["example/app#7"],
+            }
+        ],
+        "closed_issues": [
+            {
+                "ref": "example/app#7",
+                "url": ISSUE_URL,
+                "updated_at": ASSESSED_AT.isoformat(),
+                "closing_head_sha": "aaa111",
+                "closed_by": ["example/app#10"],
+                "purpose": {
+                    "criteria": [
+                        {"text": "Search answers in 200 ms", "met": False},
+                        {"text": "Results are paginated", "met": True},
+                    ]
+                },
+            }
+        ],
+        "follow_ups": [
+            {
+                "title": "Add a test for the search hot path",
+                "reason": "The hot path changed without a test.",
+                "evidence": ["backend/search.py:42"],
+                "ref": "example/app#10",
+            }
+        ],
+        "reopen_requests": [
+            {
+                "ref": "example/app#7",
+                "url": ISSUE_URL,
+                "revision": "aaa111",
+                "reason": "The last comment measures 3 s.",
+                "evidence": ["comment measuring 3 s"],
+            }
+        ],
+    }
+
+
+@pytest.fixture(autouse=True)
+def account_owner(db_session: Session, test_user: Any) -> Any:
+    """Make the caller the account's primary user, whom the OSS check admits."""
+    account = crud_account.get(db_session, id=test_user.account_id)
+    account.primary_user_id = test_user.id
+    db_session.flush()
+    return account
+
+
+class FakeTracker:
+    """Records every tracker call instead of making it."""
+
+    def __init__(self) -> None:
+        self.calls: List[tuple] = []
+
+    async def create_issue(self, project_key: str, issue_data: Any) -> Any:
+        self.calls.append(("create_issue", project_key, issue_data))
+        return SimpleNamespace(url="https://github.com/example/app/issues/99")
+
+    async def update_issue(self, issue_id: str, issue_data: Any) -> Any:
+        self.calls.append(("update_issue", issue_id, issue_data))
+        return SimpleNamespace()
+
+    async def add_comment(self, issue_id: str, comment: str) -> Any:
+        self.calls.append(("add_comment", issue_id, comment))
+        return SimpleNamespace()
+
+
+@pytest.fixture
+def tracker(monkeypatch: pytest.MonkeyPatch) -> Dict[str, Any]:
+    """A fake tracker plus the current issue and closing PR state."""
+    fake = FakeTracker()
+    state: Dict[str, Any] = {"fake": fake, "issue_updated": ASSESSED_AT, "head": None}
+    project = SimpleNamespace(
+        id=uuid.uuid4(), organization_id=uuid.uuid4(), identifier="example/app"
+    )
+
+    async def client(*args: Any, **kwargs: Any) -> FakeTracker:
+        return fake
+
+    monkeypatch.setattr(actions, "get_tracker_client", client)
+    monkeypatch.setattr(
+        actions.crud_project,
+        "get_by_slug_or_identifier",
+        lambda db, *, slug_or_identifier, account_id=None: (
+            project if slug_or_identifier == "example/app" else None
+        ),
+    )
+    monkeypatch.setattr(
+        views.crud_issue,
+        "get_by_external_url",
+        lambda db, *, external_url, account_id=None: SimpleNamespace(
+            key="example/app#7",
+            external_id="7",
+            project=project,
+            project_id=project.id,
+            updated_at=state["issue_updated"],
+        ),
+    )
+    monkeypatch.setattr(
+        views.crud_issue_cost,
+        "get_pull_request",
+        lambda db, *, account_id, pr_key: (
+            SimpleNamespace(head_sha=state["head"]) if state["head"] else None
+        ),
+    )
+    return state
+
+
+def _audit_rows(db: Session, account_id: Any) -> List[AuditLog]:
+    return (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.account_id == str(account_id),
+            AuditLog.action == actions.AUDIT_ACTION,
+        )
+        .order_by(AuditLog.timestamp)
+        .all()
+    )
+
+
+def _report_run(db: Session, account_id: Any) -> Any:
+    return _run(
+        db, _flow(db, account_id, report=True), hours=0, result=_fixture_report()
+    )
+
+
+def test_default_policy_keeps_both_proposals_in_the_report(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    for tool, status in (("create_issue", None), ("update_issue", "open")):
+        allowed, _ = actions.run_write_decision(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=test_user.id,
+            execution_id=run.id,
+            tool=tool,
+            target="example/app#7",
+            status=status,
+        )
+        assert allowed is False
+
+    body = client.get(f"{BASE}/{run.id}").json()
+    assert len(body["report"]["follow_ups"]) == 1
+    assert len(body["report"]["reopen_requests"]) == 1
+    assert body["stale_reopen_requests"] == {}
+    assert tracker["fake"].calls == []
+    denied = [
+        r.details["denied_by"] for r in _audit_rows(db_session, test_user.account_id)
+    ]
+    assert denied == [
+        "tracker_writes.create_follow_up=deny",
+        "tracker_writes.reopen=approval",
+    ]
+
+
+def test_open_issue_click_creates_one_labelled_issue(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    response = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 0}
+    )
+    assert response.status_code == 200, response.text
+    decision = response.json()["decision"]
+    assert decision["status"] == "applied"
+    assert decision["issue_url"] == "https://github.com/example/app/issues/99"
+
+    [(name, project_key, data)] = tracker["fake"].calls
+    assert (name, project_key) == ("create_issue", "example/app")
+    assert data.labels == ["preloop:proposed"]
+    assert "backend/search.py:42" in data.description
+    assert f"/console/delivery-reports/{run.id}" in data.description
+
+    again = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 0}
+    )
+    assert again.status_code == 409
+    assert again.json()["detail"]["code"] == "already_decided"
+    assert len(tracker["fake"].calls) == 1
+
+    db_session.refresh(run)
+    assert run.result["proposal_actions"]["follow_up:0"]["status"] == "applied"
+    [row] = _audit_rows(db_session, test_user.account_id)
+    assert row.status == "success"
+    assert row.details["allowed_by"] == "click"
+
+
+def test_reopen_click_reopens_with_the_revision_and_unmet_criterion(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    tracker["head"] = "aaa111"
+    response = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "reopen", "ref": "example/app#7"}
+    )
+    assert response.status_code == 200, response.text
+
+    update, comment = tracker["fake"].calls
+    assert update[0] == "update_issue" and update[2].status == "open"
+    assert comment[0] == "add_comment" and comment[1] == "example/app#7"
+    assert "`aaa111`" in comment[2]
+    assert "Search answers in 200 ms" in comment[2]
+    assert "Results are paginated" not in comment[2]
+    [row] = _audit_rows(db_session, test_user.account_id)
+    assert (row.status, row.details["revision"]) == ("success", "aaa111")
+
+
+@pytest.mark.parametrize("change", ["new_commit", "issue_edit"])
+def test_stale_reopen_request_cannot_be_applied(
+    change: str, client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    if change == "new_commit":
+        tracker["head"] = "bbb222"
+    else:
+        tracker["issue_updated"] = datetime(2026, 10, 22, 9, 0, tzinfo=timezone.utc)
+
+    assert (
+        "example/app#7"
+        in client.get(f"{BASE}/{run.id}").json()["stale_reopen_requests"]
+    )
+    response = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "reopen", "ref": "example/app#7"}
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "stale"
+    assert tracker["fake"].calls == []
+    [row] = _audit_rows(db_session, test_user.account_id)
+    assert row.status == "denied"
+
+
+def test_close_is_refused_and_logged(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    response = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "close", "ref": "example/app#7"}
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "close_denied"
+    assert tracker["fake"].calls == []
+    [row] = _audit_rows(db_session, test_user.account_id)
+    assert (row.status, row.details["kind"]) == ("denied", "close")
+
+
+def test_dismiss_needs_a_reason_and_blocks_the_action(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    url = f"{BASE}/{run.id}/actions"
+    missing = client.post(url, json={"kind": "dismiss", "key": "reopen:example/app#7"})
+    assert missing.status_code == 422
+    response = client.post(
+        url,
+        json={"kind": "dismiss", "key": "reopen:example/app#7", "reason": "Known"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["decision"]["status"] == "dismissed"
+    blocked = client.post(url, json={"kind": "reopen", "ref": "example/app#7"})
+    assert blocked.status_code == 409
+    assert tracker["fake"].calls == []
+
+
+def test_a_member_without_the_permission_cannot_act(
+    client, db_session: Session, test_user, account_owner: Any, tracker: Dict[str, Any]
+) -> None:
+    account_owner.primary_user_id = None
+    db_session.flush()
+    run = _report_run(db_session, test_user.account_id)
+    response = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 0}
+    )
+    assert response.status_code == 403
+    assert tracker["fake"].calls == []
+
+
+def test_actions_are_404_for_a_foreign_or_unknown_run(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    other = _run(
+        db_session,
+        _flow(db_session, test_user.account_id, report=False),
+        hours=0,
+        result=_fixture_report(),
+    )
+    for execution_id in (other.id, uuid.uuid4()):
+        response = client.post(
+            f"{BASE}/{execution_id}/actions", json={"kind": "open_issue", "index": 0}
+        )
+        assert response.status_code == 404
+    run = _report_run(db_session, test_user.account_id)
+    unknown = client.post(
+        f"{BASE}/{run.id}/actions", json={"kind": "open_issue", "index": 5}
+    )
+    assert unknown.status_code == 404
+
+
+class TestRunWrites:
+    """Writes the report run makes through the MCP tools."""
+
+    def _guard(
+        self,
+        db: Session,
+        user: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        run: Any,
+        **kwargs: Any,
+    ) -> Any:
+        monkeypatch.setattr(
+            mcp, "_delivery_report_execution_id", lambda db, current_user: str(run.id)
+        )
+        return mcp._guard_delivery_report_write(db, user, **kwargs)
+
+    def test_automatic_creation_runs_under_the_policy(
+        self, db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _report_run(db_session, test_user.account_id)
+        with pytest.raises(HTTPException) as refused:
+            self._guard(
+                db_session,
+                test_user,
+                monkeypatch,
+                run,
+                tool="create_issue",
+                target="example/app",
+            )
+        assert refused.value.status_code == 403
+
+        crud_delivery_report_policy.save_overrides(
+            db_session,
+            account_id=test_user.account_id,
+            overrides={"tracker_writes": {"create_follow_up": "allow"}},
+        )
+        assert self._guard(
+            db_session,
+            test_user,
+            monkeypatch,
+            run,
+            tool="create_issue",
+            target="example/app",
+        ) == str(run.id)
+        last = _audit_rows(db_session, test_user.account_id)[-1]
+        assert last.details["allowed_by"] == "tracker_writes.create_follow_up=allow"
+
+    @pytest.mark.parametrize("status", ["closed", "Done", "resolved"])
+    def test_close_from_a_run_is_always_refused(
+        self,
+        status: str,
+        db_session: Session,
+        test_user,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        run = _report_run(db_session, test_user.account_id)
+        crud_delivery_report_policy.save_overrides(
+            db_session,
+            account_id=test_user.account_id,
+            overrides={
+                "tracker_writes": {"create_follow_up": "allow", "reopen": "allow"}
+            },
+        )
+        with pytest.raises(HTTPException) as refused:
+            self._guard(
+                db_session,
+                test_user,
+                monkeypatch,
+                run,
+                tool="update_issue",
+                target="example/app#7",
+                status=status,
+            )
+        assert refused.value.status_code == 403
+        [row] = _audit_rows(db_session, test_user.account_id)
+        assert (row.status, row.details["denied_by"]) == (
+            "denied",
+            "tracker_writes.close=deny",
+        )
+
+    def test_calls_outside_a_report_run_are_not_gated(
+        self, db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            mcp, "_delivery_report_execution_id", lambda db, current_user: None
+        )
+        assert (
+            mcp._guard_delivery_report_write(
+                db_session, test_user, tool="update_issue", target="x", status="closed"
+            )
+            is None
+        )
+        assert _audit_rows(db_session, test_user.account_id) == []
+
+    def test_execution_id_resolves_only_report_runs(
+        self, db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _report_run(db_session, test_user.account_id)
+        other = _run(
+            db_session,
+            _flow(db_session, test_user.account_id, report=False),
+            hours=0,
+            result={},
+        )
+        import preloop.services.dynamic_fastmcp_http as http
+
+        for execution, expected in ((run, str(run.id)), (other, None)):
+            monkeypatch.setattr(
+                http,
+                "get_current_user_context",
+                lambda execution=execution: SimpleNamespace(
+                    flow_execution_id=str(execution.id)
+                ),
+            )
+            assert mcp._delivery_report_execution_id(db_session, test_user) == expected
+
+
+def test_set_action_keeps_other_result_keys(db_session: Session, test_user) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    run.result = {**run.result, "_private_publication": {"phase": "complete"}}
+    db_session.commit()
+    crud_flow_execution.set_delivery_report_action(
+        db_session, execution_id=run.id, key="follow_up:0", record={"status": "x"}
+    )
+    db_session.refresh(run)
+    assert run.result["_private_publication"] == {"phase": "complete"}
+    assert run.result["follow_ups"][0]["title"].startswith("Add a test")
