@@ -240,8 +240,11 @@ class TestKubernetesLogStreaming:
                     assert lines[2] == "K8s Line 3"
 
     @pytest.mark.asyncio
-    async def test_stream_kubernetes_logs_no_pods(self, k8s_executor):
+    async def test_stream_kubernetes_logs_no_pods(self, k8s_executor, monkeypatch):
         """Test streaming when no pods are found."""
+        # Exercise every retry without spending a minute on real wall-clock waits.
+        sleep = AsyncMock()
+        monkeypatch.setattr("preloop.agents.container.asyncio.sleep", sleep)
         with patch("preloop.agents.container.KUBERNETES_AVAILABLE", True):
             with patch("preloop.agents.container.config") as mock_config:
                 with patch("preloop.agents.container.client") as mock_client:
@@ -265,6 +268,9 @@ class TestKubernetesLogStreaming:
                     assert len(lines) == 1
                     assert "[WARN]" in lines[0]
                     assert "No pods found" in lines[0]
+                    assert mock_core_api.list_namespaced_pod.await_count == 60
+                    assert sleep.await_count == 59
+                    assert all(call.args == (1,) for call in sleep.await_args_list)
 
     @pytest.mark.asyncio
     async def test_stream_kubernetes_logs_handles_api_exception(self, k8s_executor):

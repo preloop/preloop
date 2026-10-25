@@ -174,3 +174,24 @@ workspace, a tokenless service account, and no host Docker socket, kubeconfig,
 cloud identity, or deployment credentials. A serialized controller reuses only
 the repository runner identity and starts `run.sh --once` for each pod. These
 tests yield to hosted flow executions and use a reduced fuzz worker budget.
+
+## Backend collection and CPU budgets
+
+`scripts/run_backend_shard.py` discovers test files from the pytest configuration
+without importing them, then assigns whole files to contiguous, duration-weighted
+shards. New files receive an estimated weight and are always included. Pytest
+collects only the assigned files; tests within a file retain their normal order.
+The duration file is a balancing hint, not an allowlist. Coverage remains enabled
+on all shards and the combined job still enforces the coverage floor.
+
+Inspect a shard without running tests:
+
+```bash
+python scripts/run_backend_shard.py --shards 18 --group 1 --plan
+```
+
+One runner slot is not necessarily one CPU: CodeQL and other analysis tools may
+start multiple threads. Set CPU budgets on the host runner services and leave
+headroom for PostgreSQL and the operating system. Use measured concurrent load,
+not the number of registrations, to size the pool. Tool thread settings are
+hints; the host CPU budget enforces isolation without changing workflow checks.

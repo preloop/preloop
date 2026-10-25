@@ -479,16 +479,9 @@ jobs:
           PRELOOP_DISABLE_TELEMETRY: 'true'
         run: python -m pytest backend/tests/helm -q
 
-  # Eighteen shards. On the green main run 37987118309, eight count-based
-  # shards left group 2 at 26.7m (25.2m of that in pytest) while group 6
-  # was 4.8m. .github/pytest-split-durations.json makes
-  # duration_based_chunks cut on measured time; the slowest chunk is
-  # about 3.3m of tests, and hosted setup is about 1.5m, so a shard stays
-  # under 7m. least_duration is still wrong here: it round-robins
-  # individual tests and breaks unittest setUp isolation plus tests that
-  # share a process-wide DB session. Chunks keep collection order, so
-  # files stay together. The 60% coverage floor is applied after shards
-  # are combined -- a single shard only sees part of the tree.
+  # Partition complete files before pytest imports tests. Historical durations
+  # balance contiguous groups, preserving file/test order and including new files.
+  # Coverage is still collected in every shard and combined before the 60% floor.
   #
   # Postgres is not a service container. scripts/ci_postgres.py checks
   # 127.0.0.1:5432 first. A server that accepts test_user gets one new
@@ -598,12 +591,9 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest -v \
+          python scripts/run_backend_shard.py --shards 18 \
+            --group ${{ matrix.group }} -- -v \
             -m "not integration" \
-            --splits 18 \
-            --group ${{ matrix.group }} \
-            --splitting-algorithm=duration_based_chunks \
-            --durations-path .github/pytest-split-durations.json \
             --cov=preloop \
             --cov-report= \
             --junitxml=test-results.xml
@@ -1030,9 +1020,13 @@ jobs:
 
       - name: Install pinned Playwright MCP and Chromium
         working-directory: environments/preloop/tools
+        env:
+          WITH_DEPS: ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }}
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          # Self-hosted OS libraries are provisioned by the runner administrator.
+          # shellcheck disable=SC2086 # WITH_DEPS is one flag or empty
+          npx playwright install $WITH_DEPS chromium
 
       - name: Set up Python
         uses: ./.github/actions/setup-ci-python
