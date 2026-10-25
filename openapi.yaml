@@ -14698,7 +14698,7 @@ paths:
         '409':
           description: Conflict
         '422':
-          description: Unprocessable Content
+          description: Unprocessable Entity
         '502':
           description: Bad Gateway
         '401':
