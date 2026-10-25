@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.models import crud, models
 from preloop.plugins import account_hooks
+from preloop.services import multiuser
 
 
 @pytest.fixture
@@ -71,7 +72,10 @@ def test_mounted_roles_route_scopes_projection_and_total(
     test_user: models.User,
     scoped_roles: dict[str, Any],
     other_account: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Account custom roles are listed only when an overlay supports them.
+    monkeypatch.setattr(multiuser, "advanced_roles_enabled", lambda: True)
     if other_account:
         caller = models.User(id=uuid4(), account_id=scoped_roles["other_account"])
         app.dependency_overrides[get_current_active_user] = lambda: caller
@@ -100,6 +104,20 @@ def test_mounted_roles_route_scopes_projection_and_total(
     for key in set(roles) - expected:
         assert f"{key} role details" not in response.text
         assert f"{key} permission details" not in response.text
+
+
+def test_oss_roles_route_lists_only_basic_system_roles(
+    client: TestClient, scoped_roles: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(multiuser, "advanced_roles_enabled", lambda: False)
+    response = client.get("/api/v1/roles")
+    assert response.status_code == 200
+    data = response.json()
+    assert not [row for row in data["roles"] if row["name"].startswith("example_")]
+    assert {row["name"] for row in data["roles"]} <= {"owner", "admin", "member"}
+    assert data["total"] == len(data["roles"])
+    for label in scoped_roles["roles"]:
+        assert f"{label} role details" not in response.text
 
 
 def test_roles_route_requires_authentication(client: TestClient, app: FastAPI) -> None:
