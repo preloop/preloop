@@ -511,7 +511,6 @@ def test_default_model_exists(db_session: Session):
         provider_name="openai",
         model_identifier="gpt-5.4-test",
         api_endpoint="https://api.openai.com/v1",
-        api_key="test_key",
         is_default=True,
         account_id=None,
     )

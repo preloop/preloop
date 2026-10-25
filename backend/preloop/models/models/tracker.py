@@ -129,11 +129,11 @@ class Tracker(Base):
     jira_webhook_id: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, comment="Stored Jira Webhook ID"
     )
-    jira_webhook_secret: Mapped[Optional[str]] = mapped_column(
-        String(255),
-        nullable=True,
-        comment="Secret used to validate incoming Jira webhooks. Store encrypted if possible.",
-    )
+
+    @property
+    def jira_webhook_secret(self) -> None:
+        """Compatibility read: webhook credentials live only in SecretReference."""
+        return None
 
     # Authentication type for trackers
     auth_type: Mapped[str] = mapped_column(
@@ -239,7 +239,6 @@ class Tracker(Base):
     def resolved_webhook_secret(self) -> Optional[str]:
         """Return the Jira webhook secret, decrypting the SecretReference.
 
-        Falls back to the legacy plaintext ``jira_webhook_secret`` column.
         Cached on the instance like :attr:`resolved_api_key`.
         """
         cached = getattr(self, "_resolved_webhook_secret_cache", _MISSING)
@@ -252,7 +251,7 @@ class Tracker(Base):
                 get_secret_service().resolve_secret_reference(self.webhook_secret).value
             )
         else:
-            value = self.jira_webhook_secret
+            value = None
         object.__setattr__(self, "_resolved_webhook_secret_cache", value)
         return value
 

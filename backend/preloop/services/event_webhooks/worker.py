@@ -39,6 +39,7 @@ from preloop.services.event_webhooks.signing import (
     USER_AGENT,
     signature_header,
 )
+from preloop.services.event_webhooks.transport import WebhookTransport
 from preloop.utils.encryption import decrypt_value
 
 logger = logging.getLogger(__name__)
@@ -384,6 +385,10 @@ async def run_once(db_factory=_open_worker_session) -> int:
         async with httpx.AsyncClient(
             timeout=settings.webhook_delivery_timeout_seconds,
             follow_redirects=False,
+            transport=(
+                WebhookTransport() if settings.webhook_block_private_targets else None
+            ),
+            trust_env=not settings.webhook_block_private_targets,
         ) as client:
             outcomes = await asyncio.gather(*(_send(item, client) for item in prepared))
         outcomes = [outcome for outcome in outcomes if outcome is not None]

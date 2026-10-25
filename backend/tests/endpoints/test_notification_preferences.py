@@ -94,6 +94,10 @@ def test_register_via_token_success(
 
     created_api_key = db_session.get(ApiKey, data["api_key_id"])
     assert created_api_key is not None
+    assert created_api_key.key is None
+    from preloop.models.crud import crud_api_key
+
+    assert created_api_key.key_hash == crud_api_key.build_key_hash(data["api_key"])
     assert created_api_key.account_id == test_user.account_id
 
     # Verify token was consumed in database

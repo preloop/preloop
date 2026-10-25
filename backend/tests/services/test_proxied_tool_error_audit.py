@@ -12,7 +12,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastmcp.tools import Tool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from mcp import types
 
 from preloop.services.dynamic_fastmcp import DynamicFastMCP
@@ -277,7 +277,7 @@ async def test_client_call_tool_keeps_is_error_and_structured_content():
         isError=True,
     )
     streams = AsyncMock()
-    streams.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock(), None))
+    streams.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
     streams.__aexit__ = AsyncMock(return_value=None)
     session = AsyncMock()
     session.__aenter__ = AsyncMock(return_value=session)
@@ -285,7 +285,7 @@ async def test_client_call_tool_keeps_is_error_and_structured_content():
     session.call_tool = AsyncMock(return_value=upstream)
     with (
         patch(
-            "preloop.services.mcp_client_pool.streamablehttp_client",
+            "preloop.services.mcp_client_pool.streamable_http_client",
             return_value=streams,
         ),
         patch("preloop.services.mcp_client_pool.ClientSession", return_value=session),

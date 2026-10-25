@@ -1,0 +1,6 @@
+(version 1)
+(allow default)
+(deny network*)
+; HTTP fixture servers bind to loopback. Child processes inherit the sandbox.
+(allow network-inbound (local ip "localhost:*"))
+(allow network-outbound (remote ip "localhost:*"))

@@ -238,8 +238,8 @@ async def test_scan_marks_shadowed_and_warns(db_session, test_user, monkeypatch)
     client = MagicMock()
     client.list_tools = AsyncMock(
         return_value=[
-            SimpleNamespace(name="read_scope", description="d", inputSchema={}),
-            SimpleNamespace(name="list_scopes", description="d", inputSchema={}),
+            SimpleNamespace(name="read_scope", description="d", input_schema={}),
+            SimpleNamespace(name="list_scopes", description="d", input_schema={}),
         ]
     )
     monkeypatch.setattr(

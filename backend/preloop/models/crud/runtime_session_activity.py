@@ -1671,5 +1671,71 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .all()
         )
 
+    def gateway_call_batch(
+        self,
+        db: Session,
+        *,
+        min_stored_bytes: int,
+        limit: int,
+        after: Optional[tuple[datetime, Any]] = None,
+        account_id: Optional[Any] = None,
+        before_timestamp: Optional[datetime] = None,
+        skip_marker: Optional[str] = None,
+    ) -> list[RuntimeSessionActivity]:
+        """Return one keyset page of model gateway call rows for maintenance.
+
+        Rows are walked oldest first on ``(timestamp, id)``, so a caller can
+        resume from the last row it saw. ``pg_column_size`` reads the stored
+        (compressed) size from the tuple header without detoasting the value,
+        which is what lets a pass skip rows that are already small cheaply.
+        Rows whose session is under legal hold are never returned.
+
+        Args:
+            db: Database session.
+            min_stored_bytes: Only rows whose stored metadata is larger.
+            limit: Page size.
+            after: ``(timestamp, id)`` of the last row of the previous page.
+            account_id: Restrict to one account.
+            before_timestamp: Only rows strictly older than this.
+            skip_marker: Skip rows whose ``body_compaction`` marker already
+                has this key set (for example ``"bodies_stripped"``); when
+                ``None``, skip rows that carry any marker.
+
+        Returns:
+            Up to ``limit`` rows, oldest first.
+        """
+        model = self.model
+        marker = model.metadata_["body_compaction"]
+        filters: list[Any] = [
+            model.activity_type == "model_gateway_call",
+            func.pg_column_size(model.metadata_) > min_stored_bytes,
+            ~model.runtime_session_id.in_(
+                select(models.RuntimeSession.id).where(
+                    models.RuntimeSession.legal_hold.is_(True)
+                )
+            ),
+        ]
+        if skip_marker is None:
+            filters.append(~model.metadata_.has_key("body_compaction"))
+        else:
+            filters.append(func.coalesce(marker[skip_marker].astext, "false") != "true")
+        if account_id is not None:
+            filters.append(model.account_id == account_id)
+        if before_timestamp is not None:
+            filters.append(model.timestamp < before_timestamp)
+        if after is not None:
+            filters.append(tuple_(model.timestamp, model.id) > tuple_(*after))
+        return (
+            db.query(model)
+            .filter(*filters)
+            .order_by(model.timestamp.asc(), model.id.asc())
+            .limit(max(1, int(limit)))
+            .all()
+        )
+
+    def maintenance_accounts(self, db: Session) -> list[models.Account]:
+        """Return every account, for per-account retention resolution."""
+        return db.query(models.Account).order_by(models.Account.id).all()
+
 
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)

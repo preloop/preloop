@@ -59,12 +59,7 @@ class CRUDAIModel(CRUDBase[AIModel]):
         """Return credentialed models for deployment-wide bootstrap defaults."""
         return (
             db.query(models.AIModel)
-            .filter(
-                or_(
-                    models.AIModel.api_key.isnot(None),
-                    models.AIModel.credentials_secret_id.isnot(None),
-                )
-            )
+            .filter(models.AIModel.credentials_secret_id.isnot(None))
             .order_by(models.AIModel.id)
             .all()
         )
@@ -276,7 +271,6 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 raise ValueError(
                     "Referenced credential secret belongs to a different account"
                 )
-            obj_data["api_key"] = None
             return
 
         if api_key:
@@ -289,7 +283,6 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 existing_secret_id=existing_secret_id,
             )
             obj_data["credentials_secret_id"] = secret_ref.id
-            obj_data["api_key"] = None
             return
 
         if credential_type or credential_payload is not None:
@@ -305,7 +298,6 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 meta_data={"credential_type": credential_type},
             )
             obj_data["credentials_secret_id"] = secret_ref.id
-            obj_data["api_key"] = None
             return
 
         if (
@@ -324,7 +316,6 @@ class CRUDAIModel(CRUDBase[AIModel]):
                 existing_secret_id=existing_secret_id,
             )
             obj_data["credentials_secret_id"] = secret_ref.id
-            obj_data["api_key"] = None
 
     def get_default_active_model(
         self,

@@ -140,17 +140,16 @@ def seed_test_user(email: str, password: str, api_key: str):
     assign_owner_role_if_available(db_session, user)
 
     click.echo("Checking for test user API key...")
-    # A simple check to see if any key exists for the user.
-    # A more robust implementation might check for the specific key.
-    existing_keys = crud_api_key.get_active_by_user(db_session, username=user.username)
-    if any(k.key == api_key for k in existing_keys):
+    if crud_api_key.get_by_key(
+        db_session, key=api_key, account_id=str(user.account_id)
+    ):
         click.echo("API key already exists for the test user.")
     else:
         click.echo("Creating API key for the test user...")
         api_key_in = ApiKeyCreate(name="Test API Key")
         crud_api_key.create_with_owner(
             db_session,
-            obj_in=api_key_in,
+            obj_in=api_key_in.model_dump(),
             owner_username=user.username,
             key_value=api_key,
         )

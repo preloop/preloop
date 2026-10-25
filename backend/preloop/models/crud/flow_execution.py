@@ -305,6 +305,35 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         execution.result = {**current, "published_prs": [*items, publication]}
         db.commit()
 
+    def add_decision(
+        self, db: Session, *, execution_id: uuid.UUID, decision: dict[str, Any]
+    ) -> None:
+        """Append an agent decision once, up to ``MAX_DECISIONS`` per execution."""
+        with db.no_autoflush:
+            execution = (
+                db.query(FlowExecution)
+                .filter(FlowExecution.id == execution_id)
+                .populate_existing()
+                .with_for_update()
+                .one_or_none()
+            )
+        if execution is None:
+            return
+        current = execution.result if isinstance(execution.result, dict) else {}
+        existing = current.get("decisions")
+        items = list(existing) if isinstance(existing, list) else []
+        from preloop.services.flow_pr_binding import MAX_DECISIONS
+
+        if decision in items:
+            return
+        if len(items) >= MAX_DECISIONS:
+            if not current.get("decisions_truncated"):
+                execution.result = {**current, "decisions_truncated": True}
+                db.commit()
+            return
+        execution.result = {**current, "decisions": [*items, decision]}
+        db.commit()
+
     def get_continuation_navigation(
         self, db: Session, *, root_id: uuid.UUID, account_id: uuid.UUID
     ) -> List[FlowExecutionNavigationRow]:
@@ -1037,8 +1066,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         flow_id: Any,
         account_id: Optional[str] = None,
         exclude_execution_id: Any = None,
+        succeeded_only: bool = False,
     ) -> Optional[FlowExecution]:
         """Newest execution of this flow that stored a result artifact.
+
+        ``succeeded_only`` skips runs that did not end SUCCEEDED, for a
+        caller whose baseline must be a completed report rather than a
+        failed run's error result.
 
         Backs the ``previous_result_execution_id: "last"`` payload
         sentinel, which is how a scheduled review run diffs against its own
@@ -1058,9 +1092,46 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         if exclude_execution_id:
             query = query.filter(FlowExecution.id != exclude_execution_id)
+        if succeeded_only:
+            query = query.filter(FlowExecution.status == "SUCCEEDED")
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.order_by(FlowExecution.start_time.desc()).first()
+
+    def completed_merge_audits(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        since: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> List[FlowExecution]:
+        """SUCCEEDED runs of this account's merge-audit flows, newest first.
+
+        A merge-audit flow is one whose ``agent_config.lifecycle_kind`` is
+        ``merge_audit`` (preset 013). ``agent_config`` is plain JSON, so the
+        flows are picked in Python; an account has few flows. Backs the
+        Delivery Report's audit reuse: a closed issue with a completed audit
+        is not assessed again.
+        """
+        if not account_id:
+            return []
+        flow_ids = [
+            flow.id
+            for flow in db.query(Flow).filter(Flow.account_id == account_id).all()
+            if isinstance(flow.agent_config, dict)
+            and flow.agent_config.get("lifecycle_kind") == "merge_audit"
+        ]
+        if not flow_ids:
+            return []
+        query = db.query(FlowExecution).filter(
+            FlowExecution.flow_id.in_(flow_ids),
+            FlowExecution.status == "SUCCEEDED",
+            FlowExecution.result.isnot(None),
+        )
+        if since is not None:
+            query = query.filter(FlowExecution.start_time >= since)
+        return query.order_by(FlowExecution.start_time.desc()).limit(limit).all()
 
     def last_successful_scheduled_at(
         self, db: Session, *, flow_id: Any

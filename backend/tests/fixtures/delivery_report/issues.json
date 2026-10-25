@@ -1,0 +1,8 @@
+[
+  {"key": "acme/app#11", "title": "Search by title", "url": "https://example.com/acme/app/issues/11", "status": "closed", "created_at": "2026-10-01T09:00:00+00:00", "updated_at": "2026-10-13T12:05:00+00:00",
+   "description": "Users cannot find issues by title.\n\n## Acceptance\n- Search returns results by title\n"},
+  {"key": "acme/app#12", "title": "Export to CSV", "url": "https://example.com/acme/app/issues/12", "status": "closed", "created_at": "2026-10-02T09:00:00+00:00", "updated_at": "2026-10-14T12:05:00+00:00",
+   "description": "Need CSV export.\n\n<!-- preloop-issue-triage:start -->\n## Triage\n\n### Acceptance criteria\n- CSV export includes headers\n- Exports respect the date filter\n<!-- preloop-issue-triage:end -->"},
+  {"key": "acme/app#13", "title": "Archive items", "url": "https://example.com/acme/app/issues/13", "status": "open", "created_at": "2026-10-05T09:00:00+00:00", "updated_at": "2026-10-15T12:05:00+00:00",
+   "description": "## Acceptance\n- Archived items are hidden from lists\n"}
+]

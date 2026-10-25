@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastmcp import Context
 from fastmcp.tools import FunctionTool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 
 from preloop.services.approval_helper import require_approval
 from preloop.services.audit.async_writer import outbox_enabled

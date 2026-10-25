@@ -1,6 +1,6 @@
 """Tests for MCP Streamable HTTP httpx defaults."""
 
-import httpx
+import httpx2 as httpx
 
 from preloop.services.mcp_httpx_client import create_streamable_mcp_http_client
 

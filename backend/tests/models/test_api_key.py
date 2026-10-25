@@ -40,16 +40,37 @@ def test_get_by_key(db_session, create_account, create_user):
     # Create a key
     key_data = {"name": "Test Key"}
     key = crud_api_key.create_with_owner(
-        db_session, obj_in=key_data, owner_username=user.username
+        db_session,
+        obj_in=key_data,
+        owner_username=user.username,
+        key_value="synthetic-user-api-key",
     )
 
     # Retrieve the key by its value
-    retrieved_key = crud_api_key.get_by_key(db_session, key=key.key)
+    retrieved_key = crud_api_key.get_by_key(db_session, key="synthetic-user-api-key")
 
     # Verify it's the same key
     assert retrieved_key is not None
     assert retrieved_key.id == key.id
     assert retrieved_key.key == key.key
+
+
+def test_get_by_key_never_resolves_an_empty_key(
+    db_session, create_account, create_user
+):
+    """A leftover sha256('') fingerprint must not authenticate a blank bearer."""
+    user = create_user(account=create_account())
+    key = crud_api_key.create_with_owner(
+        db_session,
+        obj_in={"name": "Legacy empty key"},
+        owner_username=user.username,
+        key_value="synthetic-user-api-key",
+    )
+    key.key_hash = crud_api_key.build_key_hash("")
+    key.key_prefix = crud_api_key.build_key_prefix("")
+    db_session.flush()
+
+    assert crud_api_key.get_by_key(db_session, key="") is None
 
 
 def test_get_active_by_user(db_session, create_account, create_user):
@@ -126,18 +147,19 @@ def test_validate_key(db_session, create_account, create_user):
         db_session,
         obj_in={"name": "Scoped Key", "scopes": ["read:issues", "write:projects"]},
         owner_username=user.username,
+        key_value="synthetic-user-api-key",
     )
 
     # Validate with matching scopes
     valid_key = crud_api_key.validate_key(
-        db_session, key=key.key, required_scopes=["read:issues"]
+        db_session, key="synthetic-user-api-key", required_scopes=["read:issues"]
     )
     assert valid_key is not None
     assert valid_key.id == key.id
 
     # Validate with non-matching scopes
     invalid_key = crud_api_key.validate_key(
-        db_session, key=key.key, required_scopes=["admin:system"]
+        db_session, key="synthetic-user-api-key", required_scopes=["admin:system"]
     )
     assert invalid_key is None
 

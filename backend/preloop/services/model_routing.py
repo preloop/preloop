@@ -70,7 +70,7 @@ class ModelRoutingError(ValueError):
 
 def model_has_credential_source(model: models.AIModel) -> bool:
     """True when an AI model row has some way to authenticate at run time."""
-    if model.credentials_secret_id or model.api_key:
+    if model.credentials_secret_id:
         return True
     meta_data = model.meta_data if isinstance(model.meta_data, dict) else {}
     gateway = meta_data.get("gateway")

@@ -335,3 +335,38 @@ describe('CopilotUsagePanel', () => {
     expect(q(element, 'copilot-paused')).to.equal(null);
   });
 });
+
+it('keeps unsupported premium fields unknown in developer and model tables', async () => {
+  localStorage.setItem('accessToken', 'fixture-token');
+  const summary = makeSummary();
+  summary.premium_requests.by_developer = [
+    { login: 'jane', net_amount: null, net_quantity: null },
+  ];
+  summary.premium_requests.by_model = [
+    { model: 'example-model', net_amount: null, net_quantity: null },
+  ];
+  const stub = sinon
+    .stub(window, 'fetch')
+    .callsFake(async () => jsonResponse(summary));
+  try {
+    const el = await fixture<CopilotUsagePanel>(
+      html`<copilot-usage-panel
+        .startDate=${'2026-10-01T00:00:00Z'}
+      ></copilot-usage-panel>`
+    );
+    await waitUntil(
+      () =>
+        !!el.shadowRoot!.querySelector('[data-testid="copilot-by-developer"]')
+    );
+    for (const id of ['copilot-by-developer', 'copilot-by-model']) {
+      const row = el.shadowRoot!.querySelector(
+        `[data-testid="${id}"] tbody tr`
+      )!;
+      expect(row.textContent).to.include('Unknown');
+      expect(row.textContent).to.not.include('$0');
+    }
+  } finally {
+    stub.restore();
+    localStorage.clear();
+  }
+});

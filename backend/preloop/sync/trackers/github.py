@@ -2010,11 +2010,15 @@ class GitHubTracker(BaseTracker):
                 )
 
             # Get PR files/changes
-            files_path = f"/repos/{owner}/{repo}/pulls/{pr_number}/files"
-            files = await self._request("GET", files_path)
+            # Paginated: one page stops at 100 files, and a report that
+            # judges risk from the file list must see all of them.
+            files_path = f"repos/{owner}/{repo}/pulls/{pr_number}/files"
+            files = await self._make_request(files_path)
 
             changes = {
-                "files_changed": len(files),
+                # GitHub's own count, so a reader can tell when the listed
+                # files fall short of it (the endpoint stops at 3000).
+                "files_changed": pr_data.get("changed_files", len(files)),
                 "additions": pr_data.get("additions", 0),
                 "deletions": pr_data.get("deletions", 0),
                 "changed_files": [
@@ -2047,6 +2051,8 @@ class GitHubTracker(BaseTracker):
                 "created_at": pr_data["created_at"],
                 "updated_at": pr_data["updated_at"],
                 "merged_at": pr_data.get("merged_at"),
+                "head_sha": pr_data["head"].get("sha"),
+                "merge_commit_sha": pr_data.get("merge_commit_sha"),
                 "is_draft": pr_data.get("draft", False),
                 "comments": all_comments,
                 "changes": changes,

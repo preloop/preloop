@@ -10,7 +10,7 @@
 
 **The open-source AI agent control plane and software factory.**
 
-Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see spend by model, agent, session, API key and flow, including imported Copilot usage, and cap it with budgets.
+Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see gateway spend by model, agent, session, API key and flow, and cap it with budgets. Imported Copilot usage is displayed separately as vendor-reported data.
 
 It has two halves, and the same policies, budgets and session timeline apply to both:
 
@@ -22,6 +22,10 @@ It has two halves, and the same policies, budgets and session timeline apply to 
 - Platform and security teams that need agents governed before they reach production systems.
 - Engineering teams running coding agents that want to see the cost and keep an audit trail.
 - Teams that want tickets and events turned into bounded agent work they can review.
+
+MCP clients connect to `/mcp`; existing `/mcp/v1` configurations remain compatible.
+See the [tested MCP protocol matrix](docs/architecture/mcp-protocol-compatibility.md)
+for modern discovery, legacy initialization, and SDK migration details.
 
 Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
 
@@ -86,10 +90,11 @@ AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execu
 
 One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Cloud or Jira. A flow starts an agent in a hosted container or on your own runner. Every tool call it makes passes the same firewall and approvals as your own agents, and every model call is charged to the flow's budget. The agent opens a pull request; the [Pull Request Reviewer](docs/guide/flows/pull-request-review.md) reviews it; review or CI feedback resumes [the implementation](docs/guide/flows/durable-implementation-feedback.md) on the same branch, and the result is a pull request you can review. You can steer the run with an operator note at any point, and the whole run is one timeline.
 
-[20 presets](backend/presets/README.md) ship in this repository, including:
+[21 presets](backend/presets/README.md) ship in this repository, including:
 
 - [Issue Triage Assistant](docs/guide/flows/issue-triage.md) and issue refinement
 - [Pull Request Reviewer](docs/guide/flows/pull-request-review.md)
+- [Delivery Report](docs/guide/flows/delivery-report.md): a weekly, read-only report. See what landed, what the available evidence supports against stated criteria, and which gaps deserve investigation
 - [Automated issue implementation](docs/guide/flows/automated-issue-implementation.md)
 - [Security audit presets](docs/guide/flows/security-audit-presets.md): SBOM verify, exploit check, release audit. They collect machine evidence for CRA- and EU AI Act-style reviews. That is not a conformity assessment, certification, or legal advice.
 - [Observe / Eval](./backend/presets/003-observe-eval.yaml)
@@ -164,7 +169,9 @@ preloop login --url http://localhost:3000
 preloop agents discover
 ```
 
-Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/README.md#authentication). TLS, SMTP, upgrades and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), Helm chart [`helm/preloop`](helm/preloop), [compatibility policy](docs/compatibility.md). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules.
+Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/README.md#authentication). TLS, SMTP, upgrades and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), Helm chart [`helm/preloop`](helm/preloop), [compatibility policy](docs/compatibility.md). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules. The [local upgrade acceptance harness](docs/operations/upgrade-acceptance.md) verifies release-to-candidate migrations, data and credentials in disposable Compose and kind stacks.
+
+Credential storage upgrades require a maintenance window and the existing encryption key; follow the [staged upgrade guide](docs/operations/credential-storage-upgrade.md) before upgrading an existing installation.
 
 Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
 
@@ -222,4 +229,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers: follow the [protected-branc
 
 [Apache License 2.0](LICENSE). Copyright (c) 2026 Spacecode AI Inc.
 
-Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). The [release SBOM audit gate](./docs/release-sbom-audit.md) checks both architectures of every release image and the tag's security workflows. Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).

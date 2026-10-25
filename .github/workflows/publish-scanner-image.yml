@@ -10,11 +10,10 @@
 # resolve the current advisory database digest, build, smoke the image with
 # --network none and print what would be published, without pushing.
 #
-# The smoke builds on the small fetch base instead of the 10 GB Codex base,
-# which does not fit a hosted runner's disk. The publish build adds files to
-# the Codex base with COPY --link only, so BuildKit never unpacks the base.
-# Set file permissions in the fetch stage; --chmod on that final COPY
-# disables the linked-layer optimization and exhausts the runner's disk.
+# The smoke builds on the small fetch base. Publication uses one native
+# runner per architecture: an SBOM scans the merged Codex filesystem, so the
+# publish build needs disk for the unpacked base even with COPY --link. The
+# final index merges both platform manifests and their SPDX attestations.
 
 name: Publish Scanner Image
 
@@ -47,14 +46,27 @@ permissions:
   contents: read
 
 env:
+  PRELOOP_DISABLE_TELEMETRY: "true"
   IMAGE: ghcr.io/${{ github.repository_owner }}/preloop-codex-scanner
   # Same digest as the FETCH_IMAGE default in environments/scanner/Dockerfile.
   SMOKE_BASE: python:3.12-slim-bookworm@sha256:34386ef0cb081344d7ec1c103ba398e6e9f64e9ab3a1509accc92a4e24a07258
 
 jobs:
   scanner-image:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    outputs:
+      publish: ${{ steps.publication.outputs.publish }}
+      release_tag: ${{ steps.publication.outputs.release_tag }}
+      publish_latest: ${{ steps.publication.outputs.publish_latest }}
     permissions:
       contents: read
       packages: write
@@ -75,9 +87,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash environments/scanner/resolve-publication.sh
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -97,6 +106,34 @@ jobs:
       - name: Smoke offline
         run: environments/scanner/run-smoke.sh preloop-codex-scanner:smoke
 
+      - name: Free disk space for image SBOM scan
+        if: steps.publication.outputs.publish == 'true'
+        run: |
+          set -euo pipefail
+          df -h
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /usr/share/swift \
+            /usr/local/.ghcup \
+            /usr/local/share/chromium \
+            /usr/share/miniconda \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache \
+            /usr/local/lib/node_modules
+          sudo apt-get clean
+          docker system prune -af || true
+          df -h
+          avail_kb="$(df -Pk / | awk 'NR==2 {print $4}')"
+          min_kb=$((40 * 1024 * 1024))
+          echo "available KiB: ${avail_kb} (need ${min_kb})"
+          if [ "$avail_kb" -lt "$min_kb" ]; then
+            echo "not enough free disk for the unpacked Codex base" >&2
+            exit 1
+          fi
+
       - name: Log in to Container Registry
         if: steps.publication.outputs.publish == 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -112,14 +149,14 @@ jobs:
         with:
           context: .
           file: environments/scanner/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           push: true
+          sbom: generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
           build-args: |
             TRIVY_DB_REPOSITORY=${{ steps.db.outputs.ref }}
-          # Manual recovery never moves latest; stable tag pushes still do.
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.publication.outputs.release_tag }}
-            ${{ steps.publication.outputs.publish_latest == 'true' && format('{0}:latest', env.IMAGE) || '' }}
+          # Unique per-run inputs prevent concurrent recoveries from mixing
+          # architectures before the final index and its SBOMs are verified.
+          tags: ${{ env.IMAGE }}:build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
 
       - name: Record digest
         env:
@@ -143,3 +180,53 @@ jobs:
               echo "- Dry run: publishing was not requested, nothing was pushed."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish scanner index and SBOMs
+    needs: scanner-image
+    if: needs.scanner-image.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Merge platform images and attestations
+        id: index
+        env:
+          RELEASE_TAG: ${{ needs.scanner-image.outputs.release_tag }}
+          PUBLISH_LATEST: ${{ needs.scanner-image.outputs.publish_latest }}
+        run: |
+          set -euo pipefail
+          args=(-t "$IMAGE:$RELEASE_TAG")
+          if [ "$PUBLISH_LATEST" = true ]; then args+=(-t "$IMAGE:latest"); fi
+          docker buildx imagetools create "${args[@]}" \
+            "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-amd64" \
+            "$IMAGE:build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-arm64"
+          digest="$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{json .Manifest.Digest}}' | tr -d '\"')"
+          printf '%s' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Verify and export image SBOMs
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.index.outputs.digest }}
+          RELEASE_TAG: ${{ needs.scanner-image.outputs.release_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/image_sbom.py --name scanner --image "$IMAGE_REF" \
+            --tag "$RELEASE_TAG" --source-sha "$SOURCE_SHA" --output image-sbom-scanner
+
+      - name: Upload image SBOM evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-sbom-scanner
+          path: image-sbom-scanner/
+          if-no-files-found: error

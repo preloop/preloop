@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking or behavior changes
 
+- **Stored model gateway calls keep only what each call added.** A
+  `model_gateway_call` row in `runtime_session_activity` used to store the
+  whole conversation the call replayed, so storage grew with the square of
+  session length. It now stores the messages new to that call, with their
+  original positions, plus the response, capped at
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 32768). The console
+  stitches the conversation back together across a session's rows. An hourly
+  maintenance task, `maintain_gateway_activity`, compacts rows written by
+  older releases in bounded batches (`GATEWAY_ACTIVITY_COMPACTION_ENABLED`,
+  on by default) and, when `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED` is set,
+  removes conversation content older than the account's plan history window.
+  See the Gateway activity storage operations page.
+
 - **`apply` rejects a `sensitive_data` scope server it does not know.** A tool
   rule or `reference_only` entry whose `scope.servers` names a server that is
   neither in the file's `mcp_servers` nor configured in or shared with the

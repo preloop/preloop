@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -41,7 +43,7 @@ def tree(db_session: Session) -> Any:
     db_session.flush()
     now = datetime.now(timezone.utc)
     resources = {
-        "ai_model": models.AIModel(
+        "ai_model": ai_model_with_secret(
             account_id=owner.id,
             name="Shared model",
             provider_name="example",

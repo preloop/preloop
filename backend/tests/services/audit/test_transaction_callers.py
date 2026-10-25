@@ -863,15 +863,22 @@ async def test_legacy_mcp_audit_failure_preserves_tool_outcome(
     from preloop.services import db_executor
 
     monkeypatch.setenv("PRELOOP_AUDIT_OUTBOX_ENABLED", "true")
+    from preloop.services import dynamic_fastmcp_http
+    from mcp import types
+
     fake_server = MagicMock()
-    handlers = []
-    fake_server.call_tool.return_value = lambda fn: handlers.append(fn) or fn
+    handlers = {}
+    fake_server.add_request_handler.side_effect = (
+        lambda method, params, fn: handlers.__setitem__(method, fn)
+    )
     monkeypatch.setattr(module, "Server", lambda *a, **kw: fake_server)
     server = module.DynamicMCPServer()
     caller = module.UserContext(
         user_id=str(uuid4()), account_id=str(uuid4()), username="example"
     )
-    monkeypatch.setattr(server, "_extract_user_context", lambda ctx: caller)
+    monkeypatch.setattr(
+        dynamic_fastmcp_http, "get_current_user_context", lambda: caller
+    )
     tool = MagicMock()
     tool.name = "example_tool"
     monkeypatch.setattr(server, "_get_tools_for_user", lambda ctx: [tool])
@@ -898,8 +905,10 @@ async def test_legacy_mcp_audit_failure_preserves_tool_outcome(
     monkeypatch.setattr(db_executor, "run_db_async", fail_admission)
     metric = MagicMock()
     monkeypatch.setattr(outbox, "record_admission_failure", metric, raising=False)
-    result = await handlers[0]("example_tool", {})
-    assert result[0].text == (
+    result = await handlers["tools/call"](
+        MagicMock(), types.CallToolRequestParams(name="example_tool", arguments={})
+    )
+    assert result.content[0].text == (
         "Error executing tool: original tool failure" if handler_fails else "completed"
     )
     handler.assert_awaited_once()
