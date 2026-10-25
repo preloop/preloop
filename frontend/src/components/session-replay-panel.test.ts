@@ -1775,4 +1775,97 @@ describe('SessionReplayPanel Requests search and copy', () => {
       else delete (navigator as { clipboard?: Clipboard }).clipboard;
     }
   });
+
+  it('builds tool and approval row text from what the row shows', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${[]}
+      ></session-replay-panel>
+    `);
+    const internals = element as unknown as {
+      approvalState: { now: number };
+      chatRowText(row: unknown): { header: string[]; body: string[] };
+      chatRowMatches(row: unknown, query: string): boolean;
+    };
+    const now = Date.parse('2026-06-07T13:00:00Z');
+    internals.approvalState = { ...internals.approvalState, now };
+    const tool = {
+      id: 't1',
+      timestamp: '2026-06-07T12:00:00Z',
+      tool: { name: 'Bash', arguments: 'ls -la', result: 'README.md' },
+    };
+    const time = `Time: ${new Date('2026-06-07T12:00:00Z').toLocaleString()}`;
+    expect(internals.chatRowText(tool)).to.deep.equal({
+      header: [time, 'Tool: Bash'],
+      body: ['Arguments: ls -la', 'Result: README.md'],
+    });
+    expect(internals.chatRowMatches(tool, 'readme')).to.equal(true);
+
+    const approval = (status: string, expires_at?: string) => ({
+      id: 'a1',
+      timestamp: '2026-06-07T12:00:00Z',
+      request: { tool_name: 'write_file', status, expires_at },
+    });
+    expect(internals.chatRowText(approval('declined')).body).to.deep.equal([
+      'Denied',
+    ]);
+    // A pending request past its expiry reads as timed out, as on the card.
+    const expired = approval('pending', '2026-06-07T12:30:00Z');
+    expect(internals.chatRowText(expired).body).to.deep.equal(['Timed out']);
+    expect(internals.chatRowMatches(expired, 'timed out')).to.equal(true);
+    expect(internals.chatRowMatches(approval('declined'), 'denied')).to.equal(
+      true
+    );
+  });
+
+  it('disables copy when nothing matches and reports a failed copy', async () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('denied');
+        },
+      },
+    });
+    const toasts: string[] = [];
+    const listener = (event: Event) =>
+      toasts.push((event as CustomEvent<{ message: string }>).detail.message);
+    window.addEventListener('show-toast', listener);
+    const consoleError = console.error;
+    console.error = () => {};
+    try {
+      const element = await fixture<SessionReplayPanel>(html`
+        <session-replay-panel
+          replayMode="timeline"
+          .session=${SESSION}
+          .events=${events()}
+        ></session-replay-panel>
+      `);
+      const copy = () =>
+        [...element.shadowRoot!.querySelectorAll('sl-button')].find((button) =>
+          button.textContent?.includes('Copy as text')
+        )!;
+
+      copy().click();
+      await waitUntil(() => toasts.length === 1);
+      expect(toasts[0]).to.equal(
+        'Could not copy the requests to the clipboard.'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('[role="status"]')).to.equal(
+        null
+      );
+
+      await search(element, 'nothing like this');
+      expect(copy().hasAttribute('disabled')).to.equal(true);
+    } finally {
+      console.error = consoleError;
+      window.removeEventListener('show-toast', listener);
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
 });

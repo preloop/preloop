@@ -4,6 +4,10 @@ import {
   recordingEventActivity,
   recordingToolActivity,
 } from '../utils/recording-cue';
+import {
+  approvalStatusLabel,
+  normalizeApprovalRequest,
+} from '../utils/approvals';
 import { parseUTCDate } from '../utils/date';
 import {
   renderSessionApproval,
@@ -5903,7 +5907,11 @@ export class SessionReplayPanel extends LitElement {
                 >`
               : nothing
           }
-          <sl-button size="small" @click=${() => void this.copyChatRows()}>
+          <sl-button
+            size="small"
+            ?disabled=${search?.shown === 0}
+            @click=${() => void this.copyChatRows()}
+          >
             <sl-icon slot="prefix" name="clipboard"></sl-icon>
             Copy as text
           </sl-button>
@@ -5957,7 +5965,13 @@ export class SessionReplayPanel extends LitElement {
     const request = row.request!;
     return {
       header: [time, `Approval: ${request.tool_name}`],
-      body: [String(request.status || '')].filter(Boolean),
+      // The label the approval card shows ("Denied", "Timed out"), not the
+      // raw API status.
+      body: [
+        approvalStatusLabel(
+          normalizeApprovalRequest(request, this.approvalState.now).status
+        ),
+      ].filter(Boolean),
     };
   }
 
@@ -5971,7 +5985,9 @@ export class SessionReplayPanel extends LitElement {
   }
 
   private async copyChatRows(): Promise<void> {
-    const text = this.chatRows.shown
+    const shown = this.chatRows.shown;
+    if (!shown.length) return;
+    const text = shown
       .map((row) => {
         const { header, body } = this.chatRowText(row);
         return [...header, ...body].join('\n');
@@ -5979,8 +5995,19 @@ export class SessionReplayPanel extends LitElement {
       .join('\n\n');
     try {
       await navigator.clipboard.writeText(text);
-    } catch {
+    } catch (error) {
       this.chatCopied = false;
+      console.error('Failed to copy requests to the clipboard:', error);
+      this.dispatchEvent(
+        new CustomEvent('show-toast', {
+          bubbles: true,
+          composed: true,
+          detail: {
+            message: 'Could not copy the requests to the clipboard.',
+            variant: 'danger',
+          },
+        })
+      );
       return;
     }
     this.chatCopied = true;
