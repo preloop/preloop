@@ -2008,9 +2008,14 @@ async def replace_account_managed_agent_model_bindings(
 
 
 def _governance_defaults_response(
+    db: Session,
     account: Account,
 ) -> AccountGovernanceDefaultsResponse:
-    """Build the defaults response including per-agent override ids."""
+    """Build the defaults response including per-agent override ids.
+
+    Overrides left behind by deleted agents are omitted: the console resolves
+    each id to a name, and an id with no agent behind it is a guaranteed 404.
+    """
     store = normalize_subject_governance_store(account.meta_data or {})
     agents_bucket = store.get(SUBJECT_TYPE_MANAGED_AGENTS) or {}
     override_agent_ids = sorted(
@@ -2022,6 +2027,11 @@ def _governance_defaults_response(
             or config.get("approval_workflow_id")
         )
     )
+    if override_agent_ids:
+        existing = crud_managed_agent.existing_ids_for_account(
+            db, account_id=str(account.id), agent_ids=override_agent_ids
+        )
+        override_agent_ids = [i for i in override_agent_ids if i in existing]
     return AccountGovernanceDefaultsResponse(
         defaults=AccountGovernanceDefaults.model_validate(
             get_account_governance_defaults(account.meta_data or {})
@@ -2041,7 +2051,7 @@ async def get_account_governance_defaults_endpoint(
     db: Session = Depends(get_db_session),
 ) -> AccountGovernanceDefaultsResponse:
     """Account-wide native tool-approval defaults every agent inherits."""
-    return _governance_defaults_response(account)
+    return _governance_defaults_response(db, account)
 
 
 @router.put(
@@ -2083,7 +2093,7 @@ async def update_account_governance_defaults_endpoint(
     db.commit()
     db.refresh(account)
     invalidate_account_governance_cache(str(account.id))
-    return _governance_defaults_response(account)
+    return _governance_defaults_response(db, account)
 
 
 def _validate_governance_workflow(

@@ -9,6 +9,7 @@ The resolution chain for native tool approvals is: explicit per-agent value
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
@@ -159,3 +160,45 @@ def test_normalize_store_preserves_defaults_bucket():
         )["account_defaults"]
         == {}
     )
+
+
+def test_override_ids_skip_agents_that_no_longer_exist(db_session, test_user):
+    """A deleted agent's leftover override must not reach the Tools page.
+
+    The console resolves each override id to a name with GET /agents/:id, so
+    an id with no agent behind it costs a guaranteed 404 on every load.
+    """
+    from preloop.api.endpoints.account import _governance_defaults_response
+
+    live = models.ManagedAgent(
+        id=uuid.uuid4(),
+        account_id=test_user.account_id,
+        agent_kind="cursor",
+        session_source_type="cursor",
+        session_source_id="cursor-override",
+        display_name="Payments agent",
+        enrolled_via="runtime_session_token",
+        owner_user_id=test_user.id,
+        lifecycle_state="active",
+        lifecycle_updated_at=datetime.now(UTC).replace(tzinfo=None),
+        last_seen_at=datetime.now(UTC).replace(tzinfo=None),
+    )
+    db_session.add(live)
+    db_session.commit()
+    gone = uuid.uuid4()
+    account = _write_meta(
+        db_session,
+        test_user,
+        {
+            "subject_governance": {
+                SUBJECT_TYPE_MANAGED_AGENTS: {
+                    str(live.id): {"native_tool_approvals": "off"},
+                    str(gone): {"native_tool_approvals": "enforce"},
+                }
+            }
+        },
+    )
+
+    response = _governance_defaults_response(db_session, account)
+
+    assert response.override_agent_ids == [str(live.id)]
