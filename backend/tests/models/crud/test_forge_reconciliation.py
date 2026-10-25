@@ -608,3 +608,56 @@ def test_an_unpublished_claim_is_taken_over_after_the_grace_period(
     assert not crud_forge_webhook_delivery.claim(
         db_session, now=NOW + timedelta(days=1), **key
     )
+
+
+@pytest.mark.asyncio
+async def test_refresh_only_merge_updates_rollup_and_readiness(
+    db_session: Session,
+    test_user: Any,
+    forge: FakeForge,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services import fleet_code_activity
+    from preloop.services.readiness import scheduler
+
+    tracker = models.Tracker(
+        name="refresh-merge",
+        tracker_type="github",
+        api_key="test",
+        url="https://github.com",
+        account_id=test_user.account_id,
+    )
+    db_session.add(tracker)
+    db_session.flush()
+    rollup = crud_issue_cost.get_or_create_rollup(
+        db_session,
+        account_id=test_user.account_id,
+        tracker_id=tracker.id,
+        issue_key="acme/widgets#42",
+    )
+    row = make_pr(db_session, test_user.account_id, github_key(42), rollup_id=rollup.id)
+    assert rollup.merged_at is None
+    forge.answers["/repos/acme/widgets/pulls/42"] = {
+        "state": "closed",
+        "merged": True,
+        "merged_at": NOW.isoformat(),
+        "head": {"sha": HEAD},
+    }
+    emit = MagicMock()
+    monkeypatch.setattr(fleet_code_activity, "emit_merge_event", emit)
+    monkeypatch.setattr(scheduler.settings, "ticket_readiness_enabled", True)
+    await refresh.refresh_pull_requests(db_session, now=NOW)
+    db_session.refresh(rollup)
+    assert rollup.merged_at == NOW
+    job = db_session.query(models.ReadinessJob).filter_by(pr_id=row.id).one()
+    assert job.closed is True
+    emit.assert_called_once_with(
+        db_session,
+        account_id=test_user.account_id,
+        pr_key=github_key(42),
+        at=NOW,
+    )
+    assert (
+        await refresh.refresh_pull_requests(db_session, now=NOW + timedelta(minutes=5))
+    )["read"] == 0
+    assert emit.call_count == 1

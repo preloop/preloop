@@ -230,7 +230,14 @@ async def refresh_pull_requests(
     rows = crud_pull_request_refresh.claim_due(db, now=now, limit=limit)
     counts["claimed"] = len(rows)
     claimed = [
-        (row.id, row.account_id, row.pr_key, row.refresh_etag, row.head_sha)
+        (
+            row.id,
+            row.account_id,
+            row.pr_key,
+            row.refresh_etag,
+            row.head_sha,
+            row.merged_at,
+        )
         for row in rows
     ]
     # ``claim_due`` stamped every claimed row with this due time. A row whose
@@ -239,7 +246,7 @@ async def refresh_pull_requests(
     claim = now + REFRESH_REARM
     readers = _Readers(db)
     throttled: dict[str, datetime] = {}
-    for pull_request_id, account_id, pr_key, etag, known_head in claimed:
+    for pull_request_id, account_id, pr_key, etag, known_head, known_merge in claimed:
         ref = parse_pr_key(pr_key)
         if ref is None:
             crud_pull_request_refresh.defer(
@@ -330,7 +337,7 @@ async def refresh_pull_requests(
                 )
             except (TrackerError, ValueError):
                 facts["head_sha"] = None
-        crud_pull_request_refresh.record(
+        recorded = crud_pull_request_refresh.record(
             db,
             claimed_due=claim,
             pull_request_id=pull_request_id,
@@ -338,6 +345,18 @@ async def refresh_pull_requests(
             etag=response.etag,
             **facts,
         )
+        if (
+            recorded is not None
+            and known_merge is None
+            and recorded.merged_at is not None
+        ):
+            from preloop.services.fleet_code_activity import emit_merge_event
+            from preloop.services.readiness.scheduler import schedule_pull_request
+
+            emit_merge_event(
+                db, account_id=account_id, pr_key=pr_key, at=recorded.merged_at
+            )
+            schedule_pull_request(db, recorded)
         counts["updated"] += 1
     crud_forge_webhook_delivery.prune(
         db, before=now - DELIVERY_RETENTION, limit=DELIVERY_PRUNE_BATCH

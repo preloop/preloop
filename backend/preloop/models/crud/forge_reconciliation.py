@@ -132,6 +132,7 @@ class CRUDPullRequestRefresh:
         )
         if row is None:
             return None
+        previous_merged_at = row.merged_at
         marked_mid_read = claimed_due is not None and row.refresh_due_at != claimed_due
         if not not_modified:
             # The read that observes the merge still records the merged head.
@@ -154,6 +155,13 @@ class CRUDPullRequestRefresh:
             row.refresh_due_at = (
                 None if row.state in {"merged", "closed"} else now + REFRESH_REARM
             )
+        if row.merged_at is not None and previous_merged_at is None and row.rollup_id:
+            # Persist the derived cycle-time fact with the merge itself. A
+            # terminal row will not be retried by the normal refresh cadence.
+            from .issue_cost import crud_issue_cost
+
+            db.flush()
+            crud_issue_cost.recompute_rollup(db, rollup_id=row.rollup_id)
         db.commit()
         return row
 
