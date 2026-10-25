@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { readTableUrlState } from '../../table/table-url-state';
 import '../../components/copilot-activity-panel.ts';
 import {
@@ -1464,7 +1465,7 @@ export class AgentsView extends LitElement {
   private async fetchUsers(): Promise<
     Array<{ id: string; username: string; email: string }>
   > {
-    const response = await fetchWithAuth('/api/v1/users');
+    const response = await fetchWithAuth(REST_API_PREFIX + '/users');
     if (!response.ok) {
       return [];
     }

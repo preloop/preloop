@@ -14,6 +14,7 @@ while streaming, so an oversized upload is refused without buffering it.
 from __future__ import annotations
 
 import json
+from uuid import UUID
 from typing import Any, Optional
 
 from anyio import from_thread
@@ -27,7 +28,10 @@ from preloop.api.gateway_auth_dependency import (
     authenticate_request,
     get_browser_step_auth_context,
 )
-from preloop.models import models
+from preloop.models.crud import crud_account, crud_user
+from preloop.models.crud import media_sync as crud_media_sync
+from preloop.schemas.media_timing import MediaTiming, MediaSyncOut
+from preloop.services.media_sync import session_media_sync
 from preloop.models.db.session import get_db_session
 from preloop.schemas.runtime_session_artifact import (
     ArtifactDepositIn,
@@ -52,7 +56,11 @@ _ERRORS = {
 _DEPOSIT_BODY = {
     "required": True,
     "content": {
-        "application/json": {"schema": ArtifactDepositIn.model_json_schema()},
+        "application/json": {
+            "schema": ArtifactDepositIn.model_json_schema(
+                ref_template="#/components/schemas/{model}"
+            )
+        },
         "multipart/form-data": {
             "schema": {
                 "type": "object",
@@ -121,6 +129,7 @@ def deposit_runtime_session_artifact(
             activity_id=fields.activity_id,
             parent_artifact_id=fields.parent_artifact_id,
             tool_name=fields.tool_name,
+            media_timing=fields.media_timing,
             idempotency_key=idempotency_key,
         )
     except ArtifactDepositError as exc:
@@ -174,8 +183,8 @@ def list_runtime_session_artifacts(
             db, auth=auth, runtime_session_id=runtime_session_id
         )
         if auth.runtime_session_id is None:
-            user = db.get(models.User, auth.user.id)
-            account = db.get(models.Account, auth.account_id)
+            user = crud_user.get(db, id=auth.user.id)
+            account = crud_account.get(db, id=auth.account_id)
             _require_view_runtime_sessions(current_user=user, db=db)
             require_session_history(
                 db,
@@ -259,3 +268,82 @@ async def _parse_multipart(request: Request, body: bytes):
         return fields, payload
     finally:
         await form.close()
+
+
+@require_permission("manage_agents")
+def _require_manage_agents(*, current_user: Any, db: Session) -> None:
+    """Unbound timing writers require the agent-management permission."""
+
+
+@router.patch(
+    "/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}/media-timing",
+    response_model=RuntimeSessionArtifactOut,
+    responses=_ERRORS,
+)
+def update_artifact_media_timing(
+    runtime_session_id: str,
+    artifact_id: UUID,
+    timing: MediaTiming,
+    db: Session = Depends(get_db_session),
+    auth: ModelGatewayAuthContext = Depends(get_browser_step_auth_context),
+) -> RuntimeSessionArtifactOut:
+    """Idempotently replace timing using a session-bound key or manage_agents."""
+    try:
+        session = artifact_deposit.require_session(
+            db, auth=auth, runtime_session_id=runtime_session_id
+        )
+        if auth.runtime_session_id is None:
+            _require_manage_agents(
+                current_user=crud_user.get(db, id=auth.user.id), db=db
+            )
+        artifact = crud_media_sync.update_timing(
+            db,
+            account_id=auth.account_id,
+            session_id=session.id,
+            artifact_id=artifact_id,
+            user_id=auth.user.id,
+            timing=timing.model_dump(mode="json"),
+        )
+        if artifact is None:
+            raise HTTPException(404, "artifact_not_found")
+        artifact_deposit._emit_session_updated(
+            db, account_id=auth.account_id, session=session
+        )
+        return artifact_deposit.describe(artifact)
+    except ArtifactDepositError as exc:
+        raise HTTPException(exc.status_code, exc.code) from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@router.get(
+    "/runtime-sessions/{runtime_session_id}/media-sync",
+    response_model=MediaSyncOut,
+    responses=_ERRORS,
+)
+def get_session_media_sync(
+    runtime_session_id: str,
+    db: Session = Depends(get_db_session),
+    auth: ModelGatewayAuthContext = Depends(_list_auth_context),
+) -> MediaSyncOut:
+    """Resolve recording positions with the artifact read authorization."""
+    try:
+        session = artifact_deposit.require_session(
+            db, auth=auth, runtime_session_id=runtime_session_id
+        )
+        if auth.runtime_session_id is None:
+            _require_view_runtime_sessions(
+                current_user=crud_user.get(db, id=auth.user.id), db=db
+            )
+            require_session_history(
+                db,
+                account=crud_account.get(db, id=auth.account_id),
+                summary={
+                    "started_at": session.started_at,
+                    "last_activity_at": session.last_activity_at,
+                    "ended_at": session.ended_at,
+                },
+            )
+        return session_media_sync(db, account_id=auth.account_id, session_id=session.id)
+    except ArtifactDepositError as exc:
+        raise HTTPException(exc.status_code, exc.code) from None

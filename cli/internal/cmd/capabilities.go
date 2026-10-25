@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
 )
 
@@ -76,7 +77,7 @@ func fetchFeatures() (map[string]any, error) {
 		return nil, nil
 	}
 	client := &http.Client{Timeout: capabilityLookupTimeout}
-	resp, err := client.Get(cfg.APIURL + "/api/v1/features")
+	resp, err := client.Get(cfg.APIURL + api.RESTPrefix + "/features")
 	if err != nil {
 		return nil, err
 	}

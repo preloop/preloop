@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth } from '../api';
 
 export interface InferenceHookConfig {
@@ -28,7 +29,7 @@ export interface InferenceHookHealth {
   pilot_state: 'pending';
 }
 
-const BASE = '/api/v1/anthropic/inference-hooks';
+const BASE = REST_API_PREFIX + '/anthropic/inference-hooks';
 
 export function isIntegrationId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(

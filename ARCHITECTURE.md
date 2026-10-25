@@ -150,7 +150,11 @@ Public route and versioning boundaries are defined in
 [ADR 0001](docs/architecture/decisions/0001-api-versioning.md) and the
 [compatibility policy](docs/compatibility.md#api-versioning): REST uses
 `/api/v1`, while OAuth discovery/operations, MCP, and provider gateway
-prefixes follow their respective protocol contracts.
+prefixes follow their respective protocol contracts. REST responses, including
+errors, carry the diagnostics-only `Preloop-Server-Version` software release
+header. The header wraps the complete FastAPI middleware stack so early
+rejections and unhandled errors retain it. CLI and console REST URL builders
+share a prefix within each client; they do not negotiate versions by header.
 
 ## High-Level Architecture
 
@@ -504,7 +508,11 @@ The agent-facing tool: [search_sessions](docs/guide/agent-session-search.md).
 Audit collection also offers a durable delivery path behind the default-off
 `PRELOOP_AUDIT_OUTBOX_ENABLED` flag. Committed sanitized intents are relayed into
 audit rows transactionally; failed deliveries back off and park after a finite
-retry budget. Local operators can preview and replay a bounded failed batch for
+retry budget. Approval transitions, policy evaluation, MCP activity outcomes and
+model-content policy hits enqueue in their owning database transactions, bypassing
+bounded audit admission. Async callers await only local database work; the relay
+owns its sessions on a separate thread. Due lag, failed attempts and parked rows
+have opt-in Helm alert rules; drop alerts remain for best-effort callers. Local operators can preview and replay a bounded failed batch for
 one account with `python -m preloop.services.audit.replay`. See
 [Audit outbox operations](docs/operations/audit-outbox.md) for activation,
 admission limits, metrics and recovery.
@@ -1387,6 +1395,23 @@ Planned rollouts retain the 900-second stream drain. This prevents an unhealthy
 replica from spending the full rollout window draining before replacement.
 The chart renders probe-level grace on Kubernetes 1.28 or newer; older
 clusters retain the existing pod-level grace behavior.
+
+## Recording timeline synchronization
+
+Session artifacts optionally store typed `media_timing` independently of labels.
+`services/media_sync.py` resolves exact step offsets, producer timestamps and
+median-corrected server timestamps using metadata-only CRUD reads. The same
+resolver feeds `GET /runtime-sessions/{id}/media-sync` and signed evidence
+exports. Browser-step receipt times are server-owned; the migration backfills
+existing rows from activity creation time. Timing PATCH writes and its audit
+record commit atomically under the artifact account/session authorization.
+
+The Lit `session-recording-player` lives in the session observer, outside Talk
+routing and transcript construction. It uses the existing authorized artifact
+cache, independent mappings per recording, and a default-on
+`syncedRecordingPlayer` host option. Unmapped moments never clamp; GIFs use a
+plain-image fallback. Browser Use and Skyvern producers emit timing through the
+existing deposit API. See [the recording contract](docs/guide/artifacts.md#recordings-synchronized-to-the-timeline).
 
 ### Optional vendor organization activity
 

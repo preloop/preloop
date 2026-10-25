@@ -61,18 +61,18 @@ func executeModelsList(client *api.Client, w io.Writer) error {
 		Name string `json:"name"`
 		ID   string `json:"id"`
 	}
-	if err := client.Get("/api/v1/ai-models", &own); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &own); err != nil {
 		return err
 	}
 	var features struct {
 		Features map[string]any `json:"features"`
 	}
-	if err := client.Get("/api/v1/features", &features); err != nil {
+	if err := client.Get(api.RESTPrefix+"/features", &features); err != nil {
 		return err
 	}
 	if features.Features["hosted_models"] == true {
 		var hosted hostedModelInventory
-		if err := client.Get("/api/v1/account/hosted-models", &hosted); err != nil {
+		if err := client.Get(api.RESTPrefix+"/account/hosted-models", &hosted); err != nil {
 			return err
 		}
 		fmt.Fprintln(w, "Built-in (Preloop hosted) — operated by Preloop, metered against allowance:")
@@ -103,7 +103,7 @@ func executeHostedAliasCheck(client *api.Client, w io.Writer, alias string) erro
 		ModelCount   int     `json:"model_count"`
 		AccountCount int     `json:"account_count"`
 	}
-	if err := client.Get("/api/v1/admin/hosted-models/alias-check?alias="+url.QueryEscape(alias), &result); err != nil {
+	if err := client.Get(api.RESTPrefix+"/admin/hosted-models/alias-check?alias="+url.QueryEscape(alias), &result); err != nil {
 		if api.IsStatus(err, http.StatusNotFound) {
 			return fmt.Errorf("hosted alias checking is unavailable on this server")
 		}

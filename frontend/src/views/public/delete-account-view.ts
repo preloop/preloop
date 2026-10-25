@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { formStyles } from '../../styles/form-styles';
@@ -90,19 +91,22 @@ export class DeleteAccountView extends LitElement {
     this._success = false;
 
     try {
-      const response = await fetch('/api/v1/account/deletion-request', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          email: this._email,
-          username: this._username,
-          account_id: this._accountId,
-          org_name: this._orgName,
-          reason: this._reason,
-        }),
-      });
+      const response = await fetch(
+        REST_API_PREFIX + '/account/deletion-request',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: this._email,
+            username: this._username,
+            account_id: this._accountId,
+            org_name: this._orgName,
+            reason: this._reason,
+          }),
+        }
+      );
 
       if (!response.ok) {
         throw new Error('Network response was not ok');

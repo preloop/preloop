@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { formatUsd } from '../utils/money';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -1811,7 +1812,9 @@ export class ActivityFeed extends LitElement {
     try {
       // The same URL the console's other readers use, so a lookup that
       // overlaps one of theirs is coalesced into a single request.
-      const response = await fetchWithAuth('/api/v1/users?skip=0&limit=100');
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/users?skip=0&limit=100'
+      );
       if (!response.ok) return;
       const data = await response.json();
       const users = Array.isArray(data) ? data : data?.users;
@@ -1839,7 +1842,7 @@ export class ActivityFeed extends LitElement {
     if (since) params.set('start_date', since);
     for (const action of actions ?? []) params.append('event_type', action);
     const response = await fetchWithAuth(
-      `/api/v1/audit-logs/grouped?${params}`
+      `${REST_API_PREFIX}/audit-logs/grouped?${params}`
     );
     if (!response.ok) return null;
     const data = await response.json();

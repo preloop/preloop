@@ -76,3 +76,34 @@ the agent run is never stopped or slowed by Preloop.
 
 See [Browser steps](../../docs/guide/browser-agents.md) for the API and how
 steps appear in the console.
+
+
+## Recordings (0.2.0)
+
+Install `pip install 'preloop-browser-use[recording]'`. The supported history
+shape is fixture-tested against Browser Use 0.7.10. Its GIF implementation is
+`browser_use.agent.gif.create_history_gif`, not an Agent method; that stock
+export uses fixed three-second frames and an optional title frame. The
+reporter instead exports screenshots on their observed timebase, with no
+text overlays, so exact offsets remain meaningful.
+
+```python
+reporter = PreloopBrowserUseReporter.from_env()
+history = await reporter.run(agent, gif=True)
+# With a caller-owned Agent.run loop, call await reporter.finish(agent).
+# await reporter.finish(agent, gif=False) only flushes steps.
+```
+
+The initial time is the first step's `step_start_time` (or end time minus its
+reported duration). Frame positions use per-step timestamps at GIF's 10 ms
+precision. The exporter bounds decoded frames and refuses backwards times.
+Missing timing produces a plain GIF; missing screenshots leave the steps intact. GIFs
+upload as `screencast`; the console currently displays them without seeking.
+
+For a finished video use `finish(agent, recording_path="capture.webm",
+media_timing={"started_at": "2026-10-01T10:00:00Z", "clock": "agent"})`.
+MP4/WebM upload as `recording`. External files without `media_timing` remain
+plain players. `step_offsets` can provide exact positions. Uploads use
+`POST /runtime-sessions/{id}/artifacts`, a stable per-run idempotency key,
+three bounded retries, and the existing session credential. No `/recordings`
+endpoint is used. This package does not discover a session id or start capture.

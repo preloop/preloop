@@ -907,7 +907,7 @@ describe('ConsoleShell', () => {
     ]);
   });
 
-  it('orders the Audit group Approvals, Sessions, All events, Artifacts, Records', async () => {
+  it('orders the Audit group Approvals, Sessions, Delivery reports, All events, Artifacts, Records', async () => {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/api/v1/features')) {
@@ -940,6 +940,7 @@ describe('ConsoleShell', () => {
     expect(hrefs).to.deep.equal([
       '/console/approvals',
       '/console/runtime-sessions',
+      '/console/delivery-reports',
       '/console/audit',
       '/console/artifacts',
       '/console/settings/records',

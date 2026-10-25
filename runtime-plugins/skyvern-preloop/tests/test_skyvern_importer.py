@@ -133,6 +133,15 @@ def test_har_trace_and_recording_are_deposited_with_kinds(
         f"skyvern:{TASK}:a_trace",
         f"skyvern:{TASK}:a_rec",
     }
+    recording_body = preloop_handler.artifacts[f"skyvern:{TASK}:a_rec"]["body"]
+    metadata = json.loads(
+        recording_body.split(b'name="metadata"\r\n\r\n')[1].split(b"\r\n--")[0]
+    )
+    from preloop_skyvern.importer import recording_timing
+
+    assert metadata["media_timing"] == recording_timing(
+        recorded()["task"], recorded()["steps"]
+    )
     har_body = preloop_handler.artifacts[f"skyvern:{TASK}:a_har"]["body"]
     zipped = har_body.split(b"application/zip\r\n\r\n", 1)[1].rsplit(b"\r\n--", 1)[0]
     with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
@@ -445,3 +454,31 @@ def test_rows_refused_again_on_retry_keep_their_original_index(caplog):
         totals = preloop.post_steps(steps)
     assert totals.accepted == 5
     assert totals.rejected == [{"index": 5, "error": "extra_too_large"}]
+
+
+def test_recording_timing_uses_task_and_step_creation() -> None:
+    from datetime import datetime
+    from preloop_skyvern.importer import recording_timing
+
+    task = {"task_id": "task-1", "created_at": "2026-10-01T00:00:00Z"}
+    steps = [
+        {"step_id": f"step-{i}", "created_at": f"2026-10-01T00:00:0{i * 2}Z"}
+        for i in range(5)
+    ]
+    timing = recording_timing(task, steps)
+    assert timing["clock"] == "agent"
+    assert datetime.fromisoformat(timing["started_at"]).second == 0
+    assert timing["step_offsets"][3] == {
+        "source_step_id": "task-1:step-3",
+        "offset_ms": 6000,
+    }
+    assert (
+        recording_timing({"task_id": "task-1"}, steps)["started_at"]
+        == timing["started_at"]
+    )
+    assert (
+        recording_timing(
+            task, [{"step_id": "before", "created_at": "2026-09-30T23:59:59Z"}]
+        )["step_offsets"]
+        == []
+    )

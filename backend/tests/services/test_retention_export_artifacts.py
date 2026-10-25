@@ -4,6 +4,8 @@ Members ``artifacts/<session>/<artifact>-<name>`` with decrypted bytes, and
 ``artifacts/manifest.json`` as a list of A2A ``Artifact`` objects.
 """
 
+from typing import Any
+
 import hashlib
 import io
 import json
@@ -351,3 +353,45 @@ def test_undecryptable_bytes_abort_the_export(db_session, account, two):
     with pytest.raises(PeriodExportError) as caught:
         _export(db_session, account)
     assert caught.value.code == "artifact_unreadable"
+
+
+def test_recording_export_uses_the_api_mapping(db_session: Any, account: Any) -> None:
+    from preloop.models.crud import crud_runtime_session_activity
+    from preloop.schemas.browser_step import BrowserStepIn
+    from preloop.services.media_sync import session_media_sync
+
+    session = _session(db_session, account.id, "recording-export")
+    row = _artifact(
+        db_session,
+        session,
+        kind="recording",
+        name="capture.webm",
+        content_type="video/webm",
+        body=b"\x1a\x45\xdf\xa3" + b"\0" * 32,
+        media_timing={
+            "started_at": INSIDE.isoformat(),
+            "clock": "agent",
+            "duration_ms": 10000,
+            "step_offsets": [{"source_step_id": "step-4", "offset_ms": 6000}],
+        },
+    )
+    crud_runtime_session_activity.log_browser_step(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=session.id,
+        api_key_id=None,
+        step=BrowserStepIn(
+            source_step_id="step-4", step_index=4, action="click", occurred_at=INSIDE
+        ),
+        commit=False,
+    )
+    expected = (
+        session_media_sync(db_session, account_id=account.id, session_id=session.id)
+        .recordings[0]
+        .model_dump(mode="json")
+    )
+    export = _export(db_session, account)
+    members = _members(export.archive)
+    assert json.loads(members["artifacts/media-sync.json"])[str(row.id)] == expected
+    descriptor = json.loads(members[MEMBER_ARTIFACT_MANIFEST])[0]
+    assert descriptor["metadata"]["media_timing"] == row.media_timing

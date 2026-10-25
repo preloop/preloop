@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -1036,7 +1037,7 @@ export class PoliciesView extends LitElement {
   private async _refreshCurrentExport(): Promise<boolean> {
     try {
       const response = await fetchWithAuth(
-        '/api/v1/policies/export?format=yaml'
+        REST_API_PREFIX + '/policies/export?format=yaml'
       );
       if (!response.ok) {
         this._currentExportYaml = '';
@@ -1545,7 +1546,7 @@ export class PoliciesView extends LitElement {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetchWithAuth('/api/v1/policies/diff', {
+      const response = await fetchWithAuth(REST_API_PREFIX + '/policies/diff', {
         method: 'POST',
         body: formData,
       });
@@ -1585,10 +1586,13 @@ export class PoliciesView extends LitElement {
       const formData = new FormData();
       formData.append('file', this._pendingFile);
 
-      const response = await fetchWithAuth('/api/v1/policies/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/upload',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json();
@@ -1637,7 +1641,7 @@ export class PoliciesView extends LitElement {
 
     try {
       const response = await fetchWithAuth(
-        '/api/v1/policies/export?format=yaml'
+        REST_API_PREFIX + '/policies/export?format=yaml'
       );
 
       if (!response.ok) {
@@ -1705,10 +1709,13 @@ export class PoliciesView extends LitElement {
           type: 'application/x-yaml',
         })
       );
-      const response = await fetchWithAuth('/api/v1/policies/validate', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/validate',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       if (!response.ok) {
         const body = await response.json().catch(() => ({}));
@@ -1810,11 +1817,14 @@ export class PoliciesView extends LitElement {
         body.tag = this._versionForm.tag.trim();
       }
 
-      const response = await fetchWithAuth('/api/v1/policies/versions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/versions',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json();
@@ -1839,7 +1849,7 @@ export class PoliciesView extends LitElement {
     }
     try {
       const response = await fetchWithAuth(
-        `/api/v1/policies/versions/${versionId}/rollback`,
+        `${REST_API_PREFIX}/policies/versions/${versionId}/rollback`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1881,7 +1891,7 @@ export class PoliciesView extends LitElement {
     this._taggingVersion = true;
     try {
       const response = await fetchWithAuth(
-        `/api/v1/policies/versions/${versionId}/tag`,
+        `${REST_API_PREFIX}/policies/versions/${versionId}/tag`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -1926,7 +1936,7 @@ export class PoliciesView extends LitElement {
     this._deletingVersion = true;
     try {
       const response = await fetchWithAuth(
-        `/api/v1/policies/versions/${version.id}`,
+        `${REST_API_PREFIX}/policies/versions/${version.id}`,
         { method: 'DELETE' }
       );
 
@@ -1957,11 +1967,14 @@ export class PoliciesView extends LitElement {
         keep_count: this._pruneForm.minVersionsToKeep,
       };
 
-      const response = await fetchWithAuth('/api/v1/policies/versions/prune', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/versions/prune',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json();

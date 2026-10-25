@@ -65,7 +65,7 @@ func remoteCredentialCustody(client *api.Client, agent AgentConfig) ([]credentia
 		return nil, nil
 	}
 	var existing []mcpServerResponse
-	if err := client.Get("/api/v1/mcp-servers", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/mcp-servers", &existing); err != nil {
 		// API response bodies can contain credential material. Keep the public
 		// failure metadata-only rather than wrapping the unsanitized cause.
 		return nil, fmt.Errorf("cannot verify MCP credential custody before apply")
@@ -125,7 +125,7 @@ func preferExistingGatewayCustody(client *api.Client, agent AgentConfig, upstrea
 		return upstream
 	}
 	var models []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
 		return upstream
 	}
 	target := findReusableManagedGatewayAIModel(models, upstream)

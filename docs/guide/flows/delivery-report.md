@@ -176,6 +176,23 @@ finalizes it:
   agent cannot set these numbers. If the gateway could not price the run,
   the cost shows as unknown rather than zero.
 
+## In the console
+
+**Audit > Delivery reports** (`/console/delivery-reports`) lists every run
+that stored a report: period, projects, shipped changes, closed issues that
+are partial or have an evidence gap, proposals and spend. Open a run for the
+full report. Its summary strip shows the linkage, criteria availability and
+evidence availability ratios and the closed-issue verdict counts as separate
+numbers. "Unverified" is drawn as an evidence gap, never as a failure. Each
+section and each project has an anchor, and a change's or an issue's
+criteria and evidence expand in place.
+
+A reopen request shows as stale once the issue was edited, or new commits
+landed on its closing pull request, after the assessment. The Open issue,
+Reopen and Dismiss buttons are shown disabled for now: the server reports
+which report actions it supports (`actions` on
+`GET /api/v1/delivery-reports/{id}`) and none are implemented yet.
+
 The platform rechecks the agent's verdicts. A verdict that its cited
 evidence does not support is downgraded, and a risk flag with no evidence is
 dropped. A markdown rendering of the report is stored as
