@@ -40,6 +40,7 @@ def send_email(
     from_email: Optional[str] = None,
     *,
     timeout: Optional[float] = None,
+    headers: Optional[Dict[str, str]] = None,
 ) -> None:
     """Send an email using the configured SMTP server.
 
@@ -51,6 +52,7 @@ def send_email(
         from_email: Sender email address (defaults to SMTP_FROM).
         timeout: Optional SMTP socket timeout in seconds. Omit to retain
             the process socket default.
+        headers: Extra message headers, such as ``List-Unsubscribe``.
 
     Raises:
         EmailError: If email sending fails.
@@ -65,6 +67,8 @@ def send_email(
     msg["Subject"] = f"[{portal_url}] {subject}"
     msg["From"] = from_email
     msg["To"] = to_email
+    for name, value in (headers or {}).items():
+        msg[name] = value
 
     # Create the body of the message
     part1 = MIMEText(body_text, "plain")

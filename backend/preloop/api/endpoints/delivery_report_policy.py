@@ -147,13 +147,18 @@ def update_delivery_report_policy(
     Delivery Report flows in the same save.
     """
     ensure_permission_in_oss(db, current_user, "manage_budgets")
-    previous = resolve_policy(
-        crud_delivery_report_policy.get_overrides(db, account_id=account.id)
-    )
+    stored = crud_delivery_report_policy.get_overrides(db, account_id=account.id) or {}
+    previous = resolve_policy(stored)
     try:
         overrides = validate_account_overrides(payload.overrides)
     except PolicyOverrideError as exc:
         raise _refusal(exc) from exc
+    # Each person owns their own opt-out (the email link and
+    # /delivery-report/subscription), so a policy save keeps the stored list
+    # rather than resubscribing someone who opted out.
+    overrides.pop("opted_out_user_ids", None)
+    if stored.get("opted_out_user_ids"):
+        overrides["opted_out_user_ids"] = list(stored["opted_out_user_ids"])
     crud_delivery_report_policy.save_overrides(
         db, account_id=account.id, overrides=overrides, user_id=current_user.id
     )

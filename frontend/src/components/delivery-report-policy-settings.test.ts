@@ -57,8 +57,19 @@ function layer(level: 'account' | 'project', overrides = {}) {
   };
 }
 
-function stubApi(options: { permissions?: string[]; putStatus?: number } = {}) {
+function stubApi(
+  options: {
+    permissions?: string[];
+    putStatus?: number;
+    isRecipient?: boolean;
+  } = {}
+) {
   const puts: { path: string; body: any }[] = [];
+  const subscription = {
+    opted_out: false,
+    is_recipient: options.isRecipient ?? true,
+    report_enabled: true,
+  };
   const stub = sinon
     .stub(window, 'fetch')
     .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -72,6 +83,14 @@ function stubApi(options: { permissions?: string[]; putStatus?: number } = {}) {
             'edit_projects',
           ],
         });
+      if (path === '/api/v1/delivery-report/subscription') {
+        if (init?.method === 'PUT') {
+          const body = JSON.parse(String(init.body));
+          puts.push({ path, body });
+          return json({ ...subscription, opted_out: body.opted_out });
+        }
+        return json(subscription);
+      }
       if (path.startsWith('/api/v1/delivery-report/policy')) {
         const level = path.includes('/projects/') ? 'project' : 'account';
         if (init?.method === 'PUT') {
@@ -179,6 +198,35 @@ describe('delivery-report-policy-settings', () => {
     await waitUntil(() => puts.length === 1);
     expect(puts[0].path).to.equal('/api/v1/delivery-report/policy/projects/p1');
     expect(puts[0].body.overrides).to.deep.equal({ enabled: false });
+  });
+
+  it('lets the recipient stop their own email without the permission', async () => {
+    const { puts } = stubApi({ permissions: [] });
+    const el = await mount();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('sl-switch[data-field="subscribed"]')
+    );
+    const toggle = el.shadowRoot!.querySelector(
+      'sl-switch[data-field="subscribed"]'
+    ) as any;
+    expect(toggle.checked).to.equal(true);
+    expect(toggle.disabled).to.equal(false);
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event('sl-change'));
+    await waitUntil(() => puts.length === 1);
+    expect(puts[0]).to.deep.equal({
+      path: '/api/v1/delivery-report/subscription',
+      body: { opted_out: true },
+    });
+  });
+
+  it('shows no email switch to someone who is not the recipient', async () => {
+    stubApi({ isRecipient: false });
+    const el = await mount();
+    await el.updateComplete;
+    expect(
+      el.shadowRoot!.querySelector('sl-switch[data-field="subscribed"]')
+    ).to.equal(null);
   });
 
   it('is read-only without the permission', async () => {

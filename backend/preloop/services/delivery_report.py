@@ -37,12 +37,18 @@ from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequen
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from preloop.services.delivery_report_facts import body_summary
+
 #: ``agent_config`` key that marks a flow as a Delivery Report, so the
 #: orchestrator knows to finalize its result.
 REPORT_KIND_KEY = "report_kind"
 DELIVERY_REPORT_KIND = "delivery_report"
 #: Schema id written on every report, so a reader can tell versions apart.
 REPORT_SCHEMA = "preloop.delivery_report/v1"
+#: File names kept per shipped change in the report document.
+MAX_LISTED_FILES = 50
+#: File names rendered per change in the markdown and the email.
+RENDERED_FILES = 8
 
 PURPOSE_COVERED = "covered"
 PURPOSE_PARTIAL = "partial"
@@ -1363,6 +1369,7 @@ def assemble_report(
         if "criteria" not in purpose:
             purpose["criteria"] = criteria
         deterministic = detect_risk_flags(pr, policy=pr_policy)
+        changed = _changed_files(pr)
         risk = deterministic + list(agent.get("risk_flags") or [])
         shipped.append(
             {
@@ -1375,6 +1382,11 @@ def assemble_report(
                 "merged_at": pr.get("merged_at"),
                 "issues": links,
                 "summary": agent.get("summary"),
+                # What the PR says about itself and what it touched, so the
+                # deterministic report describes a change without a model.
+                "body_summary": body_summary(pr.get("description")),
+                "files": [f["filename"] for f in changed][:MAX_LISTED_FILES],
+                "files_changed": _file_count(pr) if changed else None,
                 "purpose": purpose,
                 "risk_flags": risk,
                 "evidence_gaps": evidence_gaps(pr),
@@ -1951,6 +1963,22 @@ def _link(item: Mapping[str, Any]) -> str:
     return f"[{label}]({url})" if url else label
 
 
+def change_detail_lines(change: Mapping[str, Any]) -> List[str]:
+    """The PR's own summary and its files, one line each, when stored."""
+    lines: List[str] = []
+    if change.get("body_summary"):
+        lines.append(str(change["body_summary"]))
+    files = [str(f) for f in change.get("files") or []]
+    if files:
+        total = change.get("files_changed") or len(files)
+        shown = ", ".join(files[:RENDERED_FILES])
+        more = total - min(len(files), RENDERED_FILES)
+        lines.append(
+            f"Files ({total}): {shown}" + (f" and {more} more" if more > 0 else "")
+        )
+    return lines
+
+
 def render_markdown(report: Mapping[str, Any]) -> str:
     """Render the report as markdown, one heading per section."""
     window = report.get("window") or {}
@@ -2006,6 +2034,7 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- {_link(change)} ({change.get('area') or 'unknown'}): purpose "
             f"{_VERDICT_LABELS[purpose['verdict']]}" + (f", {source}" if source else "")
         )
+        lines.extend(f"  - {line}" for line in change_detail_lines(change))
         for c in purpose["criteria"]:
             state = {True: "met", False: "not met", None: "evidence gap"}[c["met"]]
             cite = f" ({'; '.join(c['evidence'])})" if c["evidence"] else ""

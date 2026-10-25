@@ -4,9 +4,12 @@ import { getUserProfile, hasPermission } from '../api';
 import {
   clearDeliveryReportPolicy,
   getDeliveryReportPolicy,
+  getDeliveryReportSubscription,
   saveDeliveryReportPolicy,
+  saveDeliveryReportSubscription,
   type DeliveryReportPolicy,
   type DeliveryReportPolicyLayer,
+  type DeliveryReportSubscription,
   type PolicyOverrides,
 } from '../delivery-report-policy-api';
 import { showToast } from './confirm-dialog';
@@ -52,6 +55,7 @@ export class DeliveryReportPolicySettings extends LitElement {
   @state() private canManage = false;
   @state() private saving = false;
   @state() private error = '';
+  @state() private subscription: DeliveryReportSubscription | null = null;
   private generation = 0;
 
   static styles = css`
@@ -141,6 +145,12 @@ export class DeliveryReportPolicySettings extends LitElement {
         this.isProject ? 'edit_projects' : 'manage_budgets'
       );
       this.adopt(layer);
+      if (!this.isProject) {
+        // Each person's own copy; any member may change it.
+        this.subscription = await getDeliveryReportSubscription().catch(
+          () => null
+        );
+      }
     } catch {
       // A server without the report policy, or a member who cannot read
       // flows, gets no card.
@@ -189,7 +199,8 @@ export class DeliveryReportPolicySettings extends LitElement {
     }
     const defaults = layer.defaults;
     for (const key of Object.keys(draft) as (keyof DeliveryReportPolicy)[]) {
-      if (key === 'tracker_writes') continue;
+      // Opt-outs belong to each person (the email link, the switch below).
+      if (key === 'tracker_writes' || key === 'opted_out_user_ids') continue;
       if (!same(draft[key], defaults[key])) out[key] = draft[key];
     }
     const writes: Record<string, unknown> = {};
@@ -223,6 +234,21 @@ export class DeliveryReportPolicySettings extends LitElement {
         error instanceof Error ? error.message : 'Could not save the policy.';
     } finally {
       this.saving = false;
+    }
+  }
+
+  private async setSubscribed(subscribed: boolean): Promise<void> {
+    try {
+      this.subscription = await saveDeliveryReportSubscription(!subscribed);
+      showToast(
+        subscribed
+          ? 'You will receive the report email.'
+          : 'You will no longer receive the report email.',
+        'success'
+      );
+    } catch (error) {
+      this.error =
+        error instanceof Error ? error.message : 'Could not save the setting.';
     }
   }
 
@@ -472,6 +498,19 @@ export class DeliveryReportPolicySettings extends LitElement {
               : nothing
           }
         </div>
+        ${
+          this.subscription?.is_recipient
+            ? html`<sl-switch
+                data-field="subscribed"
+                ?checked=${!this.subscription.opted_out}
+                @sl-change=${(event: Event) =>
+                  void this.setSubscribed(
+                    (event.target as HTMLInputElement).checked
+                  )}
+                >Email me this report</sl-switch
+              >`
+            : nothing
+        }
         <p class="meta">
           Anyone can stop their own copy from the link in the email.
         </p>

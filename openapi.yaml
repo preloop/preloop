@@ -22876,6 +22876,63 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/delivery-report/subscription:
+    get:
+      tags:
+      - Delivery Report
+      summary: Read your own Delivery Report email subscription
+      description: Return whether the caller receives the report email.
+      operationId: read_delivery_report_subscription_api_v1_delivery_report_subscription_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportSubscription'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Delivery Report
+      summary: Opt out of, or back into, the Delivery Report email
+      description: Change only the caller's own subscription.
+      operationId: update_delivery_report_subscription_api_v1_delivery_report_subscription_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryReportSubscriptionUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportSubscription'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/settings/embedding:
     get:
       tags:
@@ -31799,6 +31856,34 @@ components:
       - window
       title: DeliveryReportRow
       description: One run on the collection page.
+    DeliveryReportSubscription:
+      properties:
+        opted_out:
+          type: boolean
+          title: Opted Out
+        is_recipient:
+          type: boolean
+          title: Is Recipient
+        report_enabled:
+          type: boolean
+          title: Report Enabled
+      type: object
+      required:
+      - opted_out
+      - is_recipient
+      - report_enabled
+      title: DeliveryReportSubscription
+      description: Whether the signed-in person receives the report email.
+    DeliveryReportSubscriptionUpdate:
+      properties:
+        opted_out:
+          type: boolean
+          title: Opted Out
+      type: object
+      required:
+      - opted_out
+      title: DeliveryReportSubscriptionUpdate
+      description: Opt out of, or back into, the report email.
     DeliveryReportWindow:
       properties:
         from:

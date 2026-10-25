@@ -37,6 +37,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
     false as sa_false,
     text,
@@ -273,6 +274,20 @@ class IssueCostPullRequest(Base):
         DateTime(timezone=True), nullable=True
     )
     refresh_etag: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # What the deterministic Delivery Report reads without a model call
+    # (#2020). Filled from webhooks and a bounded forge read before a run;
+    # NULL means not observed. ``body`` is bounded and keeps the change
+    # brief and review summary blocks. ``changed_files`` holds
+    # ``{filename, status, additions, deletions}`` per file, plus ``patch``
+    # for migration files only; ``files_changed`` is the forge's own count.
+    title: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    body: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    author_login: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    changed_files: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
+    files_changed: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    details_observed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class IssueCostPullRequestIssue(Base):
