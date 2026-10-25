@@ -570,6 +570,9 @@ def _read_stored_usage(
         total.last_usage_id,
         total.latest_model_alias,
         total.latest_provider_name,
+        # The live path keeps the principal's own latest request on a tie
+        # and lets a session row win only when it is strictly newer.
+        literal_column("0").label("source_rank"),
     ).where(*direct_filter)
     aggregate_queries = [direct]
     owned_pairs = [
@@ -613,6 +616,7 @@ def _read_stored_usage(
                 total.last_usage_id,
                 total.latest_model_alias,
                 total.latest_provider_name,
+                literal_column("1").label("source_rank"),
             )
             .select_from(joined)
             .where(*session_filter)
@@ -638,6 +642,7 @@ def _read_stored_usage(
             candidates.c.owner_type,
             candidates.c.owner_id,
             candidates.c.last_request_at.desc(),
+            candidates.c.source_rank,
             candidates.c.last_usage_id.desc(),
         )
     ):

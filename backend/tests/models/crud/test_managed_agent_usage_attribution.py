@@ -978,3 +978,48 @@ def test_all_time_usage_by_agent_reads_stored_totals_with_identical_figures(
         expected, expected_cost = _without_cost(by_agent[row["agent_id"]])
         assert actual == expected
         assert actual_cost == pytest.approx(expected_cost)
+
+
+def test_stored_latest_model_keeps_the_live_tie_break(
+    db_session: Session, fleet: dict[str, Any], test_user: Any
+) -> None:
+    """On equal timestamps the agent's own principal wins, as on the live path."""
+    account_id = str(test_user.account_id)
+    agent = fleet["a"]
+    tie = NOW + timedelta(minutes=5)
+    for principal_id, alias, provider in (
+        (agent.session_source_id, "direct-model", "direct-provider"),
+        (f"{agent.session_source_id}:run-1", "session-model", "session-provider"),
+        (f"{agent.session_source_id}:run-1", "session-model-2", "session-provider"),
+    ):
+        row = crud_api_usage.log_gateway_request(
+            db_session,
+            endpoint="/openai/v1/chat/completions",
+            method="POST",
+            status_code=200,
+            duration=0.1,
+            account_id=account_id,
+            runtime_session_id=str(fleet["run_colon"].id),
+            model_alias=alias,
+            provider_name=provider,
+            prompt_tokens=10,
+            completion_tokens=1,
+            total_tokens=11,
+            estimated_cost=0.01,
+            runtime_principal_type="claude_code",
+            runtime_principal_id=principal_id,
+        )
+        row.timestamp = tie
+    db_session.flush()
+    _set_backfill_ready(db_session, False)
+    live = crud_managed_agent.get_usage_aggregate_for_account(
+        db_session, account_id=account_id, agent_id=str(agent.id)
+    )
+    _set_backfill_ready(db_session, True)
+    stored = crud_managed_agent.get_usage_aggregate_for_account(
+        db_session, account_id=account_id, agent_id=str(agent.id)
+    )
+    assert live["latest_model_alias"] == "direct-model"
+    assert stored["latest_model_alias"] == live["latest_model_alias"]
+    assert stored["latest_provider_name"] == live["latest_provider_name"]
+    assert stored["last_request_at"] == live["last_request_at"]
