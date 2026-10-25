@@ -424,9 +424,7 @@ class IssueLifecycleService:
                         {"number": link.number, "sha": link.sha, "url": link.url}
                         for link in links
                     ],
-                    "runtime_evidence": await self.provider.runtime_evidence(
-                        merge.sha
-                    ),
+                    "runtime_evidence": await self.provider.runtime_evidence(merge.sha),
                 }
                 row = self._put("merge_audit", merge.sha, "queued", data)
             event = {
