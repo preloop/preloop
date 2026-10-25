@@ -816,3 +816,44 @@ def test_account_policy_save_keeps_personal_opt_outs(
     assert response.status_code == 200
     assert _opted_out(db_session, owner) == [str(owner.id)]
     assert response.json()["effective"]["pr_ready_days"] == 3
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_subgroup_report_scope_and_project_override(
+    enabled: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from preloop.models.crud import crud_delivery_report_policy, crud_flow_execution
+
+    project = "group/sub/project"
+    pr = {
+        "url": f"https://gitlab.com/{project}/-/merge_requests/7",
+        "number": 7,
+        "title": "Change",
+        "state": "merged",
+        "merged_at": "2026-10-23T12:00:00Z",
+        "changes": {"changed_files": []},
+    }
+    monkeypatch.setattr(
+        crud_delivery_report_policy, "pull_request_facts", lambda *args, **kwargs: [pr]
+    )
+    monkeypatch.setattr(
+        crud_delivery_report_policy, "issue_facts", lambda *args, **kwargs: []
+    )
+    monkeypatch.setattr(
+        crud_flow_execution, "latest_with_result", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(dr, "load_merge_audits", lambda *args, **kwargs: {"audits": []})
+    report = dr.deterministic_report(
+        None,
+        flow=SimpleNamespace(id=uuid.uuid4(), account_id=uuid.uuid4()),
+        execution=SimpleNamespace(id=None),
+        window=WINDOW,
+        run=dr.PolicyRun(
+            decision="deterministic",
+            policy=dr.DeliveryReportPolicy(projects=[project]),
+            project_policies={project: dr.DeliveryReportPolicy(enabled=enabled)},
+        ),
+    )
+    assert [change["ref"] for change in report["shipped"]] == (
+        [f"{project}#7"] if enabled else []
+    )

@@ -981,16 +981,13 @@ def _area(pr: Mapping[str, Any]) -> str:
     return sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
 
 
-_PR_URL_RE = re.compile(
-    r"/([^/]+/[^/]+?)(?:/-)?/(?:pull|pulls|merge_requests|pull-requests)/(\d+)"
-)
-
-
 def _pr_ref(pr: Mapping[str, Any]) -> str:
-    """``owner/repo#number``, from the PR URL (the response has no project)."""
-    match = _PR_URL_RE.search(str(pr.get("url") or ""))
-    if match:
-        return f"{match.group(1)}#{match.group(2)}"
+    """Full repository path and PR number, including GitLab subgroups."""
+    from preloop.services.delivery_report_facts import parse_pr_key
+
+    parsed = parse_pr_key(str(pr.get("url") or ""))
+    if parsed is not None:
+        return f"{parsed[0]}#{parsed[1]}"
     return f"{pr.get('project') or ''}#{pr.get('number')}"
 
 
