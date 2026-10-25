@@ -494,4 +494,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert credential_backfill.down_revision == "20261110_prune_api_usage_idx"
     credential_columns = script.get_revision("20261111_credential_columns")
     assert credential_columns.down_revision == "20261110_credential_backfill"
-    assert script.get_heads() == ["20261111_credential_columns"]
+    report_policy = script.get_revision("20261112_delivery_report_policy")
+    assert report_policy.down_revision == "20261111_credential_columns"
+    assert script.get_heads() == ["20261112_delivery_report_policy"]
