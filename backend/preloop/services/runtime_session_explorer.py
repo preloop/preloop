@@ -28,7 +28,6 @@ from preloop.models.crud import (
 from preloop.models.models.account import Account
 from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.approval_request import ApprovalRequest
-from preloop.models.models.runtime_session import RuntimeSession
 from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
 from preloop.services.analytics_history import (
     AnalyticsHistoryWindow,
@@ -319,7 +318,7 @@ class RuntimeSessionExplorerService:
         account: Account,
         items: list[RuntimeSessionSummary],
     ) -> None:
-        """Attach agent, cwd, tool call and pending approval fields in place.
+        """Attach agent, tool call and pending approval fields in place.
 
         These are what lets a terminal list tell two sessions apart and say
         which one needs a human (#1148). Each is one batched query for the
@@ -331,7 +330,6 @@ class RuntimeSessionExplorerService:
         session_ids = [item.id for item in items]
         for attach in (
             self._attach_managed_agents,
-            self._attach_cwds,
             self._attach_tool_call_counts,
             self._attach_pending_approval_counts,
             self._attach_artifact_counts,
@@ -381,27 +379,6 @@ class RuntimeSessionExplorerService:
             item.agent_href = f"/console/agents/{row.id}"
             item.managed_agent_name = row.display_name
             item.agent_kind = row.agent_kind
-
-    def _attach_cwds(
-        self,
-        *,
-        account: Account,
-        items: list[RuntimeSessionSummary],
-        session_ids: list[str],
-    ) -> None:
-        """Copy the hook-reported working directory onto each row."""
-        rows = (
-            self.db.query(RuntimeSession.id, RuntimeSession.cwd)
-            .filter(
-                RuntimeSession.account_id == account.id,
-                RuntimeSession.id.in_(session_ids),
-                RuntimeSession.cwd.isnot(None),
-            )
-            .all()
-        )
-        cwd_by_session = {str(row.id): row.cwd for row in rows}
-        for item in items:
-            item.cwd = cwd_by_session.get(item.id)
 
     def _attach_tool_call_counts(
         self,
