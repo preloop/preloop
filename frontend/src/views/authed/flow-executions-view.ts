@@ -257,9 +257,16 @@ export class FlowExecutionsView extends AuthedElement {
         /* The subject is the primary way to tell executions apart, so it gets
          the width the fixed columns leave over. */
         .subject-cell {
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+        .subject-cell .execution-subject-text {
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+        .subject-cell .execution-subject {
+          white-space: normal;
+          overflow-wrap: anywhere;
         }
         .subject-cell .execution-subject.is-fallback {
           font-family: var(--sl-font-mono);
@@ -873,6 +880,7 @@ export class FlowExecutionsView extends AuthedElement {
       {
         id: 'subject',
         header: 'Subject',
+        minWidth: 200,
         // No width and no resize handle: this is the column that takes what
         // the others leave, which is how the table fits its wrapper.
         resizable: false,

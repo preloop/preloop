@@ -328,15 +328,19 @@ notification.
 | `WEBHOOK_DELIVERY_POLL_SECONDS` | `5` | Outbox poll interval |
 | `WEBHOOK_DELIVERY_BATCH_SIZE` | `50` | Deliveries claimed per pass |
 | `WEBHOOK_DELIVERY_CONCURRENCY` | `8` | Concurrent POSTs per pass |
-| `WEBHOOK_DELIVERY_TIMEOUT_SECONDS` | `10` | Per-attempt HTTP timeout |
+| `WEBHOOK_DELIVERY_TIMEOUT_SECONDS` | `10` | Per-attempt HTTP timeout; with the target policy on, the connect budget covers resolution and up to three checked addresses |
 | `WEBHOOK_MAX_PENDING_PER_ACCOUNT` | `10000` | Outbox bound per account |
 | `WEBHOOK_CIRCUIT_FAILURE_THRESHOLD` | `10` | Consecutive failures that open the breaker |
 | `WEBHOOK_CIRCUIT_COOLDOWN_SECONDS` | `900` | How long the breaker stays open |
 | `WEBHOOK_DELIVERY_RETENTION_DAYS` | `14` | Retention for delivered and dead rows |
-| `WEBHOOK_BLOCK_PRIVATE_TARGETS` | `false` | Refuse URLs resolving to loopback, link-local, private or reserved space |
+| `WEBHOOK_BLOCK_PRIVATE_TARGETS` | `false` | Refuse URLs resolving to loopback, link-local, private, site-local, reserved or otherwise non-global space |
 
 `WEBHOOK_BLOCK_PRIVATE_TARGETS` is off by default because a self-hosted
 deployment posting to a collector on the same private network is the normal
-case. Turn it on for multi-tenant hosting. The check resolves the hostname
-when the endpoint is registered, not on every attempt, so a name that later
-re-resolves into private space is not caught by it.
+case. Turn it on for multi-tenant hosting. Registration and every delivery
+attempt check all resolved addresses; any non-public answer rejects the target.
+Delivery connects to a checked address while preserving the original HTTP Host
+and TLS hostname verification. Retries resolve and check again, and redirects
+are not followed. With this policy enabled, the delivery worker connects
+directly, without environment proxies, so a proxy cannot independently resolve
+an unchecked destination.

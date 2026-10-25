@@ -1347,7 +1347,7 @@ export class InventoryCard extends LitElement {
         // about 60px, enough for "No model" and an ellipsised alias.
         // 212, not 240: the spend column took 28px for the line under it
         // that says what the spend would be without subscriptions (D-05).
-        width: 212,
+        width: 180,
         minWidth: 160,
         truncate: true,
         cellClass: 'identity-cell',
@@ -1370,15 +1370,19 @@ export class InventoryCard extends LitElement {
       {
         id: 'model',
         header: 'Model',
+        minWidth: 120,
         // Absorbs what the other columns leave, so it has no handle.
         resizable: false,
-        truncate: true,
-        cellClass: 'secondary muted',
+        cellClass: 'secondary muted inventory-model',
         cellTitle: (row) => row.modelAlias || '',
-        cell: (row) => row.modelAlias || 'No model',
+        cell: (row) =>
+          html`<span style="white-space: normal; overflow-wrap: anywhere;"
+            >${row.modelAlias || 'No model'}</span
+          >`,
       },
       {
         id: 'requests',
+        visible: false,
         cellClass: 'num',
         cellLabel: 'Requests',
         header: 'Requests',

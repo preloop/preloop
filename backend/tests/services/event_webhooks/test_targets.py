@@ -23,6 +23,7 @@ def test_the_guard_is_off_by_default(monkeypatch):
     [
         ("https://127.0.0.1/hook", "loopback"),
         ("http://[::1]/hook", "loopback"),
+        ("https://[fec0::1]/hook", "site-local"),
         ("https://169.254.169.254/latest/meta-data", "link-local"),
         ("https://10.1.2.3/hook", "private"),
         ("https://192.168.1.10/hook", "private"),
