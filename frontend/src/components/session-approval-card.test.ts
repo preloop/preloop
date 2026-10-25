@@ -138,15 +138,13 @@ describe('inline session decisions', () => {
   it('denies with N through the deny confirmation', async () => {
     fetchStub.resolves(json(request({ status: 'declined' })));
     const element = await mount();
-    element
-      .shadowRoot!.querySelector('article')!
-      .dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: 'n',
-          bubbles: true,
-          composed: true,
-        })
-      );
+    element.shadowRoot!.querySelector('article')!.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'n',
+        bubbles: true,
+        composed: true,
+      })
+    );
     await waitUntil(() =>
       Boolean(
         document
