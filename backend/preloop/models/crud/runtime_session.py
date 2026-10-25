@@ -1765,6 +1765,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_ended_at,
                 self.model.turn_interrupted,
                 self.model.legal_hold,
+                self.model.cwd,
                 func.max(cast(usage_model.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
                 func.max(cast(usage_model.flow_execution_id, String)).label(
@@ -1824,6 +1825,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_ended_at,
                 self.model.turn_interrupted,
                 self.model.legal_hold,
+                self.model.cwd,
             )
         )
 
@@ -2148,6 +2150,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_ended_at,
                 self.model.turn_interrupted,
                 self.model.legal_hold,
+                self.model.cwd,
                 func.max(cast(ApiUsage.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
                 func.max(cast(ApiUsage.flow_execution_id, String)).label(
@@ -2210,6 +2213,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.turn_ended_at,
                 self.model.turn_interrupted,
                 self.model.legal_hold,
+                self.model.cwd,
             )
             .first()
         )
@@ -2394,6 +2398,7 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "turn_started_at": getattr(row, "turn_started_at", None),
             "turn_ended_at": getattr(row, "turn_ended_at", None),
             "turn_interrupted": getattr(row, "turn_interrupted", None),
+            "cwd": getattr(row, "cwd", None),
             "total_requests": int(row.request_count or 0),
             "successful_requests": int(row.success_count or 0),
             "failed_requests": int(row.error_count or 0),

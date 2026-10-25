@@ -2,6 +2,8 @@
    dark theme is a class on <html>, and custom properties are the only thing
    that crosses a shadow boundary on their own. */
 @import './styles/console-surfaces.css';
+/* The console mono face (JetBrains Mono, self-hosted woff2). */
+@import './styles/console-fonts.css';
 
 body {
   margin: 0;

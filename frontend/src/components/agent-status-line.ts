@@ -13,7 +13,7 @@ const STATIC_GLYPH = { codex: '•', claude: '✻' } as const;
  */
 const STYLE = `
 agent-status-line { display: inline-flex; align-items: baseline; gap: 0.4rem;
-  font-family: var(--console-font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-family: var(--console-font-mono, 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
   font-size: var(--console-text-meta, 0.8125rem); font-variant-numeric: tabular-nums;
   color: var(--sl-color-neutral-700); min-width: 0; }
 agent-status-line[tone='warning'] { color: var(--sl-color-warning-700); font-weight: 600; }

@@ -26,6 +26,7 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '../../components/session-chat-view';
 import '../../components/talk-composer';
 import '../../components/talk-session-picker';
+import '../../components/talk-status-line';
 import {
   TALK_SESSION_NEW_EVENT,
   TALK_SESSION_SELECT_EVENT,
@@ -306,8 +307,13 @@ export class AgentTalkView extends LitElement {
         min-height: 0;
       }
 
-      talk-composer {
+      talk-composer,
+      talk-status-line {
         flex-shrink: 0;
+      }
+
+      talk-status-line {
+        background: var(--console-surface, var(--sl-color-neutral-0));
       }
 
       .state {
@@ -1209,6 +1215,12 @@ export class AgentTalkView extends LitElement {
         .liveAlternative=${this.liveAlternative}
         sourceContext=${this.composerSourceContext}
       ></talk-composer>
+      <talk-status-line
+        .agent=${this.agent}
+        .session=${this.currentSession ?? null}
+        .connected=${this.realtimeConnected}
+        .approvals=${this.pendingApprovals.length}
+      ></talk-status-line>
     `;
   }
 
