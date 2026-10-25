@@ -39,6 +39,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from preloop.services.delivery_report_facts import body_summary
 
+from preloop.services.delivery_report_checks import fetch_scope
+
 #: ``agent_config`` key that marks a flow as a Delivery Report, so the
 #: orchestrator knows to finalize its result.
 REPORT_KIND_KEY = "report_kind"
@@ -1025,9 +1027,15 @@ def normalize_purpose(purpose: Any) -> Dict[str, Any]:
             met = None
         if met not in (True, False):
             met = None
-        criteria.append(
-            {"text": str(item["text"]).strip(), "met": met, "evidence": evidence}
-        )
+        criterion: Dict[str, Any] = {
+            "text": str(item["text"]).strip(),
+            "met": met,
+            "evidence": evidence,
+        }
+        for key in ("parent_check", "unchecked"):
+            if item.get(key):
+                criterion[key] = item[key]
+        criteria.append(criterion)
 
     claimed = purpose.get("verdict")
     if not criteria:
@@ -1280,6 +1288,79 @@ def comments_after_last_criteria_edit(
     return [dict(c) for c in comments[start:]]
 
 
+#: A criterion that asks for a dependent file to follow the change. Marking
+#: it not met because the file was not touched needs the parent-commit check.
+_ACCORDINGLY_RE = re.compile(
+    r"\b(update|adjust|align|change|fix)\b.*\baccordingly\b", re.IGNORECASE
+)
+
+
+def _parent_check_clears(record: Any, merge_sha: Optional[str]) -> bool:
+    """Whether a parent-check record shows no named file needed a change.
+
+    The record must come from :func:`delivery_report_checks.parent_references`
+    at the closing merge (when that is known), resolve the parent, and find
+    every named file without a reference to the terms.
+    """
+    from preloop.services.delivery_report_checks import PARENT_CHECK_SCHEMA
+
+    if not isinstance(record, Mapping) or record.get("schema") != PARENT_CHECK_SCHEMA:
+        return False
+    if record.get("error") or not record.get("parent_sha"):
+        return False
+    if merge_sha and record.get("merge_sha") != merge_sha:
+        return False
+    paths = record.get("paths")
+    if not isinstance(paths, list) or not paths:
+        return False
+    return all(
+        isinstance(p, Mapping) and p.get("referenced") is False and not p.get("hits")
+        for p in paths
+    )
+
+
+def apply_parent_checks(
+    purpose: Any, *, merge_sha: Optional[str] = None
+) -> Dict[str, Any]:
+    """Apply the parent-commit rule to the run's own criterion verdicts.
+
+    * A criterion marked not met that carries a ``parent_check`` record
+      showing no named file referenced the changed thing at ``<merge>^1``
+      is met: nothing needed changing. The record becomes its evidence.
+    * An "update X accordingly" criterion marked not met with no such
+      record was never checked against the parent, so it is an evidence gap
+      (``met: null``), not a miss.
+
+    Audits and cached assessments are not passed through here.
+    """
+    out: Dict[str, Any] = dict(purpose) if isinstance(purpose, Mapping) else {}
+    raw = out.get("criteria")
+    if not isinstance(raw, list):
+        return out
+    criteria: List[Any] = []
+    for item in raw:
+        if not isinstance(item, Mapping) or item.get("met") is not False:
+            criteria.append(item)
+            continue
+        criterion = dict(item)
+        record = criterion.get("parent_check")
+        if isinstance(record, Mapping) and _parent_check_clears(record, merge_sha):
+            names = ", ".join(str(p.get("path")) for p in record["paths"])
+            terms = ", ".join(_strs(record.get("terms")))
+            criterion["met"] = True
+            criterion["evidence"] = [
+                *_strs(criterion.get("evidence")),
+                f"{names}: no reference to {terms} at parent "
+                f"{str(record['parent_sha'])[:12]}; nothing needed changing",
+            ]
+        elif _ACCORDINGLY_RE.search(str(criterion.get("text") or "")):
+            criterion["met"] = None
+            criterion["unchecked"] = "parent-commit check not run"
+        criteria.append(criterion)
+    out["criteria"] = criteria
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
@@ -1400,6 +1481,7 @@ def assemble_report(
                 "evidence_gaps": evidence_gaps(pr),
                 "metadata_only": metadata_only,
                 "needs_model_risk_pass": needs_model_risk_pass(pr, deterministic),
+                "fetch_scope": fetch_scope(pr, criteria=criteria),
                 "head_sha": pr.get("head_sha"),
                 "merge_sha": pr.get("merge_commit_sha"),
                 "cost_usd": agent.get("cost_usd"),
@@ -1851,7 +1933,11 @@ def finalize_delivery_report(
         if audit is not None:
             change["purpose"] = normalize_purpose(_audited_purpose(audit))
         else:
-            purpose = normalize_purpose(change.get("purpose"))
+            purpose = normalize_purpose(
+                apply_parent_checks(
+                    change.get("purpose"), merge_sha=change.get("merge_sha")
+                )
+            )
             fallback = SOURCE_METADATA if metadata_only else SOURCE_NONE
             purpose["source"] = _assessed_source(purpose, fallback)
             change["purpose"] = purpose
@@ -1876,7 +1962,11 @@ def finalize_delivery_report(
         elif cached is not None:
             issue["purpose"] = normalize_purpose(cached)
         else:
-            purpose = normalize_purpose(issue.get("purpose"))
+            purpose = normalize_purpose(
+                apply_parent_checks(
+                    issue.get("purpose"), merge_sha=issue.get("closing_sha")
+                )
+            )
             purpose["source"] = _assessed_source(purpose, SOURCE_NONE)
             issue["purpose"] = purpose
         closed.append(issue)
@@ -2154,9 +2244,35 @@ def with_merge_audits_seed(
     and a seed that would break the workspace caps is left out (the
     platform still applies every audit when it finalizes the report).
     """
+    import json
+
+    content = json.dumps(document, default=str).encode("utf-8")
+    return _with_seed(trigger_event_data, MERGE_AUDITS_WORKSPACE_PATH, content)
+
+
+def with_report_checks_seed(
+    trigger_event_data: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """A copy of the trigger data that seeds the run's deterministic checks.
+
+    The source of :mod:`preloop.services.delivery_report_checks` lands at
+    ``tools/delivery_report_checks.py``, so the run computes the fetch scope
+    and the parent-commit check with the platform's own code.
+    """
+    from pathlib import Path
+
+    from preloop.services import delivery_report_checks
+
+    source = Path(delivery_report_checks.__file__).read_bytes()
+    return _with_seed(trigger_event_data, delivery_report_checks.WORKSPACE_PATH, source)
+
+
+def _with_seed(
+    trigger_event_data: Optional[Dict[str, Any]], path: str, content: bytes
+) -> Optional[Dict[str, Any]]:
+    """A copy of the trigger data with one more ``workspace_files`` seed."""
     import base64
     import copy
-    import json
 
     from preloop.utils.workspace_seed import (
         WORKSPACE_FILES_KEY,
@@ -2176,15 +2292,11 @@ def with_merge_audits_seed(
         target = data.setdefault("payload", {})
     seeds = target.get(WORKSPACE_FILES_KEY)
     seeds = list(seeds) if isinstance(seeds, list) else []
-    if any(
-        isinstance(seed, Mapping) and seed.get("path") == MERGE_AUDITS_WORKSPACE_PATH
-        for seed in seeds
-    ):
+    if any(isinstance(seed, Mapping) and seed.get("path") == path for seed in seeds):
         return trigger_event_data
-    content = json.dumps(document, default=str).encode("utf-8")
     seeds.append(
         {
-            "path": MERGE_AUDITS_WORKSPACE_PATH,
+            "path": path,
             "content_base64": base64.b64encode(content).decode("ascii"),
         }
     )

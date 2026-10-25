@@ -633,9 +633,12 @@ class TestMergeAuditReuse:
             data = orchestrator._delivery_report_inputs({"payload": {"window": WINDOW}})
         assert data is not None
         paths = [s["path"] for s in data["payload"]["workspace_files"]]
-        assert paths == ["previous/merge_audits.json"]
+        assert paths == [
+            "tools/delivery_report_checks.py",
+            "previous/merge_audits.json",
+        ]
 
-    def test_a_failed_audit_read_keeps_the_trigger(self) -> None:
+    def test_a_failed_audit_read_still_seeds_the_checks(self) -> None:
         from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
 
         orchestrator = object.__new__(FlowExecutionOrchestrator)
@@ -646,7 +649,11 @@ class TestMergeAuditReuse:
             "preloop.models.crud.crud_flow_execution.completed_merge_audits",
             side_effect=RuntimeError("db down"),
         ):
-            assert orchestrator._delivery_report_inputs(trigger) is trigger
+            data = orchestrator._delivery_report_inputs(trigger)
+        assert trigger == {"payload": {}}
+        assert data is not None
+        paths = [s["path"] for s in data["payload"]["workspace_files"]]
+        assert paths == ["tools/delivery_report_checks.py"]
 
 
 class TestOrchestratorPolicy:
@@ -1008,7 +1015,8 @@ class TestMeasuredRunRules:
             "<!-- PRELOOP_BRIEF -->",
             "the comments after the last comment that",
             "reopen_requests",
-            "the parent commit (<merge>^1)",
+            "tools/delivery_report_checks.py parent-check",
+            "tools/delivery_report_checks.py scope",
             "updated_at and closing PR head SHA",
             "metadata_only",
             "down_revision is a tuple",
