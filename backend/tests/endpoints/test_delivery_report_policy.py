@@ -35,8 +35,14 @@ def account_owner(db_session: Session, test_user: Any) -> Any:
 
 
 def test_a_user_without_the_permission_cannot_save(
-    db_session: Session, test_viewer_user: Any
+    db_session: Session, test_viewer_user: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """With the RBAC plugin a viewer is refused; core has no role checks."""
+    from preloop.utils import permissions
+
+    monkeypatch.setattr(
+        permissions, "_plugin_require_permission", lambda name: lambda f: f
+    )
     from preloop.api.app import create_app
     from preloop.api.auth import get_current_active_user
     from preloop.models.db.session import get_db_session
