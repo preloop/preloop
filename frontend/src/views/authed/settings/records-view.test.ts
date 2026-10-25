@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { formatRelativeOrFuture } from '../../../utils/date';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
@@ -398,7 +399,7 @@ describe('RecordsView', () => {
       listed.shadowRoot!.querySelector('[data-testid="holds-table"]')
         ?.textContent ?? '';
     expect(text).to.contain('2026-09-20 00:00:00 UTC');
-    expect(text).to.match(/\d+(d|w) ago/);
+    expect(text).to.contain(formatRelativeOrFuture(HOLD.placed_at));
   });
 
   it('downloads a period export once', async () => {
