@@ -25,11 +25,11 @@ talk-status-line { display: flex; flex-wrap: wrap; align-items: baseline;
   font-family: var(--console-font-mono, 'JetBrains Mono', ui-monospace,
     SFMono-Regular, Menlo, Consolas, monospace);
   font-size: var(--console-text-eyebrow, 0.6875rem);
-  color: var(--sl-color-neutral-600); }
+  color: var(--console-meta-color, var(--sl-color-neutral-600)); }
 talk-status-line:empty { display: none; }
 talk-status-line .talk-status-field { white-space: nowrap; }
 talk-status-line .talk-status-field + .talk-status-field::before {
-  content: '·'; margin-right: 0.5rem; color: var(--sl-color-neutral-400); }
+  content: '·'; margin-right: 0.5rem; color: var(--console-meta-color, var(--sl-color-neutral-600)); }
 talk-status-line .talk-status-cwd { min-width: 0; overflow: hidden;
   text-overflow: ellipsis; max-width: 40ch; }
 talk-status-line .talk-status-approvals { color: var(--sl-color-warning-700);
