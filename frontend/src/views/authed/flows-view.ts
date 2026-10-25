@@ -977,6 +977,10 @@ export class FlowsView extends LitElement {
             this.activeExecutions = executions;
         })
         .catch(() => undefined);
+      // Tracker names only label the Trigger column. Asked with the
+      // summary, not after it, so the column does not wait a second round
+      // trip behind the slowest read on the page.
+      void this.loadTrackerNames();
       let failure = '';
       const flows = await getFlowSummaries({
         includeStats: true,
@@ -1024,7 +1028,6 @@ export class FlowsView extends LitElement {
           })
           .catch(() => undefined);
       }
-      void this.loadTrackerNames();
     } finally {
       if (
         generation === this.flowsLoadGeneration &&
