@@ -278,3 +278,44 @@ def test_saving_the_account_policy_updates_the_report_flow(
     assert flow.schedule_config["at"] == "08:30"
     assert flow.schedule_config["payload"] == {"previous_result_execution_id": "last"}
     assert flow.is_enabled is True
+
+
+def test_a_bad_timezone_is_refused(client: TestClient) -> None:
+    response = client.put(BASE, json={"overrides": {"timezone": "Mars/Olympus"}})
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_policy"
+
+
+def test_leaving_manual_turns_the_schedule_back_on(
+    client: TestClient, db_session: Session, test_user: Any
+) -> None:
+    from preloop.models.crud import crud_flow
+    from preloop.models.schemas.flow import FlowCreate
+
+    flow = crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name=f"delivery-report-{uuid.uuid4().hex[:6]}",
+            prompt_template="report",
+            trigger_event_source="schedule",
+            trigger_event_types=["schedule"],
+            schedule_config={
+                "type": "weekly",
+                "days": ["mon"],
+                "at": "07:00",
+                "timezone": "UTC",
+            },
+            agent_type="codex",
+            agent_config={"report_kind": "delivery_report"},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            is_enabled=True,
+            account_id=str(test_user.account_id),
+        ),
+    )
+    assert client.put(BASE, json={"overrides": {"cadence": "manual"}}).status_code == 200
+    db_session.refresh(flow)
+    assert flow.is_enabled is False
+    assert client.put(BASE, json={"overrides": {"cadence": "weekly"}}).status_code == 200
+    db_session.refresh(flow)
+    assert flow.is_enabled is True

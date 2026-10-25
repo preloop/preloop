@@ -22364,11 +22364,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/DeliveryReportPolicyResponse'
         '422':
-          description: Validation Error
+          description: The save was refused; see detail.code.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/DeliveryReportPolicyRefusal'
         '401':
           description: Invalid or expired credential
         '403':
@@ -22445,11 +22445,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/DeliveryReportPolicyResponse'
         '422':
-          description: Validation Error
+          description: The save was refused; see detail.code.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+                $ref: '#/components/schemas/DeliveryReportPolicyRefusal'
         '401':
           description: Invalid or expired credential
         '403':
@@ -31082,6 +31082,29 @@ components:
         set together with explicit per-run and monthly budgets
 
         (:func:`validate_account_overrides`). Tracker writes start off.'
+    DeliveryReportPolicyRefusal:
+      properties:
+        detail:
+          $ref: '#/components/schemas/DeliveryReportPolicyRefusalDetail'
+      type: object
+      required:
+      - detail
+      title: DeliveryReportPolicyRefusal
+      description: The 422 body of a refused policy save.
+    DeliveryReportPolicyRefusalDetail:
+      properties:
+        code:
+          type: string
+          title: Code
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - code
+      - message
+      title: DeliveryReportPolicyRefusalDetail
+      description: Why a save was refused.
     DeliveryReportPolicyResponse:
       properties:
         level:
@@ -50204,6 +50227,7 @@ components:
           - type: number
             minimum: 0.0
           - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

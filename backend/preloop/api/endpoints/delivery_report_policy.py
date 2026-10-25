@@ -28,6 +28,7 @@ from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
 from preloop.schemas.delivery_report_policy import (
+    DeliveryReportPolicyRefusal,
     DeliveryReportPolicyResponse,
     DeliveryReportPolicyUpdate,
 )
@@ -43,6 +44,14 @@ from preloop.services.delivery_report import (
 from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 router = APIRouter()
+
+#: The refusal body the save routes return, so generated clients see it.
+REFUSAL_RESPONSES: Dict[int | str, Dict[str, Any]] = {
+    422: {
+        "model": DeliveryReportPolicyRefusal,
+        "description": "The save was refused; see detail.code.",
+    }
+}
 
 POLICY_PATH = "/delivery-report/policy"
 PROJECT_POLICY_PATH = "/delivery-report/policy/projects/{project_id}"
@@ -123,6 +132,7 @@ def read_delivery_report_policy(
     POLICY_PATH,
     response_model=DeliveryReportPolicyResponse,
     summary="Save the account's Delivery Report policy",
+    responses=REFUSAL_RESPONSES,
 )
 @require_permission("manage_budgets")
 def update_delivery_report_policy(
@@ -137,6 +147,9 @@ def update_delivery_report_policy(
     Delivery Report flows in the same save.
     """
     ensure_permission_in_oss(db, current_user, "manage_budgets")
+    previous = resolve_policy(
+        crud_delivery_report_policy.get_overrides(db, account_id=account.id)
+    )
     try:
         overrides = validate_account_overrides(payload.overrides)
     except PolicyOverrideError as exc:
@@ -153,7 +166,12 @@ def update_delivery_report_policy(
     )
     # The schedule and the per-run ceiling live on the report flows, where
     # the scheduler and the gateway read them.
-    sync_report_flows(db, account_id=account.id, policy=resolve_policy(overrides))
+    sync_report_flows(
+        db,
+        account_id=account.id,
+        policy=resolve_policy(overrides),
+        previous=previous,
+    )
     db.commit()
     return _response(account_overrides=overrides)
 
@@ -187,6 +205,7 @@ def read_project_delivery_report_policy(
     PROJECT_POLICY_PATH,
     response_model=DeliveryReportPolicyResponse,
     summary="Save one repository's Delivery Report overrides",
+    responses=REFUSAL_RESPONSES,
 )
 @require_permission("edit_projects")
 def update_project_delivery_report_policy(

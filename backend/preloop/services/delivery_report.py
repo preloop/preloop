@@ -279,6 +279,18 @@ class DeliveryReportPolicy(BaseModel):
             raise ValueError("at must be HH:MM")
         return value
 
+    @field_validator("timezone")
+    @classmethod
+    def _valid_timezone(cls, value: str) -> str:
+        """Require an IANA zone the scheduler can load."""
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone: {value}") from exc
+        return value
+
     def schedule_config(self) -> Optional[Dict[str, Any]]:
         """The flow ``schedule_config`` for this cadence; None for manual.
 
@@ -2383,18 +2395,27 @@ def deterministic_report(
     )
 
 
-def sync_report_flows(db: Any, *, account_id: Any, policy: DeliveryReportPolicy) -> int:
+def sync_report_flows(
+    db: Any,
+    *,
+    account_id: Any,
+    policy: DeliveryReportPolicy,
+    previous: Optional[DeliveryReportPolicy] = None,
+) -> int:
     """Carry the cadence and the per-run ceiling onto the account's report flows.
 
     The schedule and ``agent_config.limits.max_usd`` are what the scheduler
     and the gateway read, so a saved policy takes effect from the next run.
     A manual cadence turns the flow's schedule off (``is_enabled: false``);
-    a weekly or daily one leaves a flow someone disabled by hand alone.
+    leaving manual turns it back on. Otherwise a flow someone disabled by
+    hand is left alone. Nothing is committed: the caller commits once.
 
     Args:
         db: Session.
         account_id: Owning account.
         policy: The account's effective policy.
+        previous: The policy before this save, to tell a cadence leaving
+            manual from a flow disabled by hand.
 
     Returns:
         How many flows were updated.
@@ -2419,6 +2440,10 @@ def sync_report_flows(db: Any, *, account_id: Any, policy: DeliveryReportPolicy)
                 agent_config=agent_config,
                 schedule_config=parse_schedule_config(schedule),
             )
-        crud_flow.update(db, db_obj=flow, flow_in=change, account_id=account_id)
+            if previous is not None and previous.cadence == "manual":
+                change.is_enabled = True
+        crud_flow.update(
+            db, db_obj=flow, flow_in=change, account_id=account_id, commit=False
+        )
         updated += 1
     return updated

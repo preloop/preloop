@@ -32,3 +32,18 @@ class DeliveryReportPolicyResponse(BaseModel):
     defaults: DeliveryReportPolicy
     #: Fields a repository may override; the rest are the account's.
     project_override_fields: List[str]
+
+
+class DeliveryReportPolicyRefusalDetail(BaseModel):
+    """Why a save was refused."""
+
+    #: ``close_not_allowed``, ``budget_required``, ``account_setting`` or
+    #: ``invalid_policy``.
+    code: str
+    message: str
+
+
+class DeliveryReportPolicyRefusal(BaseModel):
+    """The 422 body of a refused policy save."""
+
+    detail: DeliveryReportPolicyRefusalDetail
