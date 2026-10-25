@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import date, datetime, timezone
@@ -10,7 +9,7 @@ from decimal import Decimal
 from typing import Any, Optional
 from uuid import UUID
 
-from preloop.sync.services.event_bus import get_nats_client
+from preloop.sync.services.realtime_publisher import publish_realtime
 
 logger = logging.getLogger(__name__)
 
@@ -79,21 +78,27 @@ def build_account_event(
 
 
 def emit_account_event(event: dict[str, Any]) -> None:
-    """Publish one account-scoped realtime event when an event loop exists."""
-    if not event.get("account_id") or not event.get("topic"):
+    """Queue one account-scoped realtime event. Never blocks or raises.
+
+    The event is encoded here, so later changes to ``event`` by the caller are
+    not published, and the bytes are handed to the loop that owns the NATS
+    client. Callers on worker threads or on other loops never touch the client.
+    """
+    account_id = event.get("account_id")
+    if not account_id or not event.get("topic"):
         return
     try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        from preloop.tools.utils import run_async
-
-        try:
-            run_async(_publish_account_event(event))
-        except Exception:
-            # Realtime delivery should not fail the caller.
-            logger.exception("Failed to publish account realtime event synchronously")
+        payload_bytes = encode_realtime_event_for_nats(
+            event,
+            context=f"account {account_id}",
+        )
+    except Exception:
+        # Realtime delivery should not fail the caller.
+        logger.exception("Failed to encode account realtime event")
         return
-    loop.create_task(_publish_account_event(event))
+    if payload_bytes is None:
+        return
+    publish_realtime(f"account-updates.{account_id}", payload_bytes)
 
 
 def _json_safe(value: Any) -> Any:
@@ -176,27 +181,3 @@ def _truncate_realtime_event(event: dict[str, Any]) -> dict[str, Any]:
             payload["conversation_preview"] = preview
         event["payload"] = payload
     return event
-
-
-async def _publish_account_event(event: dict[str, Any]) -> None:
-    account_id = event.get("account_id")
-    if not account_id:
-        return
-    try:
-        nats_client = await get_nats_client()
-        if not nats_client or not nats_client.is_connected:
-            return
-
-        payload_bytes = encode_realtime_event_for_nats(
-            event,
-            context=f"account {account_id}",
-        )
-        if payload_bytes is None:
-            return
-
-        await nats_client.publish(
-            f"account-updates.{account_id}",
-            payload_bytes,
-        )
-    except Exception:
-        logger.exception("Failed to publish account realtime event")
