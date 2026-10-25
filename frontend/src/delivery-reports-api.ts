@@ -94,6 +94,8 @@ export interface ReopenRequest {
   revision: string;
   reason?: string | null;
   evidence?: string[];
+  /** The run reopened the issue itself under the policy. */
+  applied?: boolean;
 }
 
 export interface FollowUp {
@@ -108,7 +110,7 @@ export interface FollowUp {
 /** A decision stored on the run for one proposal (`proposal_actions`). */
 export interface ProposalDecision {
   kind: 'open_issue' | 'reopen' | 'dismiss';
-  status: 'pending' | 'applied' | 'dismissed';
+  status: 'pending' | 'unconfirmed' | 'applied' | 'dismissed';
   issue_url?: string | null;
   reason?: string | null;
   revision?: string | null;

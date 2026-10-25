@@ -21,12 +21,14 @@ trail, and the decision is stored on the run's result under
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Mapping, Optional, Tuple
 
+import httpx
 from sqlalchemy.orm import Session
 
 from preloop.api.common import get_tracker_client
@@ -38,6 +40,7 @@ from preloop.models.crud import (
     crud_project,
 )
 from preloop.schemas.tracker_models import IssueCreate, IssueUpdate
+from preloop.sync.exceptions import TrackerConnectionError
 from preloop.services.delivery_report import (
     DeliveryReportPolicy,
     resolve_policy,
@@ -196,7 +199,57 @@ class ActionContext:
         return result if isinstance(result, Mapping) else {}
 
 
-def _claim(ctx: ActionContext, key: str, record: Dict[str, Any]) -> None:
+#: How long a ``pending`` claim may sit before Dismiss may clear it. A claim
+#: stays pending when the process died between the claim and the tracker's
+#: answer; nobody knows whether the write landed.
+STUCK_PENDING_AFTER = timedelta(minutes=15)
+
+#: Claims nobody can tell were applied: only Dismiss clears them, so a retry
+#: never opens a second issue or posts a second reopen comment.
+UNRESOLVED_STATUSES = ("unconfirmed", "pending")
+
+
+def _clearable(existing: Mapping[str, Any]) -> bool:
+    """Whether Dismiss may replace a claim whose tracker outcome is unknown."""
+    status = existing.get("status")
+    if status == "unconfirmed":
+        return True
+    if status != "pending":
+        return False
+    try:
+        at = datetime.fromisoformat(str(existing.get("at")))
+    except ValueError:
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - at >= STUCK_PENDING_AFTER
+
+
+def _ambiguous(exc: BaseException) -> bool:
+    """Whether a tracker failure leaves it unknown if the write landed.
+
+    A timeout or a dropped connection may arrive after the tracker applied
+    the write; a response that refuses it is definite.
+    """
+    return isinstance(
+        exc,
+        (
+            TrackerConnectionError,
+            httpx.TransportError,
+            asyncio.TimeoutError,
+            TimeoutError,
+            ConnectionError,
+        ),
+    )
+
+
+def _claim(
+    ctx: ActionContext,
+    key: str,
+    record: Dict[str, Any],
+    *,
+    clear_unresolved: bool = False,
+) -> None:
     existing = crud_flow_execution.set_delivery_report_action(
         ctx.db,
         execution_id=ctx.execution.id,
@@ -204,6 +257,20 @@ def _claim(ctx: ActionContext, key: str, record: Dict[str, Any]) -> None:
         record={**record, "status": "pending"},
         claim=True,
     )
+    if existing is not None and clear_unresolved and _clearable(existing):
+        return
+    if existing is not None and existing.get("status") == "pending":
+        if not _clearable(existing):
+            raise ReportActionError(
+                "in_progress", "This proposal is being applied right now.", 409
+            )
+    if existing is not None and existing.get("status") in UNRESOLVED_STATUSES:
+        raise ReportActionError(
+            "unconfirmed",
+            "The tracker did not confirm the earlier attempt. Check the tracker,"
+            " then dismiss the proposal if the write landed or is not wanted.",
+            409,
+        )
     if existing is not None:
         raise ReportActionError(
             "already_decided",
@@ -217,6 +284,21 @@ def _settle(ctx: ActionContext, key: str, record: Optional[Dict[str, Any]]) -> N
         ctx.db, execution_id=ctx.execution.id, key=key, record=record
     )
     ctx.db.refresh(ctx.execution)
+
+
+def _release(
+    ctx: ActionContext, key: str, base: Dict[str, Any], exc: BaseException
+) -> None:
+    """Settle a failed write: free a refused claim, keep an unknown one.
+
+    A definite refusal frees the proposal for another click. When the
+    outcome is unknown the claim becomes ``unconfirmed``; only Dismiss
+    clears it, so a retry cannot duplicate a write that did land.
+    """
+    if _ambiguous(exc):
+        _settle(ctx, key, {**base, "status": "unconfirmed", "error": str(exc)[:500]})
+    else:
+        _settle(ctx, key, None)
 
 
 def _project_for_follow_up(ctx: ActionContext, follow_up: Mapping[str, Any]) -> Any:
@@ -302,16 +384,20 @@ async def open_follow_up(ctx: ActionContext, index: int) -> Dict[str, Any]:
                 }
             ),
         )
-    except Exception as exc:  # noqa: BLE001 - any tracker failure releases the claim
+    except Exception as exc:  # noqa: BLE001 - every tracker failure is settled
         logger.warning("Opening follow-up %s failed", key, exc_info=True)
-        _settle(ctx, key, None)
+        _release(ctx, key, base, exc)
         _audit(
             ctx.db,
             account_id=ctx.account_id,
             user_id=ctx.user.id,
             status="failure",
             resource_id=None,
-            details={**details, "error": str(exc)[:500]},
+            details={
+                **details,
+                "error": str(exc)[:500],
+                "unconfirmed": _ambiguous(exc),
+            },
         )
         raise ReportActionError(
             "tracker_error", f"The tracker refused the new issue: {exc}", 502
@@ -426,16 +512,20 @@ async def reopen_issue(ctx: ActionContext, ref: str) -> Dict[str, Any]:
         await client.add_comment(
             target, reopen_comment(request, closed, execution_id=ctx.execution.id)
         )
-    except Exception as exc:  # noqa: BLE001 - any tracker failure releases the claim
+    except Exception as exc:  # noqa: BLE001 - every tracker failure is settled
         logger.warning("Reopening %s failed", ref, exc_info=True)
-        _settle(ctx, key, None)
+        _release(ctx, key, base, exc)
         _audit(
             ctx.db,
             account_id=ctx.account_id,
             user_id=ctx.user.id,
             status="failure",
             resource_id=ref,
-            details={**details, "error": str(exc)[:500]},
+            details={
+                **details,
+                "error": str(exc)[:500],
+                "unconfirmed": _ambiguous(exc),
+            },
         )
         raise ReportActionError(
             "tracker_error", f"The tracker refused the reopen: {exc}", 502
@@ -462,10 +552,15 @@ def dismiss(ctx: ActionContext, key: str, reason: str) -> Dict[str, Any]:
     kind, _, target = key.partition(":")
     if kind == "follow_up":
         follow_ups = ctx.report.get("follow_ups") or []
-        if not (target.isdigit() and int(target) < len(follow_ups)):
+        if not (
+            target.isascii() and target.isdigit() and int(target) < len(follow_ups)
+        ):
             raise ReportActionError("not_found", "No such follow-up.", 404)
+        key = follow_up_key(int(target))
+        target = str(int(target))
     elif kind == "reopen":
         _reopen_request(ctx, target)
+        key = reopen_key(target)
     else:
         raise ReportActionError("not_found", "No such proposal.", 404)
     record = {
@@ -475,7 +570,7 @@ def dismiss(ctx: ActionContext, key: str, reason: str) -> Dict[str, Any]:
         "at": _now(),
         "reason": reason,
     }
-    _claim(ctx, key, record)
+    _claim(ctx, key, record, clear_unresolved=True)
     _settle(ctx, key, record)
     _audit(
         ctx.db,
@@ -521,6 +616,7 @@ def run_write_decision(
     tool: str,
     target: Optional[str],
     status: Optional[str] = None,
+    other_fields: Tuple[str, ...] = (),
 ) -> Tuple[bool, str]:
     """Whether a report run may make this tracker write, logged either way.
 
@@ -530,6 +626,9 @@ def run_write_decision(
     only comments to explain a reopen. ``approval`` and ``deny`` both keep
     the write a proposal in the report.
 
+    The audit row records the policy decision (``allowed`` or ``denied``),
+    not the tracker outcome; the tool's own response carries that.
+
     Args:
         db: Session.
         account_id: The run's account.
@@ -538,6 +637,8 @@ def run_write_decision(
         tool: ``create_issue``, ``update_issue`` or ``add_comment``.
         target: The issue or project the call names.
         status: The status ``update_issue`` sets, if any.
+        other_fields: Every other field the ``update_issue`` call sets; any
+            one of them refuses the call, since a report run only reopens.
 
     Returns:
         ``(allowed, reason)``; the reason names the rule that decided.
@@ -547,6 +648,11 @@ def run_write_decision(
     if tool == "create_issue":
         rule = writes.create_follow_up
         allowed, reason = rule == "allow", f"tracker_writes.create_follow_up={rule}"
+    elif tool == "update_issue" and other_fields:
+        allowed, reason = (
+            False,
+            "a report run may only reopen, not edit " + ", ".join(sorted(other_fields)),
+        )
     elif tool == "update_issue" and normalized in CLOSING_STATUSES:
         allowed, reason = False, "tracker_writes.close=deny"
     elif tool == "update_issue" and normalized in REOPEN_STATUSES:
@@ -565,12 +671,13 @@ def run_write_decision(
         db,
         account_id=account_id,
         user_id=user_id,
-        status="success" if allowed else "denied",
+        status="allowed" if allowed else "denied",
         resource_id=target,
         details={
             "execution_id": str(execution_id),
             "kind": tool,
             "status": status,
+            "decision": "policy",
             "allowed_by" if allowed else "denied_by": reason,
         },
     )

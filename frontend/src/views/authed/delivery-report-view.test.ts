@@ -437,6 +437,30 @@ describe('delivery-report-view', () => {
     expect(row.querySelector('[data-testid="action-open-issue"]')).to.not.exist;
   });
 
+  it('shows a reopen the run applied itself as decided', async () => {
+    payload = enabled();
+    payload.report.reopen_requests![0].applied = true;
+    const el = await mount();
+    const row = el.shadowRoot!.querySelector('[data-testid="reopen-request"]')!;
+    expect(row.textContent).to.contain('Reopened');
+    expect(row.querySelector('[data-testid="action-reopen"]')).to.not.exist;
+  });
+
+  it('keeps Dismiss on a write the tracker did not confirm', async () => {
+    payload = enabled();
+    payload.report.proposal_actions = {
+      'follow_up:0': { kind: 'open_issue', status: 'unconfirmed' },
+    };
+    const el = await mount();
+    const row = el.shadowRoot!.querySelector('[data-testid="follow-up"]')!;
+    expect(row.textContent).to.contain('Not confirmed by the tracker');
+    expect(row.querySelector('[data-testid="action-open-issue"]')).to.not.exist;
+    row.querySelector<HTMLElement>('[data-testid="action-dismiss"]')!.click();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="dismiss-form"]')
+    );
+  });
+
   it('expands evidence in place', async () => {
     const el = await mount();
     const root = el.shadowRoot!;

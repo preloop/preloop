@@ -6,7 +6,9 @@ import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -20,6 +22,7 @@ from preloop.models.crud import (
 from preloop.models.models.audit_log import AuditLog
 from preloop.services import delivery_report_actions as actions
 from preloop.services import delivery_report_views as views
+from preloop.sync.exceptions import TrackerResponseError
 from tests.endpoints.test_delivery_reports import _flow, _run
 
 BASE = "/api/v1/delivery-reports"
@@ -336,6 +339,109 @@ def test_actions_are_404_for_a_foreign_or_unknown_run(
     assert unknown.status_code == 404
 
 
+@pytest.mark.parametrize("key", ["follow_up:00", "follow_up:+0"])
+def test_a_non_canonical_dismiss_key_blocks_the_canonical_action(
+    key: str, client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    url = f"{BASE}/{run.id}/actions"
+    response = client.post(url, json={"kind": "dismiss", "key": key, "reason": "No"})
+    if key == "follow_up:+0":
+        assert response.status_code == 404
+        return
+    assert response.status_code == 200, response.text
+    db_session.refresh(run)
+    assert list(run.result["proposal_actions"]) == ["follow_up:0"]
+    blocked = client.post(url, json={"kind": "open_issue", "index": 0})
+    assert blocked.status_code == 409
+    assert tracker["fake"].calls == []
+
+
+def test_a_non_ascii_digit_dismiss_key_is_not_found(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    response = client.post(
+        f"{BASE}/{run.id}/actions",
+        json={"kind": "dismiss", "key": "follow_up:\u00b2", "reason": "No"},
+    )
+    assert response.status_code == 404
+
+
+def test_a_definite_refusal_frees_the_proposal_for_another_click(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    url = f"{BASE}/{run.id}/actions"
+    tracker["fake"].create_issue = AsyncMock(
+        side_effect=TrackerResponseError("Validation failed")
+    )
+    failed = client.post(url, json={"kind": "open_issue", "index": 0})
+    assert failed.status_code == 502
+    db_session.refresh(run)
+    assert "follow_up:0" not in (run.result.get("proposal_actions") or {})
+    del tracker["fake"].create_issue
+    assert client.post(url, json={"kind": "open_issue", "index": 0}).status_code == 200
+
+
+@pytest.mark.parametrize("kind", ["open_issue", "reopen"])
+def test_an_unknown_tracker_outcome_is_kept_until_dismissed(
+    kind: str, client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    url = f"{BASE}/{run.id}/actions"
+    method = "create_issue" if kind == "open_issue" else "update_issue"
+    setattr(
+        tracker["fake"], method, AsyncMock(side_effect=httpx.ReadTimeout("timed out"))
+    )
+    body = (
+        {"kind": "open_issue", "index": 0}
+        if kind == "open_issue"
+        else {"kind": "reopen", "ref": "example/app#7"}
+    )
+    key = "follow_up:0" if kind == "open_issue" else "reopen:example/app#7"
+    assert client.post(url, json=body).status_code == 502
+    db_session.refresh(run)
+    assert run.result["proposal_actions"][key]["status"] == "unconfirmed"
+
+    retry = client.post(url, json=body)
+    assert retry.status_code == 409
+    assert retry.json()["detail"]["code"] == "unconfirmed"
+    assert getattr(tracker["fake"], method).await_count == 1
+
+    dismissed = client.post(
+        url, json={"kind": "dismiss", "key": key, "reason": "It landed"}
+    )
+    assert dismissed.status_code == 200, dismissed.text
+    assert dismissed.json()["decision"]["status"] == "dismissed"
+
+
+def test_a_stuck_pending_claim_can_only_be_dismissed_once_old(
+    client, db_session: Session, test_user, tracker: Dict[str, Any]
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    url = f"{BASE}/{run.id}/actions"
+    dismiss = {"kind": "dismiss", "key": "follow_up:0", "reason": "Stuck"}
+    for at, code in (
+        (datetime.now(timezone.utc), "in_progress"),
+        (datetime.now(timezone.utc) - actions.STUCK_PENDING_AFTER, None),
+    ):
+        crud_flow_execution.set_delivery_report_action(
+            db_session,
+            execution_id=run.id,
+            key="follow_up:0",
+            record={"kind": "open_issue", "status": "pending", "at": at.isoformat()},
+        )
+        click = client.post(url, json={"kind": "open_issue", "index": 0})
+        assert click.status_code == 409
+        response = client.post(url, json=dismiss)
+        if code:
+            assert response.json()["detail"]["code"] == code
+        else:
+            assert response.status_code == 200, response.text
+    assert tracker["fake"].calls == []
+
+
 class TestRunWrites:
     """Writes the report run makes through the MCP tools."""
 
@@ -415,6 +521,66 @@ class TestRunWrites:
             "denied",
             "tracker_writes.close=deny",
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            {"title": "Retitled"},
+            {"description": "Replaced"},
+            {"labels": ["x"]},
+            {"assignee": "someone"},
+            {"priority": "high"},
+        ],
+    )
+    async def test_reopen_cannot_carry_another_edit(
+        self,
+        edit: Dict[str, Any],
+        db_session: Session,
+        test_user,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        run = _report_run(db_session, test_user.account_id)
+        crud_delivery_report_policy.save_overrides(
+            db_session,
+            account_id=test_user.account_id,
+            overrides={"tracker_writes": {"reopen": "allow"}},
+        )
+        monkeypatch.setattr(
+            mcp, "_delivery_report_execution_id", lambda db, current_user: str(run.id)
+        )
+        monkeypatch.setattr(mcp, "_get_tool_db", lambda: db_session)
+        monkeypatch.setattr(mcp, "_tool_user", AsyncMock(return_value=test_user))
+        with pytest.raises(HTTPException) as refused:
+            await mcp.update_issue.__wrapped__(
+                issue="example/app#7", status="open", **edit
+            )
+        assert refused.value.status_code == 403
+        [row] = _audit_rows(db_session, test_user.account_id)
+        assert row.status == "denied"
+        assert row.details["denied_by"].startswith("a report run may only reopen")
+
+    def test_an_allowed_write_is_logged_as_a_decision_not_an_outcome(
+        self, db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run = _report_run(db_session, test_user.account_id)
+        crud_delivery_report_policy.save_overrides(
+            db_session,
+            account_id=test_user.account_id,
+            overrides={"tracker_writes": {"reopen": "allow"}},
+        )
+        self._guard(
+            db_session,
+            test_user,
+            monkeypatch,
+            run,
+            tool="update_issue",
+            target="example/app#7",
+            status="open",
+        )
+        [row] = _audit_rows(db_session, test_user.account_id)
+        assert row.status == "allowed"
+        assert row.details["allowed_by"] == "tracker_writes.reopen=allow"
 
     def test_calls_outside_a_report_run_are_not_gated(
         self, db_session: Session, test_user, monkeypatch: pytest.MonkeyPatch

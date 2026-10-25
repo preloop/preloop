@@ -1298,3 +1298,11 @@ class TestPolicyInTheReport:
             project_policies={"acme/docs": dr.resolve_policy(None, {"enabled": False})},
         )
         assert [c["ref"] for c in report["shipped"]] == ["acme/app#7"]
+
+
+def test_reopen_requests_keep_whether_the_run_applied_them() -> None:
+    base = {"ref": "example/app#7", "revision": "abc123", "evidence": ["a.py:1"]}
+    kept = dr.normalize_reopen_requests(
+        [{**base, "applied": True}, {**base, "ref": "example/app#8", "applied": "yes"}]
+    )
+    assert [r["applied"] for r in kept] == [True, False]

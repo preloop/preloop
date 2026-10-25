@@ -782,6 +782,7 @@ def _guard_delivery_report_write(
     tool: str,
     target: str | None,
     status: str | None = None,
+    other_fields: tuple[str, ...] = (),
 ) -> str | None:
     """Apply the report policy to a tracker write made by a report run.
 
@@ -805,6 +806,7 @@ def _guard_delivery_report_write(
         tool=tool,
         target=target,
         status=status,
+        other_fields=other_fields,
     )
     if not allowed:
         raise HTTPException(
@@ -1130,8 +1132,27 @@ async def update_issue(
     """
     db = _get_tool_db()
     current_user = await _tool_user(db)
+    edits = {
+        "title": title,
+        "description": description,
+        "priority": priority,
+        "assignee": assignee,
+        "labels": labels,
+        "add_reaction": add_reaction,
+        "remove_reaction": remove_reaction,
+        "expected_revision": expected_revision,
+        "assessment": assessment,
+        "complexity_label": complexity_label,
+        "risk_label": risk_label,
+        "readiness_label": readiness_label,
+    }
     _guard_delivery_report_write(
-        db, current_user, tool="update_issue", target=issue, status=status
+        db,
+        current_user,
+        tool="update_issue",
+        target=issue,
+        status=status,
+        other_fields=tuple(name for name, value in edits.items() if value is not None),
     )
 
     triage_requested = any(

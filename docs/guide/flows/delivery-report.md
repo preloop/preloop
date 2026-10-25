@@ -143,15 +143,23 @@ A person acts on a proposal from the report page, through
 The click is the approval, so it does not depend on the run's write rules.
 Each proposal takes one decision; it is stored on the run under
 `proposal_actions` and a second click gets 409 `already_decided`.
+When the tracker refuses the write, the proposal is free for another
+click. When the outcome is unknown (a timeout or a dropped connection), the
+decision is kept as `unconfirmed` and further clicks get 409 `unconfirmed`,
+so a retry cannot open a second issue: check the tracker, then dismiss the
+proposal. Dismiss also clears a claim left `pending` for 15 minutes.
 
 The run itself writes only where the account allows it:
 `create_follow_up: allow` lets it open follow-ups (the platform adds the
-label and the report link), `reopen: allow` lets it reopen and comment. Any
-other write from a report run, and every close, is refused with 403.
+label and the report link), `reopen: allow` lets it reopen and comment. A
+reopen that also edits the title, description, labels, assignee or priority
+is refused, as is any other write from a report run and every close (403).
 
 Every write, refusal and dismissal is in the audit log as
 `delivery_report_tracker_write`, with what allowed or refused it
-(`allowed_by: click` or the policy rule).
+(`allowed_by: click` or the policy rule). For a run's own write the row
+records the policy decision (status `allowed` or `denied`), not whether the
+tracker applied it.
 
 ## The report
 

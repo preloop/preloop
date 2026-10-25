@@ -1695,6 +1695,7 @@ def normalize_reopen_requests(raw: Any) -> List[Dict[str, Any]]:
                 "revision": revision,
                 "reason": str(item.get("reason") or "").strip() or None,
                 "evidence": evidence,
+                "applied": item.get("applied") is True,
             }
         )
     return kept

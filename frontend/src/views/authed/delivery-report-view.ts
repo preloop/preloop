@@ -41,6 +41,8 @@ export function decisionLabel(decision: ProposalDecision): string {
   if (decision.status === 'dismissed')
     return decision.reason ? `Dismissed: ${decision.reason}` : 'Dismissed';
   if (decision.status === 'pending') return 'In progress';
+  if (decision.status === 'unconfirmed')
+    return 'Not confirmed by the tracker: check it, then dismiss';
   return decision.kind === 'reopen' ? 'Reopened' : 'Issue opened';
 }
 
@@ -455,11 +457,32 @@ export class DeliveryReportView extends LitElement {
   ) {
     if (decision) {
       const label = decisionLabel(decision);
+      const unconfirmed = decision.status === 'unconfirmed';
       return html`<span class="proposal-actions" data-testid="decision">
-        ${this.chip(decision.status === 'dismissed' ? 'neutral' : 'success', label)}
+        ${this.chip(
+          decision.status === 'applied'
+            ? 'success'
+            : unconfirmed
+              ? 'warning'
+              : 'neutral',
+          label
+        )}
         ${
           decision.issue_url
             ? this.external(decision.issue_url, 'View issue')
+            : nothing
+        }
+        ${
+          unconfirmed
+            ? this.actionButton(
+                'Dismiss',
+                detail.actions.dismiss,
+                'default',
+                () => {
+                  this.dismissKey = key;
+                  this.dismissReason = '';
+                }
+              )
             : nothing
         }
       </span>`;
@@ -614,7 +637,10 @@ export class DeliveryReportView extends LitElement {
   private renderReopen(request: ReopenRequest, detail: DeliveryReportDetail) {
     const stale = detail.stale_reopen_requests[request.ref];
     const key = `reopen:${request.ref}`;
-    const decision = detail.report.proposal_actions?.[key];
+    // A request the run reopened itself under the policy is already decided.
+    const decision: ProposalDecision | undefined = request.applied
+      ? { kind: 'reopen', status: 'applied', issue_url: request.url }
+      : detail.report.proposal_actions?.[key];
     return html`<li
       data-testid="reopen-request"
       data-stale=${stale ? 'true' : 'false'}
