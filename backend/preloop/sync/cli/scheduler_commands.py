@@ -65,6 +65,12 @@ def spend_outlier_daily_trigger() -> CronTrigger:
 SPEND_OUTLIER_SESSION_CHECK_MINUTES = 15
 
 
+#: Minutes between post-deploy backfill passes. Each pass is bounded by
+#: ``preloop.models.backfills.run_pending_backfills`` (60 s by default).
+# Keep long backfill passes from dominating the shared worker slot.
+DATA_BACKFILL_INTERVAL_MINUTES = 15
+
+
 def shutdown_scheduler():
     """Function to shut down the scheduler."""
     global scheduler
@@ -257,6 +263,28 @@ async def run_scheduler_async(
         id="security_maintenance_reconciliation",
         replace_existing=True,
         misfire_grace_time=30,
+    )
+
+    # Post-deploy data backfills. Migrations only register them (the Helm
+    # pre-upgrade hook has a five-minute budget); a worker advances pending
+    # ones in committed batches. The first pass runs shortly after start, so
+    # a deploy that registered a backfill picks it up without waiting a full
+    # interval. A pass with nothing pending is one indexed query.
+    async def _publish_data_backfills() -> None:
+        try:
+            await event_bus_service.publish_task("run_data_backfills")
+        except Exception:
+            logger.exception("Failed to publish data backfill task")
+
+    scheduler.add_job(
+        _publish_data_backfills,
+        trigger=IntervalTrigger(minutes=DATA_BACKFILL_INTERVAL_MINUTES),
+        id="data_backfill_job",
+        name="Run Pending Data Backfills",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=120,
+        next_run_time=datetime.now(pytz.utc) + timedelta(minutes=1),
     )
 
     # Hourly workspace retention pass: delete captured workspace snapshots

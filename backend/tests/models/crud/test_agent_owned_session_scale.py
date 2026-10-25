@@ -145,6 +145,11 @@ def test_list_binds_few_parameters_for_an_agent_with_many_sessions(
 ) -> None:
     """Parameter count does not grow with the agent's session count."""
     _agent_with_runs(db_session, test_user, runs=1500)
+    # Subscription usage is read from stored totals, which the list uses once
+    # the post-deploy backfill has completed.
+    db_session.execute(
+        text("UPDATE agent_usage_backfill SET ready = true WHERE name = 'agents'")
+    )
     listed = crud_managed_agent.list_for_account(
         db_session, account_id=str(test_user.account_id), limit=20
     )["items"]

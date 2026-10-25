@@ -136,6 +136,9 @@ spec:
     {{- with .Values.database.cnpg.storage.storageClass }}
     storageClass: {{ . }}
     {{- end }}
+    # Let the operator grow a PVC that is in use (needs an expandable
+    # StorageClass). Set false where volume resizes are done by hand.
+    resizeInUseVolumes: {{ ne .Values.database.cnpg.storage.resizeInUseVolumes false }}
 
   # Resources
   resources:

@@ -26,6 +26,9 @@ def test_weekly_spend_with_500k_rows_uses_generic_index_within_default_timeout(
     start = datetime.now(timezone.utc) - timedelta(days=7)
     end = start + timedelta(days=7)
     run_id = uuid4()
+    # Bound fixture loading too: a cached trigger plan previously hung here
+    # before the read timeout below was installed, consuming the CI job limit.
+    db_session.execute(text("SET LOCAL statement_timeout = '120s'"))
     db_session.execute(
         text("""
         INSERT INTO api_usage
