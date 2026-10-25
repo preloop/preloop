@@ -174,8 +174,11 @@ export function invalidateUserProfileCache(): void {
  */
 const apiCacheResetHooks = new Set<() => void>();
 
-export function onApiCachesInvalidated(reset: () => void): void {
+export function onApiCachesInvalidated(reset: () => void): () => void {
   apiCacheResetHooks.add(reset);
+  return () => {
+    apiCacheResetHooks.delete(reset);
+  };
 }
 
 export function invalidateApiCaches(): void {
@@ -2426,7 +2429,9 @@ export async function getAccountAgent(
      * Optional sections to include (`usage_by_model`, `activity`,
      * `sessions`). Omitted: all of them. Empty: the header only.
      */
-    include?: Array<'usage_by_model' | 'activity' | 'sessions'>;
+    include?: Array<'usage_by_model' | 'activity' | 'sessions' | 'aggregate'>;
+    /** Identity and explicitly selected sections, without historical summary totals. */
+    lightweight?: boolean;
     session_limit?: number;
     session_offset?: number;
   } = {}
@@ -2435,6 +2440,7 @@ export async function getAccountAgent(
   if (params.start_date) queryParams.set('start_date', params.start_date);
   if (params.end_date) queryParams.set('end_date', params.end_date);
   if (params.include) queryParams.set('include', params.include.join(','));
+  if (params.lightweight) queryParams.set('lightweight', 'true');
   if (params.session_limit)
     queryParams.set('session_limit', String(params.session_limit));
   if (params.session_offset)
@@ -3457,6 +3463,7 @@ export async function getRuntimeSessionGatewayEvents(
          * carry the whole conversation (#1689).
          */
         historyWindow?: number;
+        signal?: AbortSignal;
       } = {}
 ): Promise<FlowGatewayEventsResponse> {
   const searchParams = new URLSearchParams();
@@ -3476,7 +3483,8 @@ export async function getRuntimeSessionGatewayEvents(
   }
   const params = searchParams.toString() ? `?${searchParams.toString()}` : '';
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${sessionId}/gateway-events${params}`
+    `/api/v1/runtime-sessions/${sessionId}/gateway-events${params}`,
+    typeof options === 'number' ? {} : { signal: options.signal }
   );
   if (!response.ok) {
     throw new Error('Failed to fetch runtime session gateway events');

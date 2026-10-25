@@ -15,6 +15,8 @@ Live session supervision uses shared Lit state and tool/approval cards across
 Talk, Conversation and Transcript. Gateway starts and accounting completions
 share a per-request identity; captured OpenAI, Responses and Anthropic tool
 metadata has a 64 KiB aggregate bound and follows capture/redaction policy.
+Agent detail uses independent identity, session-page and spend reads; Talk uses
+bounded delta history and coalesced refreshes. See [frontend read contracts](docs/architecture/frontend.md#route-loading-and-refreshes).
 Approval REST queries combine account and runtime-session scope, and websocket
 approval payloads pass the same permission boundary before delivery. See
 [Runtime sessions](docs/guide/concepts/runtime-sessions.md#following-live-work-and-decisions).
@@ -1361,3 +1363,18 @@ cache, independent mappings per recording, and a default-on
 `syncedRecordingPlayer` host option. Unmapped moments never clamp; GIFs use a
 plain-image fallback. Browser Use and Skyvern producers emit timing through the
 existing deposit API. See [the recording contract](docs/guide/artifacts.md#recordings-synchronized-to-the-timeline).
+
+### Optional vendor organization activity
+
+The Copilot daily importer exposes the `copilot_organization_metrics` service
+hook after reading seats. An installed extension may import daily aggregate
+reports through the existing read-only client; its service and endpoints live
+outside core. Account-scoped snapshots and governed-owner lookups remain in
+`preloop.models.crud`. The OSS Lit `copilot-activity-panel` is mounted in Cost
+and Agents only when `copilot_seat_activity` is enabled, and hides data when
+the extension denies permissions or entitlement. Vendor counters never enter
+gateway token totals. Nullable premium fields preserve unknown values through
+parsing, aggregation, API schemas and display. Durable per-day billing status
+snapshots retain retry work independently of the adoption cursor; unavailable
+days replace stale spend and make incomplete range totals unknown. Optional
+extension failures are isolated from core imports with a sanitized warning.
