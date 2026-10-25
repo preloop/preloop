@@ -848,6 +848,24 @@ describe('agent-talk-view session integrity', () => {
     expect(dropdown.open).to.equal(false);
     await typeAndSend(el, '/resume');
     await waitUntil(() => dropdown.open, 'picker did not open');
+    // Focus is in the list, so Esc closes the picker and interrupts nothing.
+    const picker = el.shadowRoot!.querySelector('talk-session-picker')!;
+    await waitUntil(() => picker.contains(el.shadowRoot!.activeElement));
+    el.shadowRoot!.activeElement!.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'Escape',
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[1]?.body ?? '').includes('"interrupt":true')
+        )
+    ).to.equal(false);
     expect(controlBodies()).to.have.length(0);
     el.remove();
   });

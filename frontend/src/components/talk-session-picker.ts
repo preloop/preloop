@@ -52,6 +52,11 @@ export class TalkSessionPicker extends LitElement {
     const dropdown = this.querySelector('sl-dropdown') as
       (HTMLElement & { show?: () => Promise<void> }) | null;
     await dropdown?.show?.();
+    // Keyboard lands in the list: arrows pick, Esc closes it.
+    const first = this.querySelector<HTMLElement>(
+      'sl-menu-item[aria-checked="true"], sl-menu-item:not([disabled])'
+    );
+    first?.focus();
   }
 
   private select(sessionId: string): void {

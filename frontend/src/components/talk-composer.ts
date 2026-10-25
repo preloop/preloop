@@ -826,8 +826,10 @@ export class TalkComposer extends LitElement {
     return 'Offline. Your message waits for the agent.';
   }
 
-  private get historyKey(): string {
-    return this.sessionId ?? '';
+  private remember(sessionId: string, text: string): void {
+    const history = readHistory(sessionId);
+    if (history[history.length - 1] !== text)
+      writeHistory(sessionId, [...history, text]);
   }
 
   private setMessage(text: string): void {
@@ -849,12 +851,15 @@ export class TalkComposer extends LitElement {
       );
       this.statusMessage = 'New session. Your next message starts it.';
     } else if (name === 'resume') {
+      // The picker takes focus, so Esc there closes it and never reaches
+      // the composer's Esc-to-interrupt.
       this.dispatchEvent(
         new CustomEvent(TALK_OPEN_PICKER_EVENT, {
           bubbles: true,
           composed: true,
         })
       );
+      return;
     } else if (name === 'interrupt') {
       void this.interruptSession();
     } else if (name === 'release') {
@@ -867,7 +872,9 @@ export class TalkComposer extends LitElement {
 
   /** Up: the previous prompt typed into this session, never another's. */
   private recallHistory(direction: -1 | 1): boolean {
-    const history = readHistory(this.historyKey);
+    // A window starting a new session has no history of its own yet.
+    if (!this.sessionId) return false;
+    const history = readHistory(this.sessionId);
     if (!history.length) return false;
     if (this.historyCursor === null) {
       // Only an empty box recalls, so Up still moves the caret in a draft.
@@ -912,6 +919,16 @@ export class TalkComposer extends LitElement {
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         this.runCommand(menu[Math.min(this.menuIndex, menu.length - 1)].name);
+        return;
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      const typed = this.message.trim().toLowerCase();
+      const known = TALK_COMMANDS.find((c) => `/${c.name}` === typed);
+      if (known && !this.availableCommands.includes(known)) {
+        // A real command this session cannot run is not a message.
+        event.preventDefault();
+        this.statusMessage = `/${known.name} is not available for this session.`;
         return;
       }
     }
@@ -999,10 +1016,9 @@ export class TalkComposer extends LitElement {
     this.setPending([...this.pending, pending]);
     this.setMessage('');
     this.historyCursor = null;
-    const historyKey = targetSessionId ?? '';
-    const history = readHistory(historyKey);
-    if (history[history.length - 1] !== text)
-      writeHistory(historyKey, [...history, text]);
+    // A first prompt has no session yet; it is recorded once the server
+    // names the session it created (deliver), never under a shared key.
+    if (targetSessionId) this.remember(targetSessionId, text);
     this.lastInputMode = 'text';
     const asNote = targetSessionId
       ? await this.sessionTakesNotes(targetSessionId)
@@ -1149,6 +1165,7 @@ export class TalkComposer extends LitElement {
         startNewSession && typeof response.target_session_id === 'string'
           ? response.target_session_id
           : null;
+      if (createdSessionId) this.remember(createdSessionId, text);
       this.setPending(
         this.pending.map((item) =>
           item.id === id

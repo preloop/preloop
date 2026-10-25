@@ -1100,4 +1100,60 @@ describe('talk-composer keyboard and slash commands', () => {
     await waitUntil(() => commandBodies().length === 2);
     expect(commandBodies()[1].message).to.equal('/new please');
   });
+  it('an unavailable command is not sent as a message', async () => {
+    const el = await mount({ supports_interrupt: false });
+    await setText(el, '/interrupt');
+    expect(el.shadowRoot!.querySelector('talk-command-menu')).to.not.exist;
+    await press(el, 'Enter');
+    expect(commandBodies()).to.have.length(0);
+    expect(el.shadowRoot!.querySelector('.hint')!.textContent).to.contain(
+      '/interrupt is not available'
+    );
+  });
+
+  it('/resume leaves focus to the picker', async () => {
+    const el = await mount();
+    const focus = sinon.spy(el, 'focusInput');
+    await setText(el, '/resume');
+    await press(el, 'Enter');
+    expect(focus.called).to.equal(false);
+  });
+
+  it("a new session's first prompt is recalled there and nowhere else", async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/runtime-sessions/') && url.endsWith('/control'))
+        return json(commandControl());
+      if (url.includes('/control/'))
+        return json({
+          status: 'delivered',
+          published: true,
+          target_session_id: 'sess-new',
+        });
+      return new Response('', { status: 200 });
+    });
+    const el = await mount();
+    el.sessionId = null;
+    await el.updateComplete;
+    await setText(el, 'start fresh');
+    await press(el, 'Enter');
+    await waitUntil(() => commandBodies().length === 1);
+    await waitUntil(() => el.pendingMessages[0]?.state === 'sent');
+
+    // Still starting a session: nothing to recall, no shared bucket.
+    const up = await press(el, 'ArrowUp');
+    expect(up.defaultPrevented).to.equal(false);
+    expect(textarea(el).value).to.equal('');
+
+    el.sessionId = 'sess-new';
+    await el.updateComplete;
+    await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('start fresh');
+
+    el.sessionId = 'sess-1';
+    await el.updateComplete;
+    await setText(el, '');
+    await press(el, 'ArrowUp');
+    expect(textarea(el).value).to.equal('');
+  });
 });
