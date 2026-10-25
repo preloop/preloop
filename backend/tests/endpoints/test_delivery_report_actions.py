@@ -733,3 +733,54 @@ def test_report_links_use_instance_settings(monkeypatch: pytest.MonkeyPatch) -> 
         actions.report_link("run")
         == "https://internal.example/console/delivery-reports/run"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status", ["closed", " Done ", "resolved", "completed", "close"]
+)
+async def test_report_cannot_create_an_already_closed_issue(
+    db_session: Session,
+    test_user,
+    tracker: Dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    run = _report_run(db_session, test_user.account_id)
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=test_user.account_id,
+        overrides={"tracker_writes": {"create_follow_up": "allow"}},
+    )
+    monkeypatch.setattr(
+        mcp, "_delivery_report_execution_id", lambda db, user: str(run.id)
+    )
+    monkeypatch.setattr(mcp, "_get_tool_db", lambda: db_session)
+    monkeypatch.setattr(
+        mcp,
+        "get_http_request",
+        lambda: SimpleNamespace(headers={"authorization": "Bearer test"}),
+    )
+    monkeypatch.setattr(
+        mcp, "get_user_from_token_if_valid", AsyncMock(return_value=test_user)
+    )
+    monkeypatch.setattr(
+        mcp.crud_project,
+        "get_by_slug_or_identifier",
+        lambda *args, **kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    client = AsyncMock()
+    monkeypatch.setattr(mcp, "get_tracker_client", client)
+    with pytest.raises(HTTPException) as refused:
+        await mcp.create_issue.__wrapped__(
+            project="example/app",
+            title="Follow-up",
+            description="Evidence",
+            status=status,
+        )
+    assert refused.value.status_code == 403
+    assert tracker["fake"].calls == []
+    client.assert_not_awaited()
+    [audit] = _audit_rows(db_session, test_user.account_id)
+    assert audit.status == "denied"
+    assert audit.details["denied_by"] == "tracker_writes.close=deny"

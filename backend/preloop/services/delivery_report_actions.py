@@ -657,7 +657,7 @@ def run_write_decision(
         execution_id: The Delivery Report run.
         tool: ``create_issue``, ``update_issue`` or ``add_comment``.
         target: The issue or project the call names.
-        status: The status ``update_issue`` sets, if any.
+        status: The status ``create_issue`` or ``update_issue`` sets, if any.
         other_fields: Every other field the ``update_issue`` call sets; any
             one of them refuses the call, since a report run only reopens.
 
@@ -666,7 +666,9 @@ def run_write_decision(
     """
     writes = account_policy(db, account_id=account_id).tracker_writes
     normalized = (status or "").strip().lower()
-    if tool == "create_issue":
+    if tool in {"create_issue", "update_issue"} and normalized in CLOSING_STATUSES:
+        allowed, reason = False, "tracker_writes.close=deny"
+    elif tool == "create_issue":
         rule = writes.create_follow_up
         allowed, reason = rule == "allow", f"tracker_writes.create_follow_up={rule}"
     elif tool == "update_issue" and other_fields:
@@ -674,8 +676,6 @@ def run_write_decision(
             False,
             "a report run may only reopen, not edit " + ", ".join(sorted(other_fields)),
         )
-    elif tool == "update_issue" and normalized in CLOSING_STATUSES:
-        allowed, reason = False, "tracker_writes.close=deny"
     elif tool == "update_issue" and normalized in REOPEN_STATUSES:
         allowed, reason = (
             writes.reopen == "allow",

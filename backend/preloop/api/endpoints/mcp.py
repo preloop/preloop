@@ -1022,7 +1022,7 @@ async def create_issue(
         raise HTTPException(status_code=404, detail=f"Project '{project}' not found.")
 
     report_run = _guard_delivery_report_write(
-        db, current_user, tool="create_issue", target=project
+        db, current_user, tool="create_issue", target=project, status=status
     )
     if report_run is not None:
         # A follow-up the report opens carries its label and the report link.
