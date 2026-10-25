@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import crud_account_halt, crud_flow, crud_flow_execution
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
-from preloop.services.audit import async_writer
+from preloop.services.audit import AuditService, async_writer
 from preloop.services.dynamic_fastmcp import DynamicFastMCP
 from preloop.services.dynamic_mcp_server import UserContext
 from preloop.services.flow_trigger_service import FlowTriggerService
@@ -47,7 +47,12 @@ def _no_background_audit_writes():
     transaction open, so the next test in the CI shard blocked on its locks
     until the job timed out. Audit writes are not under test here.
     """
-    with patch.object(async_writer.writer, "submit") as submit:
+    # App-lifespan tests can leave the process singleton disabled. Give this
+    # module its own enabled service so queue assertions do not depend on order.
+    with (
+        patch("preloop.services.audit.service._audit_service", AuditService()),
+        patch.object(async_writer.writer, "submit") as submit,
+    ):
         yield submit
 
 
