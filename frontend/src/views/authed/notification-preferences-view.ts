@@ -2,6 +2,7 @@ import { REST_API_PREFIX } from '../../api-path';
 import consoleStyles from '../../styles/console-styles.css?inline';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css, unsafeCSS } from 'lit';
+import { relativeTime } from '../../utils/relative-time';
 import { customElement, state } from 'lit/decorators.js';
 import { AuthedElement, getUserProfile } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -827,11 +828,6 @@ export class NotificationPreferencesView extends AuthedElement {
     }
   }
 
-  private formatDate(dateString: string): string {
-    const date = parseUTCDate(dateString);
-    return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-  }
-
   private formatExpiry(seconds: number): string {
     const minutes = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -978,8 +974,7 @@ export class NotificationPreferencesView extends AuthedElement {
                                 ${device.token.substring(0, 20)}...
                               </div>
                               <div class="device-date">
-                                Registered:
-                                ${this.formatDate(device.registered_at)}
+                                Registered ${relativeTime(device.registered_at)}
                               </div>
                             </div>
                           </div>

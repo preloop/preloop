@@ -1,6 +1,6 @@
 import { renderTrackerStatus } from '../utils/tracker-status';
-import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
+import { relativeTime } from '../utils/relative-time';
 import { customElement, property, state } from 'lit/decorators.js';
 import { Router } from '../router';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
@@ -169,7 +169,6 @@ export class TrackerItem extends LitElement {
       return html``;
     }
 
-    const createdAt = parseUTCDate(this.tracker.created).toLocaleDateString();
     const icon = this.getTrackerIcon(this.tracker);
 
     return html`
@@ -195,7 +194,9 @@ export class TrackerItem extends LitElement {
           <h3 class="tracker-name">${this.tracker.name}</h3>
           <p class="tracker-type">${this.tracker.tracker_type}</p>
           ${renderTrackerStatus(this.tracker)}
-          <div class="tracker-created">Created: ${createdAt}</div>
+          <div class="tracker-created">
+            Created ${relativeTime(this.tracker.created)}
+          </div>
         </div>
         <div slot="footer">
           <sl-button size="small" @click=${this._editTracker} pill

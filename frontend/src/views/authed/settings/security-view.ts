@@ -1,7 +1,7 @@
 import { REST_API_PREFIX } from '../../../api-path';
 import { ConsoleStatus } from '../../../controllers/console-status';
-import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, unsafeCSS } from 'lit';
+import { relativeTime } from '../../../utils/relative-time';
 import { customElement, state } from 'lit/decorators.js';
 import {
   CliSession,
@@ -130,13 +130,7 @@ export class SecurityView extends LitElement {
                             <small>
                               ${session.user_agent || 'unknown client'}, last
                               used
-                              ${
-                                session.last_seen_at
-                                  ? parseUTCDate(
-                                      session.last_seen_at
-                                    ).toLocaleString()
-                                  : 'never'
-                              }
+                              ${relativeTime(session.last_seen_at, 'never')}
                             </small>
                           </span>
                           <sl-button
@@ -347,7 +341,7 @@ export class SecurityView extends LitElement {
                                         ${passkey.name}
                                         <small>
                                           added
-                                          ${parseUTCDate(passkey.created_at).toLocaleDateString()}
+                                          ${relativeTime(passkey.created_at)}
                                         </small>
                                       </span>
                                       <sl-button

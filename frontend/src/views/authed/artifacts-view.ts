@@ -18,7 +18,7 @@ import {
   formatArtifactBytes,
   orderedArtifactLabels,
 } from '../../utils/session-artifacts';
-import { formatRelativeTime, parseUTCDate } from '../../utils/date';
+import { formatAbsoluteTime, formatRelativeTime } from '../../utils/date';
 import '../../components/view-header';
 import '../../components/permission-denied';
 import '../../components/browser-step-thumbnail';
@@ -913,7 +913,6 @@ export class ArtifactsView extends AuthedElement {
 
   private renderRow(item: ArtifactSearchItem): TemplateResult {
     const group = artifactKindGroup(item.kind, item.content_type);
-    const created = parseUTCDate(item.created_at);
     const unavailable = item.availability !== 'available';
     const name = item.name || item.id;
     return html`
@@ -959,7 +958,7 @@ export class ArtifactsView extends AuthedElement {
             </div>
           </div>
           <div class="side">
-            <div title=${created ? created.toLocaleString() : ''}>
+            <div title=${formatAbsoluteTime(item.created_at)}>
               ${formatRelativeTime(item.created_at)}
             </div>
             <div>${formatArtifactBytes(item.size_bytes)}</div>

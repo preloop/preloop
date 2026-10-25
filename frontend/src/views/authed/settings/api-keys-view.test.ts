@@ -298,6 +298,28 @@ describe('ApiKeysView', () => {
     expect(content).to.contain('1 tool');
   });
 
+  it('shows created and last activity as ages with the date in title', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(
+      () => !(element as any).isLoading,
+      'API keys view did not finish loading'
+    );
+    await element.updateComplete;
+    await nextFrame();
+
+    const content = element.shadowRoot?.textContent || '';
+    expect(content).not.to.contain(
+      new Date('2026-03-10T09:00:00Z').toLocaleDateString()
+    );
+    const titled = Array.from(
+      element.shadowRoot?.querySelectorAll('span[title]') ?? []
+    ).filter((span) => /ago$/.test(span.textContent?.trim() ?? ''));
+    expect(titled.length).to.be.greaterThan(0);
+    expect(titled[0].getAttribute('title')).to.contain('2026');
+  });
+
   it('keeps recently active chips primary so they do not look idle', async () => {
     fetchStub.restore();
     fetchStub = sinon.stub(window, 'fetch');
