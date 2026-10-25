@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from preloop.models.crud import crud_account_halt, crud_flow, crud_flow_execution
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
+from preloop.services.audit import async_writer
 from preloop.services.dynamic_fastmcp import DynamicFastMCP
 from preloop.services.dynamic_mcp_server import UserContext
 from preloop.services.flow_trigger_service import FlowTriggerService
@@ -32,6 +33,22 @@ def _clear_kill_switch_cache():
     invalidate_kill_switch_cache()
     yield
     invalidate_kill_switch_cache()
+
+
+@pytest.fixture(autouse=True)
+def _no_background_audit_writes():
+    """Keep the audit writer thread off the shared test session.
+
+    These tests patch ``dynamic_fastmcp.get_db`` to return ``db_session``.
+    ``call_tool`` hands ``lambda: next(get_db())`` to the background audit
+    writer, whose worker thread then commits and closes that same session
+    while the test's teardown rolls it back. The race raised
+    ``IllegalStateChangeError`` in teardown and left the connection's
+    transaction open, so the next test in the CI shard blocked on its locks
+    until the job timed out. Audit writes are not under test here.
+    """
+    with patch.object(async_writer.writer, "submit") as submit:
+        yield submit
 
 
 @pytest.fixture
@@ -120,7 +137,7 @@ class TestToolCallHalt:
         assert "kill switch" in payload["message"]
 
     async def test_tool_call_allowed_after_reenable(
-        self, db_session, test_user, halted_account
+        self, db_session, test_user, halted_account, _no_background_audit_writes
     ):
         """Lifting the tools scope restores tool execution."""
         crud_account_halt.set_scopes(
@@ -159,6 +176,8 @@ class TestToolCallHalt:
             await mcp.call_tool("get_issue", {})
 
         mock_super.assert_called_once()
+        # The audit write was queued, not run on the shared session.
+        _no_background_audit_writes.assert_called()
 
 
 class TestFlowHalt:
