@@ -401,6 +401,7 @@ class CRUDFlow(CRUDBase[models.Flow]):
         db_obj: models.Flow,
         flow_in: schemas.FlowUpdate,
         account_id: Union[str, UUID],
+        commit: bool = True,
     ) -> models.Flow:
         """
         Update an existing flow.
@@ -410,6 +411,8 @@ class CRUDFlow(CRUDBase[models.Flow]):
             db_obj: The existing flow object to update.
             flow_in: The new data for the flow.
             account_id: Account ID (string or UUID).
+            commit: Commit and refresh; False only flushes, so the caller
+                can make this update part of a larger transaction.
 
         Returns:
             The updated flow object.
@@ -421,6 +424,9 @@ class CRUDFlow(CRUDBase[models.Flow]):
         for field, value in update_data.items():
             setattr(db_obj, field, value)
         db.add(db_obj)
+        if not commit:
+            db.flush()
+            return db_obj
         db.commit()
         db.refresh(db_obj)
         return db_obj

@@ -22591,6 +22591,183 @@ paths:
         '503':
           description: Credential verification unavailable
       x-restricted-ci: deny
+  /api/v1/delivery-report/policy:
+    get:
+      tags:
+      - Delivery Report
+      summary: Read the account's Delivery Report policy
+      description: Return the account layer and the policy it resolves to.
+      operationId: read_delivery_report_policy_api_v1_delivery_report_policy_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportPolicyResponse'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Delivery Report
+      summary: Save the account's Delivery Report policy
+      description: 'Replace the account layer. Budgets and tracker writes live here.
+
+
+        The cadence and the per-run ceiling are copied onto the account''s
+
+        Delivery Report flows in the same save.'
+      operationId: update_delivery_report_policy_api_v1_delivery_report_policy_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryReportPolicyUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportPolicyResponse'
+        '422':
+          description: The save was refused; see detail.code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportPolicyRefusal'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/delivery-report/policy/projects/{project_id}:
+    get:
+      tags:
+      - Delivery Report
+      summary: Read one repository's Delivery Report policy
+      description: Return the repository layer and the policy it resolves to.
+      operationId: read_project_delivery_report_policy_api_v1_delivery_report_policy_projects__project_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportPolicyResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    put:
+      tags:
+      - Delivery Report
+      summary: Save one repository's Delivery Report overrides
+      description: Replace the repository layer (windows, criteria source, on or off).
+      operationId: update_project_delivery_report_policy_api_v1_delivery_report_policy_projects__project_id__put
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryReportPolicyUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportPolicyResponse'
+        '422':
+          description: The save was refused; see detail.code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportPolicyRefusal'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+    delete:
+      tags:
+      - Delivery Report
+      summary: Drop one repository's overrides so the account policy applies
+      description: Remove the repository layer.
+      operationId: delete_project_delivery_report_policy_api_v1_delivery_report_policy_projects__project_id__delete
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: project_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Project Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportPolicyResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/runtime-sessions/settings/embedding:
     get:
       tags:
@@ -31161,6 +31338,226 @@ components:
       - total
       title: DeliveryReportList
       description: A page of runs and the total that matched the filter.
+    DeliveryReportPolicy:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          default: true
+        cadence:
+          type: string
+          enum:
+          - weekly
+          - daily
+          - manual
+          title: Cadence
+          default: weekly
+        weekday:
+          type: string
+          enum:
+          - mon
+          - tue
+          - wed
+          - thu
+          - fri
+          - sat
+          - sun
+          title: Weekday
+          default: mon
+        at:
+          type: string
+          title: At
+          default: 07:00
+        timezone:
+          type: string
+          title: Timezone
+          default: UTC
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        report_mode:
+          type: string
+          enum:
+          - deterministic
+          - assessed
+          title: Report Mode
+          default: deterministic
+        onboarding_assessed_run:
+          type: boolean
+          title: Onboarding Assessed Run
+          default: true
+        per_run_usd:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Per Run Usd
+          default: 5.0
+        monthly_usd:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Monthly Usd
+          default: 25.0
+        drop_order:
+          items:
+            type: string
+            enum:
+            - risk_detail
+            - assessments_beyond_n
+          type: array
+          title: Drop Order
+        max_assessed_changes:
+          type: integer
+          minimum: 0.0
+          title: Max Assessed Changes
+          default: 25
+        pr_ready_days:
+          type: integer
+          minimum: 1.0
+          title: Pr Ready Days
+          default: 7
+        issue_inactive_days:
+          type: integer
+          minimum: 1.0
+          title: Issue Inactive Days
+          default: 14
+        ui_screenshot_min_lines:
+          type: integer
+          minimum: 0.0
+          title: Ui Screenshot Min Lines
+          default: 40
+        criteria_source:
+          type: string
+          enum:
+          - triage_assessment
+          - description
+          title: Criteria Source
+          default: triage_assessment
+        tracker_writes:
+          $ref: '#/components/schemas/TrackerWritePolicy'
+        recipients:
+          type: string
+          enum:
+          - account_owner
+          - sponsoring_lead
+          title: Recipients
+          default: account_owner
+        sponsoring_lead_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sponsoring Lead User Id
+        opted_out_user_ids:
+          items:
+            type: string
+          type: array
+          title: Opted Out User Ids
+      additionalProperties: false
+      type: object
+      title: DeliveryReportPolicy
+      description: 'The report policy, per account and overridable per repository.
+
+
+        Two kinds of report share this policy. The deterministic report (what
+
+        shipped, closed and aged, the delta and the deterministic risk flags)
+
+        makes no model call and costs nothing. The assessed report adds a model
+
+        pass, only on changes that have neither a completed merge audit nor a
+
+        change brief, and only under the per-run and monthly budgets. The
+
+        budget defaults come from a measured run on a heavy week. The per-run
+
+        ceiling is applied as the flow''s ``agent_config.limits.max_usd`` so the
+
+        gateway enforces it like any other execution limit.
+
+
+        Defaults (#2020): the deterministic report is on, weekly, to the account
+
+        owner. The first run is assessed once (``onboarding_assessed_run``),
+
+        capped by the per-run budget and disclosed in the settings. Recurring
+
+        assessment needs ``report_mode: assessed``, which an account can only
+
+        set together with explicit per-run and monthly budgets
+
+        (:func:`validate_account_overrides`). Tracker writes start off.'
+    DeliveryReportPolicyRefusal:
+      properties:
+        detail:
+          $ref: '#/components/schemas/DeliveryReportPolicyRefusalDetail'
+      type: object
+      required:
+      - detail
+      title: DeliveryReportPolicyRefusal
+      description: The 422 body of a refused policy save.
+    DeliveryReportPolicyRefusalDetail:
+      properties:
+        code:
+          type: string
+          title: Code
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - code
+      - message
+      title: DeliveryReportPolicyRefusalDetail
+      description: Why a save was refused.
+    DeliveryReportPolicyResponse:
+      properties:
+        level:
+          type: string
+          enum:
+          - account
+          - project
+          title: Level
+        project_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Project Id
+        overrides:
+          additionalProperties: true
+          type: object
+          title: Overrides
+        effective:
+          $ref: '#/components/schemas/DeliveryReportPolicy'
+        defaults:
+          $ref: '#/components/schemas/DeliveryReportPolicy'
+        project_override_fields:
+          items:
+            type: string
+          type: array
+          title: Project Override Fields
+      type: object
+      required:
+      - level
+      - overrides
+      - effective
+      - defaults
+      - project_override_fields
+      title: DeliveryReportPolicyResponse
+      description: One layer of the policy and what it resolves to.
+    DeliveryReportPolicyUpdate:
+      properties:
+        overrides:
+          additionalProperties: true
+          type: object
+          title: Overrides
+      type: object
+      title: DeliveryReportPolicyUpdate
+      description: 'A save: the full set of overrides for this layer.
+
+
+        Fields left out fall back to the layer below (the defaults for the
+
+        account, the account for a repository). An empty object clears them.'
     DeliveryReportRow:
       properties:
         id:
@@ -50119,6 +50516,52 @@ components:
       type: object
       title: TrackerUpdate
       description: Model for updating an existing tracker.
+    TrackerWritePolicy:
+      properties:
+        create_follow_up:
+          type: string
+          enum:
+          - allow
+          - approval
+          - deny
+          title: Create Follow Up
+          default: deny
+        reopen:
+          type: string
+          enum:
+          - allow
+          - approval
+          - deny
+          title: Reopen
+          default: approval
+        close:
+          type: string
+          const: deny
+          title: Close
+          default: deny
+        follow_up_label:
+          type: string
+          title: Follow Up Label
+          default: preloop:proposed
+      additionalProperties: false
+      type: object
+      title: TrackerWritePolicy
+      description: 'What the run may do to the tracker. Writes ship in #2021.
+
+
+        Tracker writes start off. A follow-up issue or a reopen request is a
+
+        proposal in the report, and the reader''s click on Open issue or Reopen
+
+        is the approval. Creating follow-ups automatically under the tool
+
+        policy is a per-account setting (``create_follow_up: "allow"``) that an
+
+        account enables only after the report''s proposals have proven precise
+
+        on that account. Closing is never done by the report, so ``close`` only
+
+        accepts ``deny``.'
     UnpricedModelUsage:
       properties:
         model:

@@ -34,7 +34,9 @@ agent_config:
   report_kind: delivery_report
   # The report policy's per-run ceiling, enforced by the gateway like any
   # execution limit. 5 USD per run (25 USD per month) is the measured
-  # default; see DeliveryReportPolicy.
+  # default; saving the account's policy rewrites it (and the schedule).
+  # Runs the policy keeps deterministic never start the agent: the platform
+  # builds the report from stored tracker facts. See DeliveryReportPolicy.
   limits:
     max_usd: 5.0
 # Read tools only. Tracker writes start off: follow-up issues and reopen
@@ -77,7 +79,12 @@ prompt_template: |
   so and continue. previous/merge_audits.json lists the completed merge
   audits of closed issues (issue_ref, merge_sha, purpose); it may be absent.
 
-  Report policy (defaults; the account may override): open PRs older than 7
+  Report policy: payload.report_policy carries the account's policy
+  (policy), each repository's own windows and criteria source (projects,
+  keyed by owner/repo; a repository with enabled false is left out) and why
+  this run may assess (decision: "assessed", or "onboarding" for the first
+  report, assessed once under the per-run ceiling). Use its values over the
+  defaults below. Defaults: open PRs older than 7
   days and issues with no activity for 14 days are "open past the window";
   acceptance criteria come from the issue's triage assessment section
   (between <!-- preloop-issue-triage:start --> and its end marker), else an

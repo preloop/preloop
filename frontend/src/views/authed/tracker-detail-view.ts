@@ -22,6 +22,7 @@ import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
 import '@shoelace-style/shoelace/dist/components/checkbox/checkbox.js';
+import '../../components/delivery-report-policy-settings.ts';
 import '../../components/view-header.ts';
 import '../../components/resource-actions.ts';
 import '../../components/list-toolbar.ts';
@@ -164,6 +165,10 @@ export class TrackerDetailView extends LitElement {
 
   @state()
   private _selectedProjectId = '';
+
+  /** The project whose Delivery Report policy card is open, if any. */
+  @state()
+  private _policyProjectId = '';
 
   @state()
   private _issueStatus: 'open' | 'closed' | 'all' = 'open';
@@ -1447,8 +1452,25 @@ export class TrackerDetailView extends LitElement {
                 </sl-button>`
               : ''
           }
+          <sl-button
+            size="small"
+            variant="text"
+            data-action="report-policy"
+            @click=${() =>
+              (this._policyProjectId =
+                this._policyProjectId === project.id ? '' : project.id)}
+          >
+            Report policy
+          </sl-button>
         </div>
       </div>
+      ${
+        this._policyProjectId === project.id
+          ? html`<delivery-report-policy-settings
+              project-id=${project.id}
+            ></delivery-report-policy-settings>`
+          : nothing
+      }
     `;
   }
 
