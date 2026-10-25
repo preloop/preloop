@@ -1523,13 +1523,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     );
     try {
       const response = await fetchWithAuth(
-        `/api/v1/mcp-servers/${serverId}/oauth/authorize-token`,
+        `${REST_API_PREFIX}/mcp-servers/${serverId}/oauth/authorize-token`,
         { method: 'POST' }
       );
       if (!response.ok) throw new Error('Could not start OAuth authorization.');
       const { authorize_token: token } = await response.json();
       window.location.assign(
-        `/api/v1/mcp-servers/${serverId}/oauth/authorize?code=${encodeURIComponent(token)}`
+        `${REST_API_PREFIX}/mcp-servers/${serverId}/oauth/authorize?code=${encodeURIComponent(token)}`
       );
     } catch {
       this.oauthAlert = 'error';
@@ -1540,7 +1540,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   private async _handleDisconnectOAuth(serverId: string) {
     try {
       const response = await fetchWithAuth(
-        `/api/v1/mcp-servers/${serverId}/oauth/disconnect`,
+        `${REST_API_PREFIX}/mcp-servers/${serverId}/oauth/disconnect`,
         { method: 'POST' }
       );
       if (!response.ok) throw new Error('Could not disconnect OAuth.');
