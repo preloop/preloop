@@ -142,6 +142,7 @@ class UserContext:
         mcp_tools_cache: Optional[List[Any]] = None,
         flow_id: Optional[str] = None,
         credential_type: str = "legacy",
+        api_key_scopes: Optional[tuple[Any, ...]] = None,
     ):
         self.user_id = user_id
         self.account_id = account_id
@@ -165,6 +166,7 @@ class UserContext:
         # governance override (subject type ``flows``).
         self.flow_id = flow_id
         self.credential_type = credential_type
+        self.api_key_scopes = api_key_scopes
 
 
 class DynamicMCPServer:

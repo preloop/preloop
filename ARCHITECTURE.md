@@ -118,6 +118,13 @@ LTS contract with synthetic fixtures; Jira remains the issue host. OAuth,
 webhooks and execution/publication routing are separate integrations. See the
 [deployment and validation guide](docs/guide/bitbucket-data-center.md).
 
+API-key scopes are retained in MCP request context: `mcp:read` permits
+discovery and resource/prompt reads, while `mcp:write` permits tool invocation.
+These checks precede dispatch and preserve the independent account, runtime,
+tool-list and policy limits. REST and console channels confine MCP-only keys;
+discovery, telemetry and enrollment credentials retain their narrow surfaces.
+See [agent credential boundaries](docs/security/agent-isolation.md).
+
 MCP calls with delegated-grant introspection resolve the prefix/first-wins server
 through CRUD once and copy its dispatch configuration before releasing the DB.
 The exact forwarded bearer/OAuth token is checked with RFC 7662 before access
