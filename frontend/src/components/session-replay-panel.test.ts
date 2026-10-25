@@ -1861,6 +1861,17 @@ describe('SessionReplayPanel Requests search and copy', () => {
 
       await search(element, 'nothing like this');
       expect(copy().hasAttribute('disabled')).to.equal(true);
+
+      // A type filter that leaves no rows, with no query: nothing to copy.
+      await search(element, '');
+      expect(copy().hasAttribute('disabled')).to.equal(false);
+      (element as unknown as { chatTypeFilter: string }).chatTypeFilter =
+        'tools';
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelectorAll('.chat-turn').length
+      ).to.equal(0);
+      expect(copy().hasAttribute('disabled')).to.equal(true);
     } finally {
       console.error = consoleError;
       window.removeEventListener('show-toast', listener);

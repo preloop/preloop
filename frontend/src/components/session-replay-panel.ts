@@ -5776,7 +5776,8 @@ export class SessionReplayPanel extends LitElement {
 
   private renderChatControlBar(
     turnCount: number,
-    search: { shown: number; total: number } | null = null
+    search: { shown: number; total: number } | null = null,
+    shownRows = 0
   ) {
     const thresholdMax = this.getChatThresholdMax();
     const isTokens = this.chatThresholdMode === 'tokens';
@@ -5909,7 +5910,7 @@ export class SessionReplayPanel extends LitElement {
           }
           <sl-button
             size="small"
-            ?disabled=${search?.shown === 0}
+            ?disabled=${shownRows === 0}
             @click=${() => void this.copyChatRows()}
           >
             <sl-icon slot="prefix" name="clipboard"></sl-icon>
@@ -6061,7 +6062,8 @@ export class SessionReplayPanel extends LitElement {
         ${this.renderFocusJumpHint()} ${this.renderChatSummaryBar()}
         ${this.renderChatControlBar(
           turnCount,
-          searching ? { shown: rows.length, total } : null
+          searching ? { shown: rows.length, total } : null,
+          rows.length
         )}
         ${
           rows.length
