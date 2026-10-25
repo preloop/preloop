@@ -502,4 +502,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert delivery_report_policy.down_revision == "20261112_flow_log_gateway_idx"
     activity_meta_bytes = script.get_revision("20261112_activity_meta_bytes")
     assert activity_meta_bytes.down_revision == "20261112_delivery_report_policy"
-    assert script.get_heads() == ["20261112_activity_meta_bytes"]
+    agent_usage_replan = script.get_revision("20261112_agent_usage_replan")
+    assert agent_usage_replan.down_revision == "20261112_activity_meta_bytes"
+    assert script.get_heads() == ["20261112_agent_usage_replan"]
