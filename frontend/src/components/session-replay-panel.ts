@@ -5494,6 +5494,26 @@ export class SessionReplayPanel extends LitElement {
     </div>`;
   }
 
+  private renderToolRow(tool: SessionTool) {
+    const recordingId = recordingToolActivity(
+      tool.id,
+      tool.callId ?? null,
+      this.activity
+    );
+    return html`<div
+      class=${
+        recordingId && recordingId === this.recordingActivityId
+          ? 'recording-current'
+          : ''
+      }
+      data-recording-activity=${recordingId ?? nothing}
+    >
+      ${recordingCue(this, recordingId, this.recordingSync, this.recordingEnabled)}<session-tool-card
+        .tool=${tool}
+      ></session-tool-card>
+    </div>`;
+  }
+
   private renderChatTurn(
     turn: ChatTurn,
     mostExpensiveTurnId: string | null = null
@@ -5529,17 +5549,23 @@ export class SessionReplayPanel extends LitElement {
       summary &&
       Boolean(event) &&
       !this.fullTextEventIds.has(event?.id || '');
+    const recordingId = recordingEventActivity(event, this.recordingSync);
     return html`
       <div
         class="chat-turn ${turn.failed ? 'failed' : ''} ${
           isMostExpensive ? 'most-expensive' : ''
-        } ${needsSummary ? 'summary-candidate' : ''}"
+        } ${needsSummary ? 'summary-candidate' : ''} ${
+          recordingId && recordingId === this.recordingActivityId
+            ? 'recording-current'
+            : ''
+        }"
         data-event-id=${event ? event.id : nothing}
         data-note-id=${turn.noteId || nothing}
+        data-recording-activity=${recordingId ?? nothing}
         tabindex="0"
       >
         ${this.renderChatTurnHeader(turn, isMostExpensive)}
-        ${recordingCue(this, recordingEventActivity(event, this.recordingSync), this.recordingSync, this.recordingEnabled)}
+        ${recordingCue(this, recordingId, this.recordingSync, this.recordingEnabled)}
         ${
           showSummary && summary
             ? html`
@@ -5880,11 +5906,7 @@ export class SessionReplayPanel extends LitElement {
                       row.turn
                         ? this.renderChatTurn(row.turn, mostExpensiveTurnId)
                         : row.tool
-                          ? html`<div>
-                              ${recordingCue(this, recordingToolActivity(row.tool.id, row.tool.callId ?? null, this.activity), this.recordingSync, this.recordingEnabled)}<session-tool-card
-                                .tool=${row.tool}
-                              ></session-tool-card>
-                            </div>`
+                          ? this.renderToolRow(row.tool)
                           : this.renderApproval(row.request!)
                   )}
                 </div>

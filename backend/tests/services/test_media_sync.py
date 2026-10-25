@@ -118,6 +118,26 @@ def test_server_clock_does_not_subtract_agent_skew() -> None:
     assert all(m.rule == "server_skew" and not m.approximate for m in result.mappings)
 
 
+def test_server_clock_with_few_steps_is_exact() -> None:
+    """No skew is estimated for a server clock, so few samples cost nothing."""
+    rows = [
+        activity(0, occurred=0, recorded=31),
+        activity(1, recorded=33, kind="tool_call"),
+    ]
+    result = resolve_recordings(
+        [
+            recording(
+                clock="server", started_at=(START + timedelta(seconds=30)).isoformat()
+            )
+        ],
+        rows,
+    ).recordings[0]
+    assert [(m.offset_ms, m.approximate) for m in result.mappings] == [
+        (1000, False),
+        (3000, False),
+    ]
+
+
 def test_no_timing_or_unavailable_is_plain_player() -> None:
     rec = recording()
     rec.media_timing = None

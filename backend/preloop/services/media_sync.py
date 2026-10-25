@@ -100,7 +100,7 @@ def resolve_recordings(
                     - correction
                 )
                 rule = "server_skew"
-                approximate = not enough
+                approximate = not enough and timing.clock == "agent"
             if offset < 0 or (
                 timing.duration_ms is not None and offset > timing.duration_ms
             ):
