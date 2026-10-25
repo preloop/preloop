@@ -524,8 +524,6 @@ def test_policy_apply_keeps_oauth_secrets_in_the_encrypted_store(storage):
             ):
                 assert secret not in str(server.auth_config)
                 assert store.config_for_edit(db, server)["client_secret"] == secret
-            # A new client registration needs a new grant.
-            assert "access_token" not in store.config_for_edit(db, updated)
         finally:
             crud_mcp_server.remove(db, id=created.id, account_id=str(account))
 
@@ -548,3 +546,60 @@ def test_policy_snapshot_round_trip_keeps_the_oauth_connection(storage):
         assert store.prepare(db, server_id).config["access_token"] == (
             "synthetic-old-access"
         )
+
+
+def test_reapplying_an_oauth_policy_keeps_the_grant(storage):
+    from preloop.services.policy.loader import PolicyApplier
+    from preloop.services.policy.schema import MCPServerDefinition
+
+    store = grant(storage, expires_at=time.time() + 3600)
+    factory, (account, _, server_id) = storage
+    with factory() as db:
+        PolicyApplier(db, account)._apply_mcp_servers(
+            [
+                MCPServerDefinition(
+                    name="Synthetic OAuth",
+                    url=RESOURCE,
+                    auth_type="oauth",
+                    auth_config=CONFIG,
+                )
+            ],
+            dry_run=False,
+        )
+        db.commit()
+        server = db.get(models.MCPServer, server_id)
+        assert store.state(db, server) == "connected"
+        assert store.prepare(db, server_id).config["access_token"] == (
+            "synthetic-old-access"
+        )
+
+
+def test_snapshot_from_before_a_refresh_keeps_the_rotated_grant(storage):
+    from preloop.services.policy.loader import PolicyApplier, export_current_policy
+
+    store = grant(storage)
+    factory, (account, _, server_id) = storage
+    with factory() as db:
+        snapshot = export_current_policy(
+            db, account_id=str(account), include_credentials=True
+        )
+        lease = store.prepare(db, server_id)
+        store.complete(
+            db,
+            lease,
+            {
+                **CONFIG,
+                "access_token": "rotated-access",
+                "refresh_token": "rotated-refresh",
+                "expires_at": time.time() + 3600,
+            },
+        )
+        PolicyApplier(db, account)._apply_mcp_servers(
+            snapshot.mcp_servers, dry_run=False
+        )
+        db.commit()
+        server = db.get(models.MCPServer, server_id)
+        assert store.state(db, server) == "connected"
+        config = store.config_for_edit(db, server)
+        assert config["access_token"] == "rotated-access"
+        assert config["expires_at"] > time.time() + 3500

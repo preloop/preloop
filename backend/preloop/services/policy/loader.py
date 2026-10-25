@@ -1352,7 +1352,9 @@ class PolicyApplier:
     ) -> None:
         """Apply MCP server definitions."""
         from preloop.models.crud import crud_mcp_server
+        from preloop.models.crud.upstream_mcp_oauth import crud_upstream_mcp_oauth
         from preloop.models.schemas.mcp_server import merge_auth_config
+        from preloop.utils.redaction import REDACTED_STRING
 
         for server_def in servers:
             # Check if server exists by name
@@ -1377,22 +1379,24 @@ class PolicyApplier:
                     }
                     # Only update auth_config if:
                     # 1. It's provided AND
-                    # 2. It's NOT a redaction marker AND
-                    # 3. It's not the stored public OAuth config a snapshot
-                    #    exports (its secrets live in the encrypted store)
+                    # 2. It's NOT a redaction marker
                     # This prevents rollbacks from wiping credentials
-                    unchanged_oauth = (
-                        existing.auth_type == "oauth"
-                        and server_def.auth_type == "oauth"
-                        and server_def.auth_config == existing.auth_config
-                    )
-                    if (
-                        server_def.auth_config
-                        and not auth_config_is_redacted
-                        and not unchanged_oauth
-                    ):
+                    if server_def.auth_config and not auth_config_is_redacted:
+                        incoming = server_def.auth_config
+                        if existing.auth_type == "oauth" == server_def.auth_type:
+                            # A policy or snapshot carries only the public OAuth
+                            # fields: keep every stored key it leaves out (client
+                            # secret, grant) so an unchanged binding stays
+                            # connected, even after a token refresh.
+                            stored = crud_upstream_mcp_oauth.config_for_edit(
+                                self.db, existing
+                            )
+                            incoming = {
+                                **{key: REDACTED_STRING for key in stored},
+                                **incoming,
+                            }
                         # Per-key markers keep the stored secret for that key.
-                        changes["auth_config"] = server_def.auth_config
+                        changes["auth_config"] = incoming
                     elif auth_config_is_redacted:
                         logger.debug(
                             f"Skipping auth_config update for {server_def.name} "
