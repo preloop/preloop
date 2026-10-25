@@ -33,15 +33,7 @@ class CRUDExpectedDevice:
         refs = [item["device_ref_hash"] for item in devices]
         if len(set(refs)) != len(refs):
             raise ValueError("Duplicate device reference")
-        if (
-            db.scalar(
-                select(models.Account.id)
-                .where(models.Account.id == account_id)
-                .with_for_update()
-            )
-            is None
-        ):
-            raise ValueError("Account not found")
+        self.lock_account(db, account_id=account_id)
         model = models.ExpectedDevice
         db.execute(
             delete(model).where(
