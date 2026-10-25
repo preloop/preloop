@@ -248,6 +248,9 @@ api:
   # A generous ceiling costs nothing when connections have drained — uvicorn
   # exits as soon as the last one closes.
   terminationGracePeriodSeconds: 900
+  # Failed liveness must recover promptly; planned rollouts keep the long
+  # streaming drain above. Includes the 10s preStop sleep (Kubernetes >=1.28).
+  livenessTerminationGracePeriodSeconds: 60
   resources:
     requests:
       cpu: "50m"
@@ -1147,3 +1150,18 @@ computeBackend:
     credentialsJsonPath: ""
     zone: ""
     machineType: ""
+
+# Optional rules for an existing Prometheus Operator and OTLP metrics pipeline.
+# This does not enable the audit outbox; PRELOOP_AUDIT_OUTBOX_ENABLED stays off.
+auditAlerts:
+  enabled: false
+  labels: {}
+  # Match only this installation's exported metrics; adjust for your collector.
+  metricSelector: 'job="preloop"'
+  lagSeconds: 60
+  lagFor: 5m
+  metrics:
+    oldestPendingAge: preloop_audit_outbox_oldest_pending_age_seconds
+    parked: preloop_audit_outbox_parked
+    failedAttempts: preloop_audit_outbox_attempts_failed_total
+    dropped: preloop_audit_writes_dropped_total

@@ -4,6 +4,8 @@ Preloop is an open-source, responsible AI automation platform. It can proxy tool
 
 ARCHITECTURE.md is the map. Read one chapter under `docs/architecture/` for the subsystem you are changing. Do not load every chapter for context.
 
+Version-tag publication is gated by [image SBOM and release audit validation](docs/release-sbom-audit.md). Backend, console, scanner and universal images carry inventories for both architectures, bound to immutable image digests and the source commit. The gate waits for the same tag's image and security workflows before publishing release assets.
+
 [MCP dispatch provenance](docs/architecture/mcp-dispatch-provenance.md) defines the
 identity-only extension event for completed proxied calls. Optional plugins own
 inventory interpretation; hook labels and mutable tool-name maps cannot establish
@@ -15,6 +17,8 @@ Live session supervision uses shared Lit state and tool/approval cards across
 Talk, Conversation and Transcript. Gateway starts and accounting completions
 share a per-request identity; captured OpenAI, Responses and Anthropic tool
 metadata has a 64 KiB aggregate bound and follows capture/redaction policy.
+Agent detail uses independent identity, session-page and spend reads; Talk uses
+bounded delta history and coalesced refreshes. See [frontend read contracts](docs/architecture/frontend.md#route-loading-and-refreshes).
 Approval REST queries combine account and runtime-session scope, and websocket
 approval payloads pass the same permission boundary before delivery. See
 [Runtime sessions](docs/guide/concepts/runtime-sessions.md#following-live-work-and-decisions).
@@ -101,6 +105,12 @@ Explicit concurrent-index blocks have bounded lock and statement budgets and
 restore the migration session's short blocking-DDL timeout afterwards. Operation
 durations and cancellation diagnostics identify contention without extending
 the deployment deadline. See [schema migrations](docs/operations/schema-migrations.md).
+
+The [upgrade acceptance harness](docs/operations/upgrade-acceptance.md) runs published
+release initializers and Helm hooks against a synthetic corpus in disposable local
+stacks. It stops old writers, preserves encryption settings, and verifies data,
+identity and credential continuity. Candidate rehearsals remain separate from
+acceptance of an actually published release candidate.
 Cost and cycle time per tracker issue are rolled up across flows into their own
 tables. Each issue row, summary and unassigned bucket also states `cost_coverage`
 (`complete`, `partial`, `unknown`) and how many of its runs carry a cost, so an
@@ -115,6 +125,13 @@ remain stable when slugs change. DC repository/review support targets the 10.2
 LTS contract with synthetic fixtures; Jira remains the issue host. OAuth,
 webhooks and execution/publication routing are separate integrations. See the
 [deployment and validation guide](docs/guide/bitbucket-data-center.md).
+
+API-key scopes are retained in MCP request context: `mcp:read` permits
+discovery and resource/prompt reads, while `mcp:write` permits tool invocation.
+These checks precede dispatch and preserve the independent account, runtime,
+tool-list and policy limits. REST and console channels confine MCP-only keys;
+discovery, telemetry and enrollment credentials retain their narrow surfaces.
+See [agent credential boundaries](docs/security/agent-isolation.md).
 
 MCP calls with delegated-grant introspection resolve the prefix/first-wins server
 through CRUD once and copy its dispatch configuration before releasing the DB.
@@ -133,7 +150,11 @@ Public route and versioning boundaries are defined in
 [ADR 0001](docs/architecture/decisions/0001-api-versioning.md) and the
 [compatibility policy](docs/compatibility.md#api-versioning): REST uses
 `/api/v1`, while OAuth discovery/operations, MCP, and provider gateway
-prefixes follow their respective protocol contracts.
+prefixes follow their respective protocol contracts. REST responses, including
+errors, carry the diagnostics-only `Preloop-Server-Version` software release
+header. The header wraps the complete FastAPI middleware stack so early
+rejections and unhandled errors retain it. CLI and console REST URL builders
+share a prefix within each client; they do not negotiate versions by header.
 
 ## High-Level Architecture
 
@@ -196,6 +217,7 @@ graph LR
 | [Sync](docs/architecture/sync.md) | Tracker polling, NATS scheduler/worker, issue tracker clients, and tracker scope rules. |
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
+| [MCP protocol compatibility](docs/architecture/mcp-protocol-compatibility.md) | SDK 2 / FastMCP 4 APIs, modern and legacy transport matrix, validation and no-replay boundary. |
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, restricted CI machine identities, owned review execution admission, principal-bound completion callbacks and default-deny HTTP boundary, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |
@@ -486,7 +508,11 @@ The agent-facing tool: [search_sessions](docs/guide/agent-session-search.md).
 Audit collection also offers a durable delivery path behind the default-off
 `PRELOOP_AUDIT_OUTBOX_ENABLED` flag. Committed sanitized intents are relayed into
 audit rows transactionally; failed deliveries back off and park after a finite
-retry budget. Local operators can preview and replay a bounded failed batch for
+retry budget. Approval transitions, policy evaluation, MCP activity outcomes and
+model-content policy hits enqueue in their owning database transactions, bypassing
+bounded audit admission. Async callers await only local database work; the relay
+owns its sessions on a separate thread. Due lag, failed attempts and parked rows
+have opt-in Helm alert rules; drop alerts remain for best-effort callers. Local operators can preview and replay a bounded failed batch for
 one account with `python -m preloop.services.audit.replay`. See
 [Audit outbox operations](docs/operations/audit-outbox.md) for activation,
 admission limits, metrics and recovery.
@@ -1343,3 +1369,61 @@ provider alias. Custom model discovery applies the operator endpoint CIDR policy
 and pins each request to a checked IP while preserving Host/TLS identity.
 Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
+
+Residual credential storage uses the existing SecretReference backend for model
+and webhook values, and hash-only storage for all Preloop API keys. Separate
+backfill and removal revisions retire the three legacy columns; see the
+[credential storage upgrade guide](docs/operations/credential-storage-upgrade.md)
+for the maintenance window, encryption-key continuity and rollback limits.
+
+## API diagnostics
+
+The API entry point enables Python fatal-error tracebacks on stderr (including
+spawned Uvicorn reload/worker interpreters via `PYTHONFAULTHANDLER`) before
+application startup so native faults retain thread-stack evidence in container
+logs. These traces do not include frame locals. Setting `SENTRY_DSN` keeps error
+reporting and transaction tracing enabled, but background stack profiling is
+off by default. Operators may explicitly set `SENTRY_PROFILES_SAMPLE_RATE` to
+a finite value from 0 to 1 after validating profiling with their runtime and
+native extensions. Invalid values disable profiling and log a configuration
+warning. Profiling is independent of the request-level `PROFILING_ENABLED`
+middleware option.
+
+API liveness-triggered restarts use a separate 60-second termination grace
+(`api.livenessTerminationGracePeriodSeconds`, including the preStop sleep).
+Planned rollouts retain the 900-second stream drain. This prevents an unhealthy
+replica from spending the full rollout window draining before replacement.
+The chart renders probe-level grace on Kubernetes 1.28 or newer; older
+clusters retain the existing pod-level grace behavior.
+
+## Recording timeline synchronization
+
+Session artifacts optionally store typed `media_timing` independently of labels.
+`services/media_sync.py` resolves exact step offsets, producer timestamps and
+median-corrected server timestamps using metadata-only CRUD reads. The same
+resolver feeds `GET /runtime-sessions/{id}/media-sync` and signed evidence
+exports. Browser-step receipt times are server-owned; the migration backfills
+existing rows from activity creation time. Timing PATCH writes and its audit
+record commit atomically under the artifact account/session authorization.
+
+The Lit `session-recording-player` lives in the session observer, outside Talk
+routing and transcript construction. It uses the existing authorized artifact
+cache, independent mappings per recording, and a default-on
+`syncedRecordingPlayer` host option. Unmapped moments never clamp; GIFs use a
+plain-image fallback. Browser Use and Skyvern producers emit timing through the
+existing deposit API. See [the recording contract](docs/guide/artifacts.md#recordings-synchronized-to-the-timeline).
+
+### Optional vendor organization activity
+
+The Copilot daily importer exposes the `copilot_organization_metrics` service
+hook after reading seats. An installed extension may import daily aggregate
+reports through the existing read-only client; its service and endpoints live
+outside core. Account-scoped snapshots and governed-owner lookups remain in
+`preloop.models.crud`. The OSS Lit `copilot-activity-panel` is mounted in Cost
+and Agents only when `copilot_seat_activity` is enabled, and hides data when
+the extension denies permissions or entitlement. Vendor counters never enter
+gateway token totals. Nullable premium fields preserve unknown values through
+parsing, aggregation, API schemas and display. Durable per-day billing status
+snapshots retain retry work independently of the adoption cursor; unavailable
+days replace stale spend and make incomplete range totals unknown. Optional
+extension failures are isolated from core imports with a sanitized warning.

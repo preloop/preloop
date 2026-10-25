@@ -35,6 +35,18 @@ spec:
               value: {{ .Values.config.openai.apiKey }}
             - name: PRELOOP_URL
               value: {{ .Values.environment.preloopUrl | quote }}
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: jwt-secret
+            {{- if .Values.security.encryptionKey }}
+            - name: SECURITY__ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: encryption-key
+            {{- end }}
             {{- include "preloop.extraEnv" . | nindent 12 }}
           {{- with .Values.extraEnvFrom }}
           envFrom:

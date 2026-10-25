@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 
 import { editionOf } from '../../capabilities';
@@ -2934,7 +2935,7 @@ export class DashboardView extends AuthedElement {
     params.set('start_date', startDateStr);
     try {
       const count = await this.catchWith403Handling(
-        fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`).then(
+        fetchWithAuth(`${REST_API_PREFIX}/audit-logs/grouped?${params}`).then(
           (response) => {
             if (!response.ok) {
               throw new Error('Failed to count audit events');
@@ -3349,7 +3350,7 @@ export class DashboardView extends AuthedElement {
     params.set('start_date', startDateStr);
     params.set('exceptions_limit', '12');
     const response = await fetchWithAuth(
-      `/api/v1/audit-logs/overview?${params}`
+      `${REST_API_PREFIX}/audit-logs/overview?${params}`
     );
     if (response.ok) return response.json();
     if (response.status !== 404) {
@@ -3380,10 +3381,13 @@ export class DashboardView extends AuthedElement {
           groups: [],
           total: 0,
         }),
-        total(`/api/v1/audit-logs/grouped?${countParams}`),
-        total('/api/v1/audit-logs/grouped?event_type=tool_call&limit=1'),
+        total(`${REST_API_PREFIX}/audit-logs/grouped?${countParams}`),
         total(
-          '/api/v1/audit-logs/grouped?event_type=tool_call&outcome=failed&limit=1'
+          REST_API_PREFIX + '/audit-logs/grouped?event_type=tool_call&limit=1'
+        ),
+        total(
+          REST_API_PREFIX +
+            '/audit-logs/grouped?event_type=tool_call&outcome=failed&limit=1'
         ),
       ]);
     return {
@@ -3408,7 +3412,7 @@ export class DashboardView extends AuthedElement {
     params.set('outcome_match', 'any');
     params.set('start_date', startDateStr);
     const response = await fetchWithAuth(
-      `/api/v1/audit-logs/grouped?${params}`
+      `${REST_API_PREFIX}/audit-logs/grouped?${params}`
     );
     if (!response.ok) {
       throw new Error('Failed to fetch audit exceptions');
@@ -3426,7 +3430,7 @@ export class DashboardView extends AuthedElement {
       params.set('status', status);
     }
     const response = await fetchWithAuth(
-      `/api/v1/approval-requests?${params.toString()}`
+      `${REST_API_PREFIX}/approval-requests?${params.toString()}`
     );
     if (!response.ok) {
       throw new Error('Failed to fetch approval requests');

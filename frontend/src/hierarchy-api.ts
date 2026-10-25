@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /**
  * Console client for the multi-account, account hierarchy and access rule
  * endpoints.
@@ -124,7 +125,7 @@ export interface Membership {
 
 export async function getMemberships(): Promise<Membership[]> {
   return items<Membership>(
-    await request('/api/v1/me/memberships', { passive: true })
+    await request(REST_API_PREFIX + '/me/memberships', { passive: true })
   );
 }
 
@@ -141,7 +142,7 @@ export interface CreatedAccount {
  */
 export async function createRootAccount(name: string): Promise<CreatedAccount> {
   return request<CreatedAccount>(
-    '/api/v1/me/accounts',
+    REST_API_PREFIX + '/me/accounts',
     { method: 'POST', body: JSON.stringify({ name }) },
     'capability-off',
     'Could not create the account'
@@ -186,19 +187,25 @@ function rememberAccount(accountId: string) {
  * dashboard when it does not.
  */
 const DETAIL_PROBES: ReadonlyArray<[RegExp, (id: string) => string]> = [
-  [/^\/console\/ai-models\/([^/]+)$/, (id) => `/api/v1/ai-models/${id}`],
+  [
+    /^\/console\/ai-models\/([^/]+)$/,
+    (id) => `${REST_API_PREFIX}/ai-models/${id}`,
+  ],
   [
     /^\/console\/flows\/executions\/([^/]+)$/,
-    (id) => `/api/v1/flows/executions/${id}`,
+    (id) => `${REST_API_PREFIX}/flows/executions/${id}`,
   ],
   [
     /^\/console\/flows\/(?!new$|executions$)([^/]+)$/,
-    (id) => `/api/v1/flows/${id}`,
+    (id) => `${REST_API_PREFIX}/flows/${id}`,
   ],
-  [/^\/console\/approval\/([^/]+)$/, (id) => `/api/v1/approval-requests/${id}`],
+  [
+    /^\/console\/approval\/([^/]+)$/,
+    (id) => `${REST_API_PREFIX}/approval-requests/${id}`,
+  ],
   [
     /^\/console\/settings\/api-keys\/([^/]+)$/,
-    (id) => `/api/v1/auth/api-keys/${id}`,
+    (id) => `${REST_API_PREFIX}/auth/api-keys/${id}`,
   ],
 ];
 
@@ -245,7 +252,7 @@ export async function switchAccount(
   navigate: (url: string) => void = (url) => window.location.assign(url)
 ): Promise<void> {
   const pair = await request<TokenPair>(
-    '/api/v1/auth/switch-account',
+    REST_API_PREFIX + '/auth/switch-account',
     { method: 'POST', body: JSON.stringify({ account_id: accountId }) },
     'capability-off',
     'Could not switch account'
@@ -284,7 +291,7 @@ export interface Subaccount {
 }
 
 const subaccountsPath = (accountId: string) =>
-  `/api/v1/accounts/${enc(accountId)}/subaccounts`;
+  `${REST_API_PREFIX}/accounts/${enc(accountId)}/subaccounts`;
 
 export async function listSubaccounts(
   accountId: string
@@ -369,7 +376,7 @@ export interface AccessGrant {
 }
 
 const grantsPath = (accountId: string) =>
-  `/api/v1/accounts/${enc(accountId)}/access-grants`;
+  `${REST_API_PREFIX}/accounts/${enc(accountId)}/access-grants`;
 
 export async function listAccessGrants(
   accountId: string
@@ -448,13 +455,13 @@ export interface SharingRule {
 export async function listSharingRules(): Promise<SharingRule[]> {
   // Current EE serves a bare list; earlier console contracts use an envelope.
   const body = await request<SharingRule[] | { rules?: SharingRule[] }>(
-    '/api/v1/access/rules'
+    REST_API_PREFIX + '/access/rules'
   );
   return Array.isArray(body) ? body : (body?.rules ?? []);
 }
 
 const sharesPath = (accountId: string) =>
-  `/api/v1/accounts/${enc(accountId)}/shares`;
+  `${REST_API_PREFIX}/accounts/${enc(accountId)}/shares`;
 
 export async function listShares(
   accountId: string,
@@ -512,7 +519,7 @@ export async function getSharedResource(
   resourceId: string
 ): Promise<SharedResource> {
   return request(
-    `/api/v1/accounts/${enc(accountId)}/shared-resources/${enc(kind)}/${enc(resourceId)}`,
+    `${REST_API_PREFIX}/accounts/${enc(accountId)}/shared-resources/${enc(kind)}/${enc(resourceId)}`,
     {},
     'not-found'
   );
@@ -545,7 +552,7 @@ export async function getUsageRollup(
   }
   const suffix = query.toString() ? `?${query}` : '';
   const body = await request<Partial<UsageRollup>>(
-    `/api/v1/accounts/${enc(accountId)}/usage/rollup${suffix}`,
+    `${REST_API_PREFIX}/accounts/${enc(accountId)}/usage/rollup${suffix}`,
     { passive: true }
   );
   return {
@@ -564,9 +571,12 @@ export async function getAttentionRollup(
   accountId: string
 ): Promise<AttentionRollupRow[]> {
   return items<AttentionRollupRow>(
-    await request(`/api/v1/accounts/${enc(accountId)}/attention/rollup`, {
-      passive: true,
-    })
+    await request(
+      `${REST_API_PREFIX}/accounts/${enc(accountId)}/attention/rollup`,
+      {
+        passive: true,
+      }
+    )
   );
 }
 
@@ -582,7 +592,7 @@ export interface ResourceTags {
 }
 
 const tagsPath = (kind: string, resourceId: string) =>
-  `/api/v1/tags/${enc(kind)}/${enc(resourceId)}`;
+  `${REST_API_PREFIX}/tags/${enc(kind)}/${enc(resourceId)}`;
 
 export async function getTags(
   kind: string,

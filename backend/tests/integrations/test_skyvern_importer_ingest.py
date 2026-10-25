@@ -7,6 +7,8 @@ production code paths.
 
 from __future__ import annotations
 
+from typing import Any
+
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,3 +118,36 @@ def test_reimport_with_the_same_source_ref_creates_no_duplicates(
     )
     assert len(steps) == 6
     assert len(_rows(db_session, session.id, models.RuntimeSessionArtifact)) == 9
+
+
+def test_import_maps_step_four_from_the_provider_fixture(
+    client: Any, db_session: Any, test_user: Any
+) -> None:
+    from preloop_skyvern.importer import recording_timing
+
+    session, token = _session_and_key(db_session, test_user)
+    report = _import(client, session, token)
+    recording = next(row for row in report.artifacts if row["kind"] == "recording")
+    headers = {"Authorization": f"Bearer {token}"}
+    sync = client.get(
+        f"/api/v1/runtime-sessions/{session.id}/media-sync", headers=headers
+    ).json()["recordings"][0]
+    steps = _rows(
+        db_session,
+        session.id,
+        models.RuntimeSessionActivity,
+        activity_type="browser_step",
+    )
+    fourth = next(row for row in steps if row.metadata_["step_index"] == 3)
+    exact = recording_timing(recorded()["task"], recorded()["steps"])["step_offsets"]
+    expected = next(
+        row["offset_ms"]
+        for row in exact
+        if row["source_step_id"] == fourth.metadata_["source_step_id"]
+    )
+    mapped = next(
+        row for row in sync["mappings"] if row["activity_id"] == str(fourth.id)
+    )
+    assert mapped["offset_ms"] == expected
+    assert mapped["rule"] == "exact"
+    assert recording["media_timing"]["clock"] == "agent"

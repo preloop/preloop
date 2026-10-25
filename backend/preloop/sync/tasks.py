@@ -35,6 +35,7 @@ DISPATCHABLE_TASKS: tuple[str, ...] = (
     "execute_flow",
     "resume_flow_execution",
     "cleanup_flow_workspaces",
+    "maintain_gateway_activity",
     "reconcile_flow_feedback",
     "reconcile_security_maintenance",
     "run_data_backfills",
@@ -552,6 +553,30 @@ async def cleanup_flow_workspaces() -> dict[str, int] | None:
         return await cleanup_workspace_artifacts(db)
     except Exception as e:
         logger.error("Workspace retention pass failed: %s", e, exc_info=True)
+        return None
+    finally:
+        db.close()
+
+
+async def maintain_gateway_activity() -> dict[str, Any] | None:
+    """Hourly bounded pass over stored model gateway call rows.
+
+    Compacts rows stored before slim storage and, when
+    ``GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED`` is set, strips message content
+    older than each account's plan history window. Batched and resumable; a
+    backlog drains across passes.
+    """
+    from preloop.services.gateway_activity_maintenance import (
+        run_gateway_activity_maintenance,
+    )
+
+    db = next(get_db_session())
+    try:
+        # Batches commit and wait on Postgres; keep them off the worker loop
+        # so acks and other tasks are not held up for the whole pass.
+        return await run_db_off_loop(lambda: run_gateway_activity_maintenance(db))
+    except Exception as e:
+        logger.error("Gateway activity maintenance failed: %s", e, exc_info=True)
         return None
     finally:
         db.close()

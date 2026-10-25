@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import asyncio
 import base64
 import json
@@ -395,3 +397,105 @@ def test_rows_refused_again_on_retry_keep_their_original_index():
     [result] = StepPoster(TARGET, client=_client(rec)).post(steps)
     assert result.accepted == 5
     assert result.rejected == [{"index": 5, "error": "extra_too_large"}]
+
+
+def test_finish_uploads_timestamped_gif_and_retries(tmp_path: Any) -> None:
+    from PIL import Image
+    from datetime import datetime
+
+    requests = []
+    attempts = 0
+
+    def handle(request: Any) -> Any:
+        nonlocal attempts
+        requests.append(request)
+        if request.url.path.endswith("/browser-steps"):
+            return httpx.Response(
+                200,
+                json={
+                    "accepted": len(json.loads(request.content)["steps"]),
+                    "duplicates": 0,
+                    "rejected": [],
+                },
+            )
+        attempts += 1
+        return httpx.Response(500 if attempts == 1 else 201, json={"id": "gif"})
+
+    agent = FakeAgent(_history()["history"][:3])
+    poster = StepPoster(TARGET, client=_client(handle), sleep=lambda _: None)
+    reporter = PreloopBrowserUseReporter(TARGET, poster=poster)
+
+    async def run():
+        await agent.run(on_step_end=reporter.on_step_end)
+        await reporter.finish(agent)
+        await reporter.finish(agent)
+
+    asyncio.run(run())
+    assert reporter.recording_uploaded
+    uploads = [r for r in requests if r.url.path.endswith("/artifacts")]
+    assert len(uploads) == 2
+    metadata = json.loads(
+        uploads[-1].content.split(b'name="metadata"\r\n\r\n')[1].split(b"\r\n--")[0]
+    )
+    assert metadata["kind"] == "screencast"
+    timing = metadata["media_timing"]
+    assert timing["clock"] == "agent"
+    start = _history()["history"][0]["metadata"]["step_start_time"]
+    assert datetime.fromisoformat(timing["started_at"]).timestamp() == start
+    assert [o["offset_ms"] for o in timing["step_offsets"]] == [
+        round((step["metadata"]["step_end_time"] - start) * 1000)
+        for step in _history()["history"][:3]
+    ]
+    body = uploads[-1].content
+    gif = body[body.index(b"GIF89a") :].split(b"\r\n--")[0]
+    image = Image.open(__import__("io").BytesIO(gif))
+    total = 0
+    for frame in range(image.n_frames):
+        image.seek(frame)
+        total += image.info["duration"]
+    assert total == timing["duration_ms"]
+    assert (
+        uploads[0].headers["idempotency-key"] == uploads[1].headers["idempotency-key"]
+    )
+    # No typed input, task prompt or reasoning overlay is copied to metadata.
+    assert "input_text" not in json.dumps(metadata)
+
+
+def test_finish_external_video_requires_explicit_timing_and_never_raises(
+    tmp_path: Any,
+) -> None:
+    path = tmp_path / "capture.webm"
+    path.write_bytes(b"\x1a\x45\xdf\xa3" + b"\0" * 20)
+    calls = []
+
+    def handle(request: Any) -> Any:
+        calls.append(request)
+        if request.url.path.endswith("/browser-steps"):
+            return httpx.Response(
+                200, json={"accepted": 0, "duplicates": 0, "rejected": []}
+            )
+        return httpx.Response(500)
+
+    reporter = PreloopBrowserUseReporter(
+        TARGET, poster=StepPoster(TARGET, client=_client(handle), sleep=lambda _: None)
+    )
+    agent = FakeAgent([])
+    asyncio.run(reporter.finish(agent, recording_path=path))
+    assert len(calls) == 3
+    assert not reporter.recording_uploaded
+    assert b"media_timing" not in calls[0].content
+    calls.clear()
+    asyncio.run(reporter.finish(agent, gif=False))
+    assert calls == []
+
+
+def test_history_gif_without_timing_is_plain(tmp_path: Any) -> None:
+    from preloop_browser_use.recording import history_gif
+
+    steps = [
+        history_item_to_step(item, run_id="plain-run", index=i)
+        for i, item in enumerate(_history()["history"][:2])
+    ]
+    path = tmp_path / "plain.gif"
+    assert history_gif(steps, None, path) is None
+    assert path.read_bytes().startswith(b"GIF")

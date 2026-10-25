@@ -22,11 +22,13 @@ from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping
 from uuid import UUID
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.models.crud import crud_runtime_session, crud_runtime_session_activity
 from preloop.models.crud import runtime_session_artifact as crud_artifact
+from preloop.schemas.media_timing import MediaTiming
 from preloop.schemas.runtime_session_artifact import (
     McpResourceLink,
     RuntimeSessionArtifactListOut,
@@ -159,6 +161,7 @@ def describe(artifact: models.RuntimeSessionArtifact) -> RuntimeSessionArtifactO
         size_bytes=int(artifact.size_bytes),
         sha256=artifact.sha256,
         labels=dict(artifact.labels or {}),
+        media_timing=artifact.media_timing,
         producer=artifact.producer,
         agent_id=_str_or_none(artifact.agent_id),
         tool_name=artifact.tool_name,
@@ -243,6 +246,7 @@ def deposit(
     activity_id: str | None = None,
     parent_artifact_id: str | None = None,
     tool_name: str | None = None,
+    media_timing: MediaTiming | dict[str, Any] | None = None,
     idempotency_key: str | None = None,
     producer: str = PRODUCER_DEPOSIT_API,
 ) -> DepositResult:
@@ -261,6 +265,15 @@ def deposit(
     ):
         raise ArtifactDepositError(422, ERROR_IDEMPOTENCY_KEY_INVALID)
     kind = payload.kind
+    if media_timing is not None:
+        if kind not in ("recording", "screencast"):
+            raise ArtifactDepositError(422, "artifact_timing_kind_invalid")
+        try:
+            media_timing = MediaTiming.model_validate(media_timing).model_dump(
+                mode="json"
+            )
+        except ValidationError:
+            raise ArtifactDepositError(422, "artifact_timing_invalid") from None
     # Gate on the bytes' modality as well as the declared kind: audio
     # relabelled as another kind (e.g. generated_file, audio/ogg) is still
     # raw audio and needs the same opt-in.
@@ -296,6 +309,7 @@ def deposit(
             content_type=payload.content_type,
             plaintext=plaintext,
             manifest={_REQUEST_ID_KEY: request_id},
+            media_timing=media_timing,
             activity_id=activity_uuid,
             name=name or payload.name,
             labels=merged_labels,

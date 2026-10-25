@@ -782,6 +782,8 @@ export interface ManagedAgentSummary {
   started_at: string | null;
   last_activity_at: string | null;
   ended_at: string | null;
+  /** False on identity reads; historical totals are unavailable. */
+  usage_computed?: boolean;
   total_requests: number;
   successful_requests?: number;
   failed_requests?: number;
@@ -1001,7 +1003,7 @@ export interface AccountManagedAgentListResponse {
 
 export interface ManagedAgentDetailResponse {
   agent: ManagedAgentSummary;
-  aggregate: ManagedAgentUsageAggregate;
+  aggregate: ManagedAgentUsageAggregate | null;
   usage_by_model: GatewayUsageByModel[];
   activity_by_server: ManagedAgentServerActivitySummary[];
   activity_by_tool: ManagedAgentToolActivitySummary[];
@@ -1143,6 +1145,8 @@ export interface BrowserStepScreenshotRef {
  * what the agent says it did, never an approval or proof of page state.
  */
 export interface BrowserStepMetadata {
+  occurred_at?: string | null;
+  recorded_at?: string | null;
   source?: 'api' | 'browser_use' | 'skyvern' | 'playwright_mcp' | string;
   source_step_id?: string | null;
   step_index?: number | null;
@@ -1194,6 +1198,7 @@ export interface McpResourceLink {
 
 /** One item of `GET /runtime-sessions/{id}/artifacts`. */
 export interface RuntimeSessionArtifactDescriptor {
+  media_timing?: MediaTiming | null;
   id: string;
   runtime_session_id: string;
   activity_id?: string | null;
@@ -1986,8 +1991,16 @@ export interface CopilotUsageSummary {
     // Spend on per-developer days that no current seat holder explains.
     unattributed_net_amount: number | null;
     aggregate_days: number;
-    by_developer: { login: string; net_amount: number; net_quantity: number }[];
-    by_model: { model: string; net_amount: number; net_quantity: number }[];
+    by_developer: {
+      login: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
+    by_model: {
+      model: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
   };
   model_mix: {
     login: string;
@@ -2918,4 +2931,29 @@ export interface AnthropicUsageSummary {
   by_actor: AnthropicActorUsage[];
   by_model: { model: string; estimated_cost: number; tokens: number }[];
   not_attributable: string[];
+}
+
+/** Timing is a separate typed field, independent of user labels. */
+export interface MediaTiming {
+  started_at: string;
+  duration_ms?: number | null;
+  clock: 'agent' | 'server';
+  step_offsets?: { source_step_id: string; offset_ms: number }[] | null;
+}
+export interface MediaSyncMapping {
+  activity_id: string;
+  activity_type: string;
+  api_usage_id?: string | null;
+  offset_ms: number;
+  rule: 'exact' | 'occurred_at' | 'server_skew';
+  approximate: boolean;
+}
+export interface RecordingSync {
+  artifact_id: string;
+  skew_ms: number;
+  mappings: MediaSyncMapping[];
+  unmapped_activity_ids: string[];
+}
+export interface MediaSyncResponse {
+  recordings: RecordingSync[];
 }

@@ -424,6 +424,9 @@ spec:
               exec:
                 command: ["sleep", "10"]
           livenessProbe:
+            {{- if semverCompare ">=1.28-0" .Capabilities.KubeVersion.GitVersion }}
+            terminationGracePeriodSeconds: {{ .Values.api.livenessTerminationGracePeriodSeconds | default 60 }}
+            {{- end }}
             httpGet:
               path: /api/v1/ping
               port: 8000

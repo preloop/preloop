@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
 )
@@ -40,7 +41,7 @@ import (
 // exits 0: lineage is a convenience, and it must never block a session.
 
 // agentSessionStartPath is the backend endpoint the hook registers with.
-const agentSessionStartPath = "/api/v1/agents/session-start"
+const agentSessionStartPath = api.RESTPrefix + "/agents/session-start"
 
 // parentSessionEnvVar carries the runtime session id of the spawning run.
 const parentSessionEnvVar = "PRELOOP_PARENT_SESSION_ID"

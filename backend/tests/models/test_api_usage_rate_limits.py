@@ -300,7 +300,7 @@ def test_latest_rate_limit_snapshots_use_the_skip_scan_index(db_session, test_us
     finally:
         event.remove(bind, "before_cursor_execute", _capture)
     statement, parameters = next(s for s in statements if "RECURSIVE" in s[0])
-    # One inserted row makes ix_api_usage_account_id cheaper: a sort of a
+    # One inserted row makes an account-leading index cheaper: a sort of a
     # single row costs nothing, so the planner never touches the skip-scan
     # index. Turning sorts off leaves that index as the ordered plan.
     db_session.execute(text("SET LOCAL enable_seqscan = off"))

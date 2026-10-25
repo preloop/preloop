@@ -87,6 +87,11 @@ def test_create_api_key_success(db_session_mock, mock_current_user):
         # Verify the response
         assert response.status_code == 201
         data = response.json()
+        stored = db_session_mock.add.call_args.args[0]
+        from preloop.models.crud import crud_api_key
+
+        assert stored.key is None
+        assert stored.key_hash == crud_api_key.build_key_hash(data["key"])
 
         # Critical assertions - these would fail with created_by field
         assert "user_id" in data, "Response must include user_id field"

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { html, css, nothing, unsafeCSS, type PropertyValues } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
@@ -762,7 +763,7 @@ export class ApprovalView extends AuthedElement {
       // failure into null) so the page can tell "you can't see this" from
       // "this does not exist" from "the server is down".
       const response = await fetchWithAuth(
-        `/api/v1/approval-requests/${requestId}`
+        `${REST_API_PREFIX}/approval-requests/${requestId}`
       );
       const data = response.ok ? await response.json() : null;
       if (generation !== this.requestGeneration || requestId !== this.requestId)
@@ -873,7 +874,7 @@ export class ApprovalView extends AuthedElement {
     const requestId = this.requestId;
     try {
       const events = await this.fetchData(
-        `/api/v1/approval-requests/${requestId}/history`
+        `${REST_API_PREFIX}/approval-requests/${requestId}/history`
       );
       if (generation !== this.requestGeneration || requestId !== this.requestId)
         return;
@@ -985,7 +986,7 @@ export class ApprovalView extends AuthedElement {
 
     try {
       const response = await fetch(
-        `/api/v1/approval-requests/${requestId}/${action}`,
+        `${REST_API_PREFIX}/approval-requests/${requestId}/${action}`,
         {
           method: 'POST',
           headers: {
@@ -1071,7 +1072,7 @@ export class ApprovalView extends AuthedElement {
     const requestId = this.requestId;
     try {
       const data = await this.fetchData(
-        `/api/v1/approval-requests?status=pending&limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
+        `${REST_API_PREFIX}/approval-requests?status=pending&limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
       );
       if (generation !== this.requestGeneration || requestId !== this.requestId)
         return;

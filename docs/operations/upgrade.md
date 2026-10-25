@@ -110,6 +110,13 @@ never appear in instance tracking or adoption metrics. Update notices are
 suppressed too, since they ride on the check-in response. This is the standing
 rule for internal, CI, or throwaway test installs.
 
+## Rehearse before upgrading
+
+Use the [local upgrade acceptance harness](upgrade-acceptance.md) to test the
+latest published 0.17.x release against a candidate commit or published RC. It
+creates disposable Compose and kind/Helm stacks with synthetic data, preserves
+keys and database volumes across migration, and verifies logins and credentials.
+
 ## See also
 
 - [Install the OSS stack](installation.md)

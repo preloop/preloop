@@ -45,7 +45,7 @@ import (
 )
 
 const (
-	approvalRequestsListPath = "/api/v1/approval-requests"
+	approvalRequestsListPath = api.RESTPrefix + "/approval-requests"
 
 	// attachNoteNotice is said once on attach: a hook-governed agent has no
 	// stdin, and pretending otherwise is how operators lose a steer.

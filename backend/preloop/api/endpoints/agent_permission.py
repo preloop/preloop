@@ -22,6 +22,7 @@ from preloop.api.auth.jwt import (
     _runtime_session_id_from_api_key,
 )
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.api.auth.key_scopes import enforce_runtime_api_key_scope
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
@@ -78,6 +79,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
     with get_session_factory()() as db:
         api_key = crud_api_key.get_by_key(db, key=token)
         user = _authenticate_with_api_key(db, api_key)
+        enforce_runtime_api_key_scope(api_key)
         managed_agent = _managed_agent_for_api_key(db, api_key)
         runtime_session = None
         runtime_session_id = _runtime_session_id_from_api_key(api_key)

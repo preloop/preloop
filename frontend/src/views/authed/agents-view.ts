@@ -1,3 +1,6 @@
+import { REST_API_PREFIX } from '../../api-path';
+import { readTableUrlState } from '../../table/table-url-state';
+import '../../components/copilot-activity-panel.ts';
 import {
   subscriptionEstimate,
   type SubscriptionEstimate,
@@ -69,6 +72,7 @@ import {
   getFeatures,
   updateAccountAgent,
   getUserProfile,
+  onApiCachesInvalidated,
   type ManagedAgentListParams,
 } from '../../api';
 import type {
@@ -211,6 +215,7 @@ export interface AgentListRow {
   tokenUsage: GatewayTokenUsage | null;
   spend: number;
   withoutSubscriptions: SubscriptionEstimate | null;
+  withoutSubscriptionsStale?: boolean;
   lastSeen: string | null;
   /** The original API item, so row actions keep working on the real object. */
   source: any;
@@ -354,6 +359,7 @@ export class AgentsView extends LitElement {
    */
   readonly agentTable = new ListTable<AgentListRow>(this, {
     listId: 'agents',
+    url: { prefix: 'table' },
     getRowId: (row) => row.id,
     pageSize: 0,
     defaultSorting: [{ id: 'last_seen', desc: true }],
@@ -1147,6 +1153,32 @@ export class AgentsView extends LitElement {
         .connection-line.entering {
           animation: node-fade-in 240ms ease-out both;
         }
+        .card-details summary {
+          cursor: pointer;
+          color: var(--console-meta-color);
+          font-size: var(--console-text-meta);
+        }
+        .card-details[open] summary {
+          margin-bottom: 8px;
+        }
+        .card-details a,
+        .card-details span {
+          overflow-wrap: anywhere;
+        }
+        @media (max-width: 639px) {
+          .agent-card::part(body) {
+            padding: 12px;
+          }
+          .card-stack {
+            gap: 6px;
+          }
+          .agent-meta {
+            display: none;
+          }
+          .title-row {
+            padding-right: 32px;
+          }
+        }
         .connection-line.exiting {
           opacity: 0;
         }
@@ -1156,6 +1188,42 @@ export class AgentsView extends LitElement {
 
   connectedCallback(): void {
     super.connectedCallback();
+    this.unsubscribeCacheReset = onApiCachesInvalidated(() => {
+      const generation = ++this.agentsLoadGeneration;
+      this.subscriptionEstimates.clear();
+      this.agents = null;
+      this.loading = false;
+      // Silent token refresh also invalidates caches. Replace the discarded
+      // read after the cache broom finishes, so this cannot join an old GET.
+      queueMicrotask(() => {
+        if (this.isConnected && generation === this.agentsLoadGeneration)
+          void this.loadAgents();
+      });
+    });
+
+    const params = new URLSearchParams(window.location.search);
+    const sorting = readTableUrlState({ prefix: 'table' }).sorting;
+    const columns = new Set(this.agentColumns().map((column) => column.id));
+    this.agentTable.setSorting(
+      sorting?.filter((entry) => columns.has(entry.id)) || [
+        { id: 'last_seen', desc: true },
+      ]
+    );
+    this.searchQuery = params.get('q') || '';
+    const seen = params.get('seen');
+    this.lastSeenAfter = [
+      'last_10_minutes',
+      'last_1_hour',
+      'last_24_hours',
+      'last_7_days',
+    ].includes(seen || '')
+      ? seen!
+      : 'all';
+    if (params.has('kinds'))
+      this.agentKinds = (params.get('kinds') || '')
+        .split(',')
+        .filter((kind) => AGENT_KIND_VALUES.includes(kind));
+    this.restoreListPosition = window.history.state?.agentsPosition || null;
 
     this.narrowViewportSubscription = subscribeNarrowViewport((narrow) => {
       this.narrowViewport = narrow;
@@ -1220,6 +1288,7 @@ export class AgentsView extends LitElement {
 
   updated(changedProperties: Map<string, unknown>) {
     super.updated?.(changedProperties);
+    if (this.restoreListPosition && !this.loading) void this.restorePosition();
     this.classList.toggle('canvas-fill', this.effectiveView === 'canvas');
     if (
       changedProperties.has('currentView') ||
@@ -1264,6 +1333,9 @@ export class AgentsView extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    this.unsubscribeCacheReset?.();
+    this.unsubscribeCacheReset = null;
+    this.subscriptionEstimates.clear();
     ++this.agentsLoadGeneration;
     this.unsubscribeRealtime?.();
     this.narrowViewportSubscription?.disconnect();
@@ -1279,7 +1351,80 @@ export class AgentsView extends LitElement {
     this.nodeAnimationTimers.clear();
   }
 
+  private restoreListPosition: { top: number; count: number } | null = null;
+  private restoringListPosition = false;
+
+  private scrollPort(): HTMLElement | null {
+    return (
+      this.closest('console-shell')?.shadowRoot?.querySelector(
+        '.main-content'
+      ) || null
+    );
+  }
+
+  private async restorePosition(): Promise<void> {
+    const position = this.restoreListPosition;
+    if (!position || this.loading || this.restoringListPosition || !this.agents)
+      return;
+    this.restoringListPosition = true;
+    try {
+      while (
+        this.isConnected &&
+        this.restoreListPosition === position &&
+        this.hasMoreAgents &&
+        this.agents.items.length < position.count
+      ) {
+        const before = this.agents.items.length;
+        await this.loadMoreAgents();
+        if (this.agents.items.length === before) break;
+      }
+      await this.updateComplete;
+      // Child components and the browser's history traversal finish layout
+      // after the host update; restoring earlier is clamped to the loader.
+      await new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+      );
+      if (this.isConnected && this.restoreListPosition === position) {
+        const port = this.scrollPort();
+        if (port) port.scrollTop = position.top;
+        else window.scrollTo(0, position.top);
+      }
+    } finally {
+      this.restoreListPosition = null;
+      this.restoringListPosition = false;
+    }
+  }
+
+  private syncListFilters(): void {
+    this.restoreListPosition = null;
+    const url = new URL(window.location.href);
+    for (const [key, value] of Object.entries({
+      q: this.searchQuery,
+      seen: this.lastSeenAfter === 'all' ? '' : this.lastSeenAfter,
+      kinds: this.agentKinds.join(','),
+    })) {
+      if (value || key === 'kinds') url.searchParams.set(key, value);
+      else url.searchParams.delete(key);
+    }
+    window.history.replaceState(window.history.state, '', url);
+  }
+
   onBeforeLeave() {
+    if (
+      window.location.pathname === '/console/agents' ||
+      !window.location.pathname.startsWith('/console/')
+    )
+      window.history.replaceState(
+        {
+          ...window.history.state,
+          agentsPosition: {
+            top: this.scrollPort()?.scrollTop ?? window.scrollY,
+            count: this.agents?.items.length || 0,
+          },
+        },
+        '',
+        window.location.href
+      );
     this.dispatchEvent(
       new CustomEvent('request-full-bleed', {
         detail: false,
@@ -1320,7 +1465,7 @@ export class AgentsView extends LitElement {
   private async fetchUsers(): Promise<
     Array<{ id: string; username: string; email: string }>
   > {
-    const response = await fetchWithAuth('/api/v1/users');
+    const response = await fetchWithAuth(REST_API_PREFIX + '/users');
     if (!response.ok) {
       return [];
     }
@@ -1329,6 +1474,32 @@ export class AgentsView extends LitElement {
   }
 
   private agentsLoadGeneration = 0;
+  private unsubscribeCacheReset: (() => void) | null = null;
+  private subscriptionEstimates = new Map<string, SubscriptionEstimate>();
+
+  private hasSubscriptionEstimate(agent: ManagedAgentSummary): boolean {
+    // Explicit null means no subscription traffic. An omitted block means
+    // unavailable, even if an older/partial response claims it was computed.
+    return (
+      agent.subscription_usage_computed === true &&
+      agent.subscription_usage !== undefined &&
+      typeof agent.estimated_cost === 'number' &&
+      Number.isFinite(agent.estimated_cost)
+    );
+  }
+
+  private rememberSubscriptionEstimates(agents: ManagedAgentSummary[]): void {
+    for (const agent of agents) {
+      if (this.hasSubscriptionEstimate(agent)) {
+        // Retain the entire previous calculation; never add stale subscription
+        // pricing to fresh metered spend from a partial response.
+        this.subscriptionEstimates.set(
+          agent.id,
+          subscriptionEstimate(agent.estimated_cost, agent.subscription_usage)
+        );
+      }
+    }
+  }
 
   private async loadAgents(): Promise<void> {
     const generation = ++this.agentsLoadGeneration;
@@ -1468,6 +1639,7 @@ export class AgentsView extends LitElement {
             items: Array.isArray(page?.items) ? page.items : [],
           };
           if (generation === this.agentsLoadGeneration) {
+            this.rememberSubscriptionEstimates(data.items);
             this.agents = data;
             this.loading = false;
             this.initializeNodePositions(false);
@@ -2151,6 +2323,8 @@ export class AgentsView extends LitElement {
 
   private handleSearchChange(event: CustomEvent<{ value: string }>): void {
     this.searchQuery = event.detail.value;
+    this.restoreListPosition = null;
+    this.syncListFilters();
 
     // Add debounce for search query filtering
     if ((this as any)._searchTimeout)
@@ -2176,12 +2350,14 @@ export class AgentsView extends LitElement {
     }
 
     persistAgentKinds(this.agentKinds);
+    this.syncListFilters();
     void this.loadAgents();
   }
 
   private handleLastSeenAfterChange(event: Event): void {
     const target = event.target as HTMLSelectElement;
     this.lastSeenAfter = target.value || 'all';
+    this.syncListFilters();
     void this.loadAgents();
   }
 
@@ -3310,6 +3486,7 @@ export class AgentsView extends LitElement {
     persistAgentKinds(this.agentKinds);
     this.lastSeenAfter = 'all';
     this.searchQuery = '';
+    this.syncListFilters();
     void this.loadAgents();
   };
 
@@ -3336,6 +3513,9 @@ export class AgentsView extends LitElement {
       });
       if (generation !== this.agentsLoadGeneration || !this.agents) return;
       const seen = new Set(this.agents.items.map((item) => item.id));
+      this.rememberSubscriptionEstimates(
+        page.items.filter((item) => !seen.has(item.id))
+      );
       this.agents = {
         ...this.agents,
         total: page.total,
@@ -3472,9 +3652,11 @@ export class AgentsView extends LitElement {
         requests: agent.total_requests || 0,
         tokenUsage: agent.token_usage || null,
         spend: agent.estimated_cost || 0,
-        withoutSubscriptions: agent.subscription_usage_computed
+        withoutSubscriptions: this.hasSubscriptionEstimate(agent)
           ? subscriptionEstimate(agent.estimated_cost, agent.subscription_usage)
-          : null,
+          : (this.subscriptionEstimates.get(agent.id) ?? null),
+        withoutSubscriptionsStale:
+          this.loading || !!this.error || !this.hasSubscriptionEstimate(agent),
         lastSeen: live?.lastActivityAt || agent.last_seen_at || null,
         source: agent,
       };
@@ -3657,9 +3839,14 @@ export class AgentsView extends LitElement {
             >`;
           return html`<span
             data-testid="without-subscriptions"
-            title=${estimate.title}
+            title=${
+              row.withoutSubscriptionsStale
+                ? `Estimate from a previous successful read; current pricing is unavailable or updating. ${estimate.title}`
+                : estimate.title
+            }
           >
             ${estimate.value === null ? 'No estimate' : `${estimate.partial ? '≥ ' : ''}${formatUsd(estimate.value)}`}
+            ${row.withoutSubscriptionsStale ? html`<small>previous</small>` : nothing}
           </span>`;
         },
       },
@@ -3765,6 +3952,13 @@ export class AgentsView extends LitElement {
     const estimatedCost = isFlow
       ? flowNode?.execution_stats?.estimated_cost || 0
       : agent?.estimated_cost || 0;
+    const model = agent
+      ? this.getAgentModelPresentation(agent)
+      : {
+          modelId: flowNode?.ai_model_id || null,
+          label: flowNode?.ai_model_id || 'No model',
+          title: flowNode?.ai_model_id || '',
+        };
     const lastSeen = isFlow
       ? flowNode?.execution_stats?.last_seen_at
       : agent?.last_seen_at;
@@ -3890,139 +4084,131 @@ export class AgentsView extends LitElement {
             </div>
           </div>
 
-          ${
-            isFlow && flowNode?.agent_type
-              ? html`
-                  <div
-                    style="font-size: 0.85rem; color: var(--sl-color-neutral-700); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;"
-                  >
-                    ${renderAgentIcon(
-                      flowNode.agent_type,
-                      'color: var(--sl-color-primary-500); width: 14px; height: 14px;'
-                    )}
-                    <strong>Agent Type:</strong> ${flowNode.agent_type}
-                  </div>
-                `
-              : ''
-          }
-          ${
-            (isFlow && flowNode?.ai_model_id) ||
-            (!isFlow &&
-              ((agent as any)?.ai_model_id ||
-                (agent as any)?.configured_model_alias ||
-                (agent as any)?.latest_model_alias))
-              ? html`
-                  <div
-                    style="font-size: 0.85rem; color: var(--sl-color-neutral-700); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;"
-                  >
-                    <sl-icon
-                      name="cpu"
-                      style="color: var(--sl-color-primary-500);"
-                    ></sl-icon>
-                    <strong>Model:</strong>
-                    <a
-                      href="/console/ai-models/${encodeURIComponent(
-                        isFlow
-                          ? flowNode!.ai_model_id
-                          : (agent as any)?.ai_model_id ||
-                              (agent as any)?.configured_model_id ||
-                              'unknown'
-                      )}"
-                      style="color: inherit; text-decoration: underline; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 200px;"
-                      @pointerdown="${(e: Event) => e.stopPropagation()}"
-                      @click="${(e: Event) => e.stopPropagation()}"
-                    >
-                      ${(() => {
-                        if (isFlow) return flowNode!.ai_model_id;
-                        const mId = (agent as any)?.ai_model_id;
-                        if (mId) {
-                          const model = this.aiModels.find((m) => m.id === mId);
-                          if (model && model.name) return model.name;
-                        }
-                        return (
-                          (agent as any)?.ai_model_name ||
-                          (agent as any)?.configured_model_alias ||
-                          (agent as any)?.latest_model_alias ||
-                          mId
-                        );
-                      })()}
-                    </a>
-                  </div>
-                `
-              : ''
-          }
-          <div
-            style="font-size: 0.85rem; color: var(--sl-color-neutral-600); margin-bottom: 12px;"
+          <details
+            class="card-details"
+            @click=${(event: Event) => event.stopPropagation()}
+            @keydown=${(event: Event) => event.stopPropagation()}
           >
-            ${isFlow ? '' : this.getOnboardingDescription(agent!)}
-          </div>
-
-          ${
-            !isFlow && agent && this.isModelTrafficFailing(agent)
-              ? html`
-                  <div class="model-traffic-failing">
-                    Model traffic failing:
-                    <a
-                      href=${
-                        agent.runtime_session_id
-                          ? `/console/runtime-sessions?sessionId=${encodeURIComponent(
-                              agent.runtime_session_id
-                            )}`
-                          : `/console/agents/${encodeURIComponent(agent.id)}`
+            <summary>Configuration and latest message</summary>
+            <p>
+              ${this.getSourceLabel(agentKind)}${sessionSourceId ? ` · ${sessionSourceId}` : ''}
+            </p>
+            ${
+              isFlow && flowNode?.agent_type
+                ? html`
+                    <div
+                      style="font-size: 0.85rem; color: var(--sl-color-neutral-700); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;"
+                    >
+                      ${renderAgentIcon(
+                        flowNode.agent_type,
+                        'color: var(--sl-color-primary-500); width: 14px; height: 14px;'
+                      )}
+                      <strong>Agent Type:</strong> ${flowNode.agent_type}
+                    </div>
+                  `
+                : ''
+            }
+            ${
+              (isFlow && flowNode?.ai_model_id) ||
+              (!isFlow &&
+                ((agent as any)?.ai_model_id ||
+                  (agent as any)?.configured_model_alias ||
+                  (agent as any)?.latest_model_alias))
+                ? html`
+                    <div
+                      style="font-size: 0.85rem; color: var(--sl-color-neutral-700); margin-bottom: 8px; display: flex; align-items: center; gap: 6px;"
+                    >
+                      <sl-icon
+                        name="cpu"
+                        style="color: var(--sl-color-primary-500);"
+                      ></sl-icon>
+                      <strong>Model:</strong>
+                      ${
+                        model.modelId
+                          ? html`<a
+                              href=${`/console/ai-models/${encodeURIComponent(model.modelId)}`}
+                              @pointerdown=${(event: Event) => event.stopPropagation()}
+                              @click=${(event: Event) => event.stopPropagation()}
+                              >${model.label}</a
+                            >`
+                          : html`<span>${model.label}</span>`
                       }
-                      @pointerdown=${(e: Event) => e.stopPropagation()}
-                      @click=${(e: Event) => e.stopPropagation()}
-                      >see latest session</a
-                    >
-                  </div>
-                `
-              : ''
-          }
-          ${
-            liveActivity?.lastMessagePreview
-              ? html`
-                  <div
-                    style="background: var(--sl-color-neutral-100); padding: 8px 12px; border-radius: var(--sl-border-radius-medium); margin-bottom: 12px; font-size: 0.85rem;"
-                  >
-                    <div
-                      style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--console-meta-color); margin-bottom: 4px;"
-                    >
-                      Latest from ${liveActivity.lastMessageSource || 'Agent'}
                     </div>
-                    <div
-                      style="color: var(--sl-color-neutral-800); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;"
-                    >
-                      ${liveActivity.lastMessagePreview}
-                    </div>
-                  </div>
-                `
-              : ''
-          }
-          ${
-            !isFlow
-              ? html`
-                  <div class="metric-row">
-                    <span class="label">Preloop MCP Proxy</span>
-                    <span class="value"
-                      >${
-                        agent!.mcp_proxy_configured ? 'Configured' : 'Missing'
-                      }</span
-                    >
-                  </div>
-                  <div class="metric-row">
-                    <span class="label">Preloop Model Gateway</span>
-                    <span class="value"
-                      >${
-                        agent!.model_gateway_configured
-                          ? 'Configured'
-                          : 'Missing'
-                      }</span
-                    >
-                  </div>
-                `
-              : ''
-          }
+                  `
+                : ''
+            }
+            <div
+              style="font-size: 0.85rem; color: var(--sl-color-neutral-600); margin-bottom: 12px;"
+            >
+              ${isFlow ? '' : this.getOnboardingDescription(agent!)}
+            </div>
 
+            ${
+              !isFlow && agent && this.isModelTrafficFailing(agent)
+                ? html`
+                    <div class="model-traffic-failing">
+                      Model traffic failing:
+                      <a
+                        href=${
+                          agent.runtime_session_id
+                            ? `/console/runtime-sessions?sessionId=${encodeURIComponent(
+                                agent.runtime_session_id
+                              )}`
+                            : `/console/agents/${encodeURIComponent(agent.id)}`
+                        }
+                        @pointerdown=${(e: Event) => e.stopPropagation()}
+                        @click=${(e: Event) => e.stopPropagation()}
+                        >see latest session</a
+                      >
+                    </div>
+                  `
+                : ''
+            }
+            ${
+              liveActivity?.lastMessagePreview
+                ? html`
+                    <div
+                      style="background: var(--sl-color-neutral-100); padding: 8px 12px; border-radius: var(--sl-border-radius-medium); margin-bottom: 12px; font-size: 0.85rem;"
+                    >
+                      <div
+                        style="font-weight: 600; font-size: 0.75rem; text-transform: uppercase; color: var(--console-meta-color); margin-bottom: 4px;"
+                      >
+                        Latest from ${liveActivity.lastMessageSource || 'Agent'}
+                      </div>
+                      <div
+                        style="color: var(--sl-color-neutral-800); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;"
+                      >
+                        ${liveActivity.lastMessagePreview}
+                      </div>
+                    </div>
+                  `
+                : ''
+            }
+            ${
+              !isFlow
+                ? html`
+                    <div class="metric-row">
+                      <span class="label">Preloop MCP Proxy</span>
+                      <span class="value"
+                        >${
+                          agent!.mcp_proxy_configured ? 'Configured' : 'Missing'
+                        }</span
+                      >
+                    </div>
+                    <div class="metric-row">
+                      <span class="label">Preloop Model Gateway</span>
+                      <span class="value"
+                        >${
+                          agent!.model_gateway_configured
+                            ? 'Configured'
+                            : 'Missing'
+                        }</span
+                      >
+                    </div>
+                  `
+                : ''
+            }
+          </details>
           <div class="metric-row">
             <span class="label">Estimated spend</span>
             <span class="value numeric"
@@ -4722,26 +4908,30 @@ export class AgentsView extends LitElement {
           }}
           style="--width: 650px;"
         >
-          <preloop-agent-deployer
-            .aiModels=${this.aiModels}
-            .computeFeatureEnabled=${this.computeFeatureEnabled}
-            .edition=${this.edition}
-            .isAdmin=${this.isAdmin}
-            hide-back-button
-            @deploy-agent-success=${(e: CustomEvent) => {
-              this.handleDeployAgentSuccess(e);
-              this.showDeployDialog = false;
-            }}
-            @deploy-cancel=${() => {
-              this.showDeployDialog = false;
-            }}
-          ></preloop-agent-deployer>
+          ${
+            this.showDeployDialog
+              ? html`<preloop-agent-deployer
+                  .aiModels=${this.aiModels}
+                  .computeFeatureEnabled=${this.computeFeatureEnabled}
+                  .edition=${this.edition}
+                  .isAdmin=${this.isAdmin}
+                  hide-back-button
+                  @deploy-agent-success=${(e: CustomEvent) => {
+                    this.handleDeployAgentSuccess(e);
+                    this.showDeployDialog = false;
+                  }}
+                  @deploy-cancel=${() => {
+                    this.showDeployDialog = false;
+                  }}
+                ></preloop-agent-deployer>`
+              : nothing
+          }
         </sl-dialog>
 
         <div class="content-bounds ${this.pageBoxClass}">
           <view-header
             headerText="Agents"
-            description="Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones."
+            description=${this.agents?.items.length ? '' : 'Agents connected to Preloop: their gateway credentials, MCP access, and live status. Onboard agents you already run with the CLI, or deploy new ones.'}
             width="extra-wide"
           >
             <div
@@ -4872,6 +5062,14 @@ export class AgentsView extends LitElement {
             ? nothing
             : html`<div class="content-bounds ${this.pageBoxClass}">
                 <discovered-agents-panel></discovered-agents-panel>
+                ${
+                  this.featureFlags.copilot_seat_activity === true
+                    ? html`<copilot-activity-panel
+                        enabled
+                        inventory
+                      ></copilot-activity-panel>`
+                    : nothing
+                }
               </div>`
         }
       </div>

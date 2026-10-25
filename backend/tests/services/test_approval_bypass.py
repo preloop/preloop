@@ -313,9 +313,12 @@ class TestAutoApproveViaBypass:
         assert update_arg.decided_by_ai is False
 
         # Audit entry has no human approver and is tagged [BYPASS].
-        audit_kwargs = mock_log.call_args.kwargs
-        assert audit_kwargs["approver_id"] is None
-        assert audit_kwargs["reason"].startswith("[BYPASS]")
+        # The central transition writer admits audit before committing; this
+        # test mocks that writer, so assert the metadata handed to it.
+        audit_kwargs = approval_service.update_approval_request.call_args.kwargs
+        assert audit_kwargs.get("audit_approver_id") is None
+        assert audit_kwargs["audit_reason"].startswith("[BYPASS]")
+        mock_log.assert_not_called()
 
     async def test_increments_usage_counter(self, approval_service, pending_request):
         """Each auto-approval is counted so the console can show the blast radius."""
@@ -537,9 +540,12 @@ class TestCreateAndNotifyIntegration:
         # An AI judged nothing here either.
         assert update_arg.decided_by_ai is False
 
-        audit_kwargs = mock_log.call_args.kwargs
-        assert audit_kwargs["approver_id"] is None
-        assert audit_kwargs["reason"].startswith("[BYPASS]")
+        # The central transition writer admits audit before committing; this
+        # test mocks that writer, so assert the metadata handed to it.
+        audit_kwargs = approval_service.update_approval_request.call_args.kwargs
+        assert audit_kwargs.get("audit_approver_id") is None
+        assert audit_kwargs["audit_reason"].startswith("[BYPASS]")
+        mock_log.assert_not_called()
 
     async def test_bypass_error_falls_back_to_normal_approval(
         self, approval_service, workflow, account_id

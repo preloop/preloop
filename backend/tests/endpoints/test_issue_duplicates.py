@@ -1,3 +1,5 @@
+from tests.credential_fixtures import ai_model_with_secret
+
 import pytest
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -729,7 +731,9 @@ def test_get_resolution_suggestion_invalid_resolution(mocker: MockerFixture) -> 
 
     mocker.patch(
         "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
-        return_value=MagicMock(model_identifier="gpt-5.4"),
+        return_value=ai_model_with_secret(
+            provider_name="openai", model_identifier="gpt-5.4", api_key="synthetic-key"
+        ),
     )
 
     mocker.patch(
@@ -773,7 +777,9 @@ def test_get_resolution_suggestion_success(
 
     mocker.patch(
         "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
-        return_value=MagicMock(model_identifier="gpt-5.4"),
+        return_value=ai_model_with_secret(
+            provider_name="openai", model_identifier="gpt-5.4", api_key="synthetic-key"
+        ),
     )
 
     mocker.patch(
@@ -1221,7 +1227,9 @@ def test_get_resolution_suggestion_deconflict_success(
 
     mocker.patch(
         "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
-        return_value=MagicMock(model_identifier="gpt-5.4"),
+        return_value=ai_model_with_secret(
+            provider_name="openai", model_identifier="gpt-5.4", api_key="synthetic-key"
+        ),
     )
 
     mocker.patch(
@@ -1315,7 +1323,9 @@ def test_get_resolution_suggestion_prompt_not_configured(mocker: MockerFixture) 
 
     mocker.patch(
         "preloop.api.endpoints.issue_duplicates.crud_ai_model.get_default_active_model",
-        return_value=MagicMock(model_identifier="gpt-5.4"),
+        return_value=ai_model_with_secret(
+            provider_name="openai", model_identifier="gpt-5.4", api_key="synthetic-key"
+        ),
     )
 
     mocker.patch(
@@ -1426,10 +1436,12 @@ def test_check_or_create_issue_duplicate_creates_via_ai(
     mock_issue2.description = "Desc 2"
     mock_crud_issue_get.side_effect = [mock_issue1, mock_issue2]
 
-    mock_model = MagicMock()
-    mock_model.id = uuid4()
-    mock_model.model_identifier = "gpt-5.4"
-    mock_model.api_key = "test-key"
+    mock_model = ai_model_with_secret(
+        id=uuid4(),
+        provider_name="openai",
+        model_identifier="gpt-5.4",
+        api_key="synthetic-key",
+    )
     mock_get_default_model.return_value = mock_model
 
     mock_load_prompts.return_value = {
@@ -1894,7 +1906,6 @@ def test_check_or_create_duplicate_entra_model_needs_no_api_key(
     The raw OpenAI client used to read only api_key and fall back to
     OPENAI_API_KEY, which is unset on an Entra deployment.
     """
-    from preloop.models.models.ai_model import AIModel
     from preloop.services.azure_entra import reset_token_cache
     from preloop.services.model_credentials import resolve_model_call_credentials
 
@@ -1915,7 +1926,7 @@ def test_check_or_create_duplicate_entra_model_needs_no_api_key(
     issue_b.id = uuid4()
     issue_b.title = "Title B"
     issue_b.description = "Description B"
-    model = AIModel(
+    model = ai_model_with_secret(
         id=uuid4(),
         provider_name="azure",
         model_identifier="chat-deployment",

@@ -2577,12 +2577,27 @@ paths:
           - type: string
           - type: 'null'
           description: 'Comma list of optional sections: usage_by_model, activity,
-            sessions. Omitted returns all of them; an empty value returns the agent,
-            its aggregate, credentials and enrollments only.'
+            sessions, aggregate. Omitted returns all sections; an empty value returns
+            identity. Legacy reads always include the aggregate. Lightweight section
+            reads omit unrelated identity enrichment, devices, credentials and enrollments.'
           title: Include
-        description: 'Comma list of optional sections: usage_by_model, activity, sessions.
-          Omitted returns all of them; an empty value returns the agent, its aggregate,
-          credentials and enrollments only.'
+        description: 'Comma list of optional sections: usage_by_model, activity, sessions,
+          aggregate. Omitted returns all sections; an empty value returns identity.
+          Legacy reads always include the aggregate. Lightweight section reads omit
+          unrelated identity enrichment, devices, credentials and enrollments.'
+      - name: lightweight
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Return identity and recency without all-time usage totals.
+            Aggregate is null unless its section is included. Identity totals are
+            not computed (agent.usage_computed=false).
+          default: false
+          title: Lightweight
+        description: Return identity and recency without all-time usage totals. Aggregate
+          is null unless its section is included. Identity totals are not computed
+          (agent.usage_computed=false).
       - name: session_limit
         in: query
         required: false
@@ -14470,6 +14485,103 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/delivery-reports:
+    get:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: List Delivery Reports
+      description: Runs of the account's Delivery Report flows that stored a report.
+      operationId: list_delivery_reports_api_v1_delivery_reports_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 25
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Runs that started at or after this time.
+          title: Since
+        description: Runs that started at or after this time.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/delivery-reports/{execution_id}:
+    get:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: Get Delivery Report
+      description: One run's full report, with reopen requests that went stale marked.
+      operationId: get_delivery_report_api_v1_delivery_reports__execution_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportDetail'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
   /api/v1/cost/by-issue:
     get:
       tags:
@@ -21720,9 +21832,66 @@ paths:
         content:
           application/json:
             schema:
+              $defs:
+                MediaStepOffset:
+                  additionalProperties: false
+                  description: An exact producer-reported position in the media timebase.
+                  properties:
+                    source_step_id:
+                      maxLength: 200
+                      minLength: 1
+                      title: Source Step Id
+                      type: string
+                    offset_ms:
+                      minimum: 0
+                      title: Offset Ms
+                      type: integer
+                  required:
+                  - source_step_id
+                  - offset_ms
+                  title: MediaStepOffset
+                  type: object
+                MediaTiming:
+                  additionalProperties: false
+                  description: Wall clock at media t=0, optionally supplemented by
+                    exact offsets.
+                  properties:
+                    started_at:
+                      format: date-time
+                      title: Started At
+                      type: string
+                    duration_ms:
+                      anyOf:
+                      - minimum: 0
+                        type: integer
+                      - type: 'null'
+                      title: Duration Ms
+                    clock:
+                      enum:
+                      - agent
+                      - server
+                      title: Clock
+                      type: string
+                    step_offsets:
+                      anyOf:
+                      - items:
+                          $ref: '#/components/schemas/MediaStepOffset'
+                        maxItems: 5000
+                        type: array
+                      - type: 'null'
+                      title: Step Offsets
+                  required:
+                  - started_at
+                  - clock
+                  title: MediaTiming
+                  type: object
               additionalProperties: false
               description: 'JSON deposit: the metadata fields plus one MCP ``ContentBlock``.'
               properties:
+                media_timing:
+                  anyOf:
+                  - $ref: '#/components/schemas/MediaTiming'
+                  - type: 'null'
                 kind:
                   anyOf:
                   - type: string
@@ -21786,8 +21955,8 @@ paths:
                   format: binary
                 metadata:
                   type: string
-                  description: 'JSON object: kind, name, labels, activity_id, parent_artifact_id,
-                    tool_name'
+                  description: 'JSON object: media_timing, kind, name, labels, activity_id,
+                    parent_artifact_id, tool_name'
       security:
       - bearerAuth: []
       x-restricted-ci: deny
@@ -21865,6 +22034,111 @@ paths:
           description: Runtime session not found in this account
         '422':
           description: Bad kind, label, limit or cursor
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}/media-timing:
+    patch:
+      tags:
+      - Runtime Sessions
+      summary: Update Artifact Media Timing
+      description: Idempotently replace timing using a session-bound key or manage_agents.
+      operationId: update_artifact_media_timing_api_v1_runtime_sessions__runtime_session_id__artifacts__artifact_id__media_timing_patch
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Artifact Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MediaTiming'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionArtifactOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/media-sync:
+    get:
+      tags:
+      - Runtime Sessions
+      summary: Get Session Media Sync
+      description: Resolve recording positions with the artifact read authorization.
+      operationId: get_session_media_sync_api_v1_runtime_sessions__runtime_session_id__media_sync_get
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaSyncOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '503':
           description: Credential verification unavailable
       security:
@@ -26864,6 +27138,10 @@ components:
           type: string
           format: date-time
           title: Created At
+        media_timing:
+          anyOf:
+          - $ref: '#/components/schemas/MediaTiming'
+          - type: 'null'
         content_block:
           $ref: '#/components/schemas/McpResourceLink'
         session_title:
@@ -29998,16 +30276,18 @@ components:
           type: string
           title: Login
         net_amount:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Amount
         net_quantity:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Quantity
       type: object
       required:
       - login
-      - net_amount
-      - net_quantity
       title: CopilotDeveloperSpend
       description: Premium-request spend for one developer.
     CopilotModelMix:
@@ -30057,16 +30337,18 @@ components:
           type: string
           title: Model
         net_amount:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Amount
         net_quantity:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Quantity
       type: object
       required:
       - model
-      - net_amount
-      - net_quantity
       title: CopilotModelSpend
       description: Premium-request spend for one model.
     CopilotPremiumRequests:
@@ -30738,6 +31020,218 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DeliveryReportActions:
+      properties:
+        open_issue:
+          type: boolean
+          title: Open Issue
+          default: false
+        reopen:
+          type: boolean
+          title: Reopen
+          default: false
+        dismiss:
+          type: boolean
+          title: Dismiss
+          default: false
+      type: object
+      title: DeliveryReportActions
+      description: 'Which report actions this server can carry out.
+
+
+        Opening a proposed follow-up and reopening an issue are tracker writes
+
+        that are not implemented yet; the console renders them disabled.'
+    DeliveryReportDetail:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        status:
+          type: string
+          title: Status
+        report_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Report Status
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        window:
+          $ref: '#/components/schemas/DeliveryReportWindow'
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        shipped:
+          type: integer
+          title: Shipped
+          default: 0
+        closed:
+          type: integer
+          title: Closed
+          default: 0
+        closed_unverified:
+          type: integer
+          title: Closed Unverified
+          default: 0
+        proposals:
+          type: integer
+          title: Proposals
+          default: 0
+        cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Usd
+          description: Gateway spend; null when the gateway could not price it.
+        report:
+          additionalProperties: true
+          type: object
+          title: Report
+        stale_reopen_requests:
+          additionalProperties:
+            type: string
+          type: object
+          title: Stale Reopen Requests
+          description: 'Reopen requests that no longer apply, by issue ref, with the
+            reason: the issue was edited, or new commits landed on its closing pull
+            request, after the assessed revision.'
+        actions:
+          $ref: '#/components/schemas/DeliveryReportActions'
+      type: object
+      required:
+      - id
+      - flow_id
+      - status
+      - window
+      - report
+      title: DeliveryReportDetail
+      description: One run with its full report document.
+    DeliveryReportList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DeliveryReportRow'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - items
+      - total
+      title: DeliveryReportList
+      description: A page of runs and the total that matched the filter.
+    DeliveryReportRow:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        status:
+          type: string
+          title: Status
+        report_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Report Status
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        window:
+          $ref: '#/components/schemas/DeliveryReportWindow'
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        shipped:
+          type: integer
+          title: Shipped
+          default: 0
+        closed:
+          type: integer
+          title: Closed
+          default: 0
+        closed_unverified:
+          type: integer
+          title: Closed Unverified
+          default: 0
+        proposals:
+          type: integer
+          title: Proposals
+          default: 0
+        cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Usd
+          description: Gateway spend; null when the gateway could not price it.
+      type: object
+      required:
+      - id
+      - flow_id
+      - status
+      - window
+      title: DeliveryReportRow
+      description: One run on the collection page.
+    DeliveryReportWindow:
+      properties:
+        from:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: From
+        to:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: To
+      type: object
+      title: DeliveryReportWindow
+      description: The period a run covered, as the run recorded it.
     DeploymentVerificationRequest:
       properties:
         merge_sha:
@@ -38613,7 +39107,9 @@ components:
           type: array
           title: Devices
         aggregate:
-          $ref: '#/components/schemas/ManagedAgentUsageAggregate'
+          anyOf:
+          - $ref: '#/components/schemas/ManagedAgentUsageAggregate'
+          - type: 'null'
         usage_by_model:
           items:
             $ref: '#/components/schemas/GatewayUsageByModel'
@@ -38652,7 +39148,6 @@ components:
       type: object
       required:
       - agent
-      - aggregate
       title: ManagedAgentDetailResponse
       description: One managed agent plus its recent runtime session history.
     ManagedAgentDeviceSummary:
@@ -39336,6 +39831,11 @@ components:
             format: date-time
           - type: 'null'
           title: Ended At
+        usage_computed:
+          type: boolean
+          title: Usage Computed
+          description: False for lightweight identity reads; usage totals are unavailable.
+          default: true
         total_requests:
           type: integer
           title: Total Requests
@@ -39677,6 +40177,104 @@ components:
       - size
       title: McpResourceLink
       description: MCP ``ResourceLink`` pointing at the artifact's byte route.
+    MediaStepOffset:
+      properties:
+        source_step_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Source Step Id
+        offset_ms:
+          type: integer
+          minimum: 0.0
+          title: Offset Ms
+      additionalProperties: false
+      type: object
+      required:
+      - source_step_id
+      - offset_ms
+      title: MediaStepOffset
+      description: An exact producer-reported position in the media timebase.
+    MediaSyncMapping:
+      properties:
+        activity_id:
+          type: string
+          title: Activity Id
+        activity_type:
+          type: string
+          title: Activity Type
+        api_usage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Usage Id
+        offset_ms:
+          type: integer
+          title: Offset Ms
+        rule:
+          type: string
+          enum:
+          - exact
+          - occurred_at
+          - server_skew
+          title: Rule
+        approximate:
+          type: boolean
+          title: Approximate
+      type: object
+      required:
+      - activity_id
+      - activity_type
+      - offset_ms
+      - rule
+      - approximate
+      title: MediaSyncMapping
+      description: One timeline row resolved to a recording position.
+    MediaSyncOut:
+      properties:
+        recordings:
+          items:
+            $ref: '#/components/schemas/RecordingSync'
+          type: array
+          title: Recordings
+      type: object
+      required:
+      - recordings
+      title: MediaSyncOut
+      description: Session mappings computed once for the console and evidence export.
+    MediaTiming:
+      properties:
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        duration_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Duration Ms
+        clock:
+          type: string
+          enum:
+          - agent
+          - server
+          title: Clock
+        step_offsets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/MediaStepOffset'
+            type: array
+            maxItems: 5000
+          - type: 'null'
+          title: Step Offsets
+      additionalProperties: false
+      type: object
+      required:
+      - started_at
+      - clock
+      title: MediaTiming
+      description: Wall clock at media t=0, optionally supplemented by exact offsets.
     MobileDeviceRegistration:
       properties:
         platform:
@@ -42397,6 +42995,32 @@ components:
       title: RebuiltInputsRequest
       description: Authenticated rebuilt SBOM for the published commit. Not an automatic
         rebuild.
+    RecordingSync:
+      properties:
+        artifact_id:
+          type: string
+          title: Artifact Id
+        skew_ms:
+          type: integer
+          title: Skew Ms
+        mappings:
+          items:
+            $ref: '#/components/schemas/MediaSyncMapping'
+          type: array
+          title: Mappings
+        unmapped_activity_ids:
+          items:
+            type: string
+          type: array
+          title: Unmapped Activity Ids
+      type: object
+      required:
+      - artifact_id
+      - skew_ms
+      - mappings
+      - unmapped_activity_ids
+      title: RecordingSync
+      description: Independent mapping for one recording, including unavailable artifacts.
     RefreshRequest:
       properties:
         refresh_token:
@@ -44032,6 +44656,10 @@ components:
           type: string
           format: date-time
           title: Created At
+        media_timing:
+          anyOf:
+          - $ref: '#/components/schemas/MediaTiming'
+          - type: 'null'
         content_block:
           $ref: '#/components/schemas/McpResourceLink'
       type: object

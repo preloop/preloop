@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../../api-path';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, unsafeCSS } from 'lit';
@@ -247,7 +248,7 @@ export class SecurityView extends LitElement {
       return;
     }
     try {
-      await fetchWithAuth('/api/v1/auth/sessions/revoke-all', {
+      await fetchWithAuth(REST_API_PREFIX + '/auth/sessions/revoke-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',

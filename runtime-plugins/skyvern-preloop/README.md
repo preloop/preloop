@@ -102,3 +102,9 @@ Typed text and other action parameters are never sent. LLM prompts,
 responses and HTML scrapes are not imported. On a Preloop server without
 the artifact deposit API (before preloop/preloop#1080) the files are
 skipped with a log line naming #1080.
+
+
+Version 0.2.0 adds `media_timing` to recording deposits: task `created_at`
+(or the first step `created_at`) is the agent-clock origin; step creation
+timestamps give exact `source_step_id` offsets. Missing timestamps preserve a
+plain video. The console uses the same server mapping as the evidence export.

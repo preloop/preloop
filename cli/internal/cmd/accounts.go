@@ -84,7 +84,7 @@ func membershipSlug(m membership) string {
 
 func fetchMemberships(client *api.Client) ([]membership, error) {
 	var raw itemList[membership]
-	if err := client.Get("/api/v1/me/memberships", &raw); err != nil {
+	if err := client.Get(api.RESTPrefix+"/me/memberships", &raw); err != nil {
 		if api.IsStatus(err, http.StatusNotFound) {
 			return nil, fmt.Errorf("this server does not support multiple accounts")
 		}
@@ -161,7 +161,7 @@ func runAccountsSwitch(cmd *cobra.Command, args []string) error {
 	}
 
 	var pair switchAccountResponse
-	if err := client.Post("/api/v1/auth/switch-account", map[string]string{"account_id": target.AccountID}, &pair); err != nil {
+	if err := client.Post(api.RESTPrefix+"/auth/switch-account", map[string]string{"account_id": target.AccountID}, &pair); err != nil {
 		return err
 	}
 	if pair.AccessToken == "" || pair.RefreshToken == "" {

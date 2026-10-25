@@ -22,10 +22,14 @@ from contextvars import ContextVar
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 import httpx
+import httpx2
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from mcp.types import TextContent, ToolAnnotations
+
+from preloop.api.auth.key_scopes import mcp_scope_allowed
+from preloop.services.audit.async_writer import outbox_enabled
 
 from preloop.services.dynamic_mcp_server import (
     UserContext,
@@ -62,6 +66,13 @@ from preloop.services.sensitive_data.storage import (
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
+
+# Invocation uses the same account/tool catalogue as discovery, but does not
+# grant the caller discovery authority. Keep this internal lookup local to the
+# current task and reset it before dispatching any tool implementation.
+_invocation_catalogue: ContextVar[bool] = ContextVar(
+    "invocation_catalogue", default=False
+)
 
 
 def with_builtin_annotations(tool: Tool) -> Tool:
@@ -637,7 +648,7 @@ def _audit_grant_kwargs(
     return {}
 
 
-def _record_grant_denial(
+async def _record_grant_denial(
     account_id: str,
     tool_name: str,
     grant: GrantResult,
@@ -648,7 +659,7 @@ def _record_grant_denial(
     """Record the hard grant gate through the existing policy-denial audit path."""
     from preloop.services.policy_evaluator import _log_policy_decision_async
 
-    _log_policy_decision_async(
+    fields = dict(
         account_id=uuid.UUID(account_id),
         tool_name=tool_name,
         action="deny",
@@ -659,6 +670,17 @@ def _record_grant_denial(
         correlation_id=correlation_id,
         extra_details={"grant": grant.binding},
     )
+
+    if outbox_enabled():
+        from preloop.services.db_executor import run_db_async
+
+        def persist(db: Session) -> None:
+            _log_policy_decision_async(db=db, **fields)
+            db.commit()
+
+        await run_db_async(persist)
+    else:
+        _log_policy_decision_async(**fields)
 
 
 def _proxied_exception_outcome(
@@ -672,7 +694,9 @@ def _proxied_exception_outcome(
     """
     status_code = getattr(getattr(cause, "response", None), "status_code", None)
     reason = _short_reason(cause) or type(cause).__name__
-    if isinstance(cause, httpx.HTTPStatusError) and isinstance(status_code, int):
+    if isinstance(
+        cause, (httpx.HTTPStatusError, httpx2.HTTPStatusError)
+    ) and isinstance(status_code, int):
         outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
         code = f"http_{status_code}"
     else:
@@ -1352,22 +1376,28 @@ class DynamicFastMCP(FastMCP):
         context = self._get_current_user_context()
         return getattr(context, "credential_type", "legacy") == "restricted_runtime"
 
+    def _api_key_scope_allowed(self, required_scope: str) -> bool:
+        context = self._get_current_user_context()
+        return mcp_scope_allowed(
+            getattr(context, "api_key_scopes", None), required_scope
+        )
+
     async def list_resources(self, *, run_middleware: bool = True) -> list[Any]:
-        if self._restricted_protocol():
+        if self._restricted_protocol() or not self._api_key_scope_allowed("mcp:read"):
             return []
         return list(await super().list_resources(run_middleware=run_middleware))
 
     async def list_resource_templates(
         self, *, run_middleware: bool = True
     ) -> list[Any]:
-        if self._restricted_protocol():
+        if self._restricted_protocol() or not self._api_key_scope_allowed("mcp:read"):
             return []
         return list(
             await super().list_resource_templates(run_middleware=run_middleware)
         )
 
     async def list_prompts(self, *, run_middleware: bool = True) -> list[Any]:
-        if self._restricted_protocol():
+        if self._restricted_protocol() or not self._api_key_scope_allowed("mcp:read"):
             return []
         return list(await super().list_prompts(run_middleware=run_middleware))
 
@@ -1377,17 +1407,20 @@ class DynamicFastMCP(FastMCP):
         *,
         version: Any = None,
         run_middleware: bool = True,
-        task_meta: Any = None,
     ) -> Any:
+        if not self._api_key_scope_allowed("mcp:read"):
+            raise PermissionError("Access denied: API key requires mcp:read")
         if self._restricted_protocol():
             raise PermissionError(
                 "Access denied: restricted runtime resource unsupported"
             )
         return await super().read_resource(
-            uri, version=version, run_middleware=run_middleware, task_meta=task_meta
+            uri, version=version, run_middleware=run_middleware
         )
 
     async def get_prompt(self, name: str, version: Any = None) -> Any:
+        if not self._api_key_scope_allowed("mcp:read"):
+            raise PermissionError("Access denied: API key requires mcp:read")
         if self._restricted_protocol():
             raise PermissionError(
                 "Access denied: restricted runtime prompt unsupported"
@@ -1409,6 +1442,10 @@ class DynamicFastMCP(FastMCP):
         Returns:
             List of tools available to the current user
         """
+        if not _invocation_catalogue.get() and not self._api_key_scope_allowed(
+            "mcp:read"
+        ):
+            return []
         if run_middleware and self._restricted_protocol():
             # FastMCP re-enters this override with run_middleware=False. Start
             # the batch there so one request checks one authority snapshot.
@@ -1990,7 +2027,7 @@ async def {internal_name}({params_str}):
         if grant is not None:
             _grant_binding_var.set(deepcopy(grant.binding))
         if grant is not None and grant.deny_reason:
-            _record_grant_denial(account_id, tool_name, grant, user_id=user_context.user_id,
+            await _record_grant_denial(account_id, tool_name, grant, user_id=user_context.user_id,
                                 correlation_id=_correlation_id_var.get(None))
             return _wrapper_tool_error(f"Access denied: {{grant.deny_reason}}", status="refused")
     if snapshot is None:
@@ -2213,7 +2250,6 @@ async def {internal_name}({params_str}):
         *,
         version=None,
         run_middleware: bool = True,
-        task_meta=None,
     ):
         """Override tool execution for access validation and name translation.
 
@@ -2229,12 +2265,18 @@ async def {internal_name}({params_str}):
             arguments: Arguments derived from FastMCP
             version: Optional Tool Version
             run_middleware: Whether to run middleware
-            task_meta: Optional Background Task Metadata
 
         Returns:
             ToolResult from tool execution
         """
         arguments = arguments or {}
+
+        # Check even on FastMCP re-entry and approval replay. Scope grants do
+        # not replace the account, tool, runtime or policy checks below.
+        if not self._api_key_scope_allowed("mcp:write"):
+            denial = "Access denied: API key requires mcp:write"
+            self._record_attributed_refusal(name, arguments, denial)
+            return _tool_error_result(denial)
 
         # FastMCP's middleware re-enters this override with
         # run_middleware=False after the outer call has already authorized
@@ -2252,7 +2294,6 @@ async def {internal_name}({params_str}):
                 dispatch_arguments,
                 version=version,
                 run_middleware=False,
-                task_meta=task_meta,
             )
 
         # Extract justification from arguments before it reaches the tool function.
@@ -2281,7 +2322,9 @@ async def {internal_name}({params_str}):
                 denial = (
                     f"Access denied: Cannot invoke internal tool name '{name}' directly"
                 )
-                self._record_attributed_refusal(name, arguments, denial)
+                await asyncio.to_thread(
+                    self._record_attributed_refusal, name, arguments, denial
+                )
                 return _tool_error_result(denial)
 
             logger.info(
@@ -2292,7 +2335,6 @@ async def {internal_name}({params_str}):
                 self._remap_wrapper_arguments(name, arguments),
                 version=version,
                 run_middleware=run_middleware,
-                task_meta=task_meta,
             )
 
         _grant_dispatch_var.set(None)
@@ -2316,7 +2358,8 @@ async def {internal_name}({params_str}):
 
         async def _refuse(text: str) -> ToolResult:
             """Record a refused call (usage and audit rows), return its error."""
-            self._audit_refused_tool_call(
+            audit_fields = await asyncio.to_thread(
+                self._audit_refused_tool_call,
                 user_context,
                 client_tool_name=name,
                 arguments=arguments,
@@ -2327,11 +2370,13 @@ async def {internal_name}({params_str}):
             _grant_dispatch_var.set(None)
             _grant_binding_var.set(None)
             try:
-                self._persist_tool_call_activity(
+                await asyncio.to_thread(
+                    self._persist_tool_call_activity,
                     user_context,
                     tool_name=name,
                     client_tool_name=name,
                     status=TOOL_CALL_STATUS_REFUSED,
+                    audit_fields=audit_fields,
                     summary=text,
                     arguments=arguments,
                     correlation_id=correlation_id,
@@ -2540,7 +2585,11 @@ async def {internal_name}({params_str}):
                 )
 
         # Check if user has access to this tool
-        available_tools = await self.list_tools(run_middleware=run_middleware)
+        catalogue_token = _invocation_catalogue.set(True)
+        try:
+            available_tools = await self.list_tools(run_middleware=run_middleware)
+        finally:
+            _invocation_catalogue.reset(catalogue_token)
         if not any(tool.name == name for tool in available_tools):
             logger.warning(
                 f"User {user_context.username} attempted to call "
@@ -2565,7 +2614,7 @@ async def {internal_name}({params_str}):
                     )
             except Exception:
                 grant_binding = grant_introspector._unavailable()
-                _record_grant_denial(
+                await _record_grant_denial(
                     user_context.account_id,
                     name,
                     GrantResult(grant_binding, "introspection_unavailable"),
@@ -2582,7 +2631,7 @@ async def {internal_name}({params_str}):
                 grant_binding = grant.binding
                 _grant_binding_var.set(grant_binding)
                 if grant.deny_reason:
-                    _record_grant_denial(
+                    await _record_grant_denial(
                         user_context.account_id,
                         name,
                         grant,
@@ -2730,6 +2779,9 @@ async def {internal_name}({params_str}):
                         ),
                     },
                 )
+                # This evaluation owns a short-lived transaction, including its audit.
+                if outbox_enabled():
+                    await db.commit()
 
             action, approval_workflow_id, reason = _policy_decision
             owner_action = await run_db_off_loop(
@@ -2876,7 +2928,6 @@ async def {internal_name}({params_str}):
                 dispatch_arguments,
                 version=version,
                 run_middleware=run_middleware,
-                task_meta=task_meta,
             )
             if sensitive_config is not None:
                 result = await self._enforce_sensitive_result_policy(
@@ -2921,12 +2972,18 @@ async def {internal_name}({params_str}):
             _proxied_raw_result_var.set(None)
             _tool_error_detail_var.set(None)
 
+            audit_fields: Optional[dict[str, Any]] = None
             # ── Audit: log tool execution ───────────────────────────────
             try:
                 from preloop.plugins.base import get_plugin_manager
 
                 plugin_manager = get_plugin_manager()
-                audit_service = plugin_manager.get_service("audit_service")
+                if outbox_enabled():
+                    from preloop.services.audit import get_audit_service
+
+                    audit_service = get_audit_service()
+                else:
+                    audit_service = plugin_manager.get_service("audit_service")
                 if audit_service:
                     audit_scope = StorageScope(
                         target="tool.args",
@@ -2934,8 +2991,7 @@ async def {internal_name}({params_str}):
                         server_name=scope_server_name,
                         managed_agent_id=scope_agent_id,
                     )
-                    audit_service.log_tool_call_async(
-                        db_factory=lambda: next(get_db()),
+                    audit_fields = dict(
                         account_id=uuid.UUID(user_context.account_id),
                         user_id=uuid.UUID(user_context.user_id),
                         # The name the client called, not the internal
@@ -2978,6 +3034,10 @@ async def {internal_name}({params_str}):
                             audit_service, audit_error_code, audit_error_reason
                         ),
                     )
+                    if not outbox_enabled():
+                        audit_service.log_tool_call_async(
+                            db_factory=lambda: next(get_db()), **audit_fields
+                        )
             except Exception as audit_err:
                 logger.debug(f"Failed to audit tool execution: {audit_err}")
 
@@ -3007,7 +3067,8 @@ async def {internal_name}({params_str}):
                     activity_status = TOOL_CALL_STATUS_SUCCEEDED
                     activity_summary = None
                 try:
-                    self._persist_tool_call_activity(
+                    await asyncio.to_thread(
+                        self._persist_tool_call_activity,
                         user_context,
                         tool_name=name,
                         client_tool_name=client_tool_name,
@@ -3017,6 +3078,7 @@ async def {internal_name}({params_str}):
                         correlation_id=correlation_id,
                         elapsed_ms=elapsed_ms,
                         storage_config=storage_config,
+                        audit_fields=audit_fields,
                     )
                 except Exception as activity_err:
                     logger.debug(
@@ -3186,6 +3248,7 @@ async def {internal_name}({params_str}):
         correlation_id: Optional[str],
         elapsed_ms: Optional[int] = None,
         storage_config: Any = None,
+        audit_fields: Optional[dict[str, Any]] = None,
     ) -> None:
         """Write one governed tool-call outcome and fan it out to live streams.
 
@@ -3195,7 +3258,20 @@ async def {internal_name}({params_str}):
         (key names and sizes) so the row can flag an oversized or malformed
         call without retaining customer data.
         """
+        from preloop.services.audit import get_audit_service
+
+        if outbox_enabled() and audit_fields is None:
+            raise ValueError("Durable tool outcomes require audit fields")
+        durable_fields = audit_fields if outbox_enabled() else None
         if not getattr(user_context, "runtime_session_id", None):
+            if durable_fields is not None:
+                from preloop.models.db.session import get_session_factory
+
+                with get_session_factory()() as db:
+                    get_audit_service().enqueue_in_transaction(
+                        db, "log_tool_call", **durable_fields
+                    )
+                    db.commit()
             return
 
         from preloop.models.crud import crud_runtime_session_activity
@@ -3286,7 +3362,14 @@ async def {internal_name}({params_str}):
                 summary=bounded_summary,
                 metadata=metadata,
                 timestamp=ended_at,
+                commit=durable_fields is None,
             )
+            if durable_fields is not None:
+                get_audit_service().enqueue_in_transaction(
+                    db, "log_tool_call", **durable_fields
+                )
+                db.commit()
+                db.refresh(activity)
             activity_timestamp = (
                 activity.timestamp.isoformat() if activity.timestamp else None
             )
@@ -3409,6 +3492,9 @@ async def {internal_name}({params_str}):
                         execution_id=user_context.flow_execution_id,
                     )
                 )
+        except Exception:
+            db.rollback()
+            raise
         finally:
             db.close()
 
@@ -3565,7 +3651,7 @@ async def {internal_name}({params_str}):
         reason: str,
         correlation_id: Optional[str],
         grant: Optional[dict[str, Any]] = None,
-    ) -> None:
+    ) -> Optional[dict[str, Any]]:
         """Write the audit ``tool_call`` row for a call refused before dispatch.
 
         Status is ``declined`` with a short reason and the call's
@@ -3579,7 +3665,12 @@ async def {internal_name}({params_str}):
             from preloop.plugins.base import get_plugin_manager
             from preloop.services.sensitive_data import storage as storage_module
 
-            audit_service = get_plugin_manager().get_service("audit_service")
+            if outbox_enabled():
+                from preloop.services.audit import get_audit_service
+
+                audit_service = get_audit_service()
+            else:
+                audit_service = get_plugin_manager().get_service("audit_service")
             if not audit_service:
                 return
             account_id = user_context.account_id
@@ -3616,8 +3707,7 @@ async def {internal_name}({params_str}):
                     "arguments_withheld": True,
                     "arg_keys": sorted(str(k) for k in (arguments or {})),
                 }
-            audit_service.log_tool_call_async(
-                db_factory=lambda: next(get_db()),
+            audit_fields = dict(
                 account_id=uuid.UUID(str(account_id)),
                 user_id=uuid.UUID(str(user_context.user_id)),
                 tool_name=client_tool_name,
@@ -3639,6 +3729,11 @@ async def {internal_name}({params_str}):
                 **_audit_grant_kwargs(audit_service, grant),
                 **_audit_error_kwargs(audit_service, "refused", _short_reason(reason)),
             )
+            if not outbox_enabled():
+                audit_service.log_tool_call_async(
+                    db_factory=lambda: next(get_db()), **audit_fields
+                )
+            return audit_fields
         except Exception as audit_err:
             logger.debug(f"Failed to audit refused tool call: {audit_err}")
 
@@ -3662,7 +3757,7 @@ async def {internal_name}({params_str}):
         owner = account_id or getattr(user_context, "account_id", None)
         client_tool_name = self._client_visible_registered_name(name, owner)
         correlation_id = _correlation_id_var.get(None) or str(uuid.uuid4())
-        self._audit_refused_tool_call(
+        audit_fields = self._audit_refused_tool_call(
             user_context,
             client_tool_name=client_tool_name,
             arguments=arguments,
@@ -3675,6 +3770,7 @@ async def {internal_name}({params_str}):
                 tool_name=name,
                 client_tool_name=client_tool_name,
                 status=TOOL_CALL_STATUS_REFUSED,
+                audit_fields=audit_fields,
                 summary=text,
                 arguments=arguments,
                 correlation_id=correlation_id,
@@ -3752,7 +3848,7 @@ async def {internal_name}({params_str}):
         else:
             _grant_binding_var.set(fresh_binding)
         if grant.deny_reason:
-            _record_grant_denial(
+            await _record_grant_denial(
                 snapshot.account_id,
                 snapshot.tool_name,
                 grant,
@@ -3804,8 +3900,12 @@ async def {internal_name}({params_str}):
         # The durable approval owns this dispatch, even without HTTP context.
         denial = await self._halt_dispatch_denial(account_id)
         if denial:
-            self._record_attributed_refusal(
-                name, arguments, denial, account_id=account_id
+            await asyncio.to_thread(
+                self._record_attributed_refusal,
+                name,
+                arguments,
+                denial,
+                account_id=account_id,
             )
             return _tool_error_result(denial)
         translation_token = None
@@ -3951,6 +4051,7 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
             runtime_principal_name=runtime_principal_name,
             api_key_id=api_key_id,
             api_key_name=api_key_name,
+            api_key_scopes=tuple(api_key.scopes) if api_key else None,
             managed_agent_id=(
                 str(managed_agent_id) if managed_agent_id is not None else None
             ),

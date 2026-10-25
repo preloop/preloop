@@ -1605,26 +1605,23 @@ def create_api_key(
 
     try:
         # Create a new API key
-        new_key = ApiKey(
-            name=key_data.name,
-            key=key_value,
-            key_hash=crud_api_key.build_key_hash(key_value),
-            key_prefix=crud_api_key.build_key_prefix(key_value),
-            scopes=key_data.scopes,
-            account_id=current_user.account_id,
-            user_id=current_user.id,
-            expires_at=key_data.expires_at,
-            context_data=context_data,
+        new_key, key_value = crud_api_key.issue(
+            session,
+            key_value=key_value,
+            obj_in={
+                "name": key_data.name,
+                "scopes": key_data.scopes,
+                "account_id": current_user.account_id,
+                "user_id": current_user.id,
+                "expires_at": key_data.expires_at,
+                "context_data": context_data,
+            },
         )
-
-        session.add(new_key)
-        session.commit()
-        session.refresh(new_key)
 
         return ApiKeyResponse(
             id=new_key.id,
             name=new_key.name,
-            key=new_key.key,
+            key=key_value,
             created_at=new_key.created_at,
             expires_at=new_key.expires_at,
             scopes=new_key.scopes,
@@ -1639,14 +1636,14 @@ def create_api_key(
                 detail="API key with this name already exists",
             )
 
-        logger.error(f"Integrity error creating API key: {str(e)}")
+        logger.error("Integrity error creating API key")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating API key",
         )
     except Exception as e:
         session.rollback()
-        logger.error(f"Error creating API key: {str(e)}")
+        logger.error("Error creating API key")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating API key",

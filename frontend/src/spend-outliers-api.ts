@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /**
  * Console client for spend outlier alerts (#960).
  *
@@ -57,7 +58,7 @@ export interface SpendOutlierSettings {
   configured?: boolean;
 }
 
-const BASE = '/api/v1/attention/spend-outliers';
+const BASE = REST_API_PREFIX + '/attention/spend-outliers';
 
 /**
  * Open spend outliers. Passive: the list loads with the dashboard, and a

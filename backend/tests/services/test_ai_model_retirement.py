@@ -1,5 +1,7 @@
 """Retired global models preserve history without serving new default selection."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -13,7 +15,7 @@ from preloop.models.crud import crud_ai_model
 def _model(
     *, owned: bool = False, retired: object = None, default: bool = False
 ) -> models.AIModel:
-    return models.AIModel(
+    return ai_model_with_secret(
         id=uuid4(),
         account_id=uuid4() if owned else None,
         name="Example model",

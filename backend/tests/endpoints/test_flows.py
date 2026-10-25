@@ -595,8 +595,10 @@ def _make_ai_model(
     model.account_id = account_id
     model.is_default = is_default
     model.provider_name = provider_name
-    model.credentials_secret_id = credentials_secret_id
-    model.api_key = api_key
+    model.credentials_secret_id = credentials_secret_id or (
+        uuid.uuid4() if api_key else None
+    )
+    model.api_key = None
     model.meta_data = meta_data
     model.api_endpoint = api_endpoint
     model.model_kind = "llm"
