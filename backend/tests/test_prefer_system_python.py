@@ -210,3 +210,18 @@ def test_composite_falls_back_to_the_pinned_setup_python() -> None:
     assert "GITHUB_WORKSPACE" in prefer["run"]
     assert fallback["uses"] == SETUP_PYTHON_PIN
     assert fallback["if"] == "steps.system.outputs.use_setup == 'true'"
+
+
+def test_self_hosted_fallback_repairs_clean_environment_loader() -> None:
+    import yaml  # type: ignore[import-untyped]
+
+    with COMPOSITE.open(encoding="utf-8") as handle:
+        steps = yaml.safe_load(handle)["runs"]["steps"]
+    repair = steps[2]
+    assert "runner.environment == 'self-hosted'" in repair["if"]
+    assert "steps.system.outputs.use_setup == 'true'" in repair["if"]
+    script = repair["run"]
+    assert script.count("env -u LD_LIBRARY_PATH") == 2
+    assert "patchelf --set-rpath" in script
+    assert "${ORIGIN}/../lib" in script
+    assert "pythonLocation" in script

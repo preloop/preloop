@@ -222,3 +222,9 @@ cache using the lockfile key. Self-hosted jobs skip archive upload/download and
 cache pruning. Changed lockfiles are still validated on every install. Editable
 project code is installed separately with `--no-deps` so each job tests its own
 checkout. No mutable virtual environment is shared between jobs.
+
+Install `patchelf` on minimal Linux runner images. When `setup-ci-python` falls
+back to a downloaded interpreter, it verifies that Python can start without
+`LD_LIBRARY_PATH` and repairs its tool-cache loader path if needed. The isolated
+shell tests intentionally clear that variable, so a missing loader path must
+fail before the test suite rather than produce unrelated test failures.
