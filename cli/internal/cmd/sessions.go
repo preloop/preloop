@@ -31,7 +31,7 @@ const (
 	// runtimeSessionSearchPath is the POST endpoint. POST, not GET, because
 	// the query text is whatever an operator is hunting for in their own
 	// transcripts and a request path ends up in every access log on the way.
-	runtimeSessionSearchPath = "/api/v1/runtime-sessions/search"
+	runtimeSessionSearchPath = api.RESTPrefix + "/runtime-sessions/search"
 
 	// sessionSearchMaxPageSize mirrors MAX_SESSION_RESULTS on the server: a
 	// larger --page-size would be a 422, so it is refused here with a

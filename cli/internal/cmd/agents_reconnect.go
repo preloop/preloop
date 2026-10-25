@@ -153,7 +153,7 @@ func listReconnectCredentialGroups(client *api.Client, agentID, credentialType s
 		return nil, fmt.Errorf("managed agent has no id")
 	}
 	var models []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
 		return nil, fmt.Errorf("list subscription models: %w", err)
 	}
 	groups := reconnectCredentialGroupsForEnrollment(models, agentID, credentialType)
@@ -199,7 +199,7 @@ func reconnectCredentialGroups(client *api.Client, groups [][]aiModelResponse, c
 		}
 		if secretID == "" {
 			var response aiModelResponse
-			path := "/api/v1/ai-models/" + url.PathEscape(group[0].ID)
+			path := api.RESTPrefix + "/ai-models/" + url.PathEscape(group[0].ID)
 			if err := client.Put(path, map[string]interface{}{
 				"credential_type": credentialType, "credential_payload": payload,
 			}, &response); err != nil {
@@ -216,7 +216,7 @@ func reconnectCredentialGroups(client *api.Client, groups [][]aiModelResponse, c
 		// legacy split model families by attaching them to the single owner.
 		for _, model := range group {
 			var response aiModelResponse
-			path := "/api/v1/ai-models/" + url.PathEscape(model.ID)
+			path := api.RESTPrefix + "/ai-models/" + url.PathEscape(model.ID)
 			if err := client.Put(path, map[string]interface{}{
 				"credentials_secret_id": secretID,
 			}, &response); err != nil {

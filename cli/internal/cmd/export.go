@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	assetRegisterPath      = "/api/v1/exports/asset-register"
-	incidentCandidatesPath = "/api/v1/exports/incident-candidates"
+	assetRegisterPath      = api.RESTPrefix + "/exports/asset-register"
+	incidentCandidatesPath = api.RESTPrefix + "/exports/incident-candidates"
 )
 
 // exportCmd groups the compliance exports.

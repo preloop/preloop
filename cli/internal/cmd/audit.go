@@ -28,12 +28,12 @@ import (
 )
 
 const (
-	auditChainStatusPath      = "/api/v1/audit/chain/status"
-	auditChainVerifyPath      = "/api/v1/audit/chain/verify"
-	auditChainSegmentPath     = "/api/v1/audit/chain/segment"
-	auditChainCheckpointsPath = "/api/v1/audit/chain/checkpoints"
-	signingKeysPath           = "/api/v1/signing/keys"
-	serverVersionPath         = "/api/v1/version"
+	auditChainStatusPath      = api.RESTPrefix + "/audit/chain/status"
+	auditChainVerifyPath      = api.RESTPrefix + "/audit/chain/verify"
+	auditChainSegmentPath     = api.RESTPrefix + "/audit/chain/segment"
+	auditChainCheckpointsPath = api.RESTPrefix + "/audit/chain/checkpoints"
+	signingKeysPath           = api.RESTPrefix + "/signing/keys"
+	serverVersionPath         = api.RESTPrefix + "/version"
 
 	auditSegmentPageSize = 500
 	// auditMaxPages bounds one run at half a million rows. A chain longer

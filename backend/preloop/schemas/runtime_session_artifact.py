@@ -11,7 +11,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from preloop.schemas.media_timing import MediaTiming
 
 
 class ArtifactDepositMetadata(BaseModel):
@@ -22,6 +24,19 @@ class ArtifactDepositMetadata(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid")
+
+    media_timing: MediaTiming | None = None
+
+    @model_validator(mode="after")
+    def timing_kind(self) -> "ArtifactDepositMetadata":
+        """Only recordings and screencasts carry synchronization metadata."""
+        if self.media_timing is not None and self.kind not in (
+            None,
+            "recording",
+            "screencast",
+        ):
+            raise ValueError("media_timing requires recording or screencast")
+        return self
 
     kind: Optional[str] = Field(
         None,
@@ -95,6 +110,7 @@ class RuntimeSessionArtifactOut(BaseModel):
     availability: str
     legal_hold: bool
     created_at: datetime
+    media_timing: MediaTiming | None = None
     content_block: McpResourceLink
 
 

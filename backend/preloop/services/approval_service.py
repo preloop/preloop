@@ -5,11 +5,15 @@ import concurrent.futures
 import json
 import uuid
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Set
 from urllib.parse import urljoin
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
+
+from preloop.services.audit.async_writer import outbox_enabled
 
 from preloop.models.models import (
     ApprovalRequest,
@@ -40,6 +44,15 @@ from preloop.services.event_webhooks.events import (
 logger = logging.getLogger(__name__)
 
 _LOCAL_PRESENCE_WINDOW = timedelta(seconds=20)
+
+
+@dataclass(frozen=True)
+class _NotificationAuditSubject:
+    """Identifiers that remain readable after a channel transaction rolls back."""
+
+    id: uuid.UUID
+    account_id: uuid.UUID | str
+    tool_name: str
 
 
 def _operator_present_at_machine(db, approval_request: ApprovalRequest) -> bool:
@@ -114,11 +127,12 @@ def _log_approval_lifecycle_async(
     execution_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
+    db: Optional[Session] = None,
 ) -> None:
-    """Log an approval lifecycle event asynchronously (fire-and-forget).
+    """Admit a lifecycle event in ``db``, or use the legacy bounded writer.
 
-    This helper function wraps the audit service call to log approval lifecycle
-    events without blocking the main execution flow.
+    A supplied session belongs to the business transaction. Durable admission
+    errors propagate so a decision cannot commit without its audit intent.
 
     Args:
         account_id: Account ID
@@ -136,10 +150,6 @@ def _log_approval_lifecycle_async(
         if not audit_service:
             return
 
-        db_factory = _get_db_factory()
-        if not db_factory:
-            return
-
         # Convert execution_id to UUID if it's a string
         exec_id = None
         if execution_id:
@@ -149,8 +159,7 @@ def _log_approval_lifecycle_async(
                 # execution_id may be a non-UUID flow id; omit it from audit metadata.
                 pass
 
-        audit_service.log_approval_lifecycle_async(
-            db_factory=db_factory,
+        fields = dict(
             account_id=account_id,
             approval_id=approval_id,
             event=event,
@@ -161,7 +170,17 @@ def _log_approval_lifecycle_async(
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
+        if db is not None:
+            audit_service.enqueue_in_transaction(
+                db, "log_approval_lifecycle", priority=True, **fields
+            )
+        else:
+            audit_service.log_approval_lifecycle_async(
+                db_factory=_get_db_factory(), **fields
+            )
     except Exception as e:
+        if db is not None and outbox_enabled():
+            raise
         logger.debug(f"Failed to log approval lifecycle to audit: {e}")
 
 
@@ -188,17 +207,14 @@ def _log_approval_notification_async(
     error: Optional[str] = None,
     correlation_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
+    db: Optional[Session] = None,
 ) -> None:
-    """Fire-and-forget audit log entry for one approval notification fan-out."""
+    """Admit a notification event in its timeline transaction when supplied."""
     try:
         audit_service = _get_audit_service()
         if not audit_service:
             return
-        db_factory = _get_db_factory()
-        if not db_factory:
-            return
-        audit_service.log_approval_notification_async(
-            db_factory=db_factory,
+        fields = dict(
             account_id=account_id,
             approval_id=approval_id,
             channel=channel,
@@ -212,7 +228,17 @@ def _log_approval_notification_async(
             correlation_id=correlation_id,
             extra_details=extra_details,
         )
+        if db is not None:
+            audit_service.enqueue_in_transaction(
+                db, "log_approval_notification", priority=True, **fields
+            )
+        else:
+            audit_service.log_approval_notification_async(
+                db_factory=_get_db_factory(), **fields
+            )
     except Exception as e:
+        if db is not None and outbox_enabled():
+            raise
         logger.debug(f"Failed to log approval notification to audit: {e}")
 
 
@@ -227,14 +253,12 @@ def _log_approval_tool_executed_async(
     correlation_id: Optional[str] = None,
     execution_id: Optional[str] = None,
     extra_details: Optional[Dict[str, Any]] = None,
+    db: Optional[Session] = None,
 ) -> None:
-    """Fire-and-forget audit log entry for the post-approval tool execution."""
+    """Admit execution audit in the transaction storing the replay result."""
     try:
         audit_service = _get_audit_service()
         if not audit_service:
-            return
-        db_factory = _get_db_factory()
-        if not db_factory:
             return
         exec_id: Optional[uuid.UUID] = None
         if execution_id:
@@ -243,8 +267,7 @@ def _log_approval_tool_executed_async(
             except (ValueError, TypeError):
                 # execution_id may be a non-UUID flow id; omit it from audit metadata.
                 pass
-        audit_service.log_approval_tool_executed_async(
-            db_factory=db_factory,
+        fields = dict(
             account_id=account_id,
             approval_id=approval_id,
             tool_name=tool_name,
@@ -256,8 +279,32 @@ def _log_approval_tool_executed_async(
             execution_id=exec_id,
             extra_details=extra_details,
         )
+        if db is not None:
+            audit_service.enqueue_in_transaction(
+                db, "log_approval_tool_executed", priority=True, **fields
+            )
+        else:
+            audit_service.log_approval_tool_executed_async(
+                db_factory=_get_db_factory(), **fields
+            )
     except Exception as e:
+        if db is not None and outbox_enabled():
+            raise
         logger.debug(f"Failed to log approval tool execution to audit: {e}")
+
+
+async def enqueue_approval_audit(
+    db: AsyncSession, operation: str, **fields: Any
+) -> None:
+    """Admit an approval event using its owner's session, without committing."""
+    helper = {
+        "log_approval_notification": _log_approval_notification_async,
+        "log_approval_tool_executed": _log_approval_tool_executed_async,
+    }[operation]
+    if outbox_enabled():
+        await db.run_sync(lambda session: helper(db=session, **fields))
+    else:
+        helper(**fields)
 
 
 # Thread pool for running sync database operations
@@ -346,7 +393,9 @@ async def _send_delayed_approval_email(
                     request_id,
                     reason,
                 )
-                _log_approval_notification_async(
+                await enqueue_approval_audit(
+                    db,
+                    "log_approval_notification",
                     account_id=account_id,
                     approval_id=request_id,
                     channel="email",
@@ -357,6 +406,7 @@ async def _send_delayed_approval_email(
                     error="resolved_before_email",
                     correlation_id=correlation_id,
                 )
+                await db.commit()
                 return
 
             if (
@@ -367,7 +417,9 @@ async def _send_delayed_approval_email(
                     "Skipping delayed email for approval %s: expired",
                     request_id,
                 )
-                _log_approval_notification_async(
+                await enqueue_approval_audit(
+                    db,
+                    "log_approval_notification",
                     account_id=account_id,
                     approval_id=request_id,
                     channel="email",
@@ -378,6 +430,7 @@ async def _send_delayed_approval_email(
                     error="resolved_before_email",
                     correlation_id=correlation_id,
                 )
+                await db.commit()
                 return
 
             service = ApprovalService(db, base_url)
@@ -387,7 +440,9 @@ async def _send_delayed_approval_email(
                     "Delayed email for %s missing workflow; skipping send",
                     request_id,
                 )
-                _log_approval_notification_async(
+                await enqueue_approval_audit(
+                    db,
+                    "log_approval_notification",
                     account_id=account_id,
                     approval_id=request_id,
                     channel="email",
@@ -398,6 +453,7 @@ async def _send_delayed_approval_email(
                     error="missing_workflow",
                     correlation_id=correlation_id,
                 )
+                await db.commit()
                 return
 
             result = await service._send_email_notification(
@@ -415,7 +471,9 @@ async def _send_delayed_approval_email(
                 status = "failed"
             else:
                 status = "sent"
-            _log_approval_notification_async(
+            await enqueue_approval_audit(
+                db,
+                "log_approval_notification",
                 account_id=account_id,
                 approval_id=request_id,
                 channel="email",
@@ -427,6 +485,7 @@ async def _send_delayed_approval_email(
                 error=str(result.get("error")) if result.get("error") else None,
                 correlation_id=correlation_id,
             )
+            await db.commit()
             logger.info(
                 "Delayed email for approval %s: %s",
                 request_id,
@@ -782,8 +841,34 @@ class ApprovalService:
         )
 
         self.db.add(approval_request)
-        await self.db.commit()
-        await self.db.refresh(approval_request)
+        # Admit the lifecycle intent before committing the request.
+        # Read correlation_id from context var if available (set by _call_tool)
+        corr_id = None
+        try:
+            from preloop.services.dynamic_fastmcp import _correlation_id_var
+
+            corr_id = _correlation_id_var.get(None)
+        except Exception:
+            # Correlation id is optional telemetry; ignore lookup failures.
+            pass
+        from preloop.utils.redaction import redact_dict
+
+        await self._enqueue_lifecycle(
+            account_id=account_id,
+            approval_id=approval_request.id,
+            event="created",
+            tool_name=tool_name,
+            execution_id=execution_id,
+            correlation_id=corr_id,
+            extra_details={
+                "approval_workflow_id": str(approval_workflow_id),
+                # Credential scrub over the already policy-redacted copy, so
+                # the lifecycle audit row holds neither secrets nor PII.
+                "tool_args": redact_dict(stored_tool_args or {}),
+                "timeout_seconds": timeout,
+                **({"rule_context": rule_context} if rule_context else {}),
+            },
+        )
 
         # Timeline: the request itself is the first entry. Recorded here (not
         # by MCP-layer callers) so every creation path — tool gate, ask_user,
@@ -800,6 +885,7 @@ class ApprovalService:
             ),
         )
         await self.db.commit()
+        await self.db.refresh(approval_request)
 
         # Broadcast creation event. A deferred caller still gets the webhook
         # now; the live broadcast waits until the request is known to be
@@ -808,35 +894,6 @@ class ApprovalService:
             await self._broadcast_approval_update(approval_request, "created")
         else:
             await self._enqueue_approval_webhook(approval_request, "created")
-
-        # Log to audit trail (fire-and-forget)
-        # Read correlation_id from context var if available (set by _call_tool)
-        corr_id = None
-        try:
-            from preloop.services.dynamic_fastmcp import _correlation_id_var
-
-            corr_id = _correlation_id_var.get(None)
-        except Exception:
-            # Correlation id is optional telemetry; ignore lookup failures.
-            pass
-        from preloop.utils.redaction import redact_dict
-
-        _log_approval_lifecycle_async(
-            account_id=account_id,
-            approval_id=approval_request.id,
-            event="created",
-            tool_name=tool_name,
-            execution_id=execution_id,
-            correlation_id=corr_id,
-            extra_details={
-                "approval_workflow_id": str(approval_workflow_id),
-                # Credential scrub over the already policy-redacted copy, so
-                # the lifecycle audit row holds neither secrets nor PII.
-                "tool_args": redact_dict(stored_tool_args or {}),
-                "timeout_seconds": timeout,
-                **({"rule_context": rule_context} if rule_context else {}),
-            },
-        )
 
         # Note: Notifications are sent via send_notifications() which is called
         # by create_and_notify(). Do NOT send notifications here to avoid duplicates.
@@ -876,7 +933,13 @@ class ApprovalService:
         )
 
     async def update_approval_request(
-        self, request_id: uuid.UUID, update: ApprovalRequestUpdate
+        self,
+        request_id: uuid.UUID,
+        update: ApprovalRequestUpdate,
+        *,
+        audit_approver_id: Optional[uuid.UUID] = None,
+        audit_reason: Optional[str] = None,
+        audit_details: Optional[Dict[str, Any]] = None,
     ) -> Optional[ApprovalRequest]:
         """Update an approval request.
 
@@ -891,6 +954,7 @@ class ApprovalService:
         if not approval_request:
             return None
 
+        previous_status = approval_request.status
         # Update fields
         for field, value in update.model_dump(exclude_unset=True).items():
             setattr(approval_request, field, value)
@@ -910,6 +974,22 @@ class ApprovalService:
                 approval_request.tool_args = cleaned
                 flag_modified(approval_request, "tool_args")
 
+        if approval_request.status != previous_status:
+            await self._enqueue_lifecycle(
+                account_id=str(approval_request.account_id),
+                approval_id=approval_request.id,
+                event="denied"
+                if approval_request.status == "declined"
+                else approval_request.status,
+                tool_name=approval_request.tool_name,
+                approver_id=audit_approver_id,
+                reason=audit_reason
+                if audit_reason is not None
+                else approval_request.approver_comment,
+                execution_id=approval_request.execution_id,
+                correlation_id=_current_correlation_id(),
+                extra_details=audit_details,
+            )
         await self.db.commit()
         await self.db.refresh(approval_request)
 
@@ -923,6 +1003,19 @@ class ApprovalService:
             await self._release_parked_executions(approval_request)
 
         return approval_request
+
+    async def _enqueue_lifecycle(self, **fields: Any) -> None:
+        """Flush the lifecycle intent in this session; never commit or detach it."""
+        if outbox_enabled():
+            try:
+                await self.db.run_sync(
+                    lambda db: _log_approval_lifecycle_async(db=db, **fields)
+                )
+            except Exception:
+                await self.db.rollback()
+                raise
+        else:
+            _log_approval_lifecycle_async(**fields)
 
     async def _release_parked_executions(
         self, approval_request: ApprovalRequest
@@ -1069,7 +1162,11 @@ class ApprovalService:
             update = ApprovalRequestUpdate(
                 status="expired", resolved_at=datetime.utcnow()
             )
-            expired = await self.update_approval_request(approval_request.id, update)
+            expired = await self.update_approval_request(
+                approval_request.id,
+                update,
+                audit_reason="Request timed out without response",
+            )
             return expired or approval_request
         return None
 
@@ -1202,15 +1299,6 @@ class ApprovalService:
                 updated_request = await self.update_approval_request(request_id, update)
                 if updated_request:
                     await self._broadcast_approval_update(updated_request, "approved")
-                    _log_approval_lifecycle_async(
-                        account_id=str(updated_request.account_id),
-                        approval_id=updated_request.id,
-                        event="approved",
-                        tool_name=updated_request.tool_name,
-                        approver_id=None,
-                        reason=comment,
-                        execution_id=updated_request.execution_id,
-                    )
                 return updated_request
             else:
                 # For quorum > 1 without user_id, only allow ONE anonymous vote per request
@@ -1269,7 +1357,6 @@ class ApprovalService:
             )
             # Update responses in the database
             approval_request.responses = responses
-            await self.db.commit()
 
             await self._record_event(
                 approval_request_id=request_id,
@@ -1278,22 +1365,17 @@ class ApprovalService:
                 detail=f"Approval request approved (quorum {approval_count}/{approvals_required} met)",
             )
 
-            updated_request = await self.update_approval_request(request_id, update)
+            updated_request = await self.update_approval_request(
+                request_id,
+                update,
+                audit_approver_id=user_id,
+                audit_details={
+                    "approval_count": approval_count,
+                    "approvals_required": approvals_required,
+                },
+            )
             if updated_request:
                 await self._broadcast_approval_update(updated_request, "approved")
-                _log_approval_lifecycle_async(
-                    account_id=str(updated_request.account_id),
-                    approval_id=updated_request.id,
-                    event="approved",
-                    tool_name=updated_request.tool_name,
-                    approver_id=user_id,
-                    reason=comment,
-                    execution_id=updated_request.execution_id,
-                    extra_details={
-                        "approval_count": approval_count,
-                        "approvals_required": approvals_required,
-                    },
-                )
             return updated_request
         else:
             # Quorum not met yet - just record the vote and broadcast progress
@@ -1410,15 +1492,6 @@ class ApprovalService:
                 updated_request = await self.update_approval_request(request_id, update)
                 if updated_request:
                     await self._broadcast_approval_update(updated_request, "declined")
-                    _log_approval_lifecycle_async(
-                        account_id=str(updated_request.account_id),
-                        approval_id=updated_request.id,
-                        event="denied",
-                        tool_name=updated_request.tool_name,
-                        approver_id=None,
-                        reason=comment,
-                        execution_id=updated_request.execution_id,
-                    )
                 return updated_request
             else:
                 # For quorum > 1 without user_id, only allow ONE anonymous vote per request
@@ -1502,7 +1575,6 @@ class ApprovalService:
             )
             # Update responses in the database
             approval_request.responses = responses
-            await self.db.commit()
 
             await self._record_event(
                 approval_request_id=request_id,
@@ -1512,22 +1584,17 @@ class ApprovalService:
                 comment=comment,
             )
 
-            updated_request = await self.update_approval_request(request_id, update)
+            updated_request = await self.update_approval_request(
+                request_id,
+                update,
+                audit_approver_id=user_id,
+                audit_details={
+                    "decline_count": decline_count,
+                    "approvals_required": approvals_required,
+                },
+            )
             if updated_request:
                 await self._broadcast_approval_update(updated_request, "declined")
-                _log_approval_lifecycle_async(
-                    account_id=str(updated_request.account_id),
-                    approval_id=updated_request.id,
-                    event="denied",
-                    tool_name=updated_request.tool_name,
-                    approver_id=user_id,
-                    reason=comment,
-                    execution_id=updated_request.execution_id,
-                    extra_details={
-                        "decline_count": decline_count,
-                        "approvals_required": approvals_required,
-                    },
-                )
             return updated_request
         else:
             # Still possible to reach quorum - just record the vote
@@ -1743,7 +1810,7 @@ class ApprovalService:
             detail=f"Auto-approved without review: {reason}",
         )
         updated_request = await self.update_approval_request(
-            approval_request.id, update
+            approval_request.id, update, audit_reason=f"[BYPASS] {reason}"
         )
         if updated_request is None:  # pragma: no cover - defensive
             return approval_request
@@ -1757,18 +1824,6 @@ class ApprovalService:
                 )
 
         await self._broadcast_approval_update(updated_request, "approved")
-
-        # Audit with no approver_id: nobody approved this. The [BYPASS] prefix
-        # mirrors the [AI] convention so the audit timeline is scannable.
-        _log_approval_lifecycle_async(
-            account_id=str(updated_request.account_id),
-            approval_id=updated_request.id,
-            event="approved",
-            tool_name=updated_request.tool_name,
-            approver_id=None,
-            reason=f"[BYPASS] {reason}",
-            execution_id=updated_request.execution_id,
-        )
 
         logger.info(
             "Approval request %s auto-approved without review "
@@ -1813,7 +1868,11 @@ class ApprovalService:
             ai_confidence=ai_confidence,
             ai_reasoning=reason,
         )
-        updated_request = await self.update_approval_request(request_id, update)
+        updated_request = await self.update_approval_request(
+            request_id,
+            update,
+            audit_reason=f"[AI] {reason}" if decided_by_ai else reason,
+        )
 
         if updated_request:
             # Committed explicitly: nothing after this guarantees a commit on
@@ -1830,17 +1889,6 @@ class ApprovalService:
             )
             await self.db.commit()
             await self._broadcast_approval_update(updated_request, "approved")
-
-            # Log to audit trail (fire-and-forget)
-            _log_approval_lifecycle_async(
-                account_id=str(updated_request.account_id),
-                approval_id=updated_request.id,
-                event="approved",
-                tool_name=updated_request.tool_name,
-                approver_id=None,  # AI decision, no human approver
-                reason=f"[AI] {reason}" if decided_by_ai else reason,
-                execution_id=updated_request.execution_id,
-            )
 
         return updated_request
 
@@ -1876,7 +1924,11 @@ class ApprovalService:
             ai_confidence=ai_confidence,
             ai_reasoning=reason,
         )
-        updated_request = await self.update_approval_request(request_id, update)
+        updated_request = await self.update_approval_request(
+            request_id,
+            update,
+            audit_reason=f"[AI] {reason}" if decided_by_ai else reason,
+        )
 
         if updated_request:
             # Committed explicitly: nothing after this guarantees a commit on
@@ -1893,17 +1945,6 @@ class ApprovalService:
             )
             await self.db.commit()
             await self._broadcast_approval_update(updated_request, "declined")
-
-            # Log to audit trail (fire-and-forget)
-            _log_approval_lifecycle_async(
-                account_id=str(updated_request.account_id),
-                approval_id=updated_request.id,
-                event="denied",
-                tool_name=updated_request.tool_name,
-                approver_id=None,  # AI decision, no human approver
-                reason=f"[AI] {reason}" if decided_by_ai else reason,
-                execution_id=updated_request.execution_id,
-            )
 
         return updated_request
 
@@ -2552,14 +2593,6 @@ class ApprovalService:
         await self._broadcast_approval_update(
             updated, "expired", {"expired_reason": reason}
         )
-        _log_approval_lifecycle_async(
-            account_id=str(updated.account_id),
-            approval_id=updated.id,
-            event="expired",
-            tool_name=updated.tool_name,
-            reason=detail,
-            execution_id=updated.execution_id,
-        )
         return updated
 
     async def send_notifications(
@@ -2644,6 +2677,10 @@ class ApprovalService:
         # Recover correlation_id from the originating MCP context so the audit
         # entries we emit below land in the same timeline group.
         correlation_id = _current_correlation_id()
+        audit_subject = _NotificationAuditSubject(
+            approval_request.id, approval_request.account_id, approval_request.tool_name
+        )
+        notification_audits: list[dict[str, Any]] = []
         approver_user_ids: List[uuid.UUID] = []
         try:
             approver_user_ids = await self._get_all_approver_user_ids(approval_workflow)
@@ -2682,12 +2719,13 @@ class ApprovalService:
             logger.error(f"Failed to send push notifications: {str(e)}")
             results["mobile_push"] = {"success": False, "error": str(e)}
 
-        await self._audit_notification_result(
-            approval_request=approval_request,
-            channel="mobile_push",
-            channel_result=results["mobile_push"],
-            recipient_user_ids=partition["push_capable"] or approver_user_ids,
-            correlation_id=correlation_id,
+        notification_audits.append(
+            dict(
+                channel="mobile_push",
+                channel_result=results["mobile_push"],
+                recipient_user_ids=partition["push_capable"] or approver_user_ids,
+                correlation_id=correlation_id,
+            )
         )
 
         push_unavailable = results["mobile_push"].get("success") is False or bool(
@@ -2727,12 +2765,13 @@ class ApprovalService:
                 logger.error(f"Failed to send email notifications: {str(e)}")
                 results["email"] = {"success": False, "error": str(e)}
 
-            await self._audit_notification_result(
-                approval_request=approval_request,
-                channel="email",
-                channel_result=results["email"],
-                recipient_user_ids=immediate_email_ids or approver_user_ids,
-                correlation_id=correlation_id,
+            notification_audits.append(
+                dict(
+                    channel="email",
+                    channel_result=results["email"],
+                    recipient_user_ids=immediate_email_ids or approver_user_ids,
+                    correlation_id=correlation_id,
+                )
             )
 
         if delayed_email_ids:
@@ -2753,12 +2792,13 @@ class ApprovalService:
                 "scheduled": len(delayed_email_ids),
                 "delay_seconds": delay_seconds,
             }
-            await self._audit_notification_result(
-                approval_request=approval_request,
-                channel="email",
-                channel_result=results["email_delayed"],
-                recipient_user_ids=delayed_email_ids,
-                correlation_id=correlation_id,
+            notification_audits.append(
+                dict(
+                    channel="email",
+                    channel_result=results["email_delayed"],
+                    recipient_user_ids=delayed_email_ids,
+                    correlation_id=correlation_id,
+                )
             )
 
         # Handle webhook-based notifications (these are workflow-level, not per-user).
@@ -2782,14 +2822,45 @@ class ApprovalService:
                     logger.error(f"Failed to send {channel} notification: {str(e)}")
                     results[channel] = {"success": False, "error": str(e)}
 
-                await self._audit_notification_result(
-                    approval_request=approval_request,
-                    channel=channel,
-                    channel_result=results[channel],
-                    recipient_user_ids=None,
-                    correlation_id=correlation_id,
+                notification_audits.append(
+                    dict(
+                        channel=channel,
+                        channel_result=results[channel],
+                        recipient_user_ids=None,
+                        correlation_id=correlation_id,
+                    )
                 )
 
+        # Complete external delivery first. A channel's audit rollback must not
+        # expire the ORM data needed to notify the remaining channels.
+        audit_errors: list[str] = []
+        for fields in notification_audits:
+            try:
+                if outbox_enabled():
+                    from preloop.models.db.session import get_async_db_session
+
+                    # These timeline writes follow the request's commit. Give
+                    # each its own session so a failed channel cannot expire
+                    # the request returned by create_and_notify.
+                    async with get_async_db_session() as audit_db:
+                        audit_owner = ApprovalService(audit_db, self.base_url)
+                        await audit_owner._audit_notification_result(
+                            approval_request=audit_subject, **fields
+                        )
+                else:
+                    await self._audit_notification_result(
+                        approval_request=audit_subject, **fields
+                    )
+            except Exception:
+                from preloop.services.audit.outbox import record_admission_failure
+
+                record_admission_failure("notification_admission")
+                audit_errors.append(fields["channel"])
+                logger.error(
+                    "Could not admit notification audit for %s", fields["channel"]
+                )
+        if audit_errors:
+            results["audit_errors"] = audit_errors
         return results
 
     async def _partition_approvers_for_stagger(
@@ -2892,7 +2963,7 @@ class ApprovalService:
 
     async def _audit_notification_result(
         self,
-        approval_request: ApprovalRequest,
+        approval_request: ApprovalRequest | _NotificationAuditSubject,
         channel: str,
         channel_result: Dict[str, Any],
         recipient_user_ids: Optional[List[uuid.UUID]],
@@ -2927,7 +2998,9 @@ class ApprovalService:
             else:
                 status = "sent" if success else "failed"
 
-            _log_approval_notification_async(
+            await enqueue_approval_audit(
+                self.db,
+                "log_approval_notification",
                 account_id=str(approval_request.account_id),
                 approval_id=approval_request.id,
                 channel=channel,
@@ -2948,6 +3021,9 @@ class ApprovalService:
                 ),
             )
         except Exception as exc:  # pragma: no cover - defensive
+            if outbox_enabled():
+                await self.db.rollback()
+                raise
             logger.debug(f"Failed to persist notification audit for {channel}: {exc}")
 
         # Timeline entry so the approval-view history shows every fan-out
@@ -2966,6 +3042,9 @@ class ApprovalService:
             )
             await self.db.commit()
         except Exception as exc:  # pragma: no cover - defensive
+            await self.db.rollback()
+            if outbox_enabled():
+                raise
             logger.debug(
                 f"Failed to record notification timeline event for {channel}: {exc}"
             )
@@ -3798,6 +3877,16 @@ class ApprovalService:
                         )
                         approval_request.expires_at = new_expires_at
 
+                        await poll_service._enqueue_lifecycle(
+                            account_id=str(approval_request.account_id),
+                            approval_id=approval_request.id,
+                            event="escalated",
+                            tool_name=approval_request.tool_name,
+                            execution_id=approval_request.execution_id,
+                            extra_details={
+                                "new_expires_at": utc_isoformat(new_expires_at)
+                            },
+                        )
                         await poll_db.commit()
                         await poll_db.refresh(approval_request)
 
@@ -3833,22 +3922,14 @@ class ApprovalService:
                             detail=("Expired: no response within the approval window"),
                         )
                         expired_request = await poll_service.update_approval_request(
-                            request_id, ApprovalRequestUpdate(status="expired")
+                            request_id,
+                            ApprovalRequestUpdate(status="expired"),
+                            audit_reason="Request timed out without response",
                         )
                         # Broadcast expiration event
                         if expired_request:
                             await poll_service._broadcast_approval_update(
                                 expired_request, "expired"
-                            )
-
-                            # Log to audit trail (fire-and-forget)
-                            _log_approval_lifecycle_async(
-                                account_id=str(expired_request.account_id),
-                                approval_id=expired_request.id,
-                                event="expired",
-                                tool_name=expired_request.tool_name,
-                                reason="Request timed out without response",
-                                execution_id=expired_request.execution_id,
                             )
 
                         raise TimeoutError(

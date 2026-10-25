@@ -134,7 +134,7 @@ class CRUDTracker(CRUDBase[Tracker]):
                 )
             else:
                 obj_data["webhook_secret_id"] = None
-            obj_data["jira_webhook_secret"] = None
+            obj_data.pop("jira_webhook_secret")
 
     def create(self, db: Session, *, obj_in: Dict[str, Any]) -> Tracker:
         """Create new tracker with initialized timestamp fields."""
@@ -178,17 +178,9 @@ class CRUDTracker(CRUDBase[Tracker]):
         return (
             db.query(Tracker)
             .filter(
-                (
-                    (Tracker.api_key.isnot(None) & (Tracker.api_key != ""))
-                    & Tracker.credentials_secret_id.is_(None)
-                )
-                | (
-                    (
-                        Tracker.jira_webhook_secret.isnot(None)
-                        & (Tracker.jira_webhook_secret != "")
-                    )
-                    & Tracker.webhook_secret_id.is_(None)
-                )
+                Tracker.api_key.isnot(None),
+                Tracker.api_key != "",
+                Tracker.credentials_secret_id.is_(None),
             )
             .all()
         )
@@ -212,16 +204,6 @@ class CRUDTracker(CRUDBase[Tracker]):
             )
             tracker.api_key = None
             migrated_api = True
-        if tracker.jira_webhook_secret and not tracker.webhook_secret_id:
-            tracker.webhook_secret_id = store_tracker_secret(
-                db,
-                account_id=tracker.account_id,
-                name=f"{tracker.name} webhook secret",
-                secret_value=tracker.jira_webhook_secret,
-                secret_kind=TRACKER_WEBHOOK_SECRET_KIND,
-            )
-            tracker.jira_webhook_secret = None
-            migrated_webhook = True
         if migrated_api or migrated_webhook:
             tracker.last_updated = datetime.now(timezone.utc)
             if commit:

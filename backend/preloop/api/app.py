@@ -25,9 +25,11 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
 from starlette.websockets import WebSocketState
 
 from preloop import __version__
+from preloop.api.middleware.server_version import ServerVersionMiddleware
 from preloop.config import settings
 from preloop.models.db.session import get_db_session
 from preloop.models.db.setup import setup_database
@@ -967,6 +969,7 @@ def _register_control_plane_routes(
     )
     from preloop.api.endpoints import embedding as embedding_router
     from preloop.api.endpoints import (
+        delivery_reports,
         employee_events,
         event_webhooks,
         exports,
@@ -1269,6 +1272,12 @@ def _register_control_plane_routes(
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(
+        delivery_reports.router,
+        prefix="/api/v1",
+        tags=["Delivery Reports"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
         issue_costs.router,
         prefix="/api/v1",
         tags=["Cost Analytics"],
@@ -1472,6 +1481,13 @@ def _register_control_plane_routes(
         return FileResponse(str(invitation_html_path), media_type="text/html")
 
 
+class PreloopAPI(FastAPI):
+    """Keep REST diagnostics outside error handling and all user middleware."""
+
+    def build_middleware_stack(self) -> ASGIApp:
+        return ServerVersionMiddleware(super().build_middleware_stack())
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -1485,7 +1501,7 @@ def create_app() -> FastAPI:
     base_dir = Path(__file__).resolve().parent.parent.parent
 
     # Initialize FastAPI app
-    app = FastAPI(
+    app = PreloopAPI(
         title="Preloop API",
         description="REST API for Preloop issue tracking management",
         version=__version__,

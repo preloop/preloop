@@ -138,10 +138,11 @@ MCP revisions `2025-11-25` and earlier use `initialize` version negotiation
 supported versions and capabilities. Modern and legacy clients can share
 an endpoint under the
 [MCP compatibility specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
-Support for the modern revision, the Python SDK v2 migration, and the tested
-interoperability matrix are pending in
-[#1629](https://github.com/preloop/preloop/issues/1629); this policy does not
-claim those upgrades have already shipped.
+The [tested Preloop matrix](architecture/mcp-protocol-compatibility.md) records
+SDK/FastMCP versions, supported transports, and migration details.
+Preloop supports the modern revision with Python SDK v2 and FastMCP 4, while
+retaining the legacy revisions documented in that matrix
+([#1629](https://github.com/preloop/preloop/issues/1629)).
 
 Browser pages such as `/approval/{id}`, `/invitations/accept`,
 `/mcp/authorize/consent` and `/docs/*` are console HTML, not public API,
@@ -149,7 +150,7 @@ and may change in any release.
 
 ### Version discovery
 
-The accepted design adds a diagnostics-only header to every response under
+The server emits a diagnostics-only header on every response under
 `/api/v1/`, including errors:
 
 ```text
@@ -161,7 +162,9 @@ needs no authentication. It identifies the software release that answered,
 not the REST contract version, and has no request-side meaning. Clients do
 not send a header to select REST behavior.
 
-The header is not emitted yet. Implementation and client REST-prefix
-centralization are tracked in
-[#1630](https://github.com/preloop/preloop/issues/1630), linked from the
-[1.0.0 readiness checklist](https://github.com/preloop/preloop/issues/978).
+The Go CLI and console share their respective REST prefix constants
+(`api.RESTPrefix` in Go, `REST_API_PREFIX` in the console). These preserve
+current URLs and prepare clients for deliberate future version selection;
+changing a constant is not an automatic migration of all clients to a new
+REST contract. OAuth, MCP, WebSocket and provider gateway URLs retain their
+own protocol contracts.

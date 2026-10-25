@@ -502,21 +502,34 @@ class PreloopOAuthProvider(OAuthProvider):
 
             user = await get_user_from_token_if_valid(token, db)
             if user:
+                from preloop.api.auth.key_scopes import is_single_purpose_api_key
+
+                api_key_obj = None
+                if token and "." not in token:
+                    from preloop.models.crud import crud_api_key
+
+                    api_key_obj = getattr(user, "_auth_api_key", None)
+                    if api_key_obj is None:
+                        api_key_obj = crud_api_key.get_by_key(db, key=token)
+                if is_single_purpose_api_key(api_key_obj):
+                    return None
                 access_token = AccessToken(
                     token=token,
                     client_id=str(user.id),
-                    scopes=[],
+                    scopes=[
+                        scope
+                        for scope in (api_key_obj.scopes or [])
+                        if isinstance(scope, str)
+                    ]
+                    if api_key_obj
+                    else [],
                     expires_at=None,
                 )
                 object.__setattr__(access_token, "user", user)
 
                 # Also attach API key object if applicable
-                if token and "." not in token:  # API keys don't have dots (JWTs do)
-                    from preloop.models.crud import crud_api_key
-
-                    api_key_obj = crud_api_key.get_by_key(db, key=token)
-                    if api_key_obj:
-                        object.__setattr__(access_token, "api_key", api_key_obj)
+                if api_key_obj:
+                    object.__setattr__(access_token, "api_key", api_key_obj)
 
                 return access_token
 

@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	approvalPoliciesPath = "/api/v1/approval-workflows"
-	approvalRequestsPath = "/api/v1/approval-requests"
+	approvalPoliciesPath = api.RESTPrefix + "/approval-workflows"
+	approvalRequestsPath = api.RESTPrefix + "/approval-requests"
 )
 
 // ApprovalWorkflow represents an approval workflow.

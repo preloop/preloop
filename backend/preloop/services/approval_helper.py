@@ -968,7 +968,7 @@ async def require_approval(
                         progress_token = None
                         try:
                             progress_token = (
-                                ctx.request_context.meta.progressToken
+                                ctx.request_context.meta.get("progressToken")
                                 if ctx.request_context.meta
                                 else None
                             )

@@ -928,6 +928,28 @@ DEPOSIT_ARTIFACT_TOOL: Dict[str, Any] = {
                 "type": "object",
                 "description": "labels.source_tool names the tool that made it.",
             },
+            "media_timing": {
+                "type": "object",
+                "description": "Recording/screencast timebase: started_at (RFC3339), clock (agent/server), optional duration_ms and step_offsets (source_step_id, offset_ms).",
+                "required": ["started_at", "clock"],
+                "properties": {
+                    "started_at": {"type": "string", "format": "date-time"},
+                    "clock": {"type": "string", "enum": ["agent", "server"]},
+                    "duration_ms": {"type": "integer", "minimum": 0},
+                    "step_offsets": {
+                        "type": "array",
+                        "maxItems": 5000,
+                        "items": {
+                            "type": "object",
+                            "required": ["source_step_id", "offset_ms"],
+                            "properties": {
+                                "source_step_id": {"type": "string"},
+                                "offset_ms": {"type": "integer", "minimum": 0},
+                            },
+                        },
+                    },
+                },
+            },
             "parent_artifact_id": {"type": "string"},
             "activity_id": {"type": "string"},
         },

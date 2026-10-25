@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { formatRelativeTime } from '../../utils/date';
 import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -1467,7 +1468,7 @@ export class AgentDetailView extends LitElement {
   private async fetchUsers(): Promise<
     Array<{ id: string; username: string; email: string }>
   > {
-    const response = await fetchWithAuth('/api/v1/users');
+    const response = await fetchWithAuth(REST_API_PREFIX + '/users');
     if (!response.ok) {
       return [];
     }

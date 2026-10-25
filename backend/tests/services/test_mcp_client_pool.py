@@ -21,7 +21,7 @@ def mock_mcp_session():
     mock_write_stream = MagicMock()
     mock_streams = AsyncMock()
     mock_streams.__aenter__ = AsyncMock(
-        return_value=(mock_read_stream, mock_write_stream, None)
+        return_value=(mock_read_stream, mock_write_stream)
     )
     mock_streams.__aexit__ = AsyncMock(return_value=None)
 
@@ -29,10 +29,11 @@ def mock_mcp_session():
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
     mock_init_result = MagicMock()
-    mock_init_result.protocolVersion = "2024-11-05"
-    mock_init_result.serverInfo = MagicMock()
-    mock_init_result.serverInfo.name = "test-server"
+    mock_init_result.protocol_version = "2024-11-05"
+    mock_init_result.server_info = MagicMock()
+    mock_init_result.server_info.name = "test-server"
     mock_session.initialize = AsyncMock(return_value=mock_init_result)
+    mock_session.protocol_version = "2025-11-25"
 
     return mock_streams, mock_session
 
@@ -91,7 +92,7 @@ class TestMCPClientConnect:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -116,7 +117,7 @@ class TestMCPClientConnect:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -140,7 +141,7 @@ class TestMCPClientConnect:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -161,7 +162,7 @@ class TestMCPClientConnect:
         mock_streams.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            "preloop.services.mcp_client_pool.streamablehttp_client",
+            "preloop.services.mcp_client_pool.streamable_http_client",
             return_value=mock_streams,
         ):
             with pytest.raises(Exception, match="Connection failed"):
@@ -178,7 +179,7 @@ class TestMCPClientConnect:
         mock_streams.__aexit__ = AsyncMock(return_value=None)
 
         with patch(
-            "preloop.services.mcp_client_pool.streamablehttp_client",
+            "preloop.services.mcp_client_pool.streamable_http_client",
             return_value=mock_streams,
         ):
             with pytest.raises(Exception, match="Connection failed"):
@@ -264,7 +265,7 @@ class TestMCPClientListTools:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -303,7 +304,7 @@ class TestMCPClientListTools:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -326,7 +327,7 @@ class TestMCPClientListTools:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -353,12 +354,12 @@ class TestMCPClientCallTool:
         mock_text_item.text = "Result text"
         mock_result.content = [mock_text_item]
 
-        # Mock streamablehttp_client context manager
+        # Mock streamable_http_client context manager
         mock_read_stream = MagicMock()
         mock_write_stream = MagicMock()
         mock_streams = AsyncMock()
         mock_streams.__aenter__ = AsyncMock(
-            return_value=(mock_read_stream, mock_write_stream, None)
+            return_value=(mock_read_stream, mock_write_stream)
         )
         mock_streams.__aexit__ = AsyncMock(return_value=None)
 
@@ -371,7 +372,7 @@ class TestMCPClientCallTool:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -406,9 +407,7 @@ class TestMCPClientCallTool:
         client._connected = True
 
         mock_streams = AsyncMock()
-        mock_streams.__aenter__ = AsyncMock(
-            return_value=(MagicMock(), MagicMock(), None)
-        )
+        mock_streams.__aenter__ = AsyncMock(return_value=(MagicMock(), MagicMock()))
         mock_streams.__aexit__ = AsyncMock(return_value=None)
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -418,7 +417,7 @@ class TestMCPClientCallTool:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -440,15 +439,15 @@ class TestMCPClientCallTool:
         # Create mock with spec to control hasattr
         mock_image_item = MagicMock(spec=["data", "mimeType"])
         mock_image_item.data = b"image_data"
-        mock_image_item.mimeType = "image/png"
+        mock_image_item.mime_type = "image/png"
         mock_result.content = [mock_image_item]
 
-        # Mock streamablehttp_client context manager
+        # Mock streamable_http_client context manager
         mock_read_stream = MagicMock()
         mock_write_stream = MagicMock()
         mock_streams = AsyncMock()
         mock_streams.__aenter__ = AsyncMock(
-            return_value=(mock_read_stream, mock_write_stream, None)
+            return_value=(mock_read_stream, mock_write_stream)
         )
         mock_streams.__aexit__ = AsyncMock(return_value=None)
 
@@ -461,7 +460,7 @@ class TestMCPClientCallTool:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -489,15 +488,15 @@ class TestMCPClientCallTool:
         mock_text_item.text = "Text result"
         mock_image_item = MagicMock(spec=["data", "mimeType"])
         mock_image_item.data = b"image_data"
-        mock_image_item.mimeType = "image/png"
+        mock_image_item.mime_type = "image/png"
         mock_result.content = [mock_text_item, mock_image_item]
 
-        # Mock streamablehttp_client context manager
+        # Mock streamable_http_client context manager
         mock_read_stream = MagicMock()
         mock_write_stream = MagicMock()
         mock_streams = AsyncMock()
         mock_streams.__aenter__ = AsyncMock(
-            return_value=(mock_read_stream, mock_write_stream, None)
+            return_value=(mock_read_stream, mock_write_stream)
         )
         mock_streams.__aexit__ = AsyncMock(return_value=None)
 
@@ -510,7 +509,7 @@ class TestMCPClientCallTool:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(
@@ -546,12 +545,12 @@ class TestMCPClientCallTool:
         mock_text_item.text = "Result"
         mock_result.content = [mock_text_item]
 
-        # Mock streamablehttp_client context manager
+        # Mock streamable_http_client context manager
         mock_read_stream = MagicMock()
         mock_write_stream = MagicMock()
         mock_streams = AsyncMock()
         mock_streams.__aenter__ = AsyncMock(
-            return_value=(mock_read_stream, mock_write_stream, None)
+            return_value=(mock_read_stream, mock_write_stream)
         )
 
         async def streams_cleanup(*args):
@@ -574,7 +573,7 @@ class TestMCPClientCallTool:
 
         with (
             patch(
-                "preloop.services.mcp_client_pool.streamablehttp_client",
+                "preloop.services.mcp_client_pool.streamable_http_client",
                 return_value=mock_streams,
             ),
             patch(

@@ -23,6 +23,10 @@ It has two halves, and the same policies, budgets and session timeline apply to 
 - Engineering teams running coding agents that want to see the cost and keep an audit trail.
 - Teams that want tickets and events turned into bounded agent work they can review.
 
+MCP clients connect to `/mcp`; existing `/mcp/v1` configurations remain compatible.
+See the [tested MCP protocol matrix](docs/architecture/mcp-protocol-compatibility.md)
+for modern discovery, legacy initialization, and SDK migration details.
+
 Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
 
 ## Your first five minutes
@@ -73,7 +77,7 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **Agent Control** | Talk to long-running agents from the console, phone, or watch. Steer runs with [operator notes](docs/guide/operator-notes.md). | Terminal access |
 | **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including [imported Copilot usage](docs/guide/copilot-usage-import.md). | FinOps dashboards, vendor billing exports |
 | **Human Approvals** | Mobile, watch, Slack, Mattermost, email, webhook, or `preloop approvals`. Native `Bash`/`Edit`. Agents can `ask_user`. | Custom Slack bots, Peta Desk |
-| **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes. | AgentOps, Langfuse, LangSmith |
+| **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes, and [synchronized recordings](docs/guide/artifacts.md#recordings-synchronized-to-the-timeline). | AgentOps, Langfuse, LangSmith |
 | **Fleet Map** | People, devices, agents, models and observed work in one [map](docs/guide/fleet-map.md). | Spreadsheets |
 | **Evidence packs** | Apache flow presets write `result.json` plus an evidence directory for CRA / AI Act-style work. Not a certification. | Custom GRC folders |
 
@@ -90,7 +94,7 @@ One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Clou
 
 - [Issue Triage Assistant](docs/guide/flows/issue-triage.md) and issue refinement
 - [Pull Request Reviewer](docs/guide/flows/pull-request-review.md)
-- [Delivery Report](docs/guide/flows/delivery-report.md): a weekly, read-only report of what shipped, whether it did what its issues asked, and what is still open
+- [Delivery Report](docs/guide/flows/delivery-report.md): a weekly, read-only report. See what landed, what the available evidence supports against stated criteria, and which gaps deserve investigation
 - [Automated issue implementation](docs/guide/flows/automated-issue-implementation.md)
 - [Security audit presets](docs/guide/flows/security-audit-presets.md): SBOM verify, exploit check, release audit. They collect machine evidence for CRA- and EU AI Act-style reviews. That is not a conformity assessment, certification, or legal advice.
 - [Observe / Eval](./backend/presets/003-observe-eval.yaml)
@@ -133,6 +137,7 @@ Check a sample call before saving with **Test this rule** or **Simulate** in the
 - **Model providers:** OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guide/providers/bedrock.md), [Azure OpenAI](docs/guide/providers/azure-openai.md), [Alibaba Cloud Model Studio](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot, Z.ai, OpenRouter, any OpenAI-compatible endpoint, and [runner-proxied local models](docs/guide/runner-local-models.md). [Reviewed model pricing](docs/guide/model-price-refresh.md); unpriced models stay visibly unpriced.
 - **Restricted CI identity:** a machine identity bound to one project and one flow for CI jobs. [Guide](docs/guide/flows/restricted-ci.md).
 - **Account kill switch:** blocks gateway and tool traffic and stops managed flow runs, with audited recovery. [Guide](docs/guide/account-kill-switch.md).
+- **Durable audit delivery:** opt-in transactional intents for approvals, policy decisions and tool outcomes, with restart replay and backlog alerts. [Operations guide](docs/operations/audit-outbox.md).
 - **Session search:** keyword search by default, semantic as an opt-in, every search audited. [Saved searches](docs/guide/session-saved-searches.md).
 - **DORA exports:** the AI-agent slice of the ICT inventory and incident record. [Guide](docs/guide/dora-agent-slice.md).
 - **OTLP export:** off by default; emits OpenTelemetry GenAI spans. [Guide](docs/guide/observability-otlp.md).
@@ -164,7 +169,9 @@ preloop login --url http://localhost:3000
 preloop agents discover
 ```
 
-Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/README.md#authentication). TLS, SMTP, upgrades and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), Helm chart [`helm/preloop`](helm/preloop), [compatibility policy](docs/compatibility.md). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules.
+Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/README.md#authentication). TLS, SMTP, upgrades and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), Helm chart [`helm/preloop`](helm/preloop), [compatibility policy](docs/compatibility.md). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules. The [local upgrade acceptance harness](docs/operations/upgrade-acceptance.md) verifies release-to-candidate migrations, data and credentials in disposable Compose and kind stacks.
+
+Credential storage upgrades require a maintenance window and the existing encryption key; follow the [staged upgrade guide](docs/operations/credential-storage-upgrade.md) before upgrading an existing installation.
 
 Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
 
@@ -222,4 +229,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers: follow the [protected-branc
 
 [Apache License 2.0](LICENSE). Copyright (c) 2026 Spacecode AI Inc.
 
-Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
+Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). The [release SBOM audit gate](./docs/release-sbom-audit.md) checks both architectures of every release image and the tag's security workflows. Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).

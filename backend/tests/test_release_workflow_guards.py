@@ -117,3 +117,115 @@ def test_images_publish_only_on_version_tags() -> None:
             step for step in job["steps"] if step.get("name") == "Build and push"
         )
         assert push["with"]["push"] is True
+
+
+def test_release_publication_requires_complete_tag_audit() -> None:
+    jobs = _workflow()["jobs"]
+    for job_id in ("create-release", "publish-pypi"):
+        assert "release-audit" in jobs[job_id]["needs"]
+    audit = jobs["release-audit"]
+    assert set(audit["needs"]) == {"build-backend", "build-frontend", "sbom"}
+    assert audit["if"] == "startsWith(github.ref, 'refs/tags/v')"
+    for step in audit["steps"]:
+        assert not step.get("continue-on-error")
+    commands = "\n".join(step.get("run", "") for step in audit["steps"])
+    assert "release_audit.py collect" in commands
+    assert "--verify-registry --require-workflows" in commands
+    assert '--tag "$GITHUB_REF_NAME" --source-sha "$GITHUB_SHA"' in commands
+    prepare = next(
+        s
+        for s in jobs["create-release"]["steps"]
+        if s.get("name") == "Prepare release assets"
+    )
+    assert (
+        "release_audit.py validate --directory artifacts/audited-sbom" in prepare["run"]
+    )
+    assert "cp artifacts/audited-sbom/*.json release-assets/" in prepare["run"]
+    assert prepare["run"].index("release_audit.py validate") < prepare["run"].index(
+        "release_assets.py checksum"
+    )
+
+
+def test_published_backend_console_have_digest_bound_sboms() -> None:
+    jobs = _workflow()["jobs"]
+    for job_id in IMAGE_JOBS:
+        steps = jobs[job_id]["steps"]
+        build = next(s for s in steps if s.get("id") == "image")
+        assert "@sha256:" in build["with"]["sbom"]
+        assert build["with"]["platforms"] == "linux/amd64,linux/arm64"
+        export = next(
+            s for s in steps if s.get("name") == "Verify and export image SBOMs"
+        )
+        assert export["env"]["IMAGE_REF"].endswith("@${{ steps.image.outputs.digest }}")
+        assert "image_sbom.py" in export["run"]
+        upload = next(s for s in steps if s.get("name") == "Upload image SBOM evidence")
+        assert upload["with"]["if-no-files-found"] == "error"
+
+
+def test_codeql_runs_on_release_tags_for_the_audit_gate() -> None:
+    workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/codeql.yml").read_text())
+    assert _trigger(workflow)["push"]["tags"] == ["v*"]
+
+
+def test_manual_validation_cannot_publish_images_or_releases() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/release-validation.yml").read_text()
+    )
+    assert "workflow_dispatch" in _trigger(workflow)
+    assert workflow["permissions"] == {"contents": "read"}
+    for step in workflow["jobs"]["validate"]["steps"]:
+        command = step.get("run", "")
+        assert "--push" not in command
+        assert "docker push" not in command
+        assert "gh release" not in command
+        assert "docker/login-action" not in step.get("uses", "")
+
+
+def test_manual_remote_audit_is_read_only_and_runs_the_full_gate() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/release-validation.yml").read_text()
+    )
+    job = workflow["jobs"]["remote-audit"]
+    assert "workflow_dispatch" in job["if"]
+    assert set(job["permissions"].values()) == {"read"}
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "release_audit.py collect" in commands
+    assert "--verify-registry --require-workflows" in commands
+    for forbidden in ("--push", "docker push", "gh release", "secrets."):
+        assert forbidden not in commands
+    for step in job["steps"]:
+        assert "docker/login-action" not in step.get("uses", "")
+        assert "${{" not in step.get("run", "")
+
+
+def test_every_image_evidence_job_checks_out_its_validator() -> None:
+    for filename in (
+        "release.yml",
+        "publish-scanner-image.yml",
+        "publish-universal-image.yml",
+    ):
+        workflow = yaml.safe_load(
+            (REPO_ROOT / ".github/workflows" / filename).read_text()
+        )
+        for job in workflow["jobs"].values():
+            checked_out = False
+            for step in job.get("steps", []):
+                if step.get("uses", "").startswith("actions/checkout@"):
+                    checked_out = True
+                if "scripts/image_sbom.py" in step.get("run", ""):
+                    assert checked_out, (filename, job["name"])
+
+
+def test_universal_exports_attestations_for_the_smoked_image() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/publish-universal-image.yml").read_text()
+    )
+    steps = workflow["jobs"]["image"]["steps"]
+    publish = next(s for s in steps if s.get("name") == "Push smoked amd64 image")
+    assert "--sbom=generator=" in publish["run"]
+    assert 'test "$published_config" = "$smoked_config"' in publish["run"]
+    for step in steps[: steps.index(publish)]:
+        if "buildx prune" in step.get("run", ""):
+            assert "needs.gate.outputs.publish != 'true'" in step["if"]
+    arm = next(s for s in steps if s.get("name") == "Build and push arm64")
+    assert "@sha256:" in arm["with"]["sbom"]

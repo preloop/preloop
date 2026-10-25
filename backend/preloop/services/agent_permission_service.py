@@ -638,6 +638,11 @@ async def request_agent_permission(
             runtime_session_id=runtime_session_id,
             flow_id=flow_id,
         )
+        from preloop.services.audit.async_writer import outbox_enabled
+
+        if outbox_enabled():
+            # Allow/deny paths return without creating an approval request.
+            await db.commit()
         matched_require: Optional[Tuple[str, Optional[Any], Optional[dict]]] = None
         if rule_outcome is not None:
             action, reason, rule_wf_id, rule_ctx = rule_outcome

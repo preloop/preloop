@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /**
  * Console client for brokered live desktop views (#870).
  *
@@ -143,7 +144,7 @@ export async function listOnlineDesktopEndpoints(
   let response: Response;
   try {
     response = await fetchWithAuth(
-      `/api/v1/desktop/endpoints?${params.toString()}`,
+      `${REST_API_PREFIX}/desktop/endpoints?${params.toString()}`,
       { passive: true }
     );
   } catch {
@@ -176,7 +177,7 @@ export async function createDesktopView(
   if (options.runtimeSessionId)
     body.runtime_session_id = options.runtimeSessionId;
   const response = await fetchWithAuth(
-    `/api/v1/desktop/endpoints/${encodeURIComponent(endpointId)}/views`,
+    `${REST_API_PREFIX}/desktop/endpoints/${encodeURIComponent(endpointId)}/views`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -189,7 +190,7 @@ export async function createDesktopView(
 
 export async function getDesktopView(viewId: string): Promise<DesktopView> {
   const response = await fetchWithAuth(
-    `/api/v1/desktop/views/${encodeURIComponent(viewId)}`,
+    `${REST_API_PREFIX}/desktop/views/${encodeURIComponent(viewId)}`,
     { cache: 'no-store' }
   );
   if (!response.ok) throw await errorFrom(response);
@@ -199,7 +200,7 @@ export async function getDesktopView(viewId: string): Promise<DesktopView> {
 /** Ends a view. Idempotent on the server; a 404 means it is already gone. */
 export async function endDesktopView(viewId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/desktop/views/${encodeURIComponent(viewId)}`,
+    `${REST_API_PREFIX}/desktop/views/${encodeURIComponent(viewId)}`,
     { method: 'DELETE' }
   );
   if (!response.ok && response.status !== 404) throw await errorFrom(response);
@@ -210,7 +211,7 @@ export async function requestDesktopControl(
   reason: string
 ): Promise<DesktopView> {
   const response = await fetchWithAuth(
-    `/api/v1/desktop/views/${encodeURIComponent(viewId)}/control`,
+    `${REST_API_PREFIX}/desktop/views/${encodeURIComponent(viewId)}/control`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -223,7 +224,7 @@ export async function requestDesktopControl(
 
 export async function releaseDesktopControl(viewId: string): Promise<void> {
   const response = await fetchWithAuth(
-    `/api/v1/desktop/views/${encodeURIComponent(viewId)}/control/release`,
+    `${REST_API_PREFIX}/desktop/views/${encodeURIComponent(viewId)}/control/release`,
     { method: 'POST' }
   );
   if (!response.ok) throw await errorFrom(response);

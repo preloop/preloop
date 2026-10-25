@@ -21,7 +21,7 @@ with the format signature, so a file that is not the declared type is refused.
 | --- | --- | --- | --- |
 | `screenshot` | `image/png`, `image/jpeg`, `image/webp` | 2 MiB | `RUNTIME_SESSION_SCREENSHOT_MAX_BYTES` |
 | `recording` | `video/webm`, `video/mp4` | 512 MiB | `RUNTIME_SESSION_RECORDING_MAX_BYTES` |
-| `screencast` | `video/webm`, `video/mp4` | 64 MiB | `RUNTIME_SESSION_SCREENCAST_MAX_BYTES` |
+| `screencast` | `video/webm`, `video/mp4`, `image/gif` | 64 MiB | `RUNTIME_SESSION_SCREENCAST_MAX_BYTES` |
 | `audio` | `audio/mpeg`, `audio/wav`, `audio/ogg`, `audio/webm`, `audio/mp4`, `audio/flac` | 25 MiB | `RUNTIME_SESSION_AUDIO_MAX_BYTES` |
 | `transcript` | `text/plain`, `text/vtt`, `application/x-subrip`, `application/json` | 5 MiB | `RUNTIME_SESSION_TRANSCRIPT_MAX_BYTES` |
 | `document` | `text/plain`, `text/markdown`, `application/json`, `application/pdf` | 10 MiB | `RUNTIME_SESSION_DOCUMENT_MAX_BYTES` |
@@ -454,3 +454,121 @@ whose text starts with the code.
 | (MCP) | `artifact_no_session` | The MCP credential is not bound to a runtime session. |
 | (MCP) | `artifact_link_outside_session` | A `resource_link` names an artifact of another session. |
 | (MCP) 410 | `artifact_unavailable` | A `resource_link` names an artifact whose bytes were evicted or deleted. |
+
+## Recordings synchronized to the timeline
+
+A finished `recording` or `screencast` can carry `media_timing`, separate from
+labels, in JSON or multipart deposit metadata and in the `deposit_artifact`
+MCP tool. Existing clients can omit it. For example:
+
+```json
+{
+  "kind": "recording",
+  "name": "capture.webm",
+  "media_timing": {
+    "started_at": "2026-10-01T10:00:00Z",
+    "duration_ms": 10000,
+    "clock": "agent",
+    "step_offsets": [
+      {"source_step_id": "run-1:4", "offset_ms": 6000}
+    ]
+  }
+}
+```
+
+`started_at` is the timezone-qualified wall clock at **video t=0**, not the
+upload time. `clock` is `agent` or `server`. Duration is optional. Exact step
+offsets are nonnegative integer milliseconds, with at most 5000 unique
+`source_step_id` entries. Timing on another artifact kind is rejected with
+422. Offsets beyond the declared or decoded duration remain unmapped; they
+never clamp to the beginning or end of the recording.
+
+A producer that learns timing later can send that timing object as the body
+of `PATCH /api/v1/runtime-sessions/{id}/artifacts/{artifact_id}/media-timing`.
+It requires a credential bound to that session or `manage_agents`. Identical
+retries are no-ops; changes atomically append `artifact.timing.updated` to the
+audit trail. Updating timing leaves the content hash, retention and legal
+hold unchanged.
+
+`GET /api/v1/runtime-sessions/{id}/media-sync` has the artifact read permission
+and account boundary. It returns one entry per recording with `artifact_id`,
+`skew_ms`, `mappings` and `unmapped_activity_ids`. Each mapping names its
+`activity_id`, `offset_ms`, `rule` and `approximate` status. Model-call mappings
+also include `api_usage_id` for correlation with gateway turns. The server
+resolves these in this order:
+
+1. Exact producer step offset.
+2. Step `occurred_at` minus recording `started_at`, when both use the agent clock.
+3. Server receipt/model/tool time minus recording start, subtracting the median
+   `recorded_at - occurred_at` when converting to an agent clock.
+
+Browser-step batches receive a server-set `recorded_at`. Historical rows get
+it from their database creation time; missing historical producer times are
+not invented. With fewer than three paired step times, skew correction uses
+zero and the agent-clock server-time mapping is marked approximate. Server
+clock recordings do not subtract producer skew. Negative offsets, including
+clock jumps, remain unmapped. The signed period evidence export includes the
+same resolver's output in `artifacts/media-sync.json` and includes
+`media_timing` in each artifact descriptor.
+
+In Sessions, a sticky, collapsible player appears above the conversation.
+Choose a recording by name, producer and start time. **Play from here** seeks
+the selected recording from a browser step, model turn or identified tool
+call. `[` and `]` move to the previous/next mapped browser step, except while
+typing. Playback highlights the current step and the step strip, and follows
+the timeline only after five seconds without user scrolling. Multiple
+recordings keep independent mappings; overlapping captures are not merged.
+The console's `syncedRecordingPlayer` feature option defaults to on and can be
+disabled by an embedding host during rollout.
+
+Recordings without timing remain plain players with **This recording has no
+timing data**. Unmapped steps say **Not in this recording**; an attempted
+out-of-range seek says **No recording for this moment**. Finished artifacts
+can appear while a session is still live; this is not live streaming. Evicted
+or expired recordings retain their existing unavailability marker.
+
+GIF screencasts use a plain image fallback in this player, with **Seek not
+supported for GIF in this browser** and no seek controls. Their exact timing
+metadata is still stored and exported. Use MP4/WebM when interactive seeking
+is required. Content is fetched only when requested, through the existing
+authorized artifact route.
+
+### ffmpeg capture recipe
+
+For an X11 display on a local Linux host, record the producer wall clock at
+capture launch and deposit the completed file. The clock must be the same as
+the `occurred_at` values reported by the browser-step producer. This recipe
+captures no audio. It does not start managed capture or connect to a remote VM.
+
+```sh
+export PRELOOP_DISABLE_TELEMETRY=true
+python - <<'PY'
+import datetime
+import json
+import subprocess
+
+started = datetime.datetime.now(datetime.timezone.utc).isoformat()
+subprocess.run([
+    "ffmpeg", "-y", "-use_wallclock_as_timestamps", "1",
+    "-f", "x11grab", "-framerate", "10", "-i", ":99",
+    "-t", "10", "-an", "-c:v", "libvpx-vp9", "capture.webm",
+], check=True)
+with open("capture-metadata.json", "w") as stream:
+    json.dump({"kind": "recording", "name": "capture.webm", "media_timing": {
+        "started_at": started, "clock": "agent"
+    }}, stream)
+PY
+curl --fail --request POST \
+  "$PRELOOP_URL/api/v1/runtime-sessions/$PRELOOP_RUNTIME_SESSION_ID/artifacts" \
+  --header "Authorization: Bearer $PRELOOP_AGENT_KEY" \
+  --header 'Idempotency-Key: capture-example-1' \
+  --form 'file=@capture.webm;type=video/webm' \
+  --form 'metadata=<capture-metadata.json'
+```
+
+Measure capture startup delay against a visible local action before relying
+on subsecond accuracy. For a slow ffmpeg startup, instrument the first frame
+and use that wall time as `started_at`, then PATCH the timing. No VM accuracy
+claim follows from the fixture tests. Captured pixels may contain secrets,
+OTPs or other windows: text redaction does not redact the screen. Choose the
+capture region and retention policy accordingly.

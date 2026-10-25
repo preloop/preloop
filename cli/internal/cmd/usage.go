@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	usageImportPath    = "/api/v1/usage/import"
-	usageImportCsvPath = "/api/v1/usage/import/csv"
+	usageImportPath    = api.RESTPrefix + "/usage/import"
+	usageImportCsvPath = api.RESTPrefix + "/usage/import/csv"
 
 	// usageImportMaxEventsPerRequest mirrors MAX_EVENTS_PER_REQUEST in
 	// backend/preloop/schemas/usage_import.py. Larger JSON files are split

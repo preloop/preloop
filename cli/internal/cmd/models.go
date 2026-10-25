@@ -117,7 +117,7 @@ func executeModelsSync(client *api.Client, w io.Writer, provider string, dryRun 
 		DryRun:   dryRun,
 	}
 	var response modelsCatalogSyncResponse
-	if err := client.Post("/api/v1/ai-models/sync", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/ai-models/sync", request, &response); err != nil {
 		return fmt.Errorf("model catalog sync failed: %w", err)
 	}
 

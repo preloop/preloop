@@ -28,7 +28,10 @@ from preloop.models import models
 from preloop.models.schemas.flow import FlowCreate
 from preloop.services import artifact_deposit
 from tests.api.test_artifact_deposit import _session, _token
-from tests.api.test_deposit_artifact_mcp import _drop_async_pool, _enable, _mcp
+from tests.api.test_deposit_artifact_mcp import _enable, _mcp
+from tests.api.test_deposit_artifact_mcp import shared_db as _mcp_shared_db
+
+shared_db = _mcp_shared_db
 
 REPO = Path(__file__).resolve().parents[2]
 PRESET_PATH = REPO / "backend" / "presets" / "020-audio-transcription-agent.yaml"
@@ -41,29 +44,6 @@ AUDIO_SERVER = "audio-mcp"
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 from scripts.fixtures.warehouse_sim import server as sim  # noqa: E402
-
-
-@pytest.fixture
-def shared_db(db_session, monkeypatch):
-    """Every get_db the MCP stack opens joins the test transaction."""
-    from sqlalchemy.orm import Session
-
-    def _factory():
-        session = Session(bind=db_session.connection())
-        try:
-            yield session
-        finally:
-            session.close()
-
-    for target in (
-        "preloop.models.db.session.get_db_session",
-        "preloop.services.mcp_http.get_db",
-        "preloop.services.dynamic_fastmcp.get_db",
-    ):
-        monkeypatch.setattr(target, _factory)
-    _drop_async_pool()
-    yield db_session
-    _drop_async_pool()
 
 
 @pytest.fixture(scope="module")
@@ -154,7 +134,7 @@ def test_loader_ships_it_and_the_flow_schema_accepts_it(preset):
 
 
 def _sim_blocks(blocks) -> list[dict[str, Any]]:
-    return [b.model_dump(mode="json", exclude_none=True) for b in blocks]
+    return [b.model_dump(mode="json", by_alias=True, exclude_none=True) for b in blocks]
 
 
 async def _run_contract(mcp, payload: dict[str, Any]) -> dict[str, Any]:
@@ -187,8 +167,8 @@ async def _run_contract(mcp, payload: dict[str, Any]) -> dict[str, Any]:
         "deposit_artifact",
         {"name": f"{tag}.vtt", "kind": "transcript", "content": vtt, "labels": labels},
     )
-    assert not transcript.isError, transcript.content
-    transcript_id = transcript.structuredContent["id"]
+    assert not transcript.is_error, transcript.content
+    transcript_id = transcript.structured_content["id"]
     summary = await mcp.call_tool(
         "deposit_artifact",
         {
@@ -199,7 +179,7 @@ async def _run_contract(mcp, payload: dict[str, Any]) -> dict[str, Any]:
             "parent_artifact_id": transcript_id,
         },
     )
-    assert not summary.isError, summary.content
+    assert not summary.is_error, summary.content
     raw_audio = await mcp.call_tool(
         "deposit_artifact",
         {
@@ -210,13 +190,13 @@ async def _run_contract(mcp, payload: dict[str, Any]) -> dict[str, Any]:
         },
     )
     audio_text = " ".join(getattr(c, "text", "") for c in raw_audio.content)
-    if raw_audio.isError:
+    if raw_audio.is_error:
         # Expected when the account has not opted in; never a failure.
         assert artifact_deposit.ERROR_AUDIO_DISABLED in audio_text
     return {
         "transcript_id": transcript_id,
-        "summary_id": summary.structuredContent["id"],
-        "audio_stored": not raw_audio.isError,
+        "summary_id": summary.structured_content["id"],
+        "audio_stored": not raw_audio.is_error,
         "succeeded": True,
     }
 
@@ -338,7 +318,7 @@ async def test_missing_consent_asks_the_user_and_deposits_nothing(
         report = await _run_contract(mcp, {**PAYLOAD, "consent_basis": ""})
         result = await asyncio.wait_for(report["task"], timeout=30)
 
-    assert not result.isError, result.content
+    assert not result.is_error, result.content
     assert "pending_approval" in result.content[0].text
     assert len(asked) == 1
     assert asked[0]["tool_name"] == "ask_user"
@@ -366,19 +346,21 @@ def rebuild_audio(text: str) -> dict[str, Any]:
     return {
         "type": "audio",
         "data": _field(text, "data"),
-        "mimeType": _field(text, "mimeType"),
+        "mimeType": _field(text, "mime_type") or _field(text, "mimeType"),
     }
 
 
 def rebuild_resource(text: str) -> dict[str, Any]:
     """The prompt's FLATTENED RESULTS step for an EmbeddedResource block."""
     inner = text[text.index("resource=TextResourceContents(") :]
-    uri = re.search(r"uri=AnyUrl\('([^']+)'\)", inner).group(1)
+    uri = _field(inner, "uri")
+    if uri is None:
+        uri = re.search(r"uri=AnyUrl\('([^']+)'\)", inner).group(1)
     return {
         "type": "resource",
         "resource": {
             "uri": uri,
-            "mimeType": _field(inner, "mimeType"),
+            "mimeType": _field(inner, "mime_type") or _field(inner, "mimeType"),
             "text": _field(inner, "text"),
         },
     }
@@ -422,9 +404,9 @@ async def test_flattened_proxy_results_rebuild_to_the_original_blocks(
     transcript_text = await _through_proxy(ctx, transcript_blocks)
 
     # The flattened shape the prompt describes.
-    assert "type='audio'" in audio_text and "mimeType='audio/wav'" in audio_text
+    assert "type='audio'" in audio_text and "mime_type='audio/wav'" in audio_text
     assert "resource=TextResourceContents(" in transcript_text
-    assert "mimeType='text/vtt'" in transcript_text
+    assert "mime_type='text/vtt'" in transcript_text
 
     audio = rebuild_audio(audio_text)
     vtt = rebuild_resource(transcript_text)

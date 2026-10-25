@@ -1,0 +1,82 @@
+name: Upgrade acceptance
+
+on:
+  pull_request:
+    paths:
+      - scripts/upgrade_acceptance/**
+      - .github/workflows/upgrade-acceptance.yml
+  workflow_dispatch:
+    inputs:
+      rc:
+        description: 'Published 1.0.0-rc tag; empty rehearses the selected commit'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upgrade-acceptance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: false
+
+env:
+  PRELOOP_DISABLE_TELEMETRY: 'true'
+
+jobs:
+  harness-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.3 pytest==9.1.1
+      - run: python -m pytest scripts/upgrade_acceptance/tests -q
+
+  local-upgrade:
+    if: github.event_name == 'workflow_dispatch'
+    needs: harness-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.19.0
+      - name: Install local harness prerequisites
+        run: |
+          python -m pip install PyYAML==6.0.3
+          mkdir -p "$RUNNER_TEMP/upgrade-tools"
+          cd "$RUNNER_TEMP/upgrade-tools"
+          curl --fail --silent --show-error --location https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64 -o kind-linux-amd64
+          curl --fail --silent --show-error --location https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64.sha256sum -o kind.sha256sum
+          sha256sum --check kind.sha256sum
+          install -m 755 kind-linux-amd64 kind
+          echo "$RUNNER_TEMP/upgrade-tools" >> "$GITHUB_PATH"
+      - name: Rehearse both local install surfaces
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_REF: ${{ github.sha }}
+          RC_TAG: ${{ inputs.rc }}
+        run: |
+          args=(--runtime both --candidate-ref "$CANDIDATE_REF" --output "$RUNNER_TEMP/upgrade-evidence")
+          if [[ -n "$RC_TAG" ]]; then
+            args+=(--rc "$RC_TAG")
+          fi
+          python scripts/upgrade_acceptance/runner.py "${args[@]}"
+      - name: Upload only the credential-free result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-acceptance-result
+          path: ${{ runner.temp }}/upgrade-evidence/report.json
+          if-no-files-found: warn

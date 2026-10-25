@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
@@ -1301,7 +1302,7 @@ ${this.flow.review_instructions}</pre>
                           style="flex: 1;"
                           value="${
                             window.location.origin
-                          }/api/v1/webhooks/flows/${this.flowId}/${
+                          }${REST_API_PREFIX}/webhooks/flows/${this.flowId}/${
                             this.flow.webhook_config.webhook_secret
                           }"
                         ></sl-input>
@@ -1822,7 +1823,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
 
   copyWebhookUrl() {
     if (!this.flow.webhook_config?.webhook_secret) return;
-    const webhookUrl = `${window.location.origin}/api/v1/webhooks/flows/${this.flowId}/${this.flow.webhook_config.webhook_secret}`;
+    const webhookUrl = `${window.location.origin}${REST_API_PREFIX}/webhooks/flows/${this.flowId}/${this.flow.webhook_config.webhook_secret}`;
     navigator.clipboard.writeText(webhookUrl).then(() => {
       alert('Webhook URL copied to clipboard!');
     });
@@ -2343,7 +2344,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                 readonly
                 label="Webhook URL"
                 style="flex: 1;"
-                value="${window.location.origin}/api/v1/webhooks/flows/${
+                value="${window.location.origin}${REST_API_PREFIX}/webhooks/flows/${
                   this.flowId
                 }/${this.flow.webhook_config.webhook_secret}"
               ></sl-input>

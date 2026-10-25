@@ -1,0 +1,6 @@
+Reading issue #123 and the repository layout.
+2026-10-24T10:00:01Z PRELOOP_DECISION {"summary": "Store retries on the job row", "reason": "The queue already locks the row, so no new table is needed", "alternatives": ["Separate retry table", "In-memory counter"]}
+Running pytest tests/test_jobs.py ... 12 passed
+PRELOOP_DECISION {"summary": "Cap retries at five", "reason": "Matches the existing webhook retry limit"}
+PRELOOP_DECISION {"summary": "Truncated line", "reason":
+Committing changes.
