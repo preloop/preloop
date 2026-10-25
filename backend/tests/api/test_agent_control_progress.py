@@ -332,3 +332,125 @@ def test_get_open_by_source_id_scopes_account_and_skips_ended(
         )
         is None
     )
+
+
+async def _emit_for_command(
+    connection: SimpleNamespace, inbound: AgentControlInboundEnvelope, command: Any
+) -> tuple[MagicMock, MagicMock]:
+    with (
+        patch.object(
+            agent_control.crud_agent_control_command,
+            "get_by_command_id",
+            return_value=command,
+        ) as lookup,
+        patch.object(
+            agent_control.crud_runtime_session, "get_open_by_source_id"
+        ) as by_source,
+        patch.object(agent_control, "emit_account_event") as emit,
+    ):
+        await agent_control._emit_session_progress(_FakeDatabase(), connection, inbound)
+    by_source.assert_not_called()
+    if lookup.called:
+        assert lookup.call_args.kwargs["account_id"] == connection.account_id
+        assert (
+            lookup.call_args.kwargs["managed_agent_id"] == connection.managed_agent_id
+        )
+    return emit, lookup
+
+
+@pytest.mark.asyncio
+async def test_new_session_command_delta_reaches_the_tracking_session() -> None:
+    """A New session turn streams to the session Talk was told to open.
+
+    The sidecar only knows the native Claude id; the command row names the
+    tracking session the send response returned.
+    """
+    account_id, agent_id = str(uuid4()), str(uuid4())
+    tracking = uuid4()
+    command = SimpleNamespace(
+        kind="command",
+        status="acked",
+        runtime_session_id=tracking,
+        consuming_account_id=None,
+    )
+    emit, _ = await _emit_for_command(
+        _connection(account_id, agent_id),
+        _delta("native-claude-id", command_id="cmd-1", seq=1),
+        command,
+    )
+    event = emit.call_args.args[0]
+    assert event["account_id"] == account_id
+    assert event["runtime_session_id"] == str(tracking)
+    assert "command_id" not in event["payload"]
+
+
+@pytest.mark.asyncio
+async def test_shared_agent_command_delta_goes_to_the_consuming_account_only() -> None:
+    owner, consumer = str(uuid4()), str(uuid4())
+    command = SimpleNamespace(
+        kind="command",
+        status="acked",
+        runtime_session_id=uuid4(),
+        consuming_account_id=consumer,
+    )
+    emit, _ = await _emit_for_command(
+        _connection(owner, str(uuid4())),
+        _delta("native-claude-id", command_id="cmd-2"),
+        command,
+    )
+    emit.assert_called_once()
+    assert emit.call_args.args[0]["account_id"] == consumer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    [
+        None,
+        SimpleNamespace(
+            kind="command",
+            status="completed",
+            runtime_session_id=uuid4(),
+            consuming_account_id=None,
+        ),
+        SimpleNamespace(
+            kind="command",
+            status="acked",
+            runtime_session_id=None,
+            consuming_account_id=None,
+        ),
+    ],
+)
+async def test_command_delta_without_a_live_command_is_dropped(command: Any) -> None:
+    emit, _ = await _emit_for_command(
+        _connection(str(uuid4()), str(uuid4())),
+        _delta("native-claude-id", command_id="cmd-3"),
+        command,
+    )
+    emit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reasoning_titles_are_never_throttled() -> None:
+    agent_id = str(uuid4())
+    connection = _connection(str(uuid4()), agent_id)
+    with (
+        patch.object(
+            agent_control.crud_runtime_session,
+            "get_open_by_source_id",
+            return_value=SimpleNamespace(id=uuid4()),
+        ),
+        patch.object(
+            agent_control,
+            "session_managed_agent",
+            return_value=SimpleNamespace(id=agent_id),
+        ),
+        patch.object(agent_control, "emit_account_event") as emit,
+    ):
+        for index in range(60):
+            await agent_control._emit_session_progress(
+                _FakeDatabase(),
+                connection,
+                _delta("thread-tui", kind="status_title", seq=index),
+            )
+    assert emit.call_count == 60

@@ -40,7 +40,15 @@ export class SessionProgressForwarder {
       this.pending.set(sessionId, { ...event });
       this.timer ??= setTimeout(() => {
         this.timer = undefined;
-        for (const id of [...this.pending.keys()]) this.flush(id);
+        // A throw in a timer callback would end the sidecar process; live
+        // progress is best effort, so a failed send only loses this delta.
+        for (const id of [...this.pending.keys()]) {
+          try {
+            this.flush(id);
+          } catch {
+            this.pending.delete(id);
+          }
+        }
       }, this.flushMs);
       return;
     }

@@ -762,7 +762,13 @@ export class AgentTalkView extends LitElement {
         // coming back reads the open session again instead of trusting it.
         const reconnected = connected && this.realtimeConnected === false;
         this.realtimeConnected = connected;
-        if (reconnected) void this.load();
+        if (reconnected) {
+          // Deltas (or the turn end) may have been missed while down: the
+          // stored thread is the authority, not a half-streamed bubble.
+          this.resetLiveReply();
+          this.lastProgressSeq = null;
+          void this.load();
+        }
       }
     );
     this.realtimeConnected =

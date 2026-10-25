@@ -514,6 +514,7 @@ export class PreloopClaudeSidecar {
     try {
       const turn = await this.sessions.completeTurn({
         text,
+        commandId: messageId,
         onProgress: messageId
           ? (event) =>
               this.sendEnvelope({

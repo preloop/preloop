@@ -102,3 +102,27 @@ test("the forwarder merges deltas, keeps order and numbers events per session", 
   assert.equal(sent[3].seq, 1, "the counter is per session");
   forwarder.stop();
 });
+
+test("a command turn tags its live progress with the command id", async () => {
+  const live = [];
+  const manager = new SessionManager(baseConfig, streamingFactory({}), {
+    log: () => {},
+    onLiveProgress: (sessionId, event) => live.push(event),
+  });
+  try {
+    await manager.completeTurn({ text: "there", commandId: "cmd-1" });
+    assert.ok(live.length > 0);
+    assert.ok(live.every((event) => event.command_id === "cmd-1"));
+  } finally {
+    manager.stop();
+  }
+});
+
+test("a send that throws in the flush timer does not crash the sidecar", async () => {
+  const forwarder = new SessionProgressForwarder(() => {
+    throw new Error("socket closed");
+  }, "claude_code", 5);
+  forwarder.push("s1", { kind: "assistant_delta", turn_id: "t", item_id: "a", delta: "x" });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  forwarder.stop();
+});

@@ -882,7 +882,7 @@ export class SessionChatView extends LitElement {
     const last = items[items.length - 1];
     return `${items.length}|${last ? last.key : ''}|${this.events.length}|${
       this.activity.length
-    }|${this.liveReply.length}`;
+    }|${this.liveReply.length}|${this.liveReply.slice(-64)}`;
   }
 
   /**

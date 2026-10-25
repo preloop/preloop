@@ -135,9 +135,20 @@ export type TurnProgress = {
  * still comes from the result message.
  */
 export type LiveProgress =
-  | { kind: "turn_started"; turn_id: string }
-  | { kind: "turn_completed"; turn_id: string; status: "completed" | "failed" }
-  | { kind: "assistant_delta"; turn_id: string; item_id: string; delta: string };
+  | { kind: "turn_started"; turn_id: string; command_id?: string }
+  | {
+      kind: "turn_completed";
+      turn_id: string;
+      status: "completed" | "failed";
+      command_id?: string;
+    }
+  | {
+      kind: "assistant_delta";
+      turn_id: string;
+      item_id: string;
+      delta: string;
+      command_id?: string;
+    };
 
 export type LiveProgressListener = (
   sessionId: string,
@@ -145,6 +156,8 @@ export type LiveProgressListener = (
 ) => void;
 
 type TurnWaiter = {
+  /** Command this turn answers; scopes its live progress on the server. */
+  commandId?: string;
   onProgress?: (event: TurnProgress) => void;
   progressCount: number;
   resolve: (outcome: TurnOutcome) => void;
@@ -174,6 +187,7 @@ class OwnedSession {
   private liveTurn = 0;
   private liveTurnOpen = false;
   private liveMessage = 0;
+  private liveCommandId?: string;
 
   constructor(
     readonly key: string,
@@ -184,8 +198,14 @@ class OwnedSession {
 
   private emitLive(event: LiveProgress): void {
     if (!this.onLive || !this.sessionId) return;
+    // The server routes a command turn by its command (the session the
+    // operator opened); the native id alone may name another session.
+    const commandId = this.liveCommandId;
     try {
-      this.onLive(this.sessionId, event);
+      this.onLive(
+        this.sessionId,
+        commandId ? { ...event, command_id: commandId } : event,
+      );
     } catch {
       // Live progress is best effort; the turn itself must not fail.
     }
@@ -196,6 +216,7 @@ class OwnedSession {
     const event = message.event;
     if (!event) return;
     if (!this.liveTurnOpen) {
+      this.liveCommandId = this.turnWaiters[0]?.commandId;
       this.liveTurnOpen = true;
       this.liveTurn += 1;
       this.liveMessage = 0;
@@ -349,6 +370,7 @@ class OwnedSession {
     text: string,
     timeoutMs: number = DEFAULT_TURN_TIMEOUT_MS,
     onProgress?: (event: TurnProgress) => void,
+    commandId?: string,
   ): Promise<TurnOutcome> {
     if (this.ended) {
       return Promise.reject(new Error("Claude Code session ended"));
@@ -360,6 +382,7 @@ class OwnedSession {
         settled: false,
         onProgress,
         progressCount: 0,
+        commandId,
       };
       waiter.timer = setTimeout(() => {
         if (!waiter.settled) {
@@ -455,6 +478,8 @@ function resultErrorText(message: SdkMessage): string {
 
 export type SendMessageParams = {
   onProgress?: (event: TurnProgress) => void;
+  /** Envelope id of the command this turn answers. */
+  commandId?: string;
   text: string;
   targetSessionId?: string;
   /** Native Claude session id for SDK `resume` when the envelope has it. */
@@ -684,6 +709,7 @@ export class SessionManager {
         params.text,
         timeoutMs,
         params.onProgress,
+        params.commandId,
       );
       params.onProgress?.({
         kind: "summary",
