@@ -2013,7 +2013,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         return query.all()
 
     def get_execution_stats_for_flows(
-        self, db: Session, flow_ids: List[Any], start_date: Optional[datetime] = None
+        self,
+        db: Session,
+        flow_ids: List[Any],
+        start_date: Optional[datetime] = None,
+        *,
+        include_lifetime_usage: bool = True,
     ) -> List[Any]:
         """Get execution statistics for a list of flow IDs.
 
@@ -2033,6 +2038,12 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 other callers (the agents view) show lifetime totals.
                 ``token_usage`` follows the counts it sits beside: the window
                 when one is given, all time otherwise.
+
+            include_lifetime_usage: Sum every gateway row the flows ever
+                made for the all-time ``estimated_cost`` and tokens. That
+                scan grows with each run, and the windowed flows list does
+                not show either figure, so it passes ``False`` and gets
+                ``estimated_cost=None`` instead.
 
         Returns:
             One row per flow that has ever executed.
@@ -2076,33 +2087,37 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         # summed beside the money because a row that states spend and leaves
         # the token cell empty reads as "we measured nothing" on traffic we
         # did measure (the agents list asks for these lifetime figures).
-        cost_stats = (
-            db.query(
-                ApiUsage.flow_id,
-                func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
-                    "estimated_cost"
-                ),
-                func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
-                    "prompt_tokens"
-                ),
-                func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
-                    "completion_tokens"
-                ),
-                func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-                *cache_split_columns(),
+        cost_stats = []
+        if include_lifetime_usage:
+            cost_stats = (
+                db.query(
+                    ApiUsage.flow_id,
+                    func.coalesce(func.sum(ApiUsage.estimated_cost), 0.0).label(
+                        "estimated_cost"
+                    ),
+                    func.coalesce(func.sum(ApiUsage.prompt_tokens), 0).label(
+                        "prompt_tokens"
+                    ),
+                    func.coalesce(func.sum(ApiUsage.completion_tokens), 0).label(
+                        "completion_tokens"
+                    ),
+                    func.coalesce(func.sum(ApiUsage.total_tokens), 0).label(
+                        "total_tokens"
+                    ),
+                    *cache_split_columns(),
+                )
+                .filter(
+                    ApiUsage.flow_id.in_(flow_ids),
+                    ApiUsage.action_type == "model_gateway",
+                    # Replay-validation traffic is not the flow's spend. The
+                    # Overview usage summary and the per-execution aggregation
+                    # both exclude it, so this had to as well or the same window
+                    # would read differently in two places.
+                    exclude_replay_usage_condition(),
+                )
+                .group_by(ApiUsage.flow_id)
+                .all()
             )
-            .filter(
-                ApiUsage.flow_id.in_(flow_ids),
-                ApiUsage.action_type == "model_gateway",
-                # Replay-validation traffic is not the flow's spend. The
-                # Overview usage summary and the per-execution aggregation
-                # both exclude it, so this had to as well or the same window
-                # would read differently in two places.
-                exclude_replay_usage_condition(),
-            )
-            .group_by(ApiUsage.flow_id)
-            .all()
-        )
 
         cost_map = {str(row.flow_id): row.estimated_cost for row in cost_stats}
         # Lifetime tokens, split the same way the windowed figures are, so a
@@ -2230,7 +2245,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 self.total_execs = row.total_execs
                 self.running_execs = row.running_execs
                 self.last_seen_at = row.last_seen_at
-                self.estimated_cost = cost_map.get(str(row.flow_id), 0.0)
+                self.estimated_cost = (
+                    cost_map.get(str(row.flow_id), 0.0)
+                    if include_lifetime_usage
+                    else None
+                )
                 self.since = start_date
                 window = window_map.get(str(row.flow_id))
                 # A flow with no run in the window is a real answer (0 runs,

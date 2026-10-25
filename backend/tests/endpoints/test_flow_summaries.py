@@ -169,7 +169,9 @@ def test_summary_uses_owned_stats_and_same_window_projection(mocker: Any) -> Non
         stats_since=start,
         current_user=user,
     )
-    aggregate.assert_called_once_with(db, [owned.id], start_date=start)
+    aggregate.assert_called_once_with(
+        db, [owned.id], start_date=start, include_lifetime_usage=False
+    )
     assert all(row.execution_stats["since"] == start.isoformat() for row in result)
     assert all(row.execution_stats["runs"] == 0 for row in result)
 
