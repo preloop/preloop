@@ -14,38 +14,7 @@ import pytest
 
 from preloop.sync import tasks
 from preloop.sync.services import nats_worker
-
-
-async def _handler(monkeypatch: pytest.MonkeyPatch) -> Any:
-    worker = nats_worker.PreloopSyncNatsWorker(
-        "nats://example.invalid:4222",
-        "maintenance-test-pool",
-        tasks_allowlist=["maintain_gateway_activity"],
-    )
-    worker.nc = MagicMock(is_connected=True)
-    worker.js = MagicMock(
-        add_consumer=AsyncMock(),
-        pull_subscribe=AsyncMock(return_value=MagicMock(subject="maintenance")),
-        consumer_info=AsyncMock(side_effect=RuntimeError("absent")),
-    )
-    handlers: list[Any] = []
-
-    async def capture(self: Any, sub: Any, handler: Any) -> None:
-        handlers.append(handler)
-
-    monkeypatch.setattr(
-        nats_worker.PreloopSyncNatsWorker, "_process_pull_messages", capture
-    )
-    monkeypatch.setattr(
-        "preloop.services.model_price_catalog.load_catalog", lambda: None
-    )
-    monkeypatch.setattr(
-        "preloop.services.reviewed_model_price_refresh.start_reviewed_price_refresh",
-        lambda: None,
-    )
-    await worker.start_listening()
-    assert len(handlers) == 1
-    return handlers[0]
+from tests.services.test_repricing_worker_dispatch import _handler
 
 
 @pytest.mark.asyncio
@@ -53,7 +22,7 @@ async def test_maintenance_pass_renews_lease_until_it_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The lease is renewed during the pass, then acked once, then left alone."""
-    handler = await _handler(monkeypatch)
+    handler = await _handler(monkeypatch, "maintain_gateway_activity")
     release = asyncio.Event()
     ticked = asyncio.Event()
 

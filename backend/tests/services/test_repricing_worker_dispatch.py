@@ -12,11 +12,15 @@ from preloop.sync import tasks
 from preloop.sync.services import nats_worker
 
 
-async def _handler(monkeypatch: pytest.MonkeyPatch) -> Any:
+async def _handler(
+    monkeypatch: pytest.MonkeyPatch,
+    task_name: str = "reprice_gateway_usage_task",
+) -> Any:
+    """Start a worker with a mocked JetStream and return its message handler."""
     worker = nats_worker.PreloopSyncNatsWorker(
         "nats://example.invalid:4222",
-        "repricing-test-pool",
-        tasks_allowlist=["reprice_gateway_usage_task"],
+        f"{task_name}-test-pool",
+        tasks_allowlist=[task_name],
     )
     worker.nc = MagicMock(is_connected=True)
     worker.js = MagicMock(
