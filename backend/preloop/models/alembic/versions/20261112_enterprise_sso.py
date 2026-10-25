@@ -1,7 +1,7 @@
 """Enterprise SSO configuration tables.
 
 Revision ID: 20261112_enterprise_sso
-Revises: 20261110_media_timing
+Revises: 20261112_forge_reconciliation
 
 Per-account IdP connections, verified email domains, the SSO policy, IdP
 group mappings, hashed SCIM tokens and the single-use id replay guard. New
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 revision = "20261112_enterprise_sso"
-down_revision = "20261110_media_timing"
+down_revision = "20261112_forge_reconciliation"
 branch_labels = None
 depends_on = None
 
