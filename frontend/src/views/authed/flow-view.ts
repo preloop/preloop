@@ -2225,7 +2225,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                           }
                         >
                           ${tool.name}
-                          <sl-badge variant="primary" size="small"
+                          <sl-badge class="chip" variant="neutral" pill
                             >${tool.source_name}</sl-badge
                           >
                           ${

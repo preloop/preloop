@@ -4107,7 +4107,9 @@ ${execution.resolved_input_prompt}</pre>
         <div slot="title-prefix" class="status-pill">
           ${
             execution.resume_of
-              ? html`<sl-badge variant="primary" pill>Continuation</sl-badge>`
+              ? html`<sl-badge class="chip" variant="neutral" pill
+                  >Continuation</sl-badge
+                >`
               : nothing
           }
           ${running ? html`<span class="status-dot"></span>` : ''}

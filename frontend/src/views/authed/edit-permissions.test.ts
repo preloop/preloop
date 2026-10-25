@@ -185,9 +185,10 @@ describe('Edit controls permission states', () => {
               ? ['Manage roles', 'Edit team', 'Delete team']
               : [];
         for (const title of mutationLabels) {
-          const button = element.shadowRoot!.querySelector(
-            `sl-button[title="${title}"]`
-          ) as any;
+          // Row actions live in the row's kebab menu (DESIGN.md tables).
+          const button = [
+            ...element.shadowRoot!.querySelectorAll('.row-menu sl-menu-item'),
+          ].find((item) => item.textContent?.trim() === title) as any;
           expect(button, title).to.exist;
           expect(button.disabled, title).to.equal(state !== 'rbac off');
         }

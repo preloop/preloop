@@ -2011,7 +2011,7 @@ export class ApprovalsView extends AuthedElement {
                 <sl-icon name=${this.getStatusIcon(request.status)}></sl-icon>
                 ${approvalStatusLabel(request.status)}
               </sl-badge>
-              <sl-badge pill class="tag-chip">
+              <sl-badge pill class="tag-chip" variant="neutral">
                 <sl-icon name="cpu"></sl-icon>
                 ${approvalRequesterName(request)}
               </sl-badge>

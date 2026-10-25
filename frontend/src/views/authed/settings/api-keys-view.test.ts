@@ -399,7 +399,7 @@ describe('ApiKeysView', () => {
       ])
     );
     expect(chipVariants).to.deep.equal({
-      'Recently active': 'primary',
+      'Recently active': 'success',
       'Active now': 'success',
       Idle: 'neutral',
       Revoked: 'danger',

@@ -244,6 +244,11 @@ describe('RunnersView', () => {
     expect(element.shadowRoot?.textContent).to.contain('office-mac');
     expect(element.shadowRoot?.textContent).to.contain('ops@example.com');
     expect(element.shadowRoot?.textContent).to.contain('local');
+    // A label is a tag, not a state: the tag recipe, never a primary pill
+    // (an sl-badge with no variant falls back to primary).
+    const label = element.shadowRoot?.querySelector('.labels sl-badge');
+    expect(label?.classList.contains('tag-chip')).to.equal(true);
+    expect(label?.getAttribute('variant')).to.equal('neutral');
     const control = element.shadowRoot?.querySelector(
       'preloop-runner-pool-select'
     );
@@ -541,7 +546,8 @@ describe('RunnersView', () => {
     });
     await element.updateComplete;
     expect(badge().textContent?.trim()).to.equal('Idle');
-    expect(badge().getAttribute('variant')).to.equal('primary');
+    // Idle is a state, not an outcome: neutral, never primary.
+    expect(badge().getAttribute('variant')).to.equal('neutral');
   });
 
   it('falls back to status when the server sends no presence', async () => {

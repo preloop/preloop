@@ -828,10 +828,10 @@ export class RunnersView extends LitElement {
     switch ((status || '').toLowerCase()) {
       case 'online':
         return 'success';
+      // Busy and idle are states, not outcomes (DESIGN.md Chips): neutral.
       case 'busy':
-        return 'warning';
       case 'idle':
-        return 'primary';
+        return 'neutral';
       default:
         return 'neutral';
     }
@@ -1062,7 +1062,11 @@ export class RunnersView extends LitElement {
                                 <div class="labels">
                                   ${(row.labels || []).map(
                                     (label) =>
-                                      html`<sl-badge class="chip" pill
+                                      html`<sl-badge
+                                        class="tag-chip"
+                                        variant="neutral"
+                                        pill
+                                        ><sl-icon name="tag"></sl-icon
                                         >${label}</sl-badge
                                       >`
                                   )}

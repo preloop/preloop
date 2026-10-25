@@ -5,7 +5,7 @@ import { invalidateApiCaches } from '../../../api';
 import { resetConfirmDialogForTests } from '../../../components/confirm-dialog';
 import { answerConfirmDialog } from '../../../utils/test-confirm-dialog';
 import './invitation-management-view';
-import type { InvitationManagementView } from './invitation-management-view';
+import { InvitationManagementView } from './invitation-management-view';
 
 describe('InvitationManagementView', () => {
   let fetchStub: sinon.SinonStub;
@@ -169,9 +169,28 @@ describe('InvitationManagementView', () => {
     expect(element.shadowRoot?.textContent).to.contain('invitee@example.com');
     // Status is a tint chip with a human label, not a raw enum value.
     const chip = element.shadowRoot?.querySelector(
-      '.invitation-meta sl-badge.status-chip'
+      'tbody tr[data-invitation-id] sl-badge.status-chip'
     );
     expect(chip?.textContent?.trim()).to.equal('Pending');
+    expect(chip?.hasAttribute('pill')).to.equal(true);
+    // A console table, not a card per invitation.
+    const root = element.shadowRoot!;
+    expect(root.querySelector('.invitations-grid sl-card')).to.equal(null);
+    const headers = [
+      ...root.querySelectorAll('sl-tab-panel[name="pending"] thead th'),
+    ].map((th) => (th.textContent || '').trim());
+    expect(headers).to.deep.equal([
+      'Email',
+      'Status',
+      'Sent',
+      'Expires',
+      'Accepted',
+      'Actions',
+    ]);
+    // Dates are facts in their own columns, not chips.
+    root.querySelectorAll('tbody sl-badge').forEach((badge) => {
+      expect(badge.classList.contains('status-chip')).to.equal(true);
+    });
   });
 
   it('shows an error when invitation loading fails', async () => {
@@ -229,12 +248,15 @@ describe('InvitationManagementView', () => {
         fetchStub
           .getCalls()
           .filter((call) => call.args[1]?.method === 'DELETE');
+      expect(
+        element.shadowRoot!.querySelector('tbody sl-button[variant="danger"]')
+      ).to.equal(null);
       const cancel = element.shadowRoot!.querySelector(
-        '.invitation-actions sl-button[variant="danger"]'
+        'sl-tab-panel[name="pending"] .row-menu sl-menu-item[data-action="cancel"]'
       ) as HTMLElement;
-      expect(cancel.querySelector('sl-icon')?.getAttribute('label')).to.equal(
-        'Cancel invitation'
-      );
+      expect(cancel.textContent!.trim()).to.equal('Cancel invitation');
+      expect(cancel.classList.contains('danger-item')).to.equal(true);
+      expect(cancel.previousElementSibling?.tagName).to.equal('SL-DIVIDER');
 
       cancel.click();
       const prompt = await answerConfirmDialog(false);
@@ -249,5 +271,14 @@ describe('InvitationManagementView', () => {
     } finally {
       nativeConfirm.restore();
     }
+  });
+
+  it('states expiry as a countdown, never a bare date', () => {
+    const now = new Date('2026-10-25T12:00:00Z');
+    const label = (iso: string) =>
+      InvitationManagementView.expiresLabel(iso, now);
+    expect(label('2026-11-01T12:00:00Z')).to.equal('in 7d');
+    expect(label('2026-10-25T15:00:00Z')).to.equal('in 3h');
+    expect(label('2026-10-24T12:00:00Z')).to.equal('Expired');
   });
 });
