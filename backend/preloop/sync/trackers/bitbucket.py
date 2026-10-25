@@ -80,6 +80,7 @@ from ..exceptions import (
     TrackerResponseError,
 )
 from .base import BaseTracker
+from .utils import HTTP_STATUS_NOT_MODIFIED, ConditionalResponse, parse_retry_after
 
 logger = logging.getLogger(__name__)
 
@@ -252,8 +253,11 @@ class BitbucketTracker(BaseTracker):
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Any] = None,
         token: Optional[str] = None,
+        extra_headers: Optional[Dict[str, str]] = None,
     ) -> httpx.Response:
         headers, auth = self._auth(token)
+        if extra_headers:
+            headers = {**headers, **extra_headers}
         async with httpx.AsyncClient(
             timeout=HTTP_TIMEOUT_SECONDS,
             # Managed redirects are validated explicitly before sending a
@@ -273,6 +277,7 @@ class BitbucketTracker(BaseTracker):
         params: Optional[Dict[str, Any]] = None,
         json: Optional[Any] = None,
         allow_status: Iterable[int] = (),
+        headers: Optional[Dict[str, str]] = None,
     ) -> httpx.Response:
         """Send one API request with Bearer auth and a Basic fallback.
 
@@ -282,6 +287,7 @@ class BitbucketTracker(BaseTracker):
             params: Query parameters.
             json: JSON body.
             allow_status: Error statuses the caller handles itself.
+            headers: Extra request headers, such as ``If-None-Match``.
 
         Returns:
             The response.
@@ -307,15 +313,29 @@ class BitbucketTracker(BaseTracker):
                 for redirect_count in range(4):
                     token = await self._managed_token()
                     response = await self._send(
-                        method, url, params=params, json=json, token=token
+                        method,
+                        url,
+                        params=params,
+                        json=json,
+                        token=token,
+                        extra_headers=headers,
                     )
                     if response.status_code == 401 and not refreshed:
                         token = await self._managed_token(force_refresh=True)
                         refreshed = True
                         response = await self._send(
-                            method, url, params=params, json=json, token=token
+                            method,
+                            url,
+                            params=params,
+                            json=json,
+                            token=token,
+                            extra_headers=headers,
                         )
-                    if not 300 <= response.status_code < 400:
+                    if (
+                        not 300 <= response.status_code < 400
+                        or response.status_code == HTTP_STATUS_NOT_MODIFIED
+                    ):
+                        # A 304 answers a conditional read; it is no redirect.
                         break
                     location = response.headers.get("Location", "")
                     if (
@@ -351,14 +371,18 @@ class BitbucketTracker(BaseTracker):
                     # The Location query replaces the original request params.
                     params = None
             else:
-                response = await self._send(method, url, params=params, json=json)
+                response = await self._send(
+                    method, url, params=params, json=json, extra_headers=headers
+                )
                 if (
                     response.status_code == 401
                     and not self._use_basic
                     and self._can_fall_back_to_basic()
                 ):
                     self._use_basic = True
-                    response = await self._send(method, url, params=params, json=json)
+                    response = await self._send(
+                        method, url, params=params, json=json, extra_headers=headers
+                    )
                     if response.status_code == 401:
                         self._use_basic = False
         except httpx.HTTPError as exc:
@@ -386,9 +410,42 @@ class BitbucketTracker(BaseTracker):
                 f"Bitbucket denied the request (403): {detail}", status_code=403
             )
         if status_code == 429:
-            raise TrackerRateLimitError("Bitbucket rate limit reached (429).")
+            raise TrackerRateLimitError(
+                "Bitbucket rate limit reached (429).",
+                retry_after=parse_retry_after(response.headers),
+            )
         raise TrackerResponseError(
             f"Bitbucket API error {status_code}: {detail}", status_code=status_code
+        )
+
+    async def conditional_get(
+        self, path: str, etag: Optional[str]
+    ) -> ConditionalResponse:
+        """GET an API path with ``If-None-Match``; 304 means unchanged.
+
+        Args:
+            path: Path under the API base URL.
+            etag: Validator from the previous read, or None for a plain GET.
+
+        Returns:
+            The status, the body on 200, and the validator for next time.
+
+        Raises:
+            TrackerRateLimitError: On 429, with the advised wait.
+            TrackerResponseError: On any other error status.
+        """
+        response = await self._request(
+            "GET",
+            path,
+            allow_status=(HTTP_STATUS_NOT_MODIFIED,),
+            headers={"If-None-Match": etag} if etag else None,
+        )
+        if response.status_code == HTTP_STATUS_NOT_MODIFIED:
+            return ConditionalResponse(
+                HTTP_STATUS_NOT_MODIFIED, None, response.headers.get("ETag") or etag
+            )
+        return ConditionalResponse(
+            response.status_code, response.json(), response.headers.get("ETag")
         )
 
     async def _get_json(

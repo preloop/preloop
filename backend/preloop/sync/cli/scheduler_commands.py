@@ -251,6 +251,22 @@ async def run_scheduler_async(
         misfire_grace_time=30,
     )
 
+    # Pull request record refresh: a bounded batch per minute, each record
+    # re-armed after five minutes; webhooks make a record due at once.
+    async def _publish_pull_request_refresh() -> None:
+        try:
+            await event_bus_service.publish_task("refresh_pull_request_records")
+        except Exception:
+            logger.exception("Failed to publish pull request record refresh")
+
+    scheduler.add_job(
+        _publish_pull_request_refresh,
+        trigger=IntervalTrigger(seconds=60),
+        id="pull_request_record_refresh",
+        replace_existing=True,
+        misfire_grace_time=60,
+    )
+
     async def _publish_security_maintenance_tick() -> None:
         try:
             await event_bus_service.publish_task("reconcile_security_maintenance")

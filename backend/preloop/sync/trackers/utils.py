@@ -4,8 +4,11 @@ Utility functions for tracker implementations.
 
 import asyncio
 import logging
+import time
+from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from functools import wraps
-from typing import Any, Callable, List, Optional, Type, Union
+from typing import Any, Callable, List, Mapping, Optional, Type, Union
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,7 @@ DEFAULT_RETRY_DELAY = 1.0
 HTTP_STATUS_OK = 200
 HTTP_STATUS_CREATED = 201
 HTTP_STATUS_NO_CONTENT = 204
+HTTP_STATUS_NOT_MODIFIED = 304
 HTTP_STATUS_UNAUTHORIZED = 401
 HTTP_STATUS_NOT_FOUND = 404
 HTTP_STATUS_CONFLICT = 409
@@ -30,6 +34,79 @@ HTTP_STATUS_UNPROCESSABLE_ENTITY = 422
 # HTTP Status Code Ranges
 HTTP_SUCCESS_MIN = 200
 HTTP_SUCCESS_MAX = 299
+
+
+@dataclass(frozen=True)
+class ConditionalResponse:
+    """One conditional GET: 200 with a body, or 304 with none.
+
+    Attributes:
+        status: ``200`` or ``304``.
+        body: Parsed JSON body on 200, None on 304.
+        etag: The validator to send as ``If-None-Match`` next time; on 304
+            the one that was sent when the provider repeats none.
+    """
+
+    status: int
+    body: Any
+    etag: Optional[str]
+
+    @property
+    def not_modified(self) -> bool:
+        """Whether the provider confirmed the cached representation."""
+        return self.status == HTTP_STATUS_NOT_MODIFIED
+
+
+def parse_retry_after(
+    headers: Mapping[str, str], *, now: Optional[float] = None
+) -> Optional[float]:
+    """Seconds a throttled provider asked the caller to wait.
+
+    Reads ``Retry-After`` (delta seconds or an HTTP date), then the GitHub
+    and GitLab reset headers (``x-ratelimit-reset`` / ``ratelimit-reset``,
+    epoch seconds). Header names are matched case-insensitively.
+
+    Args:
+        headers: Response headers.
+        now: Current epoch seconds; defaults to the wall clock.
+
+    Returns:
+        A non-negative wait in seconds, or None when no header names one.
+    """
+    lowered = {str(key).lower(): str(value) for key, value in headers.items()}
+    current = time.time() if now is None else now
+    raw = lowered.get("retry-after", "").strip()
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            try:
+                return max(0.0, parsedate_to_datetime(raw).timestamp() - current)
+            except (TypeError, ValueError):
+                pass
+    for name in ("x-ratelimit-reset", "ratelimit-reset"):
+        reset = lowered.get(name, "").strip()
+        if reset:
+            try:
+                return max(0.0, float(reset) - current)
+            except ValueError:
+                continue
+    return None
+
+
+def rate_limit_delay(error: BaseException) -> Optional[float]:
+    """The wait a tracker error asks for, or None when it is not throttling.
+
+    A 429, or any tracker error that carries a provider ``retry_after``, is
+    throttling. A throttled error without a hint returns 0.0 so callers can
+    still apply their own floor.
+    """
+    retry_after = getattr(error, "retry_after", None)
+    if retry_after is not None:
+        return float(retry_after)
+    if getattr(error, "status_code", None) == 429:
+        return 0.0
+    return None
 
 
 def is_http_error(error: Exception, status_code: int) -> bool:

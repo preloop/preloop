@@ -123,6 +123,10 @@ from .flow import CRUDFlow  # Import CRUDFlow class
 from .flow_execution import CRUDFlowExecution
 from .flow_execution_log import CRUDFlowExecutionLog
 from .flow_feedback import crud_flow_feedback
+from .forge_reconciliation import (
+    crud_forge_webhook_delivery,
+    crud_pull_request_refresh,
+)
 from .flow_runner import CRUDFlowRunner, crud_flow_runner
 from .desktop import crud_desktop
 from .runner_remote_session import (
@@ -333,6 +337,8 @@ __all__ = [
     "CRUDManagedOAuth",
     "crud_managed_oauth",
     "crud_flow_feedback",
+    "crud_forge_webhook_delivery",
+    "crud_pull_request_refresh",
     "crud_issue_cost",
     "CRUDCliSession",
     "crud_cli_session",

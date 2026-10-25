@@ -15,6 +15,7 @@ from preloop.api.loop_safety import run_db_off_loop
 from preloop.models import models
 from preloop.models.crud import (
     crud_comment,
+    crud_forge_webhook_delivery,
     crud_issue,
     crud_organization,
     crud_project,
@@ -119,6 +120,81 @@ class _WebhookPlan:
         self.tasks.append((name, args, kwargs))
 
 
+#: Tracker types whose delivery header is a forge-assigned, redelivery-stable
+#: id: ``X-GitHub-Delivery``, ``X-Gitlab-Event-UUID``, ``X-Request-UUID``.
+FORGE_DEDUPE_TRACKER_TYPES = frozenset({"github", "gitlab", "bitbucket"})
+
+
+def _forge_delivery_id(tracker_type: str, plan: _WebhookPlan) -> Optional[str]:
+    """The forge delivery id of the queued event task, if it has one."""
+    if tracker_type.lower() not in FORGE_DEDUPE_TRACKER_TYPES or not plan.tracker_id:
+        return None
+    for name, _args, kwargs in plan.tasks:
+        if name == "process_webhook_event" and kwargs.get("delivery_id"):
+            return str(kwargs["delivery_id"])
+    return None
+
+
+async def _claim_forge_delivery(
+    db: Session, tracker_type: str, plan: _WebhookPlan
+) -> Optional[bool]:
+    """Claim the delivery id before queueing.
+
+    Returns:
+        True when claimed, False for a duplicate, None when the delivery has
+        no forge id or the claim could not be recorded (queue as before).
+    """
+    delivery_id = _forge_delivery_id(tracker_type, plan)
+    if delivery_id is None:
+        return None
+
+    def claim() -> bool:
+        try:
+            return crud_forge_webhook_delivery.claim(
+                db,
+                tracker_id=uuid.UUID(str(plan.tracker_id)),
+                delivery_id=delivery_id,
+                now=datetime.now(timezone.utc),
+            )
+        finally:
+            _safe_close_db_session(db)
+
+    try:
+        return await run_db_off_loop(claim)
+    except Exception:
+        logger.exception("Webhook delivery dedupe unavailable; queueing anyway")
+        return None
+
+
+async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
+    """Drop the claim of a delivery whose task was not acknowledged."""
+    delivery_id = next(
+        (
+            str(kwargs["delivery_id"])
+            for name, _args, kwargs in plan.tasks
+            if name == "process_webhook_event" and kwargs.get("delivery_id")
+        ),
+        None,
+    )
+    if delivery_id is None:
+        return
+
+    def release() -> None:
+        try:
+            crud_forge_webhook_delivery.release(
+                db,
+                tracker_id=uuid.UUID(str(plan.tracker_id)),
+                delivery_id=delivery_id,
+            )
+        finally:
+            _safe_close_db_session(db)
+
+    try:
+        await run_db_off_loop(release)
+    except Exception:
+        logger.exception("Webhook delivery claim release failed")
+
+
 @router.post("/private/webhooks/{tracker_type}/{organization_id}", response_model=None)
 async def receive_webhook(
     tracker_type: str,
@@ -166,6 +242,21 @@ async def receive_webhook(
         # Notifications queued before a validation/DB failure must still be sent.
         preparation_error = exc
 
+    claimed_delivery = (
+        await _claim_forge_delivery(db, tracker_type, plan)
+        if preparation_error is None
+        else None
+    )
+    if claimed_delivery is False:
+        # A redelivery (or a concurrent duplicate) of an event already queued.
+        # Its inline issue changes above are idempotent; queueing it again
+        # would run its flow triggers twice.
+        return {
+            "status": "duplicate",
+            "message": "Webhook delivery already queued",
+            "tracker_id": plan.tracker_id,
+        }
+
     publish_failed = False
     for name, args, kwargs in plan.tasks:
         try:
@@ -179,6 +270,9 @@ async def receive_webhook(
 
     if preparation_error is not None:
         raise preparation_error
+    if publish_failed and claimed_delivery:
+        # Nothing was acknowledged, so the forge's redelivery must be queued.
+        await _release_forge_delivery(db, plan)
     if publish_failed:
         # Returning 200 would stop tracker redelivery even though no task was
         # acknowledged. Inline issue changes are idempotent on a delivery retry.

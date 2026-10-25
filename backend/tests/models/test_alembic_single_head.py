@@ -506,4 +506,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert agent_usage_replan.down_revision == "20261112_activity_meta_bytes"
     upstream_mcp_oauth = script.get_revision("20261110_upstream_mcp_oauth")
     assert upstream_mcp_oauth.down_revision == "20261112_agent_usage_replan"
-    assert script.get_heads() == ["20261110_upstream_mcp_oauth"]
+    forge_reconciliation = script.get_revision("20261112_forge_reconciliation")
+    assert forge_reconciliation.down_revision == "20261110_upstream_mcp_oauth"
+    assert script.get_heads() == ["20261112_forge_reconciliation"]

@@ -14,6 +14,7 @@ from ..config import logger
 from ..exceptions import (
     TrackerAuthenticationError,
     TrackerConnectionError,
+    TrackerRateLimitError,
     TrackerResponseError,
 )
 from .base import BaseTracker
@@ -25,6 +26,9 @@ from .utils import (
     HTTP_STATUS_UNAUTHORIZED,
     HTTP_STATUS_NOT_FOUND,
     HTTP_STATUS_CONFLICT,
+    HTTP_STATUS_NOT_MODIFIED,
+    ConditionalResponse,
+    parse_retry_after,
 )
 from preloop.models.models.project import Project
 from preloop.models.models.organization import Organization
@@ -133,6 +137,62 @@ class GitLabTracker(BaseTracker):
                 f"An unexpected error occurred in GitLab request: {e}", exc_info=True
             )
             raise TrackerResponseError(f"GitLab API error: {e}")
+
+    async def conditional_get(
+        self, path: str, etag: Optional[str]
+    ) -> ConditionalResponse:
+        """GET an API path with ``If-None-Match``; 304 means unchanged.
+
+        python-gitlab sleeps through 429s itself and drops response headers
+        on errors, so this one read goes through the client's session and
+        auth options directly and reports throttling with its advised wait.
+
+        Args:
+            path: Path under ``/api/v4``.
+            etag: Validator from the previous read, or None for a plain GET.
+
+        Returns:
+            The status, the body on 200, and the validator for next time.
+
+        Raises:
+            TrackerRateLimitError: On 429.
+            TrackerAuthenticationError: On 401.
+            TrackerResponseError: On any other error status.
+            TrackerConnectionError: On network failure.
+        """
+        if self.gl is None:
+            raise TrackerConnectionError("GitLab client is not initialized")
+        gl = self.gl
+
+        def send() -> Any:
+            opts = gl._get_session_opts()
+            if etag:
+                opts["headers"]["If-None-Match"] = etag
+            return gl.session.request("GET", gl._build_url(path), **opts)
+
+        try:
+            response = await asyncio.to_thread(send)
+        except Exception as e:
+            raise TrackerConnectionError(f"GitLab connection error: {e}")
+        if response.status_code == HTTP_STATUS_NOT_MODIFIED:
+            return ConditionalResponse(
+                HTTP_STATUS_NOT_MODIFIED, None, response.headers.get("ETag") or etag
+            )
+        if response.status_code == HTTP_STATUS_UNAUTHORIZED:
+            raise TrackerAuthenticationError("GitLab authentication failed")
+        if response.status_code == 429:
+            raise TrackerRateLimitError(
+                "GitLab rate limit reached (429).",
+                retry_after=parse_retry_after(response.headers),
+            )
+        if response.status_code >= 400:
+            raise TrackerResponseError(
+                f"GitLab API error: {response.status_code}",
+                status_code=response.status_code,
+            )
+        return ConditionalResponse(
+            response.status_code, response.json(), response.headers.get("ETag")
+        )
 
     async def _make_request_no_retry(self, method, *args, **kwargs):
         """
