@@ -1013,7 +1013,15 @@ class TestGetPullRequestFiles(IsolatedAsyncioTestCase):
             }
             for i in range(144)
         ]
-        tracker._request = AsyncMock(side_effect=[pr_data, [], []])
+        tracker._request = AsyncMock(
+            side_effect=[
+                pr_data,
+                [],
+                [],
+                {"total_count": 0, "check_runs": []},
+                {"total_count": 0},
+            ]
+        )
         tracker._make_request = AsyncMock(return_value=files)
 
         result = await tracker.get_pull_request("7")
