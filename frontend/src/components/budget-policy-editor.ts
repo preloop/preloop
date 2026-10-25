@@ -145,8 +145,8 @@ export class BudgetPolicyEditor extends LitElement {
       }
       h4 {
         margin: 0;
-        font-size: var(--sl-font-size-large);
-        font-weight: var(--sl-font-weight-semibold);
+        font-size: var(--console-text-card-title, 0.9375rem);
+        font-weight: 600;
       }
       .group {
         margin-top: var(--sl-spacing-medium);

@@ -1482,7 +1482,7 @@ export class ConsoleShell extends LitElement {
                               ? this._renderNavLink(
                                   '/console/settings/ci-identities',
                                   html`<span class="nav-row"
-                                    >Restricted CI</span
+                                    >CI identities</span
                                   >`
                                 )
                               : nothing,

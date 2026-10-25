@@ -299,8 +299,8 @@ export class TrackerDetailView extends LitElement {
         }
 
         .section-title {
-          font-size: var(--sl-font-size-large);
-          font-weight: var(--sl-font-weight-semibold);
+          font-size: var(--console-text-card-title);
+          font-weight: 600;
           margin: 0;
           display: flex;
           align-items: center;
@@ -336,7 +336,8 @@ export class TrackerDetailView extends LitElement {
 
         .analytics-card .card-header h3 {
           margin: 0;
-          font-size: var(--sl-font-size-medium);
+          font-size: var(--console-text-card-title);
+          font-weight: 600;
         }
 
         .analytics-card p {
@@ -2090,7 +2091,7 @@ export class TrackerDetailView extends LitElement {
 
     if (this._error || !this._tracker) {
       return html`
-        <view-header headerText="Tracker Details" width="narrow">
+        <view-header headerText="Tracker details" width="narrow">
           <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
             <sl-button
               variant="text"
@@ -2147,7 +2148,7 @@ export class TrackerDetailView extends LitElement {
             href="/console/trackers"
             style="margin-left: -12px;"
           >
-            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Trackers
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to trackers
           </sl-button>
         </div>
         <div slot="main-column" class="header-actions">

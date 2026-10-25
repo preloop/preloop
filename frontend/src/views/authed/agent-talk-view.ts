@@ -1138,7 +1138,7 @@ export class AgentTalkView extends LitElement {
     if (this.loading && !this.agent) {
       return html`<div class="state" role="status">
         <sl-spinner></sl-spinner>
-        <div>Loading agent...</div>
+        <div>Loading agent…</div>
       </div>`;
     }
     if (!this.agent) {

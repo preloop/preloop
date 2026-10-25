@@ -473,7 +473,7 @@ export class SpendChart extends LitElement {
           ? html`<p class="error" role="alert">${this.error}</p>`
           : this.data === null
             ? html`<div class="loading" role="status">
-                <sl-spinner></sl-spinner> Loading spend...
+                <sl-spinner></sl-spinner> Loading spend…
               </div>`
             : html`<div class=${this.loading ? 'updating' : ''}>
                 ${this.renderChart()}
@@ -501,7 +501,8 @@ export class SpendChart extends LitElement {
     }
     h2 {
       margin: 0;
-      font-size: var(--console-text-section, var(--sl-font-size-medium));
+      font-size: var(--console-text-card-title, 0.9375rem);
+      font-weight: 600;
     }
     .controls {
       display: flex;

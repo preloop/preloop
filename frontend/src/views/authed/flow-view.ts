@@ -803,7 +803,7 @@ export class FlowView extends LitElement {
             href="/console/flows"
             style="margin-left: -12px;"
           >
-            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Flows
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to flows
           </sl-button>
         </div>
       </view-header>
@@ -904,7 +904,7 @@ export class FlowView extends LitElement {
             href="/console/flows"
             style="margin-left: -12px;"
           >
-            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Flows
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to flows
           </sl-button>
         </div>
       </view-header>
@@ -1029,7 +1029,7 @@ export class FlowView extends LitElement {
             href="/console/flows"
             style="margin-left: -12px;"
           >
-            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to Flows
+            <sl-icon slot="prefix" name="arrow-left"></sl-icon> Back to flows
           </sl-button>
         </div>
         <div
@@ -2132,7 +2132,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
           style="display: flex; align-items: center; gap: var(--sl-spacing-small); padding: var(--sl-spacing-medium); color: var(--console-meta-color);"
         >
           <sl-spinner style="font-size: 1rem;"></sl-spinner>
-          Loading tools...
+          Loading tools…
         </div>
       `;
     }
@@ -2155,9 +2155,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             ? html`
                 <div style="margin-bottom: 1.5rem;">
                   <h4
-                    style="margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--sl-color-neutral-600); text-transform: uppercase; font-weight: 600;"
+                    style="margin-bottom: 0.75rem; font-size: var(--console-text-body); color: var(--sl-color-neutral-700); font-weight: 600;"
                   >
-                    Built-in Tools
+                    Built-in tools
                   </h4>
                   <div
                     style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem;"
@@ -2200,9 +2200,9 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             ? html`
                 <div>
                   <h4
-                    style="margin-bottom: 0.75rem; font-size: 0.875rem; color: var(--sl-color-neutral-600); text-transform: uppercase; font-weight: 600;"
+                    style="margin-bottom: 0.75rem; font-size: var(--console-text-body); color: var(--sl-color-neutral-700); font-weight: 600;"
                   >
-                    MCP Server Tools
+                    MCP server tools
                   </h4>
                   <div
                     style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.75rem;"
@@ -2440,7 +2440,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             this.isPollingOrganizations
               ? html`<sl-option value="">
                   <sl-spinner style="font-size: 1rem;"></sl-spinner>
-                  Loading organizations...
+                  Loading organizations…
                 </sl-option>`
               : this.organizations.length === 0 &&
                   this.flow.trigger_organization_id
@@ -2473,7 +2473,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
             this.isPollingProjects
               ? html`<sl-option value="">
                   <sl-spinner style="font-size: 1rem;"></sl-spinner>
-                  Loading projects...
+                  Loading projects…
                 </sl-option>`
               : (() => {
                   // Filter projects by selected organization for trigger

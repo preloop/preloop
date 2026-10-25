@@ -813,11 +813,11 @@ export class PreloopSessionObserver extends LitElement {
         display: block;
       }
 
+      /* A row in the card, not a box inside it (depth limit two): a
+         hairline under the controls separates them from the transcript. */
       .toolbar {
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-radius: var(--sl-border-radius-medium);
-        padding: var(--sl-spacing-small);
+        border-bottom: 1px solid var(--console-hairline);
+        padding: 0 0 var(--sl-spacing-small);
       }
 
       .meta {
@@ -866,20 +866,17 @@ export class PreloopSessionObserver extends LitElement {
         text-align: center;
       }
 
-      /* Optimize first-use hint: a single-line info bar under the tab strip.
-       Semantic info cyan left border (this IS information), 4px radius. */
+      /* Optimize first-use hint: the last line of the session toolbar, in
+       meta text. It used to be a boxed, cyan-ruled bar of its own, a third
+       surface inside the card. */
       .optimize-hint {
         align-items: baseline;
-        background: var(--sl-color-neutral-50);
-        border: 1px solid var(--sl-color-neutral-200);
-        border-left: 3px solid var(--sl-color-cyan-500, #30c9e8);
-        border-radius: 4px;
-        color: var(--sl-color-neutral-700);
+        color: var(--console-meta-color);
         display: flex;
-        font-size: var(--sl-font-size-small);
+        flex-basis: 100%;
+        font-size: var(--console-text-meta);
         gap: var(--sl-spacing-x-small);
         line-height: 1.5;
-        padding: var(--sl-spacing-x-small) var(--sl-spacing-small);
       }
 
       .optimize-hint-body {
@@ -3153,6 +3150,7 @@ export class PreloopSessionObserver extends LitElement {
               : nothing
           }
         </div>
+        ${this.renderOptimizeHint()}
       </div>
     `;
   }
@@ -3233,7 +3231,7 @@ export class PreloopSessionObserver extends LitElement {
       return html`
         <div class="loading">
           <sl-spinner></sl-spinner>
-          <div>Loading sessions...</div>
+          <div>Loading sessions…</div>
         </div>
       `;
     }
@@ -3276,7 +3274,7 @@ export class PreloopSessionObserver extends LitElement {
         @artifact-scrub=${(event: CustomEvent<{ artifactId: string }>) =>
           void this.scrollToArtifact(event.detail.artifactId)}
       >
-        ${this.renderToolbar()} ${this.renderOptimizeHint()}
+        ${this.renderToolbar()}
         ${this.pinnedSessionError ? html`<p role="alert">${this.pinnedSessionError}</p>` : nothing}
         ${this.pinnedSessionPending ? html`<p role="status">Loading selected session…</p>` : nothing}
         ${

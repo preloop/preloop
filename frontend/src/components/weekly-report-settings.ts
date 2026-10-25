@@ -75,7 +75,8 @@ export class WeeklyReportSettings extends LitElement {
     }
     h2 {
       margin: 0 0 0.25rem;
-      font-size: 1.25rem;
+      font-size: var(--console-text-card-title, 0.9375rem);
+      font-weight: 600;
     }
     .row {
       padding: 0.75rem 0;

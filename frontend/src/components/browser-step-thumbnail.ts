@@ -317,7 +317,7 @@ export class BrowserStepThumbnail extends LitElement {
         Image failed to load
       </div>`;
     }
-    return html`<div class="box muted" aria-busy="true">Loading...</div>`;
+    return html`<div class="box muted" aria-busy="true">Loading…</div>`;
   }
 }
 

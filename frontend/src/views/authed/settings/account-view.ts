@@ -726,7 +726,10 @@ export class AccountView extends LitElement {
         <div class="main-column">
           <!-- Account details section -->
           <sl-card style="margin-bottom: 2rem;">
-            <h2 slot="header" style="margin: 0; font-size: 1.25rem;">
+            <h2
+              slot="header"
+              style="margin: 0; font-size: var(--console-text-card-title);"
+            >
               Account
             </h2>
 

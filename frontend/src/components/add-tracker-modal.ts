@@ -1827,7 +1827,7 @@ export class AddTrackerModal extends LitElement {
         ?disabled=${this.managedRepositoriesState !== 'loaded' || !repositories?.length}
         help-text=${
           this.managedRepositoriesState === 'loading'
-            ? 'Loading accessible repositories...'
+            ? 'Loading accessible repositories…'
             : this.managedRepositoriesState === 'failed'
               ? 'Repository discovery failed. Retry to choose a repository.'
               : this.managedRepositoriesState === 'loaded' &&

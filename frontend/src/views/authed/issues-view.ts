@@ -723,7 +723,7 @@ export class IssuesView extends LitElement {
               () =>
                 html`<div class="loading-overlay">
                   <sl-spinner></sl-spinner>
-                  <span>Loading issues...</span>
+                  <span>Loading issues…</span>
                 </div>`
             )}
             ${when(
@@ -741,7 +741,7 @@ export class IssuesView extends LitElement {
                               <th>Issue 1</th>
                               <th>Issue 2</th>
                               <th class="text-right">Similarity</th>
-                              <th class="text-right">AI Review</th>
+                              <th class="text-right">AI review</th>
                               <th class="text-right">Actions</th>
                             </tr>
                           </thead>

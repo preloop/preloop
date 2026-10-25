@@ -462,6 +462,14 @@ describe('AgentDetailView', () => {
       'preloop-session-observer'
     ) as any;
     expect(observer.selectedSessionId).to.equal('runtime-session-1');
+    // The session pane sits in the tab, not in a card inside the tab panel.
+    const card = observer.closest('sl-card') as HTMLElement;
+    expect(card.classList.contains('flat')).to.be.true;
+    await (card as any).updateComplete;
+    const base = card.shadowRoot!.querySelector(
+      '[part~="base"]'
+    ) as HTMLElement;
+    expect(getComputedStyle(base).borderTopWidth).to.equal('0px');
     observer.dispatchEvent(
       new CustomEvent('session-selected', {
         detail: { sessionId: 'runtime-session-2' },

@@ -1,7 +1,7 @@
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import {
-  renderWithoutSubscriptionsLine,
+  withoutSubscriptionsTitle,
   type SubscriptionEstimate,
 } from '../utils/subscription-estimate';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
@@ -288,6 +288,38 @@ const TALL_VIEWPORT = 1000;
 const ROWS_DEFAULT = 6;
 const ROWS_TALL = 8;
 
+/** The exact spend, plus the without-subscriptions sentence when there is one. */
+function spendTitle(
+  cost: number | null | undefined,
+  estimate: SubscriptionEstimate | null | undefined,
+  subscriptionRequests: number | undefined
+): string {
+  const without = withoutSubscriptionsTitle(estimate, subscriptionRequests);
+  const exact = formatUsdExact(cost);
+  return without ? `${exact}. ${without}` : exact;
+}
+
+/**
+ * Scrolls a horizontal strip just enough that `item` has `padding` px of
+ * room on each side (or sits at the strip's start when it is near it).
+ */
+export function revealInStrip(
+  strip: HTMLElement,
+  item: HTMLElement,
+  padding: number
+): void {
+  const left =
+    item.getBoundingClientRect().left -
+    strip.getBoundingClientRect().left +
+    strip.scrollLeft;
+  const right = left + item.getBoundingClientRect().width;
+  if (left - padding < strip.scrollLeft) {
+    strip.scrollLeft = Math.max(0, left - padding);
+  } else if (right + padding > strip.scrollLeft + strip.clientWidth) {
+    strip.scrollLeft = right + padding - strip.clientWidth;
+  }
+}
+
 function timeValue(value: string | null | undefined): number {
   if (!value) return 0;
   const parsed = parseUTCDate(value).getTime();
@@ -554,6 +586,27 @@ export class InventoryCard extends LitElement {
 
         sl-tab-group::part(tabs) {
           border-bottom: none;
+        }
+
+        /* On a phone the strip scrolls by touch; the edge fades so a tab
+           running off it reads as "more this way", not as a cut. */
+        @media (max-width: 640px) {
+          sl-tab-group::part(nav) {
+            -webkit-mask-image: linear-gradient(
+              to right,
+              transparent,
+              #000 var(--sl-spacing-x-large),
+              #000 calc(100% - var(--sl-spacing-x-large)),
+              transparent
+            );
+            mask-image: linear-gradient(
+              to right,
+              transparent,
+              #000 var(--sl-spacing-x-large),
+              #000 calc(100% - var(--sl-spacing-x-large)),
+              transparent
+            );
+          }
         }
 
         sl-tab::part(base) {
@@ -842,6 +895,38 @@ export class InventoryCard extends LitElement {
     }
     this.onResize();
     window.addEventListener('resize', this.onResize);
+  }
+
+  protected updated(changed: Map<PropertyKey, unknown>): void {
+    super.updated(changed);
+    // Counts land after the first paint and widen the tabs, so keep the
+    // active tab in view on every update until the reader scrolls the strip.
+    if (changed.has('tab') || !this.tabStripTouched)
+      void this.revealActiveTab();
+  }
+
+  private tabStripTouched = false;
+
+  /**
+   * Scrolls the tab strip so the active tab sits clear of both edges. The
+   * tab group's own reveal puts it flush against the edge, which on a phone
+   * left the remembered tab beside a clipped fragment of its neighbour.
+   */
+  private async revealActiveTab(): Promise<void> {
+    const group = this.renderRoot.querySelector('sl-tab-group') as
+      (HTMLElement & { updateComplete?: Promise<unknown> }) | null;
+    if (!group) return;
+    await group.updateComplete;
+    // After the tab group's own scroll, which runs once its tabs are defined.
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const nav = group.shadowRoot?.querySelector(
+      '.tab-group__nav'
+    ) as HTMLElement | null;
+    const active = this.renderRoot.querySelector(
+      `sl-tab[panel="${this.activeTab}"]`
+    ) as HTMLElement | null;
+    if (nav && active) revealInStrip(nav, active, 24);
   }
 
   disconnectedCallback(): void {
@@ -1244,9 +1329,18 @@ export class InventoryCard extends LitElement {
   }
 
   private renderTabs() {
+    const touched = () => {
+      this.tabStripTouched = true;
+    };
     return html`
-      <div class="tabs">
+      <div
+        class="tabs"
+        @pointerdown=${touched}
+        @wheel=${touched}
+        @touchstart=${touched}
+      >
         <sl-tab-group
+          no-scroll-controls
           @sl-tab-show=${(event: CustomEvent<{ name: string }>) => {
             const name = event.detail.name as InventoryTab;
             if ((TAB_ORDER as string[]).includes(name)) {
@@ -1341,7 +1435,9 @@ export class InventoryCard extends LitElement {
         // about 60px, enough for "No model" and an ellipsised alias.
         // 212, not 240: the spend column took 28px for the line under it
         // that says what the spend would be without subscriptions (D-05).
-        width: 180,
+        // That line now lives in the spend cell's title, so "$ est." is back
+        // to one figure and the name takes the width it was giving up.
+        width: 212,
         minWidth: 160,
         truncate: true,
         cellClass: 'identity-cell',
@@ -1410,12 +1506,17 @@ export class InventoryCard extends LitElement {
         headerLabel: 'Estimated spend',
         pickerLabel: 'Estimated spend',
         numeric: true,
-        width: 100,
+        width: 72,
         cell: (row) =>
           this.renderUsageCell(
-            html`<span title=${formatUsdExact(row.cost)}
-                >${formatUsd(row.cost)}</span
-              >${renderWithoutSubscriptionsLine(row.withoutSubscriptions, row.subscriptionRequests)}`
+            html`<span
+              title=${spendTitle(
+                row.cost,
+                row.withoutSubscriptions,
+                row.subscriptionRequests
+              )}
+              >${formatUsd(row.cost)}</span
+            >`
           ),
       },
       {
@@ -1772,7 +1873,7 @@ export class InventoryCard extends LitElement {
                             )}
                           </td>
                           <td class="num" data-label="Spend">
-                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>${renderWithoutSubscriptionsLine(row.withoutSubscriptions, row.subscriptionRequests)}`)}
+                            ${this.renderUsageCell(html`<span title=${spendTitle(row.cost, row.withoutSubscriptions, row.subscriptionRequests)}>${formatUsd(row.cost)}</span>`)}
                           </td>
                         </tr>
                       `

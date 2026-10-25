@@ -926,7 +926,7 @@ describe('FlowView load failure', () => {
     localStorage.clear();
   });
 
-  it('shows an error with Back to Flows and Try again instead of spinning', async () => {
+  it('shows an error with Back to flows and Try again instead of spinning', async () => {
     localStorage.setItem('accessToken', 'test-token');
     let flowFails = true;
     const fetchStub = sinon
@@ -968,7 +968,7 @@ describe('FlowView load failure', () => {
       expect(alert?.getAttribute('role')).to.equal('alert');
       expect(alert?.textContent).to.include('Could not load this flow');
       const back = root.querySelector('sl-button[href="/console/flows"]');
-      expect(back?.textContent).to.include('Back to Flows');
+      expect(back?.textContent).to.include('Back to flows');
 
       flowFails = false;
       const retry = [...alert!.querySelectorAll('sl-button')].find((b) =>

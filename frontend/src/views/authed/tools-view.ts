@@ -1967,7 +1967,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
             }}
           >
             Ask a human before
-            running${this.savingGovernanceDefaults ? ' Saving...' : ''}
+            running${this.savingGovernanceDefaults ? ' Saving…' : ''}
           </sl-switch>
           ${
             enforced

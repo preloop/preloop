@@ -1226,6 +1226,27 @@ describe('PreloopSessionObserver', () => {
       expect(text).to.contain('Try Optimize');
     });
 
+    it('folds the hint into the session toolbar, with no box of its own', async () => {
+      const el = await createObserverWithOptimization();
+      await waitUntil(
+        () => el.shadowRoot?.querySelector('.optimize-hint'),
+        'hint bar did not render',
+        { timeout: 3000 }
+      );
+      const hint = el.shadowRoot!.querySelector(
+        '.optimize-hint'
+      ) as HTMLElement;
+      expect(hint.closest('.toolbar'), 'hint inside the toolbar').to.exist;
+      const hintStyle = getComputedStyle(hint);
+      expect(hintStyle.borderLeftWidth).to.equal('0px');
+      expect(hintStyle.backgroundColor).to.equal('rgba(0, 0, 0, 0)');
+      // Depth limit two: the toolbar is a row in the card, not a filled box.
+      const toolbar = el.shadowRoot!.querySelector('.toolbar') as HTMLElement;
+      const toolbarStyle = getComputedStyle(toolbar);
+      expect(toolbarStyle.backgroundColor).to.equal('rgba(0, 0, 0, 0)');
+      expect(toolbarStyle.borderTopWidth).to.equal('0px');
+    });
+
     it('does not show the hint when optimization is disabled', async () => {
       const el = (await fixture(
         html`<preloop-session-observer

@@ -426,7 +426,7 @@ export class SessionArtifactRow extends LitElement {
     const load = this.text;
     if (!load) {
       return html`<pre class="excerpt" data-testid="artifact-excerpt">
-Loading...</pre>`;
+Loading…</pre>`;
     }
     if (load.status === 'error') {
       return html`<div class="error">${load.message}</div>`;

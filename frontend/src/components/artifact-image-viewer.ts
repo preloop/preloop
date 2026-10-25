@@ -330,7 +330,7 @@ export class ArtifactImageViewer extends LitElement {
       </div>`;
     }
     if (!this.load) {
-      return html`<div class="placeholder">Loading screenshot...</div>`;
+      return html`<div class="placeholder">Loading screenshot…</div>`;
     }
     if (this.load.status !== 'ok') {
       return html`<div class="placeholder">

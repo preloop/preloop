@@ -179,6 +179,23 @@ sl-badge:focus-visible,
     margin: 0;
 }
 
+/* Section headings sit on the scale even when a view leaves them unstyled.
+   Browser defaults (1.5em, 1.17em, 0.83em of the parent) put 21px, 17.55px
+   and 11.62px titles on the settings and cost pages. Element selectors, so
+   any class rule or a view's own later `h3 {}` still wins. */
+h2,
+h3,
+h4 {
+    font-size: var(--console-text-card-title);
+    font-weight: 600;
+}
+
+h5,
+h6 {
+    font-size: var(--console-text-body);
+    font-weight: 600;
+}
+
 .header {
     display: flex;
     justify-content: space-between;

@@ -437,7 +437,7 @@ export class SensitiveDataPanel extends LitElement {
           @click=${this._save}
           ?disabled=${this.readonly || this.saving || !this._dirty}
         >
-          ${this.saving ? 'Saving...' : 'Review and save'}
+          ${this.saving ? 'Saving…' : 'Review and save'}
         </button>
       </div>
       ${

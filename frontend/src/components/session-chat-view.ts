@@ -1594,7 +1594,7 @@ ${
       return html`
         <div class="loading">
           <sl-spinner></sl-spinner>
-          <div>Loading conversation...</div>
+          <div>Loading conversation…</div>
         </div>
       `;
     }

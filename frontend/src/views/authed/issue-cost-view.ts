@@ -39,6 +39,7 @@ import '../../components/time-range-select.ts';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
+import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
@@ -265,11 +266,15 @@ export class IssueCostView extends AuthedElement {
           background: none;
           border: none;
           cursor: pointer;
-          color: inherit;
-          padding: 0 var(--sl-spacing-2x-small);
+          color: var(--console-meta-color);
+          padding: var(--sl-spacing-2x-small);
+          display: inline-flex;
+          align-items: center;
+          border-radius: var(--sl-border-radius-small);
         }
-        .detail td {
-          background: var(--sl-color-neutral-50);
+        .expand:hover {
+          background: var(--console-hover-tint);
+          color: inherit;
         }
         .muted {
           color: var(--console-meta-color);
@@ -619,7 +624,10 @@ export class IssueCostView extends AuthedElement {
             aria-label="Show executions of ${row.issue_key}"
             @click=${() => void this.toggle(row)}
           >
-            ${this.expanded[row.id] ? '▾' : '▸'}
+            <sl-icon
+              name=${this.expanded[row.id] ? 'chevron-down' : 'chevron-right'}
+              aria-hidden="true"
+            ></sl-icon>
           </button>`,
       },
       {
@@ -887,7 +895,7 @@ export class IssueCostView extends AuthedElement {
       ${
         this.loading && !report
           ? html`<div class="loading-state" role="status">
-              <sl-spinner></sl-spinner><span>Loading cost per issue...</span>
+              <sl-spinner></sl-spinner><span>Loading cost per issue…</span>
             </div>`
           : nothing
       }

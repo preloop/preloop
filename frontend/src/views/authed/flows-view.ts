@@ -1689,7 +1689,7 @@ export class FlowsView extends LitElement {
           ${
             this.showPresets
               ? this.presetsLoading && this.presets.length === 0
-                ? html`<div class="presets-collapsed">Loading presets...</div>`
+                ? html`<div class="presets-collapsed">Loading presets…</div>`
                 : html`
                     <div class="presets-grid">
                       ${this.presets.map((preset) =>

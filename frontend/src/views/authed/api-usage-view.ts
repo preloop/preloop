@@ -1848,7 +1848,7 @@ export class ApiUsageView extends LitElement {
                     aria-busy="true"
                   >
                     <sl-spinner></sl-spinner>
-                    <div>Loading gateway usage summary...</div>
+                    <div>Loading gateway usage summary…</div>
                   </div>
                 </sl-card>
               `

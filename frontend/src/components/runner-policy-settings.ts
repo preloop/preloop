@@ -34,6 +34,11 @@ export class RunnerPolicySettings extends LitElement {
     :host {
       display: block;
     }
+    h2 {
+      margin: 0 0 0.5rem;
+      font-size: var(--console-text-card-title, 0.9375rem);
+      font-weight: 600;
+    }
     section {
       padding: 1.25rem;
       border: 1px solid var(--sl-color-neutral-200);

@@ -37,7 +37,7 @@ export function renderVerdict(
     return html`
       <sl-badge variant="neutral" pill>
         <sl-spinner style="font-size: 0.8em; margin-right: 4px;"></sl-spinner>
-        Checking...
+        Checking…
       </sl-badge>
     `;
   }

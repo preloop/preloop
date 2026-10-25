@@ -1040,6 +1040,30 @@ describe('DashboardView', () => {
     expect(strip.offsetHeight, 'strip height').to.be.at.most(56);
   });
 
+  it('prints a short chip label and keeps the full sentence in its title', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () =>
+        !element['loading'] &&
+        !element['fetchingApprovals'] &&
+        !element['fetchingAudit'] &&
+        !element['fetchingMCPAndTools'] &&
+        element['attentionInputs'] != null,
+      'dashboard did not finish loading'
+    );
+    await element.updateComplete;
+    const chip = element.shadowRoot!.querySelector(
+      '.attention-strip a.attention-chip-link'
+    ) as HTMLAnchorElement;
+    const first = element['attentionItems'][0];
+    expect(
+      chip.querySelector('.attention-chip-text')!.textContent!.trim()
+    ).to.not.contain(' · ');
+    expect(chip.getAttribute('title')).to.equal(
+      first.detail ? `${first.title} · ${first.detail}` : first.title
+    );
+  });
+
   it('points each strip chip at its own row on the attention page', async () => {
     const element = await mountDashboard();
     await waitUntil(
@@ -2363,12 +2387,13 @@ describe('DashboardView', () => {
         'inventory-card'
       ) as any;
       await inventory.updateComplete;
-      const line = inventory.shadowRoot.querySelector(
-        '[data-testid="without-subscriptions"]'
+      // One figure in the cell; the estimate is in the spend title (UX3-04).
+      const cell = inventory.shadowRoot.querySelector(
+        'td[data-label="Spend"] span[title]'
       );
-      expect(
-        line.querySelector('summary').textContent.replace(/\s+/g, ' ').trim()
-      ).to.equal('$2.34 w/o subs.');
+      expect(cell.getAttribute('title')).to.contain(
+        'Without subscriptions: $2.34.'
+      );
     });
 
     it('reads each tab from a fetch the page already made', async () => {

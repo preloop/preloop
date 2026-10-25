@@ -159,6 +159,10 @@ export class HostedAllowance extends LitElement {
     :host {
       display: block;
     }
+    h2 {
+      font-size: var(--console-text-card-title, 0.9375rem);
+      font-weight: 600;
+    }
     section.compact {
       padding: var(--sl-spacing-small) var(--sl-spacing-medium);
       margin: 0;
