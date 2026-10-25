@@ -313,9 +313,13 @@ def test_leaving_manual_turns_the_schedule_back_on(
             account_id=str(test_user.account_id),
         ),
     )
-    assert client.put(BASE, json={"overrides": {"cadence": "manual"}}).status_code == 200
+    assert (
+        client.put(BASE, json={"overrides": {"cadence": "manual"}}).status_code == 200
+    )
     db_session.refresh(flow)
     assert flow.is_enabled is False
-    assert client.put(BASE, json={"overrides": {"cadence": "weekly"}}).status_code == 200
+    assert (
+        client.put(BASE, json={"overrides": {"cadence": "weekly"}}).status_code == 200
+    )
     db_session.refresh(flow)
     assert flow.is_enabled is True
