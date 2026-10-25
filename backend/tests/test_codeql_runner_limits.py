@@ -45,3 +45,26 @@ def test_javascript_codeql_sets_up_node_before_extraction() -> None:
         for index, step in enumerate(steps)
         if step.get("name") == "Initialize CodeQL"
     )
+
+
+def test_go_codeql_sets_up_go_before_autobuild() -> None:
+    """Go analysis has a toolchain even on self-hosted ubuntu-latest runners."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    steps = workflow["jobs"]["analyze"]["steps"]
+    setup_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Set up Go for CodeQL"
+    )
+    setup = steps[setup_index]
+    assert setup["if"] == "matrix.language == 'go'"
+    assert setup["uses"] == (
+        "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+    )
+    assert setup["with"]["go-version-file"] == "cli/go.mod"
+    assert setup["with"]["cache"] is False
+    assert setup_index < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Initialize CodeQL"
+    )
