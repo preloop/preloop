@@ -3,9 +3,11 @@
 Revision ID: 20261110_credential_backfill
 Revises: 20261110_prune_api_usage_idx
 
-Drain old writers before applying. This revision is an operator-visible stopping
-point; the next revision removes the columns. No plaintext is reconstructed on
-rollback. Keep this migration independent of the application's ORM schema.
+This revision is an operator-visible stopping point. The columns stay in this
+release, because the previous release still maps them during a rolling upgrade;
+a later revision reruns this backfill before it removes them. No plaintext is
+reconstructed on rollback. Keep this migration independent of the application's
+ORM schema.
 """
 
 import hashlib
@@ -107,8 +109,9 @@ def _move_secrets(table_name: str, column: str, reference: str, kind: str) -> No
 def upgrade() -> None:
     """Backfill atomically; fail closed on conflicting or unreadable credentials."""
     bind = op.get_bind()
-    # Prevent an old writer from racing the scan. Old application processes must
-    # remain stopped between this revision and the contract revision.
+    # Prevent an old writer from racing the scan. A writer of the previous
+    # release can add plaintext after this revision; the later removal revision
+    # reruns this backfill first.
     bind.execute(
         sa.text("LOCK TABLE ai_model, api_key, tracker IN SHARE ROW EXCLUSIVE MODE")
     )

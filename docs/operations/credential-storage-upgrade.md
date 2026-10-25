@@ -32,7 +32,7 @@ maps stay in place. Use the new release's migration code with the deployment's
 database and encryption configuration. Do not put secrets on the command line
 or enable SQL parameter logging.
 
-## Backfill, then remove
+## Backfill
 
 From `backend/preloop/models` in the new release's environment:
 
@@ -46,8 +46,9 @@ global models), hashes API keys, and clears legacy columns. Existing references
 win over stale plaintext; ownership and local ciphertext are checked before
 clearing. External references are preserved without contacting the provider.
 Conflicting fingerprints, invalid references or encryption failure abort the
-transaction. The migration locks the affected tables; keep writers stopped
-between both stages.
+transaction. The migration blocks writes to the affected tables while it runs;
+reads, including API key lookups on pods of the previous release, stay valid
+during the rollout.
 
 Inspect counts without selecting secrets:
 
