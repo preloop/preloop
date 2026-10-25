@@ -45,6 +45,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import type {
   AgentControlCommandResponse,
   FlowGatewayEvent,
+  FlowGatewayEventsResponse,
   ManagedAgentSummary,
   RuntimeSessionActivityItem,
   RuntimeSessionSummary,
@@ -91,7 +92,12 @@ import {
   TALK_SWITCH_SESSION_EVENT,
 } from '../../components/talk-composer';
 
-const EVENT_PAGE_SIZE = 50;
+/**
+ * Turns per page. The first page is what the thread opens on, so it stays
+ * small; older turns load by cursor on request. 50 turns of a long session
+ * came to several megabytes in one response.
+ */
+const EVENT_PAGE_SIZE = 20;
 const TURN_HISTORY_WINDOW = 40;
 
 @customElement('agent-talk-view')
@@ -146,7 +152,11 @@ export class AgentTalkView extends LitElement {
   @query('talk-composer') private composer!: TalkComposer;
 
   private previousDocumentTitle = document.title;
-  private nextEventOffset: number | null = null;
+  /**
+   * Where the next older page starts: the server's keyset cursor, or the
+   * offset from a server that predates `next_cursor` (and ignores `before`).
+   */
+  private nextEventPage: { before: string } | { offset: number } | null = null;
   private unsubscribeRealtime: (() => void) | null = null;
   private unsubscribeRealtimeState: (() => void) | null = null;
   private channel: BroadcastChannel | null = null;
@@ -644,8 +654,7 @@ export class AgentTalkView extends LitElement {
       // Resume from the fresh page's cursor even when older pages remain
       // mounted. A burst can add more than one page; retained row count is
       // not an offset and would skip the gap between new and retained rows.
-      this.nextEventOffset =
-        events.pagination?.next_offset ?? (events.logs || []).length;
+      this.nextEventPage = this.nextPageOf(events);
       // Anything the server has now echoed back is in the thread already.
       this.composer?.clearSentPending(this.echoedCommandIds(this.activity));
       this.sessionLoadFailed = false;
@@ -673,7 +682,7 @@ export class AgentTalkView extends LitElement {
       !this.sessionId ||
       this.loadingMoreEvents ||
       !this.hasMoreEvents ||
-      this.nextEventOffset === null
+      this.nextEventPage === null
     ) {
       return;
     }
@@ -683,7 +692,7 @@ export class AgentTalkView extends LitElement {
     try {
       const page = await getRuntimeSessionGatewayEvents(sessionId, {
         limit: EVENT_PAGE_SIZE,
-        offset: this.nextEventOffset,
+        ...this.nextEventPage,
         history: 'delta',
         historyWindow: TURN_HISTORY_WINDOW,
         signal: this.eventsAbort?.signal,
@@ -699,7 +708,7 @@ export class AgentTalkView extends LitElement {
       for (const event of page.logs || []) byId.set(event.id, event);
       this.events = this.sortEvents(Array.from(byId.values()));
       this.hasMoreEvents = page.pagination?.has_more ?? false;
-      this.nextEventOffset = page.pagination?.next_offset ?? null;
+      this.nextEventPage = this.hasMoreEvents ? this.nextPageOf(page) : null;
     } catch (error) {
       if (generation !== this.sessionGeneration) return;
       this.error =
@@ -707,6 +716,21 @@ export class AgentTalkView extends LitElement {
     } finally {
       if (generation === this.sessionGeneration) this.loadingMoreEvents = false;
     }
+  }
+
+  /**
+   * The page after `page`. The cursor when the server sent one; otherwise
+   * the offset, because a server without `next_cursor` also ignores
+   * `before` and would answer the newest page again.
+   */
+  private nextPageOf(
+    page: FlowGatewayEventsResponse
+  ): { before: string } | { offset: number } | null {
+    const cursor = page.pagination?.next_cursor;
+    if (cursor) return { before: cursor };
+    const offset = page.pagination?.next_offset;
+    if (typeof offset === 'number') return { offset };
+    return null;
   }
 
   private sortEvents(events: FlowGatewayEvent[]): FlowGatewayEvent[] {
@@ -889,7 +913,7 @@ export class AgentTalkView extends LitElement {
     this.activity = [];
     this.pendingApprovals = [];
     this.hasMoreEvents = false;
-    this.nextEventOffset = null;
+    this.nextEventPage = null;
     this.loadingEvents = false;
     this.loadingMoreEvents = false;
     this.browserStepViewerIndex = -1;

@@ -1,6 +1,7 @@
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
+import { relativeTime } from '../../../utils/relative-time';
 import { customElement, state } from 'lit/decorators.js';
 import {
   getApiKeysPage,
@@ -436,15 +437,12 @@ export class ApiKeysView extends LitElement {
         sort: 'number',
         value: (key) => day(key.created_at),
         searchText: () => '',
-        cell: (key) => parseUTCDate(key.created_at).toLocaleDateString(),
+        cell: (key) => relativeTime(key.created_at),
       },
       {
         id: 'last_activity',
         header: 'Last activity',
-        cell: (key) =>
-          lastActivity(key)
-            ? parseUTCDate(lastActivity(key)).toLocaleDateString()
-            : 'Never',
+        cell: (key) => relativeTime(lastActivity(key), 'Never'),
       },
       {
         id: 'usage',
@@ -461,10 +459,7 @@ export class ApiKeysView extends LitElement {
         value: (key) =>
           key.expires_at ? day(key.expires_at) : Number.MAX_SAFE_INTEGER,
         searchText: () => '',
-        cell: (key) =>
-          key.expires_at
-            ? parseUTCDate(key.expires_at).toLocaleDateString()
-            : 'Never',
+        cell: (key) => relativeTime(key.expires_at, 'Never'),
       },
     ];
   }
