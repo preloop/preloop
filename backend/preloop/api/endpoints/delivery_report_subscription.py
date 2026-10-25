@@ -43,7 +43,8 @@ class DeliveryReportSubscription(BaseModel):
 
     #: The person asked not to receive the report.
     opted_out: bool
-    #: The policy names this person as the recipient (owner or lead).
+    #: This person is the one the report is sent to (owner or lead), as
+    #: the sender resolves it, ignoring their own opt-out.
     is_recipient: bool
     #: The account's report is turned on at all.
     report_enabled: bool
@@ -61,14 +62,18 @@ def _subscription(
     policy = resolve_policy(
         crud_delivery_report_policy.get_overrides(db, account_id=account.id)
     )
-    named = (
-        policy.sponsoring_lead_user_id
-        if policy.recipients == "sponsoring_lead" and policy.sponsoring_lead_user_id
-        else str(account.primary_user_id or "")
+    # The same resolution the sender uses, so an inactive lead hands the
+    # toggle to the owner exactly as it hands them the email.
+    recipients = crud_delivery_report_policy.report_recipients(
+        db,
+        account_id=account.id,
+        recipient_rule=policy.recipients,
+        sponsoring_lead_user_id=policy.sponsoring_lead_user_id,
+        opted_out_user_ids=[],
     )
     return DeliveryReportSubscription(
         opted_out=str(user.id) in {str(u) for u in policy.opted_out_user_ids},
-        is_recipient=named == str(user.id),
+        is_recipient=any(u.id == user.id for u in recipients),
         report_enabled=policy.enabled,
     )
 

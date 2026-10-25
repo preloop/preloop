@@ -147,7 +147,11 @@ def update_delivery_report_policy(
     Delivery Report flows in the same save.
     """
     ensure_permission_in_oss(db, current_user, "manage_budgets")
-    stored = crud_delivery_report_policy.get_overrides(db, account_id=account.id) or {}
+    # Locked so a person's opt-out landing during the save is not lost.
+    stored = (
+        crud_delivery_report_policy.get_overrides(db, account_id=account.id, lock=True)
+        or {}
+    )
     previous = resolve_policy(stored)
     try:
         overrides = validate_account_overrides(payload.overrides)

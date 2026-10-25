@@ -43,7 +43,7 @@ _CLOSING_LINE_RE = re.compile(
     r"^\s*(part of|closes|fixes|resolves|refs?)\b[^\n]*$", re.IGNORECASE
 )
 _PR_URL_RE = re.compile(
-    r"^https?://[^/]+/(?P<repo>[^/]+/[^/]+?)(?:/-)?/"
+    r"^https?://[^/]+/(?P<repo>[^/]+(?:/[^/]+)+?)(?:/-)?/"
     r"(?:pull|pulls|merge_requests|pull-requests)/(?P<number>\d+)"
 )
 
@@ -186,8 +186,10 @@ def details_from_forge(pr: Mapping[str, Any]) -> Dict[str, Any]:
 def details_from_webhook(event_data: Mapping[str, Any]) -> Dict[str, Any]:
     """Title, body and author login from a pull request webhook payload.
 
-    GitHub sends ``pull_request``, GitLab ``object_attributes`` (with the
-    author under ``user``), Bitbucket Cloud ``pullrequest``. Webhooks carry
+    GitHub sends ``pull_request``, GitLab ``object_attributes``, Bitbucket
+    Cloud ``pullrequest``. GitLab's top-level ``user`` is whoever acted on
+    the merge request, not its author, so the author is left for the forge
+    read unless the attributes name one. Webhooks carry
     no file list.
 
     Args:
@@ -209,7 +211,7 @@ def details_from_webhook(event_data: Mapping[str, Any]) -> Dict[str, Any]:
         login = user.get("login") if isinstance(user, Mapping) else None
     elif isinstance(gitlab, Mapping):
         title, body = gitlab.get("title"), gitlab.get("description")
-        user = payload.get("user")
+        user = gitlab.get("author")
         login = user.get("username") if isinstance(user, Mapping) else None
     elif isinstance(bitbucket, Mapping):
         title, body = bitbucket.get("title"), bitbucket.get("description")

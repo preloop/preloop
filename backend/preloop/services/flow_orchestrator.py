@@ -5717,9 +5717,17 @@ class FlowExecutionOrchestrator:
         except Exception:
             logger.exception("Finalizing the delivery report failed")
             return merged_result
-        return self._distribute_delivery_report(merged_result, run)
+        self._delivery_report_finalized = True
+        return merged_result
 
-    def _distribute_delivery_report(
+    async def _send_finalized_delivery_report(self, merged_result: Any) -> Any:
+        """Distribute the report once :meth:`_finalize_delivery_report` built it."""
+        if not getattr(self, "_delivery_report_finalized", False):
+            return merged_result
+        run = getattr(self, "_delivery_report_run", None)
+        return await self._distribute_delivery_report(merged_result, run)
+
+    async def _distribute_delivery_report(
         self, merged_result: Any, run: Optional["PolicyRun"]
     ) -> Any:
         """Email the finished report to its recipients and record it (#2020).
@@ -5735,7 +5743,7 @@ class FlowExecutionOrchestrator:
         if not isinstance(merged_result, dict):
             return merged_result
         try:
-            record = distribute_report(
+            record = await distribute_report(
                 self.db,
                 flow=self.flow,
                 execution=self.execution_log,
@@ -9927,6 +9935,7 @@ class FlowExecutionOrchestrator:
             # rules, the delta and the spend to the agent's report. The agent
             # cannot author what the run spent or what the last report asked.
             merged_result = self._finalize_delivery_report(merged_result)
+            merged_result = await self._send_finalized_delivery_report(merged_result)
 
             verification_evidence = self._resolve_verification_evidence()
             if verification_evidence is not None and isinstance(merged_result, dict):

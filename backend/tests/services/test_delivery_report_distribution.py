@@ -13,7 +13,7 @@ import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, Dict, List
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -120,8 +120,12 @@ class TestDetailsFromWebhook:
             ),
             (
                 {
-                    "object_attributes": {"title": "T", "description": "B"},
-                    "user": {"username": "b"},
+                    "object_attributes": {
+                        "title": "T",
+                        "description": "B",
+                        "author": {"username": "b"},
+                    },
+                    "user": {"username": "merger"},
                 },
                 "b",
             ),
@@ -143,6 +147,17 @@ class TestDetailsFromWebhook:
             "body": "B",
             "author_login": login,
         }
+
+    def test_gitlab_actor_is_not_taken_for_the_author(self) -> None:
+        details = facts.details_from_webhook(
+            {
+                "payload": {
+                    "object_attributes": {"title": "T", "description": "B"},
+                    "user": {"username": "merger"},
+                }
+            }
+        )
+        assert "author_login" not in details
 
     def test_unknown_payload_states_nothing(self) -> None:
         assert facts.details_from_webhook({"payload": {"issue": {}}}) == {}
@@ -182,6 +197,40 @@ def test_report_without_details_lists_no_files() -> None:
     assert change["files"] == []
     assert change["files_changed"] is None
     assert change["body_summary"] is None
+    assert change["files_observed"] is False
+    assert "File list not read" in report["report_markdown"]
+
+
+def test_an_observed_empty_file_list_is_not_reported_as_unread() -> None:
+    report = dr.assemble_report(
+        window=WINDOW,
+        pull_requests=[
+            {
+                "url": PR_URL,
+                "merged_at": "2026-10-20T10:00:00+00:00",
+                "changes": {"changed_files": []},
+            }
+        ],
+        issues=[],
+    )
+    assert report["shipped"][0]["files_observed"] is True
+    assert "File list not read" not in report["report_markdown"]
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (PR_URL, (REPO, 7)),
+        (
+            "https://gitlab.com/group/sub/project/-/merge_requests/7",
+            ("group/sub/project", 7),
+        ),
+        ("https://gitlab.com/group/project/-/merge_requests/9", ("group/project", 9)),
+        ("https://example.com/not-a-pr", None),
+    ],
+)
+def test_parse_pr_key(url: str, expected: Any) -> None:
+    assert facts.parse_pr_key(url) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -510,12 +559,14 @@ class TestDistribute:
             )
 
         with patch("preloop.utils.email.send_email", fake_send):
-            record = dre.distribute_report(
-                db,
-                flow=SimpleNamespace(account_id=owner.account_id),
-                execution=SimpleNamespace(id="exec-1"),
-                report=report,
-                policy=dr.DeliveryReportPolicy(**policy),
+            record = asyncio.run(
+                dre.distribute_report(
+                    db,
+                    flow=SimpleNamespace(account_id=owner.account_id),
+                    execution=SimpleNamespace(id="exec-1"),
+                    report=report,
+                    policy=dr.DeliveryReportPolicy(**policy),
+                )
             )
         return record, sent
 
@@ -543,11 +594,32 @@ class TestDistribute:
     def test_opted_out_owner_is_not_emailed(
         self, db_session: Session, owner: Any
     ) -> None:
-        record, sent = self._send(
-            db_session, owner, _report(), opted_out_user_ids=[str(owner.id)]
+        crud_delivery_report_policy.set_user_opt_out(
+            db_session, account_id=owner.account_id, user_id=owner.id, opted_out=True
         )
+        record, sent = self._send(db_session, owner, _report())
         assert sent == []
         assert record["status"] == "no_recipients"
+
+    def test_opt_out_during_the_run_is_honoured(
+        self, db_session: Session, owner: Any
+    ) -> None:
+        # The run started with a snapshot that still lists the owner; the
+        # opt-out stored since then wins.
+        crud_delivery_report_policy.set_user_opt_out(
+            db_session, account_id=owner.account_id, user_id=owner.id, opted_out=True
+        )
+        record, sent = self._send(db_session, owner, _report(), opted_out_user_ids=[])
+        assert (record["status"], sent) == ("no_recipients", [])
+
+    def test_turned_off_during_the_run_is_not_sent(
+        self, db_session: Session, owner: Any
+    ) -> None:
+        crud_delivery_report_policy.save_overrides(
+            db_session, account_id=owner.account_id, overrides={"enabled": False}
+        )
+        record, sent = self._send(db_session, owner, _report(), enabled=True)
+        assert (record["status"], sent) == ("disabled", [])
 
     def test_sent_once(self, db_session: Session, owner: Any) -> None:
         report = {**_report(), dre.DISTRIBUTION_KEY: {"status": "sent"}}
@@ -568,12 +640,14 @@ class TestDistribute:
             raise EmailError("smtp down")
 
         with patch("preloop.utils.email.send_email", failing):
-            record = dre.distribute_report(
-                db_session,
-                flow=SimpleNamespace(account_id=owner.account_id),
-                execution=SimpleNamespace(id="exec-1"),
-                report=_report(),
-                policy=None,
+            record = asyncio.run(
+                dre.distribute_report(
+                    db_session,
+                    flow=SimpleNamespace(account_id=owner.account_id),
+                    execution=SimpleNamespace(id="exec-1"),
+                    report=_report(),
+                    policy=None,
+                )
             )
         assert record["status"] == "failed"
         assert record["failed"] == [str(owner.id)]
@@ -588,11 +662,26 @@ def test_orchestrator_stores_the_distribution_record() -> None:
     orchestrator.flow = SimpleNamespace(id="flow-1", account_id="acct-1")
     with patch(
         "preloop.services.delivery_report_email.distribute_report",
-        return_value={"status": "sent", "sent_to": ["u"]},
+        new=AsyncMock(return_value={"status": "sent", "sent_to": ["u"]}),
     ) as distribute:
-        result = orchestrator._distribute_delivery_report({"status": "success"}, None)
+        result = asyncio.run(
+            orchestrator._distribute_delivery_report({"status": "success"}, None)
+        )
     assert result[dre.DISTRIBUTION_KEY]["status"] == "sent"
     assert distribute.call_args.kwargs["policy"] is None
+
+
+def test_orchestrator_sends_only_a_finalized_report() -> None:
+    from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+    orchestrator = object.__new__(FlowExecutionOrchestrator)
+    with patch(
+        "preloop.services.delivery_report_email.distribute_report", new=AsyncMock()
+    ) as distribute:
+        original = {"status": "success"}
+        result = asyncio.run(orchestrator._send_finalized_delivery_report(original))
+    assert result is original
+    distribute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -655,6 +744,31 @@ def test_opt_out_token_for_a_user_outside_the_account_is_refused(
     assert client.post(OPT_OUT, params={"token": token}).status_code == 400
 
 
+@pytest.fixture
+def anonymous_client(app: Any) -> Any:
+    """A client with no signed-in user: the opt-out link must work without one."""
+    from preloop.api.auth import get_current_active_user
+
+    app.dependency_overrides.pop(get_current_active_user, None)
+    with TestClient(app) as anonymous:
+        yield anonymous
+
+
+def test_opt_out_needs_no_session(
+    anonymous_client: TestClient, db_session: Session, owner: Any
+) -> None:
+    assert anonymous_client.get(SUBSCRIPTION).status_code == 401
+    page = anonymous_client.get(OPT_OUT, params={"token": _token(owner)})
+    assert page.status_code == 200
+    response = anonymous_client.post(
+        OPT_OUT,
+        params={"token": _token(owner)},
+        data={"List-Unsubscribe": "One-Click"},
+    )
+    assert response.status_code == 200
+    assert _opted_out(db_session, owner) == [str(owner.id)]
+
+
 def test_subscription_round_trip(
     client: TestClient, db_session: Session, owner: Any
 ) -> None:
@@ -666,6 +780,29 @@ def test_subscription_round_trip(
     body = client.put(SUBSCRIPTION, json={"opted_out": False}).json()
     assert body["opted_out"] is False
     assert _opted_out(db_session, owner) == []
+
+
+def test_owner_sees_the_toggle_when_the_named_lead_is_inactive(
+    client: TestClient, db_session: Session, owner: Any
+) -> None:
+    lead = _member(db_session, owner.account_id, active=False)
+    crud_delivery_report_policy.save_overrides(
+        db_session,
+        account_id=owner.account_id,
+        overrides={
+            "recipients": "sponsoring_lead",
+            "sponsoring_lead_user_id": str(lead.id),
+        },
+    )
+    assert client.get(SUBSCRIPTION).json()["is_recipient"] is True
+
+
+def test_opted_out_recipient_still_sees_the_toggle(
+    client: TestClient, db_session: Session, owner: Any
+) -> None:
+    client.put(SUBSCRIPTION, json={"opted_out": True})
+    body = client.get(SUBSCRIPTION).json()
+    assert (body["opted_out"], body["is_recipient"]) == (True, True)
 
 
 def test_account_policy_save_keeps_personal_opt_outs(

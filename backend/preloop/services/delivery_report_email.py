@@ -13,6 +13,7 @@ A run sends at most once: the outcome is stored on the result as
 
 from __future__ import annotations
 
+import asyncio
 import html
 import logging
 from datetime import datetime, timezone
@@ -169,7 +170,7 @@ def render_email(
     return subject, "\n".join(text) + "\n", body_html
 
 
-def distribute_report(
+async def distribute_report(
     db: Any,
     *,
     flow: Any,
@@ -182,14 +183,17 @@ def distribute_report(
 
     Nothing is sent for a report that did not complete, for a turned-off
     report, or for a result that was already distributed. A failed send to
-    one recipient is recorded and does not fail the run.
+    one recipient is recorded and does not fail the run. The blocking SMTP
+    send runs in a worker thread so a slow relay does not hold the event
+    loop; database reads stay on the caller's thread.
 
     Args:
         db: Session.
         flow: The Delivery Report flow.
         execution: The finished execution.
         report: The finalized result.
-        policy: The account's effective policy; None reads the defaults.
+        policy: The policy the run started with; None reads the defaults.
+            Recipients, opt-outs and the on switch are re-read at send time.
         now: Clock for the record.
 
     Returns:
@@ -197,7 +201,7 @@ def distribute_report(
         the report is not one that is sent.
     """
     from preloop.models.crud import crud_delivery_report_policy
-    from preloop.services.delivery_report import DEFAULT_POLICY
+    from preloop.services.delivery_report import DEFAULT_POLICY, resolve_policy
     from preloop.utils.email import EmailError, send_email
 
     if not isinstance(report, Mapping) or report.get("status") != "success":
@@ -206,15 +210,20 @@ def distribute_report(
         return None
     policy = policy or DEFAULT_POLICY
     stamp = (now or datetime.now(timezone.utc)).isoformat()
-    if not policy.enabled:
-        return {"status": "disabled", "sent_to": [], "at": stamp}
     account_id = getattr(flow, "account_id", None)
+    # Who receives it is read now, not from the snapshot the run started
+    # with, so an opt-out or a turn-off during the run is honoured at once.
+    current = resolve_policy(
+        crud_delivery_report_policy.get_overrides(db, account_id=account_id)
+    )
+    if not (policy.enabled and current.enabled):
+        return {"status": "disabled", "sent_to": [], "at": stamp}
     recipients = crud_delivery_report_policy.report_recipients(
         db,
         account_id=account_id,
-        recipient_rule=policy.recipients,
-        sponsoring_lead_user_id=policy.sponsoring_lead_user_id,
-        opted_out_user_ids=policy.opted_out_user_ids,
+        recipient_rule=current.recipients,
+        sponsoring_lead_user_id=current.sponsoring_lead_user_id,
+        opted_out_user_ids=current.opted_out_user_ids,
     )
     if not recipients:
         return {"status": "no_recipients", "sent_to": [], "at": stamp}
@@ -227,7 +236,8 @@ def distribute_report(
         )
         subject, text, body = render_email(report, link=link, opt_out=unsubscribe)
         try:
-            send_email(
+            await asyncio.to_thread(
+                send_email,
                 user.email,
                 subject,
                 text,

@@ -32,7 +32,7 @@ def _uuid(value: Any) -> uuid.UUID:
 
 
 def _row(
-    db: Session, *, account_id: Any, project_id: Any = None
+    db: Session, *, account_id: Any, project_id: Any = None, lock: bool = False
 ) -> Optional[models.DeliveryReportPolicySetting]:
     query = select(models.DeliveryReportPolicySetting).where(
         models.DeliveryReportPolicySetting.account_id == _uuid(account_id)
@@ -43,11 +43,13 @@ def _row(
         query = query.where(
             models.DeliveryReportPolicySetting.project_id == _uuid(project_id)
         )
+    if lock:
+        query = query.with_for_update()
     return db.scalar(query)
 
 
 def get_overrides(
-    db: Session, *, account_id: Any, project_id: Any = None
+    db: Session, *, account_id: Any, project_id: Any = None, lock: bool = False
 ) -> Optional[Dict[str, Any]]:
     """The stored overrides of the account row, or of one project row.
 
@@ -55,11 +57,12 @@ def get_overrides(
         db: Session.
         account_id: Owning account.
         project_id: A project, or None for the account row.
+        lock: Hold the row until the caller commits, for a read-modify-write.
 
     Returns:
         The overrides, or None when no row exists.
     """
-    row = _row(db, account_id=account_id, project_id=project_id)
+    row = _row(db, account_id=account_id, project_id=project_id, lock=lock)
     return dict(row.overrides or {}) if row is not None else None
 
 
@@ -452,7 +455,9 @@ def set_user_opt_out(
     """Add or remove one user in the account policy's opt-out list.
 
     Writes the account row's overrides directly: the opt-out is the
-    person's own choice and needs no budget permission. The caller commits.
+    person's own choice and needs no budget permission. The row is locked
+    so a concurrent opt-out or policy save cannot drop this change. The
+    caller commits.
 
     Args:
         db: Session.
@@ -463,7 +468,7 @@ def set_user_opt_out(
     Returns:
         The stored opt-out list.
     """
-    row = _row(db, account_id=account_id)
+    row = _row(db, account_id=account_id, lock=True)
     overrides = dict(row.overrides or {}) if row is not None else {}
     current = [str(u) for u in overrides.get("opted_out_user_ids") or []]
     key = str(user_id)

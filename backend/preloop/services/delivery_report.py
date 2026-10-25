@@ -656,6 +656,14 @@ def _changed_files(pr: Mapping[str, Any]) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _files_observed(pr: Mapping[str, Any]) -> bool:
+    """Whether the PR's file list was read at all, even if empty."""
+    changes = pr.get("changes")
+    return isinstance(changes, Mapping) and isinstance(
+        changes.get("changed_files"), list
+    )
+
+
 def _file_count(pr: Mapping[str, Any]) -> Optional[int]:
     """The PR's own changed-file count, when the response states one."""
     changes = pr.get("changes")
@@ -1387,6 +1395,9 @@ def assemble_report(
                 "body_summary": body_summary(pr.get("description")),
                 "files": [f["filename"] for f in changed][:MAX_LISTED_FILES],
                 "files_changed": _file_count(pr) if changed else None,
+                # False when the file list was never read, so "no files"
+                # and "file-based flags not checked" stay distinguishable.
+                "files_observed": _files_observed(pr),
                 "purpose": purpose,
                 "risk_flags": risk,
                 "evidence_gaps": evidence_gaps(pr),
@@ -1976,6 +1987,8 @@ def change_detail_lines(change: Mapping[str, Any]) -> List[str]:
         lines.append(
             f"Files ({total}): {shown}" + (f" and {more} more" if more > 0 else "")
         )
+    elif change.get("files_observed") is False:
+        lines.append("File list not read: file-based risk flags were not checked")
     return lines
 
 
@@ -2378,9 +2391,10 @@ def deterministic_report(
     """Build the report without a model call, from stored tracker facts.
 
     Shipped and open PRs come from the pull request ledger, closed and open
-    issues from the tracker sync, audits from completed merge audits. The
-    ledger holds no PR title, body or file list, so file-based risk flags
-    and brief gaps only appear on assessed runs.
+    issues from the tracker sync, audits from completed merge audits. PR
+    title, body and file list come from the ledger, stamped by webhooks and
+    filled by a bounded forge read before the run; a PR whose file list was
+    never read is marked so, and its file-based flags are not checked.
 
     Args:
         db: Session.
