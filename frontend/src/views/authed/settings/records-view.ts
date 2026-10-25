@@ -3,6 +3,8 @@ import { formatCount, formatCountExact } from '../../../utils/count-format';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
+import { formatUTCDateTime, parseUtc } from '../../../utils/date';
+import { relativeTime } from '../../../utils/relative-time';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -668,6 +670,17 @@ export class RecordsView extends LitElement {
     }
   }
 
+  /**
+   * Records are evidence, so a time here keeps its exact value on the page:
+   * relative first like every console time, the exact UTC instant (to the
+   * second, zone stated) beside it.
+   */
+  private stamp(value: string | null | undefined, fallback = '') {
+    if (parseUtc(value) === null) return fallback;
+    return html`${relativeTime(value)}
+      <span class="note">${formatUTCDateTime(value as string)}</span>`;
+  }
+
   private fact(label: string, value: unknown) {
     return html`<dt>${label}</dt>
       <dd>${value ?? 'None'}</dd>`;
@@ -738,7 +751,7 @@ export class RecordsView extends LitElement {
                         background pass and this count lags the writes.
                       </span>`
                   )}
-                  ${this.fact('Last sealed at', status.last_sealed_at || 'Never')}
+                  ${this.fact('Last sealed', this.stamp(status.last_sealed_at, 'Never'))}
                   ${this.fact(
                     'Pruned below',
                     `${status.pruned_below_seq} (retention purge, not tampering)`
@@ -747,7 +760,9 @@ export class RecordsView extends LitElement {
                   ${this.fact(
                     'Latest checkpoint',
                     status.latest_checkpoint
-                      ? `seq ${status.latest_checkpoint.seq} at ${status.latest_checkpoint.checkpointed_at}, key ${status.latest_checkpoint.signing_key_id || 'none'}`
+                      ? html`seq ${status.latest_checkpoint.seq},
+                        ${this.stamp(status.latest_checkpoint.checkpointed_at)},
+                        key ${status.latest_checkpoint.signing_key_id || 'none'}`
                       : 'None yet'
                   )}
                 </dl>`
@@ -905,7 +920,7 @@ ${offlineAuditCommand(range)}</pre>
                           html`<tr>
                             <td>${row.seq}</td>
                             <td>${row.row_count}</td>
-                            <td>${row.checkpointed_at}</td>
+                            <td>${this.stamp(row.checkpointed_at)}</td>
                             <td>${row.signing_key_id || 'None'}</td>
                             <td>
                               ${
@@ -984,9 +999,9 @@ ${offlineAuditCommand(range)}</pre>
                         html`<tr>
                           <td>${key.key_id}</td>
                           <td>${key.algorithm}</td>
-                          <td>${key.created_at || 'Unknown'}</td>
+                          <td>${this.stamp(key.created_at, 'Unknown')}</td>
                           <td>
-                            ${key.active ? 'Active' : `Retired ${key.retired_at || ''}`}
+                            ${key.active ? 'Active' : html`Retired ${this.stamp(key.retired_at)}`}
                           </td>
                           <td>
                             <code>${truncateMiddle(key.public_key, 24)}</code>
@@ -1258,11 +1273,12 @@ ${offlineAuditCommand(range)}</pre>
                         </td>
                         <td>${hold.reason}</td>
                         <td>${hold.placed_by_user_id || 'Unknown'}</td>
-                        <td>${hold.placed_at || 'Unknown'}</td>
+                        <td>${this.stamp(hold.placed_at, 'Unknown')}</td>
                         <td>
                           ${
                             hold.released_at
-                              ? `${hold.released_at} by ${hold.released_by_user_id || 'unknown'}`
+                              ? html`${this.stamp(hold.released_at)} by
+                                ${hold.released_by_user_id || 'unknown'}`
                               : 'Still in force'
                           }
                         </td>

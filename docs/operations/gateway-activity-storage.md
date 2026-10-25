@@ -7,6 +7,11 @@ session is stored as one row in the `runtime_session_activity` table. The
 row holds usage, cost and timing, plus the conversation content that the
 session views show.
 
+A model call made by a flow run is stored instead as a `model_gateway_call`
+row in `flow_execution_log`, the execution's log, with the same payload. The
+flow execution page builds its Transcript tab from these rows. Everything
+below about what a row stores applies to both tables.
+
 ## What one row stores
 
 A model call sends the whole conversation so far. Older releases stored all
@@ -72,6 +77,26 @@ Compaction frees space inside the table for new rows. The table file on disk
 does not shrink until Postgres rewrites it (`VACUUM FULL` or `pg_repack`),
 which you schedule in your own maintenance window.
 
+### Flow execution logs
+
+Flow log rows written by older releases are compacted by the same pass when
+`FLOW_LOG_GATEWAY_COMPACTION_ENABLED=true`. It is off by default because it
+removes replayed history from existing rows; new rows are stored slim
+whatever this setting says. It uses the same batch settings, skips
+executions under legal hold, and leaves every other log type (agent log
+lines, tool calls, status updates) untouched.
+
+```bash
+# See what compacting flow logs would do, without writing anything
+python -m preloop.services.gateway_activity_maintenance --flow-logs --no-compaction --dry-run
+
+# Compact up to 500 batches of flow log rows now
+python -m preloop.services.gateway_activity_maintenance --flow-logs --no-compaction --max-batches 500
+```
+
+The summary reports flow log rows under `flow_log_compaction`. Body
+retention below does not apply to flow logs.
+
 ## Retention of conversation content
 
 With `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED=true`, the same hourly pass also
@@ -100,6 +125,7 @@ manual run with `--no-size-backfill`.
 | --- | --- | --- |
 | `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` | `32768` | Byte cap for one stored gateway call row; `0` disables the cap |
 | `GATEWAY_ACTIVITY_COMPACTION_ENABLED` | `true` | Hourly compaction of rows from older releases |
+| `FLOW_LOG_GATEWAY_COMPACTION_ENABLED` | `false` | Hourly compaction of flow log model call rows from older releases |
 | `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED` | `false` | Hourly removal of content older than the plan history window |
 | `GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED` | `true` | Hourly fill of `metadata_bytes` on rows from older releases |
 | `GATEWAY_ACTIVITY_MAINTENANCE_BATCH_SIZE` | `200` | Rows per transaction |

@@ -6,14 +6,14 @@ Schema only: existing rows are filled by the bounded gateway activity
 maintenance pass after the deploy, never inside this migration.
 
 Revision ID: 20261112_activity_meta_bytes
-Revises: 20261110_media_timing
+Revises: 20261112_delivery_report_policy
 """
 
 from alembic import op
 import sqlalchemy as sa
 
 revision = "20261112_activity_meta_bytes"
-down_revision = "20261110_media_timing"
+down_revision = "20261112_delivery_report_policy"
 branch_labels = None
 depends_on = None
 

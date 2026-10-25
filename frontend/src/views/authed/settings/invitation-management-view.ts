@@ -1,9 +1,8 @@
-import { formatRelativeTime } from '../../../utils/date';
 import { ConsoleStatus } from '../../../controllers/console-status';
-import { parseUTCDate } from '../../../utils/date';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import { EditPermissions } from '../../../controllers/edit-permissions';
 import { LitElement, html, css, unsafeCSS } from 'lit';
+import { relativeTime } from '../../../utils/relative-time';
 import { customElement, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import {
@@ -262,15 +261,6 @@ export class InvitationManagementView extends LitElement {
     }
   }
 
-  formatDate(dateString: string): string {
-    const date = parseUTCDate(dateString);
-    return (
-      date.toLocaleDateString() +
-      ' ' +
-      date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    );
-  }
-
   getStatusVariant(
     status: string
   ): 'success' | 'warning' | 'neutral' | 'danger' {
@@ -414,10 +404,7 @@ export class InvitationManagementView extends LitElement {
                 <div class="invitation-details">
                   <h3 class="invitation-email">${invitation.email}</h3>
                   <p class="invitation-date">
-                    Sent
-                    <span title=${this.formatDate(invitation.created_at)}
-                      >${formatRelativeTime(invitation.created_at)}</span
-                    >
+                    Sent ${relativeTime(invitation.created_at)}
                   </p>
                   <div class="invitation-meta">
                     <sl-badge
@@ -430,7 +417,7 @@ export class InvitationManagementView extends LitElement {
                       invitation.status === 'pending'
                         ? html`
                             <sl-badge class="chip" variant="neutral">
-                              Expires ${this.formatDate(invitation.expires_at)}
+                              Expires ${relativeTime(invitation.expires_at)}
                             </sl-badge>
                           `
                         : ''
@@ -439,8 +426,7 @@ export class InvitationManagementView extends LitElement {
                       invitation.accepted_at
                         ? html`
                             <sl-badge class="chip" variant="success">
-                              Accepted
-                              ${this.formatDate(invitation.accepted_at)}
+                              Accepted ${relativeTime(invitation.accepted_at)}
                             </sl-badge>
                           `
                         : ''

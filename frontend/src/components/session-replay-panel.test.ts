@@ -1670,3 +1670,213 @@ describe('SessionReplayPanel Requests summary and replay start', () => {
     );
   });
 });
+
+describe('SessionReplayPanel Requests search and copy', () => {
+  const events = () => [
+    previewEvent(
+      'e1',
+      '2026-06-07T12:00:00Z',
+      [{ role: 'user', text: 'Review the patch' }],
+      { model_alias: 'model-a', total_tokens: 1234 }
+    ),
+    previewEvent(
+      'e2',
+      '2026-06-07T12:01:00Z',
+      [{ role: 'assistant', text: 'Looks good' }],
+      { model_alias: 'model-b', total_tokens: 42 }
+    ),
+  ];
+
+  async function search(element: SessionReplayPanel, query: string) {
+    const input = element.shadowRoot!.querySelector<HTMLInputElement>(
+      'input[aria-label="Search requests"]'
+    )!;
+    input.value = query;
+    input.dispatchEvent(new Event('input'));
+    await element.updateComplete;
+  }
+
+  const turns = (element: SessionReplayPanel) =>
+    [...element.shadowRoot!.querySelectorAll('.chat-turn')].map((turn) =>
+      turn.getAttribute('data-event-id')
+    );
+  const count = (element: SessionReplayPanel) =>
+    element
+      .shadowRoot!.querySelector('.chat-search-count')
+      ?.textContent?.replace(/\s+/g, ' ')
+      .trim() ?? null;
+
+  it('filters rows by model and message text, case-insensitively', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${events()}
+      ></session-replay-panel>
+    `);
+    expect(turns(element)).to.deep.equal(['e2', 'e1']);
+    expect(count(element)).to.equal(null);
+
+    await search(element, 'MODEL-A');
+    expect(turns(element)).to.deep.equal(['e1']);
+    expect(count(element)).to.equal('1 of 2');
+
+    await search(element, 'looks');
+    expect(turns(element)).to.deep.equal(['e2']);
+
+    await search(element, 'nothing like this');
+    expect(turns(element)).to.deep.equal([]);
+    expect(count(element)).to.equal('0 of 2');
+    expect(element.shadowRoot!.querySelector('.empty')?.textContent).to.include(
+      'No requests match'
+    );
+
+    await search(element, '');
+    expect(turns(element)).to.deep.equal(['e2', 'e1']);
+    expect(count(element)).to.equal(null);
+  });
+
+  it('copies the shown rows as plain text blocks', async () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const copied: string[] = [];
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: async (value: string) => void copied.push(value) },
+    });
+    try {
+      const element = await fixture<SessionReplayPanel>(html`
+        <session-replay-panel
+          replayMode="timeline"
+          .session=${SESSION}
+          .events=${events()}
+        ></session-replay-panel>
+      `);
+      const copy = [...element.shadowRoot!.querySelectorAll('sl-button')].find(
+        (button) => button.textContent?.includes('Copy as text')
+      )!;
+      const time = (iso: string) => new Date(iso).toLocaleString();
+      const blockA = `Time: ${time('2026-06-07T12:00:00Z')}\nModel: model-a\nTokens: 1,234\nuser: Review the patch`;
+      const blockB = `Time: ${time('2026-06-07T12:01:00Z')}\nModel: model-b\nTokens: 42\nassistant: Looks good`;
+
+      copy.click();
+      await waitUntil(() => copied.length === 1);
+      expect(copied[0]).to.equal(`${blockB}\n\n${blockA}`);
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelector('[role="status"]')?.textContent
+      ).to.include('Copied');
+
+      await search(element, 'patch');
+      copy.click();
+      await waitUntil(() => copied.length === 2);
+      expect(copied[1]).to.equal(blockA);
+    } finally {
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
+
+  it('builds tool and approval row text from what the row shows', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="timeline"
+        .session=${SESSION}
+        .events=${[]}
+      ></session-replay-panel>
+    `);
+    const internals = element as unknown as {
+      approvalState: { now: number };
+      chatRowText(row: unknown): { header: string[]; body: string[] };
+      chatRowMatches(row: unknown, query: string): boolean;
+    };
+    const now = Date.parse('2026-06-07T13:00:00Z');
+    internals.approvalState = { ...internals.approvalState, now };
+    const tool = {
+      id: 't1',
+      timestamp: '2026-06-07T12:00:00Z',
+      tool: { name: 'Bash', arguments: 'ls -la', result: 'README.md' },
+    };
+    const time = `Time: ${new Date('2026-06-07T12:00:00Z').toLocaleString()}`;
+    expect(internals.chatRowText(tool)).to.deep.equal({
+      header: [time, 'Tool: Bash'],
+      body: ['Arguments: ls -la', 'Result: README.md'],
+    });
+    expect(internals.chatRowMatches(tool, 'readme')).to.equal(true);
+
+    const approval = (status: string, expires_at?: string) => ({
+      id: 'a1',
+      timestamp: '2026-06-07T12:00:00Z',
+      request: { tool_name: 'write_file', status, expires_at },
+    });
+    expect(internals.chatRowText(approval('declined')).body).to.deep.equal([
+      'Denied',
+    ]);
+    // A pending request past its expiry reads as timed out, as on the card.
+    const expired = approval('pending', '2026-06-07T12:30:00Z');
+    expect(internals.chatRowText(expired).body).to.deep.equal(['Timed out']);
+    expect(internals.chatRowMatches(expired, 'timed out')).to.equal(true);
+    expect(internals.chatRowMatches(approval('declined'), 'denied')).to.equal(
+      true
+    );
+  });
+
+  it('disables copy when nothing matches and reports a failed copy', async () => {
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('denied');
+        },
+      },
+    });
+    const toasts: string[] = [];
+    const listener = (event: Event) =>
+      toasts.push((event as CustomEvent<{ message: string }>).detail.message);
+    window.addEventListener('show-toast', listener);
+    const consoleError = console.error;
+    console.error = () => {};
+    try {
+      const element = await fixture<SessionReplayPanel>(html`
+        <session-replay-panel
+          replayMode="timeline"
+          .session=${SESSION}
+          .events=${events()}
+        ></session-replay-panel>
+      `);
+      const copy = () =>
+        [...element.shadowRoot!.querySelectorAll('sl-button')].find((button) =>
+          button.textContent?.includes('Copy as text')
+        )!;
+
+      copy().click();
+      await waitUntil(() => toasts.length === 1);
+      expect(toasts[0]).to.equal(
+        'Could not copy the requests to the clipboard.'
+      );
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('[role="status"]')).to.equal(
+        null
+      );
+
+      await search(element, 'nothing like this');
+      expect(copy().hasAttribute('disabled')).to.equal(true);
+
+      // A type filter that leaves no rows, with no query: nothing to copy.
+      await search(element, '');
+      expect(copy().hasAttribute('disabled')).to.equal(false);
+      (element as unknown as { chatTypeFilter: string }).chatTypeFilter =
+        'tools';
+      await element.updateComplete;
+      expect(
+        element.shadowRoot!.querySelectorAll('.chat-turn').length
+      ).to.equal(0);
+      expect(copy().hasAttribute('disabled')).to.equal(true);
+    } finally {
+      console.error = consoleError;
+      window.removeEventListener('show-toast', listener);
+      if (original) Object.defineProperty(navigator, 'clipboard', original);
+      else delete (navigator as { clipboard?: Clipboard }).clipboard;
+    }
+  });
+});

@@ -495,6 +495,27 @@ class TestMergeAuditReuse:
         assert [c["met"] for c in audit["purpose"]["criteria"]] == [True, True]
         assert audit["purpose"]["criteria"][0]["text"] == "CSV export includes headers"
 
+    def test_only_supplied_runtime_evidence_counts(self) -> None:
+        execution = _executions()[0]
+        lifecycle = execution.trigger_event_details["payload"]["lifecycle"]
+        lifecycle["runtime_evidence"] = {"artifacts": [{"id": "artifact:55"}]}
+        first, second = execution.result["criteria"]
+        execution.result = {
+            **execution.result,
+            "criteria": [
+                {**first, "code": [], "tests": [], "runtime": ["artifact:55"]},
+                # The controller dropped this invented id and the verdict.
+                {**second, "code": [], "tests": [], "runtime": ["preview:404"]},
+            ],
+        }
+        record = dr.merge_audit_record(execution)
+        assert record is not None
+        headers, date_filter = record["purpose"]["criteria"]
+        assert headers["met"] is True
+        assert headers["evidence"] == ["export output inspected", "artifact:55"]
+        assert date_filter["met"] is None
+        assert "preview:404" not in date_filter["evidence"]
+
     def test_audited_closed_issue_takes_the_audit(self) -> None:
         report = _window_report(merge_audits=_audits())
         closed = {i["ref"]: i for i in report["closed_issues"]}
@@ -617,6 +638,70 @@ class TestMergeAuditReuse:
             side_effect=RuntimeError("db down"),
         ):
             assert orchestrator._delivery_report_inputs(trigger) is trigger
+
+
+class TestOrchestratorPolicy:
+    def _orchestrator(self) -> Any:
+        from preloop.services.flow_orchestrator import FlowExecutionOrchestrator
+
+        orchestrator = object.__new__(FlowExecutionOrchestrator)
+        orchestrator.db = object()
+        orchestrator.execution_log = SimpleNamespace(id="exec-1")
+        orchestrator.trigger_event_data = {"payload": {"window": WINDOW}}
+        orchestrator.flow = SimpleNamespace(
+            id="flow-1",
+            account_id="acct-1",
+            agent_config={"report_kind": "delivery_report"},
+        )
+        return orchestrator
+
+    def test_an_assessed_run_receives_the_policy(self) -> None:
+        orchestrator = self._orchestrator()
+        run = dr.PolicyRun(decision="onboarding", policy=dr.DeliveryReportPolicy())
+        with (
+            patch("preloop.services.delivery_report.plan_policy_run", return_value=run),
+            patch(
+                "preloop.models.crud.crud_flow_execution.completed_merge_audits",
+                return_value=[],
+            ),
+        ):
+            data = orchestrator._delivery_report_inputs({"payload": {"window": WINDOW}})
+        assert data is not None
+        block = data["payload"]["report_policy"]
+        assert block["decision"] == "onboarding"
+        assert block["policy"]["tracker_writes"]["close"] == "deny"
+
+    def test_a_run_that_may_not_call_a_model_builds_the_report_itself(self) -> None:
+        orchestrator = self._orchestrator()
+        run = dr.PolicyRun(
+            decision="skipped_no_credit", policy=dr.DeliveryReportPolicy()
+        )
+        built = dr.assemble_report(
+            window=WINDOW, pull_requests=[], issues=[], assessment=run.decision
+        )
+        with patch(
+            "preloop.services.delivery_report.deterministic_report", return_value=built
+        ) as build:
+            result = orchestrator._run_deterministic_delivery_report(run)
+        assert build.call_args.kwargs["window"]["to"] == WINDOW["to"]
+        assert result["status"] == "SUCCEEDED"
+        assert result["result"]["summary"]["assessments_skipped_reason"] == "no_credit"
+
+    def test_an_unreadable_policy_keeps_the_preset_defaults(self) -> None:
+        orchestrator = self._orchestrator()
+        with patch(
+            "preloop.services.delivery_report.plan_policy_run",
+            side_effect=RuntimeError("db down"),
+        ):
+            assert orchestrator._plan_delivery_report_run() is None
+
+    def test_a_disabled_report_is_not_finalized(self) -> None:
+        orchestrator = self._orchestrator()
+        orchestrator._delivery_report_run = dr.PolicyRun(
+            decision="disabled", policy=dr.DeliveryReportPolicy(enabled=False)
+        )
+        result = {"status": "disabled", "reason": "off"}
+        assert orchestrator._finalize_delivery_report(result) is result
 
 
 class TestBriefsAndSummaries:
@@ -849,8 +934,12 @@ class TestPolicyDefaults:
         )
 
     def test_budgets_and_modes(self) -> None:
-        policy = dr.DeliveryReportPolicy()
-        assert (policy.per_run_usd, policy.monthly_usd) == (5.0, 25.0)
+        default = dr.DeliveryReportPolicy()
+        assert (default.per_run_usd, default.monthly_usd) == (5.0, 25.0)
+        # Deterministic is the default; recurring assessment is opted into.
+        assert default.report_mode == "deterministic"
+        assert default.assessments_allowed(0.0) is False
+        policy = dr.DeliveryReportPolicy(report_mode="assessed")
         assert policy.assessments_allowed(24.99) is True
         assert policy.assessments_allowed(25.0) is False
         assert policy.assessments_allowed(None) is True
@@ -1066,3 +1155,137 @@ class TestReviewFindings:
         latest = closed["acme/app#11"]["latest_comment"]
         assert latest["body"] == "measured: title search misses prefixes"
         assert closed["acme/app#12"]["latest_comment"] is None
+
+
+class TestPolicyResolution:
+    def test_defaults_resolve_as_stated(self) -> None:
+        policy = dr.resolve_policy(None, None)
+        assert policy.enabled is True
+        assert (policy.cadence, policy.weekday) == ("weekly", "mon")
+        assert policy.report_mode == "deterministic"
+        assert policy.onboarding_assessed_run is True
+        assert policy.recipients == "account_owner"
+        assert policy.tracker_writes.create_follow_up == "deny"
+        assert policy.tracker_writes.close == "deny"
+
+    def test_project_overrides_layer_on_the_account(self) -> None:
+        account = {"pr_ready_days": 3, "tracker_writes": {"create_follow_up": "allow"}}
+        project = {"pr_ready_days": 10, "per_run_usd": 99.0}
+        policy = dr.resolve_policy(account, project)
+        assert policy.pr_ready_days == 10
+        # Budgets are the account's; a stored project budget is ignored.
+        assert policy.per_run_usd == 5.0
+        assert policy.tracker_writes.create_follow_up == "allow"
+        assert policy.tracker_writes.reopen == "approval"
+
+    def test_a_stored_layer_that_no_longer_validates_is_skipped(self) -> None:
+        policy = dr.resolve_policy({"pr_ready_days": 0, "unknown": 1})
+        assert policy.pr_ready_days == 7
+
+    def test_close_allowed_is_rejected(self) -> None:
+        with pytest.raises(dr.PolicyOverrideError) as err:
+            dr.validate_account_overrides({"tracker_writes": {"close": "allow"}})
+        assert err.value.code == "close_not_allowed"
+
+    def test_recurring_assessment_needs_both_budgets(self) -> None:
+        with pytest.raises(dr.PolicyOverrideError) as err:
+            dr.validate_account_overrides({"report_mode": "assessed"})
+        assert err.value.code == "budget_required"
+        assert (
+            dr.validate_account_overrides(
+                {"report_mode": "assessed", "per_run_usd": 2.0, "monthly_usd": 10.0}
+            )["report_mode"]
+            == "assessed"
+        )
+
+    def test_unknown_fields_are_rejected(self) -> None:
+        with pytest.raises(dr.PolicyOverrideError):
+            dr.validate_account_overrides({"bogus": True})
+
+    def test_project_rejects_account_settings(self) -> None:
+        with pytest.raises(dr.PolicyOverrideError) as err:
+            dr.validate_project_overrides({"monthly_usd": 1.0})
+        assert err.value.code == "account_setting"
+        assert dr.validate_project_overrides({"enabled": False}) == {"enabled": False}
+
+
+class TestAssessmentDecision:
+    def test_first_run_is_the_onboarding_assessment(self) -> None:
+        policy = dr.DeliveryReportPolicy()
+        assert dr.assessment_decision(policy, has_previous_report=False) == "onboarding"
+        assert (
+            dr.assessment_decision(policy, has_previous_report=True) == "deterministic"
+        )
+
+    def test_recurrence_respects_the_monthly_budget(self) -> None:
+        policy = dr.DeliveryReportPolicy(report_mode="assessed", monthly_usd=10.0)
+        assert (
+            dr.assessment_decision(
+                policy, has_previous_report=True, spent_this_month_usd=9.0
+            )
+            == "assessed"
+        )
+        assert (
+            dr.assessment_decision(
+                policy, has_previous_report=True, spent_this_month_usd=10.0
+            )
+            == "skipped_budget"
+        )
+
+    def test_no_credit_skips_assessments(self) -> None:
+        policy = dr.DeliveryReportPolicy(report_mode="assessed")
+        assert (
+            dr.assessment_decision(
+                policy, has_previous_report=True, credit_available_usd=0.0
+            )
+            == "skipped_no_credit"
+        )
+
+    def test_turned_off(self) -> None:
+        policy = dr.DeliveryReportPolicy(enabled=False)
+        assert dr.assessment_decision(policy, has_previous_report=False) == "disabled"
+
+
+class TestPolicyInTheReport:
+    def test_no_credit_report_says_assessments_were_skipped(self) -> None:
+        report = dr.assemble_report(
+            window={"from": "2026-10-17T00:00:00Z", "to": "2026-10-24T00:00:00Z"},
+            pull_requests=[
+                {
+                    "url": "https://github.com/acme/app/pull/7",
+                    "merged_at": "2026-10-20T10:00:00Z",
+                    "state": "merged",
+                    "linked_issues": ["acme/app#3"],
+                }
+            ],
+            issues=[],
+            assessment="skipped_no_credit",
+        )
+        assert report["summary"]["assessments_skipped_reason"] == "no_credit"
+        assert report["shipped"][0]["issues"] == ["acme/app#3"]
+        assert "the account has no credit left" in report["report_markdown"]
+
+    def test_agent_cannot_author_the_decision(self) -> None:
+        report = dr.finalize_delivery_report(
+            {"assessment": {"decision": "skipped_no_credit"}}
+        )
+        assert "assessment" not in report
+        assert report["summary"]["assessments_skipped_reason"] is None
+
+    def test_disabled_repository_is_left_out(self) -> None:
+        report = dr.assemble_report(
+            window={"from": "2026-10-17T00:00:00Z", "to": "2026-10-24T00:00:00Z"},
+            pull_requests=[
+                {
+                    "url": "https://github.com/acme/app/pull/7",
+                    "merged_at": "2026-10-20T10:00:00Z",
+                },
+                {
+                    "url": "https://github.com/acme/docs/pull/8",
+                    "merged_at": "2026-10-20T10:00:00Z",
+                },
+            ],
+            issues=[],
+            project_policies={"acme/docs": dr.resolve_policy(None, {"enabled": False})},
+        )
+        assert [c["ref"] for c in report["shipped"]] == ["acme/app#7"]

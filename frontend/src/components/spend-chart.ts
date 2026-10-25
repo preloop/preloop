@@ -80,18 +80,22 @@ export function niceMax(value: number): number {
 }
 
 /**
- * Spend over time for the Cost page: a full-width bar chart with its own
- * range (presets or a custom pair of dates), bucket size, and back/forward
- * stepping by one window. Reads GET /cost/timeseries, which is bounded to
- * a year per request.
+ * Spend over time: a full-width bar chart. Reads GET /cost/timeseries, which
+ * is bounded to a year per request.
+ *
+ * Given a `period`, the chart belongs to a page that already owns the range
+ * (one range per page, DESIGN.md "Time range and units"): it draws exactly
+ * that window, restates it as a muted label and offers only the bucket size.
+ * Without one it carries its own range (presets or a custom pair of dates)
+ * and back/forward stepping by one window.
  */
 @customElement('spend-chart')
 export class SpendChart extends LitElement {
   /** Injected clock for tests. */
   @property({ attribute: false }) now: () => Date = () => new Date();
   /**
-   * The window the rest of the page covers. While the chart is on "Same as
-   * page" it draws exactly this window, so its total matches the cards.
+   * The window the rest of the page covers. The chart draws exactly this
+   * window, so its total matches the cards, and has no range of its own.
    */
   @property({ attribute: false }) period: {
     startDate: string;
@@ -119,10 +123,14 @@ export class SpendChart extends LitElement {
     if (!this.hasUpdated) return;
     if (!changed.has('period') || !this.period || !this.start) return;
     const before = changed.get('period') as SpendChart['period'];
+    // Compare instants, not strings: the page hands over the window it asked
+    // for, then the one the server echoed back in another spelling.
+    const instant = (value: string | undefined) =>
+      value ? new Date(value).getTime() : Number.NaN;
     const same =
-      before?.startDate === this.period.startDate &&
-      before?.endDate === this.period.endDate;
-    if (!same && (this.preset === 'page' || before == null)) this.adoptPeriod();
+      instant(before?.startDate) === instant(this.period.startDate) &&
+      instant(before?.endDate) === instant(this.period.endDate);
+    if (!same) this.adoptPeriod();
   }
 
   private adoptPeriod() {
@@ -366,65 +374,82 @@ export class SpendChart extends LitElement {
     `;
   }
 
+  /** The chart's own range, only when no page owns one. */
+  private renderRangeControls() {
+    return html`<sl-select
+        size="small"
+        label="Range"
+        class="preset"
+        value=${this.preset}
+        @sl-change=${(event: Event) => {
+          const value = (event.target as HTMLSelectElement)
+            .value as SpendPreset;
+          if (value !== 'custom') this.applyPreset(value);
+          else this.preset = 'custom';
+        }}
+      >
+        ${PRESETS.map(
+          (option) =>
+            html`<sl-option value=${option.value}>${option.label}</sl-option>`
+        )}
+        <sl-option value="custom">Custom range</sl-option>
+      </sl-select>
+      ${
+        this.preset === 'custom'
+          ? html`<sl-input
+                size="small"
+                type="date"
+                label="From"
+                class="date"
+                value=${isoDay(this.start)}
+                @sl-change=${(event: Event) =>
+                  this.setCustom(
+                    'start',
+                    (event.target as HTMLInputElement).value
+                  )}
+              ></sl-input>
+              <sl-input
+                size="small"
+                type="date"
+                label="To"
+                class="date"
+                value=${isoDay(new Date(this.end.getTime() - DAY_MS))}
+                @sl-change=${(event: Event) =>
+                  this.setCustom(
+                    'end',
+                    (event.target as HTMLInputElement).value
+                  )}
+              ></sl-input>`
+          : nothing
+      }`;
+  }
+
+  private renderStepControls() {
+    return html`<sl-button-group label="Step through time">
+      <sl-button
+        size="small"
+        class="step-back"
+        aria-label="Previous period"
+        @click=${() => this.step(-1)}
+        >‹</sl-button
+      >
+      <sl-button
+        size="small"
+        class="step-forward"
+        aria-label="Next period"
+        ?disabled=${this.atPresent}
+        @click=${() => this.step(1)}
+        >›</sl-button
+      >
+    </sl-button-group>`;
+  }
+
   render() {
     return html`<section aria-labelledby="spend-chart-title">
       <header>
         <h2 id="spend-chart-title">Spend over time</h2>
         <div class="controls">
-          <sl-select
-            size="small"
-            label="Range"
-            class="preset"
-            value=${this.preset}
-            @sl-change=${(event: Event) => {
-              const value = (event.target as HTMLSelectElement)
-                .value as SpendPreset;
-              if (value === 'page') this.adoptPeriod();
-              else if (value !== 'custom') this.applyPreset(value);
-              else this.preset = 'custom';
-            }}
-          >
-            ${
-              this.period
-                ? html`<sl-option value="page">Same as page</sl-option>`
-                : nothing
-            }
-            ${PRESETS.map(
-              (option) =>
-                html`<sl-option value=${option.value}
-                  >${option.label}</sl-option
-                >`
-            )}
-            <sl-option value="custom">Custom range</sl-option>
-          </sl-select>
-          ${
-            this.preset === 'custom'
-              ? html`<sl-input
-                    size="small"
-                    type="date"
-                    label="From"
-                    class="date"
-                    value=${isoDay(this.start)}
-                    @sl-change=${(event: Event) =>
-                      this.setCustom(
-                        'start',
-                        (event.target as HTMLInputElement).value
-                      )}
-                  ></sl-input>
-                  <sl-input
-                    size="small"
-                    type="date"
-                    label="To"
-                    class="date"
-                    value=${isoDay(new Date(this.end.getTime() - DAY_MS))}
-                    @sl-change=${(event: Event) =>
-                      this.setCustom(
-                        'end',
-                        (event.target as HTMLInputElement).value
-                      )}
-                  ></sl-input>`
-              : nothing
-          }
+          ${this.period ? nothing : this.renderRangeControls()}
           <sl-button-group label="Bucket size">
             ${(['day', 'week', 'month'] as CostGranularity[]).map(
               (value) =>
@@ -440,23 +465,7 @@ export class SpendChart extends LitElement {
                 >`
             )}
           </sl-button-group>
-          <sl-button-group label="Step through time">
-            <sl-button
-              size="small"
-              class="step-back"
-              aria-label="Previous period"
-              @click=${() => this.step(-1)}
-              >‹</sl-button
-            >
-            <sl-button
-              size="small"
-              class="step-forward"
-              aria-label="Next period"
-              ?disabled=${this.atPresent}
-              @click=${() => this.step(1)}
-              >›</sl-button
-            >
-          </sl-button-group>
+          ${this.period ? nothing : this.renderStepControls()}
         </div>
       </header>
       ${

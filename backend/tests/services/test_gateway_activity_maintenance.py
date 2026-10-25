@@ -146,9 +146,11 @@ def test_run_respects_disabled_halves(db_session, monkeypatch):
     monkeypatch.setattr(settings, "gateway_activity_compaction_enabled", False)
     monkeypatch.setattr(settings, "gateway_activity_body_retention_enabled", False)
     monkeypatch.setattr(settings, "gateway_activity_size_backfill_enabled", False)
+    monkeypatch.setattr(settings, "flow_log_gateway_compaction_enabled", False)
     summary = maintenance.run_gateway_activity_maintenance(db_session)
     assert summary["compaction"] is None and summary["retention"] is None
     assert summary["size_backfill"] is None
+    assert summary["flow_log_compaction"] is None
 
 
 def test_retention_strips_small_rows_too(db_session, test_user, monkeypatch):
@@ -337,3 +339,101 @@ def test_run_includes_size_backfill(db_session, test_user, monkeypatch):
     assert summary["size_backfill"]["sized_rows"] >= 1
     db_session.refresh(row)
     assert row.metadata_bytes == _db_text_bytes(db_session, row)
+
+
+def _execution(db_session, account_id, *, held: bool = False):
+    flow = models.Flow(
+        account_id=account_id,
+        name=f"flow-{uuid.uuid4().hex[:8]}",
+        prompt_template="Example",
+        agent_config={},
+    )
+    db_session.add(flow)
+    db_session.flush()
+    execution = models.FlowExecution(flow_id=flow.id, legal_hold=held)
+    db_session.add(execution)
+    db_session.flush()
+    return execution
+
+
+def _flow_row(db_session, execution, *, turns: int, log_type="model_gateway_call"):
+    row = models.FlowExecutionLog(
+        execution_id=execution.id,
+        log_type=log_type,
+        message=None,
+        metadata_=_noisy(_call_payload(turns, text_size=600)),
+    )
+    db_session.add(row)
+    db_session.flush()
+    return row
+
+
+def test_flow_log_compaction_rewrites_legacy_rows(db_session, test_user, cap):
+    execution = _execution(db_session, test_user.account_id)
+    rows = [_flow_row(db_session, execution, turns=n) for n in range(5, 9)]
+    before = sum(payload_bytes(r.metadata_) for r in rows)
+
+    first = maintenance.compact_flow_log_rows(db_session, batch_size=2, max_batches=1)
+    assert first.compacted_rows == 2 and not first.exhausted
+    rest = maintenance.compact_flow_log_rows(db_session, batch_size=2, max_batches=10)
+    assert rest.compacted_rows == 2 and rest.exhausted
+
+    for row in rows:
+        db_session.refresh(row)
+        assert COMPACTION_KEY in row.metadata_
+        # Kept messages carry their original position for the transcript.
+        kept = row.metadata_["conversation_preview"]["messages"]
+        assert all(isinstance(m.get("position"), int) for m in kept)
+    assert sum(payload_bytes(r.metadata_) for r in rows) < before / 5
+    again = maintenance.compact_flow_log_rows(db_session, batch_size=2, max_batches=5)
+    assert again.compacted_rows == 0 and again.exhausted
+
+
+def test_flow_log_compaction_dry_run_writes_nothing(db_session, test_user, cap):
+    execution = _execution(db_session, test_user.account_id)
+    row = _flow_row(db_session, execution, turns=8)
+    result = maintenance.compact_flow_log_rows(
+        db_session, batch_size=10, max_batches=1, dry_run=True
+    )
+    assert result.compacted_rows == 1 and result.bytes_after < result.bytes_before
+    db_session.refresh(row)
+    assert COMPACTION_KEY not in row.metadata_
+
+
+def test_flow_log_compaction_skips_held_executions_and_other_types(
+    db_session, test_user, cap
+):
+    held = _execution(db_session, test_user.account_id, held=True)
+    held_row = _flow_row(db_session, held, turns=8)
+    other = _flow_row(
+        db_session,
+        _execution(db_session, test_user.account_id),
+        turns=8,
+        log_type="agent_log_line",
+    )
+    result = maintenance.compact_flow_log_rows(db_session, batch_size=10, max_batches=2)
+    assert result.compacted_rows == 0
+    for row in (held_row, other):
+        db_session.refresh(row)
+        assert COMPACTION_KEY not in row.metadata_
+
+
+def test_run_compacts_flow_logs_only_when_enabled(
+    db_session, test_user, cap, monkeypatch
+):
+    monkeypatch.setattr(settings, "gateway_activity_compaction_enabled", False)
+    monkeypatch.setattr(settings, "gateway_activity_body_retention_enabled", False)
+    monkeypatch.setattr(settings, "gateway_activity_size_backfill_enabled", False)
+    row = _flow_row(db_session, _execution(db_session, test_user.account_id), turns=8)
+
+    monkeypatch.setattr(settings, "flow_log_gateway_compaction_enabled", False)
+    summary = maintenance.run_gateway_activity_maintenance(db_session)
+    assert summary["flow_log_compaction"] is None
+    db_session.refresh(row)
+    assert COMPACTION_KEY not in row.metadata_
+
+    monkeypatch.setattr(settings, "flow_log_gateway_compaction_enabled", True)
+    summary = maintenance.run_gateway_activity_maintenance(db_session)
+    assert summary["flow_log_compaction"]["compacted_rows"] == 1
+    db_session.refresh(row)
+    assert COMPACTION_KEY in row.metadata_

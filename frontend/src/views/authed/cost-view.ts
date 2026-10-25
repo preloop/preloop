@@ -334,6 +334,11 @@ export class CostView extends AuthedElement {
   @state() private pricingContextReady = false;
   private loadGeneration = 0;
   private currentPeriod: DateRangeParams | null = null;
+  /**
+   * The window this load asked for, known before any answer: the chart draws
+   * it while the headline summary is still on its way (UX3-20).
+   */
+  @state() private requestedPeriod: DateRangeParams | null = null;
   private readyBreakdowns = new Set<CostUsageBreakdown>();
   private pendingBreakdowns = new Map<CostUsageBreakdown, Promise<void>>();
   private initialSessionPage: CostAnalyticsSummaryResponse | null = null;
@@ -1083,6 +1088,12 @@ export class CostView extends AuthedElement {
     this.error = null;
     this.previousRangeSummary = null;
     this.currentPeriod = null;
+    // A digest link waits for the account check below: a window it is
+    // about to block starts no read.
+    this.requestedPeriod =
+      this.digestBlocked || this.digestAccountId || this.digestPeriod
+        ? null
+        : { ...period };
     this.loadedTabs = new Set();
     this.sectionStates = {};
     this.sectionErrors = {};
@@ -1117,6 +1128,7 @@ export class CostView extends AuthedElement {
           return;
         }
       }
+      if (!this.requestedPeriod) this.requestedPeriod = { ...period };
       void this.loadContext(generation);
       void this.loadAccountingFindings(generation);
       // Share the first answer with the visible tab and imported usage. Separate
@@ -4377,41 +4389,59 @@ export class CostView extends AuthedElement {
             : null
         }
         ${
-          this.loading && !hasAnswer
-            ? html`<sl-card>
+          hasAnswer || (this.loading && !this.error)
+            ? html`
                 <div
-                  class="loading-state"
-                  role="status"
-                  aria-live="polite"
-                  aria-busy="true"
+                  class="results ${updating ? 'is-updating' : ''}"
+                  aria-busy=${updating ? 'true' : 'false'}
                 >
-                  <sl-spinner></sl-spinner>
-                  <span>Loading cost analytics...</span>
+                  ${
+                    hasAnswer
+                      ? html`${this.renderMetrics()}
+                        ${this.renderUnpricedNotice()}
+                        ${this.renderAccountingFindings()}`
+                      : html`<sl-card>
+                          <div
+                            class="loading-state"
+                            role="status"
+                            aria-live="polite"
+                            aria-busy="true"
+                          >
+                            <sl-spinner></sl-spinner>
+                            <span>Loading cost analytics...</span>
+                          </div>
+                        </sl-card>`
+                  }
+                  ${
+                    // One element for the whole load: it starts on the window
+                    // the page asked for and keeps it when the answer lands.
+                    (this.currentPeriod ?? this.requestedPeriod)
+                      ? html`<spend-chart
+                          .period=${this.currentPeriod ?? this.requestedPeriod}
+                        ></spend-chart>`
+                      : nothing
+                  }
+                  ${
+                    hasAnswer
+                      ? html`
+                          ${this.renderSubscriptionUsage()}
+                          ${this.renderCatalogInfo()}
+                          <div class="column-layout dashboard extra-wide">
+                            <div class="main-column">
+                              ${this.renderBreakdown()}
+                              ${this.renderImportedUsage()}
+                            </div>
+                            <div class="side-column">
+                              <hosted-allowance compact></hosted-allowance>
+                              ${this.renderControls()}
+                            </div>
+                          </div>
+                        `
+                      : nothing
+                  }
                 </div>
-              </sl-card>`
-            : hasAnswer
-              ? html`
-                  <div
-                    class="results ${updating ? 'is-updating' : ''}"
-                    aria-busy=${updating ? 'true' : 'false'}
-                  >
-                    ${this.renderMetrics()} ${this.renderUnpricedNotice()}
-                    ${this.renderAccountingFindings()}
-                    <spend-chart .period=${this.currentPeriod}></spend-chart>
-                    ${this.renderSubscriptionUsage()}
-                    ${this.renderCatalogInfo()}
-                    <div class="column-layout dashboard extra-wide">
-                      <div class="main-column">
-                        ${this.renderBreakdown()} ${this.renderImportedUsage()}
-                      </div>
-                      <div class="side-column">
-                        <hosted-allowance compact></hosted-allowance>
-                        ${this.renderControls()}
-                      </div>
-                    </div>
-                  </div>
-                `
-              : nothing
+              `
+            : nothing
         }
         ${this.renderDialogs()}
       </div>

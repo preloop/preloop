@@ -16,7 +16,8 @@ recorded tool responses:
 
 * :class:`DeliveryReportPolicy`, the report policy as a config object with
   the design's defaults (cadence, budget, open-item windows, tracker write
-  rules). There is no policy UI yet; the preset carries the defaults.
+  rules). Accounts change it in the console; the stored overrides live in
+  ``delivery_report_policy`` and :func:`resolve_policy` layers them.
 * :func:`assemble_report`, the deterministic report built from
   ``get_pull_request`` and ``get_issue`` responses. It is also what a run
   sends when the budget leaves no room for assessments.
@@ -34,7 +35,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Literal, Mapping, Optional, Sequence
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 #: ``agent_config`` key that marks a flow as a Delivery Report, so the
 #: orchestrator knows to finalize its result.
@@ -106,6 +107,7 @@ SECTIONS = (
 WriteRule = Literal["allow", "approval", "deny"]
 DropStep = Literal["risk_detail", "assessments_beyond_n"]
 ReportMode = Literal["deterministic", "assessed"]
+RecipientRule = Literal["account_owner", "sponsoring_lead"]
 DEFAULT_DROP_ORDER: tuple[DropStep, ...] = ("risk_detail", "assessments_beyond_n")
 
 _CLOSED_STATES = frozenset({"closed", "done", "resolved", "completed"})
@@ -192,6 +194,8 @@ class TrackerWritePolicy(BaseModel):
     accepts ``deny``.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     #: ``deny`` keeps creation off: the follow-up stays a proposal in the
     #: report until the account enables automatic creation.
     create_follow_up: WriteRule = "deny"
@@ -211,8 +215,19 @@ class DeliveryReportPolicy(BaseModel):
     budget defaults come from a measured run on a heavy week. The per-run
     ceiling is applied as the flow's ``agent_config.limits.max_usd`` so the
     gateway enforces it like any other execution limit.
+
+    Defaults (#2020): the deterministic report is on, weekly, to the account
+    owner. The first run is assessed once (``onboarding_assessed_run``),
+    capped by the per-run budget and disclosed in the settings. Recurring
+    assessment needs ``report_mode: assessed``, which an account can only
+    set together with explicit per-run and monthly budgets
+    (:func:`validate_account_overrides`). Tracker writes start off.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
+    #: The one opt-out toggle: off sends no report at all.
+    enabled: bool = True
     cadence: Literal["weekly", "daily", "manual"] = "weekly"
     weekday: Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun"] = "mon"
     at: str = "07:00"
@@ -220,8 +235,11 @@ class DeliveryReportPolicy(BaseModel):
     #: Project identifiers in scope; empty means every linked project.
     projects: List[str] = Field(default_factory=list)
     #: ``deterministic`` never calls a model; ``assessed`` adds the model
-    #: pass within the budgets below.
-    report_mode: ReportMode = "assessed"
+    #: pass on every run within the budgets below.
+    report_mode: ReportMode = "deterministic"
+    #: Assess the first report once, capped by ``per_run_usd``, so the
+    #: account sees what an assessment adds before it sets a budget.
+    onboarding_assessed_run: bool = True
     per_run_usd: float = Field(default=5.0, gt=0)
     monthly_usd: float = Field(default=25.0, gt=0)
     #: What to drop first when the budget runs short. The shipped list is
@@ -235,6 +253,12 @@ class DeliveryReportPolicy(BaseModel):
     ui_screenshot_min_lines: int = Field(default=40, ge=0)
     criteria_source: Literal["triage_assessment", "description"] = "triage_assessment"
     tracker_writes: TrackerWritePolicy = Field(default_factory=TrackerWritePolicy)
+    #: Who receives the report. Recipients by role are an EE extension.
+    recipients: RecipientRule = "account_owner"
+    #: The sponsoring lead's user id when ``recipients`` names one.
+    sponsoring_lead_user_id: Optional[str] = None
+    #: Users who asked not to receive the report (the email opt-out link).
+    opted_out_user_ids: List[str] = Field(default_factory=list)
 
     def assessments_allowed(self, spent_this_month_usd: Optional[float]) -> bool:
         """Whether this run may pay for a model pass.
@@ -253,6 +277,18 @@ class DeliveryReportPolicy(BaseModel):
         """Require HH:MM, the shape the schedule forms take."""
         if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", value):
             raise ValueError("at must be HH:MM")
+        return value
+
+    @field_validator("timezone")
+    @classmethod
+    def _valid_timezone(cls, value: str) -> str:
+        """Require an IANA zone the scheduler can load."""
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(f"unknown timezone: {value}") from exc
         return value
 
     def schedule_config(self) -> Optional[Dict[str, Any]]:
@@ -285,6 +321,199 @@ class DeliveryReportPolicy(BaseModel):
 
 
 DEFAULT_POLICY = DeliveryReportPolicy()
+
+#: What a repository may set for itself. Cadence, scope, budgets, the drop
+#: order, tracker writes and recipients belong to the account: one report
+#: run covers every repository and spends one budget.
+PROJECT_OVERRIDE_FIELDS: frozenset[str] = frozenset(
+    {
+        "enabled",
+        "pr_ready_days",
+        "issue_inactive_days",
+        "ui_screenshot_min_lines",
+        "criteria_source",
+    }
+)
+
+#: Why a run did or did not pay for a model pass.
+AssessmentDecision = Literal[
+    "assessed",
+    "onboarding",
+    "deterministic",
+    "skipped_budget",
+    "skipped_no_credit",
+    "disabled",
+]
+#: Decisions under which the run makes a model call.
+ASSESSING_DECISIONS: frozenset[str] = frozenset({"assessed", "onboarding"})
+#: Decisions that drop assessments the account asked for.
+SKIPPED_DECISIONS: frozenset[str] = frozenset({"skipped_budget", "skipped_no_credit"})
+
+
+class PolicyOverrideError(ValueError):
+    """A policy save the API refuses, with a stable code for the console."""
+
+    def __init__(self, code: str, message: str) -> None:
+        """Keep the code beside the sentence.
+
+        Args:
+            code: Stable refusal code.
+            message: The sentence the console shows.
+        """
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def _merge(base: Dict[str, Any], overrides: Mapping[str, Any]) -> Dict[str, Any]:
+    """Layer one override document; ``tracker_writes`` merges per field."""
+    out = dict(base)
+    for key, value in overrides.items():
+        if key == "tracker_writes" and isinstance(value, Mapping):
+            out[key] = {**dict(out.get(key) or {}), **dict(value)}
+        else:
+            out[key] = value
+    return out
+
+
+def _known(
+    overrides: Optional[Mapping[str, Any]], allowed: Iterable[str]
+) -> Dict[str, Any]:
+    allowed = set(allowed)
+    return {k: v for k, v in (overrides or {}).items() if k in allowed}
+
+
+def resolve_policy(
+    account_overrides: Optional[Mapping[str, Any]] = None,
+    project_overrides: Optional[Mapping[str, Any]] = None,
+) -> DeliveryReportPolicy:
+    """The effective policy: defaults, then the account row, then the project.
+
+    Stored rows are read leniently: a key this build does not know is
+    ignored, and a layer that no longer validates (a row written by a newer
+    build) is skipped rather than failing the run.
+
+    Args:
+        account_overrides: The account row's stored overrides.
+        project_overrides: One project row's stored overrides.
+
+    Returns:
+        The validated policy.
+    """
+    merged: Dict[str, Any] = {}
+    layers = (
+        _known(account_overrides, DeliveryReportPolicy.model_fields),
+        _known(project_overrides, PROJECT_OVERRIDE_FIELDS),
+    )
+    for layer in layers:
+        candidate = _merge(merged, layer)
+        try:
+            DeliveryReportPolicy.model_validate(candidate)
+        except ValidationError:
+            continue
+        merged = candidate
+    return DeliveryReportPolicy.model_validate(merged)
+
+
+def validate_account_overrides(
+    overrides: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Check an account save; return the overrides to store.
+
+    Recurring assessment is a spending decision, so ``report_mode:
+    assessed`` is accepted only with both budgets stated in the same
+    document. ``close`` accepts only ``deny``.
+
+    Args:
+        overrides: The account's overrides as sent.
+
+    Returns:
+        The overrides, unchanged, once they validate.
+
+    Raises:
+        PolicyOverrideError: The save is refused.
+    """
+    try:
+        DeliveryReportPolicy.model_validate(_merge({}, overrides))
+    except ValidationError as exc:
+        if any(
+            tuple(err.get("loc") or ())[:2] == ("tracker_writes", "close")
+            for err in exc.errors()
+        ):
+            raise PolicyOverrideError(
+                "close_not_allowed", "The report never closes issues."
+            ) from exc
+        raise PolicyOverrideError("invalid_policy", str(exc)) from exc
+    if overrides.get("report_mode") == "assessed" and not (
+        "per_run_usd" in overrides and "monthly_usd" in overrides
+    ):
+        raise PolicyOverrideError(
+            "budget_required",
+            "Recurring assessments need a per-run and a monthly budget.",
+        )
+    return dict(overrides)
+
+
+def validate_project_overrides(overrides: Mapping[str, Any]) -> Dict[str, Any]:
+    """Check a repository save; return the overrides to store.
+
+    Args:
+        overrides: The project's overrides as sent.
+
+    Returns:
+        The overrides, unchanged, once they validate.
+
+    Raises:
+        PolicyOverrideError: A field the account owns, or an invalid value.
+    """
+    account_only = sorted(set(overrides) - PROJECT_OVERRIDE_FIELDS)
+    if account_only:
+        raise PolicyOverrideError(
+            "account_setting",
+            "Set on the account, not per repository: " + ", ".join(account_only),
+        )
+    try:
+        DeliveryReportPolicy.model_validate(dict(overrides))
+    except ValidationError as exc:
+        raise PolicyOverrideError("invalid_policy", str(exc)) from exc
+    return dict(overrides)
+
+
+def assessment_decision(
+    policy: DeliveryReportPolicy,
+    *,
+    has_previous_report: bool,
+    spent_this_month_usd: Optional[float] = None,
+    credit_available_usd: Optional[float] = None,
+) -> AssessmentDecision:
+    """Whether this run may pay for a model pass, and why not.
+
+    Args:
+        policy: The account's effective policy.
+        has_previous_report: A report was already produced for this flow.
+        spent_this_month_usd: Report spend so far this month; None when
+            unknown (the per-run ceiling still caps the run).
+        credit_available_usd: Hosted credit available; None when the
+            account does not run on hosted credit.
+
+    Returns:
+        ``disabled`` (no report), ``deterministic`` (no model call wanted),
+        ``skipped_*`` (wanted, but no credit or no monthly budget left), or
+        ``assessed`` / ``onboarding`` (the run may call a model).
+    """
+    if not policy.enabled:
+        return "disabled"
+    if policy.report_mode == "assessed":
+        wanted: AssessmentDecision = "assessed"
+    elif policy.onboarding_assessed_run and not has_previous_report:
+        wanted = "onboarding"
+    else:
+        return "deterministic"
+    if credit_available_usd is not None and credit_available_usd <= 0:
+        return "skipped_no_credit"
+    if wanted == "assessed" and not policy.assessments_allowed(spent_this_month_usd):
+        return "skipped_budget"
+    return wanted
 
 
 # ---------------------------------------------------------------------------
@@ -875,26 +1104,48 @@ def merge_audit_record(execution: Any) -> Optional[Dict[str, Any]]:
     contract_criteria = (
         contract.get("criteria") if isinstance(contract, Mapping) else None
     )
-    outcomes: Dict[str, str] = {}
+    from pydantic import ValidationError
+
+    from preloop.schemas.issue_lifecycle import Criterion, CriterionEvidence
+    from preloop.services.issue_lifecycle import (
+        checked_criterion,
+        runtime_evidence_ids,
+    )
+
+    contract_by_id: Dict[str, Criterion] = {}
     for item in contract_criteria if isinstance(contract_criteria, list) else []:
-        if isinstance(item, Mapping) and item.get("id"):
-            outcomes[str(item["id"])] = str(item.get("outcome") or item["id"])
+        try:
+            criterion = Criterion.model_validate(item)
+        except ValidationError:
+            continue
+        contract_by_id[criterion.id] = criterion
+    supplied = runtime_evidence_ids(envelope.get("runtime_evidence"))
     criteria: List[Dict[str, Any]] = []
     raw_criteria = result.get("criteria")
     for item in raw_criteria if isinstance(raw_criteria, list) else []:
-        if not isinstance(item, Mapping):
+        try:
+            checked = CriterionEvidence.model_validate(item)
+        except ValidationError:
             continue
-        cid = str(item.get("criterion_id") or "")
-        evidence = [
-            *_strs(item.get("code")),
-            *_strs(item.get("tests")),
-            *_strs(item.get("observations")),
-        ]
+        cid = checked.criterion_id
+        # The controller's rule, so the report never counts a citation or a
+        # verdict the published audit dropped.
+        if cid in contract_by_id:
+            checked_criterion(
+                checked, contract_by_id[cid], kind="merge_audit", supplied=supplied
+            )
+        else:
+            checked.verdict = "unknown"
         criteria.append(
             {
-                "text": outcomes.get(cid, cid),
-                "met": _AUDIT_MET.get(str(item.get("verdict")), None),
-                "evidence": evidence,
+                "text": contract_by_id[cid].outcome if cid in contract_by_id else cid,
+                "met": _AUDIT_MET.get(checked.verdict, None),
+                "evidence": [
+                    *checked.code,
+                    *checked.tests,
+                    *checked.observations,
+                    *checked.runtime,
+                ],
             }
         )
     url = envelope.get("issue_url")
@@ -1031,6 +1282,8 @@ def assemble_report(
     merge_audits: Sequence[Mapping[str, Any]] = (),
     policy: DeliveryReportPolicy = DEFAULT_POLICY,
     now: Optional[datetime] = None,
+    project_policies: Optional[Mapping[str, DeliveryReportPolicy]] = None,
+    assessment: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the report from ``get_pull_request`` and ``get_issue`` responses.
 
@@ -1046,6 +1299,10 @@ def assemble_report(
             closed issue takes the audit's result.
         policy: The report policy.
         now: Clock for ages; defaults to the window end.
+        project_policies: Per-repository effective policies keyed by
+            ``owner/repo`` (the project part of a ref). A repository whose
+            policy is turned off is left out of the report.
+        assessment: The run's :func:`assessment_decision`.
 
     Returns:
         The report document with every section of :data:`SECTIONS`.
@@ -1055,6 +1312,19 @@ def assemble_report(
     clock = now or end
     assessments = assessments or {}
     issue_by_ref: Dict[str, Mapping[str, Any]] = {}
+    overrides = project_policies or {}
+
+    def policy_for(project: str) -> DeliveryReportPolicy:
+        return overrides.get(project.lower()) or overrides.get(project) or policy
+
+    def pr_project(pr: Mapping[str, Any]) -> str:
+        return _pr_ref(pr).split("#", 1)[0]
+
+    def issue_project(issue: Mapping[str, Any]) -> str:
+        return str(issue.get("project") or str(issue.get("key") or "").split("#")[0])
+
+    pull_requests = [p for p in pull_requests if policy_for(pr_project(p)).enabled]
+    issues = [i for i in issues if policy_for(issue_project(i)).enabled]
 
     shipped: List[Dict[str, Any]] = []
     linked_by_issue: Dict[str, List[str]] = {}
@@ -1062,7 +1332,15 @@ def assemble_report(
         if not pr.get("merged_at") or not _in_window(pr.get("merged_at"), start, end):
             continue
         ref = _pr_ref(pr)
-        links = linked_issue_refs(pr.get("description"))
+        pr_policy = policy_for(pr_project(pr))
+        links = list(
+            dict.fromkeys(
+                [
+                    *linked_issue_refs(pr.get("description")),
+                    *_strs(pr.get("linked_issues")),
+                ]
+            )
+        )
         criteria: List[str] = []
         for link in links:
             linked_by_issue.setdefault(link, []).append(ref)
@@ -1071,7 +1349,8 @@ def assemble_report(
                 issue_by_ref[link] = issue
                 criteria.extend(
                     extract_criteria(
-                        issue.get("description"), source=policy.criteria_source
+                        issue.get("description"),
+                        source=policy_for(issue_project(issue)).criteria_source,
                     )
                 )
         metadata_only = metadata_only_reason(pr)
@@ -1081,7 +1360,7 @@ def assemble_report(
         purpose = dict(agent.get("purpose") or {})
         if "criteria" not in purpose:
             purpose["criteria"] = criteria
-        deterministic = detect_risk_flags(pr, policy=policy)
+        deterministic = detect_risk_flags(pr, policy=pr_policy)
         risk = deterministic + list(agent.get("risk_flags") or [])
         shipped.append(
             {
@@ -1116,8 +1395,9 @@ def assemble_report(
         prs = next(
             (v for k, v in linked_by_issue.items() if _issue_matches_ref(issue, k)), []
         )
+        issue_policy = policy_for(issue_project(issue))
         criteria_texts = extract_criteria(
-            issue.get("description"), source=policy.criteria_source
+            issue.get("description"), source=issue_policy.criteria_source
         )
         met: Dict[str, Dict[str, Any]] = {}
         for change in shipped:
@@ -1128,7 +1408,9 @@ def assemble_report(
                     met.setdefault(c["text"], c)
         closing = [c for c in shipped if c["ref"] in prs]
         closing_pr = closing[-1] if closing else {}
-        recent = comments_after_last_criteria_edit(issue, source=policy.criteria_source)
+        recent = comments_after_last_criteria_edit(
+            issue, source=issue_policy.criteria_source
+        )
         closed.append(
             {
                 "ref": key,
@@ -1166,7 +1448,7 @@ def assemble_report(
         if opened is None:
             continue
         age = (clock - opened).days
-        if age >= policy.pr_ready_days:
+        if age >= policy_for(pr_project(pr)).pr_ready_days:
             open_items.append(
                 {
                     "kind": "pull_request",
@@ -1184,7 +1466,7 @@ def assemble_report(
         if touched is None:
             continue
         idle = (clock - touched).days
-        if idle >= policy.issue_inactive_days:
+        if idle >= policy_for(issue_project(issue)).issue_inactive_days:
             open_items.append(
                 {
                     "kind": "issue",
@@ -1206,7 +1488,7 @@ def assemble_report(
         "open_questions": [],
     }
     return finalize_delivery_report(
-        report, previous=previous, merge_audits=merge_audits
+        report, previous=previous, merge_audits=merge_audits, assessment=assessment
     )
 
 
@@ -1436,6 +1718,13 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
         c for i in closed for c in (i.get("purpose") or {}).get("criteria") or []
     ]
     skipped = (report.get("spend") or {}).get("skipped_for_budget") or []
+    decision = (report.get("assessment") or {}).get("decision")
+    if decision == "skipped_no_credit":
+        skipped_reason: Optional[str] = "no_credit"
+    elif skipped or decision == "skipped_budget":
+        skipped_reason = "budget"
+    else:
+        skipped_reason = None
     return {
         "shipped": len(shipped),
         "closed": len(closed),
@@ -1478,7 +1767,8 @@ def compute_summary(report: Mapping[str, Any]) -> Dict[str, Any]:
             )
             for source in ASSESSMENT_SOURCES
         },
-        "assessments_skipped_for_budget": bool(skipped),
+        "assessments_skipped_for_budget": skipped_reason is not None,
+        "assessments_skipped_reason": skipped_reason,
     }
 
 
@@ -1490,8 +1780,13 @@ def finalize_delivery_report(
     cost_usd: Optional[float] = None,
     total_tokens: Optional[int] = None,
     limit_usd: Optional[float] = None,
+    assessment: Optional[str] = None,
 ) -> Dict[str, Any]:
     """The platform pass over a report: honesty rules, summary, delta, spend.
+
+    ``assessment`` is the policy's :func:`assessment_decision` for the run.
+    The platform owns it: a decision that skipped assessments puts the
+    one "assessments were skipped" line in the summary.
 
     A closed issue with a completed merge audit at its closing revision
     takes the audit's result (source ``audit``), whatever the run wrote; an
@@ -1577,6 +1872,9 @@ def finalize_delivery_report(
             )
             asked.add(carried["question"])
     record_spend(out, cost_usd=cost_usd, total_tokens=total_tokens, limit_usd=limit_usd)
+    out.pop("assessment", None)
+    if assessment is not None:
+        out["assessment"] = {"decision": assessment}
     out["summary"] = compute_summary(out)
     out["report_markdown"] = render_markdown(out)
     return out
@@ -1631,7 +1929,13 @@ def _summary_lines(summary: Mapping[str, Any]) -> List[str]:
         "means an evidence gap: the available evidence could not decide the "
         "criteria. It is not a failure.",
     ]
-    if summary.get("assessments_skipped_for_budget"):
+    if summary.get("assessments_skipped_reason") == "no_credit":
+        lines += [
+            "",
+            "Assessments were skipped: the account has no credit left. "
+            "Everything above comes from tracker and forge data.",
+        ]
+    elif summary.get("assessments_skipped_for_budget"):
         lines += ["", "Assessments were skipped for budget; see the spend section."]
     return lines
 
@@ -1851,7 +2155,12 @@ def with_merge_audits_seed(
 
 
 def finalize_for_execution(
-    db: Any, *, flow: Any, execution: Any, result: Any
+    db: Any,
+    *,
+    flow: Any,
+    execution: Any,
+    result: Any,
+    assessment: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Finalize a Delivery Report run's result on the terminal path.
 
@@ -1911,4 +2220,252 @@ def finalize_for_execution(
         cost_usd=cost,
         total_tokens=tokens,
         limit_usd=limits.max_usd,
+        assessment=assessment,
     )
+
+
+# ---------------------------------------------------------------------------
+# Applying the stored policy to a run (#2020)
+# ---------------------------------------------------------------------------
+
+
+class PolicyRun(BaseModel):
+    """What the stored policy decided for one run, read when it starts."""
+
+    decision: str
+    policy: DeliveryReportPolicy
+    #: Effective policy per repository that has its own layer, keyed by
+    #: ``owner/repo`` (lower case).
+    project_policies: Dict[str, DeliveryReportPolicy] = Field(default_factory=dict)
+
+    @property
+    def calls_model(self) -> bool:
+        """Whether the run may start the agent at all."""
+        return self.decision in ASSESSING_DECISIONS
+
+    def payload(self) -> Dict[str, Any]:
+        """The ``report_policy`` block an assessed run receives."""
+        return {
+            "decision": self.decision,
+            "policy": self.policy.model_dump(mode="json"),
+            "projects": {
+                name: policy.model_dump(
+                    mode="json", include=set(PROJECT_OVERRIDE_FIELDS)
+                )
+                for name, policy in self.project_policies.items()
+            },
+        }
+
+
+def _month_start(now: datetime) -> datetime:
+    return now.astimezone(timezone.utc).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0
+    )
+
+
+def plan_policy_run(
+    db: Any,
+    *,
+    flow: Any,
+    exclude_execution_id: Any = None,
+    now: Optional[datetime] = None,
+) -> PolicyRun:
+    """Read the account's stored policy and decide what this run may do.
+
+    Every read goes through the CRUD layer and degrades: an unreadable
+    spend counts as unknown, an unreadable wallet as no wallet.
+
+    Args:
+        db: Session.
+        flow: The Delivery Report flow.
+        exclude_execution_id: The current execution, so it is not its own
+            previous report.
+        now: Clock for the month boundary.
+
+    Returns:
+        The decision and the effective policies.
+    """
+    import logging
+
+    from preloop.models.crud import crud_delivery_report_policy, crud_flow_execution
+
+    log = logging.getLogger(__name__)
+    account_id = getattr(flow, "account_id", None)
+    account_overrides = crud_delivery_report_policy.get_overrides(
+        db, account_id=account_id
+    )
+    policy = resolve_policy(account_overrides)
+    projects = {
+        name: resolve_policy(account_overrides, overrides)
+        for name, overrides in crud_delivery_report_policy.project_overrides(
+            db, account_id=account_id
+        ).items()
+    }
+    previous = crud_flow_execution.latest_with_result(
+        db,
+        flow_id=flow.id,
+        account_id=str(account_id),
+        exclude_execution_id=exclude_execution_id,
+        succeeded_only=True,
+    )
+    spent: Optional[float] = None
+    try:
+        spent = crud_delivery_report_policy.report_spend_since(
+            db,
+            account_id=account_id,
+            since=_month_start(now or datetime.now(timezone.utc)),
+        )
+    except Exception:  # noqa: BLE001 - unknown spend: the run ceiling still caps
+        log.warning("Could not read this month's report spend", exc_info=True)
+    credit: Optional[float] = None
+    try:
+        credit = crud_delivery_report_policy.credit_available(db, account_id=account_id)
+    except Exception:  # noqa: BLE001 - no readable wallet: not on hosted credit
+        log.warning("Could not read hosted credit for the report", exc_info=True)
+    decision = assessment_decision(
+        policy,
+        has_previous_report=previous is not None,
+        spent_this_month_usd=spent,
+        credit_available_usd=credit,
+    )
+    return PolicyRun(decision=decision, policy=policy, project_policies=projects)
+
+
+def report_window(payload: Any, *, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """The run's window: the payload's, else the seven days before now."""
+    window = payload.get("window") if isinstance(payload, Mapping) else None
+    if isinstance(window, Mapping) and window.get("to"):
+        return {"from": window.get("from"), "to": window.get("to")}
+    end = now or datetime.now(timezone.utc)
+    return {"from": (end - timedelta(days=7)).isoformat(), "to": end.isoformat()}
+
+
+def deterministic_report(
+    db: Any, *, flow: Any, execution: Any, run: PolicyRun, window: Mapping[str, Any]
+) -> Dict[str, Any]:
+    """Build the report without a model call, from stored tracker facts.
+
+    Shipped and open PRs come from the pull request ledger, closed and open
+    issues from the tracker sync, audits from completed merge audits. The
+    ledger holds no PR title, body or file list, so file-based risk flags
+    and brief gaps only appear on assessed runs.
+
+    Args:
+        db: Session.
+        flow: The Delivery Report flow.
+        execution: This execution.
+        run: The policy decision.
+        window: ``{"from", "to"}``.
+
+    Returns:
+        The finalized report, or a ``disabled`` result when the account
+        turned the report off.
+    """
+    from preloop.models.crud import crud_delivery_report_policy, crud_flow_execution
+
+    if run.decision == "disabled":
+        return {
+            "status": "disabled",
+            "schema": REPORT_SCHEMA,
+            "reason": "The Delivery Report is turned off for this account.",
+        }
+    account_id = getattr(flow, "account_id", None)
+    end = _parse_time(window.get("to")) or datetime.now(timezone.utc)
+    start = _parse_time(window.get("from"))
+    previous_row = crud_flow_execution.latest_with_result(
+        db,
+        flow_id=flow.id,
+        account_id=str(account_id),
+        exclude_execution_id=getattr(execution, "id", None),
+        succeeded_only=True,
+    )
+    previous = (
+        previous_row.result
+        if previous_row is not None and isinstance(previous_row.result, Mapping)
+        else None
+    )
+    scope = {p.lower() for p in run.policy.projects}
+
+    def in_scope(project: str) -> bool:
+        return not scope or project.lower() in scope
+
+    prs = [
+        pr
+        for pr in crud_delivery_report_policy.pull_request_facts(
+            db, account_id=account_id, start=start, end=end
+        )
+        if in_scope(_pr_ref(pr).split("#", 1)[0])
+    ]
+    issues = [
+        issue
+        for issue in crud_delivery_report_policy.issue_facts(
+            db, account_id=account_id, start=start, end=end
+        )
+        if in_scope(str(issue.get("project") or ""))
+    ]
+    audits = load_merge_audits(db, account_id=account_id, window=dict(window))["audits"]
+    return assemble_report(
+        window=window,
+        pull_requests=prs,
+        issues=issues,
+        previous=previous,
+        merge_audits=audits,
+        policy=run.policy,
+        project_policies=run.project_policies,
+        assessment=run.decision,
+        now=end,
+    )
+
+
+def sync_report_flows(
+    db: Any,
+    *,
+    account_id: Any,
+    policy: DeliveryReportPolicy,
+    previous: Optional[DeliveryReportPolicy] = None,
+) -> int:
+    """Carry the cadence and the per-run ceiling onto the account's report flows.
+
+    The schedule and ``agent_config.limits.max_usd`` are what the scheduler
+    and the gateway read, so a saved policy takes effect from the next run.
+    A manual cadence turns the flow's schedule off (``is_enabled: false``);
+    leaving manual turns it back on. Otherwise a flow someone disabled by
+    hand is left alone. Nothing is committed: the caller commits once.
+
+    Args:
+        db: Session.
+        account_id: Owning account.
+        policy: The account's effective policy.
+        previous: The policy before this save, to tell a cadence leaving
+            manual from a flow disabled by hand.
+
+    Returns:
+        How many flows were updated.
+    """
+    from preloop.models.crud import crud_flow
+    from preloop.models.schemas.flow import FlowUpdate, parse_schedule_config
+
+    updated = 0
+    for flow in crud_flow.get_by_account(db, account_id=account_id, limit=1000):
+        if not is_delivery_report_flow(flow):
+            continue
+        agent_config = dict(flow.agent_config or {})
+        agent_config["limits"] = {
+            **dict(agent_config.get("limits") or {}),
+            **policy.execution_limits(),
+        }
+        schedule = policy.schedule_config()
+        if schedule is None:
+            change = FlowUpdate(agent_config=agent_config, is_enabled=False)
+        else:
+            change = FlowUpdate(
+                agent_config=agent_config,
+                schedule_config=parse_schedule_config(schedule),
+            )
+            if previous is not None and previous.cadence == "manual":
+                change.is_enabled = True
+        crud_flow.update(
+            db, db_obj=flow, flow_in=change, account_id=account_id, commit=False
+        )
+        updated += 1
+    return updated

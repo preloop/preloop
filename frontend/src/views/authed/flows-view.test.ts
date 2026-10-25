@@ -98,6 +98,43 @@ describe('FlowsView', () => {
     }
   });
 
+  it('asks for tracker names with the summary, not after it', async () => {
+    let releaseSummary!: () => void;
+    const summary = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const urls: string[] = [];
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = input.toString();
+        urls.push(url);
+        if (url.includes('/flows/summary')) await summary;
+        const data = url.includes('/flows/summary')
+          ? [{ id: 'flow-1', name: 'Nightly sweep', is_enabled: true }]
+          : [];
+        return new Response(JSON.stringify(data), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      });
+    const el = await fixture<FlowsView>(html`<flows-view></flows-view>`);
+    try {
+      await waitUntil(() => urls.some((url) => url.includes('/flows/summary')));
+      // The summary is still in flight: the trigger labels are not queued
+      // behind it as a second round trip.
+      await waitUntil(() =>
+        urls.some((url) => url.includes('/api/v1/trackers'))
+      );
+    } finally {
+      releaseSummary();
+    }
+    await waitUntil(() => !(el as any).isLoading);
+    expect(
+      urls.filter((url) => url.includes('/api/v1/trackers'))
+    ).to.have.length(1);
+  });
+
   it('keeps pending executions through a range change and ignores older range answers', async () => {
     const render = sinon
       .stub(customElements.get('flows-view')!.prototype, 'render')
