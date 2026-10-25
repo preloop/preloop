@@ -18,6 +18,8 @@ from mcp.server.context import ServerRequestContext
 from mcp import types
 from sqlalchemy.orm import Session
 
+from preloop.services.audit.async_writer import outbox_enabled
+
 from preloop.models.models.account import Account
 
 logger = logging.getLogger(__name__)
@@ -61,6 +63,7 @@ def _log_tool_execution_async(
     runtime_principal_name: Optional[str] = None,
     api_key_id: Optional[str] = None,
     api_key_name: Optional[str] = None,
+    db: Optional[Session] = None,
 ) -> None:
     """Log a tool execution asynchronously (fire-and-forget)."""
     try:
@@ -68,10 +71,6 @@ def _log_tool_execution_async(
 
         audit_service = _get_audit_service()
         if not audit_service:
-            return
-
-        db_factory = _get_db_factory()
-        if not db_factory:
             return
 
         # Redact sensitive fields before audit
@@ -93,8 +92,7 @@ def _log_tool_execution_async(
                 # execution_id may be a non-UUID flow id; omit it from audit metadata.
                 pass
 
-        audit_service.log_tool_call_async(
-            db_factory=db_factory,
+        fields = dict(
             account_id=account_id,
             user_id=user_uuid,
             tool_name=tool_name,
@@ -114,8 +112,36 @@ def _log_tool_execution_async(
             api_key_id=api_key_id,
             api_key_name=api_key_name,
         )
+        if db is not None:
+            audit_service.enqueue_in_transaction(db, "log_tool_call", **fields)
+        else:
+            audit_service.log_tool_call_async(db_factory=_get_db_factory(), **fields)
     except Exception as e:
+        if db is not None and outbox_enabled():
+            raise
         logger.debug(f"Failed to log tool execution to audit: {e}")
+
+
+async def _enqueue_tool_execution(**fields: Any) -> None:
+    """Await local intent admission off-loop; remote delivery belongs to the relay."""
+    if not outbox_enabled():
+        _log_tool_execution_async(**fields)
+        return
+    from preloop.services.db_executor import run_db_async
+
+    def persist(db: Session) -> None:
+        _log_tool_execution_async(db=db, **fields)
+        db.commit()
+
+    try:
+        await run_db_async(persist)
+    except Exception:
+        # The tool's external effects have already happened. Preserve its
+        # outcome so an audit outage cannot turn success into a retry request.
+        from preloop.services.audit.outbox import record_admission_failure
+
+        record_admission_failure("tool_outcome_admission")
+        logger.error("Could not admit the tool outcome audit intent")
 
 
 class UserContext:
@@ -402,7 +428,7 @@ class DynamicMCPServer:
                 )
 
                 # Log successful tool execution to audit (fire-and-forget)
-                _log_tool_execution_async(
+                await _enqueue_tool_execution(
                     account_id=user_context.account_id,
                     user_id=user_context.user_id,
                     tool_name=name,
@@ -424,7 +450,7 @@ class DynamicMCPServer:
             except Exception as e:
                 logger.error(f"Error executing tool {name}: {e}", exc_info=True)
                 # Log failed tool execution to audit
-                _log_tool_execution_async(
+                await _enqueue_tool_execution(
                     account_id=user_context.account_id if user_context else "unknown",
                     user_id=user_context.user_id if user_context else None,
                     tool_name=name,
@@ -583,6 +609,9 @@ class DynamicMCPServer:
                         "api_key_name": getattr(user_context, "api_key_name", None),
                     },
                 )
+                # This evaluation owns a short-lived transaction, including its audit.
+                if outbox_enabled():
+                    await db.commit()
 
                 action, approval_workflow_id, rule_description = decision
 
