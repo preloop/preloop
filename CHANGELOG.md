@@ -79,6 +79,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every tool not on each server's read list, including tools a later upstream
   release adds. A test runs write and read calls through the policy simulator
   (#1426).
+- **Upstream MCP OAuth connection lifecycle.** Preloop discovers an upstream MCP
+  server's protected resource and authorization server, keeps single-use
+  authorization state and grants in encrypted storage, and coordinates token
+  refresh across workers without replaying a dispatched tool call. The tools
+  setup shows each OAuth server's connection state with connect, reconnect,
+  cancel and disconnect. Disabling an OAuth server drops its grant. Apply the
+  additive `20261110_upstream_mcp_oauth` migration and drain old application
+  workers before new OAuth setup or refresh requests; see
+  [the lifecycle notes](docs/architecture/upstream-mcp-oauth.md) (#1237).
 
 ### Security
 

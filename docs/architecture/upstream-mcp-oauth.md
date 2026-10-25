@@ -92,7 +92,14 @@ required. Connect/reconnect opens provider consent; cancel/disconnect clears
 local access/refresh grants and pending transactions and invalidates pooled
 credentials. Encrypted client registration remains available for reconnect.
 Disconnect intentionally makes no upstream revocation request; revocation is
-not part of this local operation.
+not part of this local operation. Disabling an OAuth server drops its grant the
+same way, so it reads as disconnected and needs a reconnect after re-enabling.
+
+Every write goes through `crud_mcp_server`, including policy apply: OAuth secrets
+never reach the `auth_config` JSONB column, and switching a server away from
+OAuth keeps only the public fields of its old configuration. A snapshot
+round-trip re-applies the exported public configuration without touching the
+stored grant.
 
 All automated coverage uses synthetic providers and a local PostgreSQL database.
 Real-provider authenticated compatibility remains a separately authorized release

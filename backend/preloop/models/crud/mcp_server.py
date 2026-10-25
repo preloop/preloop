@@ -97,7 +97,9 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
                 next_config.get(key) != (config or {}).get(key)
                 for key in ("issuer", "client_id", "token_endpoint", "scope", "scopes")
             )
-            if binding_changed:
+            # Disabling drops the grant, so the server reads as disconnected
+            # and a re-enabled server needs a fresh consent.
+            if binding_changed or server.status == "disabled":
                 next_config = {
                     key: value
                     for key, value in next_config.items()
@@ -106,10 +108,16 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
             server.auth_config = public_auth_config(next_config)
             if changed or inline_secrets:
                 crud_upstream_mcp_oauth.protect_config(db, server, next_config)
+        elif old_type == "oauth":
+            # The OAuth grant and client secret live only in the encrypted store:
+            # resolve echoed markers against the public fields, never the secrets.
+            server.auth_config = (
+                merge_auth_config(incoming, public_auth_config(config))
+                if "auth_config" in obj_in
+                else None
+            )
         elif "auth_config" in obj_in:
             server.auth_config = next_config
-        elif old_type == "oauth":
-            server.auth_config = None
         if commit:
             db.commit()
         else:

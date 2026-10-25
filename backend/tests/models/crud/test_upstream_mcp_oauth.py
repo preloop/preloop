@@ -442,3 +442,109 @@ def test_oauth_json_writes_never_contain_plaintext_even_during_flush(storage):
         and "synthetic-client-secret" not in write
         for write in writes
     )
+
+
+def test_switching_away_from_oauth_never_stores_the_grant_in_plaintext(storage):
+    from preloop.models.schemas.mcp_server import redact_auth_config
+
+    store = grant(storage, expires_at=time.time() + 3600)
+    with storage[0]() as db:
+        server = db.get(models.MCPServer, storage[1][2])
+        # A read-modify-write client echoes the redacted OAuth config.
+        echoed = redact_auth_config(store.config_for_edit(db, server))
+        server = crud_mcp_server.update(
+            db,
+            db_obj=server,
+            obj_in={
+                "auth_type": "bearer",
+                "auth_config": {**echoed, "token": "synthetic-bearer"},
+            },
+        )
+        stored = str(server.auth_config)
+        for secret in (
+            "synthetic-old-access",
+            "synthetic-old-refresh",
+            "synthetic-client-secret",
+        ):
+            assert secret not in stored
+        assert server.auth_config["token"] == "synthetic-bearer"
+        assert server.auth_config["client_id"] == "synthetic-client"
+
+
+def test_disabling_drops_the_grant_and_reports_disconnected(storage):
+    store = grant(storage, expires_at=time.time() + 3600)
+    with storage[0]() as db:
+        server = db.get(models.MCPServer, storage[1][2])
+        server = crud_mcp_server.update(
+            db, db_obj=server, obj_in={"status": "disabled"}
+        )
+        assert store.state(db, server) == "disconnected"
+        server = crud_mcp_server.update(db, db_obj=server, obj_in={"status": "active"})
+        assert store.state(db, server) == "disconnected"
+        config = store.config_for_edit(db, server)
+        assert "access_token" not in config
+        assert "refresh_token" not in config
+        assert config["client_secret"] == "synthetic-client-secret"
+
+
+def test_policy_apply_keeps_oauth_secrets_in_the_encrypted_store(storage):
+    from preloop.services.policy.loader import PolicyApplier
+    from preloop.services.policy.schema import MCPServerDefinition
+
+    store = grant(storage, expires_at=time.time() + 3600)
+    factory, (account, _, server_id) = storage
+    with factory() as db:
+        applier = PolicyApplier(db, account)
+        applier._apply_mcp_servers(
+            [
+                MCPServerDefinition(
+                    name="Synthetic OAuth",
+                    url=RESOURCE,
+                    auth_type="oauth",
+                    auth_config={**CONFIG, "client_secret": "synthetic-policy-secret"},
+                ),
+                MCPServerDefinition(
+                    name="Policy OAuth",
+                    url=RESOURCE,
+                    auth_type="oauth",
+                    auth_config={**CONFIG, "client_secret": "synthetic-new-secret"},
+                ),
+            ],
+            dry_run=False,
+        )
+        db.commit()
+        updated = db.get(models.MCPServer, server_id)
+        created = crud_mcp_server.get_by_name(
+            db, account_id=str(account), name="Policy OAuth"
+        )
+        try:
+            for server, secret in (
+                (updated, "synthetic-policy-secret"),
+                (created, "synthetic-new-secret"),
+            ):
+                assert secret not in str(server.auth_config)
+                assert store.config_for_edit(db, server)["client_secret"] == secret
+            # A new client registration needs a new grant.
+            assert "access_token" not in store.config_for_edit(db, updated)
+        finally:
+            crud_mcp_server.remove(db, id=created.id, account_id=str(account))
+
+
+def test_policy_snapshot_round_trip_keeps_the_oauth_connection(storage):
+    from preloop.services.policy.loader import PolicyApplier, export_current_policy
+
+    store = grant(storage, expires_at=time.time() + 3600)
+    factory, (account, _, server_id) = storage
+    with factory() as db:
+        snapshot = export_current_policy(
+            db, account_id=str(account), include_credentials=True
+        )
+        PolicyApplier(db, account)._apply_mcp_servers(
+            snapshot.mcp_servers, dry_run=False
+        )
+        db.commit()
+        server = db.get(models.MCPServer, server_id)
+        assert store.state(db, server) == "connected"
+        assert store.prepare(db, server_id).config["access_token"] == (
+            "synthetic-old-access"
+        )
