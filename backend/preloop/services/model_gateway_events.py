@@ -25,6 +25,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.cache_accounting import reported_cache_miss_tokens
+from preloop.services.gateway_activity_body import slim_gateway_payload
 from preloop.services.gateway_tool_activity import normalize_tool_activity
 from preloop.services.model_allowlist import is_model_not_allowed_detail
 from preloop.sync.services.event_bus import get_nats_client
@@ -157,7 +158,12 @@ class ModelGatewayEventEmitter:
                 summary=None,
                 flow_execution_id=execution_id,
                 api_key_id=str(usage.api_key_id) if usage.api_key_id else None,
-                metadata=event["payload"],
+                # Stored slim: only what this call added, bounded in bytes.
+                # The live event below still carries the full payload.
+                metadata=slim_gateway_payload(
+                    event["payload"],
+                    max_bytes=settings.model_gateway_activity_max_stored_bytes,
+                ),
                 timestamp=usage.timestamp,
                 commit=True,
             )

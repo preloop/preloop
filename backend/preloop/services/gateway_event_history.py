@@ -132,7 +132,13 @@ def elide_replayed_history(
                 if index < window_start and index != keep_index:
                     window_elided += 1
                     continue
-                signature = _message_signature(index, message)
+                # Stored rows keep only their own window and record each
+                # message's original position; that position is the key.
+                stored_position = message.get("position")
+                signature = _message_signature(
+                    stored_position if isinstance(stored_position, int) else index,
+                    message,
+                )
                 if (
                     signature is not None
                     and signature in seen_messages
@@ -142,7 +148,7 @@ def elide_replayed_history(
                     continue
                 if signature is not None:
                     seen_messages.add(signature)
-                new_messages.append({**message, "position": index})
+                new_messages.append({"position": index, **message})
             new_metadata = dict(preview.get("metadata") or {})
             # Tells a client this preview is partial and how many replayed
             # messages an older event on the page already carried; without
@@ -153,8 +159,26 @@ def elide_replayed_history(
             # claims the other's messages were "already shown".
             new_metadata["history_elided_count"] = elided
             if window is not None:
-                new_metadata["history_window_start"] = window_start
-                new_metadata["history_window_elided_count"] = window_elided
+                # A slim stored row already starts at its own window; report
+                # positions in the original conversation, not list indexes.
+                stored_start = new_metadata.get("history_window_start")
+                stored_elided = new_metadata.get("history_window_elided_count")
+                first = messages[window_start] if window_start < len(messages) else None
+                first_position = (
+                    first.get("position") if isinstance(first, dict) else None
+                )
+                if window_start == 0 and isinstance(stored_start, int):
+                    # The read-time window dropped nothing: the stored
+                    # boundary is the one the elided count refers to.
+                    reported_start = stored_start
+                elif isinstance(first_position, int):
+                    reported_start = first_position
+                else:
+                    reported_start = max(window_start, stored_start or 0)
+                new_metadata["history_window_start"] = reported_start
+                new_metadata["history_window_elided_count"] = window_elided + (
+                    stored_elided if isinstance(stored_elided, int) else 0
+                )
             new_payload["conversation_preview"] = {
                 **preview,
                 "messages": new_messages,
