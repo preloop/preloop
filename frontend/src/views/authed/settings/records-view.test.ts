@@ -385,6 +385,22 @@ describe('RecordsView', () => {
     );
   });
 
+  it('keeps the exact UTC instant beside the age of a hold', async () => {
+    install({ holds: [HOLD] });
+    const listed = await fixture<RecordsView>(
+      html`<records-view></records-view>`
+    );
+    await waitUntil(
+      () => listed.shadowRoot?.querySelector('[data-testid="holds-table"]'),
+      'holds table did not render'
+    );
+    const text =
+      listed.shadowRoot!.querySelector('[data-testid="holds-table"]')
+        ?.textContent ?? '';
+    expect(text).to.contain('2026-09-20 00:00:00 UTC');
+    expect(text).to.match(/\d+(d|w) ago/);
+  });
+
   it('downloads a period export once', async () => {
     install({});
     const click = sinon.stub(HTMLAnchorElement.prototype, 'click');

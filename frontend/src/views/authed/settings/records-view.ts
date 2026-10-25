@@ -3,7 +3,7 @@ import { formatCount, formatCountExact } from '../../../utils/count-format';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
-import { formatAbsoluteTime } from '../../../utils/date';
+import { formatUTCDateTime, parseUtc } from '../../../utils/date';
 import { relativeTime } from '../../../utils/relative-time';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
@@ -672,12 +672,13 @@ export class RecordsView extends LitElement {
 
   /**
    * Records are evidence, so a time here keeps its exact value on the page:
-   * relative first like every console time, the absolute instant beside it.
+   * relative first like every console time, the exact UTC instant (to the
+   * second, zone stated) beside it.
    */
   private stamp(value: string | null | undefined, fallback = '') {
-    if (!formatAbsoluteTime(value)) return fallback;
+    if (parseUtc(value) === null) return fallback;
     return html`${relativeTime(value)}
-      <span class="note">${formatAbsoluteTime(value)}</span>`;
+      <span class="note">${formatUTCDateTime(value as string)}</span>`;
   }
 
   private fact(label: string, value: unknown) {

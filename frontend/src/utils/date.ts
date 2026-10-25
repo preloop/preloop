@@ -131,7 +131,7 @@ export function formatRelativeTime(
 
   const diffWeeks = Math.floor(diffDays / 7);
   if (diffWeeks < 52) return `${diffWeeks}w${suffix}`;
-  return `${Math.floor(diffDays / 365)}y${suffix}`;
+  return `${Math.max(1, Math.floor(diffDays / 365))}y${suffix}`;
 }
 
 /**
@@ -156,7 +156,7 @@ export function formatFutureRelativeTime(
   if (diffDays < 30) return `in ${diffDays}d`;
   const diffWeeks = Math.floor(diffDays / 7);
   if (diffWeeks < 52) return `in ${diffWeeks}w`;
-  return `in ${Math.floor(diffDays / 365)}y`;
+  return `in ${Math.max(1, Math.floor(diffDays / 365))}y`;
 }
 
 /**

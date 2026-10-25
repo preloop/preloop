@@ -88,6 +88,17 @@ describe('date utilities', () => {
   });
 });
 
+describe('year boundary', () => {
+  const now = new Date('2026-10-07T20:00:00Z');
+
+  it('never renders zero years at 364 days', () => {
+    expect(formatRelativeTime('2025-10-08T20:00:00Z', now)).to.equal('1y ago');
+    expect(formatFutureRelativeTime('2027-10-06T20:00:00Z', now)).to.equal(
+      'in 1y'
+    );
+  });
+});
+
 describe('formatRelativeOrFuture', () => {
   const now = new Date('2026-07-12T20:00:00Z');
 
