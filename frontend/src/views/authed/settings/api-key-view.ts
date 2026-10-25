@@ -1,3 +1,4 @@
+import { apiKeyDisplayName } from '../../../utils/api-key-name';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { LitElement, css, html, unsafeCSS, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -323,7 +324,7 @@ export class ApiKeyView extends LitElement {
 
     const confirmed = await confirmDialog({
       title: 'Revoke API key',
-      message: `Revoke "${this.apiKey?.name}"?`,
+      message: `Revoke "${apiKeyDisplayName(this.apiKey?.name || '').name}"?`,
       detail:
         'Anything still authenticating with this key stops working immediately. This cannot be undone.',
       confirmLabel: 'Revoke key',
@@ -690,13 +691,19 @@ export class ApiKeyView extends LitElement {
       return nothing;
     }
 
+    const displayName = apiKeyDisplayName(this.apiKey.name);
     return html`
       <div class="container">
         <!-- view-header takes headerText, and its slots are top / title-prefix
              / main-column / meta / description. Passing title, backUrl and
              backLabel rendered an empty band with no title, no way back and no
              Revoke button. -->
-        <view-header headerText=${this.apiKey.name}>
+        <view-header headerText=${displayName.name}>
+          ${
+            displayName.fullId
+              ? html`<span slot="meta">Run ${displayName.fullId}</span>`
+              : nothing
+          }
           <div slot="top" style="margin-bottom: var(--sl-spacing-small);">
             <sl-button
               variant="text"

@@ -1,3 +1,4 @@
+import { cleanSessionSubject } from '../utils/session-subject';
 import { randomUuid } from '../utils/random-uuid';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import { parseUTCDate } from '../utils/date';
@@ -367,7 +368,7 @@ export class SessionHistoryWidget extends LitElement {
                 @click=${() => this._selectSession(session.id)}
               >
                 <div class="session-title">
-                  ${session.session_alias || 'Session'}
+                  ${cleanSessionSubject(session.session_alias) || 'Session'}
                 </div>
                 <div class="session-meta">
                   ${session.session_source_type} · ${session.session_source_id}
