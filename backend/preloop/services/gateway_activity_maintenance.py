@@ -16,9 +16,9 @@ resumable:
   Rows are never deleted here; deleting whole sessions is the retention
   purge's job (``RETENTION_PURGE_ENABLED``).
 
-Sessions under legal hold are skipped by both. Each batch is its own
-transaction, so stopping a pass at any point loses at most one batch of work
-and the next pass carries on. The pass runs hourly from the sync scheduler
+Sessions and flow executions under legal hold are skipped by every pass.
+Each batch is its own transaction, so stopping a pass at any point loses at
+most one batch of work and the next pass carries on. The pass runs hourly from the sync scheduler
 (task ``maintain_gateway_activity``) and can be run by hand::
 
     python -m preloop.services.gateway_activity_maintenance --max-batches 100

@@ -1394,7 +1394,8 @@ class Settings(BaseSettings):
         32768,
         description=(
             "Upper bound, in bytes of JSON, for the metadata stored on one "
-            "model_gateway_call row in runtime_session_activity. Each row "
+            "model_gateway_call row in runtime_session_activity or "
+            "flow_execution_log. Each row "
             "keeps only the messages new to that call (replayed history is "
             "already on the session's earlier rows); a call still larger than "
             "this has its tool definitions reduced to names, then its raw "
