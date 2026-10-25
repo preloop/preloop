@@ -1027,8 +1027,10 @@ def comments_after_last_criteria_edit(
         [c for c in raw if isinstance(c, Mapping)] if isinstance(raw, list) else []
     )
     comments.sort(
-        key=lambda c: _parse_time(c.get("created_at"))
-        or datetime.min.replace(tzinfo=timezone.utc)
+        key=lambda c: (
+            _parse_time(c.get("created_at"))
+            or datetime.min.replace(tzinfo=timezone.utc)
+        )
     )
     start = 0
     for index, comment in enumerate(comments):

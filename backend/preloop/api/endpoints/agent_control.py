@@ -1347,7 +1347,7 @@ def _resolve_command_progress_target(
 
     Returns:
         ``(consuming account id, runtime session id)``, or None when the
-        command is unknown, not this agent's, finished or has no session.
+        command is unknown, not this agent's, not running or unrecorded.
     """
     command = crud_agent_control_command.get_by_command_id(
         db,
@@ -1359,11 +1359,19 @@ def _resolve_command_progress_target(
         command is None
         or command.kind != "command"
         or command.status not in {"delivered", "acked"}
-        or command.runtime_session_id is None
     ):
         return None
     account_id = command.consuming_account_id or connection.account_id
-    return str(account_id), str(command.runtime_session_id)
+    # The session the operator's message was recorded on (a New session's
+    # tracking row, the targeted session, or the current binding), read the
+    # same way stored command progress is: the command row itself may still
+    # name the agent's previous binding.
+    message = crud_runtime_session_activity.command_message(
+        db, account_id=account_id, command_id=command_id
+    )
+    if message is None or message.runtime_session_id is None:
+        return None
+    return str(account_id), str(message.runtime_session_id)
 
 
 #: Reply and reasoning deltas one session may broadcast: a burst of

@@ -335,8 +335,14 @@ def test_get_open_by_source_id_scopes_account_and_skips_ended(
 
 
 async def _emit_for_command(
-    connection: SimpleNamespace, inbound: AgentControlInboundEnvelope, command: Any
+    connection: SimpleNamespace,
+    inbound: AgentControlInboundEnvelope,
+    command: Any,
+    recorded_on: Any = "from-command",
 ) -> tuple[MagicMock, MagicMock]:
+    if recorded_on == "from-command":
+        recorded_on = getattr(command, "runtime_session_id", None)
+    message = SimpleNamespace(runtime_session_id=recorded_on) if recorded_on else None
     with (
         patch.object(
             agent_control.crud_agent_control_command,
@@ -344,12 +350,23 @@ async def _emit_for_command(
             return_value=command,
         ) as lookup,
         patch.object(
+            agent_control.crud_runtime_session_activity,
+            "command_message",
+            return_value=message,
+        ) as recorded,
+        patch.object(
             agent_control.crud_runtime_session, "get_open_by_source_id"
         ) as by_source,
         patch.object(agent_control, "emit_account_event") as emit,
     ):
         await agent_control._emit_session_progress(_FakeDatabase(), connection, inbound)
     by_source.assert_not_called()
+    if recorded.called:
+        # The operator message is looked up in the account that owns the turn.
+        expected = getattr(command, "consuming_account_id", None) or (
+            connection.account_id
+        )
+        assert recorded.call_args.kwargs["account_id"] == expected
     if lookup.called:
         assert lookup.call_args.kwargs["account_id"] == connection.account_id
         assert (
@@ -367,16 +384,19 @@ async def test_new_session_command_delta_reaches_the_tracking_session() -> None:
     """
     account_id, agent_id = str(uuid4()), str(uuid4())
     tracking = uuid4()
+    # Same-account sends: the command row still names the previous binding;
+    # the operator message was recorded on the new tracking session.
     command = SimpleNamespace(
         kind="command",
         status="acked",
-        runtime_session_id=tracking,
+        runtime_session_id=uuid4(),
         consuming_account_id=None,
     )
     emit, _ = await _emit_for_command(
         _connection(account_id, agent_id),
         _delta("native-claude-id", command_id="cmd-1", seq=1),
         command,
+        recorded_on=tracking,
     )
     event = emit.call_args.args[0]
     assert event["account_id"] == account_id
@@ -454,3 +474,35 @@ async def test_reasoning_titles_are_never_throttled() -> None:
                 _delta("thread-tui", kind="status_title", seq=index),
             )
     assert emit.call_count == 60
+
+
+def test_command_message_finds_the_session_a_command_was_recorded_on(
+    db_session: Session,
+) -> None:
+    from preloop.models.crud import crud_runtime_session_activity
+
+    account = models.Account(organization_name="Command owner")
+    other = models.Account(organization_name="Command other")
+    db_session.add_all([account, other])
+    db_session.flush()
+    tracking = _runtime_session(
+        db_session, account.id, f"cmd-{uuid4().hex[:8]}", age_minutes=0, ended=False
+    )
+    crud_runtime_session_activity.log_agent_control_message(
+        db_session,
+        account_id=account.id,
+        runtime_session_id=tracking.id,
+        message="start fresh",
+        status="delivered",
+        metadata={"kind": "operator_command", "command_id": "cmd-live"},
+    )
+    found = crud_runtime_session_activity.command_message(
+        db_session, account_id=account.id, command_id="cmd-live"
+    )
+    assert found is not None and found.runtime_session_id == tracking.id
+    assert (
+        crud_runtime_session_activity.command_message(
+            db_session, account_id=other.id, command_id="cmd-live"
+        )
+        is None
+    )

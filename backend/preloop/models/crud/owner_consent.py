@@ -204,9 +204,11 @@ async def get_by_approval_async(
 ) -> models.OwnerConsent | None:
     """Find the immutable owner binding for an approval."""
     return await db.run_sync(
-        lambda session: session.query(models.OwnerConsent)
-        .filter_by(approval_request_id=approval_id)
-        .first()
+        lambda session: (
+            session.query(models.OwnerConsent)
+            .filter_by(approval_request_id=approval_id)
+            .first()
+        )
     )
 
 
