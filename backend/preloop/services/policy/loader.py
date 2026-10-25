@@ -1865,7 +1865,9 @@ def _export_item(model_cls: Type[_ExportModel], **fields: Any) -> _ExportModel:
     Rows written through the configuration API can hold values the policy
     schema rejects (for example a workflow with no timeout). Export shows the
     operator what is stored so it can be fixed, so a rejected row is kept as
-    an unvalidated model instead of failing the whole export.
+    an unvalidated model instead of failing the whole export. A stored
+    ``None`` in a required field is still omitted from the YAML, which drops
+    ``None`` values, so it reads as the schema default there.
 
     Args:
         model_cls: Policy schema model for the item.
@@ -1881,7 +1883,9 @@ def _export_item(model_cls: Type[_ExportModel], **fields: Any) -> _ExportModel:
             "Exported %s %r does not validate: %s",
             model_cls.__name__,
             fields.get("name"),
-            exc,
+            # Field paths and messages only: the inputs can hold credentials
+            # (auth_config), webhook config or AI context.
+            exc.errors(include_input=False, include_url=False),
         )
         return model_cls.model_construct(**fields)
 
@@ -2116,5 +2120,8 @@ def export_current_policy(
         # Stored state that no longer validates as one document (for example
         # a model_io rule naming a custom type the block has lost). Export
         # must still show the operator what is stored so it can be fixed.
-        logger.warning("Exported policy does not validate as a whole: %s", exc)
+        logger.warning(
+            "Exported policy does not validate as a whole: %s",
+            exc.errors(include_input=False, include_url=False),
+        )
         return PolicyDocument.model_construct(**document_fields)
