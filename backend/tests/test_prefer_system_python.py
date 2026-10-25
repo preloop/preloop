@@ -219,9 +219,12 @@ def test_self_hosted_fallback_repairs_clean_environment_loader() -> None:
         steps = yaml.safe_load(handle)["runs"]["steps"]
     repair = steps[2]
     assert "runner.environment == 'self-hosted'" in repair["if"]
+    assert "runner.os == 'Linux'" in repair["if"]
     assert "steps.system.outputs.use_setup == 'true'" in repair["if"]
     script = repair["run"]
-    assert script.count("env -u LD_LIBRARY_PATH") == 2
+    assert script.count("env -u LD_LIBRARY_PATH") == 3
     assert "patchelf --set-rpath" in script
     assert "${ORIGIN}/../lib" in script
-    assert "pythonLocation" in script
+    assert "${pythonLocation}/bin/python3" in script
+    assert 'mktemp "${python_bin}.repair.' in script
+    assert 'mv -f "$temporary" "$python_bin"' in script

@@ -33,13 +33,11 @@ runs:
     # directory with the dynamic loader. Tests deliberately run subprocesses
     # with a clean environment, so LD_LIBRARY_PATH is insufficient.
     - name: Make downloaded Python usable with a clean environment
-      if: steps.system.outputs.use_setup == 'true' && runner.environment == 'self-hosted'
+      if: steps.system.outputs.use_setup == 'true' && runner.environment == 'self-hosted' && runner.os == 'Linux'
       shell: bash
-      env:
-        PYTHON_VERSION: ${{ inputs.python-version }}
       run: |
         set -euo pipefail
-        python_bin="${pythonLocation}/bin/python${PYTHON_VERSION}"
+        python_bin="$(readlink -f "${pythonLocation}/bin/python3")"
         if env -u LD_LIBRARY_PATH "$python_bin" -c 'import ssl'; then
           exit 0
         fi
@@ -52,5 +50,10 @@ runs:
         if [ -n "$current" ]; then
           library_path="${library_path}:${current}"
         fi
-        patchelf --set-rpath "$library_path" "$python_bin"
+        temporary="$(mktemp "${python_bin}.repair.XXXXXX")"
+        trap 'rm -f "$temporary"' EXIT
+        cp -p "$python_bin" "$temporary"
+        patchelf --set-rpath "$library_path" "$temporary"
+        env -u LD_LIBRARY_PATH "$temporary" -c 'import ssl'
+        mv -f "$temporary" "$python_bin"
         env -u LD_LIBRARY_PATH "$python_bin" -c 'import ssl'
