@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { EditPermissions } from '../controllers/edit-permissions';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -342,11 +343,11 @@ export class BudgetPolicyEditor extends LitElement {
         await Promise.all([
           getAIModels(),
           getAccountAgents({ status: 'all', limit: 100 }),
-          fetchWithAuth('/api/v1/auth/users/me').then((r) =>
+          fetchWithAuth(REST_API_PREFIX + '/auth/users/me').then((r) =>
             r.ok ? r.json() : null
           ),
           (this.features.advanced_budget_administration
-            ? fetchWithAuth('/api/v1/users?limit=100')
+            ? fetchWithAuth(REST_API_PREFIX + '/users?limit=100')
             : Promise.resolve(new Response(JSON.stringify({ users: [] })))
           ).then((r) =>
             r.ok

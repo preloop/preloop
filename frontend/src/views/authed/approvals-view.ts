@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { replaceListFilters } from '../../utils/list-filter-url';
@@ -936,7 +937,9 @@ export class ApprovalsView extends AuthedElement {
     total: number | null;
   } | null> {
     const query = new URLSearchParams(params).toString();
-    const response = await fetchWithAuth(`/api/v1/approval-requests?${query}`);
+    const response = await fetchWithAuth(
+      `${REST_API_PREFIX}/approval-requests?${query}`
+    );
     if (!response.ok) return null;
     const data = await response.json();
     if (!Array.isArray(data)) return null;
@@ -1034,7 +1037,9 @@ export class ApprovalsView extends AuthedElement {
   /** Account-wide counts; the strip falls back to the loaded rows without. */
   private async loadStats(): Promise<void> {
     try {
-      const response = await fetchWithAuth('/api/v1/approval-requests/stats');
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/approval-requests/stats'
+      );
       const data = response.ok ? await response.json() : null;
       this.serverStats = isStatsResponse(data) ? data : null;
     } catch {

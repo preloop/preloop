@@ -33,10 +33,10 @@ const (
 	authorizePath = "/oauth/authorize"
 	tokenPath     = "/oauth/token"
 	revokePath    = "/oauth/revoke"
-	userInfoPath  = "/api/v1/users/me"
+	userInfoPath  = api.RESTPrefix + "/users/me"
 	// authUserInfoPath is served by OSS and EE. userInfoPath is EE-only
 	// (rbac plugin) but carries name and organization.
-	authUserInfoPath = "/api/v1/auth/users/me"
+	authUserInfoPath = api.RESTPrefix + "/auth/users/me"
 
 	cliOAuthClientID       = "cli"
 	manualOAuthRedirectURI = "urn:ietf:wg:oauth:2.0:oob"
@@ -676,7 +676,7 @@ func revokeAllSessions() error {
 		return err
 	}
 	var result map[string]int
-	return client.Post("/api/v1/auth/sessions/revoke-all", map[string]any{}, &result)
+	return client.Post(api.RESTPrefix+"/auth/sessions/revoke-all", map[string]any{}, &result)
 }
 
 // errLoginNotRevocable means the server has no per-login session for the
@@ -763,7 +763,7 @@ func runAuthSessionsList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var sessions []cliSession
-	if err := client.Get("/api/v1/auth/sessions/cli", &sessions); err != nil {
+	if err := client.Get(api.RESTPrefix+"/auth/sessions/cli", &sessions); err != nil {
 		return fmt.Errorf("failed to list CLI sessions: %w", err)
 	}
 	if len(sessions) == 0 {
@@ -800,7 +800,7 @@ func runAuthSessionsRevoke(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	sessionID := strings.TrimSpace(args[0])
-	if err := client.Delete("/api/v1/auth/sessions/cli/"+url.PathEscape(sessionID), nil); err != nil {
+	if err := client.Delete(api.RESTPrefix+"/auth/sessions/cli/"+url.PathEscape(sessionID), nil); err != nil {
 		if api.IsStatus(err, http.StatusNotFound) {
 			return fmt.Errorf("no active CLI session %s", sessionID)
 		}

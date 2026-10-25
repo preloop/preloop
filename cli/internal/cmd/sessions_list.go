@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	runtimeSessionsPath = "/api/v1/runtime-sessions"
+	runtimeSessionsPath = api.RESTPrefix + "/runtime-sessions"
 
 	// sessionsListMaxPageSize is the endpoint's own page ceiling (le=100).
 	sessionsListMaxPageSize  = 100

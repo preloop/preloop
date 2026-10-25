@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import * as api from '../api';
@@ -353,7 +354,7 @@ export class MCPServerForm extends LitElement {
     // backend 302s to the external consent form.
     try {
       const response = await api.fetchWithAuth(
-        `/api/v1/mcp-servers/${id}/oauth/authorize-token`,
+        `${REST_API_PREFIX}/mcp-servers/${id}/oauth/authorize-token`,
         { method: 'POST' }
       );
       if (!response.ok) {
@@ -361,7 +362,7 @@ export class MCPServerForm extends LitElement {
         return;
       }
       const { authorize_token: authorizeToken } = await response.json();
-      window.location.href = `/api/v1/mcp-servers/${id}/oauth/authorize?code=${encodeURIComponent(
+      window.location.href = `${REST_API_PREFIX}/mcp-servers/${id}/oauth/authorize?code=${encodeURIComponent(
         authorizeToken
       )}`;
     } catch (error) {

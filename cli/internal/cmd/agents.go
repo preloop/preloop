@@ -1943,7 +1943,7 @@ func managedAgentLooksStale(agent managedAgentSummary) bool {
 
 func listManagedAgents(client *api.Client) ([]managedAgentSummary, error) {
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	sort.SliceStable(response.Items, func(i, j int) bool {
@@ -2711,7 +2711,7 @@ func archiveManagedAgentRecord(client *api.Client, agentID string) error {
 		"reason":           "offboarded via preloop CLI",
 	}
 	var response managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+agentID, request, &response); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+agentID, request, &response); err != nil {
 		return fmt.Errorf("failed to archive managed agent %q: %w", agentID, err)
 	}
 	return nil
@@ -2719,7 +2719,7 @@ func archiveManagedAgentRecord(client *api.Client, agentID string) error {
 
 func deleteManagedAgentRecord(client *api.Client, agentID string) error {
 	var response map[string]interface{}
-	if err := client.Delete("/api/v1/agents/"+agentID, &response); err != nil {
+	if err := client.Delete(api.RESTPrefix+"/agents/"+agentID, &response); err != nil {
 		return fmt.Errorf("failed to remove managed agent %q: %w", agentID, err)
 	}
 	return nil
@@ -2848,7 +2848,7 @@ func collectOffboardCleanupCandidates(client *api.Client, current managedAgentSu
 	}
 
 	var serverIndex []mcpServerResponse
-	if err := client.Get("/api/v1/mcp-servers", &serverIndex); err != nil {
+	if err := client.Get(api.RESTPrefix+"/mcp-servers", &serverIndex); err != nil {
 		return nil, fmt.Errorf("failed to list MCP servers: %w", err)
 	}
 	serversByName := make(map[string]mcpServerResponse, len(serverIndex))
@@ -2857,11 +2857,11 @@ func collectOffboardCleanupCandidates(client *api.Client, current managedAgentSu
 	}
 
 	var modelIndex []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &modelIndex); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &modelIndex); err != nil {
 		return nil, fmt.Errorf("failed to list AI models: %w", err)
 	}
 	var flows []flowSummaryResponse
-	if err := client.Get("/api/v1/flows?limit=1000", &flows); err != nil {
+	if err := client.Get(api.RESTPrefix+"/flows?limit=1000", &flows); err != nil {
 		return nil, fmt.Errorf("failed to list flows: %w", err)
 	}
 
@@ -2942,11 +2942,11 @@ func promptOffboardCleanup(reader io.Reader, writer io.Writer, autoApprove bool,
 	bufferedReader := bufio.NewReader(reader)
 	for _, candidate := range candidates {
 		kindLabel := "MCP server"
-		deletePath := "/api/v1/mcp-servers/" + candidate.ResourceID
+		deletePath := api.RESTPrefix + "/mcp-servers/" + candidate.ResourceID
 		successLabel := "Removed MCP server"
 		if candidate.Kind == "ai_model" {
 			kindLabel = "AI model"
-			deletePath = "/api/v1/ai-models/" + candidate.ResourceID
+			deletePath = api.RESTPrefix + "/ai-models/" + candidate.ResourceID
 			successLabel = "Removed AI model"
 		}
 		if candidate.Kind == "ai_model" {
@@ -3129,7 +3129,7 @@ func issueRuntimeSessionToken(client *api.Client, agent AgentConfig, allowedServ
 	}
 
 	var result runtimeSessionTokenResponse
-	if err := client.Post("/api/v1/auth/runtime-sessions/token", request, &result); err != nil {
+	if err := client.Post(api.RESTPrefix+"/auth/runtime-sessions/token", request, &result); err != nil {
 		return nil, err
 	}
 
@@ -3193,7 +3193,7 @@ func extractAgentNameViaAPI(content string) string {
 		Name string `json:"name"`
 	}
 
-	if err := client.Post("/api/v1/agents/extract-name", request, &result); err == nil {
+	if err := client.Post(api.RESTPrefix+"/agents/extract-name", request, &result); err == nil {
 		return strings.TrimSpace(result.Name)
 	}
 	return ""
@@ -5187,7 +5187,7 @@ func ensureDiscoveredRemoteServers(client *api.Client, agent AgentConfig, public
 
 func ensureDiscoveredRemoteServersWithCustody(client *api.Client, agent AgentConfig, publicURL string, noImport bool) (*remoteServerSyncResult, error) {
 	var existing []mcpServerResponse
-	if err := client.Get("/api/v1/mcp-servers", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/mcp-servers", &existing); err != nil {
 		return nil, fmt.Errorf("failed to list MCP servers: %w", err)
 	}
 	existingByName := make(map[string]mcpServerResponse, len(existing))
@@ -5242,7 +5242,7 @@ func ensureDiscoveredRemoteServersWithCustody(client *api.Client, agent AgentCon
 			continue
 		}
 		var created mcpServerResponse
-		if err := client.Post("/api/v1/mcp-servers", request, &created); err != nil {
+		if err := client.Post(api.RESTPrefix+"/mcp-servers", request, &created); err != nil {
 			return nil, fmt.Errorf("failed to add discovered MCP server %q: %w", name, err)
 		}
 		result.Added = append(result.Added, name)
@@ -5314,7 +5314,7 @@ func extractBearerToken(server MCPDef) string {
 
 func getManagedAgentForDiscovered(client *api.Client, agent AgentConfig) (*managedAgentSummary, error) {
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	if matched := findManagedAgentForDiscovered(response.Items, agent); matched != nil {
@@ -5401,7 +5401,7 @@ func rekeyManagedAgentRecord(
 		request["principal_identity"] = identity
 	}
 	var response map[string]interface{}
-	if err := client.Post("/api/v1/agents/"+agentID+"/rekey", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/"+agentID+"/rekey", request, &response); err != nil {
 		return fmt.Errorf("failed to rekey managed agent %q: %w", agentID, err)
 	}
 	return nil
@@ -5447,7 +5447,7 @@ func ensureManagedAgentIdentityReady(
 	}
 
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return agent, nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 
@@ -5659,7 +5659,7 @@ func runAgentsMerge(cmd *cobra.Command, args []string) error {
 
 	var dryRun map[string]interface{}
 	if err := client.Post(
-		"/api/v1/agents/"+survivor.ID+"/merge",
+		api.RESTPrefix+"/agents/"+survivor.ID+"/merge",
 		map[string]interface{}{
 			"duplicate_agent_id": duplicate.ID,
 			"dry_run":            true,
@@ -5692,7 +5692,7 @@ func runAgentsMerge(cmd *cobra.Command, args []string) error {
 	}
 	var result map[string]interface{}
 	if err := client.Post(
-		"/api/v1/agents/"+survivor.ID+"/merge",
+		api.RESTPrefix+"/agents/"+survivor.ID+"/merge",
 		map[string]interface{}{
 			"duplicate_agent_id": duplicate.ID,
 			"dry_run":            false,
@@ -5723,7 +5723,7 @@ func ensureArchivedManagedAgentReenrolled(
 	}
 
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	matched := findManagedAgentForDiscovered(response.Items, agent)
@@ -5774,7 +5774,7 @@ func reviveManagedAgentLifecycle(
 		"lifecycle_action": action,
 	}
 	var updated managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+matched.ID, request, &updated); err != nil {
 		return nil, fmt.Errorf(
 			"failed to %s managed agent %q: %w", action, matched.ID, err,
 		)
@@ -5825,7 +5825,7 @@ func restoreManagedAgentLifecycle(
 		"reason":           "rolled back: re-onboarding did not complete",
 	}
 	var updated managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+matched.ID, request, &updated); err != nil {
 		fmt.Fprintf( //nolint:errcheck
 			output,
 			"Warning: could not restore enrollment %s to %s after failure: %v\n",
@@ -5919,7 +5919,7 @@ func reenrollArchivedManagedAgent(
 		"lifecycle_action": action,
 	}
 	var updated managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+matched.ID, request, &updated); err != nil {
 		return nil, fmt.Errorf("failed to %s %s managed agent %q: %w", action, stateLabel, matched.ID, err)
 	}
 	// One line per revival, naming what actually happened.
@@ -5989,7 +5989,7 @@ func createDurableManagedCredential(client *api.Client, agent *managedAgentSumma
 		Scopes:        []string{"mcp:read", "mcp:write"},
 	}
 	var response managedAgentCredentialCreateResponse
-	if err := client.Post("/api/v1/agents/"+agent.ID+"/credentials", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/"+agent.ID+"/credentials", request, &response); err != nil {
 		return nil, fmt.Errorf("failed to create durable managed-agent credential: %w", err)
 	}
 	return &response, nil
@@ -5997,7 +5997,7 @@ func createDurableManagedCredential(client *api.Client, agent *managedAgentSumma
 
 func createManagedEnrollmentRecord(client *api.Client, agentID string, request managedAgentEnrollmentCreateRequest) (*managedAgentEnrollmentSummary, error) {
 	var response managedAgentEnrollmentSummary
-	if err := client.Post("/api/v1/agents/"+agentID+"/enrollments", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/"+agentID+"/enrollments", request, &response); err != nil {
 		return nil, fmt.Errorf("failed to persist managed enrollment: %w", err)
 	}
 	return &response, nil
@@ -6005,7 +6005,7 @@ func createManagedEnrollmentRecord(client *api.Client, agentID string, request m
 
 func getManagedAgentDetail(client *api.Client, agentID string) (*managedAgentDetailResponse, error) {
 	var response managedAgentDetailResponse
-	if err := client.Get("/api/v1/agents/"+agentID, &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents/"+agentID, &response); err != nil {
 		return nil, fmt.Errorf("failed to fetch managed agent detail: %w", err)
 	}
 	return &response, nil
@@ -6043,7 +6043,7 @@ func validateManagedEnrollmentRecord(
 	}
 	var response managedAgentEnrollmentSummary
 	if err := client.Post(
-		"/api/v1/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/validate",
+		api.RESTPrefix+"/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/validate",
 		request,
 		&response,
 	); err != nil {
@@ -6073,7 +6073,7 @@ func restoreManagedEnrollmentRecord(
 	}
 	var response managedAgentEnrollmentSummary
 	if err := client.Post(
-		"/api/v1/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/restore",
+		api.RESTPrefix+"/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/restore",
 		request,
 		&response,
 	); err != nil {
@@ -7406,7 +7406,7 @@ func resolveAgentModelMatch(
 		return nil, agentModelMatchNone
 	}
 	var allModels []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &allModels); err != nil || len(allModels) == 0 {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &allModels); err != nil || len(allModels) == 0 {
 		return nil, agentModelMatchNone
 	}
 

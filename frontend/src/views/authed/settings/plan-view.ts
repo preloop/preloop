@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../../api-path';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import '../../../components/billing-subscription-details';
@@ -192,7 +193,7 @@ export class PlanView extends LitElement {
   }
 
   private async _loadSummary(): Promise<void> {
-    const response = await fetchWithAuth('/api/v1/billing/summary', {
+    const response = await fetchWithAuth(REST_API_PREFIX + '/billing/summary', {
       cache: 'no-store',
     });
     if (!response.ok)
@@ -203,7 +204,7 @@ export class PlanView extends LitElement {
   /** Current plan, eligibility and permission, from the billing plugin. */
   private async _loadOptions(): Promise<void> {
     const response = await fetchWithAuth(
-      '/api/v1/billing/plan-change-options',
+      REST_API_PREFIX + '/billing/plan-change-options',
       { cache: 'no-store' }
     );
     if (!response.ok) throw new Error('Could not load your current plan.');

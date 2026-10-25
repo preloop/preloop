@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /** Human administration only. Issued secrets have no cache or storage path. */
 import { fetchWithAuth } from './api';
 export const CI_ACTIONS = [
@@ -63,7 +64,7 @@ export interface CiSubscriptionIssued {
   event_types: ['flow.execution.finished'];
   secret: string;
 }
-const BASE = '/api/v1/ci-identities';
+const BASE = REST_API_PREFIX + '/ci-identities';
 const id = encodeURIComponent;
 async function request<T>(
   path: string,
