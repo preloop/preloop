@@ -1,5 +1,6 @@
 """Disposable-Postgres lifecycle integration through real provider/controller hooks."""
 
+import asyncio
 from copy import deepcopy
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -13,6 +14,7 @@ from preloop.models.crud.base import CRUDBase
 from preloop.models.schemas.flow_execution import FlowExecutionUpdate
 from preloop.models.crud import (
     crud_account,
+    crud_assessment,
     crud_flow_execution,
     crud_issue,
     crud_issue_lifecycle,
@@ -53,6 +55,14 @@ class FakeGitHub:
         self.calls: list[tuple[str, str]] = []
         self.fail_after_creation = False
         self.change_before_label = False
+        # Runtime evidence GitHub holds for the merge commit.
+        self.check_runs: list[dict[str, Any]] = []
+        self.workflow_runs: list[dict[str, Any]] = []
+        self.artifacts: dict[int, list[dict[str, Any]]] = {}
+        self.deployments: list[dict[str, Any]] = []
+        self.deployment_statuses: dict[int, list[dict[str, Any]]] = {}
+        self.unreadable: set[str] = set()
+        self.slow: set[str] = set()
 
     def merge(self, *, manual: bool = False, multiple: bool = False) -> None:
         self.issues[1]["state"] = "closed"
@@ -99,6 +109,24 @@ class FakeGitHub:
     ) -> Any:
         self.calls.append((method, endpoint))
         root = f"/repos/{REPO}"
+        if any(part in endpoint for part in self.slow):
+            await asyncio.sleep(1)
+        if any(part in endpoint for part in self.unreadable):
+            raise PermissionError("403 Resource not accessible by integration")
+        if endpoint == f"{root}/commits/{SHA}/check-runs":
+            return {"check_runs": deepcopy(self.check_runs)}
+        if endpoint == f"{root}/actions/runs":
+            assert params and params["head_sha"] == SHA
+            return {"workflow_runs": deepcopy(self.workflow_runs)}
+        if endpoint.startswith(f"{root}/actions/runs/"):
+            run_id = int(endpoint.split("/")[-2])
+            return {"artifacts": deepcopy(self.artifacts.get(run_id, []))}
+        if endpoint == f"{root}/deployments":
+            assert params and params["sha"] == SHA
+            return deepcopy(self.deployments)
+        if endpoint.startswith(f"{root}/deployments/"):
+            deployment_id = int(endpoint.split("/")[-2])
+            return deepcopy(self.deployment_statuses.get(deployment_id, []))
         if endpoint == f"{root}/labels" and method == "GET":
             return [{"name": name} for name in self.repository_labels]
         if endpoint == f"{root}/issues" and method == "GET":
@@ -1673,3 +1701,221 @@ async def test_pickup_replacement_requires_real_terminal_status(
         )
         assert result["state"] == "ready"
         assert result["replaces_execution_id"] == str(previous.id)
+
+
+def runtime_result(
+    contract: ReadinessContract, runtime: list[str], observation: str
+) -> dict[str, Any]:
+    """An audit result that decides every criterion from runtime evidence only."""
+    result = audit_result(contract)
+    for item in result["criteria"]:
+        item.update(code=[], tests=[], observations=[observation], runtime=runtime)
+    return result
+
+
+async def finish_with(
+    service: IssueLifecycleService,
+    flow: models.Flow,
+    contract: ReadinessContract,
+    result: dict[str, Any],
+) -> tuple[models.FlowExecution, dict[str, Any]]:
+    await service.refine(contract)
+    execution = await service.schedule_audit(flow, AsyncMock())
+    crud_flow_execution.update(
+        service.db,
+        db_obj=execution,
+        obj_in=FlowExecutionUpdate(status="SUCCEEDED", result=result),
+    )
+    return execution, await service.finish_audit(execution)
+
+
+def audit_assessments(service: IssueLifecycleService) -> list[models.Assessment]:
+    return crud_assessment.newest_per_revision(
+        service.db, account_id=service.account_id, issue_id=service.issue.id
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_output_criterion_is_decided_from_ci_artifact(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.check_runs = [
+        {
+            "id": 11,
+            "name": "build",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/example/project/runs/11",
+            "output": {"title": "Build passed"},
+        }
+    ]
+    transport.workflow_runs = [{"id": 21, "name": "CI", "conclusion": "success"}]
+    transport.artifacts = {
+        21: [
+            {
+                "id": 55,
+                "name": "dist",
+                "size_in_bytes": 120_000,
+                "expired": False,
+                "archive_download_url": "https://api.github.com/example/artifacts/55",
+            }
+        ]
+    }
+    contract = await contract_for(service)
+    contract.criteria[0].outcome = "The build emits dist/app.js under 200 KB"
+    result = runtime_result(
+        contract, ["artifact:55", "check:11"], "dist/app.js is 118 KB in artifact"
+    )
+    execution, summary = await finish_with(service, flow, contract, result)
+
+    runtime = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert [item["id"] for item in runtime["checks"]] == ["check:11"]
+    assert runtime["artifacts"][0]["name"] == "dist"
+    assert runtime["unavailable"] == []
+    assert summary["verdict"] == "complete"
+    assert summary["evidence"]["criteria"][0]["runtime"] == ["artifact:55", "check:11"]
+    (assessment,) = audit_assessments(service)
+    assert assessment.source == "audit"
+    assert assessment.revision == SHA
+    assert assessment.purpose_verdict == "covered"
+    assert assessment.flow_execution_id == execution.id
+    assert assessment.criteria_snapshot[0]["outcome"].startswith("The build emits")
+    assert assessment.evidence["runtime"]["artifacts"][0]["id"] == "artifact:55"
+    # Publication is idempotent, and so is the assessment it appends.
+    await service.finish_audit(execution)
+    assert len(audit_assessments(service)) == 1
+
+
+@pytest.mark.asyncio
+async def test_layout_criterion_is_decided_from_preview(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.deployments = [{"id": 9, "environment": "preview"}]
+    transport.deployment_statuses = {
+        9: [
+            {
+                "state": "success",
+                "environment_url": "https://preview.example.com/pr-7",
+                "log_url": "https://ci.example.com/deploy/9",
+            },
+            {"state": "in_progress", "environment_url": ""},
+        ]
+    }
+    contract = await contract_for(service)
+    contract.criteria[0].outcome = "Settings page has no horizontal scroll at 375px"
+    result = runtime_result(
+        contract, ["preview:9"], "Loaded the preview at 375px; scrollWidth 375"
+    )
+    _, summary = await finish_with(service, flow, contract, result)
+
+    assert summary["verdict"] == "complete"
+    assert summary["runtime_evidence"]["previews"] == [
+        {
+            "id": "preview:9",
+            "environment": "preview",
+            "url": "https://preview.example.com/pr-7",
+            "log_url": "https://ci.example.com/deploy/9",
+        }
+    ]
+    assert "Preview: https://preview.example.com/pr-7" in transport.comments[0]["body"]
+    assert audit_assessments(service)[0].purpose_verdict == "covered"
+
+
+@pytest.mark.asyncio
+async def test_criterion_without_reachable_evidence_stays_unverified(
+    rig: tuple,
+) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    contract = await contract_for(service, 2)
+    # C0 cites a preview the controller never supplied; C1 says why it is unknown.
+    result = runtime_result(contract, ["preview:404"], "Layout looked fine")
+    result["criteria"][1].update(
+        verdict="unknown",
+        observations=[],
+        runtime=[],
+        reason="No preview deployment exists for the merge revision",
+    )
+    _, summary = await finish_with(service, flow, contract, result)
+
+    first, second = summary["evidence"]["criteria"]
+    assert summary["verdict"] == "unknown"
+    assert first["verdict"] == "unknown" and first["runtime"] == []
+    assert "No reachable evidence" in first["reason"]
+    assert second["reason"] == "No preview deployment exists for the merge revision"
+    (assessment,) = audit_assessments(service)
+    assert assessment.purpose_verdict == "unverified"
+    assert assessment.evidence["criteria"][1]["reason"] == second["reason"]
+
+
+@pytest.mark.asyncio
+async def test_unreadable_evidence_source_is_recorded_not_fatal(rig: tuple) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.unreadable = {"/check-runs", "/actions/"}
+    contract = await contract_for(service)
+    await service.refine(contract)
+    execution = await service.schedule_audit(flow, AsyncMock())
+    runtime = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert [item["source"] for item in runtime["unavailable"]] == [
+        "checks",
+        "artifacts",
+    ]
+    assert runtime["previews"] == []
+    crud_flow_execution.update(
+        service.db, db_obj=execution, obj_in=FlowExecutionUpdate(status="FAILED")
+    )
+    await service.finish_audit(execution)
+    assert "Runtime evidence unavailable: checks" in transport.comments[0]["body"]
+    assert audit_assessments(service)[0].purpose_verdict == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_slow_evidence_source_times_out_into_unavailable(
+    rig: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.slow = {"/actions/runs"}
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_provider.EVIDENCE_TIMEOUT_SECONDS", 0.05
+    )
+    await service.refine(await contract_for(service))
+    execution = await service.schedule_audit(flow, AsyncMock())
+    assert execution is not None
+    runtime = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert runtime["unavailable"] == [
+        {"source": "artifacts", "reason": "timed out"},
+        {"source": "previews", "reason": "timed out"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1:8080/",
+        "http://10.0.0.5/",
+        "http://localhost/",
+        "file:///etc/passwd",
+    ],
+)
+async def test_local_or_private_preview_url_is_refused(rig: tuple, url: str) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.deployments = [{"id": 9, "environment": "preview"}]
+    transport.deployment_statuses = {9: [{"state": "success", "environment_url": url}]}
+    await service.refine(await contract_for(service))
+    execution = await service.schedule_audit(flow, AsyncMock())
+    runtime = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert runtime["previews"] == []
+    assert runtime["unavailable"][0]["reason"].startswith("refused preview:9")
