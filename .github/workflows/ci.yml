@@ -112,6 +112,10 @@ jobs:
               - 'backend/tests/helm/**'
             workflow:
               - '.github/workflows/ci.yml'
+              - '.github/actions/setup-ci-python/**'
+              - '.github/actions/install-ci-python-deps/**'
+              - 'scripts/run_backend_shard.py'
+              - '.github/pytest-split-durations.json'
             # Anything that can change what a hash-pinned lock resolves to.
             requirements:
               - 'requirements/**'
@@ -416,9 +420,7 @@ jobs:
       #   --python-version 3.11 --extra dev pyproject.toml
       #   -o .github/requirements/app-dev.txt
       - name: Install Python dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Install frontend dependencies
         run: cd frontend && npm ci
@@ -470,9 +472,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install Python dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Helm chart guard tests
         env:
@@ -568,20 +568,10 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Cache pip
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('.github/requirements/app-dev.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
       # App + [dev] extra hash-pinned via app-dev.txt; `--no-deps` installs
       # only the local package.
       - name: Install dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Prepare Postgres
         run: python scripts/ci_postgres.py prepare
@@ -812,15 +802,6 @@ jobs:
           cache: 'npm'
           cache-dependency-path: runtime-plugins/openclaw-preloop/package-lock.json
 
-      - name: Cache pip
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-runtime-plugins-${{ hashFiles('.github/requirements/runtime-plugin-test.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-runtime-plugins-
-            ${{ runner.os }}-pip-
-
       # Runtime + pytest hash-pinned together (a merge of runtime.txt and
       # runtime-test.txt conflicts on pygments). `--no-deps` installs only
       # the local package. Regenerate:
@@ -828,9 +809,9 @@ jobs:
       #     pyproject.toml .github/requirements/runtime-test.in \
       #     -o .github/requirements/runtime-plugin-test.txt
       - name: Install Python dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/runtime-plugin-test.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
+        with:
+          requirements: .github/requirements/runtime-plugin-test.txt
 
       - name: Run runtime-plugin pytest
         env:
@@ -1034,9 +1015,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Install test dependencies
-        run: |
-          pip install --require-hashes -r .github/requirements/app-dev.txt
-          pip install --no-deps -e .
+        uses: ./.github/actions/install-ci-python-deps
 
       - name: Prove browser egress is enforced
         env:

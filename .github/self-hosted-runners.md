@@ -207,3 +207,13 @@ namespace, enables loopback for local HTTP fixtures, forces
 drops to the invoking runner UID and GID with `setpriv` before executing the
 test binary. Do not grant unrestricted sudo or direct `unshare` access to the
 runner account. A missing helper or denied sudo must fail the check.
+
+## Python dependency reuse
+
+The `install-ci-python-deps` composite uses pinned uv to install hash-checked
+locks into a fresh job-local environment. Persistent runners retain the extracted
+package cache under their tool cache; hosted runners restore it from Actions
+cache using the lockfile key. Self-hosted jobs skip archive upload/download and
+cache pruning. Changed lockfiles are still validated on every install. Editable
+project code is installed separately with `--no-deps` so each job tests its own
+checkout. No mutable virtual environment is shared between jobs.
