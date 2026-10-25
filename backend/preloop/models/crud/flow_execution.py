@@ -1098,6 +1098,41 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.order_by(FlowExecution.start_time.desc()).first()
 
+    def completed_merge_audits(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        since: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> List[FlowExecution]:
+        """SUCCEEDED runs of this account's merge-audit flows, newest first.
+
+        A merge-audit flow is one whose ``agent_config.lifecycle_kind`` is
+        ``merge_audit`` (preset 013). ``agent_config`` is plain JSON, so the
+        flows are picked in Python; an account has few flows. Backs the
+        Delivery Report's audit reuse: a closed issue with a completed audit
+        is not assessed again.
+        """
+        if not account_id:
+            return []
+        flow_ids = [
+            flow.id
+            for flow in db.query(Flow).filter(Flow.account_id == account_id).all()
+            if isinstance(flow.agent_config, dict)
+            and flow.agent_config.get("lifecycle_kind") == "merge_audit"
+        ]
+        if not flow_ids:
+            return []
+        query = db.query(FlowExecution).filter(
+            FlowExecution.flow_id.in_(flow_ids),
+            FlowExecution.status == "SUCCEEDED",
+            FlowExecution.result.isnot(None),
+        )
+        if since is not None:
+            query = query.filter(FlowExecution.start_time >= since)
+        return query.order_by(FlowExecution.start_time.desc()).limit(limit).all()
+
     def last_successful_scheduled_at(
         self, db: Session, *, flow_id: Any
     ) -> Optional[str]:

@@ -3611,6 +3611,11 @@ class FlowExecutionOrchestrator:
         if baseline is not None:
             execution_context["baseline_delivery"] = baseline.model_dump()
 
+        if is_delivery_report_flow(self.flow):
+            execution_context["trigger_event_data"] = self._delivery_report_inputs(
+                execution_context.get("trigger_event_data")
+            )
+
         from preloop.services.flow_feedback import resolve_native_checkpoint
         from preloop.services.model_routing import validate_native_resume_identity
 
@@ -5589,6 +5594,37 @@ class FlowExecutionOrchestrator:
             # Filing is the last thing a successful review does. It never
             # turns that review into a failed execution.
             logger.exception("Filing the approved follow ups failed")
+
+    def _delivery_report_inputs(
+        self, trigger_event_data: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Seed the window's completed merge audits for a Delivery Report run.
+
+        The run reads them as ``previous/merge_audits.json`` beside the
+        previous report, so an audited closed issue is not assessed again.
+        A failed read leaves the trigger data as it was; the report pass
+        applies the audits again when the run ends.
+        """
+        from preloop.services.delivery_report import (
+            load_merge_audits,
+            with_merge_audits_seed,
+        )
+        from preloop.utils.workspace_seed import MAX_SINGLE_SEED_ENCODED_BYTES
+
+        payload = (trigger_event_data or {}).get("payload")
+        window = payload.get("window") if isinstance(payload, dict) else None
+        try:
+            document = load_merge_audits(
+                self.db,
+                account_id=self.flow.account_id,
+                window=window,
+                # Base64 grows the document by 4/3; keep the seed under cap.
+                max_bytes=MAX_SINGLE_SEED_ENCODED_BYTES * 3 // 4 - 1024,
+            )
+        except Exception:
+            logger.warning("Could not read merge audits for the report", exc_info=True)
+            return trigger_event_data
+        return with_merge_audits_seed(trigger_event_data, document)
 
     def _finalize_delivery_report(self, merged_result: Any) -> Any:
         """Apply the Delivery Report pass to a marked flow's result (#2019).
