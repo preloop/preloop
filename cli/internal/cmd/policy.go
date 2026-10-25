@@ -19,15 +19,15 @@ import (
 )
 
 const (
-	policiesValidatePath      = "/api/v1/policies/validate"
-	policiesUploadPath        = "/api/v1/policies/upload"
-	policiesDiffPath          = "/api/v1/policies/diff"
-	policiesExportPath        = "/api/v1/policies/export"
-	policiesListPath          = "/api/v1/policies/versions"
+	policiesValidatePath      = api.RESTPrefix + "/policies/validate"
+	policiesUploadPath        = api.RESTPrefix + "/policies/upload"
+	policiesDiffPath          = api.RESTPrefix + "/policies/diff"
+	policiesExportPath        = api.RESTPrefix + "/policies/export"
+	policiesListPath          = api.RESTPrefix + "/policies/versions"
 	policyListDefaultLimit    = 20
 	policyListMaxLimit        = 1000
-	policiesGeneratePath      = "/api/v1/policies/generate"
-	policiesGenerateAuditPath = "/api/v1/policies/generate-from-audit"
+	policiesGeneratePath      = api.RESTPrefix + "/policies/generate"
+	policiesGenerateAuditPath = api.RESTPrefix + "/policies/generate-from-audit"
 )
 
 // PolicyFile represents a policy file for upload.

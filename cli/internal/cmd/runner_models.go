@@ -347,7 +347,7 @@ func registerDiscoveredRunnerModels(found []runnerLocalModel, out io.Writer) err
 			ID string `json:"id"`
 		}
 		alias := "runner-" + strings.Split(state.ID, "-")[0] + "/" + strings.TrimPrefix(model.BaseURL, "http://") + "/" + model.Model
-		err = client.Post("/api/v1/runners/"+state.ID+"/models", map[string]any{
+		err = client.Post(api.RESTPrefix+"/runners/"+state.ID+"/models", map[string]any{
 			"name": model.Model + " (runner)", "provider_name": "openai", "model_identifier": model.Model,
 			"api_endpoint": model.BaseURL, "meta_data": map[string]any{"gateway": map[string]any{"enabled": true, "model_alias": alias}},
 		}, &response)

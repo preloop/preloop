@@ -19,7 +19,7 @@ type managedAgentGovernanceResponse struct {
 }
 
 func managedAgentGovernancePath(agentID string) string {
-	return "/api/v1/agents/" + strings.TrimSpace(agentID) + "/governance"
+	return api.RESTPrefix + "/agents/" + strings.TrimSpace(agentID) + "/governance"
 }
 
 func fetchManagedAgentGovernance(

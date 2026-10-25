@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth } from '../api';
 
 export type ChatProvider = 'slack' | 'mattermost' | 'discord';
@@ -46,7 +47,7 @@ async function chatRequest<T>(
   method = 'GET',
   body?: unknown
 ): Promise<T> {
-  const response = await fetchWithAuth(`/api/v1/chat${path}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/chat${path}`, {
     method,
     cache: 'no-store',
     ...(body === undefined

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { installSupportAssistant } from '../support-loader';
 import { runtimeSessionPathRedirect } from '../utils/runtime-session-route';
 import { consumeLoginReturn } from '../utils/login-return';
@@ -673,7 +674,7 @@ export class LitApp extends LitElement {
     sessionStorage.removeItem('oauth_setup_tracker');
     sessionStorage.removeItem('oauth_new_user');
 
-    fetch('/api/v1/auth/github/authorize', {
+    fetch(REST_API_PREFIX + '/auth/github/authorize', {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => {

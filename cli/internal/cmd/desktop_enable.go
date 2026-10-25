@@ -58,7 +58,7 @@ func mintDesktopCredential(client desktopCredentialClient, agentID, hostname str
 		Scopes:        []string{"mcp:read"},
 	}
 	var response managedAgentCredentialCreateResponse
-	if err := client.Post("/api/v1/agents/"+agentID+"/credentials", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/"+agentID+"/credentials", request, &response); err != nil {
 		return "", fmt.Errorf("failed to create the desktop credential: %w", err)
 	}
 	if strings.TrimSpace(response.Token) == "" {

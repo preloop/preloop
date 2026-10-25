@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { LitElement, html } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { formStyles } from '../../styles/form-styles';
@@ -61,7 +62,7 @@ export class ResetPasswordView extends LitElement {
     }
 
     try {
-      await post('/api/v1/auth/reset-password', {
+      await post(REST_API_PREFIX + '/auth/reset-password', {
         token: this.token,
         new_password: password,
       });

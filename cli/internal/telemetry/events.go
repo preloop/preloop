@@ -8,13 +8,14 @@ import (
 	"runtime"
 	"time"
 
+	"github.com/preloop/preloop/cli/internal/api/paths"
 	"github.com/preloop/preloop/cli/internal/config"
 )
 
 // eventsBatchPath is the first-party analytics ingestion endpoint (served by
 // the EE growth plugin; self-hosted servers without it return 404, which is
 // silently ignored).
-const eventsBatchPath = "/api/v1/events/batch"
+const eventsBatchPath = paths.RESTPrefix + "/events/batch"
 
 // SendConversion reports a conversion event (e.g. "Login", "Signup") to the
 // configured Preloop server. Fire-and-forget: short timeout, all failures

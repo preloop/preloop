@@ -150,7 +150,11 @@ Public route and versioning boundaries are defined in
 [ADR 0001](docs/architecture/decisions/0001-api-versioning.md) and the
 [compatibility policy](docs/compatibility.md#api-versioning): REST uses
 `/api/v1`, while OAuth discovery/operations, MCP, and provider gateway
-prefixes follow their respective protocol contracts.
+prefixes follow their respective protocol contracts. REST responses, including
+errors, carry the diagnostics-only `Preloop-Server-Version` software release
+header. The header wraps the complete FastAPI middleware stack so early
+rejections and unhandled errors retain it. CLI and console REST URL builders
+share a prefix within each client; they do not negotiate versions by header.
 
 ## High-Level Architecture
 

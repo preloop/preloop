@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../../api-path';
 import { formatCount, formatCountExact } from '../../../utils/count-format';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
@@ -540,8 +541,8 @@ export class RecordsView extends LitElement {
     try {
       const path =
         type === 'execution'
-          ? '/api/v1/flows/executions?limit=25'
-          : '/api/v1/approval-requests?limit=25';
+          ? REST_API_PREFIX + '/flows/executions?limit=25'
+          : REST_API_PREFIX + '/approval-requests?limit=25';
       const { fetchWithAuth } = await import('../../../api');
       const response = await fetchWithAuth(path);
       if (!response.ok) {

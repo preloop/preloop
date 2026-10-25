@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { fetchWithAuth } from '../api';
@@ -83,9 +84,12 @@ export class LicenceBanner extends LitElement {
     }
     try {
       // Passive: a background read must not raise the 429 toast or 402 modal.
-      const response = await fetchWithAuth('/api/v1/licence/status', {
-        passive: true,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/licence/status',
+        {
+          passive: true,
+        }
+      );
       if (!response.ok) {
         // Non-superusers (403) and community builds (404) get no banner.
         this._status = null;

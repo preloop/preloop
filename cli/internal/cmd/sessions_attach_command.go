@@ -146,11 +146,11 @@ type agentCommandStatus struct {
 }
 
 func agentPromptPath(agentID string) string {
-	return "/api/v1/agents/" + agentID + "/control/prompts"
+	return api.RESTPrefix + "/agents/" + agentID + "/control/prompts"
 }
 
 func agentCommandStatusPath(agentID, commandID string) string {
-	return "/api/v1/agents/" + agentID + "/control/commands/" + commandID
+	return api.RESTPrefix + "/agents/" + agentID + "/control/commands/" + commandID
 }
 
 // sendCommand dispatches one line as a new turn and follows its delivery.

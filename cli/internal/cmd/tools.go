@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	toolsListPath          = "/api/v1/tools"
+	toolsListPath          = api.RESTPrefix + "/tools"
 	defaultToolListTimeout = 30 * time.Second
 	defaultToolExecTimeout = 10 * time.Minute
 )
