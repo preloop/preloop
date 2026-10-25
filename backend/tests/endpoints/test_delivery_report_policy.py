@@ -35,11 +35,17 @@ def account_owner(db_session: Session, test_user: Any) -> Any:
 
 
 def test_a_user_without_the_permission_cannot_save(
-    client: TestClient, account_owner: Any, db_session: Session
+    db_session: Session, test_viewer_user: Any
 ) -> None:
-    account_owner.primary_user_id = None
-    db_session.flush()
-    response = client.put(BASE, json={"overrides": {}})
+    from preloop.api.app import create_app
+    from preloop.api.auth import get_current_active_user
+    from preloop.models.db.session import get_db_session
+
+    app = create_app()
+    app.dependency_overrides[get_db_session] = lambda: db_session
+    app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
+    with TestClient(app) as viewer_client:
+        response = viewer_client.put(BASE, json={"overrides": {}})
     assert response.status_code == 403
 
 
