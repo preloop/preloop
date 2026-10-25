@@ -969,6 +969,7 @@ def _register_control_plane_routes(
     )
     from preloop.api.endpoints import embedding as embedding_router
     from preloop.api.endpoints import (
+        delivery_reports,
         employee_events,
         event_webhooks,
         exports,
@@ -1268,6 +1269,12 @@ def _register_control_plane_routes(
         cost.router,
         prefix="/api/v1",
         tags=["Cost Analytics"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        delivery_reports.router,
+        prefix="/api/v1",
+        tags=["Delivery Reports"],
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(
