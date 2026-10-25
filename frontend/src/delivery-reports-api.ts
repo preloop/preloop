@@ -187,5 +187,7 @@ export function listDeliveryReports(params: {
 }
 
 export function getDeliveryReport(id: string): Promise<DeliveryReportDetail> {
-  return getJson(`${REST_API_PREFIX}/delivery-reports/${encodeURIComponent(id)}`);
+  return getJson(
+    `${REST_API_PREFIX}/delivery-reports/${encodeURIComponent(id)}`
+  );
 }
