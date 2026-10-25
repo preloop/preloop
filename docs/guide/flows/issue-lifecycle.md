@@ -130,6 +130,34 @@ Missing evidence, unchecked deployment requirements and subsequent issue scope
 changes cannot produce a complete verdict. An issue with no stored acceptance
 contract remains unknown rather than inventing criteria.
 
+Before the audit runs, the controller collects the runtime evidence GitHub
+already holds for the merge SHA and puts it in the envelope as
+`runtime_evidence`: check runs with their conclusions, workflow-run artifacts,
+and the `environment_url` of each successful deployment (a preview or staging
+address). Criteria about build output, latency against a baseline, viewport,
+layout or visual conformance can then be decided from a check result, a
+downloaded artifact or a read-only preview load. The audit cites what it used by
+id (`check:<id>`, `artifact:<id>`, `preview:<id>`) in a criterion's `runtime`
+list. The controller drops ids it did not supply. A `complete` verdict needs an
+observation plus either code and tests or supplied runtime evidence. A source
+GitHub refuses (for example, a token without Actions read access) is listed
+under `unavailable` and the audit still runs. When the controller downgrades a
+verdict, it appends the reason to the criterion.
+Collection has its own 3-second deadline, and a source that does not answer
+in time is listed as `timed out`. A preview URL that is not public http(s)
+(loopback, private, link-local or metadata addresses, other schemes) is refused
+before it reaches the prompt. The bundle is a snapshot taken when the audit is
+scheduled. Checks, artifacts or deployments that finish later are not in it, and
+`/audit/reconcile` reuses it. The Delivery Report applies the same rule when it
+reads a stored audit result, so it never counts a citation the controller
+dropped.
+
+Each published audit also appends one assessment through the CRUD layer
+(`source="audit"`, pinned to the merge SHA or the deployed revision). The
+assessment holds the criteria snapshot, the per-criterion evidence and the
+runtime bundle. Every criterion complete maps to `covered`, some complete to
+`partial`, none to `unverified`, and an empty contract to `no_criteria`.
+
 The controller upserts one marked audit comment, including issue and merge
 revisions, contributing PRs, evidence, and the execution link. With
 `create_follow_ups: true`, it searches existing issues and creates at most three

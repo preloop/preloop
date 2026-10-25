@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -26,6 +26,14 @@ class FlowExecutionLog(Base):
             "execution_id",
             "log_type",
             "timestamp",
+        ),
+        # The gateway activity maintenance pass walks model call rows of all
+        # executions oldest first (20261112_flow_log_gateway_idx).
+        Index(
+            "ix_flow_execution_log_gateway_call_ts",
+            "timestamp",
+            "id",
+            postgresql_where=text("log_type = 'model_gateway_call'"),
         ),
     )
 
