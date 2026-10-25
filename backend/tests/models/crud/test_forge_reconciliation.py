@@ -709,5 +709,29 @@ async def test_merge_webhook_during_refresh_emits_only_once(
     await refresh.refresh_pull_requests(db_session, now=NOW)
     db_session.refresh(row)
     assert row.merged_at == NOW
+    assert row.state == "merged"
     emit.assert_called_once()
     schedule.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 304])
+async def test_existing_webhook_merge_survives_a_stale_refresh(
+    db_session: Session,
+    test_user: Any,
+    forge: FakeForge,
+    status: int,
+) -> None:
+    # Older webhook writers persisted only merged_at. Normalize these rows
+    # under the refresh lock even if the forge answers 304 or stale closed.
+    row = make_pr(db_session, test_user.account_id, github_key(44), merged_at=NOW)
+    forge.answers["/repos/acme/widgets/pulls/44"] = (
+        304
+        if status == 304
+        else {"state": "closed", "merged": False, "head": {"sha": HEAD}}
+    )
+    await refresh.refresh_pull_requests(db_session, now=NOW)
+    db_session.refresh(row)
+    assert row.state == "merged"
+    assert row.merged_at == NOW
+    assert row.refresh_due_at is None

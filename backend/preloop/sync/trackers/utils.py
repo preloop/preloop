@@ -42,7 +42,7 @@ class ConditionalResponse:
 
     Attributes:
         status: ``200`` or ``304``.
-        body: Parsed JSON body on 200, None on 304.
+        body: Parsed JSON (or an explicitly streamed response) on 200, None on 304.
         etag: The validator to send as ``If-None-Match`` next time; on 304
             the one that was sent when the provider repeats none.
     """

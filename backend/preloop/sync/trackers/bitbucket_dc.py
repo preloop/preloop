@@ -106,6 +106,7 @@ from ..exceptions import (
     TrackerResponseError,
 )
 from .base import BaseTracker
+from .utils import parse_retry_after
 
 Organization = models.Organization
 Project = models.Project
@@ -517,7 +518,8 @@ class BitbucketDCTracker(BaseTracker):
             retry_after = response.headers.get("Retry-After")
             suffix = f" Retry after {retry_after}s." if retry_after else ""
             raise TrackerRateLimitError(
-                f"Bitbucket Data Center rate limit reached (429).{suffix}"
+                f"Bitbucket Data Center rate limit reached (429).{suffix}",
+                retry_after=parse_retry_after(response.headers),
             )
         if status == 409:
             raise BitbucketDCConflictError(

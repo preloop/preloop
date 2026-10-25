@@ -139,7 +139,7 @@ class GitLabTracker(BaseTracker):
             raise TrackerResponseError(f"GitLab API error: {e}")
 
     async def conditional_get(
-        self, path: str, etag: Optional[str]
+        self, path: str, etag: Optional[str], *, streamed: bool = False
     ) -> ConditionalResponse:
         """GET an API path with ``If-None-Match``; 304 means unchanged.
 
@@ -150,6 +150,7 @@ class GitLabTracker(BaseTracker):
         Args:
             path: Path under ``/api/v4``.
             etag: Validator from the previous read, or None for a plain GET.
+            streamed: Return the raw response body for bounded trace reads.
 
         Returns:
             The status, the body on 200, and the validator for next time.
@@ -166,6 +167,8 @@ class GitLabTracker(BaseTracker):
 
         def send() -> Any:
             opts = gl._get_session_opts()
+            if streamed:
+                opts["stream"] = True
             if etag:
                 opts["headers"]["If-None-Match"] = etag
             return gl.session.request("GET", gl._build_url(path), **opts)
@@ -174,6 +177,8 @@ class GitLabTracker(BaseTracker):
             response = await asyncio.to_thread(send)
         except Exception as e:
             raise TrackerConnectionError(f"GitLab connection error: {e}")
+        if streamed and response.status_code >= 300:
+            response.close()
         if response.status_code == HTTP_STATUS_NOT_MODIFIED:
             return ConditionalResponse(
                 HTTP_STATUS_NOT_MODIFIED, None, response.headers.get("ETag") or etag
@@ -191,7 +196,9 @@ class GitLabTracker(BaseTracker):
                 status_code=response.status_code,
             )
         return ConditionalResponse(
-            response.status_code, response.json(), response.headers.get("ETag")
+            response.status_code,
+            response if streamed else response.json(),
+            response.headers.get("ETag"),
         )
 
     async def _make_request_no_retry(self, method, *args, **kwargs):

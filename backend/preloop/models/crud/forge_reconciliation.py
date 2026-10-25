@@ -134,9 +134,11 @@ class CRUDPullRequestRefresh:
             return None, False
         previous_merged_at = row.merged_at
         marked_mid_read = claimed_due is not None and row.refresh_due_at != claimed_due
+        final = row.state == "merged" or previous_merged_at is not None
+        if final:
+            row.state = "merged"
         if not not_modified:
             # The read that observes the merge still records the merged head.
-            final = row.state == "merged"
             if state is not None and not final:
                 row.state = state
             if (

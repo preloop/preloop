@@ -51,8 +51,7 @@ def gitlab_provider(mr: dict[str, Any]) -> FeedbackProvider:
     body = {"project_id": 123, "sha": HEAD, **mr}
     return FeedbackProvider(
         SimpleNamespace(
-            gl=SimpleNamespace(http_get=object()),
-            _make_request=AsyncMock(return_value=body),
+            conditional_get=AsyncMock(return_value=SimpleNamespace(body=body)),
         ),
         binding("gitlab"),
     )
@@ -699,3 +698,42 @@ def test_gitlab_and_bitbucket_payloads_name_their_pull_request() -> None:
         pull_request_url({"issue": {"html_url": "https://github.com/a/b/issues/1"}})
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_gitlab_provider_retry_after_reaches_feedback_tick() -> None:
+    tracker = gitlab_tracker(
+        SimpleNamespace(status_code=429, headers={"Retry-After": "180"}), []
+    )
+    provider = FeedbackProvider(tracker, binding("gitlab"))
+    claim = (uuid.uuid4(), uuid.uuid4())
+    crud = MagicMock()
+    crud.unregistered_publications.return_value = []
+    crud.stopped_for_no_progress.return_value = []
+    crud.claim_due.return_value = [claim]
+
+    async def reconcile(*args: Any, **kwargs: Any) -> None:
+        await provider.read()
+
+    with (
+        patch.object(flow_feedback, "crud_flow_feedback", crud),
+        patch.object(flow_feedback, "_reconcile", reconcile),
+    ):
+        await flow_feedback.run_feedback_tick(MagicMock(), now=NOW)
+    assert crud.update.call_args.kwargs["delay_seconds"] == 180.0
+    assert (
+        crud.update.call_args.kwargs["changes"]["stop_reason"]
+        == "provider_rate_limited"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gitlab_feedback_trace_uses_header_aware_stream() -> None:
+    seen: list[dict[str, Any]] = []
+    raw = SimpleNamespace(status_code=200, headers={})
+    tracker = gitlab_tracker(raw, seen)
+    response = await tracker.conditional_get(
+        "/projects/1/jobs/2/trace", None, streamed=True
+    )
+    assert response.body is raw
+    assert seen[0]["stream"] is True

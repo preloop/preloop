@@ -891,9 +891,8 @@ class FeedbackProvider:
 
     async def _gitlab(self) -> FeedbackState:
         async def get(path: str, **options: Any) -> Any:
-            return await self.client._make_request(
-                self.client.gl.http_get, path, **options
-            )
+            response = await self.client.conditional_get(path, None, **options)
+            return response.body
 
         repo = f"/projects/{quote(self.thread.repository_id, safe='')}"
         base = f"{repo}/merge_requests/{quote(self.thread.pr_number, safe='')}"
