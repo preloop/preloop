@@ -129,9 +129,13 @@ def upgrade() -> None:
     ):
         for row in rows:
             if not row["key"]:
-                # An empty legacy credential must never become an authenticating hash.
+                # An empty legacy credential must never become an authenticating
+                # hash, including the sha256('') fingerprint 20260307 stored.
                 bind.execute(
-                    sa.text("UPDATE api_key SET key = NULL WHERE id = :id"),
+                    sa.text(
+                        "UPDATE api_key SET key = NULL, key_hash = NULL, "
+                        "key_prefix = NULL WHERE id = :id"
+                    ),
                     {"id": row["id"]},
                 )
                 continue

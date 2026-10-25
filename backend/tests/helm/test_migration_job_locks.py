@@ -9,6 +9,7 @@ would silently restore the failure mode.
 
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from .chart_helpers import helm_template, load_values, resolve_values_path
@@ -109,21 +110,30 @@ def test_concurrent_index_budgets_can_be_tuned_without_relaxing_blocking_ddl() -
     assert env["PRELOOP_MIGRATION_CONCURRENT_STATEMENT_TIMEOUT_SECONDS"] == "180"
 
 
-def test_migration_job_uses_the_same_secret_keys_as_the_application() -> None:
-    """Credential backfills must not encrypt with a different process default."""
+@pytest.mark.parametrize(
+    "template", ["templates/migration-job.yaml", "templates/init-db-job.yaml"]
+)
+def test_credential_writing_jobs_use_the_same_secret_keys_as_the_application(
+    template: str,
+) -> None:
+    """Credential backfills and seeded models must not encrypt with a default.
+
+    The init-db job seeds an AI model through ``create_with_account``, which
+    encrypts the configured provider key the same way the backfill does.
+    """
     for overrides in ([], ["security.encryptionKey=synthetic-render-only-value"]):
-        migration = _container(_job(overrides))
+        job = yaml.safe_load(helm_template(template, overrides))
         application = yaml.safe_load(
             helm_template("templates/api-deployment.yaml", overrides)
         )
         app_container = application["spec"]["template"]["spec"]["containers"][0]
-        migration_env = {item["name"]: item for item in migration["env"]}
+        job_env = {item["name"]: item for item in _container(job)["env"]}
         application_env = {item["name"]: item for item in app_container["env"]}
-        assert migration_env["SECRET_KEY"] == application_env["SECRET_KEY"]
+        assert job_env["SECRET_KEY"] == application_env["SECRET_KEY"]
         if overrides:
             assert (
-                migration_env["SECURITY__ENCRYPTION_KEY"]
+                job_env["SECURITY__ENCRYPTION_KEY"]
                 == application_env["SECURITY__ENCRYPTION_KEY"]
             )
         else:
-            assert "SECURITY__ENCRYPTION_KEY" not in migration_env
+            assert "SECURITY__ENCRYPTION_KEY" not in job_env

@@ -1,5 +1,6 @@
 """Exercise staged credential migration against isolated PostgreSQL schemas."""
 
+import hashlib
 import importlib
 import uuid
 from collections.abc import Iterator
@@ -202,11 +203,20 @@ def test_empty_legacy_values_do_not_create_credentials(legacy) -> None:
     seed(legacy)
     for table, column in contract._COLUMNS:
         legacy.execute(text(f'UPDATE {table} SET "{column}" = :value'), {"value": ""})
+    # 20260307_add_hashed_api_key_support fingerprinted every non-NULL key,
+    # including the empty string.
+    legacy.execute(
+        text("UPDATE api_key SET key_hash = :fingerprint, key_prefix = ''"),
+        {"fingerprint": hashlib.sha256(b"").hexdigest()},
+    )
     backfill.upgrade()
     assert (
         legacy.execute(text("SELECT count(*) FROM secret_reference")).scalar_one() == 0
     )
-    assert legacy.execute(text("SELECT key_hash FROM api_key")).scalar_one() is None
+    assert legacy.execute(text("SELECT key_hash, key_prefix FROM api_key")).one() == (
+        None,
+        None,
+    )
     contract.upgrade()
 
 

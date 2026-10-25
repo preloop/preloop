@@ -220,6 +220,9 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         include_restricted_runtime: bool = False,
     ) -> Optional[ApiKey]:
         """Get API key by key string."""
+        if not key:
+            # A blank bearer must never match a legacy sha256('') fingerprint.
+            return None
         key_hash = self.build_key_hash(key)
         key_prefix = self.build_key_prefix(key)
 

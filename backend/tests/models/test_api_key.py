@@ -55,6 +55,24 @@ def test_get_by_key(db_session, create_account, create_user):
     assert retrieved_key.key == key.key
 
 
+def test_get_by_key_never_resolves_an_empty_key(
+    db_session, create_account, create_user
+):
+    """A leftover sha256('') fingerprint must not authenticate a blank bearer."""
+    user = create_user(account=create_account())
+    key = crud_api_key.create_with_owner(
+        db_session,
+        obj_in={"name": "Legacy empty key"},
+        owner_username=user.username,
+        key_value="synthetic-user-api-key",
+    )
+    key.key_hash = crud_api_key.build_key_hash("")
+    key.key_prefix = crud_api_key.build_key_prefix("")
+    db_session.flush()
+
+    assert crud_api_key.get_by_key(db_session, key="") is None
+
+
 def test_get_active_by_user(db_session, create_account, create_user):
     """Test retrieving active keys for a user."""
     # Create an account and user

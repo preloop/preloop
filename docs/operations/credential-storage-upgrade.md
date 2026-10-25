@@ -16,7 +16,9 @@ and WAL: they can retain plaintext after the live schema is upgraded. Apply your
 backup retention policy to these copies.
 
 Keep the deployment's existing `SECURITY__ENCRYPTION_KEY` (Helm
-`security.encryptionKey`) available to both the migration job and every app role.
+`security.encryptionKey`) available to the migration job, the init-db job (it
+seeds the configured provider key as an encrypted model credential) and every app
+role. The chart passes the same references to each of them.
 If using the existing derived-key fallback, retain the same `SECRET_KEY`. Do not
 generate a new key during this upgrade. The backfill rejects the built-in
 development key when legacy encrypted credentials need migration.
