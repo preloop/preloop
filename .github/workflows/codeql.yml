@@ -116,6 +116,10 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
+          # Shared self-hosted runners have a smaller memory/CPU budget than
+          # GitHub-hosted runners. Init carries these limits into analyze.
+          ram: ${{ runner.environment == 'self-hosted' && '2560' || '' }}
+          threads: ${{ runner.environment == 'self-hosted' && '2' || '' }}
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
