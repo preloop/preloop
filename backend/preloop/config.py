@@ -1410,6 +1410,15 @@ class Settings(BaseSettings):
             "(GATEWAY_ACTIVITY_COMPACTION_ENABLED)."
         ),
     )
+    flow_log_gateway_compaction_enabled: bool = Field(
+        False,
+        description=(
+            "Also rewrite model_gateway_call rows of flow_execution_log stored "
+            "before slim storage, in the same hourly maintenance pass. Off by "
+            "default because it drops replayed history from existing rows "
+            "(FLOW_LOG_GATEWAY_COMPACTION_ENABLED)."
+        ),
+    )
     gateway_activity_body_retention_enabled: bool = Field(
         False,
         description=(
@@ -2092,6 +2101,10 @@ class Settings(BaseSettings):
             ),
             gateway_activity_compaction_enabled=os.getenv(
                 "GATEWAY_ACTIVITY_COMPACTION_ENABLED", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            flow_log_gateway_compaction_enabled=os.getenv(
+                "FLOW_LOG_GATEWAY_COMPACTION_ENABLED", "false"
             ).lower()
             in ("true", "1", "t", "yes"),
             gateway_activity_body_retention_enabled=os.getenv(
