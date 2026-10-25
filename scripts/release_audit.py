@@ -106,7 +106,20 @@ def collect(
         time.sleep(min(30, max(0, deadline - time.monotonic())))
     # A successful CodeQL workflow means the analysis uploaded, not that it
     # found no issues. Check the tag's active findings too. No severity waiver.
-    query = urlencode({"state": "open", "ref": f"refs/tags/{tag}", "per_page": 100})
+    # The alert listing filters by ref; first prove that code scanning holds
+    # an analysis for this exact tag ref and commit, so an unsupported or
+    # ignored tag ref fails closed instead of reading as zero findings.
+    ref = f"refs/tags/{tag}"
+    query = urlencode({"ref": ref, "sha": source_sha, "per_page": 100})
+    analyses = api(f"repos/{repo}/code-scanning/analyses?{query}")
+    require(
+        any(
+            item.get("ref") == ref and item.get("commit_sha") == source_sha
+            for item in analyses
+        ),
+        f"No code-scanning analysis recorded for {ref}@{source_sha}",
+    )
+    query = urlencode({"state": "open", "ref": ref, "per_page": 100})
     alerts = api(f"repos/{repo}/code-scanning/alerts?{query}")
     require(not alerts, f"Tag has {len(alerts)} open code-scanning findings")
     directory.mkdir(parents=True, exist_ok=True)
@@ -262,7 +275,13 @@ def main() -> None:
         )
         if args.report:
             write_json(args.report, report)
-        print("Release SBOM audit passed")
+        if args.verify_registry and args.require_workflows:
+            print("Release SBOM audit passed")
+        else:
+            print(
+                "Offline SBOM validation passed (registry and tag workflows "
+                "were not both verified; this is not a passing tag audit)"
+            )
 
 
 if __name__ == "__main__":

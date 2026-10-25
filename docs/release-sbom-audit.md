@@ -108,7 +108,29 @@ python3 scripts/release_audit.py validate --directory release-evidence \
   --verify-registry --require-workflows
 ```
 
+### First gated release
+
+No published tag carries image SBOM evidence yet, so CI cannot exercise the
+remote paths (`collect`, the tag code-scanning query and `--verify-registry`)
+before the first tag that runs this workflow. Push a release candidate tag
+such as `v1.0.0-rc.1` first and treat its **Release audit** job as the first
+remote execution. Expected evidence on that run:
+
+- `collect` logs no `Waiting for` line after the tag workflows complete and
+  writes `release-audit-runs.json` with one successful push run per workflow
+  for the tag and commit.
+- The tag has a code-scanning analysis for `refs/tags/<tag>` at that commit.
+  Without one the job fails with `No code-scanning analysis recorded`; it never
+  reads a missing analysis as zero findings.
+- `release-audit.json` reports `registry_verified: true` and
+  `tag_workflows_verified: true`, and the log ends with
+  `Release SBOM audit passed`.
+
+Any other outcome blocks publication of that candidate; fix it before the
+final tag.
+
 Offline validation omits the last two flags and reports both verification modes
-as false when `--report` is requested. It must not be called a passing tag audit.
+as false when `--report` is requested, and the command prints that it is not a
+passing tag audit.
 The final **1.0.0 tag** check in #1870 remains pending until that tag is released
 and its actual Release audit job passes.

@@ -33,6 +33,11 @@ def run_record(**overrides: object) -> dict:
     }
 
 
+def tag_analysis(**overrides: object) -> dict:
+    """Synthetic code-scanning analysis for the release tag and commit."""
+    return {"id": 7, "ref": f"refs/tags/{TAG}", "commit_sha": SHA, **overrides}
+
+
 class ReleaseAuditTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -142,7 +147,7 @@ class ReleaseAuditTests(unittest.TestCase):
     ) -> None:
         responses = [
             {"workflow_runs": [run_record()]} for _ in release_audit.WORKFLOWS
-        ] + [[{"number": 1}]]
+        ] + [[tag_analysis()], [{"number": 1}]]
         with (
             patch.object(release_audit, "api", side_effect=responses),
             patch.object(release_audit.subprocess, "run") as download,
@@ -151,12 +156,52 @@ class ReleaseAuditTests(unittest.TestCase):
                 release_audit.collect(self.directory, "example/project", TAG, SHA, 0)
             download.assert_not_called()
 
+    def test_missing_tag_analysis_fails_closed_before_alert_query(self) -> None:
+        for analyses in (
+            [],
+            [tag_analysis(ref="refs/heads/main")],
+            [tag_analysis(commit_sha="0" * 40)],
+        ):
+            responses = [
+                {"workflow_runs": [run_record()]} for _ in release_audit.WORKFLOWS
+            ] + [analyses, []]
+            with (
+                self.subTest(analyses=analyses),
+                patch.object(release_audit, "api", side_effect=responses),
+                patch.object(release_audit.subprocess, "run") as download,
+            ):
+                with self.assertRaisesRegex(ValueError, "No code-scanning analysis"):
+                    release_audit.collect(
+                        self.directory, "example/project", TAG, SHA, 0
+                    )
+                download.assert_not_called()
+
+    def test_offline_validate_is_not_reported_as_tag_audit(self) -> None:
+        argv = [
+            "release_audit.py",
+            "validate",
+            "--directory",
+            str(self.directory),
+            "--tag",
+            TAG,
+            "--source-sha",
+            SHA,
+        ]
+        with (
+            patch.object(release_audit.sys, "argv", argv),
+            patch("builtins.print") as printed,
+        ):
+            release_audit.main()
+        message = printed.call_args.args[0]
+        self.assertIn("not a passing tag audit", message)
+        self.assertNotIn("Release SBOM audit passed", message)
+
     def test_collect_downloads_exact_run_artifacts_and_validates_full_evidence(
         self,
     ) -> None:
         responses = [
             {"workflow_runs": [run_record()]} for _ in release_audit.WORKFLOWS
-        ] + [[]]
+        ] + [[tag_analysis()], []]
         with (
             patch.object(release_audit, "api", side_effect=responses),
             patch.object(release_audit.subprocess, "run") as download,
