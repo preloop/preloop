@@ -75,7 +75,7 @@ describe('attention summary', () => {
     publishAttentionSummary([item('flow'), item('pricing')]);
     const stored = readAttentionSummary();
     expect(formatAttentionSummary(stored)).to.equal(
-      '2 items need attention: 1 flow, 1 pricing'
+      '2 items need attention: 1 flow, 1 pricing question'
     );
 
     publishAttentionSummary([]);

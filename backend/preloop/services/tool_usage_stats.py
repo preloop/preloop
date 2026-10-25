@@ -136,8 +136,22 @@ class ToolUsageStatsService:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         limit: int = 100,
+        include_agents: bool = True,
     ) -> list[GatewayUsageByTool]:
-        """Return merged invocation counts and schema-injection cost per tool."""
+        """Return merged invocation counts and schema-injection cost per tool.
+
+        Args:
+            account_id: Account to aggregate.
+            start_date: Window start; 30 days before ``end_date`` by default.
+            end_date: Window end; now by default.
+            limit: Most tools to return.
+            include_agents: When False, ``usage_by_agent`` stays empty and its
+                query is skipped. The Tools list renders per-tool totals only,
+                and the breakdown is most of the payload.
+
+        Returns:
+            One aggregate per tool, costliest first.
+        """
         end = end_date or datetime.now(timezone.utc)
         start = start_date or (end - timedelta(days=30))
 
@@ -155,6 +169,8 @@ class ToolUsageStatsService:
                 start_date=start,
                 end_date=end,
             )
+            if include_agents
+            else []
         )
         schema_costs = self._aggregate_schema_costs(
             account_id=account_id,

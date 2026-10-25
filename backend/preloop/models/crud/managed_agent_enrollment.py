@@ -356,7 +356,18 @@ class CRUDManagedAgentEnrollment(CRUDBase[ManagedAgentEnrollment]):
         if db_obj is None:
             return None
         db_obj.status = status
-        db_obj.validation_result = validation_result or {}
+        incoming = validation_result or {}
+        if any(key.startswith("control_") for key in incoming):
+            # A full static validation reports the control keys itself and
+            # must be able to turn them off.
+            db_obj.validation_result = incoming
+        else:
+            # A live-only update (deferred live validation) carries no control
+            # keys. Keep what onboarding recorded and overlay the new keys.
+            db_obj.validation_result = {
+                **(db_obj.validation_result or {}),
+                **incoming,
+            }
         db_obj.last_validated_at = _utc_now()
         db.add(db_obj)
         if commit:

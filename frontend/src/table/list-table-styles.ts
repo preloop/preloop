@@ -10,6 +10,24 @@ import { css } from 'lit';
  * business, what a header does is the table layer's.
  */
 export const listTableStyles = css`
+  .table-header-content {
+    display: flex;
+    align-items: center;
+    gap: var(--sl-spacing-small, 8px);
+  }
+  th.numeric .table-header-content {
+    justify-content: flex-end;
+  }
+  .table-header-content > :not(column-picker) {
+    min-width: 0;
+  }
+  .table-header-content > column-picker {
+    flex: 0 0 auto;
+    margin-left: auto;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
   /* The button is the whole cell, so the hit area is the label, not the six
      pixels of the caret. */
   th.sortable {
@@ -29,9 +47,9 @@ export const listTableStyles = css`
     cursor: pointer;
     font: inherit;
     font-weight: var(--sl-font-weight-semibold);
-    font-size: var(--sl-font-size-x-small);
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
+    /* Sentence case at the meta size, as on Models and Gateway traffic:
+       the uppercase header was one of two header styles in the console. */
+    font-size: var(--console-text-meta, 13px);
     color: var(--sl-color-neutral-600);
     padding: 8px;
   }

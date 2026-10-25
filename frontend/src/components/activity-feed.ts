@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { formatUsd } from '../utils/money';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -282,13 +283,14 @@ const PAST_TENSE = new Set([
   'disabled',
   'assigned',
   'invited',
+  'added',
 ]);
 
 const CONFIG_LABELS: Record<string, string> = {
-  mcp_server: 'MCP Server',
+  mcp_server: 'MCP server',
   tool_configuration: 'Tool',
-  tool_rule: 'Tool Rule',
-  approval_workflow: 'Approval Workflow',
+  tool_rule: 'Tool rule',
+  approval_workflow: 'Approval workflow',
   tracker: 'Tracker',
   flow: 'Flow',
   api_key: 'API key',
@@ -807,9 +809,33 @@ export function feedEventFromAuditGroup(
       }
       return { ...shape, tone: 'warning', text: `Approval expired: ${tool}` };
     }
+    case 'policy_allow':
+    case 'policy_require_approval':
+      // An allow is a tool call going through, and a require-approval
+      // decision already has its own "Approval requested" row.
+      return null;
     default: {
+      // Moving between accounts is navigation, not news.
+      if (event.action.startsWith('user.switch_account')) return null;
+      if (event.action === 'user.login') {
+        const who = String(details.username || actor || 'Someone');
+        return {
+          ...base,
+          kind: 'other',
+          tone: 'neutral',
+          text: `${who} signed in`,
+          actor: who,
+          fields: fieldList(
+            field('User', who),
+            field('Outcome', humaniseAction(String(outcome || 'success')))
+          ),
+          href: `/console/audit?event_type=${event.action}`,
+          openLabel: 'Filter audit by this type',
+        };
+      }
       // An event type nobody wrote a recipe for still says who did what.
-      const words = event.action.split('_');
+      // Dotted types (`team.member_added`) read like underscored ones.
+      const words = event.action.replace(/\./g, '_').split('_');
       const verb = words[words.length - 1];
       const subject = words.slice(0, -1).join('_');
       const rest = {
@@ -840,7 +866,10 @@ export function feedEventFromAuditGroup(
         return { ...rest, text: `${humaniseAction(subject)} ${verb}${suffix}` };
       }
       const trail = actor ? ` · ${actor}` : '';
-      return { ...rest, text: `${humaniseAction(event.action)}${trail}` };
+      return {
+        ...rest,
+        text: `${humaniseAction(event.action.replace(/\./g, ' '))}${trail}`,
+      };
     }
   }
 }
@@ -1783,7 +1812,9 @@ export class ActivityFeed extends LitElement {
     try {
       // The same URL the console's other readers use, so a lookup that
       // overlaps one of theirs is coalesced into a single request.
-      const response = await fetchWithAuth('/api/v1/users?skip=0&limit=100');
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/users?skip=0&limit=100'
+      );
       if (!response.ok) return;
       const data = await response.json();
       const users = Array.isArray(data) ? data : data?.users;
@@ -1803,11 +1834,15 @@ export class ActivityFeed extends LitElement {
   ): Promise<AuditGroupLike[] | null> {
     const params = new URLSearchParams();
     params.set('limit', String(AUDIT_PAGE_SIZE));
+    // The feed never reads the total. Without a cap the server counts the
+    // whole matching trail, which on a long one ran past the statement
+    // timeout and failed the page (#1693).
+    params.set('count_limit', '1');
     if (skip) params.set('skip', String(skip));
     if (since) params.set('start_date', since);
     for (const action of actions ?? []) params.append('event_type', action);
     const response = await fetchWithAuth(
-      `/api/v1/audit-logs/grouped?${params}`
+      `${REST_API_PREFIX}/audit-logs/grouped?${params}`
     );
     if (!response.ok) return null;
     const data = await response.json();

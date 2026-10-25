@@ -18,6 +18,7 @@ INDEXES = (
     "ix_api_usage_gateway_subscription",
     "ix_api_usage_rate_limit_snapshot",
     "ix_api_usage_account_model_ts",
+    "ix_api_usage_principal_totals",
 )
 
 
@@ -122,9 +123,11 @@ def test_subscription_block_can_use_its_partial_index(db_session, test_user):
     )
     statement, parameters = statements[-1]
     values = set(parameters.values()) if isinstance(parameters, dict) else set()
-    assert "api_usage.action_type = " in statement
-    assert "api_usage.cost_source = " in statement
-    assert {"model_gateway", "subscription"} <= values
+    # Fixed predicates must remain constants when psycopg prepares this
+    # statement; bound values make the partial index unusable in generic plans.
+    assert "api_usage.action_type = 'model_gateway'" in statement
+    assert "api_usage.cost_source = 'subscription'" in statement
+    assert not {"model_gateway", "subscription"} & values
 
     # And the index exists with exactly that predicate, so the planner can
     # prove the query implies it.

@@ -7,12 +7,14 @@ these methods; it does not query the models itself.
 from __future__ import annotations
 
 import json
+import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any, Literal, Mapping, Optional, Sequence, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, text
+from sqlalchemy import Integer, and_, func, literal, or_, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -26,6 +28,33 @@ GovernancePolicyDocument = gov.GovernancePolicyDocument
 GovernanceReviewRun = gov.GovernanceReviewRun
 GovernanceReviewSettings = gov.GovernanceReviewSettings
 GovernanceSessionDigest = gov.GovernanceSessionDigest
+logger = logging.getLogger(__name__)
+FINISHED_SUMMARY_STATUSES = (
+    "complete",
+    "deterministic_only",
+    "deterministic_only_small",
+)
+
+
+def _digest_review_start() -> datetime:
+    """Start of the review week ending at the latest Monday 07:00 UTC."""
+    now = datetime.now(timezone.utc)
+    cutoff = datetime.combine(
+        (now - timedelta(days=now.weekday())).date(), time(7), tzinfo=timezone.utc
+    )
+    if cutoff > now:
+        cutoff -= timedelta(days=7)
+    return cutoff - timedelta(days=7)
+
+
+def _digest_utc(value: datetime) -> datetime:
+    """Normalize database timestamps for window enforcement."""
+    return (
+        value.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None
+        else value.astimezone(timezone.utc)
+    )
+
 
 #: Sentinel for "leave this column unchanged" on an upsert.
 _UNSET: Any = object()
@@ -109,6 +138,12 @@ def validate_digest(digest: Any) -> dict[str, Any]:
     if _json_size(digest) > gov.DIGEST_MAX_BYTES:
         raise GovernanceReviewValidationError(
             f"digest exceeds {gov.DIGEST_MAX_BYTES} bytes"
+        )
+    if "summary_attempts" in digest and (
+        type(digest["summary_attempts"]) is not int or digest["summary_attempts"] < 0
+    ):
+        raise GovernanceReviewValidationError(
+            "digest.summary_attempts must be a non-negative integer"
         )
     intent = digest.get("intent")
     if intent is not None and (
@@ -715,6 +750,11 @@ class CRUDGovernanceSessionDigest(CRUDBase[GovernanceSessionDigest]):
         funding: Any = _UNSET,
         truncated: Any = _UNSET,
         commit: bool = True,
+        force_resummarize: bool = False,
+        include_history: bool = False,
+        override_caller: str | None = None,
+        override_reason: str | None = None,
+        review_window_start: datetime | None = None,
     ) -> GovernanceSessionDigest:
         """Insert or replace one segment of a session.
 
@@ -750,6 +790,13 @@ class CRUDGovernanceSessionDigest(CRUDBase[GovernanceSessionDigest]):
             funding: ``platform`` or ``account``.
             truncated: True when the transcript sample was cut to fit.
             commit: Commit when True, flush otherwise.
+            force_resummarize: Permit replacing a completed segment explicitly.
+            include_history: Permit creating or summarizing earlier content.
+            override_caller: Required caller identity for either override.
+            override_reason: Required reason, written to the audit log.
+            review_window_start: Optional narrower review boundary. Cannot
+                widen the default week ending at the latest Monday 07:00 UTC
+                without the explicit include_history override.
 
         Returns:
             The stored segment.
@@ -758,6 +805,46 @@ class CRUDGovernanceSessionDigest(CRUDBase[GovernanceSessionDigest]):
             GovernanceReviewValidationError: A digest, observation, funding
                 value, or session owner is invalid.
         """
+        overrides = force_resummarize or include_history
+        if overrides and (
+            not override_caller
+            or not override_caller.strip()
+            or not override_reason
+            or not override_reason.strip()
+        ):
+            raise GovernanceReviewValidationError(
+                "summary overrides require a caller and reason"
+            )
+        paired = _pair_digest(digest, summary)
+        if paired is not None:
+            digest, summary = paired
+        review_start = _digest_review_start()
+        if review_window_start is not None:
+            # A narrower caller window is useful; an older boundary must not
+            # become an unaudited substitute for include_history.
+            review_start = max(review_start, _digest_utc(review_window_start))
+        if not include_history and _digest_utc(window_start) < review_start:
+            # Retiring a failed historical span sends no content to a model and
+            # must not require permission to analyze that history. Never allow
+            # this diagnostic transition to create a historical segment.
+            existing = self.get_multi(
+                db,
+                account_id=str(account_id),
+                runtime_session_id=runtime_session_id,
+                segment_index=segment_index,
+                limit=1,
+            )
+            retiring = (
+                isinstance(digest, dict)
+                and digest.get("summary_status") == "outside_review_window"
+                and existing
+                and _digest_utc(existing[0].window_start) == _digest_utc(window_start)
+                and _digest_utc(existing[0].window_end) == _digest_utc(window_end)
+            )
+            if not retiring:
+                raise GovernanceReviewValidationError(
+                    "segment lies outside the review window; include_history is required"
+                )
         if segment_index < 0:
             raise GovernanceReviewValidationError("segment_index must be >= 0")
         if window_end < window_start:
@@ -800,12 +887,93 @@ class CRUDGovernanceSessionDigest(CRUDBase[GovernanceSessionDigest]):
             funding=funding,
             truncated=truncated,
         )
+        status = GovernanceSessionDigest.digest["summary_status"].astext
+        intent = GovernanceSessionDigest.digest["intent"].astext
+        writable = or_(
+            and_(status.is_not(None), status.notin_(FINISHED_SUMMARY_STATUSES)),
+            and_(status.is_(None), or_(intent.is_(None), func.btrim(intent) == "")),
+        )
+        if "digest" in updates:
+            # A caller's stale snapshot cannot buy another retry allowance by
+            # resetting a failed segment's durable provider-attempt counter.
+            incoming = updates["digest"]
+            stored_attempts = func.coalesce(
+                GovernanceSessionDigest.digest["summary_attempts"].astext.cast(Integer),
+                0,
+            )
+            incoming_attempts = incoming.get("summary_attempts", 0)
+            same_claim_refund = and_(
+                status == "summarizing",
+                incoming.get("summary_status") == "summarizing",
+                GovernanceSessionDigest.digest["summary_attempted_at"].astext
+                == incoming.get("summary_attempted_at"),
+                incoming.get("summary_attempted_at") is not None,
+                incoming.get("provider_status_code") == 400,
+                incoming.get("summary_stop_reason") == "response_format_rejected",
+                stored_attempts == incoming_attempts + 1,
+            )
+            retiring = and_(
+                incoming.get("summary_status") == "outside_review_window",
+                GovernanceSessionDigest.window_start == window_start,
+                GovernanceSessionDigest.window_end == window_end,
+            )
+            if incoming.get("summary_status") == "outside_review_window":
+                # Retirement spends nothing, but must retain the durable count
+                # even when the caller supplies only a minimal diagnostic.
+                for column in ("digest", "summary"):
+                    updates[column] = func.jsonb_set(
+                        literal(updates[column], type_=JSONB),
+                        text("'{summary_attempts}'::text[]"),
+                        func.to_jsonb(
+                            func.greatest(stored_attempts, incoming_attempts)
+                        ),
+                    )
+            writable = and_(
+                writable,
+                or_(stored_attempts <= incoming_attempts, same_claim_refund, retiring),
+            )
         statement = pg_insert(GovernanceSessionDigest).values(**values)
         statement = statement.on_conflict_do_update(
             constraint="uq_governance_session_digest_segment",
             set_=updates,
-        )
-        db.execute(statement)
+            where=None if force_resummarize else writable,
+        ).returning(GovernanceSessionDigest.id)
+        identifier = db.execute(statement).scalar_one_or_none()
+        if identifier is None:
+            raise GovernanceReviewValidationError(
+                "cannot overwrite a complete segment or reset summary attempts without force_resummarize"
+            )
+        if overrides:
+            from preloop.services.session_search_index import redact_text
+            from .audit_log import crud_audit_log
+
+            assert override_caller is not None and override_reason is not None
+            details = {
+                "caller": redact_text(override_caller.strip())[0][:160],
+                "reason": redact_text(override_reason.strip())[0][:600],
+                "force_resummarize": force_resummarize,
+                "include_history": include_history,
+                "segment_index": segment_index,
+                "runtime_session_id": str(runtime_session_id),
+            }
+            audit = crud_audit_log.log_action(
+                db,
+                account_id=account_id,
+                action="governance_review.summary_override",
+                resource_type="governance_session_digest",
+                resource_id=str(identifier),
+                status="success",
+                details=details,
+                commit=False,
+            )
+            logger.warning(
+                "Governance digest write override account=%s segment=%s audit_event=%s force_resummarize=%s include_history=%s",
+                account_id,
+                identifier,
+                audit.id,
+                force_resummarize,
+                include_history,
+            )
         if commit:
             db.commit()
         else:
@@ -820,6 +988,48 @@ class CRUDGovernanceSessionDigest(CRUDBase[GovernanceSessionDigest]):
         )
         db.refresh(row)
         return row
+
+    def update(
+        self,
+        db: Session,
+        *,
+        db_obj: GovernanceSessionDigest,
+        obj_in: dict[str, Any],
+        commit: bool = True,
+    ) -> GovernanceSessionDigest:
+        """Keep generic CRUD updates subject to the same atomic write guard.
+
+        Exceptional replacements use upsert's explicit, audited overrides.
+        Identity and account ownership cannot change through this shortcut.
+        """
+        identity = {"id", "account_id", "runtime_session_id", "segment_index"}
+        if any(
+            key in obj_in and obj_in[key] != getattr(db_obj, key) for key in identity
+        ):
+            raise GovernanceReviewValidationError("segment identity cannot change")
+        timestamps = {
+            key: value
+            for key, value in obj_in.items()
+            if key in {"created_at", "updated_at"}
+        }
+        fields = {
+            key: value
+            for key, value in obj_in.items()
+            if key not in identity and key not in timestamps
+        }
+        if not fields:
+            return super().update(db, db_obj=db_obj, obj_in=timestamps, commit=commit)
+        fields.setdefault("window_start", db_obj.window_start)
+        fields.setdefault("window_end", db_obj.window_end)
+        stored = self.upsert(
+            db,
+            account_id=db_obj.account_id,
+            runtime_session_id=db_obj.runtime_session_id,
+            segment_index=db_obj.segment_index,
+            commit=False,
+            **fields,
+        )
+        return super().update(db, db_obj=stored, obj_in=timestamps, commit=commit)
 
     def list_for_window(
         self,

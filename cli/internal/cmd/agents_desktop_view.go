@@ -108,7 +108,7 @@ func resolveDesktopAgentID(client desktopViewClient, value string) (string, erro
 	value = strings.TrimSpace(value)
 	if desktopUUIDPattern.MatchString(value) {
 		var agent managedAgentSummary
-		if err := client.Get("/api/v1/agents/"+url.PathEscape(value), &agent); err != nil {
+		if err := client.Get(api.RESTPrefix+"/agents/"+url.PathEscape(value), &agent); err != nil {
 			return "", fmt.Errorf("failed to find agent %s: %w", value, err)
 		}
 		return value, nil
@@ -116,7 +116,7 @@ func resolveDesktopAgentID(client desktopViewClient, value string) (string, erro
 	var matches []string
 	for page := 0; page < desktopAgentMaxPages; page++ {
 		var response managedAgentListResponse
-		path := fmt.Sprintf("/api/v1/agents?limit=%d&offset=%d", desktopAgentPageSize, page*desktopAgentPageSize)
+		path := fmt.Sprintf(api.RESTPrefix+"/agents?limit=%d&offset=%d", desktopAgentPageSize, page*desktopAgentPageSize)
 		if err := client.Get(path, &response); err != nil {
 			return "", fmt.Errorf("failed to list agents: %w", err)
 		}
@@ -158,11 +158,11 @@ func runAgentsDesktop(ctx context.Context, s desktopViewSession) error {
 		body["duration_seconds"] = int(s.duration.Seconds())
 	}
 	var view desktopViewResponse
-	if err := s.client.Post("/api/v1/agents/"+agentID+"/desktop-views", body, &view); err != nil {
+	if err := s.client.Post(api.RESTPrefix+"/agents/"+agentID+"/desktop-views", body, &view); err != nil {
 		return fmt.Errorf("failed to open the desktop view: %w", err)
 	}
 	defer func() {
-		_ = s.client.Delete("/api/v1/desktop/views/"+view.ViewID, nil)
+		_ = s.client.Delete(api.RESTPrefix+"/desktop/views/"+view.ViewID, nil)
 	}()
 	addr := listener.Addr().String()
 	fmt.Fprintf(s.out, "Live desktop (view only, nothing is recorded) on %s until %s\n", addr, view.ExpiresAt) //nolint:errcheck

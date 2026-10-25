@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Iterable, Optional, Sequence
 
-from sqlalchemy import delete, func, literal_column, select, update
+from sqlalchemy import delete, func, literal_column, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -282,12 +282,18 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
         agent_kind: str,
         managed_agent_id: Any,
         config_path_hash: Optional[str] = None,
+        os_family: Optional[str] = None,
+        cli_version: Optional[str] = None,
+        now: Optional[datetime] = None,
     ) -> int:
         """Point matching candidates at a managed agent and mark them onboarded.
 
         Matches on workstation and kind, and on the config path hash when the
         caller has one, so one workstation running two installs of a kind
-        links only the one that was enrolled.
+        links only the one that was enrolled. When the caller has a config
+        path hash and no candidate matches, an onboarded candidate is
+        recorded for the install, so onboarding alone (without an opt-in
+        ``discover --report``) attaches the agent to its workstation.
 
         Returns:
             Number of candidates linked. The caller commits.
@@ -307,7 +313,40 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
         if config_path_hash:
             stmt = stmt.where(self.model.config_path_hash == config_path_hash)
         result = db.execute(stmt)
-        return int(getattr(result, "rowcount", 0) or 0)
+        linked = int(getattr(result, "rowcount", 0) or 0)
+        if linked or not config_path_hash:
+            return linked
+        # No ``discover --report`` row exists for this install. The validated
+        # enrollment itself is the evidence: record it as an onboarded
+        # candidate so the device fleet can place the agent on its device.
+        seen_at = now or utc_now_naive()
+        db.execute(
+            pg_insert(self.model)
+            .values(
+                id=uuid.uuid4(),
+                account_id=account_id,
+                workstation_fingerprint=workstation_fingerprint,
+                agent_kind=agent_kind,
+                config_path_hash=config_path_hash,
+                mcp_server_count=0,
+                reported_enrolled=True,
+                os_family=os_family,
+                cli_version=cli_version,
+                status=CANDIDATE_STATUS_ONBOARDED,
+                managed_agent_id=managed_agent_id,
+                first_seen_at=seen_at,
+                last_seen_at=seen_at,
+            )
+            .on_conflict_do_update(
+                constraint="uq_discovered_agent_candidate_key",
+                set_={
+                    "status": CANDIDATE_STATUS_ONBOARDED,
+                    "managed_agent_id": managed_agent_id,
+                    "last_seen_at": seen_at,
+                },
+            )
+        )
+        return 1
 
     def purge_stale(
         self,
@@ -319,6 +358,9 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
     ) -> int:
         """Delete candidates whose ``last_seen_at`` is older than the window.
 
+        Onboarded candidates still linked to a managed agent are kept: they
+        place that agent on its device.
+
         Args:
             db: Active session. Commits.
             now: Reference time (tests).
@@ -329,7 +371,16 @@ class CRUDDiscoveredAgentCandidate(CRUDBase[DiscoveredAgentCandidate]):
             Rows deleted.
         """
         cutoff = (now or utc_now_naive()) - timedelta(days=retention_days)
-        stmt = delete(self.model).where(self.model.last_seen_at < cutoff)
+        # A candidate linked to a managed agent is that agent's device link
+        # (onboarding records one even without a report), so it lives as long
+        # as the agent does; the FK nulls the link when the agent is deleted.
+        stmt = delete(self.model).where(
+            self.model.last_seen_at < cutoff,
+            or_(
+                self.model.status != CANDIDATE_STATUS_ONBOARDED,
+                self.model.managed_agent_id.is_(None),
+            ),
+        )
         if account_id is not None:
             stmt = stmt.where(self.model.account_id == account_id)
         result = db.execute(stmt)

@@ -277,6 +277,20 @@ def _pricing_response(
                 currency=str(configured.get("currency") or "USD"),
             )
 
+    from preloop.services.local_model_pricing import uses_local_inference
+
+    if uses_local_inference(ai_model):
+        return AIModelPricingResponse(
+            **base,
+            source="model_config",
+            price=AIModelPrice(
+                input_per_1m=0.0,
+                output_per_1m=0.0,
+                cached_input_per_1m=0.0,
+                request_price=0.0,
+            ),
+        )
+
     tariff = deepseek_pricing.native_tariff(ai_model)
     if tariff is not None:
         return AIModelPricingResponse(

@@ -24,6 +24,7 @@ export interface AccessRuleSummary {
 @customElement('governance-rule-set-editor')
 export class GovernanceRuleSetEditor extends LitElement {
   @property({ type: String }) toolName = '';
+  @property({ type: Boolean }) readOnly = false;
   @property({ type: Object }) toolSchema: Record<string, unknown> | null = null;
   @property({ type: Array }) rules: AccessRuleSummary[] = [];
   @property({ type: Array }) workflows: ApprovalWorkflow[] = [];
@@ -205,6 +206,7 @@ export class GovernanceRuleSetEditor extends LitElement {
   `;
 
   private _openRuleEditor(rule: AccessRuleSummary | null = null) {
+    if (this.readOnly) return;
     this._editingRule = rule as AccessRule | null;
     this._showRuleEditor = true;
   }
@@ -216,6 +218,10 @@ export class GovernanceRuleSetEditor extends LitElement {
 
   private _handleSaveRule(e: CustomEvent) {
     e.stopPropagation();
+    if (this.readOnly) {
+      e.detail.reject?.('Shared server configuration is read-only.');
+      return;
+    }
     const { rule, formData, resolve, reject } = e.detail as {
       resolve: () => void;
       reject: (message: string) => void;
@@ -247,6 +253,7 @@ export class GovernanceRuleSetEditor extends LitElement {
   }
 
   private _handleDeleteRule(rule: AccessRuleSummary) {
+    if (this.readOnly) return;
     this.dispatchEvent(
       new CustomEvent('delete-rule', {
         detail: {
@@ -260,6 +267,7 @@ export class GovernanceRuleSetEditor extends LitElement {
   }
 
   private _handleDragStart(index: number, e: DragEvent) {
+    if (this.readOnly) return;
     this._dragIndex = index;
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = 'move';
@@ -269,6 +277,7 @@ export class GovernanceRuleSetEditor extends LitElement {
 
   private _handleDragOver(index: number, e: DragEvent) {
     e.preventDefault();
+    if (this.readOnly) return;
     if (this._dragIndex === null || this._dragIndex === index) {
       return;
     }
@@ -284,6 +293,7 @@ export class GovernanceRuleSetEditor extends LitElement {
 
   private _handleDrop(index: number, e: DragEvent) {
     e.preventDefault();
+    if (this.readOnly) return;
     if (this._dragIndex === null || this._dragIndex === index) {
       this._dragIndex = null;
       this._dragOverIndex = null;
@@ -323,6 +333,7 @@ export class GovernanceRuleSetEditor extends LitElement {
   }
 
   private _moveRule(index: number, delta: number) {
+    if (this.readOnly) return;
     const rules = [...this.rules].sort((a, b) => a.priority - b.priority);
     const target = index + delta;
     if (target < 0 || target >= rules.length) return;
@@ -376,7 +387,7 @@ export class GovernanceRuleSetEditor extends LitElement {
         } ${dragPosition}"
         tabindex="0"
         @keydown=${(e: KeyboardEvent) => this._handleRuleKeydown(index, e)}
-        draggable="true"
+        draggable=${this.readOnly ? 'false' : 'true'}
         @dragstart=${(e: DragEvent) => this._handleDragStart(index, e)}
         @dragover=${(e: DragEvent) => this._handleDragOver(index, e)}
         @dragleave=${() => this._handleDragLeave()}
@@ -419,18 +430,19 @@ export class GovernanceRuleSetEditor extends LitElement {
           <sl-icon-button
             name="arrow-up"
             label=${`Move rule ${index + 1} up`}
-            ?disabled=${index === 0}
+            ?disabled=${this.readOnly || index === 0}
             @click=${() => this._moveRule(index, -1)}
           ></sl-icon-button>
           <sl-icon-button
             name="arrow-down"
             label=${`Move rule ${index + 1} down`}
-            ?disabled=${index === this.rules.length - 1}
+            ?disabled=${this.readOnly || index === this.rules.length - 1}
             @click=${() => this._moveRule(index, 1)}
           ></sl-icon-button>
           <sl-tooltip content="Edit rule">
             <sl-icon-button
               name="pencil"
+              ?disabled=${this.readOnly}
               label=${`Edit rule ${index + 1}`}
               @click=${() => this._openRuleEditor(rule)}
             ></sl-icon-button>
@@ -438,6 +450,7 @@ export class GovernanceRuleSetEditor extends LitElement {
           <sl-tooltip content="Delete rule">
             <sl-icon-button
               name="trash"
+              ?disabled=${this.readOnly}
               label=${`Delete rule ${index + 1}`}
               @click=${() => this._handleDeleteRule(rule)}
             ></sl-icon-button>
@@ -469,6 +482,7 @@ export class GovernanceRuleSetEditor extends LitElement {
         <sl-button
           size="small"
           variant="default"
+          ?disabled=${this.readOnly}
           @click=${() => this._openRuleEditor(null)}
         >
           <sl-icon slot="prefix" name="plus-lg"></sl-icon>

@@ -191,6 +191,11 @@ async def test_durable_hook_check_uses_the_agents_session_end_to_end(
     assert len(tool_events) == 1 and len(note_events) == 1
     assert tool_events[0]["runtime_session_id"] == str(session_id)
     assert tool_events[0]["payload"]["activity_id"] == str(row.id)
+    assert tool_events[0]["payload"]["managed_agent_id"] == str(hook_agent["agent_id"])
+    assert tool_events[0]["payload"]["flow_id"] is None
+    assert tool_events[0]["payload"]["runtime_principal_id"] != str(
+        hook_agent["agent_id"]
+    )
     assert "super-secret-value" not in str(tool_events[0])
     assert note_events[0]["payload"]["metadata"]["author_display"] == "Admin User"
 

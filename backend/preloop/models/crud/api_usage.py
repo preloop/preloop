@@ -1,7 +1,10 @@
 """CRUD operations for ApiUsage model."""
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+import json
+import math
 import logging
 from types import SimpleNamespace
 import uuid
@@ -20,6 +23,7 @@ from sqlalchemy import (
     select,
     text,
     true,
+    tuple_,
     union_all,
 )
 from sqlalchemy.exc import IntegrityError, TimeoutError as SQLAlchemyTimeoutError
@@ -73,6 +77,69 @@ def _refresh_committed_row(db: Session, db_obj: Any) -> None:
             set_committed_value(db_obj, key, value)
 
 
+#: Advisory lock key that serialises :meth:`CRUDApiUsage.repair_anthropic_cache_input`.
+ANTHROPIC_CACHE_INPUT_REPAIR_LOCK = "api_usage:anthropic_cache_input_repair"
+
+#: Convert raw (cache exclusive) Anthropic input rows since ``:since`` (#1955).
+#: The outer ``WHERE`` repeats the guard on the target row so PostgreSQL's
+#: re-check after a row-lock wait skips a row another writer already converted.
+ANTHROPIC_CACHE_INPUT_REPAIR_SQL = """
+WITH candidate AS (
+    SELECT id,
+           coalesce((meta_data -> 'usage_details'
+                     ->> 'cache_read_input_tokens')::bigint, 0)
+         + coalesce((meta_data -> 'usage_details'
+                     ->> 'cache_creation_input_tokens')::bigint, 0)
+           AS cache_tokens
+    FROM api_usage
+    WHERE timestamp >= :since
+      AND action_type = 'model_gateway'
+      AND usage_source IS DISTINCT FROM 'imported'
+      AND NOT (meta_data ? 'input_cache_backfill')
+      AND jsonb_typeof(meta_data -> 'usage_details') = 'object'
+      AND NOT (meta_data -> 'usage_details' ? 'prompt_tokens')
+      AND (meta_data -> 'usage_details' ->> 'input_tokens') ~ '^[0-9]+$'
+      AND coalesce(meta_data -> 'usage_details'
+                   ->> 'cache_read_input_tokens', '0') ~ '^[0-9]+$'
+      AND coalesce(meta_data -> 'usage_details'
+                   ->> 'cache_creation_input_tokens', '0') ~ '^[0-9]+$'
+      AND (meta_data -> 'usage_details' ? 'cache_read_input_tokens'
+           OR meta_data -> 'usage_details' ? 'cache_creation_input_tokens')
+      AND prompt_tokens
+          = (meta_data -> 'usage_details' ->> 'input_tokens')::bigint
+)
+UPDATE api_usage AS u
+SET prompt_tokens = u.prompt_tokens + c.cache_tokens,
+    total_tokens = CASE
+        WHEN u.total_tokens IS NULL THEN NULL
+        ELSE u.total_tokens + c.cache_tokens
+    END,
+    meta_data = jsonb_set(u.meta_data, '{input_cache_backfill}',
+                          to_jsonb(c.cache_tokens))
+FROM candidate AS c
+WHERE u.id = c.id
+  AND c.cache_tokens > 0
+  AND NOT (u.meta_data ? 'input_cache_backfill')
+  AND u.prompt_tokens
+      = (u.meta_data -> 'usage_details' ->> 'input_tokens')::bigint
+"""
+
+
+@dataclass(frozen=True)
+class GovernanceSpendSnapshot:
+    """Statement-consistent governance costs read before account admission.
+
+    Keep the original cost per id so settling a provisional row between the
+    read and the lock contributes only its cost change, never a second charge.
+    Comparing by row id also catches backdated and late-committing inserts.
+    """
+
+    account_id: str
+    start: datetime
+    costs: dict[str, float]
+    total: float
+
+
 GATEWAY_USAGE_FUNDING = frozenset({"platform", "account"})
 
 # Replay-validation re-executions are Preloop-driven measurement traffic: real
@@ -91,7 +158,9 @@ _RATE_LIMIT_SNAPSHOT_ROWS = (
     "action_type = 'model_gateway' "
     "AND (meta_data ->> 'rate_limit') IS NOT NULL "
     "AND ((meta_data ->> 'purpose') IS NULL "
-    "OR (meta_data ->> 'purpose') <> 'replay_validation')"
+    "OR (meta_data ->> 'purpose') <> 'replay_validation') "
+    "AND ((meta_data ->> 'purpose') IS NULL "
+    "OR left(meta_data ->> 'purpose', 11) <> 'governance_')"
 )
 
 
@@ -102,14 +171,51 @@ def exclude_replay_usage_condition():
     NULL; only rows explicitly tagged ``replay_validation`` are excluded.
     Mirrors ``crud/runtime_session.py``'s internal-usage exclusion style.
 
+    The key and the excluded purpose are SQL literals, not bound parameters.
+    The gateway covering indexes carry this exact predicate, and PostgreSQL
+    can only prove a partial-index predicate against constants: with bound
+    parameters a generic prepared plan (psycopg prepares a statement after a
+    few executions) cannot use those indexes and reads the heap instead.
+
     Returns:
         A SQLAlchemy boolean expression suitable for a WHERE clause.
     """
-    purpose_expr = ApiUsage.meta_data["purpose"].astext
+    purpose_expr = ApiUsage.meta_data.op("->>")(literal_column("'purpose'"))
     return or_(
         purpose_expr.is_(None),
-        purpose_expr != REPLAY_VALIDATION_PURPOSE,
+        purpose_expr != literal_column(f"'{REPLAY_VALIDATION_PURPOSE}'"),
     )
+
+
+def exclude_customer_overhead_condition() -> Any:
+    """Exclude replay and all governance purposes from customer reporting.
+
+    Keep the replay predicate literal for existing partial indexes. Purpose-
+    targeted budget reads bypass this filter, so analysis still consumes its
+    own allowance and its cost remains visible in the policy review section.
+    NULL metadata and unrelated purposes retain their existing semantics.
+    """
+    purpose = ApiUsage.meta_data.op("->>")(literal_column("'purpose'"))
+    return and_(
+        exclude_replay_usage_condition(),
+        or_(
+            purpose.is_(None),
+            func.left(purpose, literal_column("11")) != literal_column("'governance_'"),
+        ),
+    )
+
+
+def gateway_action_condition() -> Any:
+    """Return ``action_type = 'model_gateway'`` with a literal, not a parameter.
+
+    Same reason as :func:`exclude_replay_usage_condition`: the gateway partial
+    indexes are only usable by a generic prepared plan when the predicate
+    they were built with appears as constants.
+
+    Returns:
+        A SQLAlchemy boolean expression suitable for a WHERE clause.
+    """
+    return ApiUsage.action_type == literal_column("'model_gateway'")
 
 
 def cache_covered_condition(usage_model: Any = ApiUsage) -> Any:
@@ -468,13 +574,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         CRUDTelemetryIngest().supersede_for_gateway_row(db, db_obj)
 
         # Atomically record spend if estimated_cost is present and > 0.
-        # Replay-validation runs are excluded: their spend is bounded by the
-        # replay path's own hard cap, and letting them consume budget-bucket
+        # Replay and governance analysis have their own purpose-targeted caps.
+        # Letting overhead consume customer budget-bucket
         # headroom would abort the user's REAL agent traffic (budget policies
         # are still checked per request at the gateway, so an account already
         # at its limit cannot replay either).
         usage_purpose = (meta_data or {}).get("purpose")
-        if estimated_cost and account_id and usage_purpose != REPLAY_VALIDATION_PURPOSE:
+        is_overhead = usage_purpose == REPLAY_VALIDATION_PURPOSE or (
+            isinstance(usage_purpose, str) and usage_purpose.startswith("governance_")
+        )
+        if estimated_cost and account_id and not is_overhead:
             from .budget import record_spend_for_request
 
             try:
@@ -570,7 +679,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
             ApiUsage.provider_name.isnot(None),
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
         )
@@ -938,6 +1047,41 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             db.flush()
         return db_obj
 
+    def repair_anthropic_cache_input(self, db: Session, *, since: datetime) -> int:
+        """Store raw Anthropic input written since ``since`` cache inclusive.
+
+        Migration ``20261106_anthropic_cache_input`` backfills the rows that
+        existed when it ran. Pods still on the previous release keep writing
+        raw (cache exclusive) Anthropic input until the rollout finishes, so
+        this pass repeats the same predicate over recent rows once the new
+        release is serving. The amount added goes to
+        ``meta_data.input_cache_backfill`` like the migration's, so the
+        migration's downgrade reverts these rows too (#1955).
+
+        Safe to run from several replicas at once: one pass runs at a time
+        (a transaction-scoped advisory lock; a replica that finds it taken
+        skips), and the outer ``UPDATE`` re-checks the guard on the row it
+        writes, so a row converted by a concurrent writer is never converted
+        twice.
+
+        Args:
+            db: Database session; committed when the pass ran.
+            since: Earliest ``timestamp`` to repair.
+
+        Returns:
+            How many rows were converted (0 when another pass holds the lock).
+        """
+        locked = db.execute(
+            text("SELECT pg_try_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": ANTHROPIC_CACHE_INPUT_REPAIR_LOCK},
+        ).scalar()
+        if not locked:
+            db.rollback()
+            return 0
+        result = db.execute(text(ANTHROPIC_CACHE_INPUT_REPAIR_SQL), {"since": since})
+        db.commit()
+        return int(result.rowcount or 0)
+
     def get_gateway_attempt_summary(
         self,
         db: Session,
@@ -1283,9 +1427,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ).label("unpriced_tokens"),
             *cache_split_columns(),
         ).filter(
-            ApiUsage.action_type == "model_gateway",
+            gateway_action_condition(),
             _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
         )
@@ -1375,9 +1519,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.count(ApiUsage.id).label("requests"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("tokens"),
         ).filter(
-            ApiUsage.action_type == "model_gateway",
+            gateway_action_condition(),
             ApiUsage.account_id == account_id,
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
             ApiUsage.estimated_cost.is_(None),
@@ -1442,7 +1586,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             func.coalesce(ApiUsage.error_class, "").notin_(
                 ("budget_exceeded", "hosted_credit_reserved")
             ),
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
         ]
@@ -1759,9 +1903,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             # Aggregate by model identity; aliases that share ai_model_id still
             # appear as separate groups when model_alias differs (intentional —
             # callers often filter/sort by the client-visible alias).
-            ApiUsage.action_type == "model_gateway",
+            gateway_action_condition(),
             _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
         )
         if start_date:
             query = query.filter(ApiUsage.timestamp >= start_date)
@@ -2061,7 +2205,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ApiUsage.account_id == account_id,
                 ApiUsage.user_id == user_id if user_id is not None else true(),
                 ApiUsage.action_type == "model_gateway",
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
                 ApiUsage.timestamp >= start_date,
                 ApiUsage.timestamp < end_date,
             )
@@ -2105,9 +2249,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             )
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
             .filter(
-                ApiUsage.action_type == "model_gateway",
+                gateway_action_condition(),
                 ApiUsage.account_id == account_id,
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
             )
         )
         if start_date:
@@ -2170,7 +2314,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
                 ApiUsage.flow_id == flow_id,
                 ApiUsage.timestamp >= start_date,
                 ApiUsage.timestamp < end_date,
@@ -2208,9 +2352,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     ) -> list[Any]:
         """Row filter shared by the session aggregate and its key scan."""
         conditions = [
-            ApiUsage.action_type == "model_gateway",
+            gateway_action_condition(),
             ApiUsage.account_id == account_id,
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             or_(
                 ApiUsage.runtime_session_id.isnot(None),
                 ApiUsage.flow_execution_id.isnot(None),
@@ -2229,6 +2373,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
     #: Rows fetched per round trip while walking usage newest first.
     _SESSION_KEY_SCAN_BATCH = 2000
 
+    #: Bound Python work when a few busy sessions fill the whole window.
+    _SESSION_KEY_SCAN_MAX_ROWS = 20000
+
     def _recent_session_keys(
         self,
         db: Session,
@@ -2244,6 +2391,8 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         pair tied with the last one on timestamp. Both pair columns are keys
         of the session breakdown, so a breakdown group whose newest request
         ranks in the top ``limit`` always belongs to one of these pairs.
+        If the bounded walk cannot finish, group in SQL instead of streaming
+        an entire busy account's history into Python.
 
         Args:
             db: Database session.
@@ -2263,15 +2412,32 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             )
             .filter(*self._session_usage_conditions(**filters))
             .order_by(ApiUsage.timestamp.desc())
+            .limit(self._SESSION_KEY_SCAN_MAX_ROWS)
             .yield_per(self._SESSION_KEY_SCAN_BATCH)
         )
+        scanned = 0
         for session_id, execution_id, timestamp in rows:
+            scanned += 1
             if cutoff is not None and timestamp < cutoff:
-                break
+                return list(keys)
             keys.setdefault((session_id, execution_id), None)
             if cutoff is None and len(keys) >= limit:
                 cutoff = timestamp
-        return list(keys)
+        if scanned < self._SESSION_KEY_SCAN_MAX_ROWS:
+            return list(keys)
+        # With fewer than `limit` active sessions, the recency walk otherwise
+        # transfers every request in the window to Python. Aggregate in SQL
+        # once the bounded walk cannot finish. WITH TIES preserves every pair
+        # at the cutoff so the final model slices still compete on count.
+        latest = func.max(ApiUsage.timestamp)
+        grouped = (
+            select(ApiUsage.runtime_session_id, ApiUsage.flow_execution_id)
+            .where(*self._session_usage_conditions(**filters))
+            .group_by(ApiUsage.runtime_session_id, ApiUsage.flow_execution_id)
+            .order_by(latest.desc())
+            .fetch(limit, with_ties=True)
+        )
+        return [(row[0], row[1]) for row in db.execute(grouped).all()]
 
     #: Deepest session rank served by walking rows newest first; past it one
     #: grouped query is cheaper than streaming that many rows into Python.
@@ -2762,9 +2928,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             ),
             *cache_split_columns(),
         ).filter(
-            ApiUsage.action_type == "model_gateway",
+            gateway_action_condition(),
             _usage_account_clause(ApiUsage.account_id, account_id, account_ids),
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             ApiUsage.timestamp >= start_date,
             ApiUsage.timestamp < end_date,
         )
@@ -2863,7 +3029,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 *conditions,
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.model_alias.isnot(None),
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
             ]
 
         # Branch 1, direct attribution: ``ix_api_usage_flow_execution_id``.
@@ -3003,7 +3169,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.flow_execution_id == execution_id,
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
             )
             .first()
         )
@@ -3104,6 +3270,76 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
 
         return query.count()
 
+    def _governance_spend_query(
+        self, db: Session, *, account_id: str, start: datetime
+    ) -> Any:
+        """Select the small indexed governance subset, including reservations."""
+        return db.query(self.model).filter(
+            self.model.account_id == account_id,
+            self.model.timestamp >= start,
+            # Keep the partial-index predicate and expression key literal so
+            # PostgreSQL can use it even with a generic prepared statement plan.
+            text(
+                "api_usage.action_type = 'model_gateway' AND "
+                "(api_usage.meta_data ->> 'purpose') IN "
+                "('governance_session_digest', 'governance_review') AND "
+                "(api_usage.meta_data ->> 'funding') = 'platform'"
+            ),
+        )
+
+    def snapshot_governance_spend(
+        self, db: Session, *, account_id: str, start: datetime
+    ) -> GovernanceSpendSnapshot:
+        """Read weekly spend before taking the account admission lock.
+
+        Retain row costs rather than a wall-clock cutoff: inserts may carry old
+        usage timestamps or commit after admission starts. Settlements may change
+        an existing reservation in either direction.
+        """
+        costs = (
+            self._governance_spend_query(db, account_id=account_id, start=start)
+            .with_entities(
+                func.jsonb_object_agg(
+                    cast(self.model.id, String),
+                    func.coalesce(self.model.estimated_cost, 0.0),
+                ),
+            )
+            .scalar()
+        )
+        costs = costs or {}
+        return GovernanceSpendSnapshot(
+            account_id, start, costs, math.fsum(costs.values())
+        )
+
+    def governance_spend_since_snapshot(
+        self, db: Session, *, snapshot: GovernanceSpendSnapshot
+    ) -> float:
+        """Apply only inserted or changed costs under the account admission lock.
+
+        PostgreSQL READ COMMITTED supplies a fresh statement snapshot after the
+        lock wait. Costs that have not changed remain in the baseline. Removed or
+        reclassified historical rows can only leave a conservative overestimate;
+        admission never depends on concurrent retention reducing spend.
+        """
+        rows = (
+            self._governance_spend_query(
+                db, account_id=snapshot.account_id, start=snapshot.start
+            )
+            .with_entities(self.model.id, self.model.estimated_cost)
+            .filter(
+                text(
+                    "COALESCE(api_usage.estimated_cost, 0) IS DISTINCT FROM "
+                    "((CAST(:governance_costs AS jsonb) ->> api_usage.id::text)"
+                    "::double precision)"
+                ).bindparams(governance_costs=json.dumps(snapshot.costs))
+            )
+            .all()
+        )
+        return snapshot.total + sum(
+            (cost or 0.0) - snapshot.costs.get(str(identifier), 0.0)
+            for identifier, cost in rows
+        )
+
     def get_gateway_spend(
         self,
         db: Session,
@@ -3164,7 +3400,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             # agent traffic; replay-validation runs are excluded like in the
             # usage aggregations above. Purpose-targeted reads (e.g. the
             # optimizer's daily cap) are unaffected.
-            query = query.filter(exclude_replay_usage_condition())
+            query = query.filter(exclude_customer_overhead_condition())
         if funding is not None:
             query = query.filter(self.model.meta_data["funding"].astext == funding)
         return float(query.scalar() or 0.0)
@@ -3417,7 +3653,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 self.model.meta_data["usage_details"].label("usage_details"),
             )
             .filter(
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
                 self.model.action_type == "model_gateway",
                 self.model.account_id == account_id,
                 self.model.runtime_session_id == runtime_session_id,
@@ -3519,7 +3755,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         ).filter(
             ApiUsage.action_type == "model_gateway",
             ApiUsage.account_id == account_id,
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             ApiUsage.runtime_principal_id == runtime_principal_id,
             ApiUsage.timestamp >= start,
         )
@@ -3763,7 +3999,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
                 ApiUsage.timestamp >= start,
             )
             .one_or_none()
@@ -3832,7 +4068,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 ApiUsage.account_id == account_id,
                 ApiUsage.runtime_session_id.isnot(None),
                 ApiUsage.cache_creation_tokens > 0,
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
                 ApiUsage.timestamp >= start,
                 ApiUsage.timestamp < end,
             )
@@ -3935,10 +4171,11 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
                 0.0,
             ).label("api_equivalent_cost"),
         ).filter(
-            ApiUsage.action_type == "model_gateway",
+            gateway_action_condition(),
             ApiUsage.account_id == account_id,
-            ApiUsage.cost_source == "subscription",
-            exclude_replay_usage_condition(),
+            # Keep the sparse subscription index eligible in prepared plans.
+            ApiUsage.cost_source == literal_column("'subscription'"),
+            exclude_customer_overhead_condition(),
             ApiUsage.timestamp >= start,
             ApiUsage.timestamp < end,
         )
@@ -3993,7 +4230,7 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             .filter(
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
                 ApiUsage.timestamp >= start,
                 or_(
                     usage_details.has_key("prompt_tokens_details"),
@@ -4335,14 +4572,16 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             db.refresh(db_obj)
         return db_obj
 
-    def _imported_cost_sum(self, *, start_date: datetime, end_date: datetime):
+    def _imported_cost_sum(
+        self, *, account_id: str, start_date: datetime, end_date: datetime
+    ):
         """SUM of imported cost with reconciled-over-estimated precedence.
 
         A ``cost_basis='reconciled'`` row (billing export) supersedes ALL
         ``cost_basis='estimated'`` rows (hook/transcript-derived) with the
         same (account, provider_name, conversation_id) **in the queried
         window**: superseded rows contribute $0, so the two bases are never
-        summed for one scope. The EXISTS is bounded to
+        summed for one scope. The reconciliation key set is bounded to
         ``start_date <= timestamp < end_date`` so a reconciled row outside
         the window cannot zero in-window estimates while contributing $0
         itself. Rows without a conversation_id or with a NULL cost_basis
@@ -4352,17 +4591,20 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         superseded = and_(
             ApiUsage.cost_basis == "estimated",
             ApiUsage.conversation_id.isnot(None),
-            select(reconciled.id)
-            .where(
-                reconciled.account_id == ApiUsage.account_id,
-                reconciled.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
-                reconciled.cost_basis == "reconciled",
-                reconciled.provider_name == ApiUsage.provider_name,
-                reconciled.conversation_id == ApiUsage.conversation_id,
-                reconciled.timestamp >= start_date,
-                reconciled.timestamp < end_date,
-            )
-            .exists(),
+            # Build the reconciliation key set once per account/window. A
+            # correlated EXISTS probes the same conversation for every event
+            # (quadratic work for long conversations with no reconciliation).
+            tuple_(ApiUsage.provider_name, ApiUsage.conversation_id).in_(
+                select(reconciled.provider_name, reconciled.conversation_id).where(
+                    reconciled.account_id == account_id,
+                    reconciled.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
+                    reconciled.cost_basis == "reconciled",
+                    reconciled.provider_name.isnot(None),
+                    reconciled.conversation_id.isnot(None),
+                    reconciled.timestamp >= start_date,
+                    reconciled.timestamp < end_date,
+                )
+            ),
         )
         return func.coalesce(
             func.sum(
@@ -4404,9 +4646,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
         query = db.query(
             func.count(ApiUsage.id).label("event_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
-                "imported_cost"
-            ),
+            self._imported_cost_sum(
+                account_id=account_id, start_date=start_date, end_date=end_date
+            ).label("imported_cost"),
         ).filter(
             ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,
             ApiUsage.account_id == account_id,
@@ -4459,9 +4701,9 @@ class CRUDApiUsage(CRUDBase[ApiUsage]):
             import_source.label("source"),
             func.count(ApiUsage.id).label("request_count"),
             func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("total_tokens"),
-            self._imported_cost_sum(start_date=start_date, end_date=end_date).label(
-                "imported_cost"
-            ),
+            self._imported_cost_sum(
+                account_id=account_id, start_date=start_date, end_date=end_date
+            ).label("imported_cost"),
             func.max(ApiUsage.timestamp).label("last_event_at"),
         ).filter(
             ApiUsage.action_type == self.IMPORTED_USAGE_ACTION_TYPE,

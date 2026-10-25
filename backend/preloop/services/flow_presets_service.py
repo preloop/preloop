@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Any, List, Optional
 from uuid import UUID
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.models import schemas
@@ -162,7 +163,7 @@ def clone_preset_for_account(
     clear_event_triggers: bool = False,
     is_enabled: bool = False,
 ) -> Any:
-    """Clone a global preset into a disabled account-owned flow by default.
+    """Clone a global or owned preset into a disabled account flow by default.
 
     Args:
         db: Database session.
@@ -187,9 +188,14 @@ def clone_preset_for_account(
         The created flow row.
 
     Raises:
-        HTTPException: 422 when no usable AI model can be bound.
+        HTTPException: 404 when the preset is unavailable to the account, or
+            422 when no usable AI model can be bound.
     """
     crud = flow_crud if flow_crud is not None else crud_flow
+    if not preset.is_preset or (
+        preset.account_id is not None and str(preset.account_id) != str(account_id)
+    ):
+        raise HTTPException(status_code=404, detail="Preset not found")
     if bound_ai_model_id is None:
         from preloop.api.endpoints.flows import _resolve_clone_model_binding
 

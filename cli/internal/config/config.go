@@ -84,8 +84,22 @@ type RunnerConfig struct {
 	MandatedCapabilities []string `mapstructure:"mandated_capabilities"`
 }
 
+// SetConfigFile selects an explicit configuration file for this process.
+// An empty path restores the default ~/.preloop/config.yaml location.
+func SetConfigFile(path string) {
+	selectionMu.Lock()
+	defer selectionMu.Unlock()
+	selectedConfigFile = path
+}
+
 // configPath returns the full path to the config file.
 func configPath() (string, error) {
+	selectionMu.RLock()
+	path := selectedConfigFile
+	selectionMu.RUnlock()
+	if path != "" {
+		return path, nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("failed to get home directory: %w", err)
@@ -104,12 +118,12 @@ func GetConfigDir() (string, error) {
 
 // ensureConfigDir creates the config directory if it doesn't exist.
 func ensureConfigDir() error {
-	dir, err := GetConfigDir()
+	path, err := configPath()
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 

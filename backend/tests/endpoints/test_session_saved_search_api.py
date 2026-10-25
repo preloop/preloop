@@ -7,14 +7,19 @@ no longer hold.
 """
 
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.models import models
 from preloop.models.crud import (
     crud_account,
     crud_runtime_session,
+    crud_role,
     crud_session_search_document,
     crud_user,
+    crud_user_role,
 )
 from preloop.models.crud.session_search_document import SessionSearchChunk
 from preloop.models.models.session_search_document import (
@@ -27,7 +32,13 @@ SAVED_URL = "/api/v1/runtime-sessions/search/saved"
 BASE_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
 
 
-def _colleague(db_session, account_id, *, email="colleague@example.com"):
+def _colleague(
+    db_session: Session,
+    account_id: UUID,
+    *,
+    email: str = "colleague@example.com",
+    role_name: str = "viewer",
+) -> models.User:
     user = crud_user.create(
         db_session,
         obj_in={
@@ -42,6 +53,9 @@ def _colleague(db_session, account_id, *, email="colleague@example.com"):
         },
     )
     db_session.flush()
+    role = crud_role.get_by_name(db_session, name=role_name)
+    assert role is not None
+    crud_user_role.assign_role(db_session, user_id=user.id, role_id=role.id)
     return user
 
 
@@ -115,7 +129,7 @@ def test_the_list_holds_mine_and_the_shared_ones_only(
     client, app, db_session, test_user
 ):
     """A colleague's private search is not in anybody else's list."""
-    colleague = _colleague(db_session, test_user.account_id)
+    colleague = _colleague(db_session, test_user.account_id, role_name="editor")
     _act_as(app, colleague)
     private = _create(client, name="their private").json()
     shared = _create(client, name="their shared", visibility="account").json()

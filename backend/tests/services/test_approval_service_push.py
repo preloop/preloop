@@ -427,8 +427,14 @@ class TestSendPushNotification:
         sample_approval_request,
         sample_approval_workflow,
         mock_apns_service,
+        monkeypatch,
     ):
         """Test that exceptions in push notification don't crash the service."""
+        # Failure alerts must not connect to a live task bus in this unit test.
+        monkeypatch.setattr(
+            "preloop.services.approval_service.get_task_publisher",
+            AsyncMock(return_value=None),
+        )
         # Mock exception during send
         mock_apns_service.send_notification = AsyncMock(
             side_effect=Exception("Network error")

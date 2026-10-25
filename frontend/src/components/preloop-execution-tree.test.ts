@@ -179,6 +179,9 @@ describe('Execution tree', () => {
     expect(element.shadowRoot!.textContent?.trim()).to.equal('');
     expect(find(element, 'execution-tree')).to.not.exist;
     expect(rows(element)).to.have.length(0);
+    // #1692: an empty tree must take no flex gap on the execution page.
+    expect(element.hasAttribute('data-empty')).to.equal(true);
+    expect(getComputedStyle(element).display).to.equal('none');
   });
 
   it('renders one row per child with flow, label, state, duration and cost', async () => {
@@ -186,6 +189,7 @@ describe('Execution tree', () => {
 
     const visible = rows(element);
     expect(visible).to.have.length(3);
+    expect(element.hasAttribute('data-empty')).to.equal(false);
     const first = visible[0];
     expect(first.querySelector('a')!.getAttribute('href')).to.equal(
       '/console/flows/executions/child-lint'

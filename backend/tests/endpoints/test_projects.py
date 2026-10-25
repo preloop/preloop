@@ -2,8 +2,8 @@
 
 Note: These tests call the underlying endpoint functions directly, bypassing
 the require_permission decorator. This allows testing endpoint logic
-independently of RBAC. The RBAC permission checking is tested separately
-in plugin-specific tests.
+independently of RBAC. Wrapped OSS authorization is covered in
+test_tracker_project_permissions.py; plugin checks have their own tests.
 
 If the EE RBAC plugin is linked (via link_ee_plugins.sh), the decorator
 wraps functions in an async wrapper. To handle this, tests access the
@@ -55,6 +55,7 @@ def mock_user():
     user.account_id = str(uuid.uuid4())
     user.username = "testuser"
     user.is_active = True
+    user.is_superuser = True
     return user
 
 

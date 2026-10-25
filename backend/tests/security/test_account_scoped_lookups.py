@@ -5,6 +5,8 @@ column. Lookups that pass ``account_id`` must still return only rows owned by
 that account, and the API must answer 404 for another account's ids.
 """
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import uuid
 from unittest.mock import patch
 
@@ -21,7 +23,6 @@ from preloop.models.crud import (
     crud_project,
     crud_tracker,
 )
-from preloop.models.models.ai_model import AIModel
 from preloop.models.models.user import User
 
 
@@ -94,7 +95,7 @@ def other(db_session: Session) -> dict:
     )
     db_session.flush()
     data = _tree(db_session, account.id, "other")
-    model = AIModel(
+    model = ai_model_with_secret(
         name=f"other-model-{uuid.uuid4()}",
         model_identifier="gpt-test",
         provider_name="openai",

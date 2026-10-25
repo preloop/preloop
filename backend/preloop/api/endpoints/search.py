@@ -352,7 +352,7 @@ async def search_all(
     ),
     search_type: str = Query(
         "fulltext",
-        enum=["fulltext", "similarity"],
+        json_schema_extra={"enum": ["fulltext", "similarity"]},
         description="Type of search to perform ('fulltext' or 'similarity')",
     ),
     limit: int = Query(
@@ -361,7 +361,7 @@ async def search_all(
     skip: int = Query(0, ge=0, description="Number of results to skip for pagination"),
     sort: Optional[str] = Query(
         None,
-        enum=["newest"],
+        json_schema_extra={"enum": ["newest"]},
         description="Sort order. 'newest' sorts by creation date descending.",
     ),
     issue_id: Optional[str | None] = Query(

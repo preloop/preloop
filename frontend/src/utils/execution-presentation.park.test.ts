@@ -70,8 +70,8 @@ describe('formatApprovalWindow', () => {
   });
 
   it('says nothing rather than "0" when there is no window', () => {
-    expect(formatApprovalWindow(null)).to.equal('—');
-    expect(formatApprovalWindow(undefined)).to.equal('—');
+    expect(formatApprovalWindow(null)).to.equal('-');
+    expect(formatApprovalWindow(undefined)).to.equal('-');
   });
 });
 

@@ -27,7 +27,7 @@ from preloop.schemas.issue_cost import (
 )
 from preloop.schemas.readiness import ReadinessObservation
 from preloop.services import issue_cost_rollup
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 router = APIRouter(prefix="/cost/by-issue", tags=["Cost Analytics"])
 
@@ -200,6 +200,7 @@ def rebuild_issue_costs(
     that fail to record are skipped, counted in ``failed`` and examined again
     on the next call.
     """
+    ensure_permission_in_oss(db, current_user, "manage_budgets")
     account = get_account_or_404(db, current_user)
     window = rebuild_in.end_date - rebuild_in.start_date
     if window > timedelta(days=REBUILD_MAX_WINDOW_DAYS):

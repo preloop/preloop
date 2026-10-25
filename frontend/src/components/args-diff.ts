@@ -71,6 +71,44 @@ export function fileEditsFromArgs(
   return [];
 }
 
+/** Longest diff or argument block shown before it collapses. */
+export const COLLAPSE_LINE_LIMIT = 40;
+
+/** What a collapsed block shows, and the label of the button that expands it. */
+export interface CollapsePlan {
+  /** Number of lines to render while collapsed (all of them if not collapsed). */
+  visible: number;
+  total: number;
+  collapsed: boolean;
+  /** Button label, e.g. "Show all 2000 lines (+2000 -0)"; empty if not collapsed. */
+  label: string;
+}
+
+/**
+ * Decide whether a block of lines collapses and what its expand button says.
+ *
+ * A 53 KB Write rendered as 29 viewports, so the decision controls fell far
+ * below the fold. Blocks over the limit show their first lines and a button
+ * that names the full size, with added and removed counts for diffs.
+ */
+export function planCollapse(
+  lines: ReadonlyArray<{ type: string }> | number,
+  expanded = false,
+  limit = COLLAPSE_LINE_LIMIT
+): CollapsePlan {
+  const total = typeof lines === 'number' ? lines : lines.length;
+  if (expanded || total <= limit) {
+    return { visible: total, total, collapsed: false, label: '' };
+  }
+  let label = `Show all ${total} lines`;
+  if (typeof lines !== 'number') {
+    const added = lines.filter((l) => l.type === 'added').length;
+    const removed = lines.filter((l) => l.type === 'removed').length;
+    label += ` (+${added} -${removed})`;
+  }
+  return { visible: limit, total, collapsed: true, label };
+}
+
 /**
  * The file edits in an approval, shown as a diff.
  *
@@ -92,6 +130,9 @@ export class ArgsDiff extends LitElement {
 
   @state()
   private showRaw = false;
+
+  @state()
+  private expanded = false;
 
   static styles = css`
     :host {
@@ -207,6 +248,10 @@ export class ArgsDiff extends LitElement {
       color: var(--sl-color-success-800);
     }
 
+    .expand {
+      padding: 0.25rem 1rem;
+    }
+
     .empty {
       padding: 0 1rem;
       font-family: var(--sl-font-sans);
@@ -244,11 +289,46 @@ export class ArgsDiff extends LitElement {
     `;
   }
 
-  private renderEdit(edit: ArgsFileEdit, index: number, total: number) {
-    const lines = diffLines(
+  private expand() {
+    this.expanded = true;
+  }
+
+  private renderExpand(plan: CollapsePlan) {
+    if (!plan.collapsed) return nothing;
+    return html`<div class="expand">
+      <sl-button
+        size="small"
+        variant="text"
+        data-testid="expand-lines"
+        @click=${this.expand}
+        >${plan.label}</sl-button
+      >
+    </div>`;
+  }
+
+  private renderRaw() {
+    const rawLines = this.raw.split('\n');
+    const plan = planCollapse(rawLines.length, this.expanded);
+    const text = plan.collapsed
+      ? rawLines.slice(0, plan.visible).join('\n')
+      : this.raw;
+    return html`<div class="raw" data-testid="args-raw">${text}</div>
+      ${this.renderExpand(plan)}`;
+  }
+
+  private renderEdit(
+    edit: ArgsFileEdit,
+    index: number,
+    total: number,
+    budget: { left: number }
+  ) {
+    const all = diffLines(
       edit.before === '' ? [] : toDiffLines(edit.before),
       edit.after === '' ? [] : toDiffLines(edit.after)
     );
+    const lines = this.expanded ? all : all.slice(0, Math.max(0, budget.left));
+    budget.left -= lines.length;
+    if (!this.expanded && lines.length === 0 && all.length > 0) return nothing;
     return html`
       <div class="edit">
         ${
@@ -268,8 +348,16 @@ export class ArgsDiff extends LitElement {
   render() {
     const edits = this.edits;
     if (edits.length === 0) {
-      return html`<div class="raw" data-testid="args-raw">${this.raw}</div>`;
+      return this.renderRaw();
     }
+    const allLines = edits.flatMap((edit) =>
+      diffLines(
+        edit.before === '' ? [] : toDiffLines(edit.before),
+        edit.after === '' ? [] : toDiffLines(edit.after)
+      )
+    );
+    const plan = planCollapse(allLines, this.expanded);
+    const budget = { left: plan.visible };
 
     const path = edits.find((edit) => edit.path)?.path;
     return html`
@@ -292,12 +380,13 @@ export class ArgsDiff extends LitElement {
       </div>
       ${
         this.showRaw
-          ? html`<div class="raw" data-testid="args-raw">${this.raw}</div>`
+          ? this.renderRaw()
           : html`<div class="diff" data-testid="args-diff">
-              ${edits.map((edit, index) =>
-                this.renderEdit(edit, index, edits.length)
-              )}
-            </div>`
+                ${edits.map((edit, index) =>
+                  this.renderEdit(edit, index, edits.length, budget)
+                )}
+              </div>
+              ${this.renderExpand(plan)}`
       }
     `;
   }

@@ -15,6 +15,9 @@
     --console-text-meta: 0.8125rem; /* 13px */
     --console-text-eyebrow: 0.6875rem; /* 11px */
     --console-stat-value: 1.375rem; /* 22px */
+    /* Commands, tool rows and the agent status line. Generic stack until a
+       real mono face is chosen; switching it is this one line. */
+    --console-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
     /* The page box. One width and one side inset for every console page. */
     --console-page-max-width: 80rem; /* 1280px */
@@ -569,7 +572,8 @@ sl-dialog.large::part(panel) {
     text-align: center;
 }
 
-.empty-state sl-icon {
+/* Decorative icons have spacing; button slots inherit their button foreground. */
+.empty-state sl-icon:not([slot]) {
     font-size: 1.5rem;
     color: var(--console-meta-color);
     margin-bottom: var(--sl-spacing-2x-small);

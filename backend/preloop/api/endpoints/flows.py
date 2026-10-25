@@ -124,7 +124,7 @@ from preloop.services.runner_service import (
 )
 from preloop.utils.audit import log_config_change
 from preloop.utils.hashing import compute_content_hash
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from preloop.utils.workspace_seed import (
     WORKSPACE_FILES_KEY,
     WorkspaceSeedError,
@@ -161,15 +161,19 @@ def _owned_ci_execution(
     return execution
 
 
-def _reject_codex_model(
+def _validate_flow_model_binding(
     db: Session, agent_type: Any, model_id: Any, account_id: Any
 ) -> None:
-    """Validate Codex's selected model before persisting a flow."""
-    if str(agent_type).lower() != "codex" or model_id is None:
+    """Validate model scope and Codex compatibility before persisting a flow."""
+    if model_id is None:
         return
     model = crud_ai_model.get(db, id=model_id)
-    if model is None or model.account_id not in (None, account_id):
+    if model is None or (
+        model.account_id is not None and str(model.account_id) != str(account_id)
+    ):
         raise HTTPException(status_code=422, detail="AI model not found")
+    if str(agent_type).lower() != "codex":
+        return
     error = codex_model_configuration_error(model)
     if error:
         raise HTTPException(status_code=422, detail=error)
@@ -295,6 +299,8 @@ def create_flow(
     current_user: User = Depends(get_current_active_user),
 ):
     """Create new flow."""
+    ensure_permission_in_oss(db, current_user, "create_flows")
+    webhook_config_omitted = "webhook_config" not in flow_in.model_fields_set
     # Check for name uniqueness within account
     # Note: We intentionally allow flows to have the same name as global presets,
     # as users should be able to customize presets and keep the original name
@@ -350,7 +356,7 @@ def create_flow(
         flow_in.trigger_event_source = "webhook"
         flow_in.trigger_event_types = ["webhook"]
 
-    _reject_codex_model(
+    _validate_flow_model_binding(
         db, flow_in.agent_type, flow_in.ai_model_id, current_user.account_id
     )
     _reject_host_exec_flow(
@@ -393,6 +399,24 @@ def create_flow(
                 status_code=403,
                 detail="Cannot create flow from a preset belonging to another account",
             )
+
+        # Inherit only when the caller omitted the field. An explicit empty
+        # config or false flag is an operator choice and must win. The webhook
+        # branch above may already have generated a secret; retain that secret
+        # without copying any secret stored on the preset.
+        if webhook_config_omitted and preset.webhook_config:
+            inherited_config = schemas.WebhookConfig.model_validate(
+                {
+                    key: value
+                    for key, value in preset.webhook_config.items()
+                    if key in {"supersede_on_update", "dedupe_path"}
+                }
+            )
+            if flow_in.webhook_config and flow_in.webhook_config.webhook_secret:
+                inherited_config = inherited_config.model_copy(
+                    update={"webhook_secret": flow_in.webhook_config.webhook_secret}
+                )
+            flow_in.webhook_config = inherited_config
 
         # Compute hashes of the preset's current prompt and tools
         flow_in.source_prompt_hash = compute_content_hash(preset.prompt_template)
@@ -529,6 +553,9 @@ def _attach_flow_stats(
         stats = crud_flow_execution.get_execution_stats_for_flows(
             db, flow_ids, start_date=stats_since
         )
+        # The list's Last run cell links the run and prints its outcome;
+        # without these it could only say when, from the window counts.
+        last_runs = crud_flow_execution.get_last_runs_for_flows(db, flow_ids)
 
         def _window_fields(stat: Any = None) -> Dict[str, Any]:
             """The per-window counts, only when a window was asked for."""
@@ -559,6 +586,7 @@ def _attach_flow_stats(
                 # states money and no volume reads as unmeasured traffic.
                 "token_usage": getattr(s, "token_usage", None),
                 **_window_fields(s),
+                "last_run": last_runs.get(str(s.flow_id)),
             }
             for s in stats
         }
@@ -573,6 +601,7 @@ def _attach_flow_stats(
                     "estimated_cost": 0.0,
                     "token_usage": None,
                     **_window_fields(),
+                    "last_run": None,
                 },
             )
 
@@ -748,7 +777,14 @@ def clone_preset(
     the user customizes the prompt or tools.
     """
     preset = crud_flow.get(db=db, id=flow_id)
-    if not preset or not preset.is_preset:
+    if (
+        not preset
+        or not preset.is_preset
+        or (
+            preset.account_id is not None
+            and str(preset.account_id) != str(current_user.account_id)
+        )
+    ):
         raise HTTPException(status_code=404, detail="Preset not found")
 
     # Bind an AI model that will actually work for this account BEFORE
@@ -790,6 +826,7 @@ def run_preset(
     """
     # Sync handler: an async def would hold Session on the event loop and
     # fail test_async_sync_session_route_count_does_not_grow.
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     from preloop.services.preset_runner import PresetRunnerError, run_preset_on_target
 
     try:
@@ -1491,6 +1528,7 @@ def adopt_execution_continuation(
     current_user: User = Depends(get_current_active_user),
 ) -> ContinuationAdoptResponse:
     """Explicitly subscribe one previously published PR to bounded repairs."""
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     account_id = current_user.account_id
     crud_flow_feedback.release_read(db)
     try:
@@ -2313,6 +2351,10 @@ async def send_execution_command(
     stopping an execution that already ended changes nothing and answers with
     the status it ended in.
     """
+    if not isinstance(current_user, CiAuthorizationContext):
+        await run_db_off_loop(
+            lambda: ensure_permission_in_oss(db, current_user, "execute_flows")
+        )
     import logging
 
     from preloop.services.flow_execution_stop import stop_execution
@@ -2640,6 +2682,10 @@ async def trigger_flow_execution(
         Execution details, or batch details (``batch_id`` + per-cell
         ``execution_id``) when a matrix was given
     """
+    if not isinstance(current_user, CiAuthorizationContext):
+        await run_db_off_loop(
+            lambda: ensure_permission_in_oss(db, current_user, "execute_flows")
+        )
     if isinstance(current_user, CiAuthorizationContext):
         if flow_id != current_user.flow_id:
             raise HTTPException(403, "Restricted CI flow denied")
@@ -2751,6 +2797,9 @@ async def retry_flow_execution(
     Returns:
         New execution details
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "execute_flows")
+    )
     # Get the original execution
     original = crud_flow_execution.get(
         db=db, id=execution_id, account_id=current_user.account_id
@@ -2861,6 +2910,7 @@ def update_flow(
     current_user: User = Depends(get_current_active_user),
 ):
     """Update a flow."""
+    ensure_permission_in_oss(db, current_user, "edit_flows")
     flow = crud_flow.get(db=db, id=flow_id, account_id=current_user.account_id)
     if not flow:
         raise HTTPException(status_code=404, detail="Flow not found")
@@ -3030,7 +3080,7 @@ def update_flow(
         except CallableFlowsError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    _reject_codex_model(
+    _validate_flow_model_binding(
         db,
         flow_in.agent_type
         if "agent_type" in flow_in.model_fields_set
@@ -3113,6 +3163,7 @@ def delete_flow(
     current_user: User = Depends(get_current_active_user),
 ):
     """Delete a flow."""
+    ensure_permission_in_oss(db, current_user, "delete_flows")
     import logging
 
     logger = logging.getLogger(__name__)
@@ -3206,6 +3257,7 @@ def apply_preset_update(
 
     Returns the updated flow.
     """
+    ensure_permission_in_oss(db, current_user, "edit_flows")
     from preloop.services.flow_presets_service import apply_preset_update_to_flow
 
     # Check that flow belongs to user's account
@@ -3242,6 +3294,7 @@ def dismiss_preset_update(
 
     Returns the updated flow.
     """
+    ensure_permission_in_oss(db, current_user, "edit_flows")
     from preloop.services.flow_presets_service import (
         dismiss_preset_update as dismiss_update,
     )

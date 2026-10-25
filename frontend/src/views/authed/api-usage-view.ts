@@ -1338,6 +1338,7 @@ export class ApiUsageView extends LitElement {
       .table=${this.modelTable}
       .rows=${this.modelTable.rows}
       .stickyHeader=${false}
+      .columnPicker=${false}
       label="Usage by model"
       noun="models"
     ></data-table>`;
@@ -1770,7 +1771,11 @@ export class ApiUsageView extends LitElement {
         ${this.renderStatCard(
           `Tokens \u00b7 ${range}`,
           this.formatCompactNumber(tokenUsage.total_tokens),
-          html`<token-figures .usage=${tokenUsage} expanded></token-figures>`,
+          html`<token-figures
+            .usage=${tokenUsage}
+            expanded
+            wrap
+          ></token-figures>`,
           'cpu',
           this.formatNumber(tokenUsage.total_tokens)
         )}
@@ -1812,10 +1817,6 @@ export class ApiUsageView extends LitElement {
           </sl-input>
         </div>
 
-        <capability-extension
-          name="usage-rollup"
-          .context=${{ range: this.selectedRange }}
-        ></capability-extension>
         ${
           this.error
             ? html`
@@ -1848,6 +1849,12 @@ export class ApiUsageView extends LitElement {
                     aria-busy=${this.loading ? 'true' : 'false'}
                   >
                     ${this.renderSummary(this.summary)}
+                    <!-- The per-subaccount rollup sits below the KPIs so it
+                         never pushes them down the page (#1696). -->
+                    <capability-extension
+                      name="usage-rollup"
+                      .context=${{ range: this.selectedRange }}
+                    ></capability-extension>
 
                     <sl-card class="breakdown-card">
                       <div slot="header" class="section-header">

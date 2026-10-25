@@ -514,7 +514,8 @@ def test_a_rule_asking_for_approval_is_not_a_grant(db_session, account, author, 
     result = _send(db_session, account, author, tree, tree["sibling"])
 
     assert result["ok"] is False
-    assert result["error"]["code"] == agent_note_scope.REASON_GRANT_UNAVAILABLE
+    assert result["status"] == "requires_approval"
+    assert result["approval"]["facts"]["note_target_relation"] == "same_tree"
     assert _notes_written(db_session, account) == 0
 
 
@@ -625,11 +626,12 @@ def test_a_permitted_note_writes_no_refusal_row(db_session, account, author, tre
 # --- what the caller cannot do ----------------------------------------------
 
 
-def test_the_tool_takes_no_lineage_argument(db_session):
-    """An agent that could name its own lineage could name any lineage."""
+def test_the_tool_accepts_only_a_validated_caller_session_hint(db_session):
+    """A hook can name its session; execution lineage is never an input."""
     properties = SEND_NOTE_TOOL["schema"]["properties"]
     assert set(properties) == {
         "text",
+        "preloop_caller_session_id",
         "agent_id",
         "runtime_session_id",
         "execution_id",
@@ -821,3 +823,67 @@ def test_scope_refusal_audit_rows_have_a_per_author_ceiling(
 
     assert len(_scope_refusals(db_session, account)) == 1
     assert _notes_written(db_session, account) == 0
+
+
+@pytest.mark.parametrize(
+    "target,expected",
+    [
+        ("child", "descendant"),
+        ("grandchild", "descendant"),
+        ("sibling", "same_tree"),
+        ("root_agent", "ancestor"),
+        ("stranger", "unrelated"),
+        ("unlaunched", "no_lineage"),
+    ],
+)
+def test_seeded_policy_relations(db_session, account, author, tree, target, expected):
+    from preloop.models.crud import crud_user
+    from preloop.models.crud.agent_note_policy import seed_note_policy
+
+    user = crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": account.id,
+            "email": "jane@example.com",
+            "username": f"jane-{uuid4()}",
+            "hashed_password": "unused",
+            "is_active": True,
+        },
+    )
+    account.primary_user_id = user.id
+    author.owner_user_id = user.id
+    tree[target].owner_user_id = user.id
+    db_session.flush()
+    assert seed_note_policy(db_session, account_id=account.id)
+    assert not seed_note_policy(db_session, account_id=account.id)
+    result = _send(db_session, account, author, tree, tree[target])
+    if expected == "descendant":
+        assert result["ok"]
+    else:
+        assert result["status"] == "requires_approval"
+        facts = result["approval"]["facts"]
+        assert facts["note_target_relation"] == expected
+        assert facts["same_owner"] is True
+        assert facts["caller_user_can_steer_target"] is True
+        workflow = db_session.get(
+            models.ApprovalWorkflow, result["approval"]["workflow_id"]
+        )
+        assert workflow.approver_user_ids == [user.id]
+        assert _notes_written(db_session, account) == 0
+
+
+def test_seeded_policy_denies_when_human_cannot_control(
+    db_session, account, author, tree
+):
+    from preloop.models.crud.agent_note_policy import seed_note_policy
+
+    seed_note_policy(db_session, account_id=account.id)
+    result = _send(db_session, account, author, tree, tree["sibling"])
+    assert result["error"]["code"] == agent_note_scope.REASON_DENIED_BY_RULE
+    assert _notes_written(db_session, account) == 0
+
+
+def test_explicit_deny_applies_to_descendants(db_session, account, author, tree):
+    _grant_rule(db_session, account, action="deny", expression="true")
+    result = _send(db_session, account, author, tree, tree["child"])
+    assert result["error"]["code"] == agent_note_scope.REASON_DENIED_BY_RULE

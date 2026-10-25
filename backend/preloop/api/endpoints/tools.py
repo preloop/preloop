@@ -6,15 +6,16 @@ preloop/services/initialize_mcp.py to ensure consistency between REST API and MC
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from preloop.api.auth import get_current_active_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.api.common import get_account_for_user
 from preloop.models.models.user import User
 from preloop.models.crud import (
@@ -51,9 +52,9 @@ from preloop.services.policy_evaluator import evaluate_cel_expression
 from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
 from preloop.services.tool_usage_stats import ToolUsageStatsService
 from preloop.schemas.gateway_usage import GatewayUsageByTool
-from preloop.schemas.tool_summary import ToolSummaryResponse
+from preloop.schemas.tool_summary import ToolRuleIndexRow, ToolSummaryResponse
 from preloop.utils.audit import log_config_change
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 from preloop.tools.builtin_defs import (
     ASK_USER_TOOL,
@@ -484,6 +485,15 @@ class ToolUsageStatsResponse(BaseModel):
 def get_tool_usage_stats(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    include_agents: Annotated[
+        bool,
+        Query(
+            description=(
+                "Include the per-agent breakdown (usage_by_agent). Lists that "
+                "show per-tool totals only pass false for a smaller response."
+            )
+        ),
+    ] = True,
     account: Account = Depends(get_account_for_user),
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -496,6 +506,7 @@ def get_tool_usage_stats(
         account_id=str(account.id),
         start_date=start,
         end_date=end,
+        include_agents=include_agents,
     )
     return ToolUsageStatsResponse(
         period_start=start,
@@ -578,6 +589,30 @@ def list_tool_summaries(
     input definitions. Estimates are calculated from those same full definitions.
     """
     return [ToolSummaryResponse.model_validate(row) for row in _list_tools(account, db)]
+
+
+@router.get("/tools/rules", response_model=List[ToolRuleIndexRow])
+@require_permission("view_tools")
+def list_tool_rules(
+    account: Account = Depends(get_account_for_user),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> List[ToolRuleIndexRow]:
+    """Return each tool's identity and policy state, for the Policies page.
+
+    Args:
+        account: Current user's account.
+        current_user: The authenticated user.
+        db: Database session.
+
+    Returns:
+        One row per catalogue tool, without descriptions or input schemas.
+    """
+    fields = ToolRuleIndexRow.model_fields
+    return [
+        ToolRuleIndexRow.model_validate({key: row.get(key) for key in fields})
+        for row in _list_tools(account, db)
+    ]
 
 
 def _list_tools(account: Account, db: Session) -> List[Dict]:
@@ -849,6 +884,28 @@ def _list_tools(account: Account, db: Session) -> List[Dict]:
     return tools
 
 
+def _validate_tool_references(
+    db: Session,
+    *,
+    account_id: UUID,
+    approval_workflow_id: UUID | str | None = None,
+    mcp_server_id: UUID | str | None = None,
+) -> None:
+    """Require each supplied tool reference to belong to the caller's account."""
+    for reference_id, crud, detail in (
+        (approval_workflow_id, crud_approval_workflow, "Approval workflow not found"),
+        (mcp_server_id, crud_mcp_server, "MCP server not found"),
+    ):
+        if reference_id is None:
+            continue
+        try:
+            parsed_id = UUID(str(reference_id))
+        except ValueError:
+            raise HTTPException(status_code=404, detail=detail) from None
+        if not crud.get(db, id=parsed_id, account_id=str(account_id)):
+            raise HTTPException(status_code=404, detail=detail)
+
+
 @router.post("/tool-configurations", status_code=status.HTTP_201_CREATED)
 @require_permission("manage_tools")
 async def create_tool_configuration(
@@ -870,11 +927,20 @@ async def create_tool_configuration(
     Raises:
         HTTPException: If configuration already exists or creation fails
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
+    _validate_tool_references(
+        db,
+        account_id=current_user.account_id,
+        approval_workflow_id=config_data.approval_workflow_id,
+        mcp_server_id=config_data.mcp_server_id,
+    )
     # An agent-scoped configuration must reference an agent of this account.
     if config_data.managed_agent_id:
-        agent = crud_managed_agent.get_visible_target(
+        agent = crud_managed_agent.get_for_account(
             db,
-            account_id=str(account.id),
+            account_id=str(current_user.account_id),
             agent_id=str(config_data.managed_agent_id),
         )
         if not agent:
@@ -1038,6 +1104,9 @@ async def update_tool_configuration(
     Raises:
         HTTPException: If configuration not found or update fails
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     config = crud_tool_configuration.get(
         db, id=str(config_id), account_id=str(account.id)
     )
@@ -1048,6 +1117,13 @@ async def update_tool_configuration(
             detail="Tool configuration not found or access denied",
         )
 
+    _validate_tool_references(
+        db,
+        account_id=current_user.account_id,
+        approval_workflow_id=config_update.approval_workflow_id,
+        mcp_server_id=config_update.mcp_server_id,
+    )
+
     try:
         old_enabled = config.is_enabled
         updated_config = crud_tool_configuration.update(
@@ -1055,7 +1131,7 @@ async def update_tool_configuration(
         )
 
         # Determine if this was an enable/disable toggle or a general update
-        update_fields = config_update.model_dump(exclude_unset=True)
+        update_fields = config_update.model_dump(exclude_unset=True, mode="json")
         if "is_enabled" in update_fields and update_fields["is_enabled"] != old_enabled:
             action = "enabled" if updated_config.is_enabled else "disabled"
         else:
@@ -1117,6 +1193,9 @@ async def update_tool_approval_condition(
     Raises:
         HTTPException: If configuration not found or update fails
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     config = crud_tool_configuration.get(
         db, id=str(config_id), account_id=str(account.id)
     )
@@ -1211,6 +1290,9 @@ async def delete_tool_configuration(
     Raises:
         HTTPException: If configuration not found or deletion fails
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     config = crud_tool_configuration.get(
         db, id=str(config_id), account_id=str(account.id)
     )
@@ -1833,6 +1915,9 @@ async def create_or_update_tool_approval_condition(
     Raises:
         HTTPException: If tool configuration not found or creation fails
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     # Verify tool configuration exists and belongs to account
     config = crud_tool_configuration.get(
         db, id=str(config_id), account_id=str(account.id)
@@ -1948,6 +2033,9 @@ async def delete_tool_approval_condition(
     Raises:
         HTTPException: If tool configuration not found or no rules found
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     # Verify tool configuration exists and belongs to account
     config = crud_tool_configuration.get(
         db, id=str(config_id), account_id=str(account.id)
@@ -2176,6 +2264,9 @@ async def create_access_rule(
     db: Session = Depends(get_db_session),
 ) -> AccessRuleResponse:
     """Create a new access rule for a tool configuration."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     config = crud_tool_configuration.get(
         db, id=str(config_id), account_id=str(account.id)
     )
@@ -2190,6 +2281,12 @@ async def create_access_rule(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Action must be 'allow', 'deny', or 'require_approval'",
         )
+
+    _validate_tool_references(
+        db,
+        account_id=current_user.account_id,
+        approval_workflow_id=rule_in.approval_workflow_id,
+    )
 
     try:
         rule = crud_tool_access_rule.create(
@@ -2263,6 +2360,9 @@ async def update_access_rule(
     db: Session = Depends(get_db_session),
 ) -> AccessRuleResponse:
     """Update an access rule."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     rule = crud_tool_access_rule.get(db, id=rule_id, account_id=str(account.id))
 
     if not rule:
@@ -2285,6 +2385,12 @@ async def update_access_rule(
     if "condition_expression" in update_data or "condition_type" in update_data:
         expression = update_data.get("condition_expression", rule.condition_expression)
         update_data["condition_type"] = _detect_condition_type(expression or "")
+
+    _validate_tool_references(
+        db,
+        account_id=current_user.account_id,
+        approval_workflow_id=rule_in.approval_workflow_id,
+    )
 
     try:
         old_snapshot = {
@@ -2345,6 +2451,9 @@ async def delete_access_rule(
     db: Session = Depends(get_db_session),
 ) -> None:
     """Delete an access rule."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_tools")
+    )
     rule = crud_tool_access_rule.get(db, id=rule_id, account_id=str(account.id))
 
     if not rule:

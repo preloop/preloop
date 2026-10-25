@@ -97,7 +97,7 @@ renders as `503` with `Retry-After` instead of a generic `500`.
 
 Heavy aggregate handlers (cost summary and timeseries, gateway usage summary
 and rate limits, the Models overview and per-model sessions, tool stats, the
-audit chain status, and in EE the audit timeline and Overview figures) are
+audit chain status, the audit timeline and Overview figures) are
 marked with `preloop.api.heavy_routes.heavy_route`. They run on their own
 `anyio.CapacityLimiter`, `HEAVY_ROUTE_CONCURRENCY` per process (default 8),
 and hand back the request's connection while they queue. These handlers are

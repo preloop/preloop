@@ -1098,6 +1098,25 @@ describe('CostView', () => {
     );
   });
 
+  it('mounts vendor activity only when the extension feature is enabled', async () => {
+    const element = await loadedView();
+    await element['handleTabShow'](
+      new CustomEvent('sl-tab-show', { detail: { name: 'copilot' } })
+    );
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('copilot-activity-panel')
+    ).to.equal(null);
+    element['featureFlags'] = { copilot_seat_activity: true };
+    await element.updateComplete;
+    const panel = element.shadowRoot!.querySelector(
+      'copilot-activity-panel'
+    ) as HTMLElement & { startDate?: string; endDate?: string };
+    expect(panel).to.not.equal(null);
+    expect(panel.startDate).to.equal(element['currentPeriod']?.startDate);
+    expect(panel.endDate).to.equal(element['currentPeriod']?.endDate);
+  });
+
   it('shows a Teams tab only with team budgets on a server with teams', async () => {
     const tabsOf = async () => {
       const element = (await fixture(
@@ -2514,6 +2533,51 @@ describe('CostView', () => {
       expect(alert?.textContent).not.to.contain('priced fine');
       // Health has its own lookback; say so next to the range-scoped block.
       expect(alert?.textContent).to.contain('last 24 hours');
+    });
+
+    it('keeps the accounting notice compact and inline (#1696)', async () => {
+      healthPayload = {
+        window_hours: 24,
+        status: 'warn',
+        checks: [
+          {
+            key: 'subscription_billing_coverage',
+            status: 'warn',
+            detail: 'detail text',
+          },
+        ],
+      };
+      const element = await loadView();
+      await waitUntil(
+        () =>
+          element.shadowRoot?.querySelector('[aria-label="Accounting health"]'),
+        'the accounting findings must render'
+      );
+      const notice = element.shadowRoot?.querySelector(
+        '[aria-label="Accounting health"]'
+      ) as HTMLDetailsElement;
+      expect(notice.tagName).to.equal('DETAILS');
+      expect(notice.open).to.equal(false);
+      expect(
+        (notice.querySelector('summary')?.textContent ?? '').replace(
+          /\s+/g,
+          ' '
+        )
+      ).to.contain('1 accounting check needs attention');
+    });
+
+    it('puts the spend chart before subscription workload and catalog (#1696)', async () => {
+      const element = await loadView();
+      const results = element.shadowRoot?.querySelector('.results');
+      const kids = Array.from(results?.children ?? []);
+      const idx = (sel: string) =>
+        kids.findIndex((el) => el.matches(sel) || !!el.querySelector(sel));
+      const metrics = idx('[aria-label="Cost summary metrics"]');
+      const chart = idx('spend-chart');
+      const sub = idx('[aria-label="Subscription workload"]');
+      expect(metrics).to.be.greaterThan(-1);
+      expect(chart).to.be.greaterThan(metrics);
+      if (sub !== -1) expect(sub).to.be.greaterThan(chart);
     });
   });
 

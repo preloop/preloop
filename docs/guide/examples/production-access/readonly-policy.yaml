@@ -1,0 +1,146 @@
+# Read-only production access profile (#1426).
+#
+# Register the three MCP servers in Preloop as k8s-readonly, postgres-readonly
+# and sentry-readonly before you apply this file, or replace those names
+# everywhere below. They are server names, not URLs. Give sentry-readonly the
+# tool prefix sentry: Sentry's search_issues and update_issue have the same
+# names as Preloop's built-in tools, and an MCP tool with a built-in's name
+# takes over the calls to that name. Preloop then names its tools
+# sentry_<tool>, which is what this file uses. The other two servers have no
+# prefix; if you give one a prefix, rename its tools here and in the flow.
+#
+# This policy is one layer of four. The boundary is the credential each MCP
+# server holds; see README.md in this directory.
+#
+# Tool names come from kubernetes-mcp-server v0.0.67, DBHub v1.5.0 and
+# sentry-mcp 0.42.0. A tool call that no rule matches is allowed, so each
+# server gets a rule that denies every tool not on its read list. A tool that
+# a later upstream release adds stays denied until someone adds it here.
+
+version: "1.0"
+metadata:
+  name: Read-only production access
+  description: >-
+    Investigation access to Kubernetes, Postgres and Sentry MCP servers. Named
+    read tools run; every other tool on these servers is denied.
+  tags: [production-access, read-only, mcp, example]
+
+sensitive_data:
+  rules:
+    - id: k8s-readonly-allowlist
+      description: >-
+        Read-only profile: this Kubernetes tool is not on the read list.
+        Changes to the cluster go through an approved operator flow.
+      "on": [tool.args]
+      scope:
+        servers: [k8s-readonly]
+      condition: >-
+        !(tool.name in ['resources_list', 'resources_get', 'pods_list',
+        'pods_list_in_namespace', 'pods_get', 'pods_log', 'pods_top',
+        'events_list', 'namespaces_list', 'nodes_top'])
+      action: deny
+
+    - id: postgres-readonly-allowlist
+      description: >-
+        Read-only profile: this database tool is not on the read list.
+      "on": [tool.args]
+      scope:
+        servers: [postgres-readonly]
+      condition: >-
+        !(tool.name in ['execute_sql', 'search_objects'])
+      action: deny
+
+    # A guard rail with a clear message, not the boundary: the read-only
+    # database role is. Besides writes it refuses statements that switch the
+    # session to read-write (SET, BEGIN, START TRANSACTION), large-object
+    # writes, advisory locks, NOTIFY and U& escapes, which can hide a function
+    # name. Keyword matching also refuses some harmless reads, such as a
+    # string literal that contains the word "delete".
+    - id: postgres-readonly-sql-guard
+      description: >-
+        Read-only profile: SQL with a write or session-changing keyword is
+        blocked. Run read queries only.
+      "on": [tool.args]
+      scope:
+        servers: [postgres-readonly]
+        tools: [execute_sql]
+      condition: >-
+        !has(args.sql) ||
+        args.sql.matches('(?i)\\b(insert|update|delete|merge|drop|truncate|alter|create|grant|revoke|copy|call|do|lock|set|reset|set_config|begin|start\\s+transaction|into|notify|pg_notify|listen|unlisten|pg_(try_)?advisory\\w*|lo_(creat|create|from_bytea|import|put|unlink|truncate|truncate64)|lowrite)\\b|\\bu&')
+      action: deny
+
+    # execute_sentry_tool runs any catalog tool by name, writes included, so
+    # its inner name has to be on the read list too. That argument is the
+    # upstream name without the prefix, so the rule adds sentry_ before it
+    # compares; a name that is not a string makes the rule fail, which
+    # denies. Keep execute_sentry_tool itself off the list, or a nested call
+    # would hide the inner name.
+    - id: sentry-readonly-allowlist
+      description: >-
+        Read-only profile: this Sentry tool is not on the read list. For
+        execute_sentry_tool, the name argument must be a read tool.
+      "on": [tool.args]
+      scope:
+        servers: [sentry-readonly]
+      condition: >-
+        !((tool.name == 'sentry_execute_sentry_tool' && has(args.name)
+        ? 'sentry_' + args.name : tool.name)
+        in ['sentry_find_organizations', 'sentry_find_projects',
+        'sentry_search_issues', 'sentry_search_events',
+        'sentry_get_sentry_resource', 'sentry_search_sentry_tools',
+        'sentry_whoami', 'sentry_find_teams', 'sentry_find_releases',
+        'sentry_get_issue_details', 'sentry_get_issue_activity',
+        'sentry_get_issue_tag_values', 'sentry_get_issue_breadcrumbs',
+        'sentry_get_event_stacktrace', 'sentry_search_issue_events',
+        'sentry_get_trace_details', 'sentry_get_span_details',
+        'sentry_get_release_details'])
+      action: deny
+
+# The write tools these servers expose directly today, refused per tool.
+# Sentry writes that run through execute_sentry_tool are refused only by the
+# allowlist rule, since denying the executor would also block its reads. The
+# allowlist rules above already deny these
+# too; the entries show the refusal on each tool in Tools and still hold if
+# someone disables an allowlist rule.
+tools:
+  - name: resources_create_or_update
+    source: k8s-readonly
+    conditions: &k8s_write
+      - expression: "true"
+        condition_type: cel
+        action: deny
+        description: >-
+          Read-only profile: Kubernetes writes go through an approved operator
+          flow.
+  - name: resources_delete
+    source: k8s-readonly
+    conditions: *k8s_write
+  - name: resources_scale
+    source: k8s-readonly
+    conditions: *k8s_write
+  - name: pods_delete
+    source: k8s-readonly
+    conditions: *k8s_write
+  - name: pods_exec
+    source: k8s-readonly
+    conditions: *k8s_write
+  - name: pods_run
+    source: k8s-readonly
+    conditions: *k8s_write
+  - name: sentry_update_issue
+    source: sentry-readonly
+    conditions:
+      - expression: "true"
+        condition_type: cel
+        action: deny
+        description: >-
+          Read-only profile: Sentry issues are not changed from this flow.
+  - name: sentry_onboarding_status_update
+    source: sentry-readonly
+    conditions:
+      - expression: "true"
+        condition_type: cel
+        action: deny
+        description: >-
+          Read-only profile: Sentry onboarding state is not changed from this
+          flow.

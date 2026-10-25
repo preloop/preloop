@@ -671,6 +671,31 @@ describe('AIModelDetailView', () => {
     }
   });
 
+  it('puts usage before the Settings section with budget and pricing (#1692)', async () => {
+    const element = (await fixture(
+      html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
+    )) as AIModelDetailView;
+    await waitUntil(() => !(element as any).loading, 'did not load', {
+      timeout: 5000,
+    });
+    await element.updateComplete;
+    const root = element.shadowRoot!;
+    const settings = root.querySelector('[data-model-settings]');
+    expect(settings).to.exist;
+    expect(settings!.querySelector('budget-policy-editor')).to.exist;
+    expect(settings!.querySelector('#pricing')).to.exist;
+    // Identifiers and credentials are reference: they sit with the settings.
+    expect(settings!.querySelector('[data-model-details]')).to.exist;
+    const usage = Array.from(root.querySelectorAll('.model-title')).find(
+      (node) => node.textContent?.trim() === 'Usage summary'
+    );
+    expect(usage).to.exist;
+    expect(
+      usage!.compareDocumentPosition(settings!) &
+        Node.DOCUMENT_POSITION_FOLLOWING
+    ).to.not.equal(0);
+  });
+
   it('renders model observability summary, sessions, and interactions', async () => {
     const element = (await fixture(
       html`<ai-model-detail-view .modelId=${'model-1'}></ai-model-detail-view>`
@@ -692,11 +717,11 @@ describe('AIModelDetailView', () => {
     expect(content).to.contain('claude-sonnet-4');
     expect(content).to.contain('preloop/anthropic/claude-sonnet-4');
     expect(content).to.contain('Mini Claw');
-    expect(content).to.contain('Try Through Gateway');
+    expect(content).to.contain('Try through the gateway');
     expect(content).to.contain('18');
     expect(content).to.contain('$1.42');
-    expect(content).to.contain('8,500');
-    expect(content).to.contain('Session Observer');
+    expect(content).to.contain('8.5K');
+    expect(content).to.contain('Session observer');
 
     const observer = element.shadowRoot?.querySelector(
       'preloop-session-observer'
@@ -1927,6 +1952,9 @@ describe('AIModelDetailView attention dismissals', () => {
   let pricedAtZero: boolean;
   /** Off for the pages that are only unpriced, not failing. */
   let failuresEnabled: boolean;
+  /** #1956: the window's request and failure counts while failures are on. */
+  let totalRequests: number;
+  let failedRequests: number;
   let extraAliasFailures: {
     alias: string;
     last_failure_at: string;
@@ -1950,6 +1978,8 @@ describe('AIModelDetailView attention dismissals', () => {
     summaryCost = 1.5;
     pricedAtZero = false;
     failuresEnabled = true;
+    totalRequests = 20;
+    failedRequests = 9;
     extraAliasFailures = [];
 
     fetchStub = sinon
@@ -2002,9 +2032,11 @@ describe('AIModelDetailView attention dismissals', () => {
             model_identifier: 'example-model-1',
             period_start: '2026-08-15T00:00:00Z',
             period_end: '2026-09-14T23:59:59Z',
-            total_requests: 20,
-            successful_requests: failuresEnabled ? 11 : 20,
-            failed_requests: failuresEnabled ? 9 : 0,
+            total_requests: totalRequests,
+            successful_requests: failuresEnabled
+              ? totalRequests - failedRequests
+              : totalRequests,
+            failed_requests: failuresEnabled ? failedRequests : 0,
             last_failure_at: failuresEnabled ? lastFailureAt : null,
             last_failure_alias: failuresEnabled ? 'example/reviewer' : null,
             failed_requests_since: url.includes('failed_since') ? 2 : null,
@@ -2013,7 +2045,7 @@ describe('AIModelDetailView attention dismissals', () => {
                   {
                     alias: 'example/reviewer',
                     last_failure_at: lastFailureAt,
-                    failed_requests: 9,
+                    failed_requests: failedRequests,
                     failed_requests_since: url.includes('failed_since')
                       ? 2
                       : null,
@@ -2143,8 +2175,10 @@ describe('AIModelDetailView attention dismissals', () => {
       reason: 'fixed',
     });
 
+    // 9 of 20 requests failed in the window: acknowledged, not healthy
+    // (#1956), the same rule as the Models list.
     await waitUntil(
-      () => attentionBadge(element).textContent!.trim() === 'Healthy',
+      () => attentionBadge(element).textContent!.trim() === 'Acknowledged',
       'the page stayed flagged after the failure was marked fixed'
     );
     expect(attentionBadge(element).getAttribute('title')).to.contain(
@@ -2153,6 +2187,49 @@ describe('AIModelDetailView attention dismissals', () => {
     expect(
       element.shadowRoot!.querySelector('[data-testid="dismiss-model"]')
     ).to.equal(null);
+  });
+
+  const fixedMarker = () => ({
+    id: 'dismissal-1',
+    item_id: 'model:example/reviewer',
+    fingerprint: `last:${lastFailureAt}`,
+    reason: 'fixed',
+    snooze_until: null,
+    dismissed_by_user_id: 'user-1',
+    dismissed_by_username: 'Jane Doe',
+    created_at: '2026-09-14T09:30:00Z',
+  });
+
+  it('reads Acknowledged, not Healthy, when most requests failed (#1956)', async () => {
+    totalRequests = 358;
+    failedRequests = 215;
+    dismissalsResponse = [fixedMarker()];
+
+    const element = await mount();
+    await waitUntil(
+      () => attentionBadge(element)?.textContent?.trim() !== 'Attention',
+      'the marker never landed'
+    );
+
+    const badge = attentionBadge(element);
+    expect(badge.textContent!.trim()).to.equal('Acknowledged');
+    expect(badge.getAttribute('variant')).to.equal('neutral');
+    const title = badge.getAttribute('title')!;
+    expect(title).to.contain('215 of 358 requests failed in 7d');
+    expect(title).to.contain('Marked fixed');
+  });
+
+  it('keeps Healthy for an acknowledged model with a low failure rate (#1956)', async () => {
+    totalRequests = 1000;
+    failedRequests = 10;
+    dismissalsResponse = [fixedMarker()];
+
+    const element = await mount();
+    await waitUntil(
+      () => attentionBadge(element)?.textContent?.trim() === 'Healthy',
+      'a 1% failure rate under a marker did not read Healthy'
+    );
+    expect(attentionBadge(element).getAttribute('variant')).to.equal('success');
   });
 
   it('keeps a two-alias page flagged until every alias item is dismissed', async () => {
@@ -2205,8 +2282,10 @@ describe('AIModelDetailView attention dismissals', () => {
       },
     ];
     element = await mount();
+    // 9 of 20 requests failed in the window: acknowledged, not healthy
+    // (#1956), the same rule as the Models list.
     await waitUntil(
-      () => attentionBadge(element)?.textContent?.trim() === 'Healthy',
+      () => attentionBadge(element)?.textContent?.trim() === 'Acknowledged',
       'the page stayed flagged after every alias was dismissed'
     );
   });
@@ -2445,8 +2524,10 @@ describe('AIModelDetailView attention dismissals', () => {
         .dispatchEvent(
           new CustomEvent('sl-select', { detail: { item: { value: 'fixed' } } })
         );
+      // 9 of 20 requests failed in the window: acknowledged, not healthy
+      // (#1956), the same rule as the Models list.
       await waitUntil(
-        () => attentionBadge(element).textContent!.trim() === 'Healthy',
+        () => attentionBadge(element).textContent!.trim() === 'Acknowledged',
         'the page stayed flagged after both markers were taken'
       );
       const title = attentionBadge(element).getAttribute('title')!;

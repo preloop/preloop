@@ -268,28 +268,32 @@ radius of this channel is the other agent's behaviour, not just its transcript.
 The default is therefore narrow enough that turning `send_note` on is not
 itself a decision that needs a threat model.
 
-**The default scope is descent.** An agent may note the runs its own run
-started, directly or transitively, and nothing else:
+**The default policy allows self and descendants.** New accounts and existing
+accounts whose startup backfill succeeds receive editable tool access rules for
+`send_note`. A failed account is logged separately and retried on the next
+startup; its existing rules remain in effect until seeding succeeds:
 
-| The target | In the default scope |
+| Target | Default decision |
 | --- | --- |
-| A run this run started | Yes |
-| A grandchild, or deeper | Yes. Delegation is transitive, or inserting a middleman would widen the reach |
-| A sibling (another run of the same parent) | No |
-| The run that started this one | No. Descent has a direction |
-| An agent running nothing of this run's | No |
-| Anything in another account | No, and not as a scope question: a foreign id is simply not found |
+| The calling run, a child, or a deeper descendant | Allow |
+| Another run the sender's human can control from the console | Require that human's approval |
+| A run the sender's human cannot control | Deny |
+| Anything in another account | Not found |
 
-Lineage is the key because it is the only relationship here that Preloop can
-verify instead of accepting from the caller. `parent_execution_id` is written
-by the platform when a child run is created; "we are on the same team" is a
-claim an agent could simply make. The tool takes no lineage argument: the
-calling run is read from the authenticated context.
+Preloop resolves execution and runtime session lineage before evaluating these
+rules. The PreToolUse hook supplies `preloop_caller_session_id`; the server only
+accepts a session owned by the calling credential's principal. A session-bound
+credential cannot switch its session. See [Spawning workers](spawning-workers.md)
+for the hook and `preloop spawn` setup.
 
-**A caller with no lineage can note nothing.** A top level run that started no
-children, and an enrolled agent that is not running inside an execution at all,
-both have an empty descendant set, so every target is refused. That is the case
-that makes the default safe: no lineage is no reach, rather than no restriction.
+Approval uses the existing workflow service and push/email notification channels.
+An asynchronous workflow returns `pending_approval`; `get_approval_status` delivers
+the note once approved. Decline and expiry write no note. The request records the
+resolved target, relation and human permission facts in its rule context.
+The request's token link authorizes that bound human's approve or decline
+decision without requiring sign-in. Automatic approval bypasses do not decide
+these requests. A sender can queue at most three live approvals per target;
+pending or declined requests do not spend the hourly note delivery allowance.
 
 A refusal is a structured answer the model can act on, naming the scope the
 call would have needed, and each one has its own code:
@@ -299,7 +303,8 @@ call would have needed, and each one has its own code:
 | `note_scope_out_of_scope` | The target exists in the account but does not descend from the calling run |
 | `note_scope_no_lineage` | The call carries no execution lineage, so it reaches nothing |
 | `note_scope_denied_by_rule` | A tool access rule denied it |
-| `note_scope_grant_unavailable` | The rule that would have granted it asked for approval, or could not be evaluated. Scope widening fails closed |
+| `note_scope_grant_unavailable` | The approval workflow is unavailable, or policy could not be evaluated. Scope widening fails closed |
+| `note_approval_rate_limited` | Three live note approvals from this sender are already pending for the target |
 
 Every refusal writes one `agent.note_scope_denied` audit row carrying that code,
 the target, the calling run and the rule that decided, so "my agent says it
@@ -307,10 +312,8 @@ cannot reach that run" is answerable from the record.
 
 ### Granting a wider scope
 
-Wider than descent is a grant, not a setting. When the default refuses, the
-call is put to the same tool policy path every tool call already goes through,
-as a rule evaluation on `send_note`, and **only a rule that explicitly allows it
-is a grant**: the default allow that a tool with no rules returns is not, or
+Every target is evaluated by the standard tool policy path after resolution.
+An explicit allow rule can grant wider access without approval: the default allow that a tool with no rules returns is not, or
 enabling the tool would quietly mean "note anyone". Add the rule on the
 `send_note` tool in the console, or through the tool access rule API:
 
@@ -327,10 +330,8 @@ for every other tool, so a `deny` placed above a grant wins. Disabling or
 deleting the grant takes the reach away on the next call: there is nothing to
 restart and no cache to clear.
 
-Write the `has()` guard. The scope facts below exist only at this evaluation,
-and a CEL expression that reads a key the plain tool call does not carry fails
-that call closed. A `simple` condition needs no guard: a missing key is a
-non-match there.
+The scope facts below are available on every `send_note` policy evaluation.
+A `has()` guard also makes exported rules safe in simulations without scope facts.
 
 These bindings are what a rule sees. Every one of them is what the platform
 worked out, never anything the calling agent asserted:
@@ -339,7 +340,9 @@ worked out, never anything the calling agent asserted:
 | --- | --- |
 | `args.note_scope` | `account`, the scope being asked for |
 | `args.note_default_scope` | `descendants` |
-| `args.note_target_relation` | `self`, `ancestor`, `same_tree`, `unrelated` or `no_lineage` |
+| `args.same_owner` | Author and target agents have the same human owner |
+| `args.caller_user_can_steer_target` | The sender's human passes the console operator-note permission check |
+| `args.note_target_relation` | `self`, `descendant`, `ancestor`, `same_tree`, `unrelated` or `no_lineage` |
 | `args.note_author_managed_agent_id`, `args.note_author_execution_id` | Who is asking, and from which run |
 | `args.note_target_managed_agent_id`, `args.note_target_runtime_session_id`, `args.note_target_execution_id` | What it wants to reach |
 | `args.text`, `args.agent_id`, `args.runtime_session_id`, `args.execution_id` | `text` is the caller's. On the grant path the id keys are the target as the platform resolved it, under the names the tool uses, and can be present even when the caller never named them. Key on the `note_*` facts, which name author and target unambiguously. |

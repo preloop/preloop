@@ -18,7 +18,9 @@ from preloop.utils.bitbucket_dc_webhooks import BITBUCKET_DC_WEBHOOK_EVENTS
 
 INSTANCE = "https://bitbucket.example.com/bitbucket"
 TRACKER_ID = uuid.UUID("11111111-2222-3333-4444-555555555555")
-USER = SimpleNamespace(account_id=uuid.uuid4(), username="tester")
+USER = SimpleNamespace(
+    id=uuid.uuid4(), account_id=uuid.uuid4(), username="tester", is_superuser=True
+)
 
 status_endpoint = inspect.unwrap(setup.get_bitbucket_dc_webhook_status)
 rotate_endpoint = inspect.unwrap(setup.rotate_bitbucket_dc_webhook_secret)

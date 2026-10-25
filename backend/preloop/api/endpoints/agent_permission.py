@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Dict, Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, status
+from fastapi import APIRouter, Header, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from preloop.api.auth.jwt import (
@@ -22,6 +22,7 @@ from preloop.api.auth.jwt import (
     _runtime_session_id_from_api_key,
 )
 from preloop.api.loop_safety import run_db_off_loop
+from preloop.api.auth.key_scopes import enforce_runtime_api_key_scope
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import (
@@ -32,6 +33,11 @@ from preloop.models.crud import (
 from preloop.models.db.session import get_session_factory
 from preloop.services import operator_notes
 from preloop.services.agent_permission_service import request_agent_permission
+from preloop.services.session_hook_events import (
+    is_prompt_event,
+    record_prompt,
+    record_session_event,
+)
 from preloop.services.flow_approval_policy import (
     FlowApprovalGrant,
     resolve_flow_grant,
@@ -73,6 +79,7 @@ def _resolve_permission_identity(token: str) -> PermissionIdentity:
     with get_session_factory()() as db:
         api_key = crud_api_key.get_by_key(db, key=token)
         user = _authenticate_with_api_key(db, api_key)
+        enforce_runtime_api_key_scope(api_key)
         managed_agent = _managed_agent_for_api_key(db, api_key)
         runtime_session = None
         runtime_session_id = _runtime_session_id_from_api_key(api_key)
@@ -309,6 +316,9 @@ def _record_native_tool_call(
     }
     if approval_request_id:
         metadata["approval_request_id"] = approval_request_id
+    work_ref = _native_work_ref(payload)
+    if work_ref is not None:
+        metadata["work_ref"] = work_ref
     try:
         with get_session_factory()() as db:
             activity = crud_runtime_session_activity.log_tool_call(
@@ -339,6 +349,10 @@ def _record_native_tool_call(
                 "runtime_principal_name": identity.managed_agent_name,
                 "last_activity_at": timestamp,
                 "activity_id": activity_id,
+                "managed_agent_id": str(identity.managed_agent_id)
+                if identity.managed_agent_id
+                else None,
+                "flow_id": str(identity.flow_id) if identity.flow_id else None,
                 "activity_type": "tool_call",
                 "tool_name": payload.tool_name,
                 "server_name": source,
@@ -349,6 +363,55 @@ def _record_native_tool_call(
             runtime_session_id=str(runtime_session_id),
         )
     )
+    if work_ref is not None and status_label in {"allowed", "approved"}:
+        from preloop.services.fleet_code_activity import emit_code_tool_event
+
+        # Recorded at PreToolUse: the command was allowed, not yet observed
+        # to succeed (no PostToolUse hook reaches this endpoint).
+        emit_code_tool_event(
+            account_id=identity.account_id,
+            tool_name=payload.tool_name,
+            metadata=metadata,
+            managed_agent_id=identity.managed_agent_id,
+            flow_id=identity.flow_id,
+            runtime_session_id=runtime_session_id,
+            timestamp=timestamp,
+        )
+
+
+#: Native tools whose input is a shell command line.
+SHELL_TOOL_NAMES = frozenset(
+    {
+        "bash",
+        "shell",
+        "run_shell_command",
+        "run_terminal_cmd",
+        "execute_command",
+        "exec_command",
+        "terminal",
+        "local_shell",
+    }
+)
+
+
+def _native_work_ref(
+    payload: "AgentPermissionCheckRequest",
+) -> Optional[dict[str, Any]]:
+    """Classify a ``gh``/``glab`` command in a native shell tool call.
+
+    Only the parsed verb, object reference and repository are returned; the
+    command line itself is never kept. Never raises.
+    """
+    if (payload.tool_name or "").strip().lower() not in SHELL_TOOL_NAMES:
+        return None
+    tool_input = payload.tool_input or {}
+    command = tool_input.get("command") or tool_input.get("cmd")
+    if isinstance(command, list):
+        command = " ".join(str(part) for part in command)
+    from preloop.services.fleet_work_refs import classify_shell_command
+
+    remote = payload.repository.remote if payload.repository is not None else None
+    return classify_shell_command(command, remote=remote)
 
 
 #: Longest working directory stored on a session; matches the column.
@@ -557,6 +620,15 @@ class AgentPermissionCheckRequest(BaseModel):
         ),
     )
 
+    approval_request_id: Optional[UUID] = Field(
+        None,
+        description=(
+            "Id the hook proposes for an approval this call may create, so it "
+            "can expire that approval through POST /approvals/{id}/expire when "
+            "its own deadline passes. Ignored when the id is taken."
+        ),
+    )
+
     evaluation_phase: Literal["permission_request", "pre_tool_use"] = Field(
         "permission_request",
         description=(
@@ -582,6 +654,14 @@ class AgentPermissionCheckResponse(BaseModel):
             "none, which is almost always: the PreToolUse call the agent was "
             "making anyway carries the note, so a note costs no extra round "
             "trip and no note costs nothing at all."
+        ),
+    )
+    decided_by: Optional[str] = Field(
+        None,
+        description=(
+            "Who decided an approval this call waited on: a person's username, "
+            "'AI review' or 'policy'. Null when no approval was involved or it "
+            "expired. Hooks show it in the terminal."
         ),
     )
     timed_out: bool = Field(
@@ -720,6 +800,7 @@ async def agent_permission_check(
         evaluation_phase=payload.evaluation_phase,
         flow_id=identity.flow_id,
         flow_policy_label=flow_policy_label,
+        approval_request_id=payload.approval_request_id,
     )
     # Claim after the decision, so a Cursor ask response is never called delivered.
     # Copilot has no note carrier. Codex PermissionRequest and Cursor before*
@@ -774,12 +855,137 @@ async def agent_permission_check(
                 elapsed_ms=elapsed_ms,
             )
         )
+    decided_by = None
+    if request_id and not timed_out:
+        decided_by = await run_db_off_loop(
+            lambda: _approval_decided_by(identity, request_id)
+        )
     return AgentPermissionCheckResponse(
         decision=decision,
         reason=reason,
         request_id=request_id,
         timed_out=timed_out,
         operator_note=operator_note,
+        decided_by=decided_by,
+    )
+
+
+def _approval_decided_by(
+    identity: PermissionIdentity, request_id: str
+) -> Optional[str]:
+    """Name who decided the approval, for the terminal; never raises."""
+    try:
+        from preloop.models.crud import crud_user
+        from preloop.models.crud.approval_request import crud_approval_request
+
+        with get_session_factory()() as db:
+            row = crud_approval_request.get(
+                db, id=UUID(str(request_id)), account_id=identity.account_id
+            )
+            if row is None or row.status not in ("approved", "declined"):
+                return None
+            if row.decided_by_ai:
+                return "AI review"
+            if row.auto_approved_reason:
+                return "policy"
+            wanted = row.status
+            for vote in reversed(row.responses or []):
+                if vote.get("decision") != wanted:
+                    continue
+                try:
+                    user = crud_user.get(db, id=UUID(str(vote.get("user_id"))))
+                except ValueError:
+                    return None
+                return getattr(user, "username", None) if user else None
+            return None
+    except Exception:
+        logger.warning("Could not resolve the approval decider", exc_info=True)
+        return None
+
+
+class ApprovalExpireRequest(BaseModel):
+    """Why the waiter gave up on an approval."""
+
+    reason: Literal["hook_deadline"] = "hook_deadline"
+    waited_seconds: Optional[int] = Field(None, ge=0, le=86400)
+
+
+class ApprovalExpireResponse(BaseModel):
+    """The approval's status after the call; a decision that landed first wins."""
+
+    approval_request_id: str
+    status: str
+    approver_comment: Optional[str] = None
+    decided_by: Optional[str] = Field(
+        None, description="Who decided, when a decision landed before the expiry"
+    )
+
+
+def _owned_approval_exists(identity: PermissionIdentity, approval_id: UUID) -> bool:
+    """True when the approval belongs to the caller's account and agent or key."""
+    from preloop.models.crud.approval_request import crud_approval_request
+
+    with get_session_factory()() as db:
+        row = crud_approval_request.get(db, id=approval_id)
+        if row is None or str(row.account_id) != identity.account_id:
+            return False
+        if identity.managed_agent_id is not None:
+            return row.managed_agent_id == identity.managed_agent_id
+        return row.api_key_id == identity.api_key_id
+
+
+@router.post(
+    "/approvals/{approval_id}/expire",
+    response_model=ApprovalExpireResponse,
+    tags=["Agent Permissions"],
+)
+async def expire_approval_by_hook(
+    approval_id: UUID,
+    payload: ApprovalExpireRequest,
+    authorization: Optional[str] = Header(None),
+) -> ApprovalExpireResponse:
+    """Expire an approval whose permission hook stopped waiting.
+
+    The hook proposes the approval id on permission-check, so it can name the
+    request even while that call is still held. Only the agent (or key) that
+    raised the approval may expire it. A pending request becomes ``expired``
+    and is broadcast, so no surface keeps offering Approve or Deny.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Runtime bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    if not await run_db_off_loop(lambda: _owned_approval_exists(identity, approval_id)):
+        raise HTTPException(status_code=404, detail="Approval request not found")
+
+    from preloop.models.db.session import get_async_db_session
+    from preloop.services.approval_service import ApprovalService
+
+    minutes = ""
+    if payload.waited_seconds:
+        minutes = f" within {max(1, round(payload.waited_seconds / 60))} min"
+    detail = f"Expired: the agent's permission hook stopped waiting{minutes}"
+    async with get_async_db_session() as db:
+        service = ApprovalService(db, _permission_check_base_url())
+        updated = await service.expire_request(
+            approval_id, reason=payload.reason, detail=detail
+        )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    decided_by = None
+    if updated.status in ("approved", "declined"):
+        decided_by = await run_db_off_loop(
+            lambda: _approval_decided_by(identity, str(updated.id))
+        )
+    return ApprovalExpireResponse(
+        approval_request_id=str(updated.id),
+        status=updated.status,
+        approver_comment=updated.approver_comment,
+        decided_by=decided_by,
     )
 
 
@@ -838,6 +1044,14 @@ class AgentSessionStartRequest(BaseModel):
         max_length=20000,
         description="The first user prompt. Only a redacted 120 character title is kept.",
     )
+    hook_event_name: Optional[str] = Field(
+        None,
+        max_length=64,
+        description=(
+            "The hook that sent this call. UserPromptSubmit (Cursor "
+            "beforeSubmitPrompt) records the time of a prompt, never its text."
+        ),
+    )
 
 
 class AgentSessionStartResponse(BaseModel):
@@ -860,7 +1074,7 @@ def _register_session_start(
     if not principal_type or not principal_id:
         return None
     with get_session_factory()() as db:
-        return register_session_start(
+        result = register_session_start(
             db,
             account_id=identity.account_id,
             principal_type=principal_type,
@@ -874,6 +1088,24 @@ def _register_session_start(
             alias=payload.alias,
             actor_user_id=identity.user_id,
         )
+        if result is not None and is_prompt_event(payload.hook_event_name):
+            try:
+                record_prompt(
+                    db,
+                    account_id=identity.account_id,
+                    runtime_session_id=UUID(result.runtime_session_id),
+                    api_key_id=identity.api_key_id,
+                    actor_user_id=identity.user_id,
+                    source=payload.source,
+                    hook_event_name=(payload.hook_event_name or "").strip(),
+                    managed_agent_id=identity.managed_agent_id,
+                )
+            except Exception:
+                # The prompt timestamp is analytics; registration already
+                # succeeded and the hook must not fail on it.
+                db.rollback()
+                logger.warning("Could not record the prompt event", exc_info=True)
+        return result
 
 
 @router.post(
@@ -923,3 +1155,136 @@ async def agent_session_start(
         created=result.created,
         alias=result.alias,
     )
+
+
+class AgentSessionEventRequest(BaseModel):
+    """API payload for a harness turn-end or session-end signal (#1889).
+
+    Accepts Stop, SubagentStop and SessionEnd event names, storing the kind
+    and receipt time without content. Producer integration is separate from
+    this backend contract.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: str = Field(
+        ..., min_length=1, max_length=200, description="The harness's own session id"
+    )
+    hook_event_name: Literal[
+        "Stop",
+        "SubagentStop",
+        "SessionEnd",
+        "stop",
+        "sessionEnd",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Notification",
+    ]
+    source: Optional[str] = Field(
+        None, max_length=64, description="Agent adapter, e.g. 'claude_code'"
+    )
+    tool_use_id: Optional[str] = Field(None, max_length=200)
+    tool_name: Optional[str] = Field(None, max_length=100)
+    exit_code: Optional[int] = None
+    is_error: Optional[bool] = None
+    duration_ms: Optional[int] = Field(None, ge=0)
+    notification_type: Optional[str] = Field(None, max_length=64)
+    interrupted: Optional[bool] = Field(
+        None, description="Stop only: the user interrupted the turn"
+    )
+
+
+def _record_session_event(
+    identity: PermissionIdentity, payload: AgentSessionEventRequest
+) -> bool:
+    """Resolve the hook's session and record the event; False when unknown."""
+    from preloop.models.crud import crud_runtime_session
+    from preloop.services.agent_session_headers import normalize_session_id
+    from preloop.services.agent_session_lineage import (
+        runner_session_for_external,
+        session_source_id_for,
+    )
+
+    principal_type = identity.runtime_principal_type
+    principal_id = identity.runtime_principal_id
+    external = normalize_session_id(payload.session_id)
+    if not principal_type or not principal_id or external is None:
+        return False
+    with get_session_factory()() as db:
+        session = runner_session_for_external(
+            db,
+            account_id=identity.account_id,
+            external_session_id=external,
+            actor_user_id=identity.user_id,
+        )
+        if session is None:
+            qualified = session_source_id_for(principal_id, external)
+            session = crud_runtime_session.get_by_source(
+                db,
+                account_id=identity.account_id,
+                session_source_type=principal_type,
+                session_source_id=qualified,
+            )
+            # An account-local harness id is not authority to mutate its
+            # session. Require a positively owned registration; importer
+            # rows without a runtime principal cannot be ended by this hook.
+            if session is not None and (
+                session.runtime_principal_type != principal_type
+                or session.runtime_principal_id not in {principal_id, qualified}
+            ):
+                return False
+        if session is None:
+            return False
+        record_session_event(
+            db,
+            session=session,
+            api_key_id=identity.api_key_id,
+            actor_user_id=identity.user_id,
+            source=payload.source,
+            hook_event_name=payload.hook_event_name,
+            managed_agent_id=identity.managed_agent_id,
+            details=payload.model_dump(
+                include={
+                    "tool_use_id",
+                    "tool_name",
+                    "exit_code",
+                    "is_error",
+                    "duration_ms",
+                    "notification_type",
+                    "interrupted",
+                },
+                exclude_none=True,
+            ),
+        )
+        return True
+
+
+@router.post(
+    "/agents/session-event",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    tags=["Agent Permissions"],
+)
+async def agent_session_event(
+    payload: AgentSessionEventRequest,
+    authorization: Optional[str] = Header(None),
+) -> Response:
+    """Record that a hook-governed turn or session ended (#1889).
+
+    Stop and SubagentStop write a ``turn_end`` activity; SessionEnd writes
+    ``session_end`` and stamps ``ended_at`` once. An unknown session, or a
+    failure to record, still answers 204: a hook must never fail the harness.
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Runtime bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = authorization.split(" ", 1)[1].strip()
+    identity = await run_db_off_loop(lambda: _resolve_permission_identity(token))
+    try:
+        await run_db_off_loop(lambda: _record_session_event(identity, payload))
+    except Exception:
+        logger.warning("Could not record the session event", exc_info=True)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

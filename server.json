@@ -1,0 +1,26 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.preloop/preloop",
+  "title": "Preloop",
+  "description": "Open-source AI agent control plane and software factory: govern every tool and model call.",
+  "version": "0.17.1",
+  "websiteUrl": "https://preloop.ai",
+  "repository": {
+    "url": "https://github.com/preloop/preloop",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://preloop.ai/mcp/v1",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Optional. Preloop access token as 'Bearer <token>' (from 'preloop auth token'). OAuth-capable clients can omit it.",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

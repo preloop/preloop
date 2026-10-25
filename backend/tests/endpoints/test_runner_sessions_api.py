@@ -28,6 +28,7 @@ from preloop.plugins.account_hooks import (
     ACTION_RUNNER_SESSION_START,
     Decision,
 )
+from tests.permission_helpers import grant_permission
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "personal_runners"
 AUDIT_KEYS = {
@@ -151,6 +152,7 @@ def _member(db: Session, owner: models.User, name: str) -> models.User:
         },
     )
     db.flush()
+    grant_permission(db, user, "execute_flows")
     return user
 
 

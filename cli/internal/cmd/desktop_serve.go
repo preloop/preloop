@@ -26,6 +26,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/preloop/preloop/cli/internal/api"
 )
 
 const (
@@ -354,7 +356,7 @@ func (s *desktopServer) openView(ctx context.Context, control *websocket.Conn, m
 
 	viewURL, err := desktopWSURL(
 		s.opts.BaseURL,
-		"/api/v1/desktop/endpoints/"+url.PathEscape(s.endpointID)+"/views/"+url.PathEscape(message.ViewID),
+		api.RESTPrefix+"/desktop/endpoints/"+url.PathEscape(s.endpointID)+"/views/"+url.PathEscape(message.ViewID),
 	)
 	if err != nil {
 		fail("display_unavailable", err)

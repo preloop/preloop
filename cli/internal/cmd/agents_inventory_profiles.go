@@ -19,7 +19,13 @@ const inventoryProfileLimit = 64
 const inventoryConfigLimit = 4 << 20
 
 // Profile names and paths remain local. Only the keyed reference is serialized.
-type inventoryProfile struct{ Home string }
+type inventoryProfile struct {
+	Home string
+	// LocalRef identifies an unreadable ProfileList entry without a home path.
+	// It is hashed locally and must never appear in output or diagnostics.
+	LocalRef  string
+	ErrorCode string
+}
 type inventoryProfileResult struct {
 	ProfileRef   string `json:"profile_ref"`
 	Completeness string `json:"completeness"`
@@ -39,13 +45,13 @@ func inventoryProfileRef(salt, context, home string) string {
 	return hmacHex(salt, "preloop-profile:v1:"+context+":"+filepath.Clean(home))
 }
 
-func runAllUsersInventory(cmdOut io.Writer, report bool) error {
+func runAllUsersInventory(cmdOut io.Writer, report bool, deviceRefs ...string) error {
 	if !inventoryProfiles.Elevated() {
 		return errors.New("--all-users requires elevated administrator rights")
 	}
 	salt, context := "", "offline"
 	if report {
-		return sendAllUsersInventory(cmdOut)
+		return sendAllUsersInventory(cmdOut, deviceRefs...)
 	}
 	randomSalt := make([]byte, 32)
 	if _, err := rand.Read(randomSalt); err != nil {
@@ -63,13 +69,22 @@ func runAllUsersInventory(cmdOut io.Writer, report bool) error {
 func directoryInventoryProfiles(root string, includeRoot bool) ([]inventoryProfile, bool, error) {
 	directory, err := os.Open(root)
 	if err != nil {
+		if includeRoot {
+			return []inventoryProfile{{Home: "/root"}}, false, err
+		}
 		return nil, false, err
 	}
 	defer directory.Close()
 	entries, err := directory.ReadDir(257)
-	if err != nil && err != io.EOF {
-		return nil, false, err
+	if err == io.EOF {
+		err = nil
 	}
+	return inventoryDirectoryProfiles(root, entries, err, includeRoot)
+}
+
+// Entries read before a ReadDir error are still returned with that error, so
+// the collector scans them and marks the result partial.
+func inventoryDirectoryProfiles(root string, entries []os.DirEntry, readErr error, includeRoot bool) ([]inventoryProfile, bool, error) {
 	profiles := []inventoryProfile{}
 	truncated := len(entries) > 256
 	if truncated {
@@ -88,16 +103,16 @@ func directoryInventoryProfiles(root string, includeRoot bool) ([]inventoryProfi
 			truncated = true
 			break
 		}
-		profiles = append(profiles, inventoryProfile{filepath.Join(root, name)})
+		profiles = append(profiles, inventoryProfile{Home: filepath.Join(root, name)})
 	}
 	if includeRoot {
 		if len(profiles) == inventoryProfileLimit {
 			truncated = true
 		} else {
-			profiles = append(profiles, inventoryProfile{"/root"})
+			profiles = append(profiles, inventoryProfile{Home: "/root"})
 		}
 	}
-	return profiles, truncated, nil
+	return profiles, truncated, readErr
 }
 
 func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inventoryProfileDependencies, salt, context string) inventoryEnvelope {
@@ -107,9 +122,12 @@ func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inven
 	result.Scope.User, result.Scope.Coverage = "all-local-profiles", "known-registry"
 	profiles, truncated, err := profileDeps.Profiles()
 	if err != nil {
-		result.Completeness = "failed"
+		result.Completeness = "partial"
 		result.Scope.ErrorCode = "profiles_unavailable"
-		return result
+		if len(profiles) == 0 {
+			result.Completeness = "failed"
+			return result
+		}
 	}
 	if len(profiles) > inventoryProfileLimit {
 		profiles = profiles[:inventoryProfileLimit]
@@ -120,8 +138,18 @@ func collectAllUsersInventory(deps inventoryProbeDependencies, profileDeps inven
 		result.Scope.ErrorCode = "profile_limit"
 	}
 	for _, profile := range profiles {
-		ref := inventoryProfileRef(salt, context, profile.Home)
+		identity := profile.Home
+		if profile.LocalRef != "" {
+			identity = profile.LocalRef
+		}
+		ref := inventoryProfileRef(salt, context, identity)
 		state := inventoryProfileResult{ProfileRef: ref, Completeness: "complete"}
+		if profile.ErrorCode != "" {
+			state.Completeness, state.ErrorCode = "failed", profile.ErrorCode
+			result.Completeness = "partial"
+			result.Profiles = append(result.Profiles, state)
+			continue
+		}
 		info, statErr := os.Lstat(profile.Home)
 		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			state.Completeness, state.ErrorCode = "failed", "profile_unavailable"

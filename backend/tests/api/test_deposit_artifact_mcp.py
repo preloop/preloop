@@ -9,14 +9,16 @@ enables it, store through the #1080 deposit service, and answer with an MCP
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 import contextlib
 import types
+from typing import Any
 import uuid
 
-import httpx
+import httpx2 as httpx
 import pytest
 from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -33,6 +35,27 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 @pytest.fixture
 def shared_db(db_session, monkeypatch):
     """Every get_db the MCP stack opens joins the test transaction."""
+    from preloop.services.audit import get_audit_service
+
+    monkeypatch.setattr(get_audit_service(), "enabled", True)
+
+    def _write_audit(
+        db_factory: Callable[[], Session],
+        operation: Callable[..., None],
+        *,
+        priority: bool = False,
+        allow_without_loop: bool = False,
+        **fields: Any,
+    ) -> None:
+        # The protocol fixture owns one uncommitted Connection. Real audit
+        # workers own independent connections; sharing this one across threads
+        # races its savepoints, while independent workers cannot see its rows.
+        # Keep real audit persistence, serialized inside the test transaction.
+        operation(db=db_session, **fields)
+
+    monkeypatch.setattr(
+        "preloop.services.audit.service.schedule_audit_write", _write_audit
+    )
 
     def _factory():
         session = Session(bind=db_session.connection())
@@ -62,8 +85,8 @@ def _drop_async_pool():
 
 
 @contextlib.asynccontextmanager
-async def _mcp(app, token):
-    """An MCP client session against /mcp/v1 of the in-process app."""
+async def _mcp(app, token, *, modern=False, path="/mcp/v1"):
+    """An MCP client session against either alias of the in-process app."""
 
     def _client(headers=None, timeout=None, auth=None):
         return httpx.AsyncClient(
@@ -75,13 +98,17 @@ async def _mcp(app, token):
         )
 
     async with _mcp_lifespan(app):
-        async with streamablehttp_client(
-            "http://localhost/mcp/v1",
-            headers={"Authorization": f"Bearer {token}"},
-            httpx_client_factory=_client,
-        ) as (read, write, _):
+        async with (
+            _client(headers={"Authorization": f"Bearer {token}"}) as http_client,
+            streamable_http_client(
+                f"http://localhost{path}", http_client=http_client
+            ) as (read, write),
+        ):
             async with ClientSession(read, write) as session:
-                await session.initialize()
+                if modern:
+                    await session.discover()
+                else:
+                    await session.initialize()
                 yield session
 
 
@@ -121,19 +148,52 @@ def test_catalog_entry_is_compact_and_default_off():
 
 
 @pytest.mark.asyncio
-async def test_transcript_and_summary_through_mcp(app, shared_db, test_user, client):
+@pytest.mark.parametrize("modern", [False, True])
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/v1"])
+async def test_document_larger_than_four_mib_through_mcp(
+    app, shared_db, test_user, monkeypatch, modern, path
+) -> None:
+    """The protocol guard must retain the existing artifact size contract."""
+    db = shared_db
+    runtime = _session(db, test_user.account_id, "large-mcp-document")
+    token = _token(db, test_user, runtime_session_id=runtime.id)
+    _enable(db, test_user.account_id)
+    monkeypatch.setattr(artifact_deposit, "ON_STORED", [])
+    text = "sample document\n" * (4 * 1024**2 // 16 + 1)
+    assert len(text.encode()) > 4 * 1024**2
+
+    async with _mcp(app, token, modern=modern, path=path) as mcp:
+        result = await mcp.call_tool(
+            TOOL,
+            {
+                "name": "large-document.txt",
+                "kind": "document",
+                "content": {"type": "text", "text": text},
+            },
+        )
+    assert not result.is_error, result.content
+    assert result.structured_content["size_bytes"] == len(text.encode())
+    assert result.structured_content["kind"] == "document"
+    assert result.content[0].type == "resource_link"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("modern", [False, True])
+async def test_transcript_and_summary_through_mcp(
+    app, shared_db, test_user, client, modern
+):
     db = shared_db
     session = _session(db, test_user.account_id, "mcp-1081")
     token = _token(db, test_user, runtime_session_id=session.id)
 
-    async with _mcp(app, token) as mcp:
+    async with _mcp(app, token, modern=modern) as mcp:
         names = {t.name for t in (await mcp.list_tools()).tools}
         assert TOOL not in names
 
     _enable(db, test_user.account_id)
 
     vtt = _vtt(4 * 1024)
-    async with _mcp(app, token) as mcp:
+    async with _mcp(app, token, modern=modern) as mcp:
         listed = {t.name: t for t in (await mcp.list_tools()).tools}
         assert TOOL in listed
         assert listed[TOOL].description == DEPOSIT_ARTIFACT_TOOL["description"]
@@ -153,20 +213,20 @@ async def test_transcript_and_summary_through_mcp(app, shared_db, test_user, cli
                 "labels": {"source_tool": "whisper", "site": "nord"},
             },
         )
-        assert not transcript.isError, transcript.content
+        assert not transcript.is_error, transcript.content
         link = transcript.content[0]
         assert link.type == "resource_link"
-        assert link.mimeType == "text/vtt"
+        assert link.mime_type == "text/vtt"
         assert link.size == len(vtt.encode())
         assert link.name == "standup.vtt"
-        transcript_id = transcript.structuredContent["id"]
+        transcript_id = transcript.structured_content["id"]
         assert str(link.uri) == artifact_mcp_tools.absolute_uri(
             artifact_deposit.artifact_uri(session.id, transcript_id)
         )
-        assert transcript.structuredContent["content_block"]["uri"] == str(link.uri)
-        assert transcript.structuredContent["kind"] == "transcript"
-        assert transcript.structuredContent["producer"] == "deposit_mcp"
-        assert transcript.structuredContent["tool_name"] == "whisper"
+        assert transcript.structured_content["content_block"]["uri"] == str(link.uri)
+        assert transcript.structured_content["kind"] == "transcript"
+        assert transcript.structured_content["producer"] == "deposit_mcp"
+        assert transcript.structured_content["tool_name"] == "whisper"
 
         summary = await mcp.call_tool(
             TOOL,
@@ -177,9 +237,9 @@ async def test_transcript_and_summary_through_mcp(app, shared_db, test_user, cli
                 "parent_artifact_id": transcript_id,
             },
         )
-        assert not summary.isError, summary.content
-        assert summary.structuredContent["parent_artifact_id"] == transcript_id
-        summary_id = summary.structuredContent["id"]
+        assert not summary.is_error, summary.content
+        assert summary.structured_content["parent_artifact_id"] == transcript_id
+        summary_id = summary.structured_content["id"]
 
     headers = {"Authorization": f"Bearer {token}"}
     listed = client.get(
@@ -222,9 +282,9 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
                 },
             },
         )
-        assert not shot.isError, shot.content
-        assert shot.structuredContent["kind"] == "screenshot"
-        source_id = shot.structuredContent["id"]
+        assert not shot.is_error, shot.content
+        assert shot.structured_content["kind"] == "screenshot"
+        source_id = shot.structured_content["id"]
 
         relabel = await mcp.call_tool(
             TOOL,
@@ -234,10 +294,10 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
                 "labels": {"case": "short-pick"},
             },
         )
-        assert not relabel.isError, relabel.content
-        out = relabel.structuredContent
+        assert not relabel.is_error, relabel.content
+        out = relabel.structured_content
         assert out["parent_artifact_id"] == source_id
-        assert out["sha256"] == shot.structuredContent["sha256"]
+        assert out["sha256"] == shot.structured_content["sha256"]
         assert out["labels"] == {"case": "short-pick"}
 
         foreign = await mcp.call_tool(
@@ -251,7 +311,7 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
                 },
             },
         )
-        assert foreign.isError
+        assert foreign.is_error
         assert foreign.content[0].text.startswith("artifact_link_outside_session")
 
         # Matches the link pattern, names this session, but is not a UUID.
@@ -267,7 +327,7 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
                     },
                 },
             )
-            assert odd.isError, malformed
+            assert odd.is_error, malformed
             assert odd.content[0].text.startswith("artifact_link_outside_session")
 
         # urlparse raises ValueError on an invalid IPv6 netloc.
@@ -278,10 +338,10 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
                 "content": {"type": "resource_link", "uri": "https://[", "name": "x"},
             },
         )
-        assert unparsable.isError
+        assert unparsable.is_error
         assert unparsable.content[0].text.startswith("artifact_link_outside_session")
         assert (
-            unparsable.structuredContent["error"]["code"]
+            unparsable.structured_content["error"]["code"]
             == "artifact_link_outside_session"
         )
 
@@ -289,22 +349,22 @@ async def test_relabel_by_resource_link_and_refusals(app, shared_db, test_user):
             TOOL,
             {"name": "x", "content": {"type": "image", "data": "%%%"}},
         )
-        assert bad.isError
+        assert bad.is_error
         assert (
-            bad.content[0].text.split(":")[0] == bad.structuredContent["error"]["code"]
+            bad.content[0].text.split(":")[0] == bad.structured_content["error"]["code"]
         )
 
     async with _mcp(app, unbound) as mcp:
         refused = await mcp.call_tool(
             TOOL, {"name": "x", "content": {"type": "text", "text": "hi"}}
         )
-        assert refused.isError
+        assert refused.is_error
         assert refused.content[0].text.startswith("artifact_no_session:")
 
 
 def _link(result):
     block = result.content[0]
-    return {"uri": str(block.uri), "name": block.name, "mimeType": block.mimeType}
+    return {"uri": str(block.uri), "name": block.name, "mimeType": block.mime_type}
 
 
 def test_auth_context_only_trusts_a_key_of_the_users_own_account(
@@ -396,4 +456,45 @@ async def test_a_flow_opts_in_through_allowed_mcp_tools(app, shared_db, test_use
         result = await mcp.call_tool(
             TOOL, {"name": "note.md", "content": {"type": "text", "text": "# ok"}}
         )
-        assert not result.isError, result.content
+        assert not result.is_error, result.content
+
+
+@pytest.mark.asyncio
+async def test_media_timing_through_mcp(
+    app: Any, shared_db: Any, test_user: Any
+) -> None:
+    import base64
+
+    db = shared_db
+    session = _session(db, test_user.account_id, "mcp-recording")
+    token = _token(db, test_user, runtime_session_id=session.id)
+    _enable(db, test_user.account_id)
+    timing = {
+        "started_at": "2026-10-01T00:00:00Z",
+        "clock": "agent",
+        "step_offsets": [{"source_step_id": "step-1", "offset_ms": 2000}],
+    }
+    async with _mcp(app, token) as mcp:
+        result = await mcp.call_tool(
+            TOOL,
+            {
+                "name": "capture.webm",
+                "kind": "recording",
+                "media_timing": timing,
+                "content": {
+                    "type": "resource",
+                    "resource": {
+                        "uri": "file:///capture.webm",
+                        "mimeType": "video/webm",
+                        "blob": base64.b64encode(
+                            b"\x1a\x45\xdf\xa3" + b"\0" * 32
+                        ).decode(),
+                    },
+                },
+            },
+        )
+    assert not result.is_error
+    assert (
+        result.structured_content["media_timing"]["step_offsets"]
+        == timing["step_offsets"]
+    )

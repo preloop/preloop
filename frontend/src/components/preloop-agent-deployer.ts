@@ -1,3 +1,5 @@
+import { REST_API_PREFIX } from '../api-path';
+import { randomUuid } from '../utils/random-uuid';
 import { getBrandConfig } from '../brand-config';
 import type { Edition } from '../api';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -186,7 +188,7 @@ export class PreloopAgentDeployer extends LitElement {
 
   async connectedCallback() {
     super.connectedCallback();
-    void fetchWithAuth('/api/v1/agent-deployments/capabilities', {
+    void fetchWithAuth(REST_API_PREFIX + '/agent-deployments/capabilities', {
       passive: true,
     })
       .then(async (response) => {
@@ -346,21 +348,24 @@ export class PreloopAgentDeployer extends LitElement {
     };
     const signature = JSON.stringify(request);
     if (signature !== this.deploymentRequestSignature) {
-      this.deploymentRequestId = crypto.randomUUID();
+      this.deploymentRequestId = randomUuid();
       this.deploymentRequestSignature = signature;
     }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 930_000);
     try {
-      const response = await fetchWithAuth('/api/v1/agent-deployments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...request,
-          idempotency_key: this.deploymentRequestId,
-        }),
-        signal: controller.signal,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/agent-deployments',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...request,
+            idempotency_key: this.deploymentRequestId,
+          }),
+          signal: controller.signal,
+        }
+      );
       const result = await response.json();
       if (!response.ok || result.status !== 'succeeded' || !result.agent?.id) {
         const detail = result.detail;

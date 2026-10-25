@@ -33,6 +33,14 @@ export class PreloopGatewayEvent extends LitElement {
   @property({ type: Boolean, attribute: 'hide-timestamp' })
   hideTimestamp = false;
 
+  /**
+   * Leave out the "Billed to" line. The execution timeline sets this when the
+   * row is billed the same way as the gateway row above it, so 80 calls on
+   * one key do not print the same line 80 times (#1692).
+   */
+  @property({ type: Boolean, attribute: 'hide-billing' })
+  hideBilling = false;
+
   static styles = [
     // The console chip recipe (soft tints, no border) does not cross a
     // shadow boundary, so the component brings it in.
@@ -559,7 +567,13 @@ ${previewText}</pre>
     }
 
     return html`
-      <p class="gateway-event-summary-meta">${billingAttribution(payload)}</p>
+      ${
+        this.hideBilling
+          ? ''
+          : html`<p class="gateway-event-summary-meta">
+              ${billingAttribution(payload)}
+            </p>`
+      }
       <sl-details
         class="gateway-event"
         ?open=${this.expanded}

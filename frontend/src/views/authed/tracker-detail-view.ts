@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import {
   renderTrackerStatus,
   authorizationStatus,
@@ -1564,7 +1565,7 @@ export class TrackerDetailView extends LitElement {
 
     try {
       const [trackerRes, featuresRes] = await Promise.all([
-        fetchWithAuth(`/api/v1/trackers/${this._trackerId}`),
+        fetchWithAuth(`${REST_API_PREFIX}/trackers/${this._trackerId}`),
         getFeatures(),
       ]);
 

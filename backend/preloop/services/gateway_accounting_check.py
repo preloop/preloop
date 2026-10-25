@@ -162,7 +162,7 @@ def _audit_events_check(
         return _check(
             "audit_events_present",
             "skip",
-            "audit_log table not present (audit plugin not installed)",
+            "audit_log table not present (database migrations required)",
         )
     count = crud_audit_log.count_by_account(db, account_id=account_id, start_date=start)
     if count > 0:

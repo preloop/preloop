@@ -6,6 +6,12 @@ use plain file/script delivery. They do not require a Preloop signed PKG or MSI;
 those artifacts are not supplied here ([packaging work](https://github.com/preloop/preloop/issues/1343)).
 No OS, MDM vendor or Claude plan is assumed for an organization.
 
+Before selecting a rollout population, review the
+[per-OS coverage boundaries](../guide/endpoint-coverage.md#platform-scope) and
+[collector fields, hashing and retention](../guide/endpoint-coverage.md#data-minimization-and-retention).
+Include scheduler output and downstream recipients in the deployment's DPIA;
+the server's discovery purge does not rotate MDM logs or local inventory files.
+
 ## Scope and prerequisites
 
 Source contracts reviewed on 2026-10-15 at Preloop commit
@@ -249,7 +255,8 @@ changes. Revoke retired device/user/app credentials separately. Disable collecti
 independently of tool/model controls. Never restore personal OAuth state from a
 package. An unsuccessful deny, drift or rollback test stops expansion.
 
-See [coverage and threat model](../guide/endpoint-coverage.md) for what these
+See [what each signal proves](../guide/endpoint-coverage.md#what-each-signal-proves)
+and the [threat model](../guide/endpoint-coverage.md#threat-model) for what these
 results establish. Fixture checks cannot check a vendor tenant, verify a live
 app or certify an enterprise plan.
 

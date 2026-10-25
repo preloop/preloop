@@ -7,6 +7,7 @@ import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 import './runtime-sessions-view';
 import type { RuntimeSessionsView } from './runtime-sessions-view';
 import { SESSION_PAGE_SIZE, formatCueStart } from './runtime-sessions-view';
+import { runtimeSessionPathRedirect } from '../../utils/runtime-session-route';
 
 const SESSION_OPTIONS = {
   runner_id: 'r',
@@ -1016,6 +1017,50 @@ describe('RuntimeSessionsView', () => {
           await setViewport({ width: 1280, height: 800 });
         }
       });
+    }
+  });
+
+  it('keeps the filters on one row in the 1440 content column (#1689)', async () => {
+    await loadShoelaceTokens();
+    await setViewport({ width: 1440, height: 900 });
+    try {
+      // 1440 minus the console sidebar and page padding.
+      const wrapper = (await fixture(
+        html`<div style="width: 1150px">
+          <runtime-sessions-view></runtime-sessions-view>
+        </div>`
+      )) as HTMLElement;
+      const element = wrapper.querySelector(
+        'runtime-sessions-view'
+      ) as RuntimeSessionsView;
+      await waitUntil(
+        () => !(element as any).loading,
+        'Runtime sessions view did not finish loading'
+      );
+      await element.updateComplete;
+      const toolbar = element.shadowRoot!.querySelector('list-toolbar') as any;
+      await toolbar.updateComplete;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      // Nothing to clear on the default view, so no Clear filters button:
+      // in the real 1440 layout it wrapped onto a second row.
+      expect(toolbar.querySelector('.filter-actions')).to.equal(null);
+      const controls = [
+        toolbar.shadowRoot!.querySelector('sl-input.search-input'),
+        ...Array.from(toolbar.querySelectorAll('sl-select')),
+      ] as HTMLElement[];
+      expect(controls.length).to.equal(5);
+      const bottoms = controls.map((node) =>
+        Math.round(node.getBoundingClientRect().bottom)
+      );
+      for (const bottom of bottoms) {
+        expect(Math.abs(bottom - bottoms[0])).to.be.at.most(2);
+      }
+      // A filter that differs from the default brings the button back.
+      (element as any).status = 'active';
+      await element.updateComplete;
+      expect(toolbar.querySelector('.filter-actions')).to.not.equal(null);
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
     }
   });
 
@@ -2510,5 +2555,18 @@ describe('RuntimeSessionsView', () => {
       expect(button).to.not.equal(null);
       expect(button!.hasAttribute('loading')).to.equal(false);
     });
+  });
+});
+
+describe('runtime session path route', () => {
+  it('path id route redirects to sessionId query', () => {
+    expect(runtimeSessionPathRedirect('abc-123')).to.equal(
+      '/console/runtime-sessions?sessionId=abc-123'
+    );
+    expect(
+      runtimeSessionPathRedirect('abc-123', '?replay=replay', '#turn-4')
+    ).to.equal(
+      '/console/runtime-sessions?replay=replay&sessionId=abc-123#turn-4'
+    );
   });
 });

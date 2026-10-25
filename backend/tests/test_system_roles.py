@@ -5,6 +5,11 @@ from __future__ import annotations
 import ast
 import importlib.util
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import delete, select
+
+from preloop.models import models
 
 
 def _load_system_roles_module():
@@ -111,6 +116,44 @@ def test_known_permission_names_are_seeded() -> None:
     }
 
     assert known_required_permissions <= permission_names
+
+
+def test_session_sharing_and_analysis_grants() -> None:
+    names = {"share_session_searches", "run_session_optimizations"}
+    assert names <= _permission_names()
+    for role_name in SYSTEM_ROLES:
+        expected = (
+            names if role_name in {"owner", "admin", "editor", "executor"} else set()
+        )
+        assert _role_permissions(role_name) & names == expected
+
+
+def test_initializer_updates_existing_session_permission_grants(
+    db_session: Any,
+) -> None:
+    """Re-running the initializer fills missing catalogue entries and grants."""
+    names = {"share_session_searches", "run_session_optimizations"}
+    db_session.execute(
+        delete(models.Permission).where(models.Permission.name.in_(names))
+    )
+    for _ in range(2):
+        db_session.expire_all()
+        assert SYSTEM_ROLES_MODULE.initialize_system_roles(db_session)
+    grants = db_session.execute(
+        select(models.Role.name, models.Permission.name)
+        .join(models.RolePermission, models.RolePermission.role_id == models.Role.id)
+        .join(
+            models.Permission,
+            models.Permission.id == models.RolePermission.permission_id,
+        )
+        .where(models.Permission.name.in_(names), models.Role.is_system_role)
+    ).all()
+    assert len(grants) == 8
+    assert set(grants) == {
+        (role, permission)
+        for role in ("owner", "admin", "editor", "executor")
+        for permission in names
+    }
 
 
 def test_ci_administration_defaults_are_owner_and_admin_only() -> None:

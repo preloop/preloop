@@ -1,3 +1,6 @@
+/** What a gateway event without a recorded billing path reads. */
+export const BILLING_NOT_RECORDED = 'Billing path not recorded';
+
 /** Captured resolved-model attribution; older rows remain unknown. */
 export function billingAttribution(
   data: Record<string, unknown> | null | undefined
@@ -12,5 +15,5 @@ export function billingAttribution(
       typeof data.billing_model_id === 'string' ? data.billing_model_id : '';
     return `Billed to: your key (${name}${id ? ` · ${id}` : ''})`;
   }
-  return 'Billing path not recorded';
+  return BILLING_NOT_RECORDED;
 }

@@ -1,4 +1,6 @@
+import { REST_API_PREFIX } from '../api-path';
 import { installSupportAssistant } from '../support-loader';
+import { runtimeSessionPathRedirect } from '../utils/runtime-session-route';
 import { consumeLoginReturn } from '../utils/login-return';
 import { releaseBlogFallback } from '../release-blog';
 import { LitElement, html, css } from 'lit';
@@ -35,6 +37,7 @@ import '../views/public/static-view';
 import './app-header';
 import './app-footer';
 import './update-banner';
+import './licence-banner';
 import { unifiedWebSocketManager } from '../services/unified-websocket-manager';
 
 @customElement('lit-app')
@@ -411,8 +414,10 @@ export class LitApp extends LitElement {
                 path: 'dependencies',
                 component: 'issues-dependencies-view',
               },
-              { path: 'duplicates', component: 'duplicates-view' },
-              { path: 'assignments', component: 'assignments-view' },
+              // Two removed placeholder pages; an old bookmark lands on
+              // Similar issues.
+              { path: 'duplicates', redirect: '/console/issues' },
+              { path: 'assignments', redirect: '/console/issues' },
             ],
           },
           {
@@ -435,7 +440,23 @@ export class LitApp extends LitElement {
             },
           },
           { path: '/runtime-sessions', component: 'runtime-sessions-view' },
+          {
+            path: '/runtime-sessions/:sessionId',
+            action: (context, commands) =>
+              commands.redirect(
+                runtimeSessionPathRedirect(
+                  String(context.params.sessionId),
+                  context.search,
+                  context.hash
+                )
+              ),
+          },
           { path: '/artifacts', component: 'artifacts-view' },
+          { path: '/delivery-reports', component: 'delivery-reports-view' },
+          {
+            path: '/delivery-reports/:reportId',
+            component: 'delivery-report-view',
+          },
           { path: '/agents', component: 'agents-view' },
           // Before ':agentId' would not matter to Vaadin Router (it matches
           // the full path), but keeping the more specific route first is how
@@ -658,7 +679,7 @@ export class LitApp extends LitElement {
     sessionStorage.removeItem('oauth_setup_tracker');
     sessionStorage.removeItem('oauth_new_user');
 
-    fetch('/api/v1/auth/github/authorize', {
+    fetch(REST_API_PREFIX + '/auth/github/authorize', {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => {
@@ -678,9 +699,11 @@ export class LitApp extends LitElement {
   }
 
   render() {
-    // The banner renders empty except for superusers on outdated
-    // self-hosted instances (see update-banner.ts).
+    // The banners render empty except for superusers on outdated
+    // self-hosted instances (update-banner.ts) or on an Enterprise install
+    // whose licence needs attention (licence-banner.ts).
     return html`<update-banner></update-banner>
+      <licence-banner></licence-banner>
       <main></main> `;
   }
 

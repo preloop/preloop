@@ -18,7 +18,7 @@ from preloop.services.issue_lifecycle_worker import (
     dispatch_lifecycle_execution,
     run_lifecycle_endpoint,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 router = APIRouter(prefix="/issues/{issue_id}/lifecycle")
 
@@ -82,6 +82,8 @@ def refine_issue(
 ) -> dict[str, Any]:
     """Store a reviewable proposal; this operation cannot launch implementation."""
 
+    ensure_permission_in_oss(db, current_user, "edit_issues")
+
     async def operation() -> dict[str, Any]:
         try:
             service = await build_lifecycle_service(
@@ -106,6 +108,8 @@ def ready_issue(
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     """Apply the configured readiness policy once to an approved scope."""
+
+    ensure_permission_in_oss(db, current_user, "edit_issues")
 
     async def operation() -> dict[str, Any]:
         try:
@@ -140,6 +144,9 @@ def reconcile_pickup(
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     """Authorize and durably dispatch changed scope after the prior run ends."""
+
+    ensure_permission_in_oss(db, current_user, "edit_issues")
+    ensure_permission_in_oss(db, current_user, "execute_flows")
 
     async def operation() -> dict[str, Any]:
         from preloop.services.flow_trigger_service import FlowTriggerService
@@ -222,6 +229,8 @@ def reconcile_audit(
 ) -> dict[str, Any]:
     """Recover dispatch/publication after a transient provider or worker failure."""
 
+    ensure_permission_in_oss(db, current_user, "execute_flows")
+
     async def operation() -> dict[str, Any]:
         from preloop.services.flow_trigger_service import FlowTriggerService
 
@@ -301,6 +310,8 @@ def verify_deployment(
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     """Trigger a separately approved target/scope after recording deployment."""
+
+    ensure_permission_in_oss(db, current_user, "execute_flows")
 
     async def operation() -> dict[str, Any]:
         import re

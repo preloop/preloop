@@ -66,7 +66,7 @@ from preloop.services.retention_export import (
     audit_period_export,
     build_period_export,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +180,7 @@ def update_retention_settings(
     The body is the full desired state: a class the caller omits, or sets to
     null, goes back to the deployment default.
     """
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     before = {
         record_class: setting.days
         for record_class, setting in retention_policy.resolve_all(
@@ -315,6 +316,7 @@ def create_legal_hold(
     db: Session = Depends(get_db_session),
 ):
     """Freeze one execution, approval, evidence pack or runtime session."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     try:
         outcome = place_hold(
             db,
@@ -347,6 +349,7 @@ def release_legal_hold(
     db: Session = Depends(get_db_session),
 ):
     """Lift a hold. The record stays, with who lifted it and why."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     try:
         outcome = release_hold(
             db,

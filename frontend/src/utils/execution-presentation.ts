@@ -161,7 +161,7 @@ export function formatApprovalWindow(
   seconds: number | null | undefined
 ): string {
   const total = Math.max(0, Math.round(Number(seconds) || 0));
-  if (!total) return '—';
+  if (!total) return '-';
   const days = Math.floor(total / 86400);
   const hours = Math.floor((total % 86400) / 3600);
   const minutes = Math.floor((total % 3600) / 60);
@@ -190,7 +190,7 @@ export function formatApprovalWindow(
  */
 export function formatEstimatedCost(value: number | null | undefined): string {
   if (typeof value !== 'number' || Number.isNaN(value) || value <= 0) {
-    return '—';
+    return '-';
   }
   if (value < 0.01) return '<$0.01';
   return `$${value.toLocaleString(undefined, {
@@ -285,7 +285,7 @@ export function renderExecutionModel(
     return html`<span
       class="execution-model is-empty"
       title="No gateway usage recorded for this run"
-      >—</span
+      >-</span
     >`;
   }
   const [primary, ...rest] = models;

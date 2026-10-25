@@ -34,8 +34,10 @@ from preloop.services.policy.schema import (
     PolicyValidationResult,
     PolicyVersion,
     SensitiveDataConfig,
+    SensitiveDataScope,
     ToolCondition,
     ToolDefinition,
+    UnknownToolsPolicy,
     is_known_tool_source,
 )
 
@@ -819,6 +821,41 @@ class MissingWorkflowError:
         )
 
 
+def unsupported_default_settings(defaults: DefaultsDefinition) -> List[str]:
+    """List the ``defaults`` settings that ``PolicyApplier`` rejects.
+
+    Only the built-in behavior is implemented: a tool call that no rule
+    matches is allowed. A stricter setting would be ignored and make the
+    policy look stricter than it is, so ``apply`` refuses it. Policy
+    generation runs the same check on model output.
+
+    Args:
+        defaults: The policy's ``defaults`` block.
+
+    Returns:
+        One entry per rejected setting, naming it and why. Empty when
+        ``apply`` accepts the block.
+    """
+    unsupported: List[str] = []
+
+    unknown_tools = getattr(defaults.unknown_tools, "value", defaults.unknown_tools)
+    if unknown_tools != UnknownToolsPolicy.ALLOW.value:
+        unsupported.append(
+            f"unknown_tools='{unknown_tools}' (only 'allow' is currently supported)"
+        )
+
+    if defaults.require_approval_for_new_tools:
+        unsupported.append("require_approval_for_new_tools=true (not yet implemented)")
+
+    if defaults.default_approval_workflow:
+        unsupported.append(
+            f"default_approval_workflow='{defaults.default_approval_workflow}' "
+            "(not yet implemented)"
+        )
+
+    return unsupported
+
+
 class PolicyApplier:
     """Apply a policy document to the database.
 
@@ -995,11 +1032,15 @@ class PolicyApplier:
            policy file or already configured in the account)
         2. All approval workflow references can be resolved (either defined
            in the policy file or already configured in the account)
+        3. ``sensitive_data`` tool scopes only name servers that resolve the
+           same way, or the ``preloop-mcp`` pseudo server of builtin tools
 
         Args:
             policy: The policy document to validate.
-            skip_missing_servers: If True, don't error on missing servers
-                (they will be skipped during apply).
+            skip_missing_servers: If True, don't error on missing servers.
+                Tools that use one are skipped during apply; a
+                ``sensitive_data`` scope that names one is kept. Both are
+                reported as warnings.
 
         Returns:
             List of error messages. Empty list if validation passes.
@@ -1134,6 +1175,17 @@ class PolicyApplier:
                         f"which is not defined. {suggestion}"
                     )
 
+            # Missing servers are errors unless the caller skips them, as for
+            # tools. Skipping keeps the entry: it matches once a server with
+            # that name is configured.
+            unknown_scope_servers = self._unknown_scope_servers(
+                policy.sensitive_data, all_available_servers
+            )
+            if skip_missing_servers:
+                self._result.warnings.extend(unknown_scope_servers)
+            else:
+                errors.extend(unknown_scope_servers)
+
         if policy.sensitive_data is not None and policy.model_io is None:
             # The block replaces the stored one while the stored model_io
             # rules stay. A rule that scans a custom type the new block no
@@ -1188,6 +1240,64 @@ class PolicyApplier:
                     "rules in the same policy."
                 )
         return conflicts
+
+    def _unknown_scope_servers(
+        self, block: SensitiveDataConfig, available_servers: set[str]
+    ) -> List[str]:
+        """Tool-path scopes that name an MCP server the account does not have.
+
+        A scope matches on the called server's name: a server the account
+        can call, including one another account shares with it (hook H3),
+        or the ``preloop-mcp`` pseudo server of builtin tools. Any other
+        name never matches, so a deny rule or a reference_only entry scoped
+        to it applies to no call. Model targets ignore ``scope.servers``.
+
+        Args:
+            block: The policy's ``sensitive_data`` block.
+            available_servers: Lowercased server names from the policy file
+                and the account.
+
+        Returns:
+            One message per unknown server name.
+        """
+        from preloop.models.crud import crud_mcp_server
+        from preloop.services.mcp_config_service import DEFAULT_TOOL_SERVER
+
+        known = available_servers | {DEFAULT_TOOL_SERVER}
+        scoped: List[Tuple[str, SensitiveDataScope]] = [
+            (f"sensitive_data rule '{rule.id}'", rule.scope)
+            for rule in block.rules
+            if rule.has_tool_target()
+        ]
+        scoped += [
+            (f"sensitive_data reference_only entry '{entry.id}'", entry.scope)
+            for entry in block.reference_only
+        ]
+        unknown = [
+            (owner, server_name)
+            for owner, scope in scoped
+            for server_name in scope.servers
+            if server_name.lower() not in known
+        ]
+        if unknown:
+            # Tool calls also reach the servers shared with this account.
+            known |= {
+                server.name.lower()
+                for server in crud_mcp_server.get_active_visible_by_account(
+                    self.db, account_id=self.account_id
+                )
+            }
+        messages: List[str] = []
+        for owner, server_name in unknown:
+            if server_name.lower() in known:
+                continue
+            suggestion = self._get_server_suggestion(server_name, known)
+            messages.append(
+                f"{owner} is scoped to MCP server '{server_name}', which is "
+                "not configured, so it matches no call until a server with "
+                f"that name exists. {suggestion}"
+            )
+        return messages
 
     def _get_server_suggestion(self, server_name: str, available_servers: set) -> str:
         """Generate a helpful suggestion for missing server references.
@@ -1676,32 +1786,7 @@ class PolicyApplier:
         - unknown_tools: "deny" or "require_approval"
         - require_approval_for_new_tools: true
         """
-        # Check for restrictive settings that would be silently ignored
-        unsupported_settings = []
-
-        # Check unknown_tools - only "allow" is supported (current default behavior)
-        unknown_tools_value = (
-            defaults.unknown_tools.value
-            if hasattr(defaults.unknown_tools, "value")
-            else defaults.unknown_tools
-        )
-        if unknown_tools_value != "allow":
-            unsupported_settings.append(
-                f"unknown_tools='{unknown_tools_value}' (only 'allow' is currently supported)"
-            )
-
-        # Check require_approval_for_new_tools - only False is supported
-        if defaults.require_approval_for_new_tools:
-            unsupported_settings.append(
-                "require_approval_for_new_tools=true (not yet implemented)"
-            )
-
-        # Check default_approval_workflow - not yet enforced
-        if defaults.default_approval_workflow:
-            unsupported_settings.append(
-                f"default_approval_workflow='{defaults.default_approval_workflow}' (not yet implemented)"
-            )
-
+        unsupported_settings = unsupported_default_settings(defaults)
         if unsupported_settings:
             error_msg = (
                 "Policy contains restrictive default settings that are not yet supported. "
@@ -1714,8 +1799,7 @@ class PolicyApplier:
 
         # Safe defaults - just log and continue
         logger.info(
-            f"Default settings validated (using built-in defaults): "
-            f"unknown_tools={unknown_tools_value}"
+            "Default settings validated (using built-in defaults): unknown_tools=allow"
         )
         return True
 

@@ -10,6 +10,7 @@ from preloop.models.crud import (
     crud_account,
     crud_api_usage,
     crud_gateway_usage_search_document,
+    crud_managed_agent,
 )
 from preloop.models.models.account import Account
 from preloop.models.models.ai_model import AIModel
@@ -25,6 +26,7 @@ from preloop.schemas.gateway_usage import (
     FlowGatewayUsageSummaryResponse,
     GatewayBudgetSummary,
     GatewayTokenUsage,
+    GatewayUsageByAgent,
     GatewayUsageByDay,
     GatewayUsageByExecution,
     GatewayUsageByFlow,
@@ -35,7 +37,6 @@ from preloop.schemas.gateway_usage import (
     RateLimitBySession,
     RateLimitSnapshotItem,
     RateLimitTotals,
-    UsageBreakdown,
 )
 from preloop.services.analytics_history import restrict_history_window
 from preloop.services.tool_usage_stats import ToolUsageStatsService
@@ -209,7 +210,7 @@ class ModelGatewayUsageService:
         runtime_principal_id: Optional[str] = None,
         include_breakdown: bool = True,
         exclude_retries: bool = False,
-        breakdowns: Optional[set[UsageBreakdown]] = None,
+        breakdowns: Optional[set[str]] = None,
         session_limit: Optional[int] = None,
         session_offset: int = 0,
     ) -> AccountGatewayUsageSummaryResponse:
@@ -306,6 +307,29 @@ class ModelGatewayUsageService:
             )
         else:
             usage_by_tool = []
+        # Opt-in and account-wide: a per-principal filter has no agent split.
+        if "agents" in selected and runtime_principal_id is None:
+            usage_by_agent = [
+                GatewayUsageByAgent(
+                    agent_id=row["agent_id"],
+                    session_count=row["session_count"],
+                    request_count=row["total_requests"],
+                    successful_requests=row["successful_requests"],
+                    failed_requests=row["failed_requests"],
+                    token_usage=GatewayTokenUsage.from_row(row),
+                    estimated_cost=row["estimated_cost"],
+                    last_request_at=row["last_request_at"],
+                    subscription_usage=row["subscription_usage"],
+                )
+                for row in crud_managed_agent.get_usage_by_agent_for_account(
+                    self.db,
+                    account_id=str(account.id),
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            ]
+        else:
+            usage_by_agent = []
         if "days" in selected:
             requests_by_day = crud_api_usage.get_gateway_usage_timeseries(
                 self.db,
@@ -353,6 +377,7 @@ class ModelGatewayUsageService:
             ],
             total_sessions=total_sessions,
             usage_by_tool=usage_by_tool,
+            usage_by_agent=usage_by_agent,
         )
 
     def get_flow_summary(

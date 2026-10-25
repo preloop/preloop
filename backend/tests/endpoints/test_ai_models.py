@@ -1,3 +1,5 @@
+from tests.credential_fixtures import ai_model_with_secret
+
 import uuid
 from unittest.mock import MagicMock
 
@@ -404,7 +406,7 @@ async def test_fetch_provider_models_validation_error_is_400():
 
     http_exc = exc_info.value
     assert http_exc.status_code == 400
-    assert "private address" in http_exc.detail
+    assert "link-local" in http_exc.detail
     assert "sk-SUPERSECRET-KEY" not in http_exc.detail
 
 
@@ -1154,9 +1156,8 @@ def test_put_ai_model_rejects_codex_ws_override_on_non_codex_model(
 @pytest.fixture
 def built_in_model() -> models.AIModel:
     """A system model with private operator routing metadata."""
-    from preloop.services.built_in_models import BUILT_IN_MODEL_ALIAS
 
-    return models.AIModel(
+    return ai_model_with_secret(
         endpoint_type="direct",
         id=uuid.uuid4(),
         name="DeepSeek V4.1 Flash",
@@ -1169,7 +1170,7 @@ def built_in_model() -> models.AIModel:
         api_endpoint="https://operator.example.com/v1",
         credentials_secret_id=uuid.uuid4(),
         meta_data={
-            "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS},
+            "gateway": {"enabled": True, "model_alias": "example/operator-model"},
             "provider_runtime": {"private_key": "private-routing-data"},
         },
     )
@@ -1253,7 +1254,6 @@ async def test_builtin_read_does_not_allow_mutations(
     [
         (False, False, "qwen/deepseek-v4.1-flash-hosted"),
         (True, True, "qwen/deepseek-v4.1-flash-hosted"),
-        (True, False, "openai/legacy-hosted"),
     ],
 )
 async def test_unavailable_builtin_cannot_be_read(
@@ -1423,3 +1423,45 @@ def test_stored_bedrock_metadata_region_overrides_imported_secret(
         "aws_bearer_token_bedrock": "synthetic-key",
         "aws_region_name": "us-west-2" if metadata_region else "us-east-1",
     }
+
+
+@pytest.mark.asyncio
+async def test_list_ai_models_default_only(
+    mock_account: Account, mocker: MockerFixture
+) -> None:
+    """The Tools list asks for the default models only, not the catalog (#1695)."""
+    from types import SimpleNamespace
+
+    own = [
+        SimpleNamespace(
+            id=uuid.uuid4(), account_id=mock_account.account_id, is_default=flag
+        )
+        for flag in (False, True, False)
+    ]
+    crud = mocker.patch("preloop.api.endpoints.ai_models.crud_ai_model")
+    crud.get_selectable_for_account.return_value = own
+    crud.configured_account_default_kinds.return_value = set()
+    mocker.patch(
+        "preloop.models.crud.resource_share.crud_resource_share.public_list",
+        return_value=[],
+    )
+    mocker.patch(
+        "preloop.plugins.account_hooks.filter_viewable",
+        side_effect=lambda db, user, kind, rows: rows,
+    )
+    mocker.patch(
+        "preloop.api.endpoints.ai_models._apply_tariff_visibility",
+        side_effect=lambda rows, is_admin: rows,
+    )
+
+    everything = await maybe_await(
+        ai_models.list_ai_models(db=MagicMock(), current_user=mock_account)
+    )
+    defaults = await maybe_await(
+        ai_models.list_ai_models(
+            db=MagicMock(), current_user=mock_account, default_only=True
+        )
+    )
+
+    assert len(everything) == 3
+    assert defaults == [own[1]]

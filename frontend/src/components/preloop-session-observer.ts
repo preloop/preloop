@@ -1,3 +1,4 @@
+import { randomUuid } from '../utils/random-uuid';
 import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -7,9 +8,12 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/dialog/dialog.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/menu/menu.js';
+import '@shoelace-style/shoelace/dist/components/menu-item/menu-item.js';
 import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import './desktop-view';
 import {
@@ -70,6 +74,7 @@ import type {
   SessionObserverScope,
   SessionReplayMode,
 } from '../utils/session-observer';
+import { turnInfoFromSession } from '../utils/agent-status';
 import {
   formatCost,
   formatNumber,
@@ -89,8 +94,13 @@ import './talk-button';
 import './session-list-panel';
 import './session-replay-panel';
 import './session-request-timeline';
+import { runtimeFromSourceType } from '../utils/session-turns';
 import './similar-sessions-panel';
 import './browser-step-strip';
+import './session-recording-player';
+import type { SessionRecordingPlayer } from './session-recording-player';
+import type { RecordingSync, MediaSyncResponse } from '../types';
+import { getRuntimeSessionMediaSync } from '../api';
 import './artifact-image-viewer';
 import './session-artifact-summary';
 import {
@@ -118,6 +128,12 @@ const FULL_LAYOUT_MIN_HEIGHT_PX = 560;
 /** App header plus the page padding above and below the panel. */
 const FULL_LAYOUT_CHROME_PX = 120;
 const EVENT_PAGE_SIZE = 25;
+// The conversation pane reads the last 20 turns first; older turns come in
+// through "Load earlier". The window caps how much of the replayed history
+// the oldest event on a page may carry: on a 402-call session the unbounded
+// page was 2.7 MB of JSON (#1689).
+const TURN_PAGE_SIZE = 20;
+const TURN_HISTORY_WINDOW = 40;
 const REPLAY_METADATA_LIMIT = 5000;
 
 // Sidebar collapse/expand animation duration. Must match the CSS transition
@@ -195,6 +211,7 @@ const DEFAULT_FEATURES: Required<SessionObserverFeatures> = {
   endSession: false,
   similarSessions: false,
   liveDesktop: false,
+  syncedRecordingPlayer: true,
 };
 
 @customElement('preloop-session-observer')
@@ -360,6 +377,101 @@ export class PreloopSessionObserver extends LitElement {
   /** Index into the active session's browser steps shown full size, or -1. */
   @state()
   private browserStepViewerIndex = -1;
+  @state() private loadedMediaSync: Record<string, MediaSyncResponse> = {};
+  @state() private selectedRecordingId = '';
+  @state() private recordingActivityId: string | null = null;
+  private recordingLastUserScroll = -Infinity;
+
+  private get selectedRecording() {
+    return (
+      this.recordings.find((item) => item.id === this.selectedRecordingId) ??
+      this.recordings[0]
+    );
+  }
+  private get recordings() {
+    return Object.values(this.activeArtifacts).filter(
+      (item) => item.kind === 'recording' || item.kind === 'screencast'
+    );
+  }
+  private get recordingSync(): RecordingSync | undefined {
+    return this.loadedMediaSync[this.activeSessionId || '']?.recordings?.find(
+      (item) => item.artifact_id === this.selectedRecording?.id
+    );
+  }
+  private get recordingEnabled(): boolean {
+    return (
+      this.enabledFeatures.syncedRecordingPlayer &&
+      !!this.selectedRecording?.media_timing &&
+      this.selectedRecording.availability === 'available' &&
+      this.selectedRecording.content_type !== 'image/gif'
+    );
+  }
+  private get recordingPlayer(): SessionRecordingPlayer | null {
+    return this.renderRoot.querySelector('session-recording-player');
+  }
+  private seekRecording(activityId: string): void {
+    void this.recordingPlayer?.seekActivity(activityId);
+  }
+  private recordingUnavailable(
+    event: CustomEvent<{
+      sessionId: string;
+      artifactId: string;
+      availability: string;
+    }>
+  ): void {
+    const { sessionId, artifactId, availability } = event.detail;
+    const cached = this.loadedArtifacts[sessionId];
+    const artifact = cached?.byId[artifactId];
+    if (!artifact) return;
+    if (
+      sessionId === this.activeSessionId &&
+      artifactId === this.selectedRecording?.id
+    )
+      this.recordingActivityId = null;
+    this.loadedArtifacts = {
+      ...this.loadedArtifacts,
+      [sessionId]: {
+        ...cached,
+        byId: { ...cached.byId, [artifactId]: { ...artifact, availability } },
+      },
+    };
+  }
+  private recordingPlayhead(
+    event: CustomEvent<{ activityId: string | null }>
+  ): void {
+    this.recordingActivityId = event.detail.activityId;
+    if (
+      !this.recordingActivityId ||
+      Date.now() - this.recordingLastUserScroll < 5000
+    )
+      return;
+    const selector =
+      this.replayMode === 'conversation'
+        ? 'session-chat-view'
+        : 'session-replay-panel';
+    const host = this.renderRoot.querySelector(selector);
+    const row = host?.shadowRoot?.querySelector(
+      `[data-recording-activity="${CSS.escape(this.recordingActivityId)}"]`
+    );
+    row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  private renderRecordingPlayer() {
+    if (!this.enabledFeatures.syncedRecordingPlayer || !this.recordings.length)
+      return nothing;
+    return html`<session-recording-player
+      .sessionId=${this.activeSessionId || ''}
+      .recordings=${this.recordings}
+      .sync=${this.loadedMediaSync[this.activeSessionId || '']?.recordings ?? []}
+      .selectedId=${this.selectedRecording?.id ?? ''}
+      @recording-selected=${(event: CustomEvent<{ artifactId: string }>) => {
+        this.selectedRecordingId = event.detail.artifactId;
+        this.recordingActivityId = null;
+      }}
+      @recording-playhead=${this.recordingPlayhead}
+      @recording-unavailable=${this.recordingUnavailable}
+    ></session-recording-player>`;
+  }
+
   /** Artifact descriptors per session, by artifact id. */
   @state()
   private loadedArtifacts: Record<
@@ -507,9 +619,6 @@ export class PreloopSessionObserver extends LitElement {
   private summarizeVisibleContent = false;
 
   @state()
-  private livePulse = false;
-
-  @state()
   private searchQuery = '';
 
   @state()
@@ -521,7 +630,6 @@ export class PreloopSessionObserver extends LitElement {
   @state()
   private realtimeState: ConnectionState | null = null;
   private refreshTimer: number | null = null;
-  private livePulseTimer: number | null = null;
 
   static styles = [
     consoleDialogStyles,
@@ -858,6 +966,8 @@ export class PreloopSessionObserver extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    ++this.pinnedSessionRequest;
+    this.pinnedSessionPending = null;
     this.clearDesktopRecheck();
     // Reconnecting looks the endpoint up afresh.
     this.desktopLookupKey = null;
@@ -868,7 +978,6 @@ export class PreloopSessionObserver extends LitElement {
     );
     this.removeEventListener('session-create-budget', this.handleCreateBudget);
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
-    if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
     this.clearSidebarAnimationTimer();
     for (const sessionId of Object.keys(this.optimizationJobPollTimers)) {
       this.clearOptimizationJobPollTimer(sessionId);
@@ -876,11 +985,48 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   willUpdate(changed: Map<string | number | symbol, unknown>): void {
-    if (changed.has('sessions')) {
-      this.applySessions(this.sessions || []);
+    if (
+      changed.has('selectedSessionId') &&
+      changed.get('selectedSessionId') !== undefined
+    ) {
+      ++this.pinnedSessionRequest;
+      this.pinnedSessionPending = null;
+      this.pinnedSessionError = null;
+      this.failedPinnedSessionId = null;
+      if (this.selectedSessionId === null) this.activeSessionId = null;
     }
-    if (changed.has('selectedSessionId') && this.selectedSessionId) {
-      void this.selectSession(this.selectedSessionId);
+    if (changed.has('scopeId') && changed.get('scopeId') !== undefined) {
+      ++this.pinnedSessionRequest;
+      this.pinnedSessionPending = null;
+      this.pinnedSessionError = null;
+      this.failedPinnedSessionId = null;
+      this.observedSessions = [];
+      this.activeSessionId = null;
+    }
+    if (changed.has('sessions') || changed.has('scopeId')) {
+      this.applySessions(this.sessions || []);
+    } else if (
+      changed.has('selectedSessionId') &&
+      this.selectedSessionId === null
+    ) {
+      this.applySessions(null);
+    }
+    if (
+      changed.has('selectedSessionId') &&
+      !changed.has('sessions') &&
+      !changed.has('scopeId') &&
+      this.selectedSessionId !== null
+    ) {
+      if (
+        this.observedSessions.some(
+          (session) => session.id === this.selectedSessionId
+        )
+      )
+        void this.selectSession(this.selectedSessionId);
+      else {
+        this.activeSessionId = null;
+        void this.loadPinnedSession(this.selectedSessionId);
+      }
     }
   }
 
@@ -999,7 +1145,6 @@ export class PreloopSessionObserver extends LitElement {
   private handleRuntimeSessionActivity(message: any): void {
     const payload = message?.payload ?? {};
     if (!this.matchesScope(payload)) return;
-    this.pulseLive();
     // The runner may have gone offline or come back: re-read the control
     // mode of the open runner session (debounced in the element).
     if (
@@ -1054,7 +1199,6 @@ export class PreloopSessionObserver extends LitElement {
   private handleGatewayActivity(message: any): void {
     const payload = message?.payload ?? {};
     if (!this.matchesScope(payload)) return;
-    this.pulseLive();
 
     const sessionId = payload.runtime_session_id;
     if (!sessionId) {
@@ -1064,7 +1208,7 @@ export class PreloopSessionObserver extends LitElement {
 
     if (this.activeSessionId === sessionId && this.loadedEvents[sessionId]) {
       const event: FlowGatewayEvent = {
-        id: message.id || crypto.randomUUID(),
+        id: message.id || randomUuid(),
         execution_id: message.execution_id || '',
         timestamp: payload.timestamp || new Date().toISOString(),
         type: message.type,
@@ -1122,15 +1266,6 @@ export class PreloopSessionObserver extends LitElement {
     return true;
   }
 
-  private pulseLive(): void {
-    this.livePulse = true;
-    if (this.livePulseTimer !== null) window.clearTimeout(this.livePulseTimer);
-    this.livePulseTimer = window.setTimeout(() => {
-      this.livePulse = false;
-      this.livePulseTimer = null;
-    }, 1400);
-  }
-
   private scheduleScopeRefresh(): void {
     if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
     this.refreshTimer = window.setTimeout(() => {
@@ -1184,9 +1319,36 @@ export class PreloopSessionObserver extends LitElement {
     }
   }
 
-  private applySessions(rows: SessionInput[], preserveSelection = true): void {
-    this.observedSessions = normalizeObservedSessions(rows);
-    const requested = this.selectedSessionId || this.activeSessionId;
+  private pinnedSessionRequest = 0;
+  private failedPinnedSessionId: string | null = null;
+  @state() private pinnedSessionPending: string | null = null;
+  @state() private pinnedSessionError: string | null = null;
+
+  private applySessions(
+    rows: SessionInput[] | null,
+    preserveSelection = true
+  ): void {
+    const pinned = this.observedSessions.find(
+      (session) => session.id === this.selectedSessionId
+    );
+    if (rows !== null) this.observedSessions = normalizeObservedSessions(rows);
+    if (
+      pinned &&
+      !this.observedSessions.some((session) => session.id === pinned.id)
+    ) {
+      this.observedSessions = [pinned, ...this.observedSessions];
+    }
+    const requested = this.selectedSessionId ?? this.activeSessionId;
+    if (
+      this.selectedSessionId !== null &&
+      !this.observedSessions.some(
+        (session) => session.id === this.selectedSessionId
+      )
+    ) {
+      this.activeSessionId = null;
+      void this.loadPinnedSession(this.selectedSessionId);
+      return;
+    }
     const nextActive =
       preserveSelection &&
       requested &&
@@ -1196,12 +1358,66 @@ export class PreloopSessionObserver extends LitElement {
           ? this.observedSessions[0]?.id || null
           : null;
     if (nextActive && nextActive !== this.activeSessionId) {
-      // Stagger heavy event/activity loads so the session list can paint first.
       requestAnimationFrame(() => {
+        if (
+          !this.isConnected ||
+          (this.selectedSessionId !== null &&
+            this.selectedSessionId !== nextActive)
+        )
+          return;
         void this.selectSession(nextActive);
       });
-    } else if (!nextActive) {
-      this.activeSessionId = null;
+    } else if (!nextActive) this.activeSessionId = null;
+  }
+
+  /** Resolve a pinned session outside the list page through the authorized API. */
+  private async loadPinnedSession(sessionId: string): Promise<void> {
+    if (
+      this.pinnedSessionPending === sessionId ||
+      this.failedPinnedSessionId === sessionId
+    )
+      return;
+    const request = ++this.pinnedSessionRequest;
+    const scopeId = this.scopeId;
+    this.pinnedSessionPending = sessionId;
+    this.pinnedSessionError = null;
+    try {
+      // IDs are a path segment, never an arbitrary API path.
+      if (!/^[a-zA-Z0-9_-]+$/.test(sessionId))
+        throw new Error('Invalid session');
+      const { session } = await getAccountRuntimeSessionDetail(sessionId);
+      if (
+        request !== this.pinnedSessionRequest ||
+        scopeId !== this.scopeId ||
+        this.selectedSessionId !== sessionId ||
+        !this.isConnected
+      )
+        return;
+      if (
+        session.id !== sessionId ||
+        (this.scope === 'managed_agent' && session.agent_id !== scopeId)
+      )
+        throw new Error('Session belongs to another agent');
+      this.observedSessions = [
+        ...normalizeObservedSessions([session]),
+        ...this.observedSessions.filter((row) => row.id !== sessionId),
+      ];
+      await this.selectSession(sessionId);
+    } catch {
+      if (
+        request === this.pinnedSessionRequest &&
+        scopeId === this.scopeId &&
+        this.selectedSessionId === sessionId &&
+        this.isConnected
+      ) {
+        this.failedPinnedSessionId = sessionId;
+        this.pinnedSessionError =
+          'This session is unavailable or does not belong to this agent. Select another session from the list.';
+        this.activeSessionId = null;
+      }
+    } finally {
+      if (request === this.pinnedSessionRequest)
+        this.pinnedSessionPending = null;
     }
   }
 
@@ -1273,6 +1489,12 @@ export class PreloopSessionObserver extends LitElement {
       if (options.userInitiated) this.collapseSidebar();
       return;
     }
+    this.pinnedSessionError = null;
+    if (options.userInitiated) {
+      ++this.pinnedSessionRequest;
+      this.pinnedSessionPending = null;
+      this.selectedSessionId = sessionId;
+    }
     this.activeSessionId = sessionId;
     // Only a USER selection hands the list's column to the transcript.
     // Auto-selection on load must leave the list visible: the operator has
@@ -1286,6 +1508,8 @@ export class PreloopSessionObserver extends LitElement {
     }
     this.browserStepViewerIndex = -1;
     this.artifactViewerIndex = -1;
+    this.selectedRecordingId = '';
+    this.recordingActivityId = null;
     this.artifactKindFilter = null;
     this.highlightedArtifactId = null;
     // A later link to an artifact of this or another session lands again.
@@ -1315,8 +1539,9 @@ export class PreloopSessionObserver extends LitElement {
     try {
       const [events, activity] = await Promise.all([
         getRuntimeSessionGatewayEvents(sessionId, {
-          limit: EVENT_PAGE_SIZE,
+          limit: TURN_PAGE_SIZE,
           offset: 0,
+          historyWindow: TURN_HISTORY_WINDOW,
           // Every call replays the whole conversation; the page carries each
           // message once (1.7 MB -> about 150 KB on a long session, #1586).
           history: 'delta',
@@ -1347,13 +1572,13 @@ export class PreloopSessionObserver extends LitElement {
         [sessionId]: {
           nextOffset:
             events.pagination?.next_offset ??
-            ((events.logs || []).length >= EVENT_PAGE_SIZE
+            ((events.logs || []).length >= TURN_PAGE_SIZE
               ? (events.logs || []).length
               : null),
           total: events.pagination?.total ?? null,
           hasMore:
             events.pagination?.has_more ??
-            (events.logs || []).length >= EVENT_PAGE_SIZE,
+            (events.logs || []).length >= TURN_PAGE_SIZE,
         },
       };
       this.loadedActivity = {
@@ -1402,9 +1627,10 @@ export class PreloopSessionObserver extends LitElement {
     this.loadingMoreEventsForSessionId = sessionId;
     try {
       const events = await getRuntimeSessionGatewayEvents(sessionId, {
-        limit: EVENT_PAGE_SIZE,
+        limit: TURN_PAGE_SIZE,
         offset: page.nextOffset,
         history: 'delta',
+        historyWindow: TURN_HISTORY_WINDOW,
       });
       this.loadedEvents = {
         ...this.loadedEvents,
@@ -2078,6 +2304,22 @@ export class PreloopSessionObserver extends LitElement {
         ...this.loadedArtifacts,
         [sessionId]: { byId, truncated },
       };
+      if (
+        this.enabledFeatures.syncedRecordingPlayer &&
+        items.some(
+          (item) => item.kind === 'recording' || item.kind === 'screencast'
+        )
+      ) {
+        try {
+          const sync = await getRuntimeSessionMediaSync(sessionId);
+          this.loadedMediaSync = { ...this.loadedMediaSync, [sessionId]: sync };
+        } catch {
+          this.loadedMediaSync = {
+            ...this.loadedMediaSync,
+            [sessionId]: { recordings: [] },
+          };
+        }
+      }
     } catch (error) {
       console.warn('Could not list session artifacts:', error);
     }
@@ -2266,6 +2508,11 @@ export class PreloopSessionObserver extends LitElement {
    * viewer so the click still lands somewhere.
    */
   private scrubToBrowserStep(key: string): void {
+    const step = this.activeBrowserSteps.find(
+      (item) => browserStepKey(item) === key
+    );
+    if (this.recordingEnabled && step?.activity_id)
+      this.seekRecording(step.activity_id);
     const selector =
       this.replayMode === 'conversation'
         ? 'session-chat-view'
@@ -2283,6 +2530,7 @@ export class PreloopSessionObserver extends LitElement {
     return html`<browser-step-strip
       style="margin-bottom: var(--sl-spacing-small);"
       .steps=${steps}
+      .currentActivityId=${this.recordingActivityId}
       .sessionId=${this.activeSessionId}
       @browser-step-scrub=${(event: CustomEvent<{ key: string }>) =>
         this.scrubToBrowserStep(event.detail.key)}
@@ -2324,7 +2572,9 @@ export class PreloopSessionObserver extends LitElement {
       // "Chat" implied you could type here. This tab reads a session; the
       // talk window is where a conversation happens.
       { mode: 'conversation', label: 'Conversation', icon: 'chat-left-text' },
-      { mode: 'timeline', label: 'Transcript', icon: 'list-ul' },
+      // Per model request, with cost and tokens. Conversation is the
+      // terminal-ordered transcript.
+      { mode: 'timeline', label: 'Requests', icon: 'list-ul' },
       { mode: 'replay', label: 'Replay', icon: 'play-circle' },
     ];
     if (this.enabledFeatures.optimization) {
@@ -2500,13 +2750,21 @@ export class PreloopSessionObserver extends LitElement {
         style=${this.replayMode === 'conversation' ? '' : 'display:none'}
         .liveEnabled=${this.replayMode === 'conversation'}
         .sessionId=${this.activeSessionId || ''}
+        .runtime=${runtimeFromSourceType(this.activeSession?.sourceType ?? null)}
         .ended=${Boolean(this.activeSession?.endedAt)}
+        .turn=${turnInfoFromSession(
+          this.activeSession?.raw as Record<string, unknown> | undefined
+        )}
         @session-live-reload=${() => void this.reloadActiveSession()}
         .events=${this.activeEvents}
         .activity=${this.activeActivity}
         .pendingApprovals=${this.activePendingApprovals}
         .sessionEnded=${this.isSessionEnded(this.activeSession)}
         .connected=${this.realtimeConnected}
+        .recordingSync=${this.recordingSync}
+        .recordingEnabled=${this.recordingEnabled}
+        .recordingActivityId=${this.recordingActivityId}
+        .syncedRecordingPlayer=${this.enabledFeatures.syncedRecordingPlayer}
         .artifacts=${this.activeArtifacts}
         .artifactKindFilter=${this.artifactKindFilter}
         .highlightArtifactId=${this.highlightedArtifactId}
@@ -2764,7 +3022,7 @@ export class PreloopSessionObserver extends LitElement {
             ${
               live
                 ? html`<span
-                    class="live-indicator ${this.livePulse ? 'pulsing' : ''}"
+                    class="live-indicator"
                     title="Realtime session updates"
                   >
                     <span class="live-dot"></span>
@@ -2858,13 +3116,10 @@ export class PreloopSessionObserver extends LitElement {
             }}
           >
             <sl-icon slot="prefix" name="list-columns-reverse"></sl-icon>
-            Requests
+            Usage log
           </sl-button>
-          ${this.renderLiveDesktopButton(session)}
-          ${this.renderEvidenceExportButton(session)} ${this.renderTalkButton()}
-          <sl-button size="small" @click=${() => this.reloadActiveSession()}>
-            Refresh
-          </sl-button>
+          ${this.renderLiveDesktopButton(session)} ${this.renderTalkButton()}
+          ${this.renderMoreActions(session)}
           ${
             session && this.isLiveRunnerSession(session)
               ? html`<sl-button
@@ -2903,26 +3158,57 @@ export class PreloopSessionObserver extends LitElement {
   }
 
   /**
+   * Refresh and the evidence export sit in one overflow menu, so the toolbar
+   * stays one row at 1440 and the first turn is above the fold (#1689).
+   * The destructive group keeps its own place at the end of the row.
+   */
+  private renderMoreActions(session: ObservedSession | null) {
+    return html`<sl-dropdown class="more-actions" placement="bottom-end" hoist>
+      <sl-button
+        slot="trigger"
+        size="small"
+        aria-label="More actions"
+        data-testid="session-more-actions"
+      >
+        <sl-icon name="three-dots" label="More actions"></sl-icon>
+      </sl-button>
+      <sl-menu>
+        <sl-menu-item
+          data-testid="session-refresh"
+          @click=${() => this.reloadActiveSession()}
+        >
+          <sl-icon slot="prefix" name="arrow-clockwise"></sl-icon>
+          Refresh
+        </sl-menu-item>
+        ${this.renderEvidenceExportItem(session)}
+      </sl-menu>
+    </sl-dropdown>`;
+  }
+
+  /**
    * Open the period export pre-filtered to this session (#1088), so its
    * transcripts, screenshots and files leave with a sha256 each.
    */
-  private renderEvidenceExportButton(session: ObservedSession | null) {
+  private renderEvidenceExportItem(session: ObservedSession | null) {
     // Synthetic observer rows (gateway-only traffic) have no session to export.
     if (!session || !isUuid(session.id)) return nothing;
-    return html`<sl-button
-      size="small"
+    const href = sessionExportHref({
+      id: session.id,
+      started_at: session.startedAt,
+      last_activity_at: session.lastActivityAt,
+      ended_at: session.endedAt,
+    });
+    return html`<sl-menu-item
       data-testid="add-to-evidence-export"
-      href=${sessionExportHref({
-        id: session.id,
-        started_at: session.startedAt,
-        last_activity_at: session.lastActivityAt,
-        ended_at: session.endedAt,
-      })}
+      data-href=${href}
       title="Open the signed period export limited to this session's artifacts"
+      @click=${() => {
+        window.location.href = href;
+      }}
     >
       <sl-icon slot="prefix" name="box-arrow-up"></sl-icon>
       Add to evidence export
-    </sl-button>`;
+    </sl-menu-item>`;
   }
 
   /**
@@ -2955,6 +3241,34 @@ export class PreloopSessionObserver extends LitElement {
     const content = html`
       <div
         class="content"
+        @wheel=${() => {
+          this.recordingLastUserScroll = Date.now();
+        }}
+        @touchmove=${() => {
+          this.recordingLastUserScroll = Date.now();
+        }}
+        @pointerdown=${() => {
+          this.recordingLastUserScroll = Date.now();
+        }}
+        @pointermove=${(event: PointerEvent) => {
+          if (event.buttons) this.recordingLastUserScroll = Date.now();
+        }}
+        @keydown=${(event: KeyboardEvent) => {
+          this.recordingPlayer?.handleShortcut(event);
+          if (
+            [
+              'ArrowUp',
+              'ArrowDown',
+              'PageUp',
+              'PageDown',
+              'Home',
+              'End',
+            ].includes(event.key)
+          )
+            this.recordingLastUserScroll = Date.now();
+        }}
+        @recording-seek=${(event: CustomEvent<{ activityId: string }>) => this.seekRecording(event.detail.activityId)}
+        @recording-open=${(event: CustomEvent<{ artifactId: string }>) => this.recordingPlayer?.selectRecording(event.detail.artifactId)}
         @browser-step-open=${(event: CustomEvent<{ key: string }>) =>
           this.openBrowserStepViewer(event.detail.key)}
         @artifact-open=${(event: CustomEvent<{ artifactId: string }>) =>
@@ -2963,7 +3277,8 @@ export class PreloopSessionObserver extends LitElement {
           void this.scrollToArtifact(event.detail.artifactId)}
       >
         ${this.renderToolbar()} ${this.renderOptimizeHint()}
-        ${this.renderArtifactSummary()} ${this.renderBrowserStepStrip()}
+        ${this.pinnedSessionError ? html`<p role="alert">${this.pinnedSessionError}</p>` : nothing}
+        ${this.pinnedSessionPending ? html`<p role="status">Loading selected session…</p>` : nothing}
         ${
           this.error
             ? html`
@@ -3074,7 +3389,10 @@ export class PreloopSessionObserver extends LitElement {
               `
             : nothing
         }
-        ${this.renderConversationView()}
+        ${this.renderRecordingPlayer()} ${this.renderConversationView()}
+        <!-- Artifacts and the step strip follow the transcript, so the
+             first turn starts above the fold at 1440x900 (#1689). -->
+        ${this.renderArtifactSummary()} ${this.renderBrowserStepStrip()}
         <session-replay-panel
           @session-live-reload=${() => void this.reloadActiveSession()}
           style=${this.replayMode === 'conversation' ? 'display: none;' : ''}
@@ -3087,6 +3405,10 @@ export class PreloopSessionObserver extends LitElement {
               : []
           }
           .activity=${this.activeActivity}
+          .recordingSync=${this.recordingSync}
+          .recordingEnabled=${this.recordingEnabled}
+          .recordingActivityId=${this.recordingActivityId}
+          .syncedRecordingPlayer=${this.enabledFeatures.syncedRecordingPlayer}
           .artifacts=${this.activeArtifacts}
           .artifactKindFilter=${this.artifactKindFilter}
           .highlightArtifactId=${this.highlightedArtifactId}
@@ -3108,6 +3430,9 @@ export class PreloopSessionObserver extends LitElement {
           }
           .totalEvents=${this.activeEventPage?.total ?? null}
           .optimizationEnabled=${this.enabledFeatures.optimization}
+          .sessionTotalTokens=${
+            this.activeSession?.tokenUsage?.total_tokens ?? null
+          }
           .availableModels=${this.aiModels}
           .availableModelsLoading=${this.aiModelsLoading}
           .optimizationResult=${

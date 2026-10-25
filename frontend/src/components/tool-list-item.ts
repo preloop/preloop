@@ -29,6 +29,7 @@ export class ToolListItem extends LitElement {
   @property({ type: Object }) features: { [key: string]: boolean | string[] } =
     {};
   @property({ type: Boolean }) expanded = false;
+  @property({ type: Boolean }) readOnly = false;
   @property({ type: String }) mode: 'global' | 'scoped' = 'global';
   @property({ type: Boolean }) rulesInherited = false;
   @property({ type: Object }) usageStat: GatewayUsageByTool | null = null;
@@ -320,6 +321,7 @@ export class ToolListItem extends LitElement {
 
   private _handleToggleEnabled(e: Event) {
     e.stopPropagation();
+    if (this.readOnly) return;
     const checked = (e.target as HTMLInputElement).checked;
     // Native rows use a Blocked switch (inverse of is_enabled).
     const isEnabled = this._isNativeTool() ? !checked : checked;
@@ -333,6 +335,7 @@ export class ToolListItem extends LitElement {
   }
 
   private _revertToGlobal() {
+    if (this.readOnly) return;
     this.dispatchEvent(
       new CustomEvent('revert-tool', {
         detail: { tool: this.tool },
@@ -344,6 +347,10 @@ export class ToolListItem extends LitElement {
 
   private _handleSaveRule(e: CustomEvent) {
     e.stopPropagation();
+    if (this.readOnly) {
+      e.detail.reject?.('Shared server configuration is read-only.');
+      return;
+    }
     const { existingRule, formData, resolve, reject } = e.detail;
     this.dispatchEvent(
       new CustomEvent('save-rule', {
@@ -371,6 +378,7 @@ export class ToolListItem extends LitElement {
   }
 
   private _handleDeleteRule(rule: AccessRuleSummary) {
+    if (this.readOnly) return;
     this.dispatchEvent(
       new CustomEvent('delete-rule', {
         detail: {
@@ -446,11 +454,13 @@ export class ToolListItem extends LitElement {
   }
 
   private _openJustificationDialog() {
+    if (this.readOnly || this.mode === 'scoped') return;
     this._justificationMode = this.tool.justification_mode || 'disabled';
     this._showJustificationDialog = true;
   }
 
   private async _saveJustificationMode() {
+    if (this.readOnly || this.mode === 'scoped') return;
     try {
       const { updateToolConfiguration, createToolConfiguration } =
         await import('../api');
@@ -499,7 +509,7 @@ export class ToolListItem extends LitElement {
     return html`
       <div class="tool-content">
         ${
-          this.mode === 'scoped'
+          this.mode === 'scoped' && !this.readOnly
             ? this.rulesInherited
               ? html`
                   <sl-alert
@@ -542,6 +552,7 @@ export class ToolListItem extends LitElement {
         }
 
         <governance-rule-set-editor
+          .readOnly=${this.readOnly}
           .toolName=${this.tool.name}
           .toolSchema=${this._toolSchema()}
           .rules=${this.accessRules}
@@ -557,6 +568,7 @@ export class ToolListItem extends LitElement {
           }}
           @reorder-rules=${(event: CustomEvent) => {
             event.stopPropagation();
+            if (this.readOnly) return;
             this.dispatchEvent(
               new CustomEvent('reorder-rules', {
                 detail: {
@@ -700,7 +712,7 @@ export class ToolListItem extends LitElement {
                   ? !this.tool.is_enabled
                   : this.tool.is_enabled
               }
-              ?disabled=${isUnsupported}
+              ?disabled=${isUnsupported || this.readOnly}
               @sl-change=${this._handleToggleEnabled}
               ><span
                 class="switch-label ${this._isNativeTool() ? '' : 'sr-only'}"
@@ -718,7 +730,7 @@ export class ToolListItem extends LitElement {
           </div>
 
           ${
-            this._isNativeTool()
+            this._isNativeTool() || this.readOnly || this.mode === 'scoped'
               ? ''
               : html`
                   <div

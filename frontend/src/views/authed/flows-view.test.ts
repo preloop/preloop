@@ -509,6 +509,37 @@ describe('FlowsView', () => {
     expect(urls.some((u) => u.includes('/api/v1/flows/presets'))).to.be.false;
   });
 
+  it('does not fetch presets or the 200-run sample on first load (#1695)', async () => {
+    const mockFlows = [
+      {
+        id: 'flow-1',
+        name: 'Cloned Flow',
+        source_preset_id: 'preset-1',
+        execution_stats: {
+          since: '2026-01-01T00:00:00Z',
+          runs: 1,
+          failed: 0,
+          cost: 0,
+          last_run_at: '2026-01-02T00:00:00Z',
+        },
+      },
+    ];
+    fetchStub = createFetchStub(mockFlows, [
+      { id: 'preset-1', name: 'Preset' },
+    ]);
+    const element = (await fixture(
+      html`<flows-view></flows-view>`
+    )) as FlowsView;
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const urls = fetchStub.getCalls().map((c) => String(c.args[0]));
+    expect(urls.some((u) => u.includes('/api/v1/flows/presets'))).to.be.false;
+    expect(urls.some((u) => /flows\/executions.*limit=200/.test(u))).to.be
+      .false;
+  });
+
   it('stubs fetch for flows API', async () => {
     fetchStub = createFetchStub([], []);
     const element = (await fixture(
@@ -640,6 +671,9 @@ describe('FlowsView', () => {
       });
 
       expect(text).to.match(/Started .*· Running · \d+m \d+s/);
+      // Relative, with the absolute time in the title (U-02).
+      expect(text).to.match(/Started \d+m ago/);
+      expect(text).to.not.match(/\d+\/\d+\/\d{4}/);
     });
 
     it('appends nothing for a legacy terminal execution without an end time', async () => {
@@ -807,6 +841,31 @@ describe('FlowsView', () => {
         ) || []),
       ].map((link) => (link.textContent || '').trim());
 
+    it('gives the name and the last run the room at 1440 (U-09)', async () => {
+      const host = document.createElement('div');
+      host.style.width = '1125px';
+      document.body.appendChild(host);
+      try {
+        fetchStub = stubFlowsApi();
+        const element = document.createElement('flows-view') as FlowsView;
+        host.appendChild(element);
+        await waitUntil(
+          () => !(element as any).isLoading,
+          'Flows view did not finish loading'
+        );
+        await element.updateComplete;
+        const width = (cls: string) =>
+          (
+            element.shadowRoot!.querySelector(`thead th.${cls}`) as HTMLElement
+          ).getBoundingClientRect().width;
+        expect(width('col-flow')).to.be.at.least(220);
+        expect(width('col-last-run')).to.be.at.least(220);
+        expect(width('col-trigger')).to.be.lessThan(width('col-flow'));
+      } finally {
+        host.remove();
+      }
+    });
+
     it('lists the flows in a table by default and counts them', async () => {
       const element = await renderFlows();
 
@@ -854,6 +913,10 @@ describe('FlowsView', () => {
 
     it('filters by the preset a flow was cloned from', async () => {
       const element = await renderFlows();
+      // Preset names load only once the Type filter is opened (#1695).
+      element.shadowRoot
+        ?.querySelector('.preset-filter')
+        ?.dispatchEvent(new CustomEvent('sl-show'));
       await waitUntil(
         () =>
           element.rows.some(
@@ -1016,6 +1079,115 @@ describe('FlowsView', () => {
       ]);
     });
 
+    it('advances the Last run cell when a run starts over the websocket', async () => {
+      const ctor = customElements.get('flows-view') as unknown as {
+        summaryRefreshDelayMs: number;
+      };
+      const delay = ctor.summaryRefreshDelayMs;
+      const original = FLOWS[0].execution_stats;
+      ctor.summaryRefreshDelayMs = 0;
+      try {
+        const element = await renderFlows();
+        const firstRowText = () =>
+          (
+            element.shadowRoot?.querySelector('tbody tr.flow-row')
+              ?.textContent || ''
+          ).replace(/\s+/g, ' ');
+        expect(firstRowText()).to.contain('Ran 10m ago');
+        const summaryCalls = () =>
+          fetchStub.getCalls().filter((call) => {
+            const url = String(call.args[0]);
+            return (
+              url.includes('/api/v1/flows') &&
+              !url.includes('/executions') &&
+              !url.includes('/presets')
+            );
+          }).length;
+        const before = summaryCalls();
+        const presetsBefore = fetchStub
+          .getCalls()
+          .filter((call) => String(call.args[0]).includes('/presets')).length;
+
+        // The server now reports a run that started just now.
+        FLOWS[0].execution_stats = windowStats(2, 0, 1.2345, minutesAgo(0));
+        const ws = element as unknown as {
+          handleWebSocketMessage: (m: unknown) => void;
+        };
+        // A burst of events collapses into one summary request.
+        ws.handleWebSocketMessage({
+          type: 'execution_started',
+          payload: { flow_id: 'flow-review' },
+        });
+        ws.handleWebSocketMessage({
+          type: 'status_update',
+          execution_id: 'exec-unknown',
+          payload: { status: 'RUNNING' },
+        });
+        await waitUntil(
+          () => !firstRowText().includes('Ran 10m ago'),
+          'Last run did not advance'
+        );
+        await element.updateComplete;
+        expect(firstRowText()).to.match(/Ran (just now|0m ago|<1m ago)/);
+        expect(summaryCalls() - before).to.equal(1);
+        expect(
+          fetchStub
+            .getCalls()
+            .filter((call) => String(call.args[0]).includes('/presets')).length
+        ).to.equal(presetsBefore);
+      } finally {
+        FLOWS[0].execution_stats = original;
+        ctor.summaryRefreshDelayMs = delay;
+      }
+    });
+
+    it('links the last run with its status from the summary (#1695)', async () => {
+      const original = FLOWS[0].execution_stats;
+      (FLOWS[0] as any).execution_stats = {
+        ...windowStats(1, 0, 1.2345, minutesAgo(10)),
+        last_run: {
+          id: 'exec-from-summary',
+          status: 'FAILED',
+          start_time: minutesAgo(10),
+          end_time: minutesAgo(9),
+          trigger_subject: 'PR #77 Tighten the lexer',
+          trigger_subject_url: null,
+          trigger_subject_ci: 'GitHub Actions',
+          trigger_subject_ci_url: null,
+        },
+      };
+      try {
+        const element = await renderFlows();
+        const link = element.shadowRoot?.querySelector<HTMLAnchorElement>(
+          'tbody tr.flow-row a.last-run'
+        );
+        expect(link?.getAttribute('href')).to.equal(
+          '/console/flows/executions/exec-from-summary'
+        );
+        const text = (link?.textContent || '').replace(/\s+/g, ' ');
+        expect(text).to.contain('PR #77 Tighten the lexer');
+        expect(link?.querySelector('sl-badge')).to.exist;
+        const row = element.shadowRoot?.querySelector('tbody tr.flow-row');
+        expect((row?.textContent || '').replace(/\s+/g, ' ')).to.contain(
+          'GitHub Actions'
+        );
+        // A narrow cell cuts the CI hint with an ellipsis, never mid-word
+        // ("GitHub Ac") with nothing to say it was cut (B-10).
+        const hint = link!.querySelector(
+          '.execution-subject-ci'
+        ) as HTMLElement;
+        expect(getComputedStyle(hint).textOverflow).to.equal('ellipsis');
+        expect(getComputedStyle(hint).overflow).to.equal('hidden');
+        expect(
+          fetchStub
+            .getCalls()
+            .some((call) => String(call.args[0]).includes('limit=200'))
+        ).to.equal(false);
+      } finally {
+        FLOWS[0].execution_stats = original;
+      }
+    });
+
     it('shows the last run, the counts in range and the estimated spend', async () => {
       const element = await renderFlows();
       await waitUntil(
@@ -1026,8 +1198,8 @@ describe('FlowsView', () => {
 
       const firstRow = element.shadowRoot?.querySelector('tbody tr.flow-row');
       const text = (firstRow?.textContent || '').replace(/\s+/g, ' ');
-      expect(text).to.contain('Succeeded');
-      expect(text).to.contain('PR #12');
+      // The server's last run time, not a 200-run sample (#1695).
+      expect(text).to.contain('Ran 10m ago');
       // Above a cent, two decimals (DESIGN.md, "Money").
       expect(text).to.contain('$1.23');
 
@@ -1171,11 +1343,19 @@ describe('FlowsView', () => {
         () => !(element as any).isLoading,
         'Flows view did not finish loading'
       );
+      // Without server window stats the runs come from the executions
+      // sample, which can land after the list itself.
+      const reviewRow = () =>
+        element.rows.find(
+          (candidate: FlowListRow) => candidate.id === 'flow-review'
+        );
+      await waitUntil(
+        () => (reviewRow()?.runs ?? 0) > 0,
+        'executions sample did not load'
+      );
       await element.updateComplete;
 
-      const row = element.rows.find(
-        (candidate: FlowListRow) => candidate.id === 'flow-review'
-      );
+      const row = reviewRow();
       expect(row?.countsFromServer).to.equal(false);
       expect(row?.runs).to.be.greaterThan(0);
 
@@ -1493,6 +1673,14 @@ describe('FlowsView', () => {
         () => !(element as any).isLoading,
         'Flows view did not finish loading'
       );
+      // The list deliberately renders before its execution sample arrives.
+      // Date-window assertions need that separate read to finish as well.
+      if (options.executions.length && (options.flowsStatus ?? 200) === 200)
+        await waitUntil(
+          () =>
+            (element as any).executions.length === options.executions.length,
+          'Flow execution fixtures did not finish loading'
+        );
       await element.updateComplete;
       return element;
     }

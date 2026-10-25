@@ -115,7 +115,43 @@ describe('InvitationManagementView', () => {
     expect(
       (element.shadowRoot?.querySelector('view-header') as any)?.headerText
     ).to.equal('Invitations');
-    expect(element.shadowRoot?.textContent).to.contain('No invitations found');
+    expect(element.shadowRoot?.textContent).to.contain(
+      'No pending invitations.'
+    );
+  });
+
+  it('lists only pending invitations on the Pending tab (B-22)', async () => {
+    // A server that ignores the status filter returns every invitation; the
+    // Pending tab must not show cancelled or accepted ones as pending.
+    fetchStub = createFetchStub({
+      invitations: [
+        sampleInvitation,
+        {
+          ...sampleInvitation,
+          id: 'inv-cancelled',
+          email: 'cancelled@example.com',
+          status: 'cancelled',
+        },
+        {
+          ...sampleInvitation,
+          id: 'inv-accepted',
+          email: 'accepted@example.com',
+          status: 'accepted',
+        },
+      ],
+    });
+    const element = (await fixture(
+      html`<invitation-management-view></invitation-management-view>`
+    )) as InvitationManagementView;
+    await waitUntil(
+      () => (element as any).invitations?.length === 3,
+      'invitations did not load'
+    );
+    await element.updateComplete;
+    const text = element.shadowRoot?.textContent || '';
+    expect(text).to.contain('invitee@example.com');
+    expect(text).to.not.contain('cancelled@example.com');
+    expect(text).to.not.contain('accepted@example.com');
   });
 
   it('renders an invitation when one exists', async () => {

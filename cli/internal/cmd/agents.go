@@ -728,6 +728,24 @@ type managedAgentEnrollmentCreateRequest struct {
 	LastAppliedAt    *time.Time             `json:"last_applied_at,omitempty"`
 	LastValidatedAt  *time.Time             `json:"last_validated_at,omitempty"`
 	LastRestoredAt   *time.Time             `json:"last_restored_at,omitempty"`
+	// Device link (salted hashes and enumerated values only), so the server
+	// attaches the agent to this workstation whatever the enrollment status.
+	WorkstationFingerprint string `json:"workstation_fingerprint,omitempty"`
+	ConfigPathHash         string `json:"config_path_hash,omitempty"`
+	OSFamily               string `json:"os_family,omitempty"`
+	CLIVersion             string `json:"cli_version,omitempty"`
+}
+
+// withDeviceLink returns request carrying this workstation's device link
+// fields for agent. Best effort: without a salt or machine id the request is
+// returned unchanged.
+func (request managedAgentEnrollmentCreateRequest) withDeviceLink(client *api.Client, agent AgentConfig) managedAgentEnrollmentCreateRequest {
+	fields := discoveryLinkFields(client, agent)
+	request.WorkstationFingerprint = fields["workstation_fingerprint"]
+	request.ConfigPathHash = fields["config_path_hash"]
+	request.OSFamily = fields["os_family"]
+	request.CLIVersion = fields["cli_version"]
+	return request
 }
 
 type managedAgentDetailResponse struct {
@@ -886,6 +904,7 @@ func init() {
 	agentsEnrollCmd.Flags().StringSlice("tags", []string{}, "add key-value tags to the enrolled agent (e.g., --tags ext=true,env=prod)")
 	agentsEnrollCmd.Flags().Bool("approvals", false, "install native action gates for central policy and mobile/watch approvals (Claude Code, Cursor, Codex CLI, Copilot CLI, Devin, OpenCode, Pi, DeepSeek Harness)")
 	agentsEnrollCmd.Flags().Bool("no-usage-hooks", false, "Cursor only: do not install the usage hooks that store conversations as runtime sessions with a token estimate (installed by default)")
+	agentsEnrollCmd.Flags().Bool("no-sidecar", false, "Codex CLI only: do not install and start the Agent Control sidecar service (run preloop codex sidecar enable later)")
 	agentsEnrollCmd.Flags().Bool("store-transcript", false, "Cursor only: have the usage hooks also ship transcript text as session activities (default: counts, title and a short summary only)")
 	agentsEnrollCmd.Flags().String("model", "", "managed model alias to use for gateway routing (skips the interactive model picker)")
 	registerClaudeDesktopRouteFlags(agentsEnrollCmd)
@@ -928,7 +947,8 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("--all-users cannot be combined with --%s", name)
 			}
 		}
-		return runAllUsersInventory(cmd.OutOrStdout(), true)
+		deviceRef, _ := cmd.Flags().GetString("device-ref")
+		return runAllUsersInventory(cmd.OutOrStdout(), true, deviceRef)
 	}
 	asJSON, _ := cmd.Flags().GetBool("json")
 	addServers, _ := cmd.Flags().GetBool("add")
@@ -981,6 +1001,9 @@ func runAgentsDiscover(cmd *cobra.Command, args []string) error {
 	if len(discovered) == 0 {
 		fmt.Println("No AI agents found on this machine.")
 		fmt.Println(agentDiscoverySearchLabel())
+		// Agents Preloop recorded as enrolled from this host are still
+		// worth listing when their local configs are gone.
+		printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, nil, nil))
 		return nil
 	}
 
@@ -1046,25 +1069,31 @@ func promptToOnboardDiscoveredAgents(
 	autoApprove bool,
 	skipLiveValidate bool,
 ) error {
+	return promptToOnboardDiscoveredAgentsWithIO(discovered, autoApprove, skipLiveValidate, os.Stdin, os.Stdout)
+}
+
+func promptToOnboardDiscoveredAgentsWithIO(
+	discovered []AgentConfig, autoApprove, skipLiveValidate bool, input io.Reader, output io.Writer,
+) error {
+	input = bufio.NewReader(input)
 	client, err := api.NewClient(FlagToken, FlagURL)
 	if err != nil {
 		return fmt.Errorf("failed to create API client: %w", err)
 	}
 	if !client.IsAuthenticated() {
-		fmt.Println("Tip: Run 'preloop login' to onboard discovered agents.")
+		fmt.Fprintln(output, "Tip: Run 'preloop login' to onboard discovered agents.")
 		return nil
 	}
 
-	candidates, err := filterAgentsPendingEnrollment(client, discovered)
-	if err != nil {
-		return err
-	}
+	// Every discovered agent is a candidate, including already-onboarded
+	// ones: a re-run must refresh their hooks, plugins and MCP config.
+	candidates := selectOnboardingRunCandidates(client, discovered)
 	var outcomes []agentOnboardingOutcome
 	defer func() {
-		printAgentOnboardingSummary(os.Stdout, completeDiscoveryOutcomes(discovered, outcomes))
+		printAgentOnboardingSummary(output, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, outcomes)))
 	}()
 	if len(candidates) == 0 {
-		fmt.Println("All discovered agents are already onboarded or have local managed enrollment state.")
+		fmt.Fprintln(output, "No agents discovered.")
 		return nil
 	}
 
@@ -1073,7 +1102,7 @@ func promptToOnboardDiscoveredAgents(
 	// via the interactive prompts. Explicit `preloop agents onboard <name>`
 	// still works, with a warning.
 	candidates, configOnly := splitRuntimeMissingCandidates(candidates)
-	printRuntimeMissingOnboardingSkips(os.Stdout, configOnly)
+	printRuntimeMissingOnboardingSkips(output, configOnly)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -1086,7 +1115,7 @@ func promptToOnboardDiscoveredAgents(
 	// take ~5s) and a slow upstream for one agent never blocks subsequent
 	// agents from being touched.
 	deferLiveValidate := !skipLiveValidate
-	outcomes, err = promptToOnboardCandidatesTiered(os.Stdin, os.Stdout, client, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
+	outcomes, err = promptToOnboardCandidatesTiered(input, output, client, candidates, autoApprove, true, func(agent AgentConfig, approvals bool) error {
 		return executeManagedEnrollment(agent, managedEnrollmentOptions{
 			Client: client,
 			// AutoApprove carries the -y flag so per-agent sub-prompts
@@ -1098,8 +1127,8 @@ func promptToOnboardDiscoveredAgents(
 			SkipLiveValidate:  skipLiveValidate,
 			DeferLiveValidate: deferLiveValidate,
 			Approvals:         approvals,
-			Input:             os.Stdin,
-			Output:            os.Stdout,
+			Input:             input,
+			Output:            output,
 		})
 	})
 	if err != nil {
@@ -1114,7 +1143,7 @@ func promptToOnboardDiscoveredAgents(
 		}
 	}
 	if deferLiveValidate && len(enrolled) > 0 {
-		liveResults := runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
+		liveResults := runDeferredLiveValidationsParallel(client, enrolled, output)
 		applyLiveValidationOutcomesToSummary(outcomes, liveResults)
 	}
 	return agentOnboardingSummaryError(outcomes)
@@ -1138,22 +1167,20 @@ func promptToOnboardCandidates(
 
 	for _, agent := range candidates {
 		if !autoApprove {
-			action := "Onboard"
+			prompt := fmt.Sprintf("Onboard %s (%s) into managed Preloop access now? (Y/n): ", agent.Name, resolveAgentDisplayName(agent))
 			if agent.IsOnboarded {
-				action = "Re-onboard"
+				prompt = reonboardPrompt(writer, agent)
 			}
-			confirmed, err := confirmActionDefaultYes(
-				bufferedReader,
-				writer,
-				fmt.Sprintf("%s %s (%s) into managed Preloop access now? (Y/n): ", action, agent.Name, resolveAgentDisplayName(agent)),
-			)
+			confirmed, err := confirmActionDefaultYes(bufferedReader, writer, prompt)
 			if err != nil {
 				return outcomes, fmt.Errorf("failed to read onboarding confirmation: %w", err)
 			}
 			if !confirmed {
-				outcomes = append(outcomes, agentOnboardingOutcome{Agent: agent, Status: "skipped", Reason: "onboarding declined"})
+				outcomes = append(outcomes, declinedOnboardingOutcome(agent))
 				continue
 			}
+		} else {
+			announceAutoReonboard(writer, agent)
 		}
 		agent, err := prepareAgentForEnrollment(bufferedReader, writer, agent, autoApprove)
 		if err != nil {
@@ -1306,10 +1333,6 @@ func prepareAgentForEnrollment(
 ) (AgentConfig, error) {
 	agent = normalizeDiscoveredAgent(agent)
 	if autoApprove || nonInteractiveAutoConfirm() {
-		agent.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(
-			agent,
-			identitySaltForAgent(agent),
-		)
 		return agent, nil
 	}
 
@@ -1325,11 +1348,7 @@ func prepareAgentForEnrollment(
 	if strings.TrimSpace(input) != "" {
 		agent.DisplayName = strings.TrimSpace(input)
 	}
-	// Display name is decoupled from identity under v2 derivation.
-	agent.RuntimePrincipalID = stableRuntimePrincipalIDForAgent(
-		agent,
-		identitySaltForAgent(agent),
-	)
+	// Keep the normalized (possibly locally pinned) identity when renaming.
 	return agent, nil
 }
 
@@ -1353,39 +1372,6 @@ func filterAgentsPendingLocalEnrollment(discovered []AgentConfig) []AgentConfig 
 		candidates = append(candidates, agent)
 	}
 	return candidates
-}
-
-func filterAgentsPendingEnrollment(client *api.Client, discovered []AgentConfig) ([]AgentConfig, error) {
-	candidates := make([]AgentConfig, 0, len(discovered))
-	for _, agent := range discovered {
-		if agent.ReonboardRecommended {
-			candidates = append(candidates, agent)
-			continue
-		}
-		if _, err := loadLocalEnrollmentState(agent); err == nil {
-			continue
-		}
-		if client != nil {
-			if managed, err := getManagedAgentForDiscovered(client, agent); err == nil &&
-				managedAgentIsLocallyComplete(managed) {
-				continue
-			}
-		}
-		candidates = append(candidates, agent)
-	}
-	return candidates, nil
-}
-
-func managedAgentIsLocallyComplete(managed *managedAgentSummary) bool {
-	if managed == nil {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(managed.OnboardingState)) {
-	case "fully_onboarded", "mcp_proxy_only":
-		return true
-	default:
-		return false
-	}
 }
 
 func isAutoApprove(cmd *cobra.Command) bool {
@@ -1418,6 +1404,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 	runAll, _ := cmd.Flags().GetBool("all")
 	approvals, _ := cmd.Flags().GetBool("approvals")
 	noUsageHooks, _ := cmd.Flags().GetBool("no-usage-hooks")
+	noSidecar, _ := cmd.Flags().GetBool("no-sidecar")
 	storeTranscript, _ := cmd.Flags().GetBool("store-transcript")
 	preferredModel, _ := cmd.Flags().GetString("model")
 	pinModelFamilies, _ := cmd.Flags().GetBool("pin-model-families")
@@ -1446,6 +1433,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		SkipLiveValidate:    skipLiveValidate,
 		Approvals:           approvals,
 		NoUsageHooks:        noUsageHooks,
+		NoSidecar:           noSidecar,
 		StoreTranscript:     storeTranscript,
 		PreferredModel:      strings.TrimSpace(preferredModel),
 		PinModelFamilies:    pinModelFamilies,
@@ -1461,10 +1449,9 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return err
 		}
-		candidates, err := filterAgentsPendingEnrollment(client, discovered)
-		if err != nil {
-			return err
-		}
+		// Every discovered agent is a candidate, including already-onboarded
+		// ones, so a re-run refreshes hooks, plugins and MCP config.
+		candidates := selectOnboardingRunCandidates(client, discovered)
 		// Batch onboarding (with or without --all/--yes) never touches
 		// config-only agents whose runtime is reliably missing; they need an
 		// explicit `preloop agents onboard <name>`.
@@ -1477,7 +1464,8 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 					return err
 				}
 			}
-			fmt.Println("No unenrolled agents found.")
+			fmt.Println("No onboardable agents found.")
+			printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, nil)))
 			return nil
 		}
 
@@ -1534,12 +1522,15 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 				enrolled = append(enrolled, secondTier...)
 				failures = append(failures, secondFailures...)
 			}
+			outcomes := outcomesFromBestEffort(enrolled, failures)
 			if deferLiveValidate && len(enrolled) > 0 {
-				runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
+				liveResults := runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
+				applyLiveValidationOutcomesToSummary(outcomes, liveResults)
 			}
 			if err := ensureAgentControlOnboarding(client, discovered, opts); err != nil {
 				return err
 			}
+			printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, outcomes)))
 			if len(failures) > 0 {
 				printAgentOnboardingFailures(os.Stdout, failures)
 				if len(enrolled) == 0 {
@@ -1575,7 +1566,7 @@ func runAgentsEnroll(cmd *cobra.Command, args []string) error {
 			liveResults := runDeferredLiveValidationsParallel(client, enrolled, os.Stdout)
 			applyLiveValidationOutcomesToSummary(outcomes, liveResults)
 		}
-		printAgentOnboardingSummary(os.Stdout, outcomes)
+		printAgentOnboardingSummary(os.Stdout, appendServerOnlyDeviceAgents(client, discovered, completeDiscoveryOutcomes(discovered, outcomes)))
 		return agentOnboardingSummaryError(outcomes)
 	}
 
@@ -1809,6 +1800,9 @@ func runAgentsStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Config: %s\n", agent.ConfigPath)
 	fmt.Printf("Runtime principal: %s\n", runtimePrincipalIDForAgent(agent))
 	printAgentStatusDisclosure(os.Stdout, agent)
+	if line := approvalsPauseStatusLine(permissionSourceForAgent(agent)); line != "" {
+		fmt.Println(line)
+	}
 	if localState != nil {
 		fmt.Printf("Local backup: %s\n", localState.BackupPath)
 		fmt.Printf("Managed MCP URL: %s\n", localState.ManagedServerURL)
@@ -1949,7 +1943,7 @@ func managedAgentLooksStale(agent managedAgentSummary) bool {
 
 func listManagedAgents(client *api.Client) ([]managedAgentSummary, error) {
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	sort.SliceStable(response.Items, func(i, j int) bool {
@@ -2717,7 +2711,7 @@ func archiveManagedAgentRecord(client *api.Client, agentID string) error {
 		"reason":           "offboarded via preloop CLI",
 	}
 	var response managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+agentID, request, &response); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+agentID, request, &response); err != nil {
 		return fmt.Errorf("failed to archive managed agent %q: %w", agentID, err)
 	}
 	return nil
@@ -2725,7 +2719,7 @@ func archiveManagedAgentRecord(client *api.Client, agentID string) error {
 
 func deleteManagedAgentRecord(client *api.Client, agentID string) error {
 	var response map[string]interface{}
-	if err := client.Delete("/api/v1/agents/"+agentID, &response); err != nil {
+	if err := client.Delete(api.RESTPrefix+"/agents/"+agentID, &response); err != nil {
 		return fmt.Errorf("failed to remove managed agent %q: %w", agentID, err)
 	}
 	return nil
@@ -2854,7 +2848,7 @@ func collectOffboardCleanupCandidates(client *api.Client, current managedAgentSu
 	}
 
 	var serverIndex []mcpServerResponse
-	if err := client.Get("/api/v1/mcp-servers", &serverIndex); err != nil {
+	if err := client.Get(api.RESTPrefix+"/mcp-servers", &serverIndex); err != nil {
 		return nil, fmt.Errorf("failed to list MCP servers: %w", err)
 	}
 	serversByName := make(map[string]mcpServerResponse, len(serverIndex))
@@ -2863,11 +2857,11 @@ func collectOffboardCleanupCandidates(client *api.Client, current managedAgentSu
 	}
 
 	var modelIndex []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &modelIndex); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &modelIndex); err != nil {
 		return nil, fmt.Errorf("failed to list AI models: %w", err)
 	}
 	var flows []flowSummaryResponse
-	if err := client.Get("/api/v1/flows?limit=1000", &flows); err != nil {
+	if err := client.Get(api.RESTPrefix+"/flows?limit=1000", &flows); err != nil {
 		return nil, fmt.Errorf("failed to list flows: %w", err)
 	}
 
@@ -2948,11 +2942,11 @@ func promptOffboardCleanup(reader io.Reader, writer io.Writer, autoApprove bool,
 	bufferedReader := bufio.NewReader(reader)
 	for _, candidate := range candidates {
 		kindLabel := "MCP server"
-		deletePath := "/api/v1/mcp-servers/" + candidate.ResourceID
+		deletePath := api.RESTPrefix + "/mcp-servers/" + candidate.ResourceID
 		successLabel := "Removed MCP server"
 		if candidate.Kind == "ai_model" {
 			kindLabel = "AI model"
-			deletePath = "/api/v1/ai-models/" + candidate.ResourceID
+			deletePath = api.RESTPrefix + "/ai-models/" + candidate.ResourceID
 			successLabel = "Removed AI model"
 		}
 		if candidate.Kind == "ai_model" {
@@ -3135,7 +3129,7 @@ func issueRuntimeSessionToken(client *api.Client, agent AgentConfig, allowedServ
 	}
 
 	var result runtimeSessionTokenResponse
-	if err := client.Post("/api/v1/auth/runtime-sessions/token", request, &result); err != nil {
+	if err := client.Post(api.RESTPrefix+"/auth/runtime-sessions/token", request, &result); err != nil {
 		return nil, err
 	}
 
@@ -3199,7 +3193,7 @@ func extractAgentNameViaAPI(content string) string {
 		Name string `json:"name"`
 	}
 
-	if err := client.Post("/api/v1/agents/extract-name", request, &result); err == nil {
+	if err := client.Post(api.RESTPrefix+"/agents/extract-name", request, &result); err == nil {
 		return strings.TrimSpace(result.Name)
 	}
 	return ""
@@ -3802,13 +3796,21 @@ func enrichDiscoveredAgents(discovered []AgentConfig, client *api.Client) ([]Age
 
 func enrichDiscoveredAgent(agent AgentConfig, client *api.Client) (AgentConfig, error) {
 	agent = normalizeDiscoveredAgent(agent)
-	state, _ := loadLocalEnrollmentState(agent)
 	var remote *managedAgentSummary
 	if client != nil {
 		if managed, err := getManagedAgentForDiscovered(client, agent); err == nil {
 			remote = managed
 		}
 	}
+	return enrichDiscoveredAgentWithRemote(agent, remote)
+}
+
+// enrichDiscoveredAgentWithRemote is enrichDiscoveredAgent for a caller that
+// already resolved the agent's server record (nil when there is none), so a
+// batch can list managed agents once instead of once per agent.
+func enrichDiscoveredAgentWithRemote(agent AgentConfig, remote *managedAgentSummary) (AgentConfig, error) {
+	agent = normalizeDiscoveredAgent(agent)
+	state, _ := loadLocalEnrollmentState(agent)
 	agent.IsOnboarded = state != nil || remote != nil
 	if remote != nil && strings.TrimSpace(remote.OnboardingState) != "" {
 		agent.OnboardingState = strings.TrimSpace(remote.OnboardingState)
@@ -5185,7 +5187,7 @@ func ensureDiscoveredRemoteServers(client *api.Client, agent AgentConfig, public
 
 func ensureDiscoveredRemoteServersWithCustody(client *api.Client, agent AgentConfig, publicURL string, noImport bool) (*remoteServerSyncResult, error) {
 	var existing []mcpServerResponse
-	if err := client.Get("/api/v1/mcp-servers", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/mcp-servers", &existing); err != nil {
 		return nil, fmt.Errorf("failed to list MCP servers: %w", err)
 	}
 	existingByName := make(map[string]mcpServerResponse, len(existing))
@@ -5240,7 +5242,7 @@ func ensureDiscoveredRemoteServersWithCustody(client *api.Client, agent AgentCon
 			continue
 		}
 		var created mcpServerResponse
-		if err := client.Post("/api/v1/mcp-servers", request, &created); err != nil {
+		if err := client.Post(api.RESTPrefix+"/mcp-servers", request, &created); err != nil {
 			return nil, fmt.Errorf("failed to add discovered MCP server %q: %w", name, err)
 		}
 		result.Added = append(result.Added, name)
@@ -5312,7 +5314,7 @@ func extractBearerToken(server MCPDef) string {
 
 func getManagedAgentForDiscovered(client *api.Client, agent AgentConfig) (*managedAgentSummary, error) {
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	if matched := findManagedAgentForDiscovered(response.Items, agent); matched != nil {
@@ -5399,7 +5401,7 @@ func rekeyManagedAgentRecord(
 		request["principal_identity"] = identity
 	}
 	var response map[string]interface{}
-	if err := client.Post("/api/v1/agents/"+agentID+"/rekey", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/"+agentID+"/rekey", request, &response); err != nil {
 		return fmt.Errorf("failed to rekey managed agent %q: %w", agentID, err)
 	}
 	return nil
@@ -5445,7 +5447,7 @@ func ensureManagedAgentIdentityReady(
 	}
 
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return agent, nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 
@@ -5456,7 +5458,30 @@ func ensureManagedAgentIdentityReady(
 
 	var matched *managedAgentSummary
 	matchKind := ""
+	// A hostname change must not replace the identity of this installation.
+	// Read the pin from local state rather than trusting an arbitrary ID on
+	// the discovered config, and prefer it even if a derived ID also exists.
+	localState, localStateErr := loadLocalEnrollmentState(agent)
+	hasLocalState := localStateErr == nil
+	pinnedID := ""
+	if hasLocalState {
+		pinnedID = strings.TrimSpace(localState.RuntimePrincipalID)
+	}
+	// Known pre-v2 pins retain the existing lazy migration and v2 priority.
+	if pinnedID != "" && pinnedID != v1ID && pinnedID != legacyID {
+		for i := range response.Items {
+			item := response.Items[i]
+			if containsString(sourceTypes, item.SessionSourceType) && item.SessionSourceID == pinnedID {
+				matched = &item
+				matchKind = "pinned"
+				break
+			}
+		}
+	}
 	for i := range response.Items {
+		if matchKind == "pinned" {
+			break
+		}
 		item := response.Items[i]
 		if !containsString(sourceTypes, item.SessionSourceType) {
 			continue
@@ -5485,11 +5510,6 @@ func ensureManagedAgentIdentityReady(
 			matched = fallback
 			matchKind = "fallback"
 		}
-	}
-
-	hasLocalState := false
-	if _, err := loadLocalEnrollmentState(agent); err == nil {
-		hasLocalState = true
 	}
 
 	if matched != nil && matchKind == "v2" && !hasLocalState {
@@ -5530,7 +5550,7 @@ func ensureManagedAgentIdentityReady(
 		return agent, nil, nil
 	}
 
-	if matchKind == "v2" {
+	if matchKind == "v2" || matchKind == "pinned" {
 		if managedAgentLifecycleRevivalAction(matched.LifecycleState) != "" {
 			revived, err := reenrollArchivedManagedAgent(
 				client,
@@ -5639,7 +5659,7 @@ func runAgentsMerge(cmd *cobra.Command, args []string) error {
 
 	var dryRun map[string]interface{}
 	if err := client.Post(
-		"/api/v1/agents/"+survivor.ID+"/merge",
+		api.RESTPrefix+"/agents/"+survivor.ID+"/merge",
 		map[string]interface{}{
 			"duplicate_agent_id": duplicate.ID,
 			"dry_run":            true,
@@ -5672,7 +5692,7 @@ func runAgentsMerge(cmd *cobra.Command, args []string) error {
 	}
 	var result map[string]interface{}
 	if err := client.Post(
-		"/api/v1/agents/"+survivor.ID+"/merge",
+		api.RESTPrefix+"/agents/"+survivor.ID+"/merge",
 		map[string]interface{}{
 			"duplicate_agent_id": duplicate.ID,
 			"dry_run":            false,
@@ -5703,7 +5723,7 @@ func ensureArchivedManagedAgentReenrolled(
 	}
 
 	var response managedAgentListResponse
-	if err := client.Get("/api/v1/agents?limit=100", &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents?limit=100", &response); err != nil {
 		return nil, fmt.Errorf("failed to list managed agents: %w", err)
 	}
 	matched := findManagedAgentForDiscovered(response.Items, agent)
@@ -5754,7 +5774,7 @@ func reviveManagedAgentLifecycle(
 		"lifecycle_action": action,
 	}
 	var updated managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+matched.ID, request, &updated); err != nil {
 		return nil, fmt.Errorf(
 			"failed to %s managed agent %q: %w", action, matched.ID, err,
 		)
@@ -5805,7 +5825,7 @@ func restoreManagedAgentLifecycle(
 		"reason":           "rolled back: re-onboarding did not complete",
 	}
 	var updated managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+matched.ID, request, &updated); err != nil {
 		fmt.Fprintf( //nolint:errcheck
 			output,
 			"Warning: could not restore enrollment %s to %s after failure: %v\n",
@@ -5899,7 +5919,7 @@ func reenrollArchivedManagedAgent(
 		"lifecycle_action": action,
 	}
 	var updated managedAgentSummary
-	if err := client.Patch("/api/v1/agents/"+matched.ID, request, &updated); err != nil {
+	if err := client.Patch(api.RESTPrefix+"/agents/"+matched.ID, request, &updated); err != nil {
 		return nil, fmt.Errorf("failed to %s %s managed agent %q: %w", action, stateLabel, matched.ID, err)
 	}
 	// One line per revival, naming what actually happened.
@@ -5969,7 +5989,7 @@ func createDurableManagedCredential(client *api.Client, agent *managedAgentSumma
 		Scopes:        []string{"mcp:read", "mcp:write"},
 	}
 	var response managedAgentCredentialCreateResponse
-	if err := client.Post("/api/v1/agents/"+agent.ID+"/credentials", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/"+agent.ID+"/credentials", request, &response); err != nil {
 		return nil, fmt.Errorf("failed to create durable managed-agent credential: %w", err)
 	}
 	return &response, nil
@@ -5977,7 +5997,7 @@ func createDurableManagedCredential(client *api.Client, agent *managedAgentSumma
 
 func createManagedEnrollmentRecord(client *api.Client, agentID string, request managedAgentEnrollmentCreateRequest) (*managedAgentEnrollmentSummary, error) {
 	var response managedAgentEnrollmentSummary
-	if err := client.Post("/api/v1/agents/"+agentID+"/enrollments", request, &response); err != nil {
+	if err := client.Post(api.RESTPrefix+"/agents/"+agentID+"/enrollments", request, &response); err != nil {
 		return nil, fmt.Errorf("failed to persist managed enrollment: %w", err)
 	}
 	return &response, nil
@@ -5985,7 +6005,7 @@ func createManagedEnrollmentRecord(client *api.Client, agentID string, request m
 
 func getManagedAgentDetail(client *api.Client, agentID string) (*managedAgentDetailResponse, error) {
 	var response managedAgentDetailResponse
-	if err := client.Get("/api/v1/agents/"+agentID, &response); err != nil {
+	if err := client.Get(api.RESTPrefix+"/agents/"+agentID, &response); err != nil {
 		return nil, fmt.Errorf("failed to fetch managed agent detail: %w", err)
 	}
 	return &response, nil
@@ -6014,16 +6034,16 @@ func validateManagedEnrollmentRecord(
 		"status":            status,
 		"validation_result": validationResult,
 	}
-	if status == "validated" {
-		// Salted hashes only; lets the server mark a candidate reported by
-		// `agents discover --report` on this workstation as onboarded.
-		for key, value := range discoveryLinkFields(client, agent) {
-			request[key] = value
-		}
+	// Salted hashes only. Sent for every status: an agent that is applied
+	// or fails validation (MCP-only and IDE-config agents often never reach
+	// "validated") still runs on this workstation, so the server links it to
+	// the device and the device fleet can describe that device.
+	for key, value := range discoveryLinkFields(client, agent) {
+		request[key] = value
 	}
 	var response managedAgentEnrollmentSummary
 	if err := client.Post(
-		"/api/v1/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/validate",
+		api.RESTPrefix+"/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/validate",
 		request,
 		&response,
 	); err != nil {
@@ -6053,7 +6073,7 @@ func restoreManagedEnrollmentRecord(
 	}
 	var response managedAgentEnrollmentSummary
 	if err := client.Post(
-		"/api/v1/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/restore",
+		api.RESTPrefix+"/agents/"+managedAgent.ID+"/enrollments/"+enrollmentID+"/restore",
 		request,
 		&response,
 	); err != nil {
@@ -7386,7 +7406,7 @@ func resolveAgentModelMatch(
 		return nil, agentModelMatchNone
 	}
 	var allModels []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &allModels); err != nil || len(allModels) == 0 {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &allModels); err != nil || len(allModels) == 0 {
 		return nil, agentModelMatchNone
 	}
 

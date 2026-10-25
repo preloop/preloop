@@ -1,3 +1,9 @@
+import {
+  modelFailureShareText,
+  modelHealthLabel,
+  modelHealthVariant,
+} from '../../../utils/model-health';
+import { formatCount, formatCountExact } from '../../../utils/count-format';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { formatUsd, formatUsdExact } from '../../../utils/money';
@@ -339,6 +345,16 @@ export class AIModelDetailView extends LitElement {
       .interaction-list {
         display: flex;
         flex-direction: column;
+      }
+
+      .model-settings {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sl-spacing-large);
+      }
+
+      .model-settings .section-title {
+        margin: 0;
       }
 
       .page,
@@ -1340,6 +1356,18 @@ export class AIModelDetailView extends LitElement {
   }
 
   /**
+   * The range control's own short label ("7d", "30d"), for "failed in 7d";
+   * empty for All time, where "in" has no window to name.
+   */
+  private rangeShortLabel(): string {
+    if (this.selectedRange === 'all') return '';
+    return (
+      DATE_RANGE_OPTIONS.find((option) => option.value === this.selectedRange)
+        ?.label || ''
+    );
+  }
+
+  /**
    * Which days the numbers cover, restated under the control that chose them.
    * The server's own window wins over the client's preset.
    */
@@ -1351,8 +1379,9 @@ export class AIModelDetailView extends LitElement {
     });
   }
 
+  /** Compact at 1000 and above, as DESIGN.md "Numbers" says (U-01). */
   private formatNumber(value: number | null | undefined): string {
-    return typeof value === 'number' ? value.toLocaleString() : '0';
+    return typeof value === 'number' ? formatCount(value) : '0';
   }
 
   /**
@@ -2304,10 +2333,21 @@ export class AIModelDetailView extends LitElement {
       return null;
     }
     // One badge for both facts: the page reads Healthy only when every open
-    // claim about this model has been answered.
+    // claim about this model has been answered, and, as on the Models list,
+    // not while the window's failures stay at or above the threshold (#1956).
     const flagged =
       state.status === 'failing' || unpriced.status === 'unpriced';
-    const markerLabels = [
+    const label = modelHealthLabel({
+      needsAttention: flagged,
+      totalRequests: this.summary?.total_requests,
+      failedRequests: this.summary?.failed_requests,
+    });
+    const title = [
+      modelFailureShareText(
+        this.summary?.failed_requests,
+        this.summary?.total_requests,
+        this.rangeShortLabel()
+      ),
       state.status === 'marked' ? state.markerLabel : '',
       unpriced.status === 'marked' ? unpriced.markerLabel : '',
     ]
@@ -2318,10 +2358,10 @@ export class AIModelDetailView extends LitElement {
         <sl-badge
           class="status-chip"
           pill
-          variant=${flagged ? 'warning' : 'success'}
-          title=${flagged ? '' : markerLabels}
+          variant=${modelHealthVariant(label)}
+          title=${flagged ? '' : title}
         >
-          ${flagged ? 'Attention' : 'Healthy'}
+          ${label}
         </sl-badge>
         ${
           state.failuresSinceMarker !== null
@@ -2554,7 +2594,9 @@ export class AIModelDetailView extends LitElement {
         <div class="summary-strip">
           ${this.renderStat(
             'Requests',
-            this.formatNumber(this.summary.total_requests),
+            html`<span title=${formatCountExact(this.summary.total_requests)}
+              >${this.formatNumber(this.summary.total_requests)}</span
+            >`,
             `${this.formatNumber(this.summary.successful_requests)} succeeded, ${this.formatNumber(this.summary.failed_requests)} failed`
           )}
           ${this.renderStat(
@@ -2566,7 +2608,10 @@ export class AIModelDetailView extends LitElement {
           )}
           ${this.renderStat(
             'Tokens',
-            this.formatNumber(this.summary.token_usage.total_tokens),
+            html`<span
+              title=${formatCountExact(this.summary.token_usage.total_tokens)}
+              >${this.formatNumber(this.summary.token_usage.total_tokens)}</span
+            >`,
             `${this.formatNumber(this.summary.token_usage.prompt_tokens)} prompt, ${this.formatNumber(this.summary.token_usage.completion_tokens)} completion`
           )}
         </div>
@@ -2845,7 +2890,7 @@ export class AIModelDetailView extends LitElement {
     const gatewayConfig = this.getGatewayConfig();
     return html`
       <sl-card>
-        <div slot="header" class="model-title">Try Through Gateway</div>
+        <div slot="header" class="model-title">Try through the gateway</div>
         <div class="validation-stack">
           <div class="meta-line">
             ${
@@ -3024,150 +3069,6 @@ export class AIModelDetailView extends LitElement {
       <div class="dashboard extra-wide">
         <div class="main-column">
           <div class="page">
-            <sl-card>
-              <div slot="header" class="model-heading">
-                <!-- This card holds a name, an identifier, an alias,
-                     credentials and a managed agent. That is "Details";
-                     "Observability" promised telemetry it never carried. -->
-                <div class="model-title">Details</div>
-                <div class="badge-row">
-                  ${this.model?.is_built_in ? html`<sl-badge variant="neutral">Built-in</sl-badge>` : null}
-                  ${
-                    this.model?.provider_name
-                      ? html`
-                          <sl-badge class="tag-chip" variant="neutral">
-                            ${this.model.provider_name}
-                          </sl-badge>
-                        `
-                      : ''
-                  }
-                  ${
-                    this.model?.is_default
-                      ? html`<sl-badge class="chip" variant="success" pill
-                          >Default</sl-badge
-                        >`
-                      : ''
-                  }
-                  ${
-                    this.model?.model_kind
-                      ? html`
-                          <sl-badge class="tag-chip" variant="neutral">
-                            ${
-                              this.model.model_kind === 'stt'
-                                ? 'Speech to text'
-                                : this.model.model_kind === 'tts'
-                                  ? 'Text to speech'
-                                  : 'Inference'
-                            }
-                          </sl-badge>
-                        `
-                      : ''
-                  }
-                </div>
-              </div>
-              ${
-                this.model
-                  ? html`
-                      <div class="metadata-stack">
-                        <div class="model-metadata">
-                          <span><strong>Name:</strong> ${this.model.name}</span>
-                          <span>
-                            <strong>Identifier:</strong>
-                            <code>${this.model.model_identifier}</code>
-                          </span>
-                          <span>
-                            <strong>Updated:</strong>
-                            ${
-                              // "Unknown" on a model that was never edited
-                              // reads as a lookup that failed.
-                              this.model.updated_at
-                                ? this.formatDateTime(this.model.updated_at)
-                                : 'Never'
-                            }
-                          </span>
-                        </div>
-                        <div class="model-metadata">
-                          <span>
-                            <strong>Gateway:</strong>
-                            ${
-                              this.model.model_kind === 'llm'
-                                ? this.gatewayEnabled
-                                  ? 'Enabled'
-                                  : 'Disabled'
-                                : 'Not used for audio fallback'
-                            }
-                          </span>
-                          ${
-                            this.gatewayModelAlias
-                              ? html`
-                                  <span>
-                                    <strong>Gateway alias:</strong>
-                                    <code>${this.gatewayModelAlias}</code>
-                                  </span>
-                                `
-                              : ''
-                          }
-                          <span>
-                            <strong>Upstream credentials:</strong>
-                            ${this.model.has_api_key ? 'Configured' : 'Missing'}
-                          </span>
-                          ${
-                            this.managedAgentDisplayName
-                              ? html`
-                                  <span>
-                                    <strong>Managed agent:</strong>
-                                    ${
-                                      this.managedAgentId
-                                        ? html`
-                                            <a
-                                              class="session-link"
-                                              href=${`/console/agents/${encodeURIComponent(this.managedAgentId)}`}
-                                            >
-                                              ${this.managedAgentDisplayName}
-                                            </a>
-                                          `
-                                        : this.managedAgentDisplayName
-                                    }
-                                  </span>
-                                `
-                              : ''
-                          }
-                          ${
-                            this.managedAgentRuntimePrincipalId
-                              ? html`
-                                  <span>
-                                    <strong>Runtime principal:</strong>
-                                    <code
-                                      >${this.managedAgentRuntimePrincipalId}</code
-                                    >
-                                  </span>
-                                `
-                              : ''
-                          }
-                        </div>
-                      </div>
-                    `
-                  : html`
-                      <div class="meta-line">
-                        Loading model metadata and observability surfaces.
-                      </div>
-                    `
-              }
-            </sl-card>
-
-            ${this.renderUsedBy()}
-
-            <sl-card>
-              <div slot="header" class="model-title">Budget Management</div>
-              <budget-policy-editor
-                .readOnly=${!this.editPermissions.allows('manage_budgets')}
-                subjectType="ai_model"
-                .subjectId=${this.modelId}
-              ></budget-policy-editor>
-            </sl-card>
-
-            ${this.renderPricingCard()} ${this.renderGatewayValidation()}
-
             <div class="toolbar">
               <time-range-select
                 ariaLabel="Model usage range"
@@ -3238,7 +3139,7 @@ export class AIModelDetailView extends LitElement {
 
                       <sl-card>
                         <div slot="header" class="model-title">
-                          Session Observer
+                          Session observer
                         </div>
                         <div class="meta-line" style="margin-bottom: 0.75rem;">
                           Recent sessions, replay, cost breakdown, and
@@ -3279,6 +3180,156 @@ export class AIModelDetailView extends LitElement {
                     </div>
                   `
             }
+            ${this.renderUsedBy()}
+
+            <!-- #1692: usage is why the page is opened, so budgets, pricing
+                 and gateway checks sit below it in one Settings section. -->
+            <section class="model-settings" data-model-settings>
+              <h2 class="section-title">Settings</h2>
+              <!-- #1692: identifiers and credentials are reference, not the
+                   reason to open the page; they sit with the settings. -->
+              <sl-card data-model-details>
+                <div slot="header" class="model-heading">
+                  <!-- This card holds a name, an identifier, an alias,
+                     credentials and a managed agent. That is "Details";
+                     "Observability" promised telemetry it never carried. -->
+                  <div class="model-title">Details</div>
+                  <div class="badge-row">
+                    ${this.model?.is_built_in ? html`<sl-badge variant="neutral">Built-in</sl-badge>` : null}
+                    ${
+                      this.model?.provider_name
+                        ? html`
+                            <sl-badge class="tag-chip" variant="neutral">
+                              ${this.model.provider_name}
+                            </sl-badge>
+                          `
+                        : ''
+                    }
+                    ${
+                      this.model?.is_default
+                        ? html`<sl-badge class="chip" variant="success" pill
+                            >Default</sl-badge
+                          >`
+                        : ''
+                    }
+                    ${
+                      this.model?.model_kind
+                        ? html`
+                            <sl-badge class="tag-chip" variant="neutral">
+                              ${
+                                this.model.model_kind === 'stt'
+                                  ? 'Speech to text'
+                                  : this.model.model_kind === 'tts'
+                                    ? 'Text to speech'
+                                    : 'Inference'
+                              }
+                            </sl-badge>
+                          `
+                        : ''
+                    }
+                  </div>
+                </div>
+                ${
+                  this.model
+                    ? html`
+                        <div class="metadata-stack">
+                          <div class="model-metadata">
+                            <span
+                              ><strong>Name:</strong> ${this.model.name}</span
+                            >
+                            <span>
+                              <strong>Identifier:</strong>
+                              <code>${this.model.model_identifier}</code>
+                            </span>
+                            <span>
+                              <strong>Updated:</strong>
+                              ${
+                                // "Unknown" on a model that was never edited
+                                // reads as a lookup that failed.
+                                this.model.updated_at
+                                  ? this.formatDateTime(this.model.updated_at)
+                                  : 'Never'
+                              }
+                            </span>
+                          </div>
+                          <div class="model-metadata">
+                            <span>
+                              <strong>Gateway:</strong>
+                              ${
+                                this.model.model_kind === 'llm'
+                                  ? this.gatewayEnabled
+                                    ? 'Enabled'
+                                    : 'Disabled'
+                                  : 'Not used for audio fallback'
+                              }
+                            </span>
+                            ${
+                              this.gatewayModelAlias
+                                ? html`
+                                    <span>
+                                      <strong>Gateway alias:</strong>
+                                      <code>${this.gatewayModelAlias}</code>
+                                    </span>
+                                  `
+                                : ''
+                            }
+                            <span>
+                              <strong>Upstream credentials:</strong>
+                              ${this.model.has_api_key ? 'Configured' : 'Missing'}
+                            </span>
+                            ${
+                              this.managedAgentDisplayName
+                                ? html`
+                                    <span>
+                                      <strong>Managed agent:</strong>
+                                      ${
+                                        this.managedAgentId
+                                          ? html`
+                                              <a
+                                                class="session-link"
+                                                href=${`/console/agents/${encodeURIComponent(this.managedAgentId)}`}
+                                              >
+                                                ${this.managedAgentDisplayName}
+                                              </a>
+                                            `
+                                          : this.managedAgentDisplayName
+                                      }
+                                    </span>
+                                  `
+                                : ''
+                            }
+                            ${
+                              this.managedAgentRuntimePrincipalId
+                                ? html`
+                                    <span>
+                                      <strong>Runtime principal:</strong>
+                                      <code
+                                        >${this.managedAgentRuntimePrincipalId}</code
+                                      >
+                                    </span>
+                                  `
+                                : ''
+                            }
+                          </div>
+                        </div>
+                      `
+                    : html`
+                        <div class="meta-line">
+                          Loading model metadata and observability surfaces.
+                        </div>
+                      `
+                }
+              </sl-card>
+              <sl-card>
+                <div slot="header" class="model-title">Budget Management</div>
+                <budget-policy-editor
+                  .readOnly=${!this.editPermissions.allows('manage_budgets')}
+                  subjectType="ai_model"
+                  .subjectId=${this.modelId}
+                ></budget-policy-editor>
+              </sl-card>
+              ${this.renderPricingCard()} ${this.renderGatewayValidation()}
+            </section>
           </div>
         </div>
       </div>

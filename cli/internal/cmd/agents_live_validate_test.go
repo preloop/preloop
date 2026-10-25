@@ -1612,3 +1612,58 @@ func TestPreloopBudgetDenialIsNotUpstreamRateLimit(t *testing.T) {
 		t.Fatalf("budget denial must not be retried: attempts=%d calls=%d err=%v", attempts, calls, err)
 	}
 }
+
+// TestDeferredLiveValidationPreservesControlChannelConfigured guards the
+// deferred live-validation path: it must start from the enrollment's stored
+// validation result so the control_* keys written by onboarding survive the
+// result the CLI sends back to the server.
+func TestDeferredLiveValidationPreservesControlChannelConfigured(t *testing.T) {
+	origLoad := loadStoredValidationResult
+	origRun := deferredLiveValidationRunner
+	t.Cleanup(func() {
+		loadStoredValidationResult = origLoad
+		deferredLiveValidationRunner = origRun
+	})
+	loadStoredValidationResult = func(_ *api.Client, _ AgentConfig) map[string]interface{} {
+		return map[string]interface{}{
+			"control_config_written":     true,
+			"control_plugin_verified":    true,
+			"control_channel_configured": true,
+		}
+	}
+	var seen map[string]interface{}
+	deferredLiveValidationRunner = func(
+		_ *api.Client,
+		agent AgentConfig,
+		existing map[string]interface{},
+	) (*managedLiveValidationOutcome, error) {
+		seen = existing
+		result := mergeStringMaps(existing, defaultManagedLiveValidationResult(agent))
+		result["live_validation_status"] = "passed"
+		return &managedLiveValidationOutcome{
+			Attempted:        true,
+			Passed:           true,
+			ValidationResult: result,
+		}, nil
+	}
+
+	var buf bytes.Buffer
+	results := runDeferredLiveValidationsParallel(
+		nil,
+		[]AgentConfig{{Name: "Codex CLI"}},
+		&buf,
+	)
+	if len(results) != 1 || results[0].Outcome == nil {
+		t.Fatalf("expected one outcome, got %#v", results)
+	}
+	if seen["control_channel_configured"] != true {
+		t.Fatalf("runner was not seeded with stored result: %#v", seen)
+	}
+	got := results[0].Outcome.ValidationResult
+	if got["control_channel_configured"] != true || got["control_plugin_verified"] != true {
+		t.Fatalf("control keys lost from deferred result: %#v", got)
+	}
+	if got["live_validation_status"] != "passed" {
+		t.Fatalf("live status missing: %#v", got)
+	}
+}

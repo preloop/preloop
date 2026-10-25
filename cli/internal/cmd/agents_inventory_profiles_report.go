@@ -77,7 +77,7 @@ func buildAllUsersReport(salt, machineID, observationID string, scan inventoryEn
 	return report
 }
 
-func sendAllUsersInventory(w io.Writer) error {
+func sendAllUsersInventory(w io.Writer, deviceRefs ...string) error {
 	config.Select(FlagProfile, FlagAccount)
 	client := authenticatedDiscoveryClient()
 	if client == nil {
@@ -87,9 +87,15 @@ func sendAllUsersInventory(w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	machineID, err := readMachineID()
-	if err != nil {
-		return errors.New("could not determine workstation identity")
+	machineID := ""
+	if len(deviceRefs) > 0 {
+		machineID = strings.TrimSpace(deviceRefs[0])
+	}
+	if machineID == "" {
+		machineID, err = readInventoryMachineID()
+		if err != nil {
+			return errors.New("could not determine workstation identity without writing state; supply --device-ref")
+		}
 	}
 	id := make([]byte, 16)
 	if _, err = rand.Read(id); err != nil {

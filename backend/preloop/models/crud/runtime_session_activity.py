@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Integer, and_, case, cast, func, select, tuple_
+from sqlalchemy import Integer, Text, and_, case, cast, func, select, text, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,6 +27,16 @@ MAX_AGENT_CONTROL_MESSAGE_SUMMARY_LEN = 2000
 # ``success`` is kept in the success set so rows written before the outcome
 # split still aggregate as successes.
 TOOL_CALL_SUCCESS_STATUSES = ("success", "succeeded")
+
+# Timestamps the harness hooks report (#1889). They carry no content.
+HOOK_TURN_ACTIVITY_TYPES = ("user_prompt", "turn_end", "session_end")
+# Content-light hook signals that move the session's turn state: a tool
+# call finished (PostToolUse, PostToolUseFailure) and the harness waits for
+# the operator (Notification idle_prompt). Kept out of the history list
+# like the turn timestamps.
+HOOK_SIGNAL_ACTIVITY_TYPES = ("tool_end", "waiting_for_input")
+HOOK_ACTIVITY_TYPES = HOOK_TURN_ACTIVITY_TYPES + HOOK_SIGNAL_ACTIVITY_TYPES
+HOOK_EVENT_DEDUPE_SECONDS = 2.0
 
 
 def _tool_call_failure_count_expr(status_column: Any) -> Any:
@@ -374,6 +384,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         runtime_session_id: Any,
         api_key_id: Optional[Any],
         step: BrowserStepIn,
+        recorded_at: datetime | None = None,
         commit: bool = True,
     ) -> tuple[RuntimeSessionActivity, bool]:
         """Persist one browser step, or return the existing row.
@@ -408,6 +419,12 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
 
         # Field names, credentials, then the account's redact rules (#1123).
         metadata = apply_storage_redaction(account_id, _browser_step_metadata(step))
+        metadata["recorded_at"] = (
+            recorded_at or datetime.now(timezone.utc)
+        ).isoformat()
+        metadata["occurred_at"] = (
+            step.occurred_at.isoformat() if step.occurred_at else None
+        )
         locator = metadata.get("url") or metadata.get("target") or ""
         summary = apply_storage_redaction(
             account_id, _redact_browser_text(f"{step.action} {locator}")[0]
@@ -603,6 +620,95 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         if commit:
             db.commit()
             db.refresh(db_obj)
+        return db_obj
+
+    def log_hook_turn_event(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        activity_type: str,
+        api_key_id: Optional[Any] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        timestamp: Optional[datetime] = None,
+        dedupe_seconds: float = HOOK_EVENT_DEDUPE_SECONDS,
+        commit: bool = True,
+    ) -> Optional[RuntimeSessionActivity]:
+        """Persist one prompt, turn-end or session-end timestamp from a hook.
+
+        These rows carry a time and a kind only: ``summary`` is always NULL,
+        so prompt text never reaches this table. A repeat of the same kind on
+        the same session within ``dedupe_seconds`` is dropped, because a
+        harness may run the hook twice (CLI hook and runtime plugin).
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            runtime_session_id: Session the event belongs to.
+            activity_type: One of :data:`HOOK_ACTIVITY_TYPES`.
+            api_key_id: Hook credential that reported it.
+            metadata: Source, hook event name and actor; never content.
+            timestamp: Server receive time; defaults to now.
+            dedupe_seconds: Window in which a repeat is dropped.
+            commit: Commit when True, flush otherwise.
+
+        Returns:
+            The new row, or None when it was a duplicate.
+
+        Raises:
+            ValueError: When ``activity_type`` is not a hook turn type.
+        """
+        if activity_type not in HOOK_ACTIVITY_TYPES:
+            raise ValueError(f"Unsupported hook activity type: {activity_type}")
+        activity_timestamp = timestamp or datetime.now(timezone.utc)
+        # Serialize the check and the insert per session and kind, so two
+        # hooks firing together cannot both pass the dedupe.
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+            {"key": f"hook-turn-event:{runtime_session_id}:{activity_type}"},
+        )
+        duplicate = (
+            db.query(RuntimeSessionActivity.id)
+            .filter(
+                RuntimeSessionActivity.runtime_session_id == runtime_session_id,
+                RuntimeSessionActivity.activity_type == activity_type,
+                RuntimeSessionActivity.timestamp
+                >= activity_timestamp - timedelta(seconds=dedupe_seconds),
+            )
+            .first()
+        )
+        if duplicate is not None:
+            return None
+        db_obj = RuntimeSessionActivity(
+            account_id=account_id,
+            runtime_session_id=runtime_session_id,
+            api_key_id=api_key_id,
+            activity_type=activity_type,
+            status=None,
+            summary=None,
+            metadata_=sanitize_for_jsonb(metadata),
+            timestamp=activity_timestamp,
+        )
+        db.add(db_obj)
+        session = db.get(RuntimeSession, runtime_session_id)
+        if session is not None and activity_type != "session_end":
+            session.last_activity_at = activity_timestamp
+            db.add(session)
+        if session is not None:
+            from .runtime_session_turn_state import apply_activity
+
+            apply_activity(
+                session,
+                activity_type,
+                activity_timestamp,
+                interrupted=bool((metadata or {}).get("interrupted")),
+            )
+        if commit:
+            db.commit()
+            db.refresh(db_obj)
+        else:
+            db.flush()
         return db_obj
 
     def log_agent_control_message(
@@ -870,7 +976,8 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
     ) -> list[Any]:
         """Return recent activity for the timeline, newest first.
 
-        Same rows as ``list_for_runtime_session``, but a model gateway call
+        Content-free hook timestamps are excluded before the row limit. Other
+        rows match ``list_for_runtime_session``, but a model gateway call
         comes back without its history keys, removed in SQL so Postgres never
         ships them. Every other activity type keeps its full metadata.
         A focused operator note adds at most one row from the same account
@@ -883,6 +990,23 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             (self.model.activity_type == "model_gateway_call", slim),
             else_=self.model.metadata_,
         ).label("metadata_")
+        base_filters = (
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+            self.model.activity_type.notin_(HOOK_ACTIVITY_TYPES),
+        )
+        # Pick the newest ids first (the runtime_session_id index finds the
+        # rows; the sort reads only id and timestamp), then project (and
+        # strip) metadata only for those rows. Computing the slim
+        # CASE before the top-N sort detoasted every row of a long session:
+        # 8,178 rows and 1.78 GB of metadata took 10 s on prod (#1689).
+        newest_ids = (
+            db.query(self.model.id)
+            .filter(*base_filters)
+            .order_by(self.model.timestamp.desc())
+            .limit(limit)
+            .subquery()
+        )
         query = db.query(
             self.model.id,
             self.model.activity_type,
@@ -893,15 +1017,17 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             self.model.status,
             self.model.api_key_id,
             metadata_column,
-        ).filter(
-            self.model.account_id == account_id,
-            self.model.runtime_session_id == runtime_session_id,
         )
-        rows = query.order_by(self.model.timestamp.desc()).limit(limit).all()
+        rows = (
+            query.filter(self.model.id.in_(select(newest_ids.c.id)))
+            .order_by(self.model.timestamp.desc())
+            .all()
+        )
         if operator_note_id and not any(
             (row.metadata_ or {}).get("note_id") == operator_note_id for row in rows
         ):
             focused = query.filter(
+                *base_filters,
                 self.model.activity_type == "agent_control_message",
                 self.model.metadata_["kind"].astext == "operator_note",
                 self.model.metadata_["note_id"].astext == operator_note_id,
@@ -1058,6 +1184,100 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .limit(min(max(limit, 1), 100))
             .all()
         )
+
+    def list_bounded_model_gateway_call_payloads_for_session(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        start_date: datetime,
+        end_date: datetime,
+        after: tuple[datetime, Any] | None = None,
+        limit: int = 20,
+        max_payload_bytes: int = 2_000_000,
+        newest_first: bool = False,
+    ) -> tuple[
+        list[Any], list[tuple[Any, datetime]], tuple[datetime, Any] | None, bool
+    ]:
+        """Read an oldest-first payload page under a SQL-enforced byte budget.
+
+        Returns fetched rows, oversized activity IDs, and the last inspected
+        cursor, and whether every capture in the requested window was read.
+        Callers must record skipped IDs as incomplete evidence.
+        Metadata is measured in PostgreSQL before it crosses the DB connection;
+        the fetch repeats the size predicate to protect against concurrent edits.
+        """
+        size = func.coalesce(func.octet_length(cast(self.model.metadata_, Text)), 0)
+        query = db.query(self.model.id, self.model.timestamp, size).filter(
+            self.model.account_id == account_id,
+            self.model.runtime_session_id == runtime_session_id,
+            self.model.activity_type == "model_gateway_call",
+            self.model.timestamp >= start_date,
+            self.model.timestamp <= end_date,
+        )
+        if after is not None:
+            query = query.filter(
+                tuple_(self.model.timestamp, self.model.id) < after
+                if newest_first
+                else tuple_(self.model.timestamp, self.model.id) > after
+            )
+        order = (
+            (self.model.timestamp.desc(), self.model.id.desc())
+            if newest_first
+            else (self.model.timestamp.asc(), self.model.id.asc())
+        )
+        candidates = query.order_by(*order).limit(min(max(limit, 1), 20) + 1).all()
+        page_limit = min(max(limit, 1), 20)
+        chosen: list[Any] = []
+        oversized: list[tuple[Any, datetime]] = []
+        remaining = max_payload_bytes
+        cursor = after
+        for activity_id, timestamp, byte_count in candidates[:page_limit]:
+            if byte_count > max_payload_bytes:
+                oversized.append((activity_id, timestamp))
+                cursor = (timestamp, activity_id)
+                continue
+            if byte_count > remaining:
+                break
+            chosen.append(activity_id)
+            remaining -= byte_count
+            cursor = (timestamp, activity_id)
+        complete = len(candidates) <= page_limit and (
+            not candidates or cursor == (candidates[-1][1], candidates[-1][0])
+        )
+        if not chosen:
+            return [], oversized, cursor, complete and not oversized
+        measured_sizes = {
+            activity_id: byte_count
+            for activity_id, _, byte_count in candidates[:page_limit]
+            if activity_id in chosen
+        }
+        measured_timestamps = {
+            activity_id: timestamp
+            for activity_id, timestamp, _ in candidates[:page_limit]
+            if activity_id in chosen
+        }
+        rows = (
+            db.query(self.model.id, self.model.timestamp, self.model.metadata_)
+            .filter(
+                self.model.id.in_(chosen),
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.activity_type == "model_gateway_call",
+                size <= case(measured_sizes, value=self.model.id, else_=0),
+                self.model.timestamp == case(measured_timestamps, value=self.model.id),
+            )
+            .order_by(*order)
+            .all()
+        )
+        found = {row.id for row in rows}
+        oversized.extend(
+            (activity_id, timestamp)
+            for activity_id, timestamp, _ in candidates[:page_limit]
+            if activity_id in chosen and activity_id not in found
+        )
+        return rows, oversized, cursor, complete and not oversized
 
     def list_recent_model_gateway_call_payloads_for_session(
         self,
@@ -1457,6 +1677,72 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .limit(limit)
             .all()
         )
+
+    def gateway_call_batch(
+        self,
+        db: Session,
+        *,
+        min_stored_bytes: int,
+        limit: int,
+        after: Optional[tuple[datetime, Any]] = None,
+        account_id: Optional[Any] = None,
+        before_timestamp: Optional[datetime] = None,
+        skip_marker: Optional[str] = None,
+    ) -> list[RuntimeSessionActivity]:
+        """Return one keyset page of model gateway call rows for maintenance.
+
+        Rows are walked oldest first on ``(timestamp, id)``, so a caller can
+        resume from the last row it saw. ``pg_column_size`` reads the stored
+        (compressed) size from the tuple header without detoasting the value,
+        which is what lets a pass skip rows that are already small cheaply.
+        Rows whose session is under legal hold are never returned.
+
+        Args:
+            db: Database session.
+            min_stored_bytes: Only rows whose stored metadata is larger.
+            limit: Page size.
+            after: ``(timestamp, id)`` of the last row of the previous page.
+            account_id: Restrict to one account.
+            before_timestamp: Only rows strictly older than this.
+            skip_marker: Skip rows whose ``body_compaction`` marker already
+                has this key set (for example ``"bodies_stripped"``); when
+                ``None``, skip rows that carry any marker.
+
+        Returns:
+            Up to ``limit`` rows, oldest first.
+        """
+        model = self.model
+        marker = model.metadata_["body_compaction"]
+        filters: list[Any] = [
+            model.activity_type == "model_gateway_call",
+            func.pg_column_size(model.metadata_) > min_stored_bytes,
+            ~model.runtime_session_id.in_(
+                select(models.RuntimeSession.id).where(
+                    models.RuntimeSession.legal_hold.is_(True)
+                )
+            ),
+        ]
+        if skip_marker is None:
+            filters.append(~model.metadata_.has_key("body_compaction"))
+        else:
+            filters.append(func.coalesce(marker[skip_marker].astext, "false") != "true")
+        if account_id is not None:
+            filters.append(model.account_id == account_id)
+        if before_timestamp is not None:
+            filters.append(model.timestamp < before_timestamp)
+        if after is not None:
+            filters.append(tuple_(model.timestamp, model.id) > tuple_(*after))
+        return (
+            db.query(model)
+            .filter(*filters)
+            .order_by(model.timestamp.asc(), model.id.asc())
+            .limit(max(1, int(limit)))
+            .all()
+        )
+
+    def maintenance_accounts(self, db: Session) -> list[models.Account]:
+        """Return every account, for per-account retention resolution."""
+        return db.query(models.Account).order_by(models.Account.id).all()
 
 
 crud_runtime_session_activity = CRUDRuntimeSessionActivity(RuntimeSessionActivity)

@@ -418,6 +418,21 @@ describe('activity-feed', () => {
       expect(labels).to.include('Server');
     });
 
+    it('words a rule change in sentence case (U-13)', () => {
+      const event = feedEventFromAuditGroup(
+        auditGroup(
+          'configuration_change',
+          {
+            id: 'r1',
+            resource_id: 'tool_rule',
+            details: { config_type: 'tool_rule', action: 'created' },
+          },
+          'success'
+        )
+      );
+      expect(event?.text).to.equal('Tool rule created');
+    });
+
     it('names the policy and spells out the action of a policy change', () => {
       const event = feedEventFromAuditGroup(
         auditGroup(
@@ -456,6 +471,54 @@ describe('activity-feed', () => {
       expect(shape('require_approval')?.text).to.equal(
         'Claude Code needs approval for Bash'
       );
+    });
+
+    it('leaves standalone policy allow and require-approval decisions out (B-05)', () => {
+      // An allow is a tool call going through, and a require-approval
+      // decision already has its own "Approval requested" row: traffic, not
+      // news.
+      for (const action of ['policy_allow', 'policy_require_approval']) {
+        expect(
+          feedEventFromAuditGroup(
+            auditGroup(action, { id: action, resource_id: 'Bash' }, 'success'),
+            { users: [{ id: 'user-1', username: 'dimo' }] }
+          )
+        ).to.equal(null);
+      }
+    });
+
+    it('leaves account switches out and words a dotted sign-in (B-05)', () => {
+      const users = { users: [{ id: 'user-1', username: 'dimo' }] };
+      expect(
+        feedEventFromAuditGroup(
+          auditGroup('user.switch_account.in', { id: 's1' }, 'success'),
+          users
+        )
+      ).to.equal(null);
+      expect(
+        feedEventFromAuditGroup(
+          auditGroup('user.switch_account.out', { id: 's2' }, 'success'),
+          users
+        )
+      ).to.equal(null);
+      const login = feedEventFromAuditGroup(
+        auditGroup('user.login', { id: 'l1' }, 'success'),
+        users
+      );
+      expect(login?.text).to.equal('dimo signed in');
+    });
+
+    it('humanises a dotted event type it has no recipe for (B-05)', () => {
+      const event = feedEventFromAuditGroup(
+        auditGroup('team.member_added', { id: 'm1' }, 'success'),
+        { users: [{ id: 'user-1', username: 'dimo' }] }
+      );
+      expect(event?.text).to.equal('Team member added by dimo');
+      const odd = feedEventFromAuditGroup(
+        auditGroup('widget.frobnicate', { id: 'w2' }, 'success'),
+        { users: [{ id: 'user-1', username: 'dimo' }] }
+      );
+      expect(odd?.text).to.equal('Widget frobnicate · dimo');
     });
 
     it('never drops an audit event type it has no recipe for', () => {
@@ -596,6 +659,9 @@ describe('activity-feed', () => {
       }
       expect(audit[2]).to.contain(`skip=${AUDIT_PAGE_SIZE}`);
       expect(audit[3]).to.contain(`skip=${AUDIT_PAGE_SIZE * 2}`);
+      // The feed never shows a total, so it never asks for an exact one: an
+      // uncapped count of a long trail failed the request on prod (#1693).
+      for (const url of audit) expect(url).to.contain('count_limit=1');
       restore();
       localStorage.removeItem('accessToken');
     });

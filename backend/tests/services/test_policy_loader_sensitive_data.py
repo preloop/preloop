@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
+from pytest_mock import MockerFixture
 
 from preloop.services.policy import PolicyDocument, export_current_policy
 from preloop.services.policy.loader import PolicyApplier
@@ -159,3 +163,139 @@ def test_export_omits_block_when_absent(mocker) -> None:
     )
     exported = export_current_policy(MagicMock(), str(uuid.uuid4()))
     assert exported.sensitive_data is None
+
+
+# ---------------------------------------------------------------------------
+# scope.servers: a server the account does not have never matches
+# ---------------------------------------------------------------------------
+
+ALLOWLIST_RULE = {
+    "id": "allowlist",
+    "on": ["tool.args"],
+    "condition": "!(tool.name in ['get_issue'])",
+    "action": "deny",
+}
+
+
+def _configured_servers(mocker: MockerFixture, *names: str) -> None:
+    servers = []
+    for name in names:
+        server = MagicMock()
+        server.name = name
+        server.auth_config = None
+        servers.append(server)
+    mocker.patch(
+        "preloop.models.crud.crud_mcp_server.get_active_by_account",
+        return_value=servers,
+    )
+    mocker.patch(
+        "preloop.models.crud.crud_approval_workflow.get_names_by_account",
+        return_value=set(),
+    )
+    mocker.patch(
+        "preloop.services.model_content_policy.load_model_io_rules", return_value=[]
+    )
+
+
+def _policy(sensitive_data: dict[str, Any], **sections: Any) -> PolicyDocument:
+    return PolicyDocument.model_validate(
+        {
+            "version": "1.0",
+            "metadata": {"name": "p"},
+            "sensitive_data": sensitive_data,
+            **sections,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "entry"),
+    [
+        ("rules", {**ALLOWLIST_RULE, "scope": {"servers": ["githb"]}}),
+        ("reference_only", {"id": "refs", "scope": {"servers": ["githb"]}}),
+    ],
+)
+def test_apply_rejects_a_scope_server_the_account_lacks(
+    mocker: MockerFixture, section: str, entry: dict[str, Any]
+) -> None:
+    _configured_servers(mocker, "github")
+    replace = mocker.patch(
+        "preloop.services.sensitive_data.policy_store.replace_sensitive_data_config"
+    )
+    policy = _policy({section: [entry]})
+
+    result = PolicyApplier(MagicMock(), uuid.uuid4()).apply(policy)
+    assert result.success is False
+    [error] = result.errors
+    assert f"'{entry['id']}'" in error and "'githb'" in error
+    assert "github" in error  # the servers it could have meant
+    replace.assert_not_called()
+
+    # As for tools, skip_missing_servers turns it into a warning. The entry
+    # is kept and matches once a server with that name is configured.
+    result = PolicyApplier(MagicMock(), uuid.uuid4()).apply(
+        policy, skip_missing_servers=True
+    )
+    assert result.success, result.errors
+    [warning] = result.warnings
+    assert "'githb'" in warning
+    replace.assert_called_once()
+
+
+@pytest.mark.parametrize("server", ["github", "GitHub", "in-file", "preloop-mcp"])
+def test_scope_servers_the_policy_can_match_pass(
+    mocker: MockerFixture, server: str
+) -> None:
+    _configured_servers(mocker, "github")
+    policy = _policy(
+        {"rules": [{**ALLOWLIST_RULE, "scope": {"servers": [server]}}]},
+        mcp_servers=[{"name": "in-file", "url": "https://mcp.example.com"}],
+    )
+    assert PolicyApplier(MagicMock(), uuid.uuid4())._validate_references(policy) == []
+
+
+def test_scope_server_shared_with_the_account_passes(mocker: MockerFixture) -> None:
+    # Tool calls also reach servers another account shares here (hook H3),
+    # so a scope can name one that the account does not own.
+    from preloop.plugins.account_hooks import VISIBLE_MCP_SERVER, VisibilityProvider
+
+    _configured_servers(mocker, "github")
+    shared = MagicMock()
+    shared.id = uuid.uuid4()
+    shared.name = "shared-records"
+
+    class SharedServer(VisibilityProvider):
+        def extra_visible_ids(
+            self, db: Any, account_id: Any, resource_type: str
+        ) -> list[Any]:
+            return [shared.id] if resource_type == VISIBLE_MCP_SERVER else []
+
+    mocker.patch("preloop.plugins.account_hooks._visibility_provider", SharedServer())
+    db = MagicMock()
+    db.query.return_value.filter.return_value.order_by.return_value.all.return_value = [
+        shared
+    ]
+    applier = PolicyApplier(db, uuid.uuid4())
+
+    def scoped_to(server: str) -> PolicyDocument:
+        return _policy(
+            {"reference_only": [{"id": "refs", "scope": {"servers": [server]}}]}
+        )
+
+    assert applier._validate_references(scoped_to("shared-records")) == []
+    [error] = applier._validate_references(scoped_to("githb"))
+    assert "'githb'" in error
+
+
+def test_model_targets_do_not_check_scope_servers(mocker: MockerFixture) -> None:
+    # Model targets ignore scope.servers, so the name cannot stop a match.
+    _configured_servers(mocker)
+    rule = {
+        "id": "prompts",
+        "on": ["model.request"],
+        "types": ["email"],
+        "action": "deny",
+        "scope": {"servers": ["githb"]},
+    }
+    policy = _policy({"rules": [rule]})
+    assert PolicyApplier(MagicMock(), uuid.uuid4())._validate_references(policy) == []

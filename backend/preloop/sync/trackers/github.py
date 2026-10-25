@@ -1883,7 +1883,13 @@ class GitHubTracker(BaseTracker):
     def transform_issue(
         self, issue_data: Dict[str, Any], project: "Project"
     ) -> Dict[str, Any]:
-        """Transforms a GitHub issue into the common format."""
+        """Transforms a GitHub issue into the common format.
+
+        ``last_updated_external`` carries GitHub's own ``updated_at``: it is the
+        issue's activity time (close, edit, label, comment) for readers that
+        must not treat a local row write as activity, such as the Fleet Map.
+        """
+        updated_at = datetime.strptime(issue_data["updated_at"], "%Y-%m-%dT%H:%M:%SZ")
         return {
             "external_id": str(issue_data["id"]),
             "key": f"{project.slug}#{issue_data['number']}",
@@ -1893,9 +1899,8 @@ class GitHubTracker(BaseTracker):
             "created_at": datetime.strptime(
                 issue_data["created_at"], "%Y-%m-%dT%H:%M:%SZ"
             ),
-            "updated_at": datetime.strptime(
-                issue_data["updated_at"], "%Y-%m-%dT%H:%M:%SZ"
-            ),
+            "updated_at": updated_at,
+            "last_updated_external": updated_at,
             "project_id": project.id,
             "tracker_id": self.tracker_id,
             "comments": issue_data.get("comments", []),
@@ -2005,11 +2010,15 @@ class GitHubTracker(BaseTracker):
                 )
 
             # Get PR files/changes
-            files_path = f"/repos/{owner}/{repo}/pulls/{pr_number}/files"
-            files = await self._request("GET", files_path)
+            # Paginated: one page stops at 100 files, and a report that
+            # judges risk from the file list must see all of them.
+            files_path = f"repos/{owner}/{repo}/pulls/{pr_number}/files"
+            files = await self._make_request(files_path)
 
             changes = {
-                "files_changed": len(files),
+                # GitHub's own count, so a reader can tell when the listed
+                # files fall short of it (the endpoint stops at 3000).
+                "files_changed": pr_data.get("changed_files", len(files)),
                 "additions": pr_data.get("additions", 0),
                 "deletions": pr_data.get("deletions", 0),
                 "changed_files": [
@@ -2042,6 +2051,8 @@ class GitHubTracker(BaseTracker):
                 "created_at": pr_data["created_at"],
                 "updated_at": pr_data["updated_at"],
                 "merged_at": pr_data.get("merged_at"),
+                "head_sha": pr_data["head"].get("sha"),
+                "merge_commit_sha": pr_data.get("merge_commit_sha"),
                 "is_draft": pr_data.get("draft", False),
                 "comments": all_comments,
                 "changes": changes,

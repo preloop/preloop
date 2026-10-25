@@ -67,6 +67,18 @@ logger = logging.getLogger(__name__)
 # sessions are titled per list call (most-recent first); the rest get titled on
 # subsequent loads.
 MAX_TITLES_PER_LIST_REQUEST = 8
+#: Usage ``meta_data`` keys the activity timeline reads for a model call. Only
+#: these leave the database: the rest of a usage row's metadata is the captured
+#: request and response, megabytes on a long session (#1689).
+TIMELINE_USAGE_META_KEYS: tuple[str, ...] = (
+    "gateway_attempt",
+    "request_fingerprint",
+    "is_retry",
+    "retry_of_api_usage_id",
+    "transport",
+    "ws_mode",
+    "ws_override_source",
+)
 
 # Refresh a session's title once its request count has grown by at least this
 # many requests since the title was last generated.
@@ -398,13 +410,14 @@ class RuntimeSessionExplorerService:
         items: list[RuntimeSessionSummary],
         session_ids: list[str],
     ) -> None:
-        """Count recorded tool calls, falling back to the hook-reported count.
+        """Count observed tool calls from each available session source.
 
         Tool calls Preloop saw itself (MCP, governed native calls) are
         ``tool_call`` activities. A harness that only pushes usage reports a
         running conversation count instead, so its largest value is used when
-        nothing was recorded server side. The two are never added: the pushed
-        count already includes every call the harness made.
+        nothing was recorded server side. Flow agent logs also contain native
+        Codex commands absent from those sources. Counts are compared rather
+        than added because these sources can describe the same calls.
         """
         recorded = dict(
             self.db.query(
@@ -433,8 +446,15 @@ class RuntimeSessionExplorerService:
         )
         recorded = {str(key): int(value or 0) for key, value in recorded.items()}
         reported = {str(key): int(value or 0) for key, value in reported.items()}
+        flow_events = crud_runtime_session.get_flow_tool_call_counts(
+            self.db, account_id=account.id, runtime_session_ids=session_ids
+        )
         for item in items:
-            item.tool_call_count = recorded.get(item.id) or reported.get(item.id) or 0
+            item.tool_call_count = max(
+                recorded.get(item.id, 0),
+                reported.get(item.id, 0),
+                flow_events.get(item.id, 0),
+            )
 
     def _attach_pending_approval_counts(
         self,
@@ -688,6 +708,9 @@ class RuntimeSessionExplorerService:
         self._attach_managed_agents(
             account=account, items=[session], session_ids=[runtime_session_id]
         )
+        self._attach_tool_call_counts(
+            account=account, items=[session], session_ids=[runtime_session_id]
+        )
         return AccountRuntimeSessionDetailResponse(
             period_start=start_date,
             period_end=end_date,
@@ -803,6 +826,7 @@ class RuntimeSessionExplorerService:
             # The timeline shows rows, not a count; the count joins every
             # document in the window (#1582).
             include_total=False,
+            usage_meta_keys=TIMELINE_USAGE_META_KEYS,
         )
         interaction_items = [
             ModelGatewayUsageService._search_row_to_schema(item)
@@ -1232,6 +1256,10 @@ class RuntimeSessionExplorerService:
             latest_provider_name=row["latest_provider_name"],
             is_active_now=row.get("is_active_now", False),
             activity_status=row.get("activity_status", "idle"),
+            turn_state=row.get("turn_state"),
+            turn_started_at=row.get("turn_started_at"),
+            turn_ended_at=row.get("turn_ended_at"),
+            turn_interrupted=row.get("turn_interrupted"),
             total_requests=row["total_requests"],
             successful_requests=row["successful_requests"],
             failed_requests=row["failed_requests"],

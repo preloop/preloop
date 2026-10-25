@@ -81,8 +81,9 @@ type selection struct {
 }
 
 var (
-	selectionMu sync.RWMutex
-	selected    selection
+	selectionMu        sync.RWMutex
+	selected           selection
+	selectedConfigFile string
 )
 
 // Select sets the profile and account this process uses (the global

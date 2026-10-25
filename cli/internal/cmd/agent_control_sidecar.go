@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -322,22 +323,146 @@ func findAgentControlSidecarPackageEntry(
 }
 
 func runAgentControlSidecarEnable(spec agentControlSidecarSpec, cmd *cobra.Command, _ []string) error {
+	err := agentControlSidecarServiceInstaller(spec, cmd.OutOrStdout())
+	if errors.Is(err, errAgentControlSidecarServiceStart) {
+		// The unit file is written; a re-enable of an already loaded service
+		// can fail here too, so warn instead of failing the command.
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %v\n", err) //nolint:errcheck
+		return nil
+	}
+	return err
+}
+
+// errAgentControlSidecarServiceStart marks a service file that was written
+// but whose service manager (launchctl, systemctl) did not start it.
+var errAgentControlSidecarServiceStart = errors.New("sidecar service was installed but did not start")
+
+// runSidecarServiceManager runs launchctl or systemctl. It is a variable so
+// tests never touch the real user session.
+var runSidecarServiceManager = func(name string, args ...string) error {
+	output, err := exec.Command(name, args...).CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail != "" {
+			return fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, detail)
+		}
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return nil
+}
+
+var errAgentControlSidecarServiceUnsupported = errors.New("sidecar service install is not implemented on this OS")
+
+// agentControlSidecarServiceFile is the service definition path for this OS,
+// or "" where no service manager is supported.
+func agentControlSidecarServiceFile(spec agentControlSidecarSpec) string {
+	switch runtime.GOOS {
+	case "darwin":
+		return spec.launchdPath()
+	case "linux":
+		return spec.systemdPath()
+	default:
+		return ""
+	}
+}
+
+func installAgentControlSidecarService(spec agentControlSidecarSpec, out io.Writer) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	switch runtime.GOOS {
 	case "darwin":
-		return writeAgentControlSidecarLaunchd(spec, self, cmd.OutOrStdout())
+		return writeAgentControlSidecarLaunchd(spec, self, out)
 	case "linux":
-		return writeAgentControlSidecarSystemd(spec, self, cmd.OutOrStdout())
+		return writeAgentControlSidecarSystemd(spec, self, out)
 	default:
 		return fmt.Errorf(
-			"sidecar service install is not implemented on %s; use preloop %s sidecar run",
+			"%w (%s); use preloop %s sidecar run",
+			errAgentControlSidecarServiceUnsupported,
 			runtime.GOOS,
 			spec.Command,
 		)
 	}
+}
+
+// agentControlSidecarServiceInstaller installs and starts the sidecar
+// service. It is a variable so tests never touch launchctl or systemctl.
+var agentControlSidecarServiceInstaller = installAgentControlSidecarService
+
+// codexSidecarManualHint is the command to print when onboarding does not
+// start the service itself: enable where a service manager is supported,
+// otherwise the foreground run command.
+func codexSidecarManualHint(spec agentControlSidecarSpec) string {
+	if agentControlSidecarServiceFile(spec) == "" {
+		return "Run `preloop codex sidecar run` to start the sidecar."
+	}
+	return "Run `preloop codex sidecar enable` to keep the sidecar up."
+}
+
+// resolveCodexSidecarInvocation reports whether the sidecar binary can run.
+// It is a variable so tests do not depend on the host's npm install.
+var resolveCodexSidecarInvocation = func(spec agentControlSidecarSpec) error {
+	_, err := resolveAgentControlSidecarInvocation(spec)
+	return err
+}
+
+// codexPluginInstallFailed reports whether onboarding tried and failed to
+// install the runtime plugin the sidecar service would run.
+func codexPluginInstallFailed(pluginResult map[string]interface{}) bool {
+	status, _ := pluginResult["control_plugin_install_status"].(string)
+	if status == "" || strings.HasPrefix(status, "installed") {
+		return false
+	}
+	return pluginResult["control_plugin_verified"] != true
+}
+
+// maybeEnableCodexSidecarOnOnboard installs the Codex Agent Control sidecar
+// service after onboarding wrote ~/.codex/preloop-control.json, so Talk can
+// connect without a manual step. It is idempotent and honours --no-sidecar.
+// It skips the install when the plugin is missing (the service would crash
+// loop) and only prints the manual command on any failure; it never fails
+// the enrollment.
+func maybeEnableCodexSidecarOnOnboard(
+	agent AgentConfig,
+	opts managedEnrollmentOptions,
+	pluginResult map[string]interface{},
+	out io.Writer,
+) {
+	if runtimeSessionSourceTypeForAgent(agent.Name) != "codex" || !supportsAgentControlChannel(agent) {
+		return
+	}
+	if _, err := os.Stat(codexControlConfigPath()); err != nil {
+		return
+	}
+	spec := codexAgentControlSidecarSpec()
+	hint := codexSidecarManualHint(spec)
+	if opts.NoSidecar {
+		fmt.Fprintf(out, "  Codex Agent Control sidecar not started (--no-sidecar). %s\n", hint) //nolint:errcheck
+		return
+	}
+	path := agentControlSidecarServiceFile(spec)
+	if path == "" {
+		fmt.Fprintf(out, "  Codex Agent Control sidecar service is not supported on %s. %s\n", runtime.GOOS, hint) //nolint:errcheck
+		return
+	}
+	if _, err := os.Stat(path); err == nil {
+		fmt.Fprintf(out, "  Codex Agent Control sidecar service already installed (%s)\n", path) //nolint:errcheck
+		return
+	}
+	if codexPluginInstallFailed(pluginResult) {
+		fmt.Fprintf(out, "  Codex Agent Control sidecar service not installed: the Codex plugin did not install. Fix the plugin, then: %s\n", hint) //nolint:errcheck
+		return
+	}
+	if err := resolveCodexSidecarInvocation(spec); err != nil {
+		fmt.Fprintf(out, "  Codex Agent Control sidecar service not installed: %v. %s\n", err, hint) //nolint:errcheck
+		return
+	}
+	if err := agentControlSidecarServiceInstaller(spec, out); err != nil {
+		fmt.Fprintf(out, "  Warning: Codex Agent Control sidecar service not started: %v. %s\n", err, hint) //nolint:errcheck
+		return
+	}
+	fmt.Fprintln(out, "  Codex Agent Control sidecar service enabled (remove with `preloop codex sidecar disable`; skip with --no-sidecar)") //nolint:errcheck
 }
 
 func runAgentControlSidecarDisable(spec agentControlSidecarSpec, _ *cobra.Command, _ []string) error {
@@ -466,8 +591,10 @@ func writeAgentControlSidecarLaunchd(spec agentControlSidecarSpec, bin string, o
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return err
 	}
-	_ = exec.Command("launchctl", "load", path).Run()
 	fmt.Fprintf(out, "Installed %s\n", path)
+	if err := runSidecarServiceManager("launchctl", "load", path); err != nil {
+		return fmt.Errorf("%w: %v", errAgentControlSidecarServiceStart, err)
+	}
 	return nil
 }
 
@@ -487,9 +614,13 @@ func writeAgentControlSidecarSystemd(spec agentControlSidecarSpec, bin string, o
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		return err
 	}
-	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-	_ = exec.Command("systemctl", "--user", "enable", "--now", spec.systemdUnit()).Run()
 	fmt.Fprintf(out, "Installed %s\n", path)
+	if err := runSidecarServiceManager("systemctl", "--user", "daemon-reload"); err != nil {
+		return fmt.Errorf("%w: %v", errAgentControlSidecarServiceStart, err)
+	}
+	if err := runSidecarServiceManager("systemctl", "--user", "enable", "--now", spec.systemdUnit()); err != nil {
+		return fmt.Errorf("%w: %v", errAgentControlSidecarServiceStart, err)
+	}
 	return nil
 }
 

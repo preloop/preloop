@@ -19,6 +19,7 @@ from sqlalchemy import (
     literal_column,
     or_,
     tuple_,
+    update,
 )
 from sqlalchemy.orm import Session, aliased
 
@@ -60,6 +61,10 @@ INTERNAL_USAGE_PURPOSES = tuple(sorted(GATEWAY_USAGE_PURPOSES))
 # namespaces distinguishable is what lets provenance be reported honestly and
 # stops the closer from ever matching a natively-keyed row.
 IDLE_GENERATION_INFIX = ":idle-"
+
+# Same window as the console's "active now" (MANAGED_AGENT_ACTIVE_WINDOW in
+# crud/managed_agent.py, not imported to keep this module free of that one).
+PRINCIPAL_ACTIVE_SESSION_WINDOW = timedelta(minutes=10)
 
 
 def _exclude_internal_usage_condition():
@@ -275,6 +280,29 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             .first()
         )
 
+    def get_open_by_source_id(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        session_source_id: str,
+    ) -> Optional[RuntimeSession]:
+        """Return the newest open session in the account with this native id.
+
+        Used to scope live progress that a runtime plugin reports by native
+        session id (for example a Codex thread id) to its runtime session.
+        """
+        return (
+            db.query(self.model)
+            .filter(
+                self.model.account_id == account_id,
+                self.model.session_source_id == session_source_id,
+                self.model.ended_at.is_(None),
+            )
+            .order_by(self.model.started_at.desc())
+            .first()
+        )
+
     def get_latest_idle_generation(
         self,
         db: Session,
@@ -394,6 +422,53 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             db.flush()
         return db_obj
 
+    def mark_ended_by_hook(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        ended_at: datetime,
+        commit: bool = True,
+    ) -> tuple[Optional[RuntimeSession], bool]:
+        """Stamp ``ended_at`` from a SessionEnd hook, at most once.
+
+        One conditional ``UPDATE ... WHERE ended_at IS NULL``, so concurrent
+        SessionEnd hooks cannot both stamp it: an ended session keeps its
+        first ``ended_at`` and is never re-opened here.
+
+        Args:
+            db: Database session.
+            account_id: Owning account.
+            runtime_session_id: Session to end.
+            ended_at: Server receive time of the hook.
+            commit: Commit when True, flush otherwise.
+
+        Returns:
+            The session (None when absent) and whether this call ended it.
+        """
+        ended = db.execute(
+            update(self.model)
+            .where(
+                self.model.account_id == account_id,
+                self.model.id == runtime_session_id,
+                self.model.ended_at.is_(None),
+            )
+            .values(ended_at=ended_at, last_activity_at=ended_at, turn_state="ended")
+            .returning(self.model.id)
+            .execution_options(synchronize_session=False)
+        ).first()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+        db_obj = self.get_account_session(
+            db, account_id=str(account_id), runtime_session_id=str(runtime_session_id)
+        )
+        if db_obj is not None and ended is not None:
+            db.refresh(db_obj)
+        return db_obj, ended is not None
+
     def reopen_for_managed_agent(
         self,
         db: Session,
@@ -439,6 +514,9 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             return db_obj
         now = datetime.now(UTC)
         db_obj.ended_at = None
+        from .runtime_session_turn_state import reset_turn
+
+        reset_turn(db_obj)
         # started_at is NOT NULL, so it is left alone: reopening continues the
         # original session rather than pretending it began now.
         db_obj.last_activity_at = now
@@ -610,7 +688,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             if db_obj.alias:
                 db_obj.alias_namespace = f"parent:{parent_session_id}"
         if reopen_if_ended and db_obj.ended_at is not None and ended_at is None:
+            from .runtime_session_turn_state import reset_turn
+
             db_obj.ended_at = None
+            reset_turn(db_obj)
             db_obj.started_at = started_at or last_activity_at
         elif started_at is not None and db_obj.started_at is None:
             db_obj.started_at = started_at
@@ -1433,6 +1514,81 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             self._principal_id_condition(principal_id),
         )
 
+    def get_flow_tool_call_counts(
+        self, db: Session, *, account_id: Any, runtime_session_ids: Sequence[Any]
+    ) -> dict[str, int]:
+        """Count parsed flow tool events linked to each runtime session.
+
+        A Codex native command is recorded in ``FlowExecution.mcp_usage_logs``
+        with ``server_name=native`` but creates no ``RuntimeSessionActivity``.
+        Model gateway usage provides the execution-to-session link. Distinct
+        links prevent nine model requests for one run from counting the same
+        command nine times. Legacy flow sessions link by source ID instead.
+        """
+        if not runtime_session_ids:
+            return {}
+
+        sessions = (
+            db.query(
+                self.model.id,
+                self.model.session_source_type,
+                self.model.session_source_id,
+            )
+            .filter(
+                self.model.account_id == account_id,
+                self.model.id.in_(runtime_session_ids),
+            )
+            .all()
+        )
+        links: dict[str, set[uuid.UUID]] = {str(row.id): set() for row in sessions}
+        for row in sessions:
+            if row.session_source_type == "flow_execution" and _is_uuid(
+                row.session_source_id
+            ):
+                links[str(row.id)].add(uuid.UUID(row.session_source_id))
+
+        usage_links = (
+            db.query(ApiUsage.runtime_session_id, ApiUsage.flow_execution_id)
+            .filter(
+                ApiUsage.account_id == account_id,
+                ApiUsage.runtime_session_id.in_(runtime_session_ids),
+                ApiUsage.flow_execution_id.isnot(None),
+                ApiUsage.action_type == "model_gateway",
+                _exclude_internal_usage_condition(),
+            )
+            .distinct()
+            .all()
+        )
+        for session_id, execution_id in usage_links:
+            links[str(session_id)].add(execution_id)
+
+        execution_ids = set().union(*links.values()) if links else set()
+        if not execution_ids:
+            return {}
+        event_count = case(
+            (
+                func.jsonb_typeof(models.FlowExecution.mcp_usage_logs) == "array",
+                func.jsonb_array_length(models.FlowExecution.mcp_usage_logs),
+            ),
+            else_=0,
+        )
+        rows = (
+            db.query(models.FlowExecution.id, event_count)
+            .join(models.Flow, models.FlowExecution.flow_id == models.Flow.id)
+            .filter(
+                models.Flow.account_id == account_id,
+                models.FlowExecution.id.in_(execution_ids),
+            )
+            .all()
+        )
+        counts_by_execution = {row.id: int(row[1] or 0) for row in rows}
+        return {
+            session_id: sum(
+                counts_by_execution.get(execution_id, 0) for execution_id in ids
+            )
+            for session_id, ids in links.items()
+        }
+
     @staticmethod
     def _account_usage_links(
         db: Session,
@@ -1596,6 +1752,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
                 func.max(cast(usage_model.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
@@ -1651,6 +1811,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
             )
         )
@@ -1833,8 +1997,62 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.session_source_id.startswith(f"{principal_id}-")
                 | (self.model.session_source_id == principal_id),
             )
-            .order_by(self.model.created_at.desc())
+            # PostgreSQL's now() default is shared within a transaction. Use
+            # session start time, then identity, to order equal creation times.
+            .order_by(
+                self.model.created_at.desc(),
+                self.model.started_at.desc(),
+                self.model.id.desc(),
+            )
             .first()
+        )
+
+    def count_active_by_principal(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        principal_type: str,
+        principal_id: str,
+        now: Optional[datetime] = None,
+    ) -> int:
+        """Count the principal's sessions that are open and recently active.
+
+        Active matches the console's "active now": not ended, with activity
+        inside ``PRINCIPAL_ACTIVE_SESSION_WINDOW``. A session that was never
+        ended but went quiet long ago does not count, so a principal is not
+        treated as concurrent forever because of one abandoned session.
+
+        Args:
+            db: Database session.
+            account_id: Account that owns the sessions.
+            principal_type: Runtime principal type (the session source type).
+            principal_id: Runtime principal id.
+            now: Reference time, for tests. Defaults to the current time.
+
+        Returns:
+            int: Number of active sessions for the principal.
+        """
+        cutoff = (now or datetime.now(UTC)) - PRINCIPAL_ACTIVE_SESSION_WINDOW
+        # Both ways a session names its principal count: the source-id form
+        # ``get_latest_by_principal`` attributes to (``<id>`` or ``<id>-*``)
+        # and the per-run principal form (``<id>:<run-id>``). Missing either
+        # would undercount and let the latest session be guessed again.
+        by_source = and_(
+            self.model.session_source_type == principal_type,
+            self.model.session_source_id.startswith(f"{principal_id}-")
+            | (self.model.session_source_id == principal_id),
+        )
+        return int(
+            db.query(func.count(self.model.id))
+            .filter(
+                self.model.account_id == account_id,
+                or_(by_source, self._principal_condition(principal_type, principal_id)),
+                self.model.ended_at.is_(None),
+                self.model.last_activity_at >= cutoff,
+            )
+            .scalar()
+            or 0
         )
 
     def get_account_session_summary(
@@ -1848,8 +2066,28 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         ai_model_id: Optional[str] = None,
     ) -> Optional[dict[str, Any]]:
         """Return one runtime session with aggregated gateway usage."""
+        # The session's own identity first (a primary-key read), so the usage
+        # join can name it: matched through the correlated OR, Postgres read
+        # every gateway row of the account (294k on the founder's) to keep
+        # one session's 5.8k (#1689).
+        source = (
+            db.query(self.model.session_source_type, self.model.session_source_id)
+            .filter(
+                self.model.account_id == account_id, self.model.id == runtime_session_id
+            )
+            .first()
+        )
+        if source is None:
+            return None
         usage_join = self._usage_join_conditions(
-            start_date=start_date, end_date=end_date, ai_model_id=ai_model_id
+            start_date=start_date,
+            end_date=end_date,
+            ai_model_id=ai_model_id,
+            session=(
+                runtime_session_id,
+                source.session_source_type,
+                source.session_source_id,
+            ),
         )
         summary_columns_available = self._summary_columns_available(db)
         parent_session_id_available = self._parent_session_id_available(db)
@@ -1897,6 +2135,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
                 func.max(cast(ApiUsage.flow_id, String)).label("flow_id"),
                 func.max(Flow.name).label("flow_name"),
@@ -1955,6 +2197,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
                 self.model.started_at,
                 self.model.last_activity_at,
                 self.model.ended_at,
+                self.model.turn_state,
+                self.model.turn_started_at,
+                self.model.turn_ended_at,
+                self.model.turn_interrupted,
                 self.model.legal_hold,
             )
             .first()
@@ -2021,20 +2267,49 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
         start_date: Optional[datetime],
         end_date: Optional[datetime],
         ai_model_id: Optional[str] = None,
+        session: Optional[tuple[Any, Optional[str], Optional[str]]] = None,
     ):
-        legacy_flow_execution_match = and_(
-            RuntimeSession.session_source_type == "flow_execution",
-            ApiUsage.flow_execution_id.isnot(None),
-            cast(ApiUsage.flow_execution_id, String)
-            == RuntimeSession.session_source_id,
-        )
+        """Join conditions from a runtime session to its gateway usage rows.
+
+        Args:
+            start_date: Inclusive lower bound on usage timestamps.
+            end_date: Exclusive upper bound on usage timestamps.
+            ai_model_id: Only usage of this model.
+            session: ``(id, session_source_type, session_source_id)`` of the
+                one session being read. Its values go into the match as
+                constants, so each half is an index lookup instead of a
+                filter over the account's usage.
+
+        Returns:
+            The SQLAlchemy join condition.
+        """
+        if session is not None:
+            session_id, source_type, source_id = session
+            session_match: Any = ApiUsage.runtime_session_id == session_id
+            if source_type == "flow_execution" and source_id:
+                try:
+                    execution_id = uuid.UUID(str(source_id))
+                except ValueError:
+                    execution_id = None
+                if execution_id is not None:
+                    session_match = or_(
+                        session_match, ApiUsage.flow_execution_id == execution_id
+                    )
+        else:
+            legacy_flow_execution_match = and_(
+                RuntimeSession.session_source_type == "flow_execution",
+                ApiUsage.flow_execution_id.isnot(None),
+                cast(ApiUsage.flow_execution_id, String)
+                == RuntimeSession.session_source_id,
+            )
+            session_match = or_(
+                ApiUsage.runtime_session_id == RuntimeSession.id,
+                legacy_flow_execution_match,
+            )
         conditions = [
             ApiUsage.account_id == RuntimeSession.account_id,
             ApiUsage.action_type == "model_gateway",
-            or_(
-                ApiUsage.runtime_session_id == RuntimeSession.id,
-                legacy_flow_execution_match,
-            ),
+            session_match,
             # Exclude Preloop-internal usage (session optimization + title
             # generation) from the summed metrics so a session's token/cost/
             # request totals reflect only real agent traffic. This join is the
@@ -2107,6 +2382,10 @@ class CRUDRuntimeSession(CRUDBase[RuntimeSession]):
             "latest_provider_name": row.latest_provider_name,
             "is_active_now": is_active_now,
             "activity_status": activity_status,
+            "turn_state": getattr(row, "turn_state", None),
+            "turn_started_at": getattr(row, "turn_started_at", None),
+            "turn_ended_at": getattr(row, "turn_ended_at", None),
+            "turn_interrupted": getattr(row, "turn_interrupted", None),
             "total_requests": int(row.request_count or 0),
             "successful_requests": int(row.success_count or 0),
             "failed_requests": int(row.error_count or 0),

@@ -330,7 +330,7 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 	}
 
 	timeoutSeconds := existingApprovalHookWaitBudget(agent)
-	hostTimeoutSeconds := timeoutSeconds + approvalHookProcessHeadroomSeconds
+	hostTimeoutSeconds := approvalHookHostTimeoutSeconds(source, timeoutSeconds)
 	workspaceRoot := workspaceRootForAgent(agent)
 	policyPaths := discoverAgentPolicyPaths(source, workspaceRoot)
 
@@ -359,7 +359,9 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 			}
 		}
 	case permissionSourceClaudeCode:
-		if err := upsertNestedCommandHook(configPath, "PreToolUse", "*", command, hostTimeoutSeconds); err != nil {
+		// statusMessage replaces Claude Code's "running PreToolUse hook"
+		// spinner text while an approval is held.
+		if err := upsertNestedCommandHookWithStatus(configPath, "PreToolUse", "*", command, hostTimeoutSeconds, claudeApprovalHookStatusMessage); err != nil {
 			return err
 		}
 		// Lineage and the spawn-time id handoff (#1045): SessionStart
@@ -378,6 +380,12 @@ func installApprovalHooks(agent AgentConfig, baseURL, token string, out io.Write
 		}
 		if err := upsertNestedCommandHook(configPath, "SessionEnd", "", sessionEndHookCommand(source), sessionHookTimeoutSeconds); err != nil {
 			return err
+		}
+		// Agent state (tool ends, waits for input): fail-open, 5 s.
+		for _, hook := range activityHookEvents {
+			if err := upsertNestedCommandHook(configPath, hook.event, hook.matcher, activityHookCommand(source), activityHookTimeoutSeconds); err != nil {
+				return err
+			}
 		}
 	case permissionSourceCodexCLI:
 		for _, hook := range []struct{ event, command string }{
@@ -490,7 +498,7 @@ func enablePermissionPromptBuiltin(client *api.Client, managedAgentID string, ou
 		"managed_agent_id": managedAgentID,
 	}
 	var response map[string]interface{}
-	err := client.Post("/api/v1/tool-configurations", payload, &response)
+	err := client.Post(api.RESTPrefix+"/tool-configurations", payload, &response)
 	alreadyConfigured := err != nil && api.IsStatus(err, http.StatusBadRequest)
 	if err != nil && !alreadyConfigured {
 		return false, fmt.Errorf("failed to enable the permission_prompt builtin: %w", err)
@@ -574,7 +582,7 @@ func removeApprovalHooks(agent AgentConfig, out io.Writer) error {
 				return err
 			}
 		}
-		for _, event := range noteLifecycleHookEvents {
+		for _, event := range append(append([]string{}, noteLifecycleHookEvents...), activityHookEventNames()...) {
 			if err := removeNestedCommandHook(configPath, event, false); err != nil {
 				return err
 			}
@@ -942,6 +950,16 @@ func removePermissionHookCredential(agent AgentConfig) error {
 // Claude Code PreToolUse and Codex PermissionRequest), replacing any existing
 // Preloop entry under eventKey.
 func upsertNestedCommandHook(path, eventKey, matcher, command string, timeoutSeconds int) error {
+	return upsertNestedCommandHookWithStatus(path, eventKey, matcher, command, timeoutSeconds, "")
+}
+
+// claudeApprovalHookStatusMessage is the spinner text Claude Code shows while
+// the approval hook runs.
+const claudeApprovalHookStatusMessage = "Waiting for Preloop approval"
+
+// upsertNestedCommandHookWithStatus is upsertNestedCommandHook with an
+// optional statusMessage, which Claude Code shows while the hook runs.
+func upsertNestedCommandHookWithStatus(path, eventKey, matcher, command string, timeoutSeconds int, statusMessage string) error {
 	doc, err := loadJSONDocumentOrEmpty(path)
 	if err != nil {
 		return err
@@ -955,6 +973,9 @@ func upsertNestedCommandHook(path, eventKey, matcher, command string, timeoutSec
 	}
 	if timeoutSeconds > 0 {
 		inner["timeout"] = timeoutSeconds
+	}
+	if statusMessage != "" {
+		inner["statusMessage"] = statusMessage
 	}
 	entry := map[string]interface{}{
 		"matcher": matcher,

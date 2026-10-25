@@ -79,6 +79,8 @@ Restart the agent runtime after installing the plugin. When the plugin connects 
 
 If native plugin installation fails (for example OpenClaw requires a newer Node version), the CLI can fall back to Preloop's managed Agent Control sidecar so validation can still confirm control readiness.
 
+For Codex CLI, `preloop agents onboard` also installs and starts the Agent Control sidecar service (launchd on macOS, a systemd user unit on Linux), so Talk connects without a manual step. Re-onboarding leaves an installed service alone. Pass `--no-sidecar` to skip it and run `preloop codex sidecar enable` later. If the Codex plugin did not install or the service does not start, onboarding prints that command instead; on platforms without launchd or systemd it prints `preloop codex sidecar run`.
+
 ---
 
 ## Runtime Responsibilities

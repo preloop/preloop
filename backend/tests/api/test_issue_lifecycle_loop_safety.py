@@ -23,7 +23,9 @@ def lifecycle_app() -> FastAPI:
     """Mount the production routes with isolated authentication and DB fixtures."""
     app = FastAPI()
     app.include_router(issue_lifecycle.router)
-    actor = models.User(id=uuid4(), account_id=uuid4(), username="loop-test")
+    actor = models.User(
+        id=uuid4(), account_id=uuid4(), username="loop-test", is_superuser=True
+    )
     app.dependency_overrides[get_current_active_user] = lambda: actor
     app.dependency_overrides[get_db_session] = object
 

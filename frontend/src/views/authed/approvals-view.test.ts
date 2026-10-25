@@ -323,6 +323,57 @@ describe('ApprovalsView', () => {
     expect(emptyState?.textContent).to.include('No approval requests yet');
   });
 
+  it('says nothing is waiting, not "no requests yet", over a history (B-19)', async () => {
+    fetchStub = sinon
+      .stub(window, 'fetch')
+      .callsFake(async (input: RequestInfo | URL) => {
+        const url = new URL(String(input), window.location.origin);
+        const json = (data: unknown) =>
+          new Response(JSON.stringify(data), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        if (url.pathname.endsWith('/approval-requests/stats')) {
+          return json({
+            total: 1200,
+            pending: 0,
+            approved: 1100,
+            declined: 50,
+            expired: 30,
+            cancelled: 20,
+            human_approved: 900,
+            human_declined: 50,
+            auto_approved_by_bypass: 200,
+            avg_response_minutes: 3,
+            tools: ['example_tool'],
+          });
+        }
+        if (url.pathname.endsWith('/approval-requests')) {
+          return json([]);
+        }
+        return json({});
+      });
+    const element = (await fixture(
+      html`<approvals-view></approvals-view>`
+    )) as ApprovalsView;
+    await waitUntil(
+      () => !(element as any).loading,
+      'Approvals view did not finish loading'
+    );
+    await element.updateComplete;
+    const emptyState = element.shadowRoot?.querySelector('.empty-state');
+    expect(emptyState?.textContent).to.include(
+      'Nothing is waiting for a decision.'
+    );
+    expect(emptyState?.textContent).to.not.include('No approval requests yet');
+    const showAll = emptyState?.querySelector(
+      '[data-testid="show-all-approvals"]'
+    );
+    expect(showAll?.getAttribute('href')).to.equal(
+      '/console/approvals?status=all'
+    );
+  });
+
   it('shows a danger alert with Retry instead of the empty state when loading fails', async () => {
     let fail = true;
     fetchStub = sinon.stub(window, 'fetch').callsFake(
@@ -1533,9 +1584,17 @@ describe('ApprovalsView', () => {
       );
       // The strip counts the whole account, from the server.
       const strip = element.shadowRoot!.querySelector('.stat-strip')!;
+      // Compact at 1000 and above, exact in the title (U-01).
       expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
-        '40000 requests'
+        '40K requests'
       );
+      expect(strip.textContent!.replace(/\s+/g, ' ')).to.contain(
+        '32K approved'
+      );
+      expect(
+        strip.querySelector('strong[title="40,000"]'),
+        'exact total in the title'
+      ).to.exist;
       expect(strip.textContent).to.not.contain('Last');
     });
 

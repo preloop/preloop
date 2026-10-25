@@ -1,3 +1,5 @@
+import { randomUuid } from '../../utils/random-uuid';
+import { flowRuntimeLabel } from '../../utils/flow-runtime';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd } from '../../utils/money';
 import { errorHeadline } from '../../utils/attention';
@@ -102,6 +104,10 @@ import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/details/details.js';
 import '@shoelace-style/shoelace/dist/components/copy-button/copy-button.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
+import {
+  BILLING_NOT_RECORDED,
+  billingAttribution,
+} from '../../utils/billing-attribution';
 
 interface FlowExecutionUpdate {
   execution_id: string;
@@ -468,7 +474,30 @@ export class FlowExecutionView extends LitElement {
       .resume-line a:hover {
         text-decoration: underline;
       }
+      /* #1692: the issue and PR links are one line, not a boxed card; the
+         box only appears when there are follow-up runs to list. */
+      .status-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0 24px;
+        /* Tucked under the summary strip: it reads as the strip's last line. */
+        margin: -16px 0 -8px;
+      }
+      .status-row:not(:has(:not(preloop-execution-continuation[data-empty]))) {
+        display: none;
+      }
+      .status-row > * {
+        margin: 0;
+      }
       .continuation-navigation {
+        margin: 0;
+      }
+      .continuation-navigation:not(.has-follow-ups) sl-button::part(base) {
+        height: auto;
+        line-height: 1.6;
+      }
+      .continuation-navigation.has-follow-ups {
         margin-bottom: var(--sl-spacing-medium);
         border: 1px solid var(--sl-color-neutral-200);
         border-radius: var(--sl-border-radius-medium);
@@ -480,6 +509,22 @@ export class FlowExecutionView extends LitElement {
       }
       .continuation-navigation a {
         color: var(--sl-color-primary-600);
+      }
+      .published-prs {
+        margin: var(--sl-spacing-medium) 0;
+      }
+      .published-prs ul {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-small) var(--sl-spacing-large);
+        list-style: none;
+        padding: 0;
+        margin: var(--sl-spacing-x-small) 0 0;
+      }
+      .published-prs li {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sl-spacing-x-small);
       }
       /* One of the page's two ambient animations: the dot that says this run
          is still going. The chip beside it stays a soft tint. */
@@ -518,7 +563,7 @@ export class FlowExecutionView extends LitElement {
         padding: 12px 0;
         border-top: 1px solid var(--console-hairline);
         border-bottom: 1px solid var(--console-hairline);
-        margin-bottom: 16px;
+        margin-bottom: 4px;
       }
       .host-sessions {
         display: flex;
@@ -606,14 +651,19 @@ export class FlowExecutionView extends LitElement {
         white-space: normal;
       }
       /* The line plus its "Show full error" control, which opens Output. */
+      /* #1692: the error and its "Show full error" share one line. */
       .error-block-line {
-        margin: -4px 0 16px;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0 8px;
+        margin: -4px 0 12px;
       }
       .error-block-line .error-line {
         margin: 0;
       }
       .error-block-line .show-full-error::part(base) {
-        padding-left: 24px;
+        padding-left: 0;
         height: auto;
         line-height: 1.6;
       }
@@ -707,7 +757,13 @@ export class FlowExecutionView extends LitElement {
       }
       /* While the run is live the stream owns a viewport-sized region and
          scrolls inside itself, so the newest item stays where the eye is.
-         A finished run is a document: it scrolls with the page. */
+         A finished run is a document: it scrolls with the page, up to two
+         viewports (#1692). A heavier run (80+ entries) scrolls inside that
+         region, so the page stays within three screens. */
+      .timeline-stream:not(.is-live) {
+        max-height: calc(200dvh - 400px);
+        overflow-y: auto;
+      }
       .timeline-stream.is-live {
         height: calc(100dvh - 340px);
         min-height: 320px;
@@ -718,7 +774,8 @@ export class FlowExecutionView extends LitElement {
         display: grid;
         grid-template-columns: 76px minmax(0, 1fr);
         gap: 12px;
-        padding: 8px 0;
+        /* #1692: rows are dense so a long run stays within three screens. */
+        padding: 4px 0;
         border-bottom: 1px solid var(--console-hairline);
       }
       .timeline-row:last-child {
@@ -1243,9 +1300,9 @@ export class FlowExecutionView extends LitElement {
    */
   private renderDurationText(): string {
     const execution = this.execution;
-    if (!execution) return '—';
+    if (!execution) return '-';
 
-    return executionDurationText(execution, this.durationNow) || '—';
+    return executionDurationText(execution, this.durationNow) || '-';
   }
 
   async updated(changedProperties: Map<string, any>) {
@@ -2532,7 +2589,7 @@ export class FlowExecutionView extends LitElement {
         toolName,
         payload.status || 'unknown',
         detail || '',
-        crypto.randomUUID(), // Ensure keys are unique even if the same tool is called at the same second
+        randomUuid(), // Ensure keys are unique even if the same tool is called at the same second
       ].join(':'),
       timestamp,
       toolName,
@@ -2589,11 +2646,12 @@ export class FlowExecutionView extends LitElement {
       });
   }
 
-  private renderGatewayEvent(event: FlowGatewayEvent) {
+  private renderGatewayEvent(event: FlowGatewayEvent, hideBilling = false) {
     return html`
       <preloop-gateway-event
         .event=${{ ...event }}
         hide-timestamp
+        ?hide-billing=${hideBilling}
         @gateway-event-expand=${(e: CustomEvent) => {
           if (e.detail.expanded) {
             this.handleGatewayEventExpand(event.id);
@@ -2919,7 +2977,31 @@ export class FlowExecutionView extends LitElement {
     >`;
   }
 
-  private renderTimelineRow(row: TimelineRow) {
+  /**
+   * Gateway rows whose billing line repeats the gateway row shown above them.
+   *
+   * Only the first row of a run of same-billed calls prints "Billed to"; the
+   * rest would repeat it word for word (#1692).
+   */
+  private repeatedBillingKeys(rows: TimelineRow[]): Set<string> {
+    const repeated = new Set<string>();
+    let previous: string | null = null;
+    for (const row of rows) {
+      if (row.kind !== 'event') continue;
+      const event =
+        row.item.kind === 'gateway' ? row.item.gatewayEvent : undefined;
+      if (!event) continue;
+      const billing = billingAttribution(event.payload || {});
+      // "Billing path not recorded" says nothing a reader can act on, and
+      // printed under every call it doubled the timeline's height (#1692).
+      if (billing === previous || billing === BILLING_NOT_RECORDED)
+        repeated.add(row.key);
+      previous = billing;
+    }
+    return repeated;
+  }
+
+  private renderTimelineRow(row: TimelineRow, hideBilling = false) {
     if (row.kind === 'logs') {
       const expanded = this.expandedLogGroups.has(row.key);
       const count = row.logs.length;
@@ -2956,7 +3038,7 @@ export class FlowExecutionView extends LitElement {
         <div class="timeline-row timeline-gateway">
           ${this.renderTimelineTime(row.timestamp)}
           <div class="timeline-body">
-            ${this.renderGatewayEvent(item.gatewayEvent)}
+            ${this.renderGatewayEvent(item.gatewayEvent, hideBilling)}
           </div>
         </div>
       `;
@@ -3023,6 +3105,7 @@ export class FlowExecutionView extends LitElement {
     // before anyone scrolled (#1586).
     const hiddenRows = Math.max(0, rows.length - this.timelineRowsShown);
     const visibleRows = hiddenRows > 0 ? rows.slice(hiddenRows) : rows;
+    const repeatedBilling = this.repeatedBillingKeys(visibleRows);
     // The first reads only. Status rows from the detail row can already be
     // showing, so this is a line under them, not a replacement for them.
     const timelineLoading =
@@ -3115,7 +3198,9 @@ export class FlowExecutionView extends LitElement {
               ? html`<div class="panel-empty">
                   Nothing recorded for this run yet.
                 </div>`
-              : visibleRows.map((row) => this.renderTimelineRow(row))
+              : visibleRows.map((row) =>
+                  this.renderTimelineRow(row, repeatedBilling.has(row.key))
+                )
           }
           ${
             timelineLoading
@@ -3527,7 +3612,7 @@ ${execution.resolved_input_prompt}</pre>
         ? formatEstimatedCost(this.budgetUsed)
         : this.totalTokens > 0
           ? 'Not priced'
-          : '—';
+          : '-';
 
     const limits = this.executionLimits;
     const tokenLimit = limits?.max_total_tokens;
@@ -3679,7 +3764,12 @@ ${execution.resolved_input_prompt}</pre>
         </div>
         <div class="strip-item">
           <span class="strip-label">Agent</span>
-          <span class="strip-value">${this.flow?.agent_type || '—'}</span>
+          <span
+            class="strip-value"
+            data-testid="strip-agent"
+            title=${this.flow?.agent_type || ''}
+            >${this.flow?.agent_type ? flowRuntimeLabel(this.flow.agent_type) : '-'}</span
+          >
         </div>
         <div class="strip-item">
           <span class="strip-label">Session</span>
@@ -3694,7 +3784,7 @@ ${execution.resolved_input_prompt}</pre>
                     title=${sessionReference}
                     >${shortenIdentifier(sessionReference)}</a
                   >`
-                : '—'
+                : '-'
             }
           </span>
         </div>
@@ -3766,7 +3856,7 @@ ${execution.resolved_input_prompt}</pre>
     if (!followUps.length && !navigation.issue_url && !navigation.pr_url)
       return nothing;
     return html`<section
-      class="continuation-navigation"
+      class="continuation-navigation ${followUps.length ? 'has-follow-ups' : ''}"
       data-testid="continuation-navigation"
       aria-label="Issue and pull request follow-up"
     >
@@ -3813,6 +3903,70 @@ ${execution.resolved_input_prompt}</pre>
                   : nothing
               }
             </sl-details>`
+          : nothing
+      }
+    </section>`;
+  }
+
+  private renderPublishedPrs(execution: FlowExecution) {
+    const raw = execution.result?.published_prs;
+    if (!Array.isArray(raw) || raw.length === 0) return nothing;
+    const seen = new Set<string>();
+    const publications = raw.filter(
+      (
+        item
+      ): item is {
+        url: string;
+        branch?: string;
+        provider?: string;
+        repository?: string;
+      } => {
+        if (!item || typeof item.url !== 'string') return false;
+        try {
+          if (!['http:', 'https:'].includes(new URL(item.url).protocol))
+            return false;
+        } catch {
+          return false;
+        }
+        const key = item.url.replace(/\/$/, '');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }
+    );
+    if (!publications.length) return nothing;
+    return html`<section
+      class="published-prs"
+      data-testid="published-prs"
+      aria-label="Published pull requests"
+    >
+      <strong>Published pull requests</strong>
+      <ul>
+        ${publications.map((item) => {
+          const url = new URL(item.url);
+          const path = url.pathname.replace(/^\//, '');
+          const separator = [
+            '/-/merge_requests/',
+            '/merge_requests/',
+            '/pull/',
+            '/pull-requests/',
+          ].find((part) => path.includes(part));
+          const repository =
+            item.repository || (separator ? path.split(separator, 1)[0] : path);
+          return html`<li>
+            <a href=${item.url} target="_blank" rel="noopener noreferrer"
+              >${repository || url.host} ·
+              ${item.provider === 'gitlab' ? 'MR' : 'PR'}</a
+            >
+            ${item.branch ? html`<code>${item.branch}</code>` : nothing}
+          </li>`;
+        })}
+      </ul>
+      ${
+        execution.result?.published_prs_truncated
+          ? html`<p>
+              Additional published pull requests were omitted from this list.
+            </p>`
           : nothing
       }
     </section>`;
@@ -3983,56 +4137,62 @@ ${execution.resolved_input_prompt}</pre>
           <!-- Why the run is waiting, failed or stopped comes first: it is
                the first question a reader of this page has. -->
           ${this.renderWaitingLine(execution)}
-          ${
-            errorLine
-              ? html`<div class="error-block-line">
-                  <div
-                    class="error-line"
-                    role="alert"
-                    data-testid="error-line"
-                    title=${execution.error_message || ''}
+          <!-- #1692: the error (or stop) line and the issue/PR links share
+               one row, so the timeline starts within the first screenful. -->
+          <div class="status-row">
+            ${
+              errorLine
+                ? html`<div class="error-block-line">
+                    <div
+                      class="error-line"
+                      role="alert"
+                      data-testid="error-line"
+                      title=${execution.error_message || ''}
+                    >
+                      <sl-icon name="exclamation-triangle"></sl-icon>
+                      <span class="error-text">${errorLine}</span>
+                    </div>
+                    ${
+                      execution.error_message
+                        ? html`<sl-button
+                            variant="text"
+                            size="small"
+                            class="show-full-error"
+                            data-testid="show-full-error"
+                            @click=${this.showFullError}
+                            >Show full error</sl-button
+                          >`
+                        : nothing
+                    }
+                  </div>`
+                : ''
+            }
+            ${
+              stopLine
+                ? html`<div
+                    class="stop-line"
+                    role="status"
+                    data-testid="stop-line"
                   >
-                    <sl-icon name="exclamation-triangle"></sl-icon>
-                    <span class="error-text">${errorLine}</span>
-                  </div>
-                  ${
-                    execution.error_message
-                      ? html`<sl-button
-                          variant="text"
-                          size="small"
-                          class="show-full-error"
-                          data-testid="show-full-error"
-                          @click=${this.showFullError}
-                          >Show full error</sl-button
-                        >`
-                      : nothing
-                  }
-                </div>`
-              : ''
-          }
-          ${
-            stopLine
-              ? html`<div
-                  class="stop-line"
-                  role="status"
-                  data-testid="stop-line"
-                >
-                  <sl-icon name="stop-circle"></sl-icon>
-                  <span>${stopLine}</span>
-                </div>`
-              : ''
-          }
-          ${this.renderHostSessions()}
-          ${this.renderContinuationNavigation(execution)}
+                    <sl-icon name="stop-circle"></sl-icon>
+                    <span>${stopLine}</span>
+                  </div>`
+                : ''
+            }
+            ${this.renderContinuationNavigation(execution)}
+            <!-- #1692: the PR follow-up action rides the status row instead
+                 of taking its own block above the tabs. -->
+            <preloop-execution-continuation
+              .execution=${execution}
+            ></preloop-execution-continuation>
+          </div>
+          ${this.renderPublishedPrs(execution)} ${this.renderHostSessions()}
           <!-- What this run delegated, and what that cost. Renders nothing
                for the overwhelming majority of runs, which delegate
                nothing. -->
           <preloop-execution-tree
             execution-id=${execution.id}
           ></preloop-execution-tree>
-          <preloop-execution-continuation
-            .execution=${execution}
-          ></preloop-execution-continuation>
           ${this.renderOperatorNotes(execution)}
           <sl-tab-group
             class="execution-tabs"

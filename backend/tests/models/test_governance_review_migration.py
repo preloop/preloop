@@ -152,6 +152,9 @@ def test_downgrade_upgrade_on_seeded_database(
         policy_document_version=document.version,
         user_id=test_user.id,
         digest={"intent": "Check the parser"},
+        include_history=True,
+        override_caller="test/governance-migration",
+        override_reason="Seed historical rows for migration compatibility",
         commit=False,
     )
     crud_governance_finding.insert_findings(

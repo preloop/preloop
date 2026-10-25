@@ -1074,6 +1074,7 @@ def test_http_entrypoints_preserve_tenant_scope_and_authorization(
         account_id=service.account_id,
         username="example-user",
         is_active=True,
+        is_superuser=True,
     )
     app.dependency_overrides[get_current_active_user] = lambda: actor
     with TestClient(app) as client:
@@ -1523,7 +1524,11 @@ async def test_reconcile_http_dispatches_once_with_label_already_present(
     app.include_router(router)
     app.dependency_overrides[get_db_session] = lambda: service.db
     actor = models.User(
-        id=uuid4(), account_id=service.account_id, username="reviewer", is_active=True
+        id=uuid4(),
+        account_id=service.account_id,
+        username="reviewer",
+        is_active=True,
+        is_superuser=True,
     )
     app.dependency_overrides[get_current_active_user] = lambda: actor
     body = {

@@ -1,5 +1,7 @@
+import { REST_API_PREFIX } from '../../api-path';
+import consoleStyles from '../../styles/console-styles.css?inline';
 import { ConsoleStatus } from '../../controllers/console-status';
-import { html, css } from 'lit';
+import { html, css, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { AuthedElement, getUserProfile } from '../../api';
 import { unifiedWebSocketManager } from '../../services/unified-websocket-manager';
@@ -121,6 +123,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
   static styles = [
     consoleDialogStyles,
+    unsafeCSS(consoleStyles),
     css`
       /* No page geometry here: the shell owns the width and the side inset
          (styles/console-styles.css, "The page box"). */
@@ -128,13 +131,17 @@ export class NotificationPreferencesView extends AuthedElement {
         display: block;
       }
 
+      /* The console sheet (loaded for its chip recipe) makes .header a
+         flex row; this page stacks its title over its description. */
       .header {
+        display: block;
+        min-height: 0;
         margin-bottom: var(--sl-spacing-large);
       }
 
       .header h1 {
         margin: 0 0 var(--sl-spacing-x-small) 0;
-        font-size: var(--sl-font-size-2x-large);
+        font-size: var(--console-text-h1, 1.625rem);
         font-weight: var(--sl-font-weight-semibold);
         color: var(--sl-color-neutral-900);
       }
@@ -504,7 +511,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
     try {
       const data = await this.fetchData(
-        '/api/v1/notification-preferences/me/test-push',
+        REST_API_PREFIX + '/notification-preferences/me/test-push',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -535,13 +542,13 @@ export class NotificationPreferencesView extends AuthedElement {
           <div>
             <h2 class="section-title" style="margin: 0;">
               Test push delivery
-              <sl-badge variant="neutral" pill>Admin</sl-badge>
+              <sl-badge class="chip" variant="neutral" pill>Admin</sl-badge>
             </h2>
             <div class="preference-description">
               Sends a clearly labelled test over the real delivery path and
               reports exactly what the push provider said. Nothing is gated on
-              it &mdash; no approval request is created, and responding to it on
-              the device has no effect.
+              it: no approval request is created, and responding to it on the
+              device has no effect.
             </div>
           </div>
         </div>
@@ -602,7 +609,11 @@ export class NotificationPreferencesView extends AuthedElement {
           (device) => html`
             <div class="test-result-item ${device.success ? 'ok' : 'failed'}">
               <div class="test-result-head">
-                <sl-badge variant=${device.success ? 'success' : 'danger'}>
+                <sl-badge
+                  class="chip"
+                  pill
+                  variant=${device.success ? 'success' : 'danger'}
+                >
                   ${device.success ? 'Delivered' : 'Failed'}
                 </sl-badge>
                 <span class="test-result-meta">
@@ -616,8 +627,7 @@ export class NotificationPreferencesView extends AuthedElement {
                   ? html`<div class="test-result-error">
                       ${
                         device.error_reason
-                          ? html`<strong>${device.error_reason}</strong>
-                              &mdash; `
+                          ? html`<strong>${device.error_reason}</strong>: `
                           : ''
                       }${device.error}
                     </div>`
@@ -667,7 +677,9 @@ export class NotificationPreferencesView extends AuthedElement {
   private async loadPreferences(options: { background?: boolean } = {}) {
     try {
       if (!options.background) this.isLoading = true;
-      const data = await this.fetchData('/api/v1/notification-preferences/me');
+      const data = await this.fetchData(
+        REST_API_PREFIX + '/notification-preferences/me'
+      );
 
       if (!data) {
         throw new Error('Failed to load preferences');
@@ -693,11 +705,14 @@ export class NotificationPreferencesView extends AuthedElement {
 
     try {
       this.isSaving = true;
-      const data = await this.fetchData('/api/v1/notification-preferences/me', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ [field]: value }),
-      });
+      const data = await this.fetchData(
+        REST_API_PREFIX + '/notification-preferences/me',
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ [field]: value }),
+        }
+      );
 
       if (!data) {
         throw new Error(`Failed to update ${label}`);
@@ -754,7 +769,7 @@ export class NotificationPreferencesView extends AuthedElement {
   private async handleShowQRCode() {
     try {
       const data = await this.fetchData(
-        '/api/v1/notification-preferences/me/qr-code'
+        REST_API_PREFIX + '/notification-preferences/me/qr-code'
       );
 
       if (!data) {
@@ -794,7 +809,7 @@ export class NotificationPreferencesView extends AuthedElement {
 
     try {
       const data = await this.fetchData(
-        `/api/v1/notification-preferences/me/device/${encodeURIComponent(token)}`,
+        `${REST_API_PREFIX}/notification-preferences/me/device/${encodeURIComponent(token)}`,
         {
           method: 'DELETE',
         }
@@ -952,13 +967,9 @@ export class NotificationPreferencesView extends AuthedElement {
                                 }
                                 style="font-size: 1.5rem;"
                               ></sl-icon>
-                              <sl-badge
-                                variant=${
-                                  device.platform === 'ios'
-                                    ? 'primary'
-                                    : 'success'
-                                }
-                              >
+                              <!-- A platform is a label, not a state:
+                                   neutral, never a green or blue paint. -->
+                              <sl-badge class="chip" pill variant="neutral">
                                 ${device.platform === 'ios' ? 'iOS' : 'Android'}
                               </sl-badge>
                             </div>

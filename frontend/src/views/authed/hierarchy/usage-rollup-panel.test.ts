@@ -79,6 +79,11 @@ describe('usage-rollup-panel', () => {
     expect((q(el, 'subaccount-filter') as HTMLSelectElement).value).to.equal(
       '__all__'
     );
+    // The table holds subaccounts only, so its total sits under a page total
+    // that also counts this account's own traffic; the title says so (U-18).
+    const title = el.shadowRoot!.querySelector('.head h3')!;
+    expect(title.textContent!.trim()).to.equal('Subaccounts only');
+    expect(title.getAttribute('title')).to.contain("This account's own");
   });
 
   it('contains a wide table at 390px and retains exact monetary values', async () => {
@@ -167,5 +172,36 @@ describe('usage-rollup-panel', () => {
     await waitUntil(() => off === 1);
     expect(el.shadowRoot!.querySelector('sl-card')).to.be.null;
     expect(toastCount()).to.equal(before);
+  });
+
+  it('hides an all-zero rollup with no open attention (#1696)', async () => {
+    let calls = 0;
+    api = mockApi({
+      capabilities: ['account_hierarchy'],
+      routes: [
+        {
+          path: USAGE,
+          body: () => {
+            calls++;
+            return { rows: [{ ...ROWS[0], requests: 0, cost_usd: 0 }] };
+          },
+        },
+        {
+          path: ATTENTION,
+          body: {
+            items: [
+              { subaccount_id: 'sub-a', subaccount_name: 'North', count: 0 },
+            ],
+          },
+        },
+      ],
+    });
+    const el = await fixture<UsageRollupPanel>(
+      html`<usage-rollup-panel .context=${{}}></usage-rollup-panel>`
+    );
+    await waitUntil(() => calls > 0);
+    await el.updateComplete;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(el.shadowRoot!.querySelector('sl-card')).to.be.null;
   });
 });

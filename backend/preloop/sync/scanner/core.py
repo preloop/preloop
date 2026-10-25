@@ -43,6 +43,58 @@ POLLING_THRESHOLD = timedelta(seconds=int(os.getenv("POLLING_THRESHOLD", 3600)))
 RECHECK_PROJECT_WEBHOOK_INTERVAL = POLLING_THRESHOLD * 10
 
 
+def _naive_utc(value: Any) -> Optional[datetime.datetime]:
+    if isinstance(value, str):
+        try:
+            value = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime.datetime):
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def stamped_times_to_heal(
+    current: Any, incoming: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    """Timestamp fields to rewrite when a stored provider time is impossible.
+
+    A provider's update time never moves backwards. A stored
+    ``last_updated_external`` later than the provider's own value is the sync
+    clock an older transform wrote (the Jira sync did, 2026-10-21), so the
+    provider's ``created_at`` and ``last_updated_external`` replace it, and
+    ``updated_at`` too while it still carries the same stamp (a later local
+    edit keeps its own time). Returns None when nothing needs healing.
+
+    Args:
+        current: Stored issue row.
+        incoming: Transformed provider values.
+
+    Returns:
+        The timestamp values to write, or None.
+    """
+    provider = _naive_utc(incoming.get("last_updated_external"))
+    stored = _naive_utc(getattr(current, "last_updated_external", None))
+    if provider is None or stored is None:
+        return None
+    if stored <= provider + datetime.timedelta(seconds=1):
+        return None
+    healed: Dict[str, Any] = {"last_updated_external": provider}
+    local = _naive_utc(getattr(current, "updated_at", None))
+    if local is not None and abs(local - stored) <= datetime.timedelta(seconds=1):
+        # ``updated_at`` still carries the stamp; a later local edit keeps its time.
+        healed["updated_at"] = provider
+    elif local is not None:
+        # Written explicitly, or the column's onupdate would stamp the heal time.
+        healed["updated_at"] = local
+    created = _naive_utc(incoming.get("created_at"))
+    if created is not None:
+        healed["created_at"] = created
+    return healed
+
+
 class TrackerClient:
     """Client for interacting with trackers."""
 
@@ -472,6 +524,14 @@ class TrackerClient:
                     current_issue_model = crud_issue.update(
                         db, db_obj=current_issue_model, obj_in=xformed_issue_data
                     )
+                elif healed := stamped_times_to_heal(
+                    current_issue_model, xformed_issue_data
+                ):
+                    # An older sync stamped its own clock as the provider time;
+                    # the provider's earlier time replaces it (no content change).
+                    current_issue_model = crud_issue.heal_timestamps(
+                        db, db_obj=current_issue_model, values=healed
+                    )
             else:
                 issue_changed = True
                 # A webhook may insert the same issue concurrently.
@@ -804,15 +864,15 @@ async def _process_organization(
                 # API is not used so a repository access token also works.
                 for project in projects:
                     try:
-                        if not await client.client.is_webhook_registered_for_project(
-                            project, webhook_target_url
-                        ):
-                            await client.client.register_webhook(
-                                db=db,
-                                project=project,
-                                webhook_url=webhook_target_url,
-                                secret=current_secret_to_use,
-                            )
+                        # register_webhook is idempotent and lists hooks
+                        # itself; calling it unconditionally lets it collapse
+                        # pre-existing same-URL duplicates and drift.
+                        await client.client.register_webhook(
+                            db=db,
+                            project=project,
+                            webhook_url=webhook_target_url,
+                            secret=current_secret_to_use,
+                        )
                     except Exception as e:
                         logger.error(
                             f"Error registering webhook for Bitbucket repository {project.identifier}: {e}",

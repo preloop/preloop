@@ -68,6 +68,7 @@ def _run_helm(
     overrides: List[str] | None = None,
     values_files: List[str] | None = None,
     string_overrides: List[str] | None = None,
+    kube_version: str | None = None,
 ) -> str:
     helm = shutil.which("helm")
     if helm is None:  # pragma: no cover - depends on the local toolchain
@@ -78,6 +79,8 @@ def _run_helm(
         overrides.append(f"environment.jwtSecret={TEST_JWT_SECRET}")
 
     command = [helm, "template", "preloop", str(chart_dir)]
+    if kube_version:
+        command += ["--kube-version", kube_version]
     if template:
         command += ["--show-only", template]
     for values_file in values_files or []:
@@ -100,6 +103,7 @@ def helm_template(
     *,
     values_files: List[str] | None = None,
     string_overrides: List[str] | None = None,
+    kube_version: str | None = None,
 ) -> str:
     """Render one chart template, skipping when helm is unavailable."""
     with offline_chart() as chart_dir:
@@ -109,6 +113,7 @@ def helm_template(
             overrides=overrides,
             values_files=values_files,
             string_overrides=string_overrides,
+            kube_version=kube_version,
         )
 
 

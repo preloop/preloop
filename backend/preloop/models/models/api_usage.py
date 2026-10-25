@@ -11,7 +11,10 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Boolean, DateTime, Float, Integer, String
 
-from preloop.models.gateway_usage import AGENT_GATEWAY_PREDICATE
+from preloop.models.gateway_usage import (
+    AGENT_GATEWAY_PREDICATE,
+    CUSTOMER_GATEWAY_PREDICATE,
+)
 
 from .base import Base
 
@@ -59,6 +62,12 @@ class ApiUsage(Base):
 
     __tablename__ = "api_usage"
 
+    # api_usage_pkey already indexes id; the shared Base column would add a
+    # second, identical btree that every insert maintains.
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, index=False, default=uuid.uuid4
+    )
+
     # Request details
     user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -70,7 +79,8 @@ class ApiUsage(Base):
         UUID(as_uuid=True),
         ForeignKey("account.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
+        # No single-column index: the account-leading composites below serve
+        # account-only filters and the FK lookup.
     )
     api_key_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -213,6 +223,17 @@ class ApiUsage(Base):
             ),
         ),
         Index(
+            "ix_api_usage_governance_spend",
+            "account_id",
+            text("(meta_data ->> 'funding')"),
+            "timestamp",
+            postgresql_include=["id", "estimated_cost"],
+            postgresql_where=text(
+                "action_type = 'model_gateway' AND (meta_data ->> 'purpose') IN "
+                "('governance_session_digest', 'governance_review')"
+            ),
+        ),
+        Index(
             "ix_api_usage_governance_candidate",
             "account_id",
             "runtime_session_id",
@@ -267,6 +288,29 @@ class ApiUsage(Base):
             "timestamp",
             postgresql_ops={"timestamp": "DESC"},
         ),
+        # Agents list per-principal totals and latest request (#1694): both
+        # LATERAL reads are index-only, so a cold cache does not fetch every
+        # usage row from the heap. Migration 20261102_agent_usage_idx.
+        Index(
+            "ix_api_usage_principal_totals",
+            "account_id",
+            "runtime_principal_type",
+            "runtime_principal_id",
+            text("timestamp DESC"),
+            text("id DESC"),
+            postgresql_include=[
+                "status_code",
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "estimated_cost",
+                "cache_read_tokens",
+                "cache_creation_tokens",
+                "model_alias",
+                "provider_name",
+            ],
+            postgresql_where=text("action_type = 'model_gateway'"),
+        ),
         # Per-user summaries filter runtime_principal_id without the principal
         # type, so the type-leading index above is not usable. This partial
         # index covers that filter for model-gateway rows.
@@ -312,11 +356,66 @@ class ApiUsage(Base):
                 "(meta_data ->> 'purpose') <> 'replay_validation')"
             ),
         ),
+        # Per-model gateway aggregate (Models overview) for the models on the
+        # page: same key shape as ix_api_usage_account_model_ts, which the
+        # planner picks for ``ai_model_id IN (...)``, but covering, so that
+        # path is an index-only scan rather than a heap read per row.
+        Index(
+            "ix_api_usage_gateway_model_totals",
+            "account_id",
+            "ai_model_id",
+            "timestamp",
+            postgresql_include=[
+                column
+                for column in GATEWAY_TOTALS_INCLUDE
+                if column not in ("ai_model_id", "flow_id")
+            ],
+            postgresql_where=text(
+                "action_type = 'model_gateway' AND "
+                "((meta_data ->> 'purpose') IS NULL OR "
+                "(meta_data ->> 'purpose') <> 'replay_validation')"
+            ),
+        ),
+        # Reporting excludes governance analysis without fetching wide metadata.
+        # Old indexes remain for replay-only operational readers during rollout.
+        Index(
+            "ix_api_usage_customer_totals",
+            "account_id",
+            "timestamp",
+            postgresql_include=GATEWAY_TOTALS_INCLUDE,
+            postgresql_where=text(CUSTOMER_GATEWAY_PREDICATE),
+        ),
+        Index(
+            "ix_api_usage_customer_model_totals",
+            "account_id",
+            "ai_model_id",
+            "timestamp",
+            postgresql_include=[
+                column
+                for column in GATEWAY_TOTALS_INCLUDE
+                if column not in ("ai_model_id", "flow_id")
+            ],
+            postgresql_where=text(CUSTOMER_GATEWAY_PREDICATE),
+        ),
         # Subscription-billed gateway rows (Spend subscription block). Few
         # rows, and without it the block was a sequential scan of the table.
         Index(
             "ix_api_usage_gateway_subscription",
             "account_id",
+            "timestamp",
+            postgresql_where=text(
+                "action_type = 'model_gateway' AND cost_source = 'subscription'"
+            ),
+        ),
+        # The agents list reads subscription totals once per principal. The
+        # account-wide subscription index cannot narrow that LATERAL lookup,
+        # while the general principal index must visit every gateway row and
+        # filter cost_source from the heap.
+        Index(
+            "ix_api_usage_principal_subscription",
+            "account_id",
+            "runtime_principal_type",
+            "runtime_principal_id",
             "timestamp",
             postgresql_where=text(
                 "action_type = 'model_gateway' AND cost_source = 'subscription'"
@@ -395,23 +494,15 @@ class ApiUsage(Base):
                 "AND meta_data->>'otlp_request_id' IS NOT NULL"
             ),
         ),
-        # Worker->parent conversation rollup for imported usage: partial
-        # indexes scoped to imported rows keep the gateway hot path
-        # unaffected while making per-thread aggregation indexable.
+        # Conversation rollup for imported usage: a partial index scoped to
+        # imported rows keeps the gateway hot path unaffected while making
+        # per-thread aggregation indexable.
         Index(
             "ix_api_usage_imported_conversation",
             "account_id",
             "conversation_id",
             postgresql_where=text(
                 "action_type = 'imported_usage' AND conversation_id IS NOT NULL"
-            ),
-        ),
-        Index(
-            "ix_api_usage_imported_parent_conv",
-            "account_id",
-            "parent_conversation_id",
-            postgresql_where=text(
-                "action_type = 'imported_usage' AND parent_conversation_id IS NOT NULL"
             ),
         ),
     )

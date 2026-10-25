@@ -92,3 +92,36 @@ for delivery channels. Delivery inspection is tracked in
 [#1550](https://github.com/preloop/preloop/issues/1550). A short run can finish
 before another turn boundary and leave its note undelivered; timing changes
 are tracked in [#1551](https://github.com/preloop/preloop/issues/1551).
+
+## Codex and Cursor conductors
+
+Use the spawn wrapper when the harness cannot export environment variables from
+SessionStart. It reads the conductor's registered handoff file and sets
+`PRELOOP_PARENT_SESSION_ID` and `PRELOOP_SESSION_ALIAS` for the child:
+
+```sh
+preloop spawn --alias api-worker -- claude -p 'Inspect the API tests.'
+preloop spawn --session "$conductor_harness_session_id" --alias ui-worker -- codex exec 'Inspect the UI tests.'
+```
+
+The wrapper uses `CODEX_THREAD_ID`, `CURSOR_CONVERSATION_ID`, or
+`PRELOOP_CURRENT_SESSION_ID` to select the current handoff. Use `--session` when
+that environment is unavailable. It refuses an unknown session instead of
+choosing the newest file, which could belong to another concurrent conductor.
+The default alias is `worker` when `--alias` is omitted. It forwards standard
+input, output, errors and the exit status and waits for the child; use the
+shell's background operator when needed. Children still need registration hooks.
+
+The PreToolUse approval hook adds `preloop_caller_session_id` to Preloop
+`send_note` and `list_sessions` calls through `updatedInput`. The server resolves
+this harness id only under the authenticated credential's runtime principal.
+A session-bound credential always retains its bound session. This field cannot
+claim another principal's lineage, and the target alias grants no access.
+
+Every account receives editable `send_note` rules in the Tools console: allow
+self and descendants, ask the sender's human for other runs that human can
+control, and deny the rest. Approval uses the standard push and email channels,
+respecting that human's notification preferences. Async workflows return
+`pending_approval`; poll `get_approval_status` with the request id to execute
+the approved note. Declined or expired requests deliver nothing. The approval
+records the resolved target and scope facts so an alias change cannot redirect it.

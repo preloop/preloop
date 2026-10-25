@@ -118,20 +118,27 @@ def _lock_for_put(
     execution_id: UUID,
     require_execution_open: bool,
 ) -> None:
-    """Take the execution then account locks every artifact write uses."""
+    """Take the account then execution locks every artifact write uses.
+
+    Account first, like billing, hosted spend, halt admission and retention:
+    those lock the account and then update the execution or insert a child
+    row whose foreign key takes KEY SHARE on it. Taking the execution first
+    here closed that cycle and PostgreSQL aborted the PUT with
+    DeadlockDetected (prod, 2026-10-19).
+    """
     from preloop.models.crud import crud_flow_execution
 
-    # Execution row first so a terminal close cannot commit during this PUT.
-    crud_flow_execution.lock_for_artifact_put(
-        db,
-        execution_id=execution_id,
-        require_open=require_execution_open,
-    )
     # Serialize quota checks without blocking child audit/usage foreign keys.
     # Account identity does not change, so NO KEY UPDATE is sufficient.
     db.query(models.Account).filter(models.Account.id == account_id).with_for_update(
         key_share=True
     ).one()
+    # Then the execution, so a terminal close cannot commit during this PUT.
+    crud_flow_execution.lock_for_artifact_put(
+        db,
+        execution_id=execution_id,
+        require_open=require_execution_open,
+    )
 
 
 def workspace_state(metadata: Any) -> tuple[str, tuple[str, ...]] | None:
@@ -473,6 +480,15 @@ def cleanup(db: Session, *, now: datetime) -> int:
     )
     db.commit()
     return count
+
+
+def end_read(db: Session) -> None:
+    """End a read-only transaction before a slow upload body is consumed.
+
+    Commit, not rollback: nothing is pending, and a commit keeps the caller's
+    outer transaction (and a test's savepoint) intact.
+    """
+    db.commit()
 
 
 def rollback(db: Session) -> None:

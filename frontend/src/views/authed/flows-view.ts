@@ -7,7 +7,6 @@ import { repeat } from 'lit/directives/repeat.js';
 import { ListTable, dataTableStyles, listTableStyles } from '../../table';
 import type { ListColumn } from '../../table';
 import '../../table/data-table';
-import '../../table/column-picker';
 import '@shoelace-style/shoelace/dist/components/alert/alert.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -103,13 +102,41 @@ function flowSummaryRow(summary: FlowSummary): FlowListItem {
   };
 }
 
-interface FlowExecution extends ExecutionSubjectSource {
+export interface FlowExecution extends ExecutionSubjectSource {
   id: string;
   flow_id: string;
   flow_name?: string | null;
   status: string;
   start_time: string;
   end_time?: string;
+}
+
+/**
+ * The last run `flows/summary` states for a flow, as a list row's run.
+ *
+ * The list no longer reads a sample of recent executions (#1695), so the Last
+ * run cell's status chip and run link come from the summary's `last_run`.
+ * Returns null when the server sent none (the flow never ran, or an older
+ * server), and the cell falls back to "Ran <when>" from `last_run_at`.
+ */
+export function serverLastRun(
+  stats: Record<string, any> | null | undefined
+): FlowExecution | null {
+  const last = stats?.last_run;
+  if (!last || typeof last.id !== 'string' || !last.start_time) {
+    return null;
+  }
+  return {
+    id: last.id,
+    flow_id: '',
+    status: String(last.status || ''),
+    start_time: String(last.start_time),
+    end_time: last.end_time || undefined,
+    trigger_subject: last.trigger_subject ?? null,
+    trigger_subject_url: last.trigger_subject_url ?? null,
+    trigger_subject_ci: last.trigger_subject_ci ?? null,
+    trigger_subject_ci_url: last.trigger_subject_ci_url ?? null,
+  };
 }
 
 export type FlowsViewMode = 'list' | 'cards';
@@ -272,7 +299,8 @@ function compareFlowRowsByKey(
     case 'last_run':
     default:
       return (
-        timeValue(a.lastRun?.start_time) - timeValue(b.lastRun?.start_time)
+        timeValue(a.lastRun?.start_time || a.lastRunAt) -
+        timeValue(b.lastRun?.start_time || b.lastRunAt)
       );
   }
 }
@@ -403,30 +431,35 @@ export class FlowsView extends LitElement {
          sized to their widest plausible number and nothing more. A flow
          called "Release Sentinel db-migration" must be readable without a
          tooltip, which is what the first screenshot round got wrong. */
+        /* The fixed columns and the percentages used to add up to more than
+         the 1125px table at 1440, so the browser scaled the percentages down
+         and the name and the last run were cut to "Pull request review..."
+         and "exa..." (U-09). The counters now take what a compact value needs
+         and the two word columns share the rest; Trigger is the one that
+         gives way. */
         .col-flow {
-          width: 25%;
+          width: 26%;
         }
         .col-trigger {
-          width: 14%;
+          width: 10%;
         }
         .col-status {
           width: 96px;
         }
         .col-last-run {
-          width: 23%;
+          width: 26%;
         }
         .col-runs,
         .col-failed {
-          width: 84px;
+          width: 64px;
         }
-        /* One compact total ("12.4M"), the same width as the cost beside it.
-         The in/out/cache breakdown that used to need 170px here is in the
+        /* One compact total ("12.4M"). The in/out/cache breakdown is in the
          tooltip and on the flow's own page. */
         .col-tokens {
-          width: 96px;
+          width: 72px;
         }
         .col-cost {
-          width: 96px;
+          width: 80px;
         }
         /* First and last columns keep the card's own gutter. */
         .flows-table th:first-child .sort-button,
@@ -838,6 +871,10 @@ export class FlowsView extends LitElement {
     super.disconnectedCallback();
     ++this.flowsLoadGeneration;
     ++this.statsLoadGeneration;
+    if (this.summaryRefreshTimer !== null) {
+      clearTimeout(this.summaryRefreshTimer);
+      this.summaryRefreshTimer = null;
+    }
     this.unsubscribe?.();
     window.removeEventListener('focus', this.refreshOnReturn);
     document.removeEventListener(
@@ -931,12 +968,6 @@ export class FlowsView extends LitElement {
       // caught and shown rather than left to become an unhandled rejection
       // that skips the socket and renders "No flows yet" over an account that
       // has flows.
-      void getFlowExecutions({ limit: EXECUTIONS_SAMPLE_LIMIT })
-        .then((executions) => {
-          if (generation === this.flowsLoadGeneration)
-            this.executions = executions;
-        })
-        .catch(() => undefined);
       void getFlowExecutions({
         limit: 20,
         status: [...IN_FLIGHT_EXECUTION_STATUSES],
@@ -976,13 +1007,22 @@ export class FlowsView extends LitElement {
       }
       this.hasInitializedPresetVisibility = true;
 
+      // /flows/presets is large, so it loads only when the presets UI is
+      // shown (an empty account, "Show presets" or Create flow). Until then a
+      // cloned flow reads "From a preset" (#1695).
       if (this.showPresets) {
         void this.ensurePresetsLoaded();
-      } else if (this.flows.some((flow) => flow.source_preset_id)) {
-        // Cloned flows name their preset in the list and in the Type filter,
-        // so the names are worth one background fetch once we know some flow
-        // has a preset behind it.
-        void this.ensurePresetsLoaded();
+      }
+      // The 200-run executions sample is only a fallback for a summary that
+      // predates `stats_since`; the server counts runs and the last run time
+      // itself (#1695).
+      if (!this.countsFromServer) {
+        void getFlowExecutions({ limit: EXECUTIONS_SAMPLE_LIMIT })
+          .then((executions) => {
+            if (generation === this.flowsLoadGeneration)
+              this.executions = executions;
+          })
+          .catch(() => undefined);
       }
       void this.loadTrackerNames();
     } finally {
@@ -1064,11 +1104,57 @@ export class FlowsView extends LitElement {
     }
   }
 
+  /** Coalescing window for websocket-driven summary refreshes. */
+  static summaryRefreshDelayMs = 1000;
+
+  private summaryRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Re-read the flow summaries after a run event, so the server-counted Last
+   * run, runs and spend do not go stale. A burst of events within the delay
+   * collapses into one request; presets and the 200-run sample are not
+   * re-fetched.
+   */
+  private scheduleSummaryRefresh(): void {
+    if (!this.countsFromServer || this.summaryRefreshTimer !== null) return;
+    this.summaryRefreshTimer = setTimeout(
+      () => {
+        this.summaryRefreshTimer = null;
+        if (this.isConnected) void this.refreshSummaryStats();
+      },
+      (this.constructor as typeof FlowsView).summaryRefreshDelayMs
+    );
+  }
+
+  private async refreshSummaryStats(): Promise<void> {
+    const stats = this.statsLoadGeneration;
+    const lifecycle = this.flowsLoadGeneration;
+    const range = this.range;
+    try {
+      const flows = await getFlowSummaries({
+        includeStats: true,
+        statsSince: this.rangeStartDate(),
+      });
+      if (
+        stats !== this.statsLoadGeneration ||
+        lifecycle !== this.flowsLoadGeneration ||
+        range !== this.range
+      )
+        return;
+      if (Array.isArray(flows)) this.flows = flows.map(flowSummaryRow);
+    } catch (error) {
+      console.error('Failed to refresh flow stats:', error);
+    }
+  }
+
   async refreshExecutions() {
+    this.scheduleSummaryRefresh();
     const [executions, activeExecutions] = await Promise.all([
-      getFlowExecutions({ limit: EXECUTIONS_SAMPLE_LIMIT }).catch(
-        () => this.executions
-      ),
+      this.countsFromServer
+        ? Promise.resolve(this.executions)
+        : getFlowExecutions({ limit: EXECUTIONS_SAMPLE_LIMIT }).catch(
+            () => this.executions
+          ),
       getFlowExecutions({
         limit: 20,
         status: [...IN_FLIGHT_EXECUTION_STATUSES],
@@ -1229,7 +1315,7 @@ export class FlowsView extends LitElement {
         triggerTitle: trigger.title,
         status,
         statusLabel: FLOW_STATUS_LABELS[status],
-        lastRun: entry?.last || null,
+        lastRun: entry?.last || serverLastRun(stats),
         lastRunAt:
           entry?.last?.start_time ||
           (countsFromServer ? stats?.last_run_at : null) ||
@@ -1690,6 +1776,7 @@ export class FlowsView extends LitElement {
           max-options-visible="1"
           placeholder="All types"
           .value=${this.filters.presets}
+          @sl-show=${() => void this.ensurePresetsLoaded()}
           @sl-change=${(event: Event) => {
             const select = event.target as HTMLElement & {
               value: string | string[];
@@ -1742,6 +1829,7 @@ export class FlowsView extends LitElement {
         </sl-select>
 
         <time-range-select
+          size="medium"
           ariaLabel="Flows time range"
           .value=${this.range}
           .options=${[
@@ -1755,20 +1843,6 @@ export class FlowsView extends LitElement {
             void this.loadRangeStats();
           }}
         ></time-range-select>
-        ${
-          this.currentView === 'list'
-            ? html`<column-picker
-                .columns=${this.table.pickerColumns}
-                ?can-reset=${this.table.hasColumnChanges}
-                density=${this.table.density}
-                @column-toggle=${(event: CustomEvent) =>
-                  this.table.setVisible(event.detail.id, event.detail.visible)}
-                @columns-reset=${() => this.table.resetColumns()}
-                @density-change=${(event: CustomEvent) =>
-                  this.table.setDensity(event.detail.density)}
-              ></column-picker>`
-            : nothing
-        }
         <span slot="count">${this.resultsLabel}</span>
         ${this.renderBulkBar()}
       </list-toolbar>
@@ -1858,7 +1932,7 @@ export class FlowsView extends LitElement {
         headerClass: 'col-last-run',
         sort: 'number',
         value: (row) => {
-          const time = timeValue(row.lastRun?.start_time);
+          const time = timeValue(row.lastRun?.start_time || row.lastRunAt);
           return Number.isFinite(time) ? time : 0;
         },
         searchText: () => '',
@@ -2312,9 +2386,9 @@ export class FlowsView extends LitElement {
             <a class="row-link" href=${href}>${name}</a>
             <div class="row-subtitle">
               Started
-              ${formatLocalDateTime(exec.start_time)}${
-                duration ? ` · ${duration}` : ''
-              }
+              <span title=${formatLocalDateTime(exec.start_time)}
+                >${formatRelativeTime(exec.start_time)}</span
+              >${duration ? ` · ${duration}` : ''}
             </div>
           </div>
         </div>

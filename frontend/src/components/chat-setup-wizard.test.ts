@@ -20,14 +20,19 @@ describe('Discovered chat setup', () => {
         return json({ slack_oauth: false });
       if (String(input).endsWith('/finish'))
         return json({ id: 'draft', name: 'Discovered bot' }, 201);
-      return json({
-        id: 'draft',
-        name: 'Discovered bot',
-        callback_url: 'https://preloop.example.com/api/v1/chat/ingress/draft',
-        workspaces,
-        expires_at: new Date(Date.now() + 60000).toISOString(),
-        signing_secret_required: false,
-      });
+      return json(
+        {
+          id: 'draft',
+          provider: 'mattermost',
+          name: 'Discovered bot',
+          bot_username: 'team-assistant',
+          callback_url: 'https://preloop.example.com/api/v1/chat/ingress/draft',
+          workspaces,
+          expires_at: new Date(Date.now() + 60000).toISOString(),
+          signing_secret_required: false,
+        },
+        String(input) === '/api/v1/chat/setup' ? 201 : 200
+      );
     });
   });
   afterEach(() => {
@@ -110,18 +115,71 @@ describe('Discovered chat setup', () => {
       )!.disabled
     ).to.equal(true);
   });
-  it('gives actionable zero-team guidance and refreshes discovery', async () => {
+  it('recovers from no teams using the same draft without reentering credentials', async () => {
     workspaces = [];
     const el = await view();
     await discover(el);
-    expect(el.shadowRoot!.textContent).to.include(
-      'Add the bot to a Mattermost team'
+    const text = el.shadowRoot!.textContent!;
+    expect(text).to.include('not a member of any team');
+    expect(text).to.include('@team-assistant');
+    expect(text).to.include('Invite People');
+    expect(text).to.include('Invite Member');
+    expect(text).to.include('System Console');
+    expect(text).to.include('Add Members');
+    expect(text).to.include('30 minutes');
+    expect(
+      el.shadowRoot!.querySelector(
+        'a[href="https://docs.mattermost.com/developers/integrate/reference/bot-accounts/"]'
+      )
+    ).not.to.equal(null);
+    const finish = () =>
+      [...el.shadowRoot!.querySelectorAll('sl-button')].find(
+        (button) => button.textContent!.trim() === 'Finish'
+      )!;
+    const refresh = () =>
+      [...el.shadowRoot!.querySelectorAll('sl-button')].find((button) =>
+        button.textContent!.includes('Refresh installation')
+      )!;
+    expect(finish().disabled).to.equal(true);
+    stub
+      .withArgs('/api/v1/chat/setup/draft/refresh')
+      .onFirstCall()
+      .resolves(json({ detail: 'Provider temporarily unavailable' }, 422));
+    refresh().click();
+    await waitUntil(() =>
+      el.shadowRoot!.textContent!.includes('Provider temporarily unavailable')
     );
+    expect(finish().disabled).to.equal(true);
+    expect(el.shadowRoot!.querySelector('form')).to.equal(null);
     workspaces = [{ id: 'added-team', name: 'Added team' }];
-    [...el.shadowRoot!.querySelectorAll('sl-button')]
-      .find((button) => button.textContent!.includes('Refresh installation'))!
-      .click();
+    refresh().click();
     await waitUntil(() => el.shadowRoot!.textContent!.includes('Added team'));
+    await waitUntil(() => !finish().disabled);
+    expect(el.shadowRoot!.querySelector('sl-select')!.value).to.equal(
+      'added-team'
+    );
+    expect((el as any).token).to.equal('');
+    const refreshes = stub
+      .getCalls()
+      .filter((call) => String(call.args[0]).endsWith('/refresh'));
+    expect(refreshes).to.have.length(2);
+    for (const call of refreshes) {
+      expect(call.args[0]).to.equal('/api/v1/chat/setup/draft/refresh');
+      expect(JSON.parse(call.args[1].body)).to.deep.equal({});
+    }
+    expect(
+      stub.getCalls().filter((call) => call.args[0] === '/api/v1/chat/setup')
+    ).to.have.length(1);
+    let created = false;
+    el.addEventListener('chat-connection-created', () => (created = true));
+    finish().click();
+    await waitUntil(() => created);
+    const post = stub
+      .getCalls()
+      .find((call) => String(call.args[0]).endsWith('/finish'))!;
+    expect(post.args[0]).to.equal('/api/v1/chat/setup/draft/finish');
+    expect(JSON.parse(post.args[1].body).workspace_id).to.equal('added-team');
+    expect(post.args[1].body).not.to.include('credential-secret');
   });
   it('clears token material when disconnected', async () => {
     const el = await view();

@@ -6,6 +6,7 @@ gateway-events page with ``history=delta`` carries each message once.
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -133,3 +134,35 @@ def test_gateway_events_delta_carries_each_message_once(client, db_session, test
         "position"
         not in (full_logs[0]["payload"]["conversation_preview"]["messages"][0])
     )
+
+
+def test_gateway_events_history_window_bounds_a_long_session_page(
+    client, db_session, test_user
+):
+    """#1689: the first page of a long session stays small."""
+    session = _session(db_session, test_user.account_id)
+    history = [{"role": "user", "source": "request", "text": "Fix the build"}]
+    for index in range(60):
+        _gateway_call(db_session, test_user.account_id, session.id, index, history)
+        history = [
+            *history,
+            {"role": "assistant", "source": "request", "text": f"{index} " * 300},
+        ]
+    db_session.commit()
+    url = f"{BASE}/{session.id}/gateway-events?limit=20&history=delta"
+
+    unbounded = client.get(url)
+    windowed = client.get(f"{url}&history_window=10")
+
+    assert unbounded.status_code == windowed.status_code == 200
+    assert len(windowed.content) < len(unbounded.content)
+    whole = unbounded.json()["logs"][-1]["payload"]["conversation_preview"]
+    assert len(json.dumps(whole["messages"])) > 20_000
+    logs = windowed.json()["logs"]
+    assert len(logs) == 20
+    oldest = logs[-1]["payload"]
+    assert len(oldest["conversation_preview"]["messages"]) <= 11
+    assert len(json.dumps(oldest["conversation_preview"]["messages"])) < 12_000
+    metadata = oldest["conversation_preview"]["metadata"]
+    assert metadata["history_window_start"] > 0
+    assert windowed.json()["pagination"]["has_more"] is True

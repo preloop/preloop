@@ -39,3 +39,22 @@ class ToolSummaryResponse(BaseModel):
         ),
     )
     warnings: list[str] = Field(default_factory=list)
+
+
+class ToolRuleIndexRow(BaseModel):
+    """The policy state of one tool, for building the Policies rules list.
+
+    Carries no description, schema or token estimate: the rules list and the
+    rule editor's tool picker need the tool's identity and its configuration
+    only, and the full catalogue is several times larger.
+    """
+
+    name: str
+    source: Literal["builtin", "mcp", "agent"]
+    source_id: str | None
+    source_name: str
+    is_enabled: bool
+    approval_workflow_id: str | None
+    config_id: str | None
+    has_approval_condition: bool
+    access_rules: list[dict[str, Any]]

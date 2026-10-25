@@ -200,7 +200,45 @@ describe('blog-seo', () => {
         any
       >;
       expect(schema.dateModified).to.equal('2026-07-18');
+      expect(schema).not.to.have.property('video');
     });
+
+    it('uses the brand default as the video thumbnail without a post image', () => {
+      const schema = buildBlogPostingSchema(
+        makePost({
+          hero_video: { mp4: '/assets/blog/fleet.mp4', alt: 'Fleet activity' },
+        }),
+        config
+      ) as Record<string, any>;
+      expect(schema.video.thumbnailUrl).to.equal(
+        'https://preloop.ai/images/diagram.png'
+      );
+    });
+
+    for (const sources of [
+      { mp4: '/assets/blog/fleet.mp4', webm: '/assets/blog/fleet.webm' },
+      { webm: 'https://cdn.example.com/fleet.webm' },
+    ]) {
+      it(`describes a video with ${Object.keys(sources).join(' and ')}`, () => {
+        const schema = buildBlogPostingSchema(
+          makePost({
+            og_image: '/assets/blog/fleet.png',
+            hero_video: { ...sources, alt: 'Fleet activity' },
+          }),
+          config
+        );
+        expect(schema.video).to.deep.equal({
+          '@type': 'VideoObject',
+          name: 'A Post',
+          description: 'A description.',
+          thumbnailUrl: 'https://preloop.ai/assets/blog/fleet.png',
+          contentUrl: sources.mp4
+            ? 'https://preloop.ai/assets/blog/fleet.mp4'
+            : sources.webm,
+          uploadDate: '2026-07-18',
+        });
+      });
+    }
 
     it('names a Person author so posts are founder-signed', () => {
       const schema = buildBlogPostingSchema(makePost(), config) as Record<
@@ -300,6 +338,91 @@ describe('blog-seo', () => {
       expect(html).to.contain('src="/assets/blog/ship.png"');
       expect(html).to.contain('alt=""');
       expect(html).to.not.match(/alt="A Post"/);
+      expect(html).to.not.contain('<video');
+    });
+
+    it('renders a muted looping video, ordered sources, poster and caption', () => {
+      const html = render_blog_post_html(
+        makePost({
+          og_image: '/assets/blog/fleet.png',
+          hero_video: {
+            mp4: '/assets/blog/fleet.mp4',
+            webm: '/assets/blog/fleet.webm',
+            alt: 'Fleet "activity" & approvals',
+            caption: 'Agents <working> & waiting',
+          },
+        }),
+        config,
+        ''
+      );
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+      const video = doc.querySelector('.blog-hero video')!;
+      for (const attribute of ['autoplay', 'muted', 'loop', 'playsinline']) {
+        expect(video.hasAttribute(attribute), attribute).to.be.true;
+      }
+      expect(video.getAttribute('preload')).to.equal('metadata');
+      expect(video.getAttribute('poster')).to.equal('/assets/blog/fleet.png');
+      expect(video.getAttribute('aria-label')).to.equal(
+        'Fleet "activity" & approvals'
+      );
+      expect(
+        Array.from(video.querySelectorAll('source')).map((source) => [
+          source.getAttribute('src'),
+          source.type,
+        ])
+      ).to.deep.equal([
+        ['/assets/blog/fleet.webm', 'video/webm'],
+        ['/assets/blog/fleet.mp4', 'video/mp4'],
+      ]);
+      const poster = doc.querySelector('.blog-hero > img')!;
+      expect(poster.getAttribute('src')).to.equal('/assets/blog/fleet.png');
+      expect(poster.getAttribute('alt')).to.equal(
+        'Fleet "activity" & approvals'
+      );
+      expect(doc.querySelector('figcaption')!.textContent).to.equal(
+        'Agents <working> & waiting'
+      );
+      expect(doc.querySelector('figcaption working')).to.equal(null);
+    });
+
+    for (const sources of [
+      { mp4: '/assets/blog/fleet.mp4' },
+      { webm: '/assets/blog/fleet.webm' },
+    ]) {
+      it(`renders a single ${Object.keys(sources)[0]} without a caption`, () => {
+        const html = render_blog_post_html(
+          makePost({ hero_video: { ...sources, alt: 'Fleet activity' } }),
+          config,
+          ''
+        );
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        expect(doc.querySelectorAll('video source')).to.have.lengthOf(1);
+        expect(doc.querySelector('figcaption')).to.equal(null);
+        expect(doc.querySelector('video')!.getAttribute('poster')).to.equal(
+          '/images/diagram.png'
+        );
+        expect(
+          doc.querySelector('.blog-hero > img')!.getAttribute('src')
+        ).to.equal('/images/diagram.png');
+      });
+    }
+
+    it('keeps the video poster as the index thumbnail', () => {
+      const html = render_blog_index_html(
+        config,
+        [
+          makePost({
+            og_image: '/assets/blog/fleet.png',
+            hero_video: {
+              mp4: '/assets/blog/fleet.mp4',
+              alt: 'Fleet activity',
+            },
+          }),
+        ],
+        ''
+      );
+      expect(html).to.contain('<img src="/assets/blog/fleet.png" alt="">');
+      expect(html).to.not.contain('<video');
     });
 
     it('renders the index newest-first with links to each post', () => {

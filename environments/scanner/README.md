@@ -36,7 +36,22 @@ The offline smoke test scans `/opt/preloop-scanner/fixtures/vulnerable`, a
 requests 2.19.0 pulls in.
 
 `.github/workflows/publish-scanner-image.yml` publishes the image to
-`ghcr.io/preloop/preloop-codex-scanner` on version tags only and prints the
-published digest. Scheduled and manual runs build and smoke without pushing.
+`ghcr.io/preloop/preloop-codex-scanner` on version tags and prints the published
+digest. Scheduled runs and manual runs with the default inputs build and smoke
+without pushing.
+The final stage only uses `COPY --link` to add the prepared files. Set file
+permissions in the fetch stage: combining `--link` with `--chmod` makes
+BuildKit unpack the large Codex base and can exhaust a hosted runner's disk.
 Registering the digest: see `docs/guide/flows/scanner-image.md` and
 `profile.example.json`.
+
+To recover a failed scanner publication without moving a release's git tag,
+run the workflow on a branch containing the corrected recipe:
+
+    gh workflow run publish-scanner-image.yml --ref <corrected-branch> \
+      -f publish=true -f release_tag=v0.17.0
+
+Manual publishing requires an existing version tag and publishes only that
+scanner image tag. It never updates `latest` or triggers a full release.
+The summary records the recipe commit separately from the image tag and
+published digest, since recovery may use a newer recipe than the release.

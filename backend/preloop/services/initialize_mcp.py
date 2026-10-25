@@ -12,9 +12,10 @@ from uuid import UUID
 
 from fastmcp import Context
 from fastmcp.tools import FunctionTool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 
 from preloop.services.approval_helper import require_approval
+from preloop.services.audit.async_writer import outbox_enabled
 from preloop.services.dynamic_fastmcp import (
     DynamicFastMCP,
     _rule_workflow_id_var,
@@ -98,7 +99,9 @@ def _mcp_caller_principal(user_context: Any) -> Optional[tuple[str, str]]:
     return None
 
 
-def _mcp_caller_session_ids(db: Any, user_context: Any) -> list:
+def _mcp_caller_session_ids(
+    db: Any, user_context: Any, caller_session_id: Optional[str] = None
+) -> list:
     """The runtime sessions this MCP call was made from (#1045).
 
     A session-bound key names its session. A durable enrolled-agent key does
@@ -122,6 +125,7 @@ def _mcp_caller_session_ids(db: Any, user_context: Any) -> list:
         principal_type=principal[0],
         principal_id=principal[1],
         headers=headers,
+        caller_session_id=caller_session_id,
     )
 
 
@@ -962,6 +966,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         external_session_id: str | None = None,
         children: str | None = None,
         ctx: Optional[Context] = None,
+        preloop_caller_session_id: str | None = None,
     ) -> str:
         """Leave an operator note for one other agent, session or execution.
 
@@ -992,28 +997,6 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         if not user_context:
             return "Error: No user context available"
 
-        arguments = {
-            "text": text,
-            "agent_id": agent_id,
-            "runtime_session_id": runtime_session_id,
-            "execution_id": execution_id,
-            "alias": alias,
-            "external_session_id": external_session_id,
-            "children": children,
-        }
-        approved, error = await require_approval(
-            tool_name=SEND_NOTE_TOOL["name"],
-            tool_source="builtin",
-            account_id=user_context.account_id,
-            arguments=arguments,
-            ctx=ctx,
-            workflow_id=_rule_workflow_id_var.get(None),
-            correlation_id=_correlation_id_var.get(None),
-            justification=_justification_var.get(None),
-        )
-        if not approved:
-            return error
-
         # The author is the identity the call already carries, never an
         # argument: an agent must not be able to sign a note as another one.
         # The same is true of the execution the call is made from, which is
@@ -1021,43 +1004,195 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         # platform when the run is created, so an agent cannot claim a
         # lineage that would let it reach further.
         caller = attribution_from_user_context(user_context)
-        db = next(get_db_session())
-        try:
-            author_sessions = _mcp_caller_session_ids(db, user_context)
-            result = send_note_from_agent(
-                db,
-                account_id=user_context.account_id,
-                author_agent_id=caller.managed_agent_id,
-                text=text,
-                agent_id=agent_id,
-                runtime_session_id=runtime_session_id,
-                execution_id=execution_id,
-                alias=alias,
-                external_session_id=external_session_id,
-                children=children,
-                author_session_ids=author_sessions,
-                author_principal=_mcp_caller_principal(user_context),
-                author_execution_id=caller.execution_id,
-                subject_context={
-                    "api_key_id": getattr(user_context, "api_key_id", None),
-                    "managed_agent_id": getattr(user_context, "managed_agent_id", None),
-                    "runtime_session_id": getattr(
-                        user_context, "runtime_session_id", None
-                    ),
-                    "runtime_principal_type": getattr(
-                        user_context, "runtime_principal_type", None
-                    ),
-                    "runtime_principal_id": getattr(
-                        user_context, "runtime_principal_id", None
-                    ),
-                    "runtime_principal_name": getattr(
-                        user_context, "runtime_principal_name", None
-                    ),
-                },
+        from preloop.api.loop_safety import run_db_off_loop
+
+        def prepare_note() -> tuple[dict, list]:
+            db = next(get_db_session())
+            try:
+                author_sessions = _mcp_caller_session_ids(
+                    db, user_context, preloop_caller_session_id
+                )
+                prepared = send_note_from_agent(
+                    db,
+                    account_id=user_context.account_id,
+                    author_agent_id=caller.managed_agent_id,
+                    text=text,
+                    agent_id=agent_id,
+                    runtime_session_id=runtime_session_id,
+                    execution_id=execution_id,
+                    alias=alias,
+                    external_session_id=external_session_id,
+                    children=children,
+                    author_session_ids=author_sessions,
+                    author_principal=_mcp_caller_principal(user_context),
+                    author_execution_id=caller.execution_id,
+                    prepare_only=True,
+                    subject_context={
+                        "api_key_id": getattr(user_context, "api_key_id", None),
+                        "flow_id": getattr(user_context, "flow_id", None),
+                        "managed_agent_id": getattr(
+                            user_context, "managed_agent_id", None
+                        ),
+                        "runtime_session_id": getattr(
+                            user_context, "runtime_session_id", None
+                        ),
+                        "runtime_principal_type": getattr(
+                            user_context, "runtime_principal_type", None
+                        ),
+                        "runtime_principal_id": getattr(
+                            user_context, "runtime_principal_id", None
+                        ),
+                        "runtime_principal_name": getattr(
+                            user_context, "runtime_principal_name", None
+                        ),
+                    },
+                )
+                # A declined approval never reaches the delivery transaction.
+                if outbox_enabled():
+                    db.commit()
+                return prepared, author_sessions
+            finally:
+                db.close()
+
+        prepared, author_sessions = await run_db_off_loop(prepare_note)
+
+        async def deliver(prepared_note: dict) -> dict | str:
+            if prepared_note.get("status") == "fanout":
+                notes, refused, pending = [], [], []
+                for item in prepared_note["results"]:
+                    outcome = await deliver(item)
+                    if isinstance(outcome, str):
+                        try:
+                            outcome = json.loads(outcome)
+                        except ValueError:
+                            outcome = {
+                                "ok": False,
+                                "error": {
+                                    "code": "approval_failed",
+                                    "message": outcome,
+                                },
+                            }
+                    if outcome.get("ok"):
+                        notes.append(outcome["note"])
+                    elif outcome.get("status") == "pending_approval":
+                        pending.append(outcome)
+                    else:
+                        refused.append(outcome.get("error", outcome))
+                result = {"ok": bool(notes), "notes": notes, "refused": refused}
+                if pending:
+                    result["pending_approvals"] = pending
+                if not notes and not pending and refused:
+                    result["error"] = refused[0]
+                return result
+            if prepared_note.get("status") not in ("ready", "requires_approval"):
+                return prepared_note
+            approval = prepared_note["approval"]
+            note_arguments = approval["arguments"]
+            if preloop_caller_session_id:
+                note_arguments["preloop_caller_session_id"] = preloop_caller_session_id
+            workflow_id = approval["workflow_id"] or _rule_workflow_id_var.get(None)
+            needs_scope_approval = prepared_note["status"] == "requires_approval"
+            if needs_scope_approval and not workflow_id:
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "note_scope_grant_unavailable",
+                        "message": "The note rule requires approval but has no workflow.",
+                    },
+                }
+            from preloop.services.dynamic_fastmcp import (
+                _bypass_approval_var,
+                _approved_id_var,
             )
-        finally:
-            db.close()
-        return json.dumps(result)
+
+            if _bypass_approval_var.get(False):
+                from preloop.models.crud.approval_request import (
+                    get_approval_request_async,
+                )
+                from preloop.models.db.session import get_async_db_session
+
+                replay_id = _approved_id_var.get(None)
+                async with get_async_db_session() as replay_db:
+                    replay_request = (
+                        await get_approval_request_async(
+                            replay_db, UUID(str(replay_id))
+                        )
+                        if replay_id
+                        else None
+                    )
+                    if (
+                        replay_request is None
+                        or replay_request.status != "approved"
+                        or str(replay_request.account_id)
+                        != str(user_context.account_id)
+                        or str(replay_request.managed_agent_id)
+                        != str(caller.managed_agent_id)
+                        or (
+                            needs_scope_approval
+                            and str(replay_request.approval_workflow_id)
+                            != str(workflow_id)
+                        )
+                    ):
+                        return {
+                            "ok": False,
+                            "error": {
+                                "code": "note_approval_changed",
+                                "message": "The sender or required approval changed; submit a new note request.",
+                            },
+                        }
+            if workflow_id:
+                rule_context = dict(approval["rule_context"] or {})
+                rule_context["note_facts"] = approval["facts"]
+                approved, error = await require_approval(
+                    tool_name=SEND_NOTE_TOOL["name"],
+                    tool_source="builtin",
+                    account_id=user_context.account_id,
+                    arguments=note_arguments,
+                    workflow_id=str(workflow_id),
+                    rule_context=rule_context,
+                    ctx=ctx,
+                    correlation_id=_correlation_id_var.get(None),
+                    justification=_justification_var.get(None),
+                )
+                if not approved:
+                    return error
+
+            def write_note() -> dict:
+                delivery_db = next(get_db_session())
+                try:
+                    return send_note_from_agent(
+                        delivery_db,
+                        account_id=user_context.account_id,
+                        author_agent_id=caller.managed_agent_id,
+                        author_execution_id=caller.execution_id,
+                        author_session_ids=author_sessions,
+                        approval_granted=bool(workflow_id),
+                        approved_workflow_id=str(workflow_id) if workflow_id else None,
+                        subject_context={
+                            key: getattr(user_context, key, None)
+                            for key in (
+                                "api_key_id",
+                                "flow_id",
+                                "managed_agent_id",
+                                "runtime_session_id",
+                                "runtime_principal_type",
+                                "runtime_principal_id",
+                                "runtime_principal_name",
+                            )
+                        },
+                        **{
+                            key: value
+                            for key, value in note_arguments.items()
+                            if key != "preloop_caller_session_id"
+                        },
+                    )
+                finally:
+                    delivery_db.close()
+
+            return await run_db_off_loop(write_note)
+
+        result = await deliver(prepared)
+        return result if isinstance(result, str) else json.dumps(result)
 
     send_note_tool = FunctionTool.from_function(
         send_note, description=SEND_NOTE_TOOL["description"]
@@ -1356,6 +1491,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         active_only: bool | None = None,
         limit: int | None = None,
         ctx: Optional[Context] = None,
+        preloop_caller_session_id: str | None = None,
     ) -> str:
         """List the runs the calling session started, compact and capped.
 
@@ -1390,6 +1526,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
             tool_source="builtin",
             account_id=user_context.account_id,
             arguments={
+                "preloop_caller_session_id": preloop_caller_session_id,
                 "parent_session_id": parent_session_id,
                 "started_since": started_since,
                 "alias": alias,
@@ -1413,7 +1550,9 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 db,
                 account_id=user_context.account_id,
                 managed_agent_id=getattr(user_context, "managed_agent_id", None),
-                caller_session_ids=_mcp_caller_session_ids(db, user_context),
+                caller_session_ids=_mcp_caller_session_ids(
+                    db, user_context, preloop_caller_session_id
+                ),
                 subject_context={
                     "api_key_id": getattr(user_context, "api_key_id", None),
                     "managed_agent_id": getattr(user_context, "managed_agent_id", None),
@@ -1545,6 +1684,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         name: str,
         kind: str | None = None,
         labels: dict | None = None,
+        media_timing: dict | None = None,
         parent_artifact_id: str | None = None,
         activity_id: str | None = None,
         ctx: Optional[Context] = None,
@@ -1572,6 +1712,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 "name": name,
                 "kind": kind,
                 "labels": labels,
+                "media_timing": media_timing,
                 "parent_artifact_id": parent_artifact_id,
                 "activity_id": activity_id,
             }
@@ -2157,6 +2298,13 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                     elif cached is not None:
                         response["tool_result"] = cached
 
+                    elif approval_request.tool_name == "send_note" and str(
+                        approval_request.managed_agent_id
+                    ) != str(getattr(user_context, "managed_agent_id", None)):
+                        response["tool_execution_error"] = (
+                            "Only the sending agent may execute this approved note."
+                        )
+
                     # A flow sees this tool even when its allow-list omits
                     # it (dynamic_fastmcp adds it so a parked run can finish
                     # an approved call); it must not replay a tool the flow
@@ -2307,46 +2455,45 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
 
                         elapsed_ms = int((_time.monotonic() - exec_start) * 1000)
 
-                        # Store the real result in a fresh transaction
+                        # Store the result and its audit intent in one transaction.
+                        from preloop.services.approval_service import (
+                            enqueue_approval_audit,
+                        )
+                        from preloop.models.crud.approval_request import (
+                            get_approval_request_async,
+                        )
+
                         async with get_async_db_session() as db2:
-                            update_result = await db2.execute(
-                                select(ApprovalRequest).where(
-                                    ApprovalRequest.id == req_id
-                                )
-                            )
-                            ar = update_result.scalar_one_or_none()
+                            ar = await get_approval_request_async(db2, req_id)
                             if ar:
-                                ar.tool_result = result_data
+                                from preloop.models.crud import crud_approval_request
+
+                                await db2.run_sync(
+                                    lambda session: crud_approval_request.update(
+                                        session,
+                                        db_obj=ar,
+                                        obj_in={"tool_result": result_data},
+                                        commit=False,
+                                    )
+                                )
+                                await enqueue_approval_audit(
+                                    db2,
+                                    "log_approval_tool_executed",
+                                    account_id=str(approval_request.account_id),
+                                    approval_id=req_id,
+                                    tool_name=tool_name,
+                                    status=exec_status,
+                                    duration_ms=elapsed_ms,
+                                    result_preview=result_preview,
+                                    error=exec_error,
+                                    extra_details={"grant": replay_grant}
+                                    if replay_grant is not None
+                                    else None,
+                                    execution_id=str(approval_request.execution_id)
+                                    if approval_request.execution_id
+                                    else None,
+                                )
                                 await db2.commit()
-
-                        # Audit the post-approval execution outcome so the
-                        # audit timeline shows the full story even for the
-                        # async-poll path (which bypasses DynamicFastMCP's
-                        # built-in tool_call audit).
-                        try:
-                            from preloop.services.approval_service import (
-                                _log_approval_tool_executed_async,
-                            )
-
-                            _log_approval_tool_executed_async(
-                                account_id=str(approval_request.account_id),
-                                approval_id=req_id,
-                                tool_name=tool_name,
-                                status=exec_status,
-                                duration_ms=elapsed_ms,
-                                result_preview=result_preview,
-                                error=exec_error,
-                                extra_details={"grant": replay_grant}
-                                if replay_grant is not None
-                                else None,
-                                execution_id=str(approval_request.execution_id)
-                                if approval_request.execution_id
-                                else None,
-                            )
-                        except Exception as audit_err:  # pragma: no cover
-                            logger.debug(
-                                f"Failed to audit post-approval execution: {audit_err}"
-                            )
 
                         if "_error" not in (result_data or {}):
                             response["tool_result"] = result_data

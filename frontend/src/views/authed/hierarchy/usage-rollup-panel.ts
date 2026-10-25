@@ -93,7 +93,7 @@ export class UsageRollupPanel extends LitElement {
       ]);
       if (generation !== this.generation) return;
       this.rows = usage.rows;
-      this.attention = attention;
+      this.attention = attention.filter((row) => row.count > 0);
       for (const row of [...usage.rows, ...attention]) {
         this.known.set(row.subaccount_id, row.subaccount_name);
       }
@@ -130,9 +130,16 @@ export class UsageRollupPanel extends LitElement {
     if (!this.ready) return nothing;
     const rows = this.visibleRows();
     const total = rows.reduce((sum, row) => sum + (row.cost_usd || 0), 0);
+    // An all-zero rollup with nothing to attend to only pushes the KPIs down.
+    const idle = rows.every((row) => !row.requests && !row.cost_usd);
+    if (this.filter === ALL && idle && !this.attention.length) return nothing;
     return html`<sl-card>
       <div class="head">
-        <h3>By subaccount</h3>
+        <h3
+          title="Spend and requests of subaccounts. This account's own traffic is in the totals above, not in this table."
+        >
+          Subaccounts only
+        </h3>
         <sl-select
           size="small"
           label="Subaccount"

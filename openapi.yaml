@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Preloop API
   description: REST API for Preloop issue tracking management
-  version: 0.16.0
+  version: 0.17.1
 paths:
   /api/v1/auth/register:
     post:
@@ -555,32 +555,6 @@ paths:
       - OAuth2PasswordBearer: []
       x-restricted-ci: deny
   /api/v1/auth/api-keys:
-    get:
-      tags:
-      - Auth
-      summary: List Api Keys
-      description: "List all API keys for the current user.\n\nArgs:\n    current_user:\
-        \ The current authenticated user.\n\nReturns:\n    List of API keys."
-      operationId: list_api_keys_api_v1_auth_api_keys_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                items:
-                  $ref: '#/components/schemas/ApiKeySummary'
-                type: array
-                title: Response List Api Keys Api V1 Auth Api Keys Get
-        '401':
-          description: Invalid or expired credential
-        '403':
-          description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
-      security:
-      - OAuth2PasswordBearer: []
-      x-restricted-ci: deny
     post:
       tags:
       - Auth
@@ -589,12 +563,14 @@ paths:
         \ data.\n    current_user: The current authenticated user.\n\nReturns:\n \
         \   The created API key details."
       operationId: create_api_key_api_v1_auth_api_keys_post
+      security:
+      - OAuth2PasswordBearer: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/ApiKeyCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -614,8 +590,99 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - Auth
+      summary: List Api Keys
+      description: "List the current user's API keys, optionally one page at a time.\n\
+        \nWith ``limit`` the list is paged on the server and the response carries\n\
+        ``X-Total-Count`` (rows matching the filters) and ``X-Retired-Count``\n(revoked\
+        \ or expired keys matching the search) headers (#1694). Without\nit every\
+        \ key is returned, as before.\n\nArgs:\n    response: The outgoing response,\
+        \ for the count headers.\n    limit: Page size, or None for every key.\n \
+        \   offset: Rows to skip.\n    q: Name search, applied only when paging.\n\
+        \    include_retired: Whether retired keys are listed, when paging.\n    sort:\
+        \ Sort key, when paging.\n    current_user: The current authenticated user.\n\
+        \    db: The database session.\n\nReturns:\n    List of API keys."
+      operationId: list_api_keys_api_v1_auth_api_keys_get
       security:
       - OAuth2PasswordBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 200
+            minimum: 1
+          - type: 'null'
+          description: Page size. Omit to list every key.
+          title: Limit
+        description: Page size. Omit to list every key.
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Rows to skip when paging.
+          default: 0
+          title: Offset
+        description: Rows to skip when paging.
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          description: Case-insensitive key name search.
+          title: Q
+        description: Case-insensitive key name search.
+      - name: include_retired
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Whether revoked and expired keys are listed.
+          default: true
+          title: Include Retired
+        description: Whether revoked and expired keys are listed.
+      - name: sort
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^-?(name|created|expires)$
+          description: name, created or expires; a leading '-' sorts descending.
+          default: -created
+          title: Sort
+        description: name, created or expires; a leading '-' sorts descending.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiKeySummary'
+                title: Response List Api Keys Api V1 Auth Api Keys Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/auth/runtime-sessions/token:
     post:
@@ -643,6 +710,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - OAuth2PasswordBearer: []
+      x-restricted-ci: deny
+  /api/v1/auth/api-keys/count:
+    get:
+      tags:
+      - Auth
+      summary: Count Api Keys
+      description: "Count the current user's usable API keys (active, not expired).\n\
+        \nDeclared before ``/api-keys/{key_id}`` so the literal path wins.\n\nArgs:\n\
+        \    current_user: The current authenticated user.\n    db: The database session.\n\
+        \nReturns:\n    The number of usable keys."
+      operationId: count_api_keys_api_v1_auth_api_keys_count_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiKeyCount'
         '401':
           description: Invalid or expired credential
         '403':
@@ -1732,7 +1825,8 @@ paths:
       summary: Update Account Details
       description: "Update current account details.\n\nArgs:\n    update_data: Account\
         \ update data\n    account: Current user's account\n    db: Database session\n\
-        \nReturns:\n    Updated account details"
+        \    current_user: Authenticated account manager\n\nReturns:\n    Updated\
+        \ account details"
       operationId: update_account_details_api_v1_account_details_patch
       requestBody:
         content:
@@ -1911,16 +2005,18 @@ paths:
         required: false
         schema:
           type: boolean
-          description: When true, include per-model/flow/session/tool/day breakdowns.
-            Default true preserves the historical response shape for API clients;
-            lightweight card callers (Overview/Agents) should pass false. Prefer /cost/summary
-            for full cost analytics.
+          description: When true, include per-model/flow/session/tool/day breakdowns
+            (and per-agent totals when breakdown=agents is selected). Default true
+            preserves the historical response shape for API clients; lightweight card
+            callers (Overview/Agents) should pass false. Prefer /cost/summary for
+            full cost analytics.
           default: true
           title: Include Breakdown
-        description: When true, include per-model/flow/session/tool/day breakdowns.
-          Default true preserves the historical response shape for API clients; lightweight
-          card callers (Overview/Agents) should pass false. Prefer /cost/summary for
-          full cost analytics.
+        description: When true, include per-model/flow/session/tool/day breakdowns
+          (and per-agent totals when breakdown=agents is selected). Default true preserves
+          the historical response shape for API clients; lightweight card callers
+          (Overview/Agents) should pass false. Prefer /cost/summary for full cost
+          analytics.
       - name: breakdown
         in: query
         required: false
@@ -1934,13 +2030,18 @@ paths:
               - sessions
               - tools
               - days
+              - agents
               type: string
           - type: 'null'
           description: Selected breakdowns, repeated for multiple sections. Omitted
-            preserves all sections; ignored when include_breakdown=false.
+            preserves the historical sections (models, flows, sessions, tools, days);
+            'agents' is opt-in and returns usage_by_agent, account-wide only (empty
+            when runtime_principal_id is set). Ignored when include_breakdown=false.
           title: Breakdown
         description: Selected breakdowns, repeated for multiple sections. Omitted
-          preserves all sections; ignored when include_breakdown=false.
+          preserves the historical sections (models, flows, sessions, tools, days);
+          'agents' is opt-in and returns usage_by_agent, account-wide only (empty
+          when runtime_principal_id is set). Ignored when include_breakdown=false.
       - name: session_limit
         in: query
         required: false
@@ -2476,12 +2577,27 @@ paths:
           - type: string
           - type: 'null'
           description: 'Comma list of optional sections: usage_by_model, activity,
-            sessions. Omitted returns all of them; an empty value returns the agent,
-            its aggregate, credentials and enrollments only.'
+            sessions, aggregate. Omitted returns all sections; an empty value returns
+            identity. Legacy reads always include the aggregate. Lightweight section
+            reads omit unrelated identity enrichment, devices, credentials and enrollments.'
           title: Include
-        description: 'Comma list of optional sections: usage_by_model, activity, sessions.
-          Omitted returns all of them; an empty value returns the agent, its aggregate,
-          credentials and enrollments only.'
+        description: 'Comma list of optional sections: usage_by_model, activity, sessions,
+          aggregate. Omitted returns all sections; an empty value returns identity.
+          Legacy reads always include the aggregate. Lightweight section reads omit
+          unrelated identity enrichment, devices, credentials and enrollments.'
+      - name: lightweight
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Return identity and recency without all-time usage totals.
+            Aggregate is null unless its section is included. Identity totals are
+            not computed (agent.usage_computed=false).
+          default: false
+          title: Lightweight
+        description: Return identity and recency without all-time usage totals. Aggregate
+          is null unless its section is included. Identity totals are not computed
+          (agent.usage_computed=false).
       - name: session_limit
         in: query
         required: false
@@ -4029,6 +4145,22 @@ paths:
           older event on the same page already carried. Positions are kept: each returned
           message carries its original `position`. The event detail endpoint still
           returns the full payload.'
+      - name: history_window
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 500
+            minimum: 1
+          - type: 'null'
+          description: With `history=delta`, each event keeps at most its last N messages
+            and tool entries, so the oldest event on a page of a long session does
+            not carry the whole conversation (#1689).
+          title: History Window
+        description: With `history=delta`, each event keeps at most its last N messages
+          and tool entries, so the oldest event on a page of a long session does not
+          carry the whole conversation (#1689).
       responses:
         '200':
           description: Successful Response
@@ -5387,6 +5519,17 @@ paths:
             format: date-time
           - type: 'null'
           title: End Date
+      - name: include_agents
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Include the per-agent breakdown (usage_by_agent). Lists that
+            show per-tool totals only pass false for a smaller response.
+          default: true
+          title: Include Agents
+        description: Include the per-agent breakdown (usage_by_agent). Lists that
+          show per-tool totals only pass false for a smaller response.
       responses:
         '200':
           description: Successful Response
@@ -5456,6 +5599,35 @@ paths:
                   $ref: '#/components/schemas/ToolSummaryResponse'
                 type: array
                 title: Response List Tool Summaries Api V1 Tools Summary Get
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/tools/rules:
+    get:
+      tags:
+      - Tools
+      summary: List Tool Rules
+      description: "Return each tool's identity and policy state, for the Policies\
+        \ page.\n\nArgs:\n    account: Current user's account.\n    current_user:\
+        \ The authenticated user.\n    db: Database session.\n\nReturns:\n    One\
+        \ row per catalogue tool, without descriptions or input schemas."
+      operationId: list_tool_rules_api_v1_tools_rules_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/ToolRuleIndexRow'
+                type: array
+                title: Response List Tool Rules Api V1 Tools Rules Get
         '401':
           description: Invalid or expired credential
         '403':
@@ -6903,7 +7075,7 @@ paths:
       - Approval Bypasses
       - approval_bypasses
       summary: Revoke Bypass
-      description: "End a bypass early.\n\nAny user who can view approvals in the\
+      description: "End a bypass early.\n\nAny user who can decide approvals in the\
         \ account may revoke a bypass, even\none they did not create. Re-tightening\
         \ a control is always safe, so it\nshould never be blocked on ownership.\n\
         \nArgs:\n    bypass_id: The bypass to revoke.\n    current_user: Current authenticated\
@@ -8151,6 +8323,50 @@ paths:
           minimum: 50
           default: 500
           title: Limit
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 527040
+            minimum: 1
+          - type: 'null'
+          description: 'Show only resources with activity in this many minutes: gateway
+            requests for models, provider accounts and providers; sessions, requests
+            or last-seen for agents; heartbeats for devices and runners; an active
+            holding for people.'
+          title: Active Within Minutes
+        description: 'Show only resources with activity in this many minutes: gateway
+          requests for models, provider accounts and providers; sessions, requests
+          or last-seen for agents; heartbeats for devices and runners; an active holding
+          for people.'
+      - name: include_idle
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: With a window, also return configured idle resources (idle=true).
+          default: false
+          title: Include Idle
+        description: With a window, also return configured idle resources (idle=true).
+      - name: users
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          description: 'Comma separated user ids (at most 50): scope the response
+            to those people, their devices, the agents and runners they own or that
+            run on those devices, the models, provider accounts and providers those
+            agents use, and the work those agents touched. Flows are omitted.'
+          title: Users
+        description: 'Comma separated user ids (at most 50): scope the response to
+          those people, their devices, the agents and runners they own or that run
+          on those devices, the models, provider accounts and providers those agents
+          use, and the work those agents touched. Flows are omitted.'
       responses:
         '200':
           description: Successful Response
@@ -8158,6 +8374,128 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FleetMapResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/fleet/code-activity:
+    get:
+      tags:
+      - Fleet
+      summary: Read Fleet Code Activity
+      description: Pull and merge requests opened, commented, reviewed and merged
+        per node.
+      operationId: read_fleet_code_activity_api_v1_fleet_code_activity_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 527040
+            minimum: 1
+          - type: 'null'
+          description: Window in minutes; omitted reads the last 90 days.
+          title: Active Within Minutes
+        description: Window in minutes; omitted reads the last 90 days.
+      - name: users
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          description: 'Comma separated user ids (at most 50): scope the response
+            to those people, their devices, the agents and runners they own or that
+            run on those devices, the models, provider accounts and providers those
+            agents use, and the work those agents touched. Flows are omitted.'
+          title: Users
+        description: 'Comma separated user ids (at most 50): scope the response to
+          those people, their devices, the agents and runners they own or that run
+          on those devices, the models, provider accounts and providers those agents
+          use, and the work those agents touched. Flows are omitted.'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetCodeActivityResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/fleet/usage:
+    get:
+      tags:
+      - Fleet
+      summary: Read Fleet Usage
+      description: Gateway request, token and estimated cost totals per model and
+        provider node.
+      operationId: read_fleet_usage_api_v1_fleet_usage_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: active_within_minutes
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 527040
+            minimum: 1
+          - type: 'null'
+          description: Window in minutes; omitted or above 90 days reads the last
+            90 days.
+          title: Active Within Minutes
+        description: Window in minutes; omitted or above 90 days reads the last 90
+          days.
+      - name: users
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          description: 'Comma separated user ids (at most 50): scope the response
+            to those people, their devices, the agents and runners they own or that
+            run on those devices, the models, provider accounts and providers those
+            agents use, and the work those agents touched. Flows are omitted.'
+          title: Users
+        description: 'Comma separated user ids (at most 50): scope the response to
+          those people, their devices, the agents and runners they own or that run
+          on those devices, the models, provider accounts and providers those agents
+          use, and the work those agents touched. Flows are omitted.'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetUsageResponse'
         '422':
           description: Validation Error
           content:
@@ -8474,6 +8812,672 @@ paths:
       responses:
         '200':
           description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs/actors:
+    get:
+      tags:
+      - Audit Logs
+      summary: List Audit Actors
+      description: List display identities for the current account's audit filters.
+      operationId: list_audit_actors_api_v1_audit_logs_actors_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 1000
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditActorResponse'
+                title: Response List Audit Actors Api V1 Audit Logs Actors Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs:
+    get:
+      tags:
+      - Audit Logs
+      summary: List audit logs with filters
+      description: 'List audit logs with optional filters.
+
+
+        This endpoint allows querying audit logs for the current user''s account
+
+        with various filter options including action type, status, resource type,
+
+        and date range.
+
+
+        Requires the ''view_audit_logs'' permission.'
+      operationId: list_audit_logs_api_v1_audit_logs_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: action
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by action (e.g., 'permission_check', 'role_assigned')
+          title: Action
+        description: Filter by action (e.g., 'permission_check', 'role_assigned')
+      - name: status_filter
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by status (e.g., 'success', 'denied', 'failure')
+          title: Status Filter
+        description: Filter by status (e.g., 'success', 'denied', 'failure')
+      - name: resource_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by resource type (e.g., 'issue', 'user', 'team')
+          title: Resource Type
+        description: Filter by resource type (e.g., 'issue', 'user', 'team')
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Filter by start date (ISO 8601 format)
+          title: Start Date
+        description: Filter by start date (ISO 8601 format)
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Filter by end date (ISO 8601 format)
+          title: End Date
+        description: Filter by end date (ISO 8601 format)
+      - name: consent_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 512
+          - type: 'null'
+          description: Exact delegated grant consent reference
+          title: Consent Ref
+        description: Exact delegated grant consent reference
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of records to skip
+          default: 0
+          title: Skip
+        description: Number of records to skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          description: Maximum number of records
+          default: 100
+          title: Limit
+        description: Maximum number of records
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogsListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs/grouped:
+    get:
+      tags:
+      - Audit Logs
+      summary: Get audit logs grouped by correlation for unified timeline
+      description: 'Get audit logs grouped by correlation_id for the unified timeline.
+
+
+        Returns tool call events as primary rows with their correlated sub-events
+
+        (policy decisions, approval lifecycle) grouped together. Non-tool events
+
+        are returned as standalone groups.'
+      operationId: list_grouped_audit_logs_api_v1_audit_logs_grouped_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: 'Filter by event type(s): ''tool_call'', ''model_gateway_request'',
+            ''config:mcp_server'', ''config:tool_rule'', etc.'
+          title: Event Type
+        description: 'Filter by event type(s): ''tool_call'', ''model_gateway_request'',
+          ''config:mcp_server'', ''config:tool_rule'', etc.'
+      - name: outcome
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          description: Filter by outcome(s) (allow, deny, require_approval, approved,
+            declined, failed, budget_denied, upstream_error, error)
+          title: Outcome
+        description: Filter by outcome(s) (allow, deny, require_approval, approved,
+          declined, failed, budget_denied, upstream_error, error)
+      - name: outcome_match
+        in: query
+        required: false
+        schema:
+          enum:
+          - all
+          - any
+          type: string
+          description: 'With several outcomes: ''all'' (default) keeps a row whose
+            chain carries every one, ''any'' a row that carries at least one'
+          default: all
+          title: Outcome Match
+        description: 'With several outcomes: ''all'' (default) keeps a row whose chain
+          carries every one, ''any'' a row that carries at least one'
+      - name: tool_name
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Filter by tool name (substring match)
+          title: Tool Name
+        description: Filter by tool name (substring match)
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Filter by start date (ISO 8601)
+          title: Start Date
+        description: Filter by start date (ISO 8601)
+      - name: end_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Filter by end date (ISO 8601)
+          title: End Date
+        description: Filter by end date (ISO 8601)
+      - name: min_cost
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0
+          - type: 'null'
+          description: Minimum estimated gateway spend (USD)
+          title: Min Cost
+        description: Minimum estimated gateway spend (USD)
+      - name: max_cost
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0
+          - type: 'null'
+          description: Maximum estimated gateway spend (USD)
+          title: Max Cost
+        description: Maximum estimated gateway spend (USD)
+      - name: consent_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 512
+          - type: 'null'
+          description: Exact delegated grant consent reference
+          title: Consent Ref
+        description: Exact delegated grant consent reference
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of groups to skip
+          default: 0
+          title: Skip
+        description: Number of groups to skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          description: Maximum number of groups
+          default: 50
+          title: Limit
+        description: Maximum number of groups
+      - name: count_limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 1000000
+            minimum: 1
+          - type: 'null'
+          description: Stop counting the total past this many groups (total_capped
+            says so). The exact total reads the whole matching trail.
+          title: Count Limit
+        description: Stop counting the total past this many groups (total_capped says
+          so). The exact total reads the whole matching trail.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditGroupedListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs/overview:
+    get:
+      tags:
+      - Audit Logs
+      summary: Audit figures and exceptions for the console Overview
+      description: 'The four audit reads the Overview made separately, in one request.
+
+
+        Every figure covers the same window, ``start_date`` onwards (#1592): the
+
+        Overview is a "this range" page, and the all-time tool call totals were
+
+        the slowest part of the request on a long trail.
+
+
+        ``events_total`` is the ``total`` the grouped timeline reports for the
+
+        window, counted up to ``OVERVIEW_COUNT_LIMIT`` so it agrees with the
+
+        Audit page. Past that, ``events_total_capped`` is set and the total is
+
+        the cap. ``tool_calls_total`` and
+
+        ``tool_calls_failed`` are plain counts of ``tool_call`` rows (all, and
+
+        those with status ``failed``) in the window. ``tool_calls_total`` equals
+
+        the grouped total for ``event_type=tool_call``; ``tool_calls_failed`` is
+
+        exact, where the grouped outcome filter only looks at the newest 5000
+
+        calls. ``exceptions`` lists the groups in the window that failed or were
+
+        denied by a policy or a budget (any of those outcomes, not all).
+
+
+        The response is cached per worker for ``OVERVIEW_CACHE_TTL_SECONDS``.'
+      operationId: get_audit_overview_api_v1_audit_logs_overview_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: start_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Window start for every figure and the exceptions (ISO 8601)
+          title: Start Date
+        description: Window start for every figure and the exceptions (ISO 8601)
+      - name: exceptions_limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 50
+          minimum: 1
+          description: Maximum number of exception groups
+          default: 12
+          title: Exceptions Limit
+        description: Maximum number of exception groups
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditOverviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs/stats:
+    get:
+      tags:
+      - Audit Logs
+      summary: Get audit log statistics
+      description: 'Get statistics about audit events.
+
+
+        Returns aggregated statistics including action counts by type and status,
+
+        top active users, and total log counts for the specified time period.
+
+
+        Requires the ''view_audit_logs'' permission.'
+      operationId: get_audit_stats_api_v1_audit_logs_stats_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 365
+          minimum: 1
+          description: Number of days to analyze (default 30)
+          default: 30
+          title: Days
+        description: Number of days to analyze (default 30)
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditStatsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs/user/{user_id}:
+    get:
+      tags:
+      - Audit Logs
+      summary: Get audit logs for a specific user
+      description: 'Get audit logs for a specific user.
+
+
+        Returns all audit logs associated with the specified user within the
+
+        given time period. This is useful for investigating user activity and
+
+        tracking security-relevant actions.
+
+
+        Requires the ''view_audit_logs'' permission.'
+      operationId: get_user_audit_logs_api_v1_audit_logs_user__user_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 365
+          minimum: 1
+          description: Number of days to look back (default 30)
+          default: 30
+          title: Days
+        description: Number of days to look back (default 30)
+      - name: skip
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of records to skip
+          default: 0
+          title: Skip
+        description: Number of records to skip
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          description: Maximum number of records
+          default: 100
+          title: Limit
+        description: Maximum number of records
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogsListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs/denials:
+    get:
+      tags:
+      - Audit Logs
+      summary: Get recent permission denial events
+      description: 'Get recent permission denial events.
+
+
+        Returns all permission check events that resulted in denial within the
+
+        specified time period. This is useful for security auditing and
+
+        identifying potential unauthorized access attempts.
+
+
+        Requires the ''view_audit_logs'' permission.'
+      operationId: get_permission_denials_api_v1_audit_logs_denials_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 90
+          minimum: 1
+          description: Number of days to look back
+          default: 7
+          title: Days
+        description: Number of days to look back
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          description: Maximum number of records
+          default: 100
+          title: Limit
+        description: Maximum number of records
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogsListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/audit-logs/{entry_id}:
+    get:
+      tags:
+      - Audit Logs
+      summary: Get Audit Entry
+      description: Fetch one account-owned entry so a console deep link can focus
+        it.
+      operationId: get_audit_entry_api_v1_audit_logs__entry_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: entry_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Entry Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogResponse'
         '422':
           description: Validation Error
           content:
@@ -11692,34 +12696,6 @@ paths:
           description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/ai-models:
-    get:
-      tags:
-      - AI Models
-      - AI Models
-      summary: List AI Models
-      description: List all AI Models associated with the authenticated user's account.
-      operationId: list_ai_models_api_v1_ai_models_get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                items:
-                  anyOf:
-                  - $ref: '#/components/schemas/SharedResourceRead'
-                  - $ref: '#/components/schemas/AIModelRead'
-                type: array
-                title: Response List Ai Models Api V1 Ai Models Get
-        '401':
-          description: Invalid or expired credential
-        '403':
-          description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
-      security:
-      - bearerAuth: []
-      x-restricted-ci: deny
     post:
       tags:
       - AI Models
@@ -11727,12 +12703,14 @@ paths:
       summary: Create AI Model
       description: Create a new AI Model for the authenticated user's account.
       operationId: create_ai_model_api_v1_ai_models_post
+      security:
+      - bearerAuth: []
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/AIModelCreate'
-        required: true
       responses:
         '201':
           description: Successful Response
@@ -11752,8 +12730,53 @@ paths:
           description: Operation or resource denied for restricted CI credentials
         '503':
           description: Credential verification unavailable
+      x-restricted-ci: deny
+    get:
+      tags:
+      - AI Models
+      - AI Models
+      summary: List AI Models
+      description: List all AI Models associated with the authenticated user's account.
+      operationId: list_ai_models_api_v1_ai_models_get
       security:
       - bearerAuth: []
+      parameters:
+      - name: default_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Only the models marked default. Use this when a caller only
+            needs to know whether a default model exists, rather than reading the
+            whole catalog.
+          default: false
+          title: Default Only
+        description: Only the models marked default. Use this when a caller only needs
+          to know whether a default model exists, rather than reading the whole catalog.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  anyOf:
+                  - $ref: '#/components/schemas/SharedResourceRead'
+                  - $ref: '#/components/schemas/AIModelRead'
+                title: Response List Ai Models Api V1 Ai Models Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/ai-models/overview:
     get:
@@ -11804,6 +12827,19 @@ paths:
           in this window are newer than the timestamp. The console passes the moment
           an operator marked the model fixed, so a row can say ''2 failed since fix''
           instead of repeating the whole window''s total.'
+      - name: include_prior_period
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Also return prior_period_estimated_cost, the spend of the window
+            of equal length just before this one, so the page needs one request instead
+            of two.
+          default: false
+          title: Include Prior Period
+        description: Also return prior_period_estimated_cost, the spend of the window
+          of equal length just before this one, so the page needs one request instead
+          of two.
       responses:
         '200':
           description: Successful Response
@@ -13448,6 +14484,103 @@ paths:
           description: Credential verification unavailable
       security:
       - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/delivery-reports:
+    get:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: List Delivery Reports
+      description: Runs of the account's Delivery Report flows that stored a report.
+      operationId: list_delivery_reports_api_v1_delivery_reports_get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 25
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      - name: since
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          description: Runs that started at or after this time.
+          title: Since
+        description: Runs that started at or after this time.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      x-restricted-ci: deny
+  /api/v1/delivery-reports/{execution_id}:
+    get:
+      tags:
+      - Delivery Reports
+      - Delivery Reports
+      summary: Get Delivery Report
+      description: One run's full report, with reopen requests that went stale marked.
+      operationId: get_delivery_report_api_v1_delivery_reports__execution_id__get
+      security:
+      - bearerAuth: []
+      parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Execution Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryReportDetail'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
       x-restricted-ci: deny
   /api/v1/cost/by-issue:
     get:
@@ -18552,11 +19685,11 @@ paths:
         it.
 
 
-        The same permission as sending: whoever may send a command may watch
+        Returns delivery state for a command belonging to the requested agent
 
-        it land. Another agent''s command id is a 404, not a leak. A sync
+        in the current account. A command belonging to another agent returns
 
-        handler: FastAPI runs it in the threadpool, off the event loop.'
+        404. FastAPI runs this sync handler in the threadpool, off the event loop.'
       operationId: get_managed_agent_command_status_api_v1_agents__agent_id__control_commands__command_id__get
       security:
       - bearerAuth: []
@@ -19286,6 +20419,67 @@ paths:
       security:
       - bearerAuth: []
       x-restricted-ci: deny
+  /api/v1/approvals/{approval_id}/expire:
+    post:
+      tags:
+      - Agent Permissions
+      - Agent Permissions
+      summary: Expire Approval By Hook
+      description: 'Expire an approval whose permission hook stopped waiting.
+
+
+        The hook proposes the approval id on permission-check, so it can name the
+
+        request even while that call is still held. Only the agent (or key) that
+
+        raised the approval may expire it. A pending request becomes ``expired``
+
+        and is broadcast, so no surface keeps offering Approve or Deny.'
+      operationId: expire_approval_by_hook_api_v1_approvals__approval_id__expire_post
+      parameters:
+      - name: approval_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Approval Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalExpireRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalExpireResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
   /api/v1/agents/session-start:
     post:
       tags:
@@ -19325,6 +20519,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AgentSessionStartResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '401':
+          description: Invalid or expired credential
+        '403':
+          description: Operation or resource denied for restricted CI credentials
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/agents/session-event:
+    post:
+      tags:
+      - Agent Permissions
+      - Agent Permissions
+      summary: Agent Session Event
+      description: 'Record that a hook-governed turn or session ended (#1889).
+
+
+        Stop and SubagentStop write a ``turn_end`` activity; SessionEnd writes
+
+        ``session_end`` and stamps ``ended_at`` once. An unknown session, or a
+
+        failure to record, still answers 204: a hook must never fail the harness.'
+      operationId: agent_session_event_api_v1_agents_session_event_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentSessionEventRequest'
+      responses:
+        '204':
+          description: Successful Response
         '422':
           description: Validation Error
           content:
@@ -20590,9 +21832,66 @@ paths:
         content:
           application/json:
             schema:
+              $defs:
+                MediaStepOffset:
+                  additionalProperties: false
+                  description: An exact producer-reported position in the media timebase.
+                  properties:
+                    source_step_id:
+                      maxLength: 200
+                      minLength: 1
+                      title: Source Step Id
+                      type: string
+                    offset_ms:
+                      minimum: 0
+                      title: Offset Ms
+                      type: integer
+                  required:
+                  - source_step_id
+                  - offset_ms
+                  title: MediaStepOffset
+                  type: object
+                MediaTiming:
+                  additionalProperties: false
+                  description: Wall clock at media t=0, optionally supplemented by
+                    exact offsets.
+                  properties:
+                    started_at:
+                      format: date-time
+                      title: Started At
+                      type: string
+                    duration_ms:
+                      anyOf:
+                      - minimum: 0
+                        type: integer
+                      - type: 'null'
+                      title: Duration Ms
+                    clock:
+                      enum:
+                      - agent
+                      - server
+                      title: Clock
+                      type: string
+                    step_offsets:
+                      anyOf:
+                      - items:
+                          $ref: '#/components/schemas/MediaStepOffset'
+                        maxItems: 5000
+                        type: array
+                      - type: 'null'
+                      title: Step Offsets
+                  required:
+                  - started_at
+                  - clock
+                  title: MediaTiming
+                  type: object
               additionalProperties: false
               description: 'JSON deposit: the metadata fields plus one MCP ``ContentBlock``.'
               properties:
+                media_timing:
+                  anyOf:
+                  - $ref: '#/components/schemas/MediaTiming'
+                  - type: 'null'
                 kind:
                   anyOf:
                   - type: string
@@ -20656,8 +21955,8 @@ paths:
                   format: binary
                 metadata:
                   type: string
-                  description: 'JSON object: kind, name, labels, activity_id, parent_artifact_id,
-                    tool_name'
+                  description: 'JSON object: media_timing, kind, name, labels, activity_id,
+                    parent_artifact_id, tool_name'
       security:
       - bearerAuth: []
       x-restricted-ci: deny
@@ -20735,6 +22034,111 @@ paths:
           description: Runtime session not found in this account
         '422':
           description: Bad kind, label, limit or cursor
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/artifacts/{artifact_id}/media-timing:
+    patch:
+      tags:
+      - Runtime Sessions
+      summary: Update Artifact Media Timing
+      description: Idempotently replace timing using a session-bound key or manage_agents.
+      operationId: update_artifact_media_timing_api_v1_runtime_sessions__runtime_session_id__artifacts__artifact_id__media_timing_patch
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: artifact_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Artifact Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MediaTiming'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSessionArtifactOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '503':
+          description: Credential verification unavailable
+      security:
+      - bearerAuth: []
+      x-restricted-ci: deny
+  /api/v1/runtime-sessions/{runtime_session_id}/media-sync:
+    get:
+      tags:
+      - Runtime Sessions
+      summary: Get Session Media Sync
+      description: Resolve recording positions with the artifact read authorization.
+      operationId: get_session_media_sync_api_v1_runtime_sessions__runtime_session_id__media_sync_get
+      parameters:
+      - name: runtime_session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Runtime Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MediaSyncOut'
+        '401':
+          description: Missing or invalid bearer token
+        '403':
+          description: Credential is bound to a different runtime session
+        '404':
+          description: Runtime session not found in this account
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
         '503':
           description: Credential verification unavailable
       security:
@@ -20906,7 +22310,9 @@ paths:
 
         The filters are validated here, so a saved search that cannot run cannot
 
-        be stored. Visibility defaults to private; sharing is a separate edit.'
+        be stored. Visibility defaults to private. Account visibility requires
+
+        permission to share saved searches.'
       operationId: create_saved_session_search_api_v1_runtime_sessions_search_saved_post
       security:
       - bearerAuth: []
@@ -21036,7 +22442,9 @@ paths:
 
         one thing: this saved question is not what it was. Only the author may do
 
-        any of them.'
+        any of them. Changing visibility to ``account`` also requires
+
+        ``share_session_searches``.'
       operationId: update_saved_session_search_api_v1_runtime_sessions_search_saved__saved_search_id__patch
       security:
       - bearerAuth: []
@@ -23518,6 +24926,14 @@ components:
             $ref: '#/components/schemas/AIModelOverviewItem'
           type: array
           title: Models
+        prior_period_estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Prior Period Estimated Cost
+          description: Estimated cost of the same models over the window of equal
+            length that ends where this one starts. Only set when the request asked
+            for it with include_prior_period.
       type: object
       required:
       - period_start
@@ -23870,6 +25286,13 @@ components:
             $ref: '#/components/schemas/GatewayUsageByTool'
           type: array
           title: Usage By Tool
+        usage_by_agent:
+          items:
+            $ref: '#/components/schemas/GatewayUsageByAgent'
+          type: array
+          title: Usage By Agent
+          description: Per-agent totals in the period, by the same attribution as
+            the agents list and agent detail. Only with breakdown=agents.
       type: object
       required:
       - period_start
@@ -24805,6 +26228,15 @@ components:
           title: Client Decision
           description: 'What the client''s own policy decided: ''allow'' | ''deny''
             | ''ask''. Absent/''ask'' escalates to a human approver.'
+        approval_request_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Approval Request Id
+          description: Id the hook proposes for an approval this call may create,
+            so it can expire that approval through POST /approvals/{id}/expire when
+            its own deadline passes. Ignored when the id is taken.
         evaluation_phase:
           type: string
           enum:
@@ -24846,6 +26278,14 @@ components:
             which is almost always: the PreToolUse call the agent was making anyway
             carries the note, so a note costs no extra round trip and no note costs
             nothing at all.'
+        decided_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decided By
+          description: 'Who decided an approval this call waited on: a person''s username,
+            ''AI review'' or ''policy''. Null when no approval was involved or it
+            expired. Hooks show it in the terminal.'
         timed_out:
           type: boolean
           title: Timed Out
@@ -24909,6 +26349,86 @@ components:
         bounded: the object travels into approval ``tool_args`` and onto the
 
         session timeline, and this is untrusted network input.'
+    AgentSessionEventRequest:
+      properties:
+        session_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Session Id
+          description: The harness's own session id
+        hook_event_name:
+          type: string
+          enum:
+          - Stop
+          - SubagentStop
+          - SessionEnd
+          - stop
+          - sessionEnd
+          - PostToolUse
+          - PostToolUseFailure
+          - Notification
+          title: Hook Event Name
+        source:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Source
+          description: Agent adapter, e.g. 'claude_code'
+        tool_use_id:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          title: Tool Use Id
+        tool_name:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Tool Name
+        exit_code:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Exit Code
+        is_error:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Is Error
+        duration_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Duration Ms
+        notification_type:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Notification Type
+        interrupted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Interrupted
+          description: 'Stop only: the user interrupted the turn'
+      type: object
+      required:
+      - session_id
+      - hook_event_name
+      title: AgentSessionEventRequest
+      description: 'API payload for a harness turn-end or session-end signal (#1889).
+
+
+        Accepts Stop, SubagentStop and SessionEnd event names, storing the kind
+
+        and receipt time without content. Producer integration is separate from
+
+        this backend contract.'
     AgentSessionStartRequest:
       properties:
         session_id:
@@ -24956,6 +26476,14 @@ components:
           title: First Prompt
           description: The first user prompt. Only a redacted 120 character title
             is kept.
+        hook_event_name:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Hook Event Name
+          description: The hook that sent this call. UserPromptSubmit (Cursor beforeSubmitPrompt)
+            records the time of a prompt, never its text.
       type: object
       required:
       - session_id
@@ -25327,6 +26855,17 @@ components:
       - user_id
       title: AnthropicUserMappingUpsert
       description: Map one imported actor (email, or ``key:<name>``) to one user.
+    ApiKeyCount:
+      properties:
+        active:
+          type: integer
+          title: Active
+          description: Keys that are active and not expired.
+      type: object
+      required:
+      - active
+      title: ApiKeyCount
+      description: How many of the current user's API keys are usable.
     ApiKeyCreate:
       properties:
         name:
@@ -25925,6 +27464,49 @@ components:
       - timestamp
       title: ApprovalEventResponse
       description: One entry in an approval request's workflow-history timeline.
+    ApprovalExpireRequest:
+      properties:
+        reason:
+          type: string
+          const: hook_deadline
+          title: Reason
+          default: hook_deadline
+        waited_seconds:
+          anyOf:
+          - type: integer
+            maximum: 86400.0
+            minimum: 0.0
+          - type: 'null'
+          title: Waited Seconds
+      type: object
+      title: ApprovalExpireRequest
+      description: Why the waiter gave up on an approval.
+    ApprovalExpireResponse:
+      properties:
+        approval_request_id:
+          type: string
+          title: Approval Request Id
+        status:
+          type: string
+          title: Status
+        approver_comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approver Comment
+        decided_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decided By
+          description: Who decided, when a decision landed before the expiry
+      type: object
+      required:
+      - approval_request_id
+      - status
+      title: ApprovalExpireResponse
+      description: The approval's status after the call; a decision that landed first
+        wins.
     ApprovalFlowExecutionSummary:
       properties:
         id:
@@ -26965,6 +28547,10 @@ components:
           type: string
           format: date-time
           title: Created At
+        media_timing:
+          anyOf:
+          - $ref: '#/components/schemas/MediaTiming'
+          - type: 'null'
         content_block:
           $ref: '#/components/schemas/McpResourceLink'
         session_title:
@@ -27120,6 +28706,278 @@ components:
       - reason
       title: AttentionDismissalUpsertRequest
       description: Body of ``PUT /attention/dismissals/{item_id}``.
+    AuditActorResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        username:
+          type: string
+          title: Username
+        full_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Full Name
+      type: object
+      required:
+      - id
+      - username
+      title: AuditActorResponse
+      description: Account-scoped display identity, without user-management fields.
+    AuditGroupResponse:
+      properties:
+        correlation_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Correlation Id
+        primary_event:
+          $ref: '#/components/schemas/AuditLogResponse'
+        sub_events:
+          items:
+            $ref: '#/components/schemas/AuditSubEventResponse'
+          type: array
+          title: Sub Events
+          default: []
+        outcome:
+          type: string
+          title: Outcome
+      type: object
+      required:
+      - correlation_id
+      - primary_event
+      - outcome
+      title: AuditGroupResponse
+      description: Response model for a grouped timeline entry.
+    AuditGroupedListResponse:
+      properties:
+        groups:
+          items:
+            $ref: '#/components/schemas/AuditGroupResponse'
+          type: array
+          title: Groups
+        total:
+          type: integer
+          title: Total
+        skip:
+          type: integer
+          title: Skip
+        limit:
+          type: integer
+          title: Limit
+        total_capped:
+          type: boolean
+          title: Total Capped
+          description: 'True when count_limit was given and more groups match: total
+            is then count_limit, a lower bound'
+          default: false
+      type: object
+      required:
+      - groups
+      - total
+      - skip
+      - limit
+      title: AuditGroupedListResponse
+      description: Response model for the grouped timeline.
+    AuditLogResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        account_id:
+          type: string
+          format: uuid
+          title: Account Id
+        user_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: User Id
+        action:
+          type: string
+          title: Action
+        resource_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resource Type
+        resource_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resource Id
+        status:
+          type: string
+          title: Status
+        ip_address:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ip Address
+        user_agent:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Agent
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+      type: object
+      required:
+      - id
+      - account_id
+      - user_id
+      - action
+      - resource_type
+      - resource_id
+      - status
+      - ip_address
+      - user_agent
+      - details
+      - timestamp
+      title: AuditLogResponse
+      description: Response model for audit log entries.
+    AuditLogsListResponse:
+      properties:
+        logs:
+          items:
+            $ref: '#/components/schemas/AuditLogResponse'
+          type: array
+          title: Logs
+        total:
+          type: integer
+          title: Total
+        skip:
+          type: integer
+          title: Skip
+        limit:
+          type: integer
+          title: Limit
+      type: object
+      required:
+      - logs
+      - total
+      - skip
+      - limit
+      title: AuditLogsListResponse
+      description: Response model for list of audit logs.
+    AuditOverviewResponse:
+      properties:
+        events_total:
+          type: integer
+          title: Events Total
+          description: Timeline groups since start_date, counted up to 10000. events_total_capped
+            means more groups match.
+        events_total_capped:
+          type: boolean
+          title: Events Total Capped
+          description: True when events_total stopped at 10000 groups and more match,
+            the same cap the Audit page reports as 10K+.
+          default: false
+        tool_calls_total:
+          type: integer
+          title: Tool Calls Total
+          description: tool_call events since start_date (every one when absent)
+        tool_calls_failed:
+          type: integer
+          title: Tool Calls Failed
+          description: tool_call events with status failed since start_date
+        exceptions:
+          $ref: '#/components/schemas/AuditGroupedListResponse'
+          description: Most recent groups since start_date whose chain failed or was
+            denied by a policy or a budget (any of these outcomes), newest first,
+            with their total.
+      type: object
+      required:
+      - events_total
+      - tool_calls_total
+      - tool_calls_failed
+      - exceptions
+      title: AuditOverviewResponse
+      description: Everything the console Overview reads from the audit trail, in
+        one call.
+    AuditStatsResponse:
+      properties:
+        action_stats:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Action Stats
+          description: Statistics by action and status
+          example:
+          - action: permission_check
+            count: 15
+            status: denied
+        user_activity:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: User Activity
+          description: Top active users
+          example:
+          - action_count: 150
+            email: admin@example.com
+            username: admin
+        total_count:
+          type: integer
+          title: Total Count
+          description: Total number of audit logs in period
+        period_days:
+          type: integer
+          title: Period Days
+          description: Number of days analyzed
+      type: object
+      required:
+      - action_stats
+      - user_activity
+      - total_count
+      - period_days
+      title: AuditStatsResponse
+      description: Response model for audit statistics.
+    AuditSubEventResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        action:
+          type: string
+          title: Action
+        status:
+          type: string
+          title: Status
+        details:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Details
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+      type: object
+      required:
+      - id
+      - action
+      - status
+      - details
+      - timestamp
+      title: AuditSubEventResponse
+      description: Response model for a sub-event in a grouped timeline.
     AuthUserCreate:
       properties:
         username:
@@ -28160,7 +30018,8 @@ components:
           type: boolean
           title: Skip Missing Servers
           description: If true, skip tools that reference MCP servers not configured
-            in your account instead of failing. Skipped tools are reported as warnings.
+            in your account instead of failing, and keep sensitive_data scopes that
+            name such servers. Both are reported as warnings.
           default: false
       type: object
       required:
@@ -29875,16 +31734,18 @@ components:
           type: string
           title: Login
         net_amount:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Amount
         net_quantity:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Quantity
       type: object
       required:
       - login
-      - net_amount
-      - net_quantity
       title: CopilotDeveloperSpend
       description: Premium-request spend for one developer.
     CopilotModelMix:
@@ -29934,16 +31795,18 @@ components:
           type: string
           title: Model
         net_amount:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Amount
         net_quantity:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Net Quantity
       type: object
       required:
       - model
-      - net_amount
-      - net_quantity
       title: CopilotModelSpend
       description: Premium-request spend for one model.
     CopilotPremiumRequests:
@@ -30615,6 +32478,218 @@ components:
       type: object
       title: DashboardTelemetryResponse
       description: Aggregate high-level metrics for the global dashboard control plane.
+    DeliveryReportActions:
+      properties:
+        open_issue:
+          type: boolean
+          title: Open Issue
+          default: false
+        reopen:
+          type: boolean
+          title: Reopen
+          default: false
+        dismiss:
+          type: boolean
+          title: Dismiss
+          default: false
+      type: object
+      title: DeliveryReportActions
+      description: 'Which report actions this server can carry out.
+
+
+        Opening a proposed follow-up and reopening an issue are tracker writes
+
+        that are not implemented yet; the console renders them disabled.'
+    DeliveryReportDetail:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        status:
+          type: string
+          title: Status
+        report_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Report Status
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        window:
+          $ref: '#/components/schemas/DeliveryReportWindow'
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        shipped:
+          type: integer
+          title: Shipped
+          default: 0
+        closed:
+          type: integer
+          title: Closed
+          default: 0
+        closed_unverified:
+          type: integer
+          title: Closed Unverified
+          default: 0
+        proposals:
+          type: integer
+          title: Proposals
+          default: 0
+        cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Usd
+          description: Gateway spend; null when the gateway could not price it.
+        report:
+          additionalProperties: true
+          type: object
+          title: Report
+        stale_reopen_requests:
+          additionalProperties:
+            type: string
+          type: object
+          title: Stale Reopen Requests
+          description: 'Reopen requests that no longer apply, by issue ref, with the
+            reason: the issue was edited, or new commits landed on its closing pull
+            request, after the assessed revision.'
+        actions:
+          $ref: '#/components/schemas/DeliveryReportActions'
+      type: object
+      required:
+      - id
+      - flow_id
+      - status
+      - window
+      - report
+      title: DeliveryReportDetail
+      description: One run with its full report document.
+    DeliveryReportList:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DeliveryReportRow'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - items
+      - total
+      title: DeliveryReportList
+      description: A page of runs and the total that matched the filter.
+    DeliveryReportRow:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        flow_id:
+          type: string
+          format: uuid
+          title: Flow Id
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+        status:
+          type: string
+          title: Status
+        report_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Report Status
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        window:
+          $ref: '#/components/schemas/DeliveryReportWindow'
+        projects:
+          items:
+            type: string
+          type: array
+          title: Projects
+        shipped:
+          type: integer
+          title: Shipped
+          default: 0
+        closed:
+          type: integer
+          title: Closed
+          default: 0
+        closed_unverified:
+          type: integer
+          title: Closed Unverified
+          default: 0
+        proposals:
+          type: integer
+          title: Proposals
+          default: 0
+        cost_usd:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Cost Usd
+          description: Gateway spend; null when the gateway could not price it.
+      type: object
+      required:
+      - id
+      - flow_id
+      - status
+      - window
+      title: DeliveryReportRow
+      description: One run on the collection page.
+    DeliveryReportWindow:
+      properties:
+        from:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: From
+        to:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: To
+      type: object
+      title: DeliveryReportWindow
+      description: The period a run covered, as the run recorded it.
     DeploymentVerificationRequest:
       properties:
         merge_sha:
@@ -31867,6 +33942,223 @@ components:
       - opened_at
       title: ExtensionAttentionItem
       description: Neutral plugin item. Only local console destinations are accepted.
+    FleetCodeActivityResponse:
+      properties:
+        active_within_minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Active Within Minutes
+        since:
+          type: string
+          format: date-time
+          title: Since
+        truncated:
+          type: boolean
+          title: Truncated
+          default: false
+        counts:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetCodeCounts'
+          type: object
+          title: Counts
+        flows:
+          items:
+            $ref: '#/components/schemas/FleetCodeFlow'
+          type: array
+          title: Flows
+        events:
+          items:
+            $ref: '#/components/schemas/FleetCodeEvent'
+          type: array
+          title: Events
+        work:
+          items:
+            $ref: '#/components/schemas/FleetWorkItem'
+          type: array
+          maxItems: 200
+          title: Work
+          description: Distinct issues and pull requests, newest activity first, at
+            most 200.
+        work_truncated:
+          type: boolean
+          title: Work Truncated
+          description: More work items exist, or a bounded source read was capped.
+          default: false
+        relations:
+          items:
+            $ref: '#/components/schemas/FleetWorkRelation'
+          type: array
+          maxItems: 500
+          title: Relations
+          description: Typed relations among visible work items, flows and agents
+            in the window, deduplicated by id, newest first, at most 500.
+        relations_truncated:
+          type: boolean
+          title: Relations Truncated
+          default: false
+        users:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Users
+          description: The user node ids the response was scoped to (users= parameter),
+            unknown ids dropped; null when not scoped.
+      type: object
+      required:
+      - since
+      title: FleetCodeActivityResponse
+      description: Bounded code activity for the Fleet Map, keyed by map node id.
+    FleetCodeCounts:
+      properties:
+        opened:
+          type: integer
+          title: Opened
+          default: 0
+        commented:
+          type: integer
+          title: Commented
+          default: 0
+        reviewed:
+          type: integer
+          title: Reviewed
+          default: 0
+        merged:
+          type: integer
+          title: Merged
+          default: 0
+        issues_opened:
+          type: integer
+          title: Issues Opened
+          default: 0
+        issues_updated:
+          type: integer
+          title: Issues Updated
+          description: Issue edits, labels, closes.
+          default: 0
+        issues_commented:
+          type: integer
+          title: Issues Commented
+          default: 0
+      type: object
+      title: FleetCodeCounts
+      description: Pull and merge request actions by one map node in the window.
+    FleetCodeEvent:
+      properties:
+        id:
+          type: string
+          title: Id
+        at:
+          type: string
+          format: date-time
+          title: At
+        action:
+          type: string
+          enum:
+          - opened
+          - commented
+          - reviewed
+          - merged
+          title: Action
+        node_id:
+          type: string
+          title: Node Id
+          description: Agent or flow node that acted.
+        owner_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Id
+          description: Person node owning the acting agent, if any.
+        pr:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pr
+          description: Short reference, e.g. ``acme/api#42``.
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        work_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Work Id
+          description: Work item id when the reference is known.
+        source:
+          anyOf:
+          - type: string
+            enum:
+            - builtin
+            - cli
+            - github_mcp
+            - gitlab_mcp
+            - webhook
+          - type: 'null'
+          title: Source
+      type: object
+      required:
+      - id
+      - at
+      - action
+      - node_id
+      title: FleetCodeEvent
+      description: One recent pull or merge request action, newest first.
+    FleetCodeFlow:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: Map node id, ``flow:<uuid>``.
+        resource_id:
+          type: string
+          title: Resource Id
+        label:
+          type: string
+          title: Label
+        href:
+          type: string
+          title: Href
+        model_node_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Model Node Id
+          description: 'Map node id of the flow''s main model: the most used model
+            in the window''s gateway ledger, else the configured model.'
+        model_node_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 5
+          title: Model Node Ids
+          description: Model nodes the flow's runs called through the gateway in the
+            window (api_usage flow_id or flow_execution_id), most requests first;
+            the configured model when no ledger row exists.
+        run_count:
+          type: integer
+          title: Run Count
+          description: Runs started in the window.
+          default: 0
+        last_active_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Active At
+      type: object
+      required:
+      - id
+      - resource_id
+      - label
+      - href
+      title: FleetCodeFlow
+      description: A flow with code activity in the window, placed on the map by the
+        client.
     FleetMapAction:
       properties:
         label:
@@ -31948,6 +34240,13 @@ components:
             - open_finding
           type: array
           title: Gaps
+        account_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Account Id
+          description: 'For uses_model: the provider account node the agent reaches
+            it through.'
       type: object
       required:
       - id
@@ -32024,6 +34323,78 @@ components:
             $ref: '#/components/schemas/FleetMapAction'
           type: array
           title: Actions
+        parent_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Parent Id
+          description: Containing node, such as the provider of a provider account.
+        agent_state:
+          anyOf:
+          - type: string
+            enum:
+            - onboarded
+            - discovered
+            - inactive
+          - type: 'null'
+          title: Agent State
+          description: 'Agents only: onboarded and recently active, discovered on
+            a device but not onboarded, or onboarded but suspended or not seen recently.'
+        last_seen_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Seen At
+        avatar_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Avatar Url
+          description: 'People only: the stored profile image (SSO picture or manual
+            upload, an https URL or image data URI), null when none.'
+        idle:
+          type: boolean
+          title: Idle
+          description: Configured but without activity in the window (gateway requests
+            for models and providers, sessions or calls for agents). Idle nodes are
+            returned only without a window or with include_idle.
+          default: false
+        last_active_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Active At
+          description: Latest activity evidence inside the window.
+        provider_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Id
+          description: 'Model and provider account nodes: the provider node that contains
+            it. A model reachable through several providers is placed in the provider
+            of most of its configurations (ties by id). Null when that provider node
+            is not returned.'
+        provider_account_ids:
+          items:
+            type: string
+          type: array
+          title: Provider Account Ids
+          description: 'Model nodes: returned provider accounts that serve the model.'
+        model_ids:
+          items:
+            type: string
+          type: array
+          title: Model Ids
+          description: 'Provider and provider account nodes: returned models they
+            contain.'
+        account_ids:
+          items:
+            type: string
+          type: array
+          title: Account Ids
+          description: 'Provider nodes: returned provider accounts they contain.'
       type: object
       required:
       - id
@@ -32068,9 +34439,424 @@ components:
             type: string
           type: array
           title: Unavailable
+        active_within_minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Active Within Minutes
+          description: Activity window applied to the graph; null means any time.
+        decommissioned_agents:
+          type: integer
+          title: Decommissioned Agents
+          description: Decommissioned agents left out of the map, counted for context.
+          default: 0
+        users:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Users
+          description: The user node ids the graph was scoped to (users= parameter),
+            unknown ids dropped; null when not scoped.
       type: object
       title: FleetMapResponse
       description: Bounded partial graph; incompleteness must stay visible to consumers.
+    FleetNodeTotals:
+      properties:
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        input_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Input Tokens
+        output_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Output Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Read Tokens
+        cache_write_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Write Tokens
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+        cost_is_estimate:
+          type: boolean
+          const: true
+          title: Cost Is Estimate
+          default: true
+        currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Currency
+          description: Ledger currency (legacy null is USD); null for mixed currencies.
+        partial:
+          type: boolean
+          title: Partial
+          description: A source cap, missing token/cost data or mixed currencies makes
+            totals incomplete. Optional cache fields sum known values only.
+          default: false
+        tool_calls:
+          type: integer
+          title: Tool Calls
+          default: 0
+        approvals_requested:
+          type: integer
+          title: Approvals Requested
+          default: 0
+        approvals_approved:
+          type: integer
+          title: Approvals Approved
+          default: 0
+        approvals_declined:
+          type: integer
+          title: Approvals Declined
+          description: Declined or expired approval requests.
+          default: 0
+        prs_opened:
+          type: integer
+          title: Prs Opened
+          default: 0
+        prs_reviewed:
+          type: integer
+          title: Prs Reviewed
+          default: 0
+        prs_merged:
+          type: integer
+          title: Prs Merged
+          default: 0
+        review_comments:
+          type: integer
+          title: Review Comments
+          description: Comments on a PR or MR.
+          default: 0
+        issues_touched:
+          type: integer
+          title: Issues Touched
+          description: Distinct issues touched.
+          default: 0
+        prs_touched:
+          type: integer
+          title: Prs Touched
+          description: Distinct PRs/MRs touched.
+          default: 0
+      type: object
+      title: FleetNodeTotals
+      description: Window totals for an agent, person, flow, device or work item node.
+    FleetUsageResponse:
+      properties:
+        active_within_minutes:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Active Within Minutes
+        since:
+          type: string
+          format: date-time
+          title: Since
+        until:
+          type: string
+          format: date-time
+          title: Until
+        truncated:
+          type: boolean
+          title: Truncated
+          default: false
+        partial:
+          type: boolean
+          title: Partial
+          default: false
+        models:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetUsageTotals'
+          type: object
+          title: Models
+        providers:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetUsageTotals'
+          type: object
+          title: Providers
+        agents:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Agents
+        people:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: People
+          description: Owned agents' totals plus the person's direct gateway requests.
+        flows:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Flows
+        devices:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Devices
+          description: Totals of the managed agents hosted.
+        work:
+          additionalProperties:
+            $ref: '#/components/schemas/FleetNodeTotals'
+          type: object
+          title: Work
+          description: Gateway usage of linked flow runs plus tool calls on the item.
+        users:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Users
+          description: The user node ids the response was scoped to (users= parameter),
+            unknown ids dropped; null when not scoped.
+      type: object
+      required:
+      - since
+      - until
+      title: FleetUsageResponse
+      description: Bounded gateway usage joined to Fleet Map node identifiers.
+    FleetUsageTotals:
+      properties:
+        request_count:
+          type: integer
+          title: Request Count
+        input_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Input Tokens
+        output_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Output Tokens
+        cache_read_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Read Tokens
+        cache_write_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Cache Write Tokens
+        estimated_cost:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Estimated Cost
+        cost_is_estimate:
+          type: boolean
+          const: true
+          title: Cost Is Estimate
+          default: true
+        currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Currency
+          description: Ledger currency (legacy null is USD); null for mixed currencies.
+        partial:
+          type: boolean
+          title: Partial
+          description: A source cap, missing token/cost data or mixed currencies makes
+            totals incomplete. Optional cache fields sum known values only.
+          default: false
+      type: object
+      required:
+      - request_count
+      title: FleetUsageTotals
+      description: Known ledger totals for one canonical model or provider node.
+    FleetWorkItem:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: '``work:<kind>:<key>``.'
+          default: ''
+        href:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Href
+          description: Forge URL of the object (same as ``url``).
+        key:
+          type: string
+          title: Key
+        kind:
+          type: string
+          enum:
+          - issue
+          - pull_request
+          title: Kind
+        reference:
+          type: string
+          title: Reference
+        repo:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Repo
+        title:
+          anyOf:
+          - type: string
+            maxLength: 160
+          - type: 'null'
+          title: Title
+        url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Url
+        state:
+          anyOf:
+          - type: string
+            enum:
+            - open
+            - closed
+            - merged
+          - type: 'null'
+          title: State
+        last_action:
+          type: string
+          enum:
+          - issue_opened
+          - issue_labeled
+          - issue_unlabeled
+          - issue_updated
+          - opened
+          - commented
+          - reviewed
+          - pull_request_updated
+          - merged
+          title: Last Action
+        last_at:
+          type: string
+          format: date-time
+          title: Last At
+        review_state:
+          anyOf:
+          - type: string
+            enum:
+            - approved
+            - changes_requested
+            - commented
+            - dismissed
+          - type: 'null'
+          title: Review State
+        labels:
+          items:
+            type: string
+            maxLength: 40
+          type: array
+          maxItems: 6
+          title: Labels
+        related_issue:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Related Issue
+        node_ids:
+          items:
+            type: string
+          type: array
+          maxItems: 5
+          title: Node Ids
+      type: object
+      required:
+      - key
+      - kind
+      - reference
+      - last_action
+      - last_at
+      title: FleetWorkItem
+      description: One distinct issue or pull request active in the selected window.
+    FleetWorkRelation:
+      properties:
+        id:
+          type: string
+          title: Id
+          description: '``<kind>:<source>:<target>``, unique.'
+        kind:
+          type: string
+          enum:
+          - resolves
+          - mentions
+          - triggered
+          - produced
+          - touched
+          title: Kind
+        source:
+          type: string
+          title: Source
+          description: 'resolves/mentions: a pull request work id; triggered/produced:
+            a flow; touched: an agent or flow.'
+        target:
+          type: string
+          title: Target
+          description: An issue or pull request work id.
+        actions:
+          items:
+            type: string
+            enum:
+            - issue_opened
+            - issue_labeled
+            - issue_unlabeled
+            - issue_updated
+            - opened
+            - commented
+            - reviewed
+            - pull_request_updated
+            - merged
+          type: array
+          title: Actions
+          description: 'touched: distinct actions taken.'
+        count:
+          type: integer
+          title: Count
+          description: 'touched: tool calls in the window.'
+          default: 0
+        at:
+          type: string
+          format: date-time
+          title: At
+        provenance:
+          type: string
+          enum:
+          - tracker
+          - flow_run
+          - tool_call
+          - cli
+          - mcp
+          title: Provenance
+      type: object
+      required:
+      - id
+      - kind
+      - source
+      - target
+      - at
+      - provenance
+      title: FleetWorkRelation
+      description: A typed, window-bounded relation between a node and a work item.
     FlowArtifactKindUsage:
       properties:
         bytes:
@@ -34461,6 +37247,58 @@ components:
       type: object
       title: GatewayToolUsageByAgent
       description: Tool activity attributed to one runtime principal (managed agent).
+    GatewayUsageByAgent:
+      properties:
+        agent_id:
+          type: string
+          title: Agent Id
+        session_count:
+          type: integer
+          title: Session Count
+          default: 0
+        request_count:
+          type: integer
+          title: Request Count
+          default: 0
+        successful_requests:
+          type: integer
+          title: Successful Requests
+          default: 0
+        failed_requests:
+          type: integer
+          title: Failed Requests
+          default: 0
+        token_usage:
+          $ref: '#/components/schemas/GatewayTokenUsage'
+        estimated_cost:
+          type: number
+          title: Estimated Cost
+          default: 0.0
+        last_request_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Request At
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
+          description: 'Subscription-routed requests in the period: $0 spend, with
+            an API-equivalent estimate and its coverage. Null without any.'
+      type: object
+      required:
+      - agent_id
+      - token_usage
+      title: GatewayUsageByAgent
+      description: 'One managed agent''s gateway usage in a window.
+
+
+        A row counts for an agent when its runtime principal is the agent''s base
+
+        source id, or when it ran in a session the agent owns (the bound session,
+
+        or a per-run ``<base>:<run>`` / ``<base>-<run>`` session).'
     GatewayUsageByDay:
       properties:
         date:
@@ -37914,7 +40752,9 @@ components:
           type: array
           title: Devices
         aggregate:
-          $ref: '#/components/schemas/ManagedAgentUsageAggregate'
+          anyOf:
+          - $ref: '#/components/schemas/ManagedAgentUsageAggregate'
+          - type: 'null'
         usage_by_model:
           items:
             $ref: '#/components/schemas/GatewayUsageByModel'
@@ -37953,7 +40793,6 @@ components:
       type: object
       required:
       - agent
-      - aggregate
       title: ManagedAgentDetailResponse
       description: One managed agent plus its recent runtime session history.
     ManagedAgentDeviceSummary:
@@ -37988,6 +40827,34 @@ components:
       description: An explicitly associated device from the optional fleet projection.
     ManagedAgentEnrollmentCreateRequest:
       properties:
+        workstation_fingerprint:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Workstation Fingerprint
+        config_path_hash:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{64}$
+          - type: 'null'
+          title: Config Path Hash
+        os_family:
+          anyOf:
+          - type: string
+            enum:
+            - darwin
+            - linux
+            - windows
+            - other
+          - type: 'null'
+          title: Os Family
+        cli_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Cli Version
         enrollment_type:
           type: string
           maxLength: 64
@@ -38156,16 +41023,6 @@ components:
       description: Durable enrollment state for one managed agent.
     ManagedAgentEnrollmentValidateRequest:
       properties:
-        status:
-          type: string
-          maxLength: 32
-          minLength: 1
-          title: Status
-          default: validated
-        validation_result:
-          additionalProperties: true
-          type: object
-          title: Validation Result
         workstation_fingerprint:
           anyOf:
           - type: string
@@ -38178,6 +41035,32 @@ components:
             pattern: ^[0-9a-f]{64}$
           - type: 'null'
           title: Config Path Hash
+        os_family:
+          anyOf:
+          - type: string
+            enum:
+            - darwin
+            - linux
+            - windows
+            - other
+          - type: 'null'
+          title: Os Family
+        cli_version:
+          anyOf:
+          - type: string
+            pattern: ^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$
+          - type: 'null'
+          title: Cli Version
+        status:
+          type: string
+          maxLength: 32
+          minLength: 1
+          title: Status
+          default: validated
+        validation_result:
+          additionalProperties: true
+          type: object
+          title: Validation Result
       type: object
       title: ManagedAgentEnrollmentValidateRequest
       description: Request to update validation state for one enrollment.
@@ -38549,6 +41432,28 @@ components:
           type: string
           title: Activity Status
           default: idle
+        turn_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Turn State
+        turn_started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Started At
+        turn_ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Ended At
+        turn_interrupted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Turn Interrupted
         last_seen_at:
           type: string
           format: date-time
@@ -38571,6 +41476,11 @@ components:
             format: date-time
           - type: 'null'
           title: Ended At
+        usage_computed:
+          type: boolean
+          title: Usage Computed
+          description: False for lightweight identity reads; usage totals are unavailable.
+          default: true
         total_requests:
           type: integer
           title: Total Requests
@@ -38589,6 +41499,20 @@ components:
           type: number
           title: Estimated Cost
           default: 0.0
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
+          description: 'Subscription-routed requests: $0 spend, with an API-equivalent
+            estimate and its coverage. Null when pricing was not computed or there
+            are no subscription requests. See subscription_usage_computed for list
+            responses.'
+        subscription_usage_computed:
+          type: boolean
+          title: Subscription Usage Computed
+          description: Whether subscription usage was computed. List responses require
+            complete stored totals.
+          default: false
         configured_model_alias:
           anyOf:
           - type: string
@@ -38857,6 +41781,10 @@ components:
             format: date-time
           - type: 'null'
           title: Last Request At
+        subscription_usage:
+          anyOf:
+          - $ref: '#/components/schemas/SubscriptionUsageSummary'
+          - type: 'null'
       type: object
       required:
       - token_usage
@@ -38894,6 +41822,104 @@ components:
       - size
       title: McpResourceLink
       description: MCP ``ResourceLink`` pointing at the artifact's byte route.
+    MediaStepOffset:
+      properties:
+        source_step_id:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Source Step Id
+        offset_ms:
+          type: integer
+          minimum: 0.0
+          title: Offset Ms
+      additionalProperties: false
+      type: object
+      required:
+      - source_step_id
+      - offset_ms
+      title: MediaStepOffset
+      description: An exact producer-reported position in the media timebase.
+    MediaSyncMapping:
+      properties:
+        activity_id:
+          type: string
+          title: Activity Id
+        activity_type:
+          type: string
+          title: Activity Type
+        api_usage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Usage Id
+        offset_ms:
+          type: integer
+          title: Offset Ms
+        rule:
+          type: string
+          enum:
+          - exact
+          - occurred_at
+          - server_skew
+          title: Rule
+        approximate:
+          type: boolean
+          title: Approximate
+      type: object
+      required:
+      - activity_id
+      - activity_type
+      - offset_ms
+      - rule
+      - approximate
+      title: MediaSyncMapping
+      description: One timeline row resolved to a recording position.
+    MediaSyncOut:
+      properties:
+        recordings:
+          items:
+            $ref: '#/components/schemas/RecordingSync'
+          type: array
+          title: Recordings
+      type: object
+      required:
+      - recordings
+      title: MediaSyncOut
+      description: Session mappings computed once for the console and evidence export.
+    MediaTiming:
+      properties:
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        duration_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Duration Ms
+        clock:
+          type: string
+          enum:
+          - agent
+          - server
+          title: Clock
+        step_offsets:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/MediaStepOffset'
+            type: array
+            maxItems: 5000
+          - type: 'null'
+          title: Step Offsets
+      additionalProperties: false
+      type: object
+      required:
+      - started_at
+      - clock
+      title: MediaTiming
+      description: Wall clock at media t=0, optionally supplemented by exact offsets.
     MobileDeviceRegistration:
       properties:
         platform:
@@ -39588,9 +42614,11 @@ components:
           - session_start
           - stop
           - pre_tool_use
+          - user_prompt_submit
           title: Event
           description: 'The harness lifecycle point asking for notes: session_start,
-            stop or pre_tool_use. Recorded on the delivery for audit.'
+            stop, pre_tool_use or user_prompt_submit (the operator''s next prompt
+            in the terminal). Recorded on the delivery for audit.'
           default: pre_tool_use
         session_id:
           anyOf:
@@ -39733,6 +42761,7 @@ components:
             - session_start
             - stop
             - pre_tool_use
+            - user_prompt_submit
           - type: 'null'
           title: Delivery Event
         delivered_turn_index:
@@ -41611,6 +44640,32 @@ components:
       title: RebuiltInputsRequest
       description: Authenticated rebuilt SBOM for the published commit. Not an automatic
         rebuild.
+    RecordingSync:
+      properties:
+        artifact_id:
+          type: string
+          title: Artifact Id
+        skew_ms:
+          type: integer
+          title: Skew Ms
+        mappings:
+          items:
+            $ref: '#/components/schemas/MediaSyncMapping'
+          type: array
+          title: Mappings
+        unmapped_activity_ids:
+          items:
+            type: string
+          type: array
+          title: Unmapped Activity Ids
+      type: object
+      required:
+      - artifact_id
+      - skew_ms
+      - mappings
+      - unmapped_activity_ids
+      title: RecordingSync
+      description: Independent mapping for one recording, including unavailable artifacts.
     RefreshRequest:
       properties:
         refresh_token:
@@ -43246,6 +46301,10 @@ components:
           type: string
           format: date-time
           title: Created At
+        media_timing:
+          anyOf:
+          - $ref: '#/components/schemas/MediaTiming'
+          - type: 'null'
         content_block:
           $ref: '#/components/schemas/McpResourceLink'
       type: object
@@ -43430,6 +46489,7 @@ components:
             - agent_inactive
             - no_control_plugin
             - control_offline
+            - terminal_session
           - type: 'null'
           title: Reason Code
         reason:
@@ -43437,6 +46497,13 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        delivery:
+          type: string
+          enum:
+          - turn
+          - note
+          title: Delivery
+          default: note
         send_path:
           anyOf:
           - type: string
@@ -44284,6 +47351,28 @@ components:
           type: string
           title: Activity Status
           default: idle
+        turn_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Turn State
+        turn_started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Started At
+        turn_ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Turn Ended At
+        turn_interrupted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Turn Interrupted
         total_requests:
           type: integer
           title: Total Requests
@@ -44378,8 +47467,8 @@ components:
         tool_call_count:
           type: integer
           title: Tool Call Count
-          description: Tool calls recorded for this session, or the count its usage
-            hook reported when no tool call was recorded server side
+          description: Largest observed tool-call count from session activity, usage-hook
+            reports, or parsed events in linked flow executions
           default: 0
         pending_approval_count:
           type: integer
@@ -48241,6 +51330,69 @@ components:
       type: object
       title: ToolConfigurationUpdate
       description: Schema for updating tool configuration.
+    ToolRuleIndexRow:
+      properties:
+        name:
+          type: string
+          title: Name
+        source:
+          type: string
+          enum:
+          - builtin
+          - mcp
+          - agent
+          title: Source
+        source_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Id
+        source_name:
+          type: string
+          title: Source Name
+        is_enabled:
+          type: boolean
+          title: Is Enabled
+        approval_workflow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approval Workflow Id
+        config_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Config Id
+        has_approval_condition:
+          type: boolean
+          title: Has Approval Condition
+        access_rules:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Access Rules
+      type: object
+      required:
+      - name
+      - source
+      - source_id
+      - source_name
+      - is_enabled
+      - approval_workflow_id
+      - config_id
+      - has_approval_condition
+      - access_rules
+      title: ToolRuleIndexRow
+      description: 'The policy state of one tool, for building the Policies rules
+        list.
+
+
+        Carries no description, schema or token estimate: the rules list and the
+
+        rule editor''s tool picker need the tool''s identity and its configuration
+
+        only, and the full catalogue is several times larger.'
     ToolSummaryResponse:
       properties:
         name:

@@ -1,3 +1,10 @@
+import {
+  modelFailureShareText,
+  modelHealthLabel,
+  modelHealthVariant,
+  type ModelHealthLabel,
+  type ModelHealthVariant,
+} from '../../../utils/model-health';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../../../utils/money';
@@ -47,7 +54,6 @@ import {
   type ListColumn,
 } from '../../../table';
 import '../../../table/data-table';
-import '../../../table/column-picker';
 import '../../../table/table-pagination';
 import '../../../components/resource-actions';
 import '../../../components/token-figures';
@@ -540,9 +546,18 @@ export class AIModelsView extends LitElement {
       // One request for the page, whatever the fleet size. The per-model
       // endpoints stay for the detail view: a burst of them is what emptied
       // the API connection pool on 2026-09-03.
+      // The prior window rides on the same request (#1694): it moves once a
+      // day, so realtime refreshes and reloads inside that day skip it.
+      const priorWindow = this.getOverviewParams(1).startDate.slice(0, 10);
+      const wantPrior =
+        !options.preserveLoadingState &&
+        this.priorFleetSpendWindow !== priorWindow;
       const [models, overview, dismissals] = await Promise.all([
         getAIModels(),
-        getAIModelsOverview(this.getOverviewParams()),
+        getAIModelsOverview({
+          ...this.getOverviewParams(),
+          includePriorPeriod: wantPrior,
+        }),
         // A console that cannot read dismissals still has a Models page; it
         // just flags everything, as it did before.
         getAttentionDismissals().catch(() => DISMISSALS_UNSUPPORTED),
@@ -557,8 +572,16 @@ export class AIModelsView extends LitElement {
       // Not on realtime refreshes: five subscriptions feed this method, and
       // the prior 30 day window changes at most once a day. A third request
       // per socket message is how the pool emptied on 2026-09-03.
-      if (!options.preserveLoadingState) {
-        void this.loadPriorFleetSpend();
+      if (wantPrior) {
+        const prior = overview.prior_period_estimated_cost;
+        if (typeof prior === 'number') {
+          this.priorFleetSpendWindow = priorWindow;
+          this.priorFleetSpend = prior;
+        } else {
+          // An API without the field: the delta line just does not render.
+          this.priorFleetSpendWindow = null;
+          this.priorFleetSpend = null;
+        }
       }
     } catch (error) {
       this.error =
@@ -704,27 +727,6 @@ export class AIModelsView extends LitElement {
     return this.unpricedStateFor(this.getModelOverview(modelId), model);
   }
 
-  private async loadPriorFleetSpend(): Promise<void> {
-    const params = this.getOverviewParams(1);
-    const window = params.startDate.slice(0, 10);
-    if (this.priorFleetSpendWindow === window) {
-      return;
-    }
-    try {
-      const prior = await getAIModelsOverview(params);
-      this.priorFleetSpendWindow = window;
-      this.priorFleetSpend = prior.models.reduce(
-        (total, item) => total + item.estimated_cost,
-        0
-      );
-    } catch {
-      // A missing comparison is not an error worth a banner: the delta line
-      // just does not render, and the next load may still get it.
-      this.priorFleetSpendWindow = null;
-      this.priorFleetSpend = null;
-    }
-  }
-
   /** "30d", the suffix the Overview and Cost put after a windowed label. */
   private get windowSuffix(): string {
     return `${AIModelsView.FLEET_WINDOW_DAYS}d`;
@@ -768,6 +770,31 @@ export class AIModelsView extends LitElement {
    * Unpriced requests somebody marked expected are out for the same reason
    * (#848): a model that is unpriced on purpose is not a task.
    */
+  /**
+   * "3 unpriced · 1 failing": the attention page counts unpriced models as
+   * one pricing item and failing models as model items, so the split is what
+   * makes the two pages reconcilable.
+   */
+  private get needAttentionBreakdown(): string {
+    const rows: Array<[AIModelOverviewItem | undefined, AIModel | undefined]> =
+      this.models.length > 0
+        ? this.models.map((model) => [this.getModelOverview(model.id), model])
+        : [...this.modelOverview.values()].map((item) => [item, undefined]);
+    let unpriced = 0;
+    let failing = 0;
+    for (const [item, model] of rows) {
+      if (this.unpricedStateFor(item, model).status === 'unpriced') unpriced++;
+      if (this.attentionStateFor(item, model).status === 'failing') failing++;
+    }
+    if (unpriced === 0 && failing === 0) return 'none unpriced or failing';
+    return [
+      unpriced ? `${this.formatCompactNumber(unpriced)} unpriced` : '',
+      failing ? `${this.formatCompactNumber(failing)} failing` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
   private get modelsNeedingAttentionCount(): number {
     if (this.models.length > 0) {
       return this.models.filter((model) => {
@@ -835,31 +862,17 @@ export class AIModelsView extends LitElement {
     );
   }
 
-  private getHealthVariant(modelId: string): 'success' | 'warning' | 'neutral' {
-    if (this.needsAttention(modelId)) {
-      return 'warning';
-    }
+  private getHealthLabel(modelId: string): ModelHealthLabel {
     const overview = this.getModelOverview(modelId);
-    if (!overview || overview.total_requests === 0) {
-      return 'neutral';
-    }
-    return 'success';
+    return modelHealthLabel({
+      needsAttention: this.needsAttention(modelId),
+      totalRequests: overview?.total_requests,
+      failedRequests: overview?.failed_requests,
+    });
   }
 
-  /**
-   * "Healthy" covers an acknowledged failure or an expected missing price
-   * too: the operator said this one is handled, and the marker's date is on
-   * the badge's tooltip so the claim stays checkable.
-   */
-  private getHealthLabel(modelId: string): string {
-    if (this.needsAttention(modelId)) {
-      return 'Attention';
-    }
-    const overview = this.getModelOverview(modelId);
-    if (!overview || overview.total_requests === 0) {
-      return 'Idle';
-    }
-    return 'Healthy';
+  private getHealthVariant(modelId: string): ModelHealthVariant {
+    return modelHealthVariant(this.getHealthLabel(modelId));
   }
 
   /** The tooltip that says why a flagged-looking model reads as healthy. */
@@ -869,7 +882,13 @@ export class AIModelsView extends LitElement {
       return state.reasonText;
     }
     const unpriced = this.unpricedStateForModel(modelId);
+    const overview = this.getModelOverview(modelId);
     return [
+      modelFailureShareText(
+        overview?.failed_requests,
+        overview?.total_requests,
+        this.windowSuffix
+      ),
       state.status === 'marked' ? state.markerLabel : '',
       unpriced.status === 'marked' ? unpriced.markerLabel : '',
     ]
@@ -1008,7 +1027,7 @@ export class AIModelsView extends LitElement {
           <div class="metric-value">
             ${this.formatCompactNumber(this.modelsNeedingAttentionCount)}
           </div>
-          <div class="metric-subtext">unpriced or failing</div>
+          <div class="metric-subtext">${this.needAttentionBreakdown}</div>
         </sl-card>
         <sl-card class="summary-card">
           <div class="metric-label">Requests · ${this.windowSuffix}</div>
@@ -1020,7 +1039,7 @@ export class AIModelsView extends LitElement {
           </div>
           <div class="metric-subtext">
             ${this.formatCompactNumber(this.activeFleetSessions)} active
-            sessions
+            session${this.activeFleetSessions === 1 ? '' : 's'}
           </div>
         </sl-card>
         <sl-card class="summary-card">
@@ -1157,23 +1176,6 @@ export class AIModelsView extends LitElement {
             <sl-option value="enabled">Enabled</sl-option>
             <sl-option value="disabled">Disabled</sl-option>
           </sl-select>
-          ${
-            this.effectiveView === 'list'
-              ? html`<column-picker
-                  .columns=${this.modelTable.pickerColumns}
-                  ?can-reset=${this.modelTable.hasColumnChanges}
-                  density=${this.modelTable.density}
-                  @column-toggle=${(event: CustomEvent) =>
-                    this.modelTable.setVisible(
-                      event.detail.id,
-                      event.detail.visible
-                    )}
-                  @columns-reset=${() => this.modelTable.resetColumns()}
-                  @density-change=${(event: CustomEvent) =>
-                    this.modelTable.setDensity(event.detail.density)}
-                ></column-picker>`
-              : null
-          }
           <span slot="count">${this.resultsLabel}</span>
           ${this.renderBulkBar()}
         </list-toolbar>
@@ -1457,7 +1459,7 @@ export class AIModelsView extends LitElement {
     return html`
       <div class="cell-stack">
         <a class="model-link" href=${this.modelHref(model)}> ${model.name} </a>
-        ${model.is_built_in ? html`<sl-badge variant="neutral">Built-in</sl-badge>` : sharedFromBadge(model)}
+        ${model.is_built_in ? html`<sl-badge class="chip" pill variant="neutral">Built-in</sl-badge>` : sharedFromBadge(model)}
         ${unpricedBadge(model)}
         <div class="model-identifier" title=${alias || model.model_identifier}>
           ${alias || model.model_identifier}
@@ -1498,7 +1500,8 @@ export class AIModelsView extends LitElement {
               ? html`
                   <sl-badge class="chip" variant="neutral" pill>
                     ${this.formatCompactNumber(overview.active_session_count)}
-                    active sessions
+                    active
+                    session${overview.active_session_count === 1 ? '' : 's'}
                   </sl-badge>
                 `
               : null
@@ -1821,7 +1824,7 @@ export class AIModelsView extends LitElement {
             <a class="model-link" href=${this.modelHref(model)}>
               ${model.name}
             </a>
-            ${model.is_built_in ? html`<sl-badge variant="neutral">Built-in</sl-badge>` : sharedFromBadge(model)}
+            ${model.is_built_in ? html`<sl-badge class="chip" pill variant="neutral">Built-in</sl-badge>` : sharedFromBadge(model)}
             ${unpricedBadge(model)} ${this.renderDefaultControl(model)}
           </div>
           <div class="model-identifier">

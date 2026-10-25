@@ -1,15 +1,15 @@
 apiVersion: v2
 name: preloop
-description: The open-source AI agent control plane - MCP firewall, model gateway with budgets, human approvals, runtime observability, and audit trails
+description: The open-source AI agent control plane and software factory. MCP firewall, model gateway with budgets, human approvals, runtime observability, and audit trails
 
 # A chart can be either an 'application' or a 'library' chart.
 type: application
 
 # Chart version
-version: 0.16.0
+version: 0.17.1
 
 # Application version
-appVersion: "0.16.0"
+appVersion: "0.17.1"
 
 # Keywords for the chart
 keywords:
@@ -42,6 +42,18 @@ maintainers:
 
 # Icon for the chart (optional)
 icon: https://preloop.ai/assets/favicon.png
+
+# Artifact Hub metadata (https://artifacthub.io/docs/topics/annotations/helm/)
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/category: security
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://docs.preloop.ai
+    - name: Source
+      url: https://github.com/preloop/preloop
+    - name: Chart README
+      url: https://github.com/preloop/preloop/blob/main/helm/preloop/README.md
 
 # Dependencies
 # CloudNativePG operator should be installed in the cluster

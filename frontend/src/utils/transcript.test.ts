@@ -294,6 +294,56 @@ describe('buildConversation', () => {
     expect((prompts[0] as { text: string }).text).to.equal('Real prompt');
   });
 
+  it('folds a harness side request and its answer out of the conversation', () => {
+    // Coding-agent harnesses send small side requests of their own (a title
+    // or status summariser) through the same gateway. They are not the
+    // operator's words and must never render as a "You" bubble.
+    const events = [
+      gatewayEvent('e1', '2026-08-06T10:00:00Z', [
+        { role: 'user', text: 'Fix the flaky login test' },
+        { role: 'assistant', text: 'On it.', source: 'response' },
+      ]),
+      gatewayEvent('e2', '2026-08-06T10:00:05Z', [
+        {
+          role: 'user',
+          text: 'Describe your most recent action in 3-5 words using present tense. Good: ... Bad: ...',
+        },
+        { role: 'assistant', text: 'Fixing login test', source: 'response' },
+      ]),
+      gatewayEvent('e3', '2026-08-06T10:00:09Z', [
+        {
+          role: 'user',
+          text: 'Please write a 5-10 word title for the following conversation:',
+        },
+        { role: 'assistant', text: 'Flaky login test fix', source: 'response' },
+      ]),
+    ];
+    const { items, stats } = buildConversation(events);
+    const messages = items.filter((item) => item.type === 'message') as Array<{
+      kind: string;
+      text: string;
+    }>;
+    expect(messages.map((item) => item.text)).to.deep.equal([
+      'Fix the flaky login test',
+      'On it.',
+    ]);
+    expect(stats.promptCount).to.equal(1);
+    expect(stats.injectedCount).to.equal(4);
+  });
+
+  it('keeps a prompt that merely mentions describing an action', () => {
+    const events = [
+      gatewayEvent('e1', '2026-08-06T10:00:00Z', [
+        {
+          role: 'user',
+          text: 'Please describe your most recent action in detail',
+        },
+      ]),
+    ];
+    const { stats } = buildConversation(events);
+    expect(stats.promptCount).to.equal(1);
+  });
+
   it('reports missing raw bodies instead of guessing', () => {
     const events = [
       gatewayEvent('e1', '2026-08-06T10:00:00Z', [

@@ -43,7 +43,7 @@ function stubFetch(opts: StubOpts) {
       }
       opts.calls.push({ url, method, body });
 
-      if (url.endsWith('/api/v1/tools') && method === 'GET') {
+      if (url.endsWith('/api/v1/tools/rules') && method === 'GET') {
         return json(opts.tools ?? []);
       }
       if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {

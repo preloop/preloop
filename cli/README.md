@@ -344,7 +344,9 @@ suggests `preloop agents validate <agent> --live`. It does not establish working
 credentials or routing. Failed or inconclusive probes make the batch summary
 partial, even when MCP onboarding succeeded.
 
-Managed OpenClaw and Hermes onboarding creates a durable managed credential, backs up the local config, adds or replaces the local MCP config with a managed `preloop` entry, writes a `preloop.control.control_ws_url` contract plus the standalone runtime plugin package name (`preloop-hermes-plugin` or `@preloop-ai/openclaw-plugin`), and may also import existing MCP servers plus rewrite supported model settings to Preloop's OpenAI-compatible gateway. Use `--dry-run` to preview changes first. `preloop agents onboard --all -y` also ensures every discovered OpenClaw/Hermes runtime plugin available to the CLI is installed and verified, including agents that were already onboarded locally and would otherwise be skipped by the config rewrite step.
+Managed OpenClaw and Hermes onboarding creates a durable managed credential, backs up the local config, adds or replaces the local MCP config with a managed `preloop` entry, writes a `preloop.control.control_ws_url` contract plus the standalone runtime plugin package name (`preloop-hermes-plugin` or `@preloop-ai/openclaw-plugin`), and may also import existing MCP servers plus rewrite supported model settings to Preloop's OpenAI-compatible gateway. Use `--dry-run` to preview changes first. `preloop agents onboard --all -y` also ensures every discovered OpenClaw/Hermes runtime plugin available to the CLI is installed and verified, including agents that were already onboarded locally.
+
+Re-running `preloop agents onboard` (or `preloop agents discover`) without an agent name covers every discovered agent, not only new ones. Already-onboarded agents are labelled current or outdated (MCP config drift, missing or stale Agent Control plugin) and you are asked per agent whether to update and re-test them; `-y` re-onboards all of them. The summary lists every agent, including agents Preloop recorded as enrolled from this host that discovery no longer finds.
 
 `install-runtime hermes` and `install-runtime openclaw` use their official
 publisher installers to obtain the current runtime and its dependencies. They
@@ -475,12 +477,19 @@ preloop version                        # Show version info
 preloop version --check                # Check for updates
 preloop update                         # Install the latest CLI release
 preloop update --check                 # Print current vs latest and exit
-preloop update --yes                   # Install without prompting
+preloop update --yes                   # Install without prompting or new setup
 ```
 
 `preloop update` downloads the GitHub release asset for this OS/architecture
 (the same URL as `scripts/install-cli.sh`) and replaces the current binary
-in place. The daily update notice asks whether to upgrade when stdin is a
+in place. After an update, the installed CLI refreshes and restarts an existing
+runner service, including with `--yes`. Interactive updates without `--yes`
+offer runner setup and installation or refresh of discovered agent integrations
+(MCP configuration, managed hooks and plugins). Running `preloop update` when
+already current also offers interactive setup. `--yes` skips new runner setup
+and agent integration prompts; it is required when stdin is not a TTY.
+
+The daily update notice asks whether to upgrade when stdin is a
 TTY and the binary is writable; otherwise it stays silent. Version lookup
 is skipped when `PRELOOP_DISABLE_TELEMETRY` is set.
 
@@ -571,6 +580,24 @@ prompt, because it cannot enforce the central rule. The existing hook-command
 unavailability. Missing credentials, HTTP 4xx (including authentication and rate
 denials), malformed responses, and returned server/human/policy denials or
 approval expiry stay closed.
+
+#### Pausing approvals while Preloop is unavailable
+
+When the approval service is down, every fail-closed deny message names the
+way out right after the error: `preloop agents pause`. It pauses the CLI
+approval hooks (Claude Code, Codex CLI, Cursor, Copilot CLI, Devin) on this
+machine for 1h by default (`--for 30m`, maximum `24h`), for all of them or for
+one (`preloop agents pause "Codex CLI"`). While paused the hook skips the
+permission-check call and answers with no decision, so the agent's own
+permission prompts apply; Devin, whose hook requires a verdict, is approved.
+The hook prints `Preloop approvals are paused until <time>` to stderr. Codex's
+background credential sync may still contact Preloop. Agent config files are
+not touched. The pause is stored in `~/.preloop/approvals-pause.json`, ends on
+its own, and `preloop agents resume [agent]` ends it early. `preloop agents
+status <agent>` shows an active pause. Runtime-plugin harnesses (OpenCode, Pi
+and others) do not read the pause yet. Paused calls are not audited by Preloop. Flow runs with
+`--require-flow-credential` ignore the pause and stay governed.
+
 The server governance setting `native_tool_approvals=off` disables automatic
 human escalation, while matching native rules still apply. Offboarding removes
 the installed approval hooks and their credentials.
@@ -673,7 +700,7 @@ make build
 make build-all
 
 # Run tests
-make test
+PRELOOP_DISABLE_TELEMETRY=true make test
 
 # Format code
 make fmt
@@ -681,6 +708,22 @@ make fmt
 # Run linter
 make lint
 ```
+
+The `Discovery platform parity` workflow runs discovery, profile and harness
+inventory, report builders, and unattended enrollment fixtures on Linux, macOS,
+and Windows. It downloads dependencies before compiling offline, then runs the
+test binary with external networking blocked (Linux network namespace, macOS
+sandbox, or Windows Firewall). Loopback HTTP fixture servers remain available.
+Telemetry is disabled on all three runners.
+An isolation test requires the OS to reject an external documentation address
+with a policy or namespace error, while allowing a loopback connection.
+
+When registering an app or changing its config locations, update
+`internal/cmd/testdata/discovery-platform-paths.json`. Every app needs an explicit
+entry for `darwin`, `windows`, and `linux`: an expected home-relative path, or an
+`unsupported_reason` with no path or platform declaration. Native locations are
+checked independently of fallback paths, including through the ordinary
+discovery resolver on each OS runner.
 
 ### Installing a dev build
 

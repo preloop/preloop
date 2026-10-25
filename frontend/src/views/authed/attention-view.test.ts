@@ -947,23 +947,12 @@ describe('AttentionView', () => {
     );
   });
 
-  it('shows a chip per kind, muted when the kind is empty', async () => {
+  it('shows a chip per kind that has items, and none saying zero (U-05)', async () => {
     const el = await mount();
-    const chips = Array.from(el.shadowRoot!.querySelectorAll('.chip')).map(
-      (chip) => chip.textContent!.trim()
-    );
-    expect(chips).to.eql([
-      '1 approval',
-      '0 agents',
-      '1 flow',
-      '0 models',
-      '1 budget',
-      '0 spend outliers',
-      '0 pricing',
-      '0 policy notices',
-    ]);
-    const agentsChip = el.shadowRoot!.querySelectorAll('.chip')[1];
-    expect(agentsChip.classList.contains('empty')).to.be.true;
+    const chips = Array.from(
+      el.shadowRoot!.querySelectorAll('.chip-strip .chip')
+    ).map((chip) => chip.textContent!.trim());
+    expect(chips).to.eql(['1 approval', '1 flow', '1 budget']);
   });
 
   it('opens the limits dialog from a budget row', async () => {

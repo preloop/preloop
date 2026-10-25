@@ -173,6 +173,146 @@ describe('FlowView recent executions', () => {
   });
 });
 
+describe('FlowView compact counts (U-01)', () => {
+  it('states the executions total compactly with the exact count in the title', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flowId = 'flow-1';
+    element.flow = {
+      id: 'flow-1',
+      name: 'PR Reviewer',
+      agent_type: 'codex',
+      execution_stats: { total_execs: 1998, running_execs: 0 },
+    };
+    element.recentExecutions = [
+      {
+        id: 'dee1da93-6d1e-4c0e-9f3a-2b1d0c4e5f60',
+        status: 'SUCCEEDED',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:02:00Z',
+      },
+    ];
+    document.body.appendChild(element);
+    await element.updateComplete;
+    try {
+      const link = element.shadowRoot!.querySelector('.all-executions a')!;
+      expect((link.textContent || '').trim()).to.equal(
+        'View all 2K executions'
+      );
+      expect(link.getAttribute('title')).to.equal('1,998 executions');
+    } finally {
+      element.remove();
+    }
+  });
+});
+
+describe('FlowView summary strip (F-02)', () => {
+  it('states runs, spend and how the recent runs went, sample named', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flowId = 'flow-1';
+    element.flow = {
+      id: 'flow-1',
+      name: 'PR Reviewer',
+      agent_type: 'codex',
+      execution_stats: {
+        total_execs: 1998,
+        running_execs: 1,
+        estimated_cost: 42.5,
+      },
+    };
+    const minutesAgo = (m: number) =>
+      new Date(Date.now() - m * 60_000).toISOString();
+    element.recentExecutions = [
+      {
+        id: 'e1',
+        status: 'FAILED',
+        start_time: minutesAgo(10),
+        end_time: minutesAgo(8),
+      },
+      {
+        id: 'e2',
+        status: 'SUCCEEDED',
+        start_time: minutesAgo(60),
+        end_time: minutesAgo(56),
+      },
+      {
+        id: 'e3',
+        status: 'SUCCEEDED',
+        start_time: minutesAgo(120),
+        end_time: minutesAgo(118),
+      },
+      { id: 'e4', status: 'RUNNING', start_time: minutesAgo(1) },
+      // A legacy terminal run with no end time has no duration to average.
+      { id: 'e5', status: 'SUCCEEDED', start_time: minutesAgo(9000) },
+    ];
+    document.body.appendChild(element);
+    await element.updateComplete;
+    try {
+      const strip = element.shadowRoot!.querySelector(
+        '[data-testid="flow-summary-strip"]'
+      ) as HTMLElement;
+      expect(strip, 'summary strip').to.exist;
+      const text = (strip.textContent || '').replace(/\s+/g, ' ').trim();
+      expect(text).to.contain('2K runs');
+      expect(text).to.contain('1 running');
+      expect(text).to.contain('$42.50 est.');
+      // Four finished runs in the sample: one failed.
+      expect(text).to.contain('25% failed');
+      expect(text).to.contain('avg 2m 40s');
+      expect(text).to.contain('last success 1h ago');
+      const sample = strip.querySelector(
+        '[data-testid="flow-summary-sample"]'
+      )!;
+      expect(sample.getAttribute('title')).to.contain('last 4 finished runs');
+    } finally {
+      element.remove();
+    }
+  });
+});
+
+describe('FlowView recent executions width (B-09)', () => {
+  it('gives the subject the slack instead of a quarter of the table', async () => {
+    const element = document.createElement('flow-view') as any;
+    element.flowReady = true;
+    element.isNew = false;
+    element.isEditing = false;
+    element.initialized = true;
+    element.flow = { id: 'flow-1', name: 'PR Reviewer', agent_type: 'codex' };
+    element.recentExecutions = [
+      {
+        id: 'dee1da93-6d1e-4c0e-9f3a-2b1d0c4e5f60',
+        status: 'SUCCEEDED',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:02:00Z',
+        trigger_subject:
+          'example/example #1203 · Pull request synchronize · 949d625b',
+        trigger_subject_url: 'https://example.com/example/example/pull/1203',
+      },
+    ];
+    const host = document.createElement('div');
+    host.style.width = '760px';
+    host.appendChild(element);
+    document.body.appendChild(host);
+    await element.updateComplete;
+    try {
+      const table = element.shadowRoot!.querySelector(
+        '.executions-table'
+      ) as HTMLElement;
+      const subject = table.querySelector('td.subject-cell') as HTMLElement;
+      expect(subject.clientWidth).to.be.at.least(table.clientWidth * 0.5);
+    } finally {
+      host.remove();
+    }
+  });
+});
+
 describe('FlowView detail page language', () => {
   /** A rendered detail page for one flow, torn down by the caller. */
   async function renderDetail(overrides: Record<string, unknown> = {}) {
@@ -206,6 +346,76 @@ describe('FlowView detail page language', () => {
     await element.updateComplete;
     return element;
   }
+
+  it('collapses a long prompt to 10 lines with a toggle (#1692)', async () => {
+    const prompt = Array.from({ length: 400 }, (_, i) => `line ${i}`).join(
+      '\n'
+    );
+    const element = await renderDetail({ prompt_template: prompt });
+    try {
+      const pre = element.shadowRoot.querySelector(
+        '[data-prompt-template]'
+      ) as HTMLElement;
+      expect(pre.classList.contains('collapsed')).to.equal(true);
+      const lineHeight = parseFloat(getComputedStyle(pre).lineHeight);
+      // Exactly ten visible lines: the box minus its padding is 10 lines.
+      const style = getComputedStyle(pre);
+      const visible =
+        pre.getBoundingClientRect().height -
+        parseFloat(style.paddingTop) -
+        parseFloat(style.paddingBottom);
+      expect(visible / lineHeight).to.be.closeTo(10, 0.05);
+      const toggle = element.shadowRoot.querySelector(
+        '[data-prompt-toggle]'
+      ) as HTMLElement;
+      expect(toggle.textContent).to.include('Show full prompt');
+      toggle.click();
+      await element.updateComplete;
+      expect(pre.classList.contains('collapsed')).to.equal(false);
+      expect(pre.getBoundingClientRect().height).to.be.above(lineHeight * 100);
+    } finally {
+      element.remove();
+    }
+  });
+
+  it('offers no toggle for a short prompt', async () => {
+    const element = await renderDetail({ prompt_template: 'one\ntwo' });
+    try {
+      expect(element.shadowRoot.querySelector('[data-prompt-toggle]')).to.not
+        .exist;
+    } finally {
+      element.remove();
+    }
+  });
+
+  it('puts recent executions before the prompt (#1692)', async () => {
+    const element = await renderDetail({ prompt_template: 'Review it' });
+    try {
+      const runs = element.shadowRoot.querySelector('[data-recent-executions]');
+      const pre = element.shadowRoot.querySelector('[data-prompt-template]');
+      expect(runs).to.exist;
+      expect(
+        runs.compareDocumentPosition(pre) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).to.not.equal(0);
+    } finally {
+      element.remove();
+    }
+  });
+
+  it('puts recent executions before the flow details (#1692)', async () => {
+    const element = await renderDetail({ prompt_template: 'Review it' });
+    try {
+      const runs = element.shadowRoot.querySelector('[data-recent-executions]');
+      const details = element.shadowRoot.querySelector('[data-flow-details]');
+      expect(runs).to.exist;
+      expect(details).to.exist;
+      expect(
+        runs.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).to.not.equal(0);
+    } finally {
+      element.remove();
+    }
+  });
 
   it('shows effective saved publication policy without claiming verification passed', async () => {
     const element = await renderDetail({

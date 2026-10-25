@@ -33,6 +33,7 @@ import {
   render_blog_post_html,
   strip_leading_markdown_title,
   type BlogPost,
+  type BlogHeroVideo,
 } from './src/blog-seo';
 import { ARTICLE_STYLES } from './src/article-styles';
 import {
@@ -158,7 +159,7 @@ export function split_frontmatter(source: string): {
  * half-formed page — a blog post with no description is a post with no
  * snippet in search results and no summary in llms.txt.
  */
-async function discover_blog_posts(
+export async function discover_blog_posts(
   contentBasePath: string,
   brandKey: string
 ): Promise<BlogPost[]> {
@@ -236,9 +237,12 @@ async function discover_blog_posts(
     const og_image = meta.og_image ? String(meta.og_image) : undefined;
     if (!og_image) {
       console.warn(
-        `[blog] "${filename}" has no og_image; the post will ship without a hero`
+        meta.hero_video !== undefined
+          ? `[blog] "${filename}" hero_video has no og_image; its poster and reduced-motion fallback will use the brand default when available`
+          : `[blog] "${filename}" has no og_image; the post will ship without a hero`
       );
     }
+    const hero_video = parse_hero_video(meta.hero_video, filename);
     const markdown_body = strip_leading_markdown_title(body, title);
 
     posts.push({
@@ -251,6 +255,7 @@ async function discover_blog_posts(
       author_url: meta.author_url ? String(meta.author_url) : undefined,
       tags: Array.isArray(meta.tags) ? meta.tags.map(String) : [],
       og_image,
+      hero_video,
       related: Array.isArray(meta.related) ? meta.related.map(String) : [],
       reading_minutes: estimate_reading_minutes(markdown_body),
       body_html: await marked.parse(markdown_body),
@@ -258,6 +263,45 @@ async function discover_blog_posts(
   }
 
   return get_published_posts(posts);
+}
+
+/** Warn and fall back to the image hero when video metadata is malformed. */
+function parse_hero_video(
+  value: unknown,
+  filename: string
+): BlogHeroVideo | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const warn = (reason: string): undefined => {
+    console.warn(`[blog] "${filename}" ignoring hero_video: ${reason}`);
+    return undefined;
+  };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return warn('must be an object');
+  }
+  const video = value as Record<string, unknown>;
+  for (const field of ['mp4', 'webm', 'alt', 'caption']) {
+    if (
+      video[field] !== undefined &&
+      (typeof video[field] !== 'string' || !video[field].trim())
+    ) {
+      return warn(`${field} must be a non-empty string`);
+    }
+  }
+  const mp4 = video.mp4 as string | undefined;
+  const webm = video.webm as string | undefined;
+  if (!mp4 && !webm) {
+    return warn('at least one source (mp4 or webm) is required');
+  }
+  if (!video.alt) {
+    return warn('alt is required');
+  }
+  const text = {
+    alt: video.alt as string,
+    caption: video.caption as string | undefined,
+  };
+  return mp4 ? { ...text, mp4, webm } : { ...text, webm: webm! };
 }
 
 /**

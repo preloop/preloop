@@ -1145,8 +1145,119 @@ class BitbucketTracker(BaseTracker):
     async def _list_hooks(self, repo_full_name: str) -> List[Dict[str, Any]]:
         return await self._paginate(f"{self._repo(repo_full_name)}/hooks")
 
+    def _stored_hook(self, db: Session, hook_uuid: str) -> Optional[Webhook]:
+        return crud_webhook.get_by_external_id(
+            db, external_id=hook_uuid, tracker_id=str(self.tracker_id)
+        )
+
+    def _pick_managed_hook(
+        self, db: Session, matching: List[Dict[str, Any]]
+    ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Choose the hook to keep among hooks sharing one callback URL.
+
+        Args:
+            db: Database session.
+            matching: Remote hooks whose URL equals the callback URL.
+
+        Returns:
+            The hook to keep (preferring one already stored in the database)
+            and the remaining duplicates to delete.
+        """
+        if not matching:
+            return None, []
+        keep = next(
+            (h for h in matching if self._stored_hook(db, str(h["uuid"]))),
+            matching[0],
+        )
+        return keep, [h for h in matching if h is not keep]
+
+    def _hook_needs_update(
+        self, db: Session, hook: Dict[str, Any], secret: str
+    ) -> bool:
+        """Return True when the remote hook drifted from the desired state."""
+        if sorted(hook.get("events") or []) != sorted(BITBUCKET_WEBHOOK_EVENTS):
+            return True
+        if hook.get("active") is False:
+            return True
+        # Bitbucket never returns the secret; resync unless our record matches.
+        stored = self._stored_hook(db, str(hook["uuid"]))
+        return getattr(stored, "secret", None) != secret
+
+    async def _remove_duplicate_hook(
+        self, db: Session, full_name: str, hook: Dict[str, Any]
+    ) -> None:
+        """Delete a duplicate same-URL hook remotely and its stored record."""
+        hook_uuid = str(hook["uuid"])
+        await self.delete_webhook({"uuid": hook_uuid, "repo_full_name": full_name})
+        stored = self._stored_hook(db, hook_uuid)
+        if stored is not None:
+            crud_webhook.remove(db, id=stored.id)
+            db.commit()
+        logger.info("Removed duplicate Bitbucket hook %s on %s", hook_uuid, full_name)
+
+    async def _matching_hooks(
+        self, full_name: str, webhook_url: str
+    ) -> List[Dict[str, Any]]:
+        return [
+            hook
+            for hook in await self._list_hooks(full_name)
+            if hook.get("url") == webhook_url and hook.get("uuid")
+        ]
+
+    async def _converge_after_create(
+        self, db: Session, full_name: str, webhook_url: str, created: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Collapse same-URL hooks left by overlapping registrations.
+
+        Every racer keeps the hook with the lowest uuid, so concurrent
+        registrations converge on the same hook and delete the others.
+        """
+        matching = await self._matching_hooks(full_name, webhook_url)
+        if len(matching) <= 1:
+            return matching[0] if matching else created
+        winner = min(matching, key=lambda h: str(h["uuid"]))
+        for hook in matching:
+            if hook is not winner:
+                try:
+                    await self._remove_duplicate_hook(db, full_name, hook)
+                except TrackerResponseError as exc:
+                    # Another racer may already have deleted it.
+                    logger.info("Duplicate hook %s already gone: %s", hook, exc)
+        return winner
+
+    def _upsert_stored_hook(
+        self,
+        db: Session,
+        project: Project,
+        external_id: str,
+        webhook_url: str,
+        secret: str,
+    ) -> None:
+        """Record the kept hook, refreshing a stale row after reconciliation."""
+        desired = {
+            "url": webhook_url,
+            "secret": secret,
+            "events": list(BITBUCKET_WEBHOOK_EVENTS),
+        }
+        stored = self._stored_hook(db, external_id)
+        if stored is None:
+            crud_webhook.create(
+                db,
+                obj_in={
+                    "external_id": external_id,
+                    "project_id": project.id,
+                    **desired,
+                },
+            )
+        elif any(getattr(stored, key, None) != value for key, value in desired.items()):
+            crud_webhook.update(db, db_obj=stored, obj_in=desired)
+
     async def register_webhook(self, **kwargs: Any) -> bool:
-        """Create (or update) the repository hook for a project.
+        """Idempotently create or reconcile the repository hook for a project.
+
+        Hooks are matched by callback URL: one is reused (and updated only
+        when its events, state or secret drifted), extra same-URL duplicates
+        are deleted, and hooks with other URLs are never touched.
 
         Keyword Args:
             db: Database session.
@@ -1173,26 +1284,27 @@ class BitbucketTracker(BaseTracker):
             "events": list(BITBUCKET_WEBHOOK_EVENTS),
         }
         try:
-            existing = next(
-                (
-                    hook
-                    for hook in await self._list_hooks(full_name)
-                    if hook.get("url") == webhook_url
-                ),
-                None,
-            )
-            if existing:
-                hook_uuid = existing.get("uuid")
+            matching = await self._matching_hooks(full_name, webhook_url)
+            keep, duplicates = self._pick_managed_hook(db, matching)
+            for duplicate in duplicates:
+                await self._remove_duplicate_hook(db, full_name, duplicate)
+            if keep is None:
+                response = await self._request(
+                    "POST", f"{self._repo(full_name)}/hooks", json=body
+                )
+                hook = await self._converge_after_create(
+                    db, full_name, webhook_url, response.json()
+                )
+            elif self._hook_needs_update(db, keep, secret):
+                hook_uuid = keep.get("uuid")
                 response = await self._request(
                     "PUT",
                     f"{self._repo(full_name)}/hooks/{quote(str(hook_uuid), safe='')}",
                     json=body,
                 )
+                hook = response.json() or keep
             else:
-                response = await self._request(
-                    "POST", f"{self._repo(full_name)}/hooks", json=body
-                )
-            hook = response.json()
+                hook = keep
         except (TrackerResponseError, TrackerAuthenticationError) as exc:
             logger.error(
                 "Failed to register Bitbucket webhook for %s: %s", full_name, exc
@@ -1200,19 +1312,7 @@ class BitbucketTracker(BaseTracker):
             return False
 
         external_id = str(hook.get("uuid") or "")
-        if not crud_webhook.get_by_external_id(
-            db, external_id=external_id, tracker_id=str(self.tracker_id)
-        ):
-            crud_webhook.create(
-                db,
-                obj_in={
-                    "external_id": external_id,
-                    "url": webhook_url,
-                    "secret": secret,
-                    "project_id": project.id,
-                    "events": list(BITBUCKET_WEBHOOK_EVENTS),
-                },
-            )
+        self._upsert_stored_hook(db, project, external_id, webhook_url, secret)
         return True
 
     async def register_project_webhook(

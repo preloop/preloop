@@ -107,7 +107,7 @@ func TestSessionStartRecordsParentWritesHandoffAndExportsLineage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(env) != "export PRELOOP_PARENT_SESSION_ID=11111111-2222-3333-4444-555555555555\n" {
+	if string(env) != "export PRELOOP_CURRENT_SESSION_ID=ext-child-1\nexport PRELOOP_PARENT_SESSION_ID=11111111-2222-3333-4444-555555555555\n" {
 		t.Fatalf("unexpected env export: %q", env)
 	}
 	if stderr != "preloop runtime_session_id=11111111-2222-3333-4444-555555555555\n" {

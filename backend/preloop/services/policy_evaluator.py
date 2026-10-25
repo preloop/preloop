@@ -10,7 +10,7 @@ import functools
 import logging
 import re
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from preloop.models.crud import (
     crud_account,
@@ -35,6 +35,7 @@ from preloop.services.approval_rule_context import (
     build_rule_context,
 )
 from preloop.services.db_executor import submit_off_loop
+from preloop.services.audit.async_writer import outbox_enabled
 from preloop.services.subject_governance import (
     get_scoped_tool_rules,
     is_tool_enabled_for_subject,
@@ -314,15 +315,24 @@ def _storage_scope_identity(
     )
 
 
-def _get_audit_service():
-    """Get the audit service instance (lazy import to avoid circular deps)."""
-    try:
-        from plugins.audit.service import get_audit_service
+# Shared rule evaluation is synchronous even in the async evaluator. Collect
+# writes locally, then flush them through AsyncSession.run_sync before returning.
+# ContextVars isolate concurrent evaluations; no Session crosses a worker thread.
+_policy_audit_writes: contextvars.ContextVar[
+    Optional[list[Callable[[Session], None]]]
+] = contextvars.ContextVar("policy_audit_writes", default=None)
 
-        return get_audit_service()
-    except ImportError:
-        logger.debug("Audit service not available")
-        return None
+
+def _flush_policy_audit(db: Session, writes: list[Callable[[Session], None]]) -> None:
+    for write in writes:
+        write(db)
+
+
+def _get_audit_service():
+    """Resolve the core audit singleton lazily to avoid circular imports."""
+    from preloop.services.audit import get_audit_service
+
+    return get_audit_service()
 
 
 def _get_db_factory():
@@ -353,11 +363,13 @@ def _log_policy_decision_async(
     extra_details: Optional[Dict[str, Any]] = None,
     server_name: Optional[str] = None,
     managed_agent_id: Optional[str] = None,
+    db: Optional[Session] = None,
 ) -> None:
-    """Log a policy decision asynchronously (fire-and-forget).
+    """Admit a decision in the owning transaction when durable audit is enabled.
 
-    This helper function wraps the audit service call to log policy decisions
-    without blocking the main execution flow.
+    Shared evaluators collect writes until their sync or async session can
+    flush them. Explicit ``db`` callers flush immediately without committing.
+    Other callers retain the bounded asynchronous fallback.
 
     Args:
         account_id: Account ID
@@ -373,8 +385,7 @@ def _log_policy_decision_async(
     # Outbound webhooks share this chokepoint so every deny path reaches
     # subscribers, including the ones that reach it through
     # model_content_policy. Emitted before the audit branch below, which
-    # returns early when no audit plugin is installed: OSS has no audit
-    # service and would otherwise never fire policy.denied.
+    # must not affect policy.denied delivery when audit collection fails.
     if action == "deny":
         # Do not enqueue on this thread: enqueue_event_detached opens a
         # session and runs select + count + insert + commit, which would
@@ -407,10 +418,6 @@ def _log_policy_decision_async(
         if not audit_service:
             return
 
-        db_factory = _get_db_factory()
-        if not db_factory:
-            return
-
         from preloop.services.sensitive_data.storage import (
             StorageScope,
             apply_storage_redaction,
@@ -427,13 +434,25 @@ def _log_policy_decision_async(
             ),
         )
 
-        def _write(args: Optional[Dict[str, Any]]) -> None:
+        def _write(
+            args: Optional[Dict[str, Any]], session: Optional[Session] = None
+        ) -> None:
             # Stored copy of the arguments: the account's redact rules apply
             # before the row is written and sealed into the chain (#1123).
             if args:
-                args = apply_storage_redaction(account_id, args, scope=scope)
-            audit_service.log_policy_decision_async(
-                db_factory=db_factory,
+                if session is not None:
+                    from preloop.services.sensitive_data.policy_store import (
+                        load_sensitive_data_config,
+                    )
+
+                    config = load_sensitive_data_config(session, account_id)
+                    if config is not None:
+                        args = apply_storage_redaction(
+                            account_id, args, scope=scope, config=config
+                        )
+                else:
+                    args = apply_storage_redaction(account_id, args, scope=scope)
+            fields = dict(
                 account_id=account_id,
                 tool_name=tool_name,
                 action=action,
@@ -446,13 +465,29 @@ def _log_policy_decision_async(
                 extra_details=extra_details,
             )
 
-        if not tool_args or has_cached_config(account_id):
+            if session is not None:
+                audit_service.enqueue_in_transaction(
+                    session, "log_policy_decision", priority=True, **fields
+                )
+            else:
+                audit_service.log_policy_decision_async(
+                    db_factory=_get_db_factory(), **fields
+                )
+
+        writes = _policy_audit_writes.get()
+        if outbox_enabled() and db is not None:
+            _write(tool_args, db)
+        elif outbox_enabled() and writes is not None:
+            writes.append(lambda session: _write(tool_args, session))
+        elif not tool_args or has_cached_config(account_id):
             _write(tool_args)
         else:
             # A cache miss reads the policy; this can run on the async
             # evaluator's loop, so move the read and the write off it.
             submit_off_loop(lambda: _write(tool_args))
     except Exception as e:
+        if db is not None and outbox_enabled():
+            raise
         logger.debug(f"Failed to log policy decision to audit: {e}")
 
 
@@ -952,6 +987,8 @@ def evaluate_policy(
           decisions, else None. Persisted on the approval request so the
           approver can see WHICH rule fired and what its expression was.
     """
+    writes: list[Callable[[Session], None]] = []
+    audit_token = _policy_audit_writes.set(writes)
     scope_token = _policy_storage_scope.set(
         _storage_scope_identity(subject_context, server_name)
     )
@@ -1114,6 +1151,9 @@ def evaluate_policy(
 
     finally:
         _policy_storage_scope.reset(scope_token)
+        _policy_audit_writes.reset(audit_token)
+        if writes:
+            _flush_policy_audit(db, writes)
 
 
 def _evaluate_rule_condition(
@@ -1603,6 +1643,7 @@ async def evaluate_policy_async(
     resolve_tool_configuration: bool = True,
     record: bool = True,
     trace: Optional[list[dict[str, Any]]] = None,
+    defer_note_scope: bool = False,
 ) -> PolicyDecision:
     """Async version of evaluate_policy.
 
@@ -1610,6 +1651,8 @@ async def evaluate_policy_async(
     roots next to ``args`` for conditions (``pii.found``, ``pii.types_found``,
     ``pii.paths`` from the sensitive-data scan).
     """
+    writes: list[Callable[[Session], None]] = []
+    audit_token = _policy_audit_writes.set(writes)
     scope_token = _policy_storage_scope.set(
         _storage_scope_identity(subject_context, server_name)
     )
@@ -1639,6 +1682,15 @@ async def evaluate_policy_async(
             return PolicyDecision(
                 "deny", None, "Tool disabled by agent or API key configuration"
             )
+
+        # send_note evaluates the same rules after resolving every target and
+        # authenticating its caller lineage. Raw tool input lacks those facts.
+        if (
+            defer_note_scope
+            and tool_name == "send_note"
+            and server_name == "preloop-mcp"
+        ):
+            return PolicyDecision("allow", None, None)
 
         scoped_rules = get_scoped_tool_rules(
             account_meta_data,
@@ -1783,3 +1835,6 @@ async def evaluate_policy_async(
         )
     finally:
         _policy_storage_scope.reset(scope_token)
+        _policy_audit_writes.reset(audit_token)
+        if writes:
+            await db.run_sync(_flush_policy_audit, writes)

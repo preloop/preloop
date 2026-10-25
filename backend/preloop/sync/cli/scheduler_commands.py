@@ -281,6 +281,28 @@ async def run_scheduler_async(
         getattr(settings, "workspace_snapshot_ttl_hours", 24),
     )
 
+    # Hourly gateway activity maintenance: compact model gateway call rows
+    # stored before slim storage and, when enabled, strip message content
+    # older than the plan history window. Bounded per pass.
+    async def _publish_gateway_activity_maintenance() -> None:
+        try:
+            await event_bus_service.publish_task("maintain_gateway_activity")
+        except Exception:
+            logger.exception("Failed to publish gateway activity maintenance task")
+
+    if settings.gateway_activity_compaction_enabled or (
+        settings.gateway_activity_body_retention_enabled
+    ):
+        scheduler.add_job(
+            _publish_gateway_activity_maintenance,
+            trigger=IntervalTrigger(hours=1),
+            id="gateway_activity_maintenance_job",
+            name="Compact Stored Gateway Activity",
+            replace_existing=True,
+            misfire_grace_time=600,
+            next_run_time=datetime.now(pytz.utc) + timedelta(minutes=5),
+        )
+
     # Periodic Stripe subscription reconciliation. A missed or rejected
     # webhook used to leave a subscription stale until an operator reconciled
     # it by hand; this pass repairs it within one interval. The worker-side
@@ -477,6 +499,9 @@ def scheduler_cmd(reload_interval: int, max_workers: int, log_level: str):
         executors=executors, job_defaults=job_defaults, timezone="UTC"
     )
 
+    from preloop.services.audit import start_audit, stop_audit
+
+    start_audit()
     try:
         # Run the scheduler in an asyncio event loop
         asyncio.run(run_scheduler_async(scheduler, reload_interval, db, max_workers))
@@ -485,6 +510,7 @@ def scheduler_cmd(reload_interval: int, max_workers: int, log_level: str):
     finally:
         # Explicitly attempt scheduler shutdown here
         shutdown_scheduler()
+        stop_audit()
 
         # Close DB session
         # Use db.is_active check instead of is_closed

@@ -630,6 +630,7 @@ def test_stream_response_ignores_null_text_deltas():
     assert "None" not in completed["response"]["output_text"]
 
 
+@pytest.mark.usefixtures("isolate_system_ai_models")
 def test_list_models_returns_gateway_enabled_aliases(db_session, test_user):
     """Only gateway-enabled models should be listed."""
     crud_ai_model.create_with_account(
@@ -669,6 +670,7 @@ def test_list_models_returns_gateway_enabled_aliases(db_session, test_user):
     assert [item["id"] for item in payload["data"]] == ["openai/gpt-5"]
 
 
+@pytest.mark.usefixtures("isolate_system_ai_models")
 def test_create_response_requires_gateway_enabled_default_when_model_omitted(
     db_session, test_user
 ):

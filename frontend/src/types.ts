@@ -494,6 +494,19 @@ export interface GatewayToolUsageByAgent {
   estimated_schema_cost: number;
 }
 
+/** One agent's gateway usage in a summary period. */
+export interface GatewayUsageByAgent {
+  agent_id: string;
+  session_count: number;
+  request_count: number;
+  successful_requests: number;
+  failed_requests: number;
+  token_usage: GatewayTokenUsage;
+  estimated_cost: number;
+  last_request_at?: string | null;
+  subscription_usage?: SubscriptionUsageSummary | null;
+}
+
 export interface GatewayUsageByTool {
   tool_name: string;
   server_name?: string | null;
@@ -580,6 +593,15 @@ export interface RuntimeSessionSummary {
   latest_model_alias: string | null;
   latest_provider_name: string | null;
   is_active_now: boolean;
+  /**
+   * What the agent is doing, derived by the server from hook rows:
+   * `working`, `waiting_for_approval`, `your_turn` or `ended`; null when no
+   * hook has reported a turn yet.
+   */
+  turn_state?: string | null;
+  turn_started_at?: string | null;
+  turn_ended_at?: string | null;
+  turn_interrupted?: boolean | null;
   activity_status: 'active_now' | 'idle' | 'ended' | string;
   total_requests: number;
   successful_requests: number;
@@ -717,6 +739,9 @@ export interface ManagedAgentSummary {
   read_only?: boolean;
   owner_name?: string;
 
+  /** Subscription-routed requests: $0 spend, an API-equivalent estimate. */
+  subscription_usage?: SubscriptionUsageSummary | null;
+  subscription_usage_computed?: boolean;
   id: string;
   runtime_session_id: string | null;
   owner_user_id: string | null;
@@ -736,6 +761,15 @@ export interface ManagedAgentSummary {
   lifecycle_reason: string | null;
   lifecycle_updated_at: string | null;
   is_active_now: boolean;
+  /**
+   * What the agent is doing, derived by the server from hook rows:
+   * `working`, `waiting_for_approval`, `your_turn` or `ended`; null when no
+   * hook has reported a turn yet.
+   */
+  turn_state?: string | null;
+  turn_started_at?: string | null;
+  turn_ended_at?: string | null;
+  turn_interrupted?: boolean | null;
   activity_status:
     | 'active_now'
     | 'recently_active'
@@ -748,6 +782,8 @@ export interface ManagedAgentSummary {
   started_at: string | null;
   last_activity_at: string | null;
   ended_at: string | null;
+  /** False on identity reads; historical totals are unavailable. */
+  usage_computed?: boolean;
   total_requests: number;
   successful_requests?: number;
   failed_requests?: number;
@@ -933,6 +969,8 @@ export interface ManagedAgentUsageAggregate {
   latest_model_alias: string | null;
   latest_provider_name: string | null;
   last_request_at: string | null;
+  /** Subscription-routed requests: $0 spend, an API-equivalent estimate. */
+  subscription_usage?: SubscriptionUsageSummary | null;
 }
 
 export interface ManagedAgentServerActivitySummary {
@@ -965,7 +1003,7 @@ export interface AccountManagedAgentListResponse {
 
 export interface ManagedAgentDetailResponse {
   agent: ManagedAgentSummary;
-  aggregate: ManagedAgentUsageAggregate;
+  aggregate: ManagedAgentUsageAggregate | null;
   usage_by_model: GatewayUsageByModel[];
   activity_by_server: ManagedAgentServerActivitySummary[];
   activity_by_tool: ManagedAgentToolActivitySummary[];
@@ -1107,6 +1145,8 @@ export interface BrowserStepScreenshotRef {
  * what the agent says it did, never an approval or proof of page state.
  */
 export interface BrowserStepMetadata {
+  occurred_at?: string | null;
+  recorded_at?: string | null;
   source?: 'api' | 'browser_use' | 'skyvern' | 'playwright_mcp' | string;
   source_step_id?: string | null;
   step_index?: number | null;
@@ -1158,6 +1198,7 @@ export interface McpResourceLink {
 
 /** One item of `GET /runtime-sessions/{id}/artifacts`. */
 export interface RuntimeSessionArtifactDescriptor {
+  media_timing?: MediaTiming | null;
   id: string;
   runtime_session_id: string;
   activity_id?: string | null;
@@ -1615,6 +1656,11 @@ export interface AccountGatewayUsageSummaryResponse {
   total_sessions?: number | null;
   usage_by_tool?: GatewayUsageByTool[];
   /**
+   * Per-agent totals in the period (`breakdown=agents`), by the attribution
+   * the agents list and agent detail use, so the three agree.
+   */
+  usage_by_agent?: GatewayUsageByAgent[];
+  /**
    * Set when the server answered from a pre-aggregated rollup rather than the
    * raw request rows, which is how a year of usage comes back in a second.
    * A rollup is coarser than the rows behind it, so the card says where the
@@ -1945,8 +1991,16 @@ export interface CopilotUsageSummary {
     // Spend on per-developer days that no current seat holder explains.
     unattributed_net_amount: number | null;
     aggregate_days: number;
-    by_developer: { login: string; net_amount: number; net_quantity: number }[];
-    by_model: { model: string; net_amount: number; net_quantity: number }[];
+    by_developer: {
+      login: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
+    by_model: {
+      model: string;
+      net_amount: number | null;
+      net_quantity: number | null;
+    }[];
   };
   model_mix: {
     login: string;
@@ -2055,6 +2109,8 @@ export interface AIModelsOverviewResponse {
   period_start: string;
   period_end: string;
   models: AIModelOverviewItem[];
+  /** Spend of the equal window just before; only with include_prior_period. */
+  prior_period_estimated_cost?: number | null;
 }
 
 export interface ApiKeyGatewayUsageSummaryResponse {
@@ -2875,4 +2931,29 @@ export interface AnthropicUsageSummary {
   by_actor: AnthropicActorUsage[];
   by_model: { model: string; estimated_cost: number; tokens: number }[];
   not_attributable: string[];
+}
+
+/** Timing is a separate typed field, independent of user labels. */
+export interface MediaTiming {
+  started_at: string;
+  duration_ms?: number | null;
+  clock: 'agent' | 'server';
+  step_offsets?: { source_step_id: string; offset_ms: number }[] | null;
+}
+export interface MediaSyncMapping {
+  activity_id: string;
+  activity_type: string;
+  api_usage_id?: string | null;
+  offset_ms: number;
+  rule: 'exact' | 'occurred_at' | 'server_skew';
+  approximate: boolean;
+}
+export interface RecordingSync {
+  artifact_id: string;
+  skew_ms: number;
+  mappings: MediaSyncMapping[];
+  unmapped_activity_ids: string[];
+}
+export interface MediaSyncResponse {
+  recordings: RecordingSync[];
 }

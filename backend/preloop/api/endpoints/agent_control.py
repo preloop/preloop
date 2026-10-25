@@ -22,7 +22,7 @@ from starlette import status
 
 from preloop.api.loop_safety import run_db_off_loop
 from preloop.api.auth import get_current_active_user
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from preloop.api.auth.jwt import (
     RuntimeBearerAuthContext,
     authenticate_runtime_bearer_token,
@@ -56,6 +56,7 @@ from preloop.schemas.agent_control import (
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_AGENT_CONTROL,
     ACCOUNT_TOPIC_RUNTIME_SESSIONS,
+    ACCOUNT_TOPIC_SESSION_PROGRESS,
     build_account_event,
     emit_account_event,
 )
@@ -73,6 +74,10 @@ from preloop.services.agent_control_dispatch import (
     dispatch_operator_message,
     persist_and_deliver_command,
     resolve_session_control_mode,
+    TERMINAL_SESSION_REASON,
+    TERMINAL_SESSION_REASON_CODE,
+    session_reachable_by_control,
+    session_managed_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -446,6 +451,7 @@ def _touch_presence(
     *,
     observed_at: datetime,
     session_mode: Optional[str] = None,
+    reachable_session_ids: Optional[list[Any]] = None,
     commit: bool = True,
 ) -> None:
     # Match operator lifecycle transactions: managed agent before runtime.
@@ -461,6 +467,7 @@ def _touch_presence(
         # every call here is proof the plugin is connected right now. It is the
         # only presence signal the other api replicas can read.
         control_heartbeat_at=observed_at,
+        control_reachable_session_ids=reachable_session_ids,
         commit=False,
     )
     crud_runtime_session.touch_activity(
@@ -1106,9 +1113,10 @@ def _persist_agent_control_progress(
         and 0 < len(tool_name) <= 100
     ):
         return
-    crud_runtime_session_activity.log_agent_control_progress(
+    consuming_account_id = command.consuming_account_id or context.account_id
+    activity = crud_runtime_session_activity.log_agent_control_progress(
         db,
-        account_id=command.consuming_account_id or context.account_id,
+        account_id=consuming_account_id,
         command_id=command_id,
         event_id=str(inbound.message_id),
         kind=kind,
@@ -1116,6 +1124,245 @@ def _persist_agent_control_progress(
         call_id=call_id if isinstance(call_id, str) else None,
         tool_name=tool_name if isinstance(tool_name, str) else None,
         commit=False,
+    )
+    _broadcast_command_progress(
+        consuming_account_id,
+        activity,
+        command_id=command_id,
+        kind=kind,
+        call_id=call_id if isinstance(call_id, str) else None,
+        tool_name=tool_name if isinstance(tool_name, str) else None,
+    )
+
+
+def _broadcast_command_progress(
+    account_id: Any,
+    activity: Any,
+    *,
+    command_id: str,
+    kind: str,
+    call_id: Optional[str],
+    tool_name: Optional[str],
+) -> None:
+    """Tell the consuming session's viewers that an SDK turn moved.
+
+    Scoped to the consuming account and the progress row's runtime session,
+    like ``runtime_session_turn_ended``, on the ``session_progress`` topic so
+    views that reload on any ``agent_control`` event are not woken by every
+    step. The payload says what kind of step it was and which tool, never the
+    summary text: viewers read text from the stored activity stream, which
+    applies its own access checks.
+    """
+    runtime_session_id = getattr(activity, "runtime_session_id", None)
+    if activity is None or runtime_session_id is None:
+        return
+    try:
+        emit_account_event(
+            build_account_event(
+                account_id=str(account_id),
+                topic=ACCOUNT_TOPIC_SESSION_PROGRESS,
+                event_type="managed_agent_command_progress",
+                payload={
+                    "runtime_session_id": str(runtime_session_id),
+                    "command_id": command_id,
+                    "kind": kind,
+                    "call_id": call_id,
+                    "tool_name": tool_name,
+                },
+                runtime_session_id=str(runtime_session_id),
+            )
+        )
+    except Exception:
+        logger.warning("Failed to emit command progress", exc_info=True)
+
+
+#: Live events a sidecar forwards for a session it can drive but did not
+#: start through a command (a Codex TUI thread on the shared app-server
+#: daemon). They are broadcast on their own topic, not stored; the sidecar
+#: merges per-token deltas into at most four events a second.
+SESSION_PROGRESS_KINDS = frozenset(
+    {
+        "turn_started",
+        "turn_completed",
+        "assistant_delta",
+        "status_title",
+        "tool_start",
+        "tool_end",
+        "usage",
+    }
+)
+_SESSION_PROGRESS_TEXT_FIELDS = {
+    "turn_id": 200,
+    "item_id": 200,
+    "call_id": 200,
+    "tool_name": 100,
+    "status": 40,
+    "delta": 2000,
+    "command": 400,
+}
+_SESSION_PROGRESS_INT_FIELDS = ("exit_code", "duration_ms")
+_SESSION_PROGRESS_USAGE_FIELDS = (
+    "input_tokens",
+    "cached_input_tokens",
+    "cache_write_input_tokens",
+    "output_tokens",
+    "reasoning_output_tokens",
+)
+
+
+def _session_progress_payload(payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Keep only the known, bounded fields of a ``session_progress`` event.
+
+    Args:
+        payload: Inbound envelope payload from the sidecar.
+
+    Returns:
+        The allow-listed, redacted payload, or None when the kind is unknown.
+    """
+    kind = payload.get("kind")
+    if not isinstance(kind, str) or kind not in SESSION_PROGRESS_KINDS:
+        return None
+    clean: dict[str, Any] = {"kind": kind}
+    for field, limit in _SESSION_PROGRESS_TEXT_FIELDS.items():
+        value = payload.get(field)
+        if isinstance(value, str):
+            clean[field] = value[:limit]
+    for field in _SESSION_PROGRESS_INT_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, int) and not isinstance(value, bool):
+            clean[field] = value
+    clean = _sanitize_agent_control_payload(clean)
+    usage = payload.get("usage")
+    if kind == "usage" and isinstance(usage, dict):
+        # Integers only, added after redaction: the redactor masks any key
+        # that contains "token", which would blank the token counters.
+        clean["usage"] = {
+            key: usage[key]
+            for key in _SESSION_PROGRESS_USAGE_FIELDS
+            if isinstance(usage.get(key), int) and not isinstance(usage.get(key), bool)
+        }
+    return clean
+
+
+#: How long a native id to runtime session mapping is trusted. Reply deltas
+#: arrive several times a second; the mapping does not change within a turn.
+_SESSION_PROGRESS_TARGET_TTL = timedelta(seconds=30)
+#: Unknown or foreign ids are re-checked sooner, so a session that registers
+#: a moment after its first event is picked up quickly.
+_SESSION_PROGRESS_MISS_TTL = timedelta(seconds=5)
+_SESSION_PROGRESS_TARGET_CACHE_MAX = 2048
+_session_progress_targets: dict[
+    tuple[str, str, str], tuple[Optional[str], datetime]
+] = {}
+
+
+def _cached_session_progress_target(
+    connection: AgentControlConnectionContext, session_source_id: str
+) -> tuple[bool, Optional[str]]:
+    """Return ``(hit, runtime_session_id)`` from the per-agent cache."""
+    key = (
+        str(connection.account_id),
+        str(connection.managed_agent_id),
+        session_source_id,
+    )
+    entry = _session_progress_targets.get(key)
+    if entry is None or entry[1] <= datetime.now(UTC):
+        _session_progress_targets.pop(key, None)
+        return False, None
+    return True, entry[0]
+
+
+def _remember_session_progress_target(
+    connection: AgentControlConnectionContext,
+    session_source_id: str,
+    runtime_session_id: Optional[str],
+) -> None:
+    if len(_session_progress_targets) >= _SESSION_PROGRESS_TARGET_CACHE_MAX:
+        _session_progress_targets.clear()
+    ttl = (
+        _SESSION_PROGRESS_TARGET_TTL
+        if runtime_session_id
+        else _SESSION_PROGRESS_MISS_TTL
+    )
+    _session_progress_targets[
+        (
+            str(connection.account_id),
+            str(connection.managed_agent_id),
+            session_source_id,
+        )
+    ] = (runtime_session_id, datetime.now(UTC) + ttl)
+
+
+def _resolve_session_progress_target(
+    db: Session,
+    connection: AgentControlConnectionContext,
+    session_source_id: str,
+) -> Optional[str]:
+    """Map a native session id to a runtime session this agent owns.
+
+    Args:
+        db: Database session.
+        connection: The authenticated sidecar connection.
+        session_source_id: Native id the sidecar reported (a Codex thread id).
+
+    Returns:
+        The runtime session id, or None when the session is unknown, ended or
+        belongs to another agent. Account isolation comes from the
+        connection's account; agent isolation from the ownership check.
+    """
+    session = crud_runtime_session.get_open_by_source_id(
+        db,
+        account_id=connection.account_id,
+        session_source_id=session_source_id,
+    )
+    if session is None:
+        return None
+    agent = session_managed_agent(db, account_id=connection.account_id, session=session)
+    if agent is None or str(agent.id) != str(connection.managed_agent_id):
+        return None
+    return str(session.id)
+
+
+async def _emit_session_progress(
+    database: Any,
+    connection: AgentControlConnectionContext,
+    inbound: AgentControlInboundEnvelope,
+) -> None:
+    """Broadcast one ``session_progress`` event scoped to its runtime session."""
+    source_id = inbound.payload.get("session_source_id")
+    if not isinstance(source_id, str) or not 0 < len(source_id) <= 200:
+        return
+    payload = _session_progress_payload(inbound.payload)
+    if payload is None:
+        return
+    hit, runtime_session_id = _cached_session_progress_target(connection, source_id)
+    if not hit:
+        try:
+            runtime_session_id = await database.run(
+                partial(
+                    _resolve_session_progress_target,
+                    connection=connection,
+                    session_source_id=source_id,
+                )
+            )
+        except _DB_DELIVERY_ERRORS:
+            # Live progress is best effort; never drop the control socket.
+            logger.warning("Could not scope session progress", exc_info=True)
+            return
+        _remember_session_progress_target(connection, source_id, runtime_session_id)
+    if runtime_session_id is None:
+        return
+    emit_account_event(
+        build_account_event(
+            account_id=connection.account_id,
+            topic=ACCOUNT_TOPIC_SESSION_PROGRESS,
+            event_type="managed_agent_session_progress",
+            payload={**payload, "message_id": inbound.message_id},
+            managed_agent_id=connection.managed_agent_id,
+            runtime_session_id=runtime_session_id,
+            session_source_type=connection.session_source_type,
+            session_source_id=source_id,
+        )
     )
 
 
@@ -1126,7 +1373,11 @@ async def _emit_agent_message(
     # Progress is delivered through the consuming execution/session's stored
     # activity stream. The generic topic belongs to the agent owner, which can
     # be a different account for a shared agent, and must not receive its text.
-    if inbound.type == "heartbeat" or inbound.name == "command_progress":
+    # Session progress is emitted scoped to its own session instead.
+    if inbound.type == "heartbeat" or inbound.name in {
+        "command_progress",
+        "session_progress",
+    }:
         return
     event_type = f"agent_control_{inbound.type}"
     emit_account_event(
@@ -1159,8 +1410,18 @@ def _process_control_message(
     inbound_mode = inbound.payload.get("session_mode")
     if inbound_mode not in {"local", "remote", "queued"}:
         inbound_mode = None
+    # Native ids the plugin can drive. Absent on older plugins and on frames
+    # that do not carry presence, which leaves the stored list unchanged.
+    reachable = inbound.payload.get("reachable_session_ids")
+    if not isinstance(reachable, list):
+        reachable = None
     _touch_presence(
-        db, connection, observed_at=observed_at, session_mode=inbound_mode, commit=False
+        db,
+        connection,
+        observed_at=observed_at,
+        session_mode=inbound_mode,
+        reachable_session_ids=reachable,
+        commit=False,
     )
     _mark_control_verified_from_capabilities(db, connection, inbound, commit=False)
     _handle_command_ack(db, connection, inbound, commit=False)
@@ -1350,6 +1611,8 @@ async def managed_agent_control_websocket(
                 await websocket.close(code=1013, reason="Database busy; reconnect")
                 break
             await _emit_agent_message(connection, inbound)
+            if inbound.type == "event" and inbound.name == "session_progress":
+                await _emit_session_progress(database, connection, inbound)
             if inbound.type == "heartbeat":
                 ack = _connection_envelope(
                     connection,
@@ -1679,6 +1942,21 @@ async def _route_managed_agent_prompt(
         agent=agent,
         request=request,
     )
+    if (
+        session_mode == "existing"
+        and target_session is not None
+        and not session_reachable_by_control(agent, target_session)
+    ):
+        # The plugin cannot type into this terminal; a command would resume
+        # the same native session in a second process and fork it. The
+        # operator sends a note instead (POST /operator-notes).
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": TERMINAL_SESSION_REASON_CODE,
+                "message": TERMINAL_SESSION_REASON,
+            },
+        )
     await _require_session_start_consent(
         db, agent=agent, request=request, current_user=current_user
     )
@@ -1828,6 +2106,9 @@ async def send_managed_agent_command(
     db: Session = Depends(get_db_session),
 ) -> AgentControlCommandResponse:
     """Backward-compatible route for sending text commands to an agent."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "control_managed_agent")
+    )
     return await _route_managed_agent_prompt(
         agent_id=agent_id,
         request=request,
@@ -1849,6 +2130,9 @@ async def send_managed_agent_prompt(
     db: Session = Depends(get_db_session),
 ) -> AgentControlCommandResponse:
     """Route a text prompt to the current, existing, or next agent session."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "control_managed_agent")
+    )
     return await _route_managed_agent_prompt(
         agent_id=agent_id,
         request=request,
@@ -1870,9 +2154,9 @@ def get_managed_agent_command_status(
 ) -> AgentControlCommandStatusResponse:
     """Delivery state of one operator command, for clients that follow it.
 
-    The same permission as sending: whoever may send a command may watch
-    it land. Another agent's command id is a 404, not a leak. A sync
-    handler: FastAPI runs it in the threadpool, off the event loop.
+    Returns delivery state for a command belonging to the requested agent
+    in the current account. A command belonging to another agent returns
+    404. FastAPI runs this sync handler in the threadpool, off the event loop.
     """
     try:
         agent_uuid = uuid.UUID(agent_id)
@@ -1949,6 +2233,7 @@ def get_runtime_session_control_mode(
         mode=decision.mode,
         reason_code=decision.reason_code,
         reason=decision.reason,
+        delivery=decision.delivery,
         send_path=decision.send_path,
         managed_agent_id=agent.id if agent is not None else None,
         agent_name=agent.display_name if agent is not None else None,
@@ -1971,6 +2256,9 @@ async def send_managed_agent_voice_transcript(
     db: Session = Depends(get_db_session),
 ) -> AgentControlCommandResponse:
     """Mobile-friendly alias that routes a voice transcript as a prompt."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "control_managed_agent")
+    )
     prompt_request = AgentControlSendMessageRequest(
         message=request.transcript,
         consent_request_id=request.consent_request_id,
@@ -2109,6 +2397,9 @@ async def request_managed_agent_takeover(
     db: Session = Depends(get_db_session),
 ) -> AgentControlCommandResponse:
     """Ask the sidecar to switch a local TUI session into remote SDK mode."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "control_managed_agent")
+    )
     return await _route_session_action(
         agent_id=agent_id,
         name="request_takeover",
@@ -2131,6 +2422,9 @@ async def release_managed_agent_session(
     db: Session = Depends(get_db_session),
 ) -> AgentControlCommandResponse:
     """Release a remote SDK session back to the local `preloop claude` TUI."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "control_managed_agent")
+    )
     return await _route_session_action(
         agent_id=agent_id,
         name="release",

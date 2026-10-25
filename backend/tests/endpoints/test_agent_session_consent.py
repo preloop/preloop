@@ -276,7 +276,11 @@ async def test_owner_cannot_clear_setting(agent: SimpleNamespace) -> None:
                 update=ManagedAgentUpdateRequest(others_may_start_sessions=None),
                 account=SimpleNamespace(id=agent.account_id),
                 request=MagicMock(),
-                current_user=SimpleNamespace(id=agent.owner_user_id),
+                current_user=SimpleNamespace(
+                    id=agent.owner_user_id,
+                    account_id=agent.account_id,
+                    is_superuser=True,
+                ),
                 db=MagicMock(),
             )
     assert exc.value.status_code == 422

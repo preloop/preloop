@@ -13,6 +13,7 @@ import functools
 import inspect
 import os
 import threading
+from contextvars import ContextVar, copy_context
 from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import HTTPException, status
@@ -37,6 +38,9 @@ try:
 except ImportError:
     # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
     _plugin_require_permission = None
+
+# Compatibility extensions must leave denied-search collection to core.
+AUDITS_DENIED_SESSION_SEARCH = True
 
 _MISSING_DEPS_DETAIL = "Permission check requires current_user and db dependencies"
 
@@ -82,7 +86,7 @@ def _run_awaitable_sync(awaitable):
             # caller thread can re-raise them after join().
             result["error"] = exc
 
-    thread = threading.Thread(target=runner, daemon=True)
+    thread = threading.Thread(target=copy_context().run, args=(runner,), daemon=True)
     thread.start()
     thread.join()
 
@@ -241,8 +245,37 @@ def require_permission(
     from preloop.models.crud.ci_principal import CiAuthorizationContext
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-        human_handler = _require_human_permission(permission_name)(func)
         signature = inspect.signature(func)
+        # One mutable marker per call, shared with copied worker/async contexts.
+        # A 403 raised after entry is already owned by the search audit wrapper.
+        entered: ContextVar[list[bool]] = ContextVar("permission_handler_entered")
+
+        if inspect.iscoroutinefunction(func):
+
+            @functools.wraps(func)
+            async def enter_handler(*args: Any, **kwargs: Any) -> Any:
+                entered.get()[0] = True
+                return await func(*args, **kwargs)
+        else:
+
+            @functools.wraps(func)
+            def enter_handler(*args: Any, **kwargs: Any) -> Any:
+                entered.get()[0] = True
+                return func(*args, **kwargs)
+
+        human_handler = _require_human_permission(permission_name)(enter_handler)
+
+        def record_refusal(args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+            if entered.get()[0] or func.__name__ != "search_runtime_sessions":
+                return
+            from preloop.services.session_search_audit import (
+                record_denied_endpoint_search,
+            )
+
+            bound = signature.bind_partial(*args, **kwargs)
+            record_denied_endpoint_search(
+                permission=permission_name, kwargs=dict(bound.arguments)
+            )
 
         def machine_call(
             args: tuple[Any, ...], kwargs: dict[str, Any]
@@ -274,24 +307,44 @@ def require_permission(
             async def wrapped(*args: Any, **kwargs: Any) -> Any:
                 from preloop.api.loop_safety import run_db_off_loop
 
-                bound = signature.bind_partial(*args, **kwargs)
-                checked = None
-                if isinstance(
-                    bound.arguments.get("current_user", kwargs.get("current_user")),
-                    CiAuthorizationContext,
-                ):
-                    checked = await run_db_off_loop(lambda: machine_call(args, kwargs))
-                if checked is not None:
-                    return await func(*checked.args, **checked.kwargs)
-                return await human_handler(*args, **kwargs)
+                token = entered.set([False])
+                try:
+                    bound = signature.bind_partial(*args, **kwargs)
+                    checked = None
+                    if isinstance(
+                        bound.arguments.get("current_user", kwargs.get("current_user")),
+                        CiAuthorizationContext,
+                    ):
+                        checked = await run_db_off_loop(
+                            lambda: machine_call(args, kwargs)
+                        )
+                    if checked is not None:
+                        entered.get()[0] = True
+                        return await func(*checked.args, **checked.kwargs)
+                    return await human_handler(*args, **kwargs)
+                except HTTPException as exc:
+                    if exc.status_code == 403:
+                        await run_db_off_loop(lambda: record_refusal(args, kwargs))
+                    raise
+                finally:
+                    entered.reset(token)
         else:
 
             @functools.wraps(func)
             def wrapped(*args: Any, **kwargs: Any) -> Any:
-                checked = machine_call(args, kwargs)
-                if checked is not None:
-                    return func(*checked.args, **checked.kwargs)
-                return human_handler(*args, **kwargs)
+                token = entered.set([False])
+                try:
+                    checked = machine_call(args, kwargs)
+                    if checked is not None:
+                        entered.get()[0] = True
+                        return func(*checked.args, **checked.kwargs)
+                    return human_handler(*args, **kwargs)
+                except HTTPException as exc:
+                    if exc.status_code == 403:
+                        record_refusal(args, kwargs)
+                    raise
+                finally:
+                    entered.reset(token)
 
         # Inventory only enables policies on handlers that explicitly opt in.
         wrapped._ci_action = ci_action

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from preloop.models.models.budget import BudgetPeriod
 from preloop.schemas.gateway_usage import (
+    SubscriptionUsageSummary,
     GatewayBudgetSummary,
     GatewayTokenUsage,
     GatewayUsageByDay,
@@ -273,47 +274,6 @@ class UnpricedModelUsage(BaseModel):
     model: str
     requests: int = 0
     tokens: int = 0
-
-
-class SubscriptionUsageSummary(BaseModel):
-    """Subscription-covered gateway workload, kept apart from marginal spend.
-
-    Subscription rows record $0 marginal API spend. ``api_equivalent_cost``
-    is an ESTIMATE of what the same calls would cost at pay-per-use API
-    prices; it is not a bill. Billed subscription dollars and provider
-    credits are not tracked, so ``billed`` is always null and
-    ``billed_available`` false until an authoritative reconciliation source
-    exists. They are never derived from token totals (#1401).
-    """
-
-    request_count: int = 0
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    total_tokens: int = 0
-    api_equivalent_cost: float = Field(
-        0.0,
-        description=(
-            "Estimate: sum of the API-equivalent cost over covered rows. "
-            "Not a billed amount."
-        ),
-    )
-    api_equivalent_cost_is_estimate: Literal[True] = True
-    covered_requests: int = Field(
-        0, description="Subscription requests that carry an API-equivalent estimate."
-    )
-    coverage: Optional[float] = Field(
-        None,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Fraction of subscription requests with an API-equivalent "
-            "estimate; null when there are none."
-        ),
-    )
-    billed: None = Field(
-        None, description="Billed subscription dollars: not tracked, always null."
-    )
-    billed_available: Literal[False] = False
 
 
 class CostAnalyticsSummaryResponse(BaseModel):

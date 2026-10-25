@@ -1,0 +1,36 @@
+# Identity for the k8s-readonly MCP server: a ServiceAccount bound to the
+# built-in view ClusterRole. view grants get, list and watch on most namespaced
+# objects and leaves out Secrets, Roles and RoleBindings.
+#
+#   kubectl apply -f k8s-readonly-rbac.yaml
+#   bash verify-readonly-rbac.sh
+#
+# view is an aggregated role: a chart can add rules to it with the
+# rbac.authorization.k8s.io/aggregate-to-view label. The verify script checks
+# what the ServiceAccount can do on your cluster, so run it after every
+# change. To limit reads to some namespaces, replace the ClusterRoleBinding
+# with one RoleBinding to ClusterRole view in each namespace.
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: agent-access
+  - apiVersion: v1
+    kind: ServiceAccount
+    metadata:
+      name: agent-readonly
+      namespace: agent-access
+  - apiVersion: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    metadata:
+      name: agent-readonly-view
+    roleRef:
+      apiGroup: rbac.authorization.k8s.io
+      kind: ClusterRole
+      name: view
+    subjects:
+      - kind: ServiceAccount
+        name: agent-readonly
+        namespace: agent-access

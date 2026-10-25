@@ -32,6 +32,7 @@ export class BrowserStepStrip extends LitElement {
   /** Browser steps in time order. */
   @property({ attribute: false }) steps: RuntimeSessionActivityItem[] = [];
   @property({ type: String }) sessionId = '';
+  @property({ attribute: false }) currentActivityId: string | null = null;
 
   /**
    * How many steps the window currently covers, counted back from the newest.
@@ -75,6 +76,10 @@ export class BrowserStepStrip extends LitElement {
       cursor: pointer;
       color: inherit;
       font: inherit;
+    }
+    button[aria-current='step'] {
+      border-color: var(--sl-color-primary-600, #2563eb);
+      background: var(--sl-color-primary-100, #dbeafe);
     }
     button:hover,
     button:focus-visible {
@@ -173,6 +178,7 @@ export class BrowserStepStrip extends LitElement {
             return html`<button
               type="button"
               data-step-key=${browserStepKey(item)}
+              aria-current=${item.activity_id === this.currentActivityId ? 'step' : 'false'}
               aria-label=${`Jump to step #${number}: ${action}`}
               @click=${() => this.scrub(item)}
             >
@@ -180,6 +186,7 @@ export class BrowserStepStrip extends LitElement {
                 shot?.artifact_id
                   ? html`<browser-step-thumbnail
                       compact
+                      budgeted
                       .sessionId=${this.sessionId}
                       .artifactId=${shot.artifact_id}
                       .availability=${String(shot.availability || 'available')}

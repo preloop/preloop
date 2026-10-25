@@ -19,18 +19,31 @@ func TestInventoryWindowsProfileListFixtures(t *testing.T) {
 		}
 		return path, nil
 	}
-	profiles, truncated, err := inventoryWindowsProfiles(names, read, func(volume string) bool { return volume == "C:" })
+	profiles, truncated, err := inventoryWindowsProfiles(names, nil, read, func(volume string) bool { return volume == "C:" })
 	if err != nil || truncated || len(profiles) != 2 {
 		t.Fatalf("ProfileList: %v %v %v", profiles, truncated, err)
 	}
-	for _, path := range []string{`\\example.com\homes\Jane`, `C:relative`, `\\?\C:\Users\Jane`, `C:\Users\Jane:secret`, `Z:\Users\Jane`} {
-		_, _, err := inventoryWindowsProfiles(names[3:4], func(string) (string, error) { return path, nil }, func(volume string) bool { return volume == "C:" })
-		if err == nil {
+	for _, path := range []string{`\\example.com\homes\Jane`, `C:relative`, `\\?\C:\Users\Jane`, `C:\Users\Jane:secret`, `Z:\Users\Jane`, `C:\Users\Jane\..\Alex`} {
+		profiles, _, err := inventoryWindowsProfiles(names[3:4], nil, func(string) (string, error) { return path, nil }, func(volume string) bool { return volume == "C:" })
+		if err != nil || len(profiles) != 1 || profiles[0].ErrorCode != "profile_unavailable" || profiles[0].Home != "" {
 			t.Fatalf("unsafe profile root accepted: %q", path)
 		}
 	}
-	_, _, err = inventoryWindowsProfiles(names[3:4], func(string) (string, error) { return "", os.ErrPermission }, func(string) bool { return true })
-	if err == nil {
-		t.Fatal("unreadable registry entry hidden")
+	profiles, _, err = inventoryWindowsProfiles(names[3:5], nil, func(sid string) (string, error) {
+		if sid == names[3] {
+			return "", os.ErrPermission
+		}
+		return paths[sid], nil
+	}, func(string) bool { return true })
+	if err != nil || len(profiles) != 2 || profiles[0].ErrorCode != "profile_unreadable" || profiles[0].LocalRef == "" || profiles[1].Home != paths[names[4]] {
+		t.Fatalf("unreadable registry entry discarded healthy scope: %v %v", profiles, err)
+	}
+}
+
+func TestInventoryWindowsProfilesKeepNamesReadBeforeError(t *testing.T) {
+	enumErr := os.ErrDeadlineExceeded
+	profiles, _, err := inventoryWindowsProfiles([]string{"S-1-5-21-1-2-3-1001"}, enumErr, func(string) (string, error) { return `C:\Users\Jane`, nil }, func(volume string) bool { return volume == "C:" })
+	if err != enumErr || len(profiles) != 1 || profiles[0].Home != `C:\Users\Jane` {
+		t.Fatalf("profiles=%#v err=%v", profiles, err)
 	}
 }

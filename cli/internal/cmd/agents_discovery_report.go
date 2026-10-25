@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -36,8 +35,8 @@ import (
 
 const (
 	discoveryReportEnv       = "PRELOOP_DISCOVERY_REPORT"
-	discoverySaltPath        = "/api/v1/agents/discovery-salt"
-	discoveryReportPath      = "/api/v1/agents/discovery-reports"
+	discoverySaltPath        = api.RESTPrefix + "/agents/discovery-salt"
+	discoveryReportPath      = api.RESTPrefix + "/agents/discovery-reports"
 	workstationFingerprintNS = "preloop-workstation:v1:"
 	configPathHashNS         = "preloop-config-path:v1:"
 	workstationIDFileName    = "workstation-id"
@@ -228,44 +227,60 @@ func discoveryLinkFields(client *api.Client, agent AgentConfig) map[string]strin
 		return nil
 	}
 	home, _ := os.UserHomeDir()
-	return map[string]string{
+	fields := map[string]string{
 		"workstation_fingerprint": workstationFingerprint(discoveryLinkSalt, machineID),
 		"config_path_hash":        configPathHash(discoveryLinkSalt, home, agent.ConfigPath),
+		"os_family":               discoveryOSFamily(),
 	}
+	if discoveryVersionPattern.MatchString(version.Version) {
+		fields["cli_version"] = version.Version
+	}
+	return fields
 }
 
 // defaultReadMachineID reads the platform machine id. When the platform
 // gives none, it falls back to a random id persisted in the CLI config dir
 // so the fingerprint stays stable across runs.
 func defaultReadMachineID() (string, error) {
-	if id := platformMachineID(); id != "" {
-		return id, nil
-	}
-	return persistedWorkstationID()
+	return machineIDWithFallback(platformMachineID, true)
 }
 
-func platformMachineID() string {
-	switch runtime.GOOS {
-	case "linux":
-		for _, path := range []string{"/etc/machine-id", "/var/lib/dbus/machine-id"} {
-			if data, err := os.ReadFile(path); err == nil {
-				if id := strings.TrimSpace(string(data)); id != "" {
-					return id
-				}
-			}
-		}
-	case "darwin":
-		out, err := exec.Command("ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
-		if err == nil {
-			return parseIORegPlatformUUID(string(out))
-		}
-	case "windows":
-		out, err := exec.Command("reg", "query", `HKLM\SOFTWARE\Microsoft\Cryptography`, "/v", "MachineGuid").Output()
-		if err == nil {
-			return parseWindowsMachineGUID(string(out))
-		}
+// Elevated inventory must not create state when the OS identity is missing.
+// Reuse an existing fallback so it still correlates with runners and v1 reports.
+var readInventoryMachineID = func() (string, error) {
+	return machineIDWithFallback(platformMachineID, false)
+}
+
+func machineIDWithFallback(platform func() string, create bool) (string, error) {
+	if id := platform(); id != "" {
+		return id, nil
 	}
-	return ""
+	if create {
+		return persistedWorkstationID()
+	}
+	dir, err := config.GetConfigDir()
+	if err != nil {
+		return "", err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	file, err := openInventoryConfig(root, workstationIDFileName)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 129))
+	if err != nil {
+		return "", err
+	}
+	id := strings.TrimSpace(string(data))
+	if id == "" || len(data) > 128 {
+		return "", errors.New("invalid workstation identity")
+	}
+	return id, nil
 }
 
 func parseIORegPlatformUUID(out string) string {

@@ -1,5 +1,6 @@
 import { fixture, html, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { setViewport } from '@web/test-runner-commands';
 
 import './flow-execution-view';
 import type { FlowExecutionView } from './flow-execution-view';
@@ -202,6 +203,34 @@ describe('FlowExecutionView first paint', () => {
     releaseAll();
   });
 
+  it('renders tool activity when randomUUID is unavailable on HTTP', async () => {
+    const uuid = sinon.stub(crypto, 'randomUUID').value(undefined);
+    const previous = bodies.detail;
+    bodies.detail = () => ({
+      ...DETAIL,
+      mcp_usage_logs: [
+        {
+          timestamp: '2026-09-01T10:00:30Z',
+          tool_name: 'search_issues',
+          status: 'success',
+        },
+      ],
+    });
+    try {
+      const element = await mount();
+      await paint(element);
+      expect(
+        root(element).querySelector('view-header')?.getAttribute('headertext')
+      ).to.equal('Nightly triage');
+      expect(text(element)).to.contain('search_issues');
+      expect((element as any).isLoading).to.equal(false);
+      releaseAll();
+    } finally {
+      bodies.detail = previous;
+      uuid.restore();
+    }
+  });
+
   it('fills each section as its own response lands', async () => {
     const element = await mount();
     await paint(element);
@@ -386,5 +415,118 @@ describe('FlowExecutionView first paint', () => {
 
     expect((element as any).gatewayEvents).to.deep.equal([]);
     expect((element as any).gatewayEventsLoaded).to.equal(false);
+  });
+  // #1692: on a failed tracker run the "Manage PR follow-up" action used to
+  // take its own block (about 40px above and below) and pushed the Timeline
+  // tabs past the first screenful. It now rides the status row, so the tabs
+  // sit where they would without the action.
+  it('keeps the PR follow-up action from pushing the Timeline tabs down', async () => {
+    await setViewport({ width: 1440, height: 900 });
+    const failed = {
+      ...DETAIL,
+      status: 'FAILED',
+      error_message: 'Agent exited with code 1',
+      trigger_event_details: {
+        source: 'github',
+        tracker_id: 'tracker-1',
+        payload: { repository: { id: 42 } },
+      },
+      result: {
+        pr_url: 'https://github.com/team/repo/pull/7',
+        pr_source_branch: 'fix/issue',
+      },
+    };
+    const tabsTop = async (detail: unknown) => {
+      bodies.detail = () => detail;
+      const element = await mount();
+      await paint(element);
+      releaseAll();
+      await element.updateComplete;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const host = element.getBoundingClientRect().top;
+      const tabs = root(element).querySelector('.execution-tabs')!;
+      const top = tabs.getBoundingClientRect().top - host;
+      const button = root(element)
+        .querySelector('preloop-execution-continuation')
+        ?.shadowRoot?.querySelector('[data-continuation-preview]');
+      element.remove();
+      return { top, button };
+    };
+    try {
+      const withAction = await tabsTop(failed);
+      expect(withAction.button, 'the action renders').to.exist;
+      expect(
+        withAction.button!.closest('.status-row') ??
+          (withAction.button!.getRootNode() as ShadowRoot).host.closest(
+            '.status-row'
+          ),
+        'the action sits in the status row'
+      ).to.exist;
+      gates = {
+        detail: gate(),
+        logs: gate(),
+        flow: gate(),
+        metrics: gate(),
+        gateway: gate(),
+      };
+      const withoutAction = await tabsTop({
+        ...failed,
+        trigger_event_details: { source: 'schedule' },
+        result: {},
+      });
+      expect(withoutAction.button).to.not.exist;
+      expect(withAction.top - withoutAction.top).to.be.at.most(4);
+    } finally {
+      bodies.detail = () => DETAIL;
+    }
+  });
+  it('keeps a heavy finished run within three viewports (#1692)', async () => {
+    await setViewport({ width: 1440, height: 900 });
+    const original = bodies.logs;
+    bodies.logs = () => ({
+      logs: Array.from({ length: 240 }, (_, i) => ({
+        execution_id: 'exec-fp',
+        timestamp: new Date(
+          Date.parse(DETAIL.start_time) + i * 20_000
+        ).toISOString(),
+        type: 'agent_log_line',
+        payload: { line: `step ${i}: ${'work '.repeat(30)}` },
+      })),
+      source: 'database',
+      has_more: false,
+    });
+    gatewayResponse = () => ({
+      logs: Array.from({ length: 80 }, (_, i) => ({
+        ...call(i, 1000, 0.1),
+        timestamp: new Date(
+          Date.parse(DETAIL.start_time) + i * 25_000
+        ).toISOString(),
+      })),
+      source: 'database',
+      has_more: false,
+    });
+    try {
+      const element = await mount();
+      await paint(element);
+      releaseAll();
+      await waitUntil(
+        () => root(element).querySelectorAll('.timeline-row').length > 40,
+        'the heavy timeline did not render'
+      );
+      await element.updateComplete;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      // The console shell adds about 400px of chrome above the tabs, so the
+      // stream gets at most two viewports minus that to keep the whole page
+      // within three screens.
+      const stream = root(element).querySelector('.timeline-stream')!;
+      expect(stream.getBoundingClientRect().height).to.be.at.most(
+        2 * 900 - 400 + 1
+      );
+      const height = element.getBoundingClientRect().height;
+      expect(height / 900).to.be.at.most(3);
+      element.remove();
+    } finally {
+      bodies.logs = original;
+    }
   });
 });

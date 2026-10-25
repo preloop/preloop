@@ -6,6 +6,8 @@
  * correlate with web sessions. Either store recovers the other when cleared.
  */
 
+import { randomUuid } from '../utils/random-uuid';
+
 const STORAGE_KEY = 'preloopVisitorId';
 const COOKIE_NAME = 'pl_vid';
 const COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60; // 400 days (browser cap)
@@ -44,26 +46,7 @@ function writeStorage(id: string): void {
 }
 
 function generateUuid(): string {
-  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
-    return crypto.randomUUID();
-  }
-  // Fallback for older browsers.
-  const bytes = new Uint8Array(16);
-  globalThis.crypto.getRandomValues(bytes);
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0'));
-  return (
-    hex.slice(0, 4).join('') +
-    '-' +
-    hex.slice(4, 6).join('') +
-    '-' +
-    hex.slice(6, 8).join('') +
-    '-' +
-    hex.slice(8, 10).join('') +
-    '-' +
-    hex.slice(10, 16).join('')
-  );
+  return randomUuid();
 }
 
 /**

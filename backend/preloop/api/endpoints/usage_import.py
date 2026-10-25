@@ -37,7 +37,8 @@ from preloop.services.usage_import import (
     parse_cursor_usage_csv,
     resolve_target_agent,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
+from preloop.api.loop_safety import run_db_off_loop
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ def import_usage_events(
     ``usage_source='imported'``. Re-sending the same events is idempotent —
     duplicates are counted in ``skipped_duplicates``, never double-billed.
     """
+    ensure_permission_in_oss(db, current_user, "import_usage")
     get_account_or_404(db, current_user)
     try:
         agent = resolve_target_agent(
@@ -129,6 +131,7 @@ def ingest_usage_records(
     whose kind equals ``source`` is used, and zero or multiple candidates
     is a 422.
     """
+    ensure_permission_in_oss(db, current_user, "import_usage")
     get_account_or_404(db, current_user)
     try:
         agent = resolve_target_agent(
@@ -198,6 +201,9 @@ async def import_usage_csv(
     stored with tokens but no charged amount. Re-importing the same file is
     idempotent.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "import_usage")
+    )
     get_account_or_404(db, current_user)
 
     parsed_column_map = None

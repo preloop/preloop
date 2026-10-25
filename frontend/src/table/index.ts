@@ -6,7 +6,11 @@ export type {
   ListTableOptions,
   PersistedSlice,
 } from './list-table';
-export { renderListHeaders, renderListCells } from './list-table-render';
+export {
+  renderHeaderColumnPicker,
+  renderListHeaders,
+  renderListCells,
+} from './list-table-render';
 export { listTableStyles } from './list-table-styles';
 export {
   TABLE_PREFERENCES_VERSION,

@@ -7,11 +7,10 @@ would be matched as a session id before it ever reached this module. Sitting
 under the search path also says what these are: the saved form of the search
 one segment up.
 
-The permission is ``view_runtime_sessions``, the same one the search endpoint
-takes. Saving a query is not a new kind of access: a saved search can only
-ever return what the person running it could have found by typing the query
-themselves, and the account bound is applied in SQL on every read here as it
-is there.
+Personal saved searches require ``view_runtime_sessions``. Sharing a saved
+search with the account additionally requires ``share_session_searches``.
+A saved search can only return sessions the caller may read, and the account
+bound is applied in SQL on every read here.
 
 Sharing is explicit. A saved search is private until its author sets
 ``visibility`` to ``account``, and only its author may rename, edit, share or
@@ -50,13 +49,33 @@ from preloop.schemas.session_saved_search import (
 )
 from preloop.services import session_saved_search as saved_search_service
 from preloop.services.session_search_fusion import ranking_identity
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import (
+    ensure_permission_in_oss,
+    require_permission,
+    user_holds_permission,
+)
 
 router = APIRouter()
 
 #: Saved searches per page. A person's saved searches are a short list; this
 #: is a bound on a pathological one, not a paging story.
 MAX_SAVED_SEARCHES_PER_PAGE = 100
+
+
+def _ensure_can_share(db: Session, *, account: Account, user: User) -> None:
+    """Check the payload-dependent sharing permission in every edition."""
+    permission = "share_session_searches"
+    ensure_permission_in_oss(db, user, permission)
+    if (
+        user.is_superuser
+        or str(account.primary_user_id) == str(user.id)
+        or user_holds_permission(db, user, permission)
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Insufficient permissions. Required: {permission}",
+    )
 
 
 def _load_visible(
@@ -144,13 +163,11 @@ def _create(
 def _update(
     db: Session,
     *,
-    account: Account,
     user: User,
-    saved_search_id: UUID,
+    saved: SessionSavedSearch,
     payload: SessionSavedSearchUpdate,
 ) -> SessionSavedSearchRead:
     """Apply an edit to a saved search the caller wrote."""
-    saved = _load_owned(db, account=account, user=user, saved_search_id=saved_search_id)
     # ``None`` means "leave this alone" on every field here, because none of
     # them is nullable: a saved search always has a name, a query and a mode.
     values: Dict[str, Any] = {
@@ -244,8 +261,12 @@ def create_saved_session_search(
     """Save a query, mode, filters and snippet preferences under a name.
 
     The filters are validated here, so a saved search that cannot run cannot
-    be stored. Visibility defaults to private; sharing is a separate edit.
+    be stored. Visibility defaults to private. Account visibility requires
+    permission to share saved searches.
     """
+    ensure_permission_in_oss(db, current_user, "view_runtime_sessions")
+    if payload.visibility == VISIBILITY_ACCOUNT:
+        _ensure_can_share(db, account=account, user=current_user)
     return _create(db, account=account, user=current_user, payload=payload)
 
 
@@ -267,6 +288,7 @@ def list_saved_session_searches(
     Most recently run first, so the searches somebody actually repeats are at
     the top of the list.
     """
+    ensure_permission_in_oss(db, current_user, "view_runtime_sessions")
     rows, total = crud_session_saved_search.list_visible(
         db,
         account_id=account.id,
@@ -298,6 +320,7 @@ def get_saved_session_search(
     db: Session = Depends(get_db_session),
 ) -> SessionSavedSearchRead:
     """Return one saved search the caller may see."""
+    ensure_permission_in_oss(db, current_user, "view_runtime_sessions")
     return saved_search_service.to_read(
         _load_visible(
             db,
@@ -326,13 +349,22 @@ def update_saved_session_search(
 
     Renaming, changing the question and sharing are one route because they are
     one thing: this saved question is not what it was. Only the author may do
-    any of them.
+    any of them. Changing visibility to ``account`` also requires
+    ``share_session_searches``.
     """
+    ensure_permission_in_oss(db, current_user, "view_runtime_sessions")
+    saved = _load_owned(
+        db, account=account, user=current_user, saved_search_id=saved_search_id
+    )
+    if (
+        payload.visibility == VISIBILITY_ACCOUNT
+        and saved.visibility != VISIBILITY_ACCOUNT
+    ):
+        _ensure_can_share(db, account=account, user=current_user)
     return _update(
         db,
-        account=account,
         user=current_user,
-        saved_search_id=saved_search_id,
+        saved=saved,
         payload=payload,
     )
 
@@ -350,6 +382,7 @@ def delete_saved_session_search(
     db: Session = Depends(get_db_session),
 ) -> None:
     """Delete a saved search the caller wrote. The sessions are untouched."""
+    ensure_permission_in_oss(db, current_user, "view_runtime_sessions")
     _delete(
         db,
         account=account,
@@ -383,6 +416,7 @@ def run_saved_session_search(
     The body is optional: it carries paging only, because the saved search
     owns everything else about the question.
     """
+    ensure_permission_in_oss(db, current_user, "view_runtime_sessions")
     # An absent body is an empty body: the defaults on the paging model are
     # the first page.
     requested = paging or SessionSavedSearchRunRequest.model_validate({})

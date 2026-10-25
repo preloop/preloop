@@ -49,6 +49,21 @@ driver can replace the SDK without changing the WebSocket protocol.
   is included in result metadata when the SDK provides it. A persistent
   checkout also reports `metadata.workspace_path` on `command_result` and
   on `event/session_activity`.
+- **Live terminal sessions (shared app-server daemon).** An interactive
+  `codex` that runs on the shared `codex app-server` daemon (Codex CLI
+  0.163.0 starts it unless run with `--no-daemon`; `preloop codex sidecar
+  enable --app-server-daemon` starts it explicitly) can be talked to live.
+  Every 5 s the sidecar lists the daemon's loaded, non-ephemeral threads and
+  reports them in `reachable_session_ids`. A `send_message` for one of them
+  becomes `turn/start` when the thread is idle, or `turn/steer` when a turn
+  is running, so the terminal shows the line and the reply as if typed.
+  `interrupt` becomes `turn/interrupt`. While subscribed, command starts and
+  ends (with exit code), reply deltas, reasoning titles, turn bounds and
+  token usage are sent as `event/session_progress` with the thread id as
+  `session_source_id`; per-token deltas are merged and sent at most every
+  250 ms. Such a thread is never resumed through the SDK, and
+  the sidecar never answers its approval prompts. See
+  [docs/app-server-spike.md](docs/app-server-spike.md).
 - **Observed sessions (presence).** The sidecar tails
   `~/.codex/sessions/**/*.jsonl` and reports `session_activity` (session id,
   cwd, last role, tail-window turn count, mtime). Summaries only; transcripts
@@ -66,9 +81,10 @@ driver can replace the SDK without changing the WebSocket protocol.
 
 ## Honest limitations
 
-- `interrupt` only aborts a turn the sidecar itself started. An interactive
-  terminal session is observe-only; interrupting it fails with a clear
-  error rather than signalling a terminal someone is typing into.
+- `interrupt` only aborts a turn the sidecar itself started or a turn of a
+  terminal session on the shared app-server daemon. A terminal session that
+  runs its own embedded app server (`codex --no-daemon`) is observe-only;
+  interrupting it fails with a clear error.
 - Turn count in `session_activity` is the number of `task_started` events
   in the tail window (at most 64KB), not a full-file count.
 
@@ -136,6 +152,9 @@ Codex-specific keys:
 | `codex_sandbox_mode` | `workspace-write` | Also allows `read-only`. `danger-full-access` is refused unless `codex_allow_full_access` is `true`. |
 | `codex_allow_full_access` | unset | Explicit opt-in for `danger-full-access`. |
 | `codex_path` | unset | Override of the `codex` binary the SDK spawns (`codexPathOverride`). |
+| `codex_app_server_enabled` | `true` | Drive terminal sessions on the shared app-server daemon. A missing daemon socket only means none are reachable. |
+| `codex_app_server_poll_ms` | `5000` | How often the daemon's loaded threads are listed. |
+| `codex_home` | `$CODEX_HOME` or `~/.codex` | Where the daemon control socket lives. |
 
 `verify` exits 0 for a valid file and non-zero with a message naming the
 problem otherwise (missing required key, wrong `runtime`, or a refused

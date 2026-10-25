@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 import { fetchWithAuth, getFeatures, getUserProfile } from './api';
 import type { UserProfile } from './api';
 
@@ -96,12 +97,17 @@ export const fleetHref = (key?: string): string =>
 export async function fleetAccess(): Promise<{
   view: boolean;
   manage: boolean;
+  /** Instance (platform) administrator: unlocks the spatial map. */
+  instanceAdmin: boolean;
+  userId: string;
 }> {
   const [features, user] = await Promise.all([getFeatures(), getUserProfile()]);
   const enabled = features.features.fleet_coverage === true;
   return {
     view: enabled && hasFleetPermission(user, 'view_device_fleet'),
     manage: enabled && hasFleetPermission(user, 'manage_device_fleet'),
+    instanceAdmin: user?.is_superuser === true,
+    userId: String(user?.id ?? ''),
   };
 }
 async function request<T>(
@@ -109,7 +115,7 @@ async function request<T>(
   signal?: AbortSignal,
   body?: unknown
 ): Promise<T> {
-  const response = await fetchWithAuth(`/api/v1/fleet${path}`, {
+  const response = await fetchWithAuth(`${REST_API_PREFIX}/fleet${path}`, {
     signal,
     ...(body === undefined
       ? {}

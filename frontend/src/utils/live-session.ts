@@ -1,4 +1,6 @@
+import { parseUtc } from './date';
 import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
+import { lastFinishReason } from './session-live';
 
 /**
  * Shared live-session state for the console's session surfaces.
@@ -103,11 +105,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function parseTime(value: string | null | undefined): number | null {
-  if (!value) return null;
-  const parsed = new Date(value).getTime();
-  return Number.isNaN(parsed) ? null : parsed;
-}
+// Offset-less backend timestamps are UTC; a local parse shifted ages by the
+// viewer's offset (an approval seconds old read as "120m").
+const parseTime = parseUtc;
 
 /** Argument keys that carry the one detail worth showing on a collapsed row. */
 const SUMMARY_KEYS = [
@@ -607,6 +607,14 @@ export function deriveLiveSessionState(
     .filter((value): value is number => value !== null)
     .sort((left, right) => right - left)[0];
   if (queued !== undefined) return base('waiting_for_agent', null, queued);
+
+  // The newest model reply asked for tools and nothing newer arrived: the
+  // agent is running them locally, which is not idle. The status line under
+  // this header said "Tool requested" while this one said "Idle".
+  if (lastFinishReason(events) === 'tool' && lastUpdateAt !== null) {
+    if (now - lastUpdateAt <= MAX_INFLIGHT_REQUEST_MS)
+      return base('running_tool', null, lastUpdateAt);
+  }
 
   return base('idle');
 }

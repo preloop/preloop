@@ -667,3 +667,39 @@ def test_resume_root_expression_matches_the_index(db_session):
     ).scalar()
     assert indexdef is not None, "run alembic upgrade head"
     assert "'_resume'::text" in indexdef and "'resume_root'::text" in indexdef
+
+
+def test_resume_chain_usage_is_read_per_member(db_session, test_user, seeded):
+    """Chain usage is one index range per member, never a walk of the index.
+
+    With the page's members as a semi join, prod's planner walked all of
+    ``ix_api_usage_flow_execution_id`` (every execution's usage) and kept the
+    page's rows: 0.67 to 1.0 s for a page of 100, 33 ms as LATERAL (#1694).
+    That plan only appears at prod's row counts, so the statement shape is
+    pinned here: usage is a LATERAL lookup keyed by the member, and members
+    are two index branches instead of one OR across the account's runs.
+    """
+    roots = {execution.id for execution in seeded["executions"]}
+    with _Statements(db_session) as log:
+        crud_flow_execution.get_resume_chain_cost_totals(
+            db_session,
+            account_id=test_user.account_id,
+            roots=list(roots),
+            root_texts=[str(root) for root in roots],
+        )
+    statement, parameters = next(row for row in log.rows if "chain_root" in row[0])
+    flat = " ".join(statement.split())
+    assert "LEFT OUTER JOIN LATERAL" in flat
+    assert "api_usage.flow_execution_id = anon_" in flat
+    assert " UNION " in flat
+    assert " OR " not in flat.split("UNION")[0].split("WHERE", 1)[1]
+    raw = db_session.connection().connection.driver_connection
+    with raw.cursor() as cursor:
+        cursor.execute("SET LOCAL enable_seqscan = off")
+        try:
+            cursor.execute("EXPLAIN " + statement, parameters)
+            plan = "\n".join(row[0] for row in cursor.fetchall())
+        finally:
+            cursor.execute("SET LOCAL enable_seqscan = on")
+    assert "ix_flow_execution_resume_root" in plan, plan
+    assert _unbounded_scans_in(plan) == []

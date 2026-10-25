@@ -26,6 +26,17 @@ describe('ApiKeysView', () => {
           !url.includes('/governance') &&
           (!init || !init.method || init.method === 'GET')
         ) {
+          // The server searches by name now (#1694).
+          if (new URL(url, window.location.origin).searchParams.get('q')) {
+            return new Response('[]', {
+              status: 200,
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Total-Count': '0',
+                'X-Retired-Count': '0',
+              },
+            });
+          }
           return new Response(
             JSON.stringify([
               {
@@ -116,6 +127,118 @@ describe('ApiKeysView', () => {
     );
     await waitUntil(() => !(element as any).isLoading);
     expect(element.table.pageSize).to.equal(25);
+  });
+
+  it('asks the server for one page of live keys, not every key (#1694)', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    const listCalls = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => /\/auth\/api-keys(\?|$)/.test(url));
+    expect(listCalls.length).to.be.greaterThan(0);
+    const params = new URL(listCalls[0], window.location.origin).searchParams;
+    expect(params.get('limit')).to.equal('25');
+    expect(params.get('offset')).to.equal('0');
+    expect(params.get('include_retired')).to.equal('false');
+    expect(params.get('sort')).to.equal('-created');
+  });
+
+  it('pages through the server total and fetches the next page', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (/\/auth\/api-keys\?/.test(url)) {
+        const offset = Number(
+          new URL(url, window.location.origin).searchParams.get('offset')
+        );
+        const rows = Array.from({ length: offset === 0 ? 25 : 5 }, (_, i) => ({
+          id: `key-${offset + i}`,
+          name: `Key ${offset + i}`,
+          created_at: '2026-03-10T09:00:00Z',
+          last_used_at: null,
+          activity_status: 'idle',
+          expires_at: null,
+        }));
+        return new Response(JSON.stringify(rows), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Total-Count': '30',
+            'X-Retired-Count': '0',
+          },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+    expect(element.table.totalRows).to.equal(30);
+    expect(element.table.canNextPage).to.equal(true);
+    element.table.setPageIndex(1);
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('offset=25'))
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('Key 29');
+  });
+
+  it('steps back a page when the last key on a later page is gone', async () => {
+    fetchStub.restore();
+    fetchStub = sinon.stub(window, 'fetch');
+    // 25 keys remain after the only key on page 2 was revoked.
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (/\/auth\/api-keys\?/.test(url)) {
+        const offset = Number(
+          new URL(url, window.location.origin).searchParams.get('offset')
+        );
+        const rows =
+          offset === 0
+            ? Array.from({ length: 25 }, (_, i) => ({
+                id: `key-${i}`,
+                name: `Key ${i}`,
+                created_at: '2026-03-10T09:00:00Z',
+                last_used_at: null,
+                activity_status: 'idle',
+                expires_at: null,
+              }))
+            : [];
+        return new Response(JSON.stringify(rows), {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Total-Count': '25',
+            'X-Retired-Count': '0',
+          },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    element.table.setPageIndex(1);
+    await waitUntil(() => element.table.pageIndex === 0, 'clamped to page 1');
+    await waitUntil(() => !(element as any).isLoading);
+    await element.updateComplete;
+    expect(element.shadowRoot?.textContent).to.contain('Key 24');
   });
 
   it('loads keys without fetching catalogs, including when creating a key', async () => {
@@ -334,6 +457,17 @@ describe('ApiKeysView', () => {
     expect(showAll, 'Show all control is rendered').to.exist;
 
     (showAll as HTMLButtonElement).click();
+    // Show all asks the server for the retired keys (#1694).
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some((call) =>
+            String(call.args[0]).includes('include_retired=true')
+          ),
+      'Show all did not refetch with retired keys'
+    );
+    await waitUntil(() => !(element as any).isLoading);
     await element.updateComplete;
 
     content = element.shadowRoot?.textContent || '';
@@ -590,6 +724,13 @@ describe('ApiKeysView', () => {
     ).to.not.equal(null);
 
     element.table.setSearch('no such key');
+    // The search runs on the server: wait for the searched page.
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).includes('q=no+such+key'))
+    );
+    await waitUntil(() => !(element as any).isLoading);
     await element.updateComplete;
     await (table as unknown as { updateComplete: Promise<unknown> })
       .updateComplete;

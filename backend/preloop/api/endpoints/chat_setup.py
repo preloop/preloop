@@ -103,6 +103,7 @@ def public_draft(draft: models.ChatSetupDraft) -> dict[str, Any]:
         "expires_at": draft.expires_at.isoformat() + "Z",
         "callback_url": callback(draft.id),
         "name": info.get("name", ""),
+        "bot_username": info.get("bot_username", ""),
         "workspaces": info.get("workspaces", []),
         "install_url": info.get("install_url"),
         "callback_conflict": bool(

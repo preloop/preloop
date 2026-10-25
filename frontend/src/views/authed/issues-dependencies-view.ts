@@ -452,7 +452,7 @@ export class IssuesDependenciesView extends LitElement {
       return html`
         <sl-alert variant="warning" open>
           <sl-icon slot="icon" name="info-circle"></sl-icon>
-          <strong>No Issues Found</strong><br />
+          <strong>No issues found</strong><br />
           No issues were found for the selected project, or the project is
           empty.
         </sl-alert>
@@ -832,7 +832,7 @@ export class IssuesDependenciesView extends LitElement {
         @on-apply=${this._applyFilters}
       ></project-filter-modal>
 
-      <view-header headerText="Issue Dependencies" width="wide">
+      <view-header headerText="Issue dependencies" width="wide">
         <div slot="main-column" class="controls">
           <sl-select
             aria-label="Project"

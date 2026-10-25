@@ -40,7 +40,7 @@ from preloop.models.crud import crud_audit_log, crud_desktop, crud_managed_agent
 from preloop.models.crud.desktop import endpoint_is_online
 from preloop.services import desktop_broker as broker
 from preloop.services.db_executor import run_db_async
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -101,6 +101,7 @@ def _authorize_operator(db: Session, user: models.User) -> None:
     if _is_machine_credential(user):
         raise _error(403, "forbidden", "Agent credentials cannot open desktop views")
     _desktop_permission(current_user=user, db=db)
+    ensure_permission_in_oss(db, user, PERMISSION)
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +740,9 @@ def _authenticate_endpoint(db: Session, token: str) -> _EndpointIdentity:
     if api_key is None:
         raise _error(401, "unauthorized", "Invalid API key")
     user = _authenticate_with_api_key(db, api_key, allow_stale_runtime_session=True)
+    from preloop.api.auth.key_scopes import enforce_runtime_api_key_scope
+
+    enforce_runtime_api_key_scope(api_key)
     context = api_key.context_data if isinstance(api_key.context_data, dict) else {}
     bound = context.get("managed_agent_id")
     return _EndpointIdentity(
@@ -1157,6 +1161,12 @@ async def _resolve_viewer(token: str) -> Optional[models.User]:
     def lookup(db: Session) -> Optional[models.User]:
         user = get_user_from_token_if_valid_sync(token, db)
         if user is None or _is_machine_credential(user):
+            return None
+        from preloop.api.auth.key_scopes import api_key_allowed_on_channel
+
+        if not api_key_allowed_on_channel(
+            getattr(user, "_auth_api_key", None), "desktop viewer websocket"
+        ):
             return None
         return detach_user(db, user)
 

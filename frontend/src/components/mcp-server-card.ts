@@ -9,6 +9,8 @@ import '@shoelace-style/shoelace/dist/components/switch/switch.js';
 import { consoleDialogStyles } from '../styles/console-dialog';
 
 export interface MCPServer {
+  is_shared?: boolean;
+  read_only?: boolean;
   id: string;
   name: string;
   url: string;
@@ -186,7 +188,7 @@ export class MCPServerCard extends LitElement {
 
     return html`
       <sl-dialog
-        label="Confirm Deletion"
+        label="Confirm deletion"
         ?open=${this.isConfirmingDelete}
         @sl-hide=${this.cancelDelete}
       >

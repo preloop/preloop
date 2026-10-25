@@ -10,6 +10,7 @@ import { loadShoelaceTokens } from '../utils/test-shoelace-theme';
 import type { PreloopSessionObserver } from './preloop-session-observer';
 
 describe('PreloopSessionObserver', () => {
+  const originalUrl = window.location.href;
   let fetchStub: sinon.SinonStub;
   let connectStub: sinon.SinonStub;
   let subscribeStub: sinon.SinonStub;
@@ -262,6 +263,7 @@ describe('PreloopSessionObserver', () => {
   });
 
   afterEach(() => {
+    window.history.replaceState(null, '', originalUrl);
     fetchStub.restore();
     connectStub.restore();
     subscribeStub.restore();
@@ -277,6 +279,219 @@ describe('PreloopSessionObserver', () => {
     });
     return text;
   }
+
+  it('resolves a pinned session beyond the first page without selecting the newest', async () => {
+    const older = { ...session, id: 'older-session', agent_id: 'agent-1' };
+    fetchStub
+      .withArgs('/api/v1/runtime-sessions/older-session')
+      .resolves(new Response(JSON.stringify({ session: older })));
+    const selected: string[] = [];
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'older-session'}
+        @session-selected=${(event: CustomEvent) => selected.push(event.detail.sessionId)}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => (el as any).activeSessionId === 'older-session');
+    expect(selected).to.deep.equal(['older-session']);
+    expect((el as any).observedSessions.map((row: any) => row.id)).to.include(
+      'older-session'
+    );
+    el.sessions = [{ ...session }];
+    await el.updateComplete;
+    expect((el as any).activeSessionId).to.equal('older-session');
+  });
+
+  for (const failure of ['missing', 'other-agent', 'invalid', 'empty']) {
+    it(`does not substitute another session when the pinned session is ${failure}`, async () => {
+      const id =
+        failure === 'invalid'
+          ? '../other'
+          : failure === 'empty'
+            ? ''
+            : 'unavailable-session';
+      fetchStub
+        .withArgs('/api/v1/runtime-sessions/unavailable-session')
+        .resolves(
+          failure === 'missing'
+            ? new Response('{}', { status: 404 })
+            : new Response(
+                JSON.stringify({
+                  session: { ...session, id, agent_id: 'another-agent' },
+                })
+              )
+        );
+      const selected: string[] = [];
+      const el = await fixture<PreloopSessionObserver>(
+        html`<preloop-session-observer
+          scope="managed_agent"
+          .scopeId=${'agent-1'}
+          .sessions=${[session]}
+          .selectedSessionId=${id}
+          @session-selected=${(event: CustomEvent) => selected.push(event.detail.sessionId)}
+        ></preloop-session-observer>`
+      );
+      await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+      expect((el as any).activeSessionId).to.equal(null);
+      expect(selected).to.deep.equal([]);
+      expect(
+        el.shadowRoot?.querySelector('[role="alert"]')?.textContent
+      ).to.contain('Select another session');
+      await (el as any).selectSession(session.id, { userInitiated: true });
+      expect((el as any).activeSessionId).to.equal(session.id);
+      expect((el as any).pinnedSessionError).to.equal(null);
+    });
+  }
+
+  it('clears an unavailable pin and resumes auto-selection when the host removes it', async () => {
+    fetchStub
+      .withArgs('/api/v1/runtime-sessions/missing-session')
+      .callsFake(async () => new Response('{}', { status: 404 }));
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'missing-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    await el.updateComplete;
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.equal(null);
+    expect((el as any).pinnedSessionPending).to.equal(null);
+  });
+
+  it('does not retry an unavailable pin on refresh until the requested id changes', async () => {
+    const missing = fetchStub.withArgs(
+      '/api/v1/runtime-sessions/missing-session'
+    );
+    missing.callsFake(async () => new Response('{}', { status: 404 }));
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'missing-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    const calls = missing.callCount;
+    for (let i = 0; i < 3; i++) {
+      el.sessions = [{ ...session }];
+      await el.updateComplete;
+      await el.reload();
+    }
+    expect(missing.callCount).to.equal(calls);
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.exist;
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    el.selectedSessionId = 'missing-session';
+    await waitUntil(() => missing.callCount > calls);
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    expect(missing.callCount).to.equal(calls + 1);
+  });
+
+  it('does not let queued auto-selection replace a newly empty pin', async () => {
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'../invalid'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!el.shadowRoot?.querySelector('[role="alert"]'));
+    const frames: FrameRequestCallback[] = [];
+    const frame = sinon
+      .stub(window, 'requestAnimationFrame')
+      .callsFake((callback) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    try {
+      el.selectedSessionId = null;
+      await el.updateComplete;
+      expect(frames.length).to.be.greaterThan(0);
+      el.selectedSessionId = '';
+      await el.updateComplete;
+    } finally {
+      frame.restore();
+    }
+    for (const callback of frames) callback(performance.now());
+    await el.updateComplete;
+    expect((el as any).activeSessionId).to.equal(null);
+    expect(el.shadowRoot?.querySelector('[role="alert"]')).to.exist;
+  });
+
+  it('invalidates an in-flight pinned read when the host removes the pin', async () => {
+    let release!: (response: Response) => void;
+    fetchStub.withArgs('/api/v1/runtime-sessions/older-session').returns(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      })
+    );
+    const el = await fixture<PreloopSessionObserver>(
+      html` <preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'older-session'}
+      >
+      </preloop-session-observer>`
+    );
+    await waitUntil(() => !!release);
+    el.selectedSessionId = null;
+    await waitUntil(() => (el as any).activeSessionId === session.id);
+    expect((el as any).pinnedSessionPending).to.equal(null);
+    release(
+      new Response(
+        JSON.stringify({
+          session: { ...session, id: 'older-session', agent_id: 'agent-1' },
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((el as any).activeSessionId).to.equal(session.id);
+    expect(
+      (el as any).observedSessions.map((row: any) => row.id)
+    ).not.to.include('older-session');
+  });
+
+  it('ignores an older pinned read after the user chooses another session', async () => {
+    let release!: (response: Response) => void;
+    fetchStub.withArgs('/api/v1/runtime-sessions/older-session').returns(
+      new Promise<Response>((resolve) => {
+        release = resolve;
+      })
+    );
+    const el = await fixture<PreloopSessionObserver>(
+      html`<preloop-session-observer
+        scope="managed_agent"
+        .scopeId=${'agent-1'}
+        .sessions=${[session]}
+        .selectedSessionId=${'older-session'}
+      ></preloop-session-observer>`
+    );
+    await waitUntil(() => !!release);
+    await (el as any).selectSession(session.id, { userInitiated: true });
+    release(
+      new Response(
+        JSON.stringify({
+          session: { ...session, id: 'older-session', agent_id: 'agent-1' },
+        })
+      )
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect((el as any).activeSessionId).to.equal(session.id);
+  });
 
   it('loads optimization model choices only after opening optimization', async () => {
     const modelCalls = () =>
@@ -348,7 +563,7 @@ describe('PreloopSessionObserver', () => {
     // now inline rather than in a separate "Supporting activity" section).
     expect(text).to.include('Build a widget');
     expect(text).to.not.include('Duplicate model summary');
-    expect(text).to.include('Transcript');
+    expect(text).to.include('Requests');
     expect(text).to.include('Replay');
     expect(
       fetchStub.calledWithMatch(
@@ -374,6 +589,28 @@ describe('PreloopSessionObserver', () => {
       .filter((url) => /\/gateway-events\?/.test(url));
     expect(pageCalls.length).to.be.greaterThan(0);
     for (const url of pageCalls) expect(url).to.contain('history=delta');
+  });
+
+  it('reads the last 20 turns with a bounded history window (#1689)', async () => {
+    const el = (await fixture(
+      html`<preloop-session-observer
+        .sessions=${[session]}
+      ></preloop-session-observer>`
+    )) as PreloopSessionObserver;
+    await waitUntil(
+      () => deepText(el.shadowRoot).includes('Build a widget'),
+      '',
+      { timeout: 3000 }
+    );
+    const pageCalls = fetchStub
+      .getCalls()
+      .map((call) => call.args[0].toString())
+      .filter((url) => /\/gateway-events\?/.test(url) && /offset=/.test(url));
+    expect(pageCalls.length).to.be.greaterThan(0);
+    for (const url of pageCalls) {
+      expect(url).to.contain('limit=20');
+      expect(url).to.match(/history_window=\d+/);
+    }
   });
 
   it('bounds the full layout to the window so the page does not grow (#1585)', async () => {
@@ -557,7 +794,7 @@ describe('PreloopSessionObserver', () => {
 
     const requestsButton = Array.from(
       el.shadowRoot?.querySelectorAll('sl-button') || []
-    ).find((button) => button.textContent?.trim().startsWith('Requests'));
+    ).find((button) => button.textContent?.trim().startsWith('Usage log'));
     expect(requestsButton).to.exist;
     requestsButton!.click();
 
@@ -745,9 +982,11 @@ describe('PreloopSessionObserver', () => {
     );
     const button = el.shadowRoot!.querySelector(
       '[data-testid="add-to-evidence-export"]'
-    ) as HTMLElement & { href: string };
+    ) as HTMLElement;
     expect(button.textContent).to.contain('Add to evidence export');
-    const url = new URL(button.href, 'http://x');
+    // In the overflow menu with Refresh, not a toolbar button (#1689).
+    expect(button.closest('sl-dropdown.more-actions')).to.exist;
+    const url = new URL(button.getAttribute('data-href')!, 'http://x');
     expect(url.pathname).to.equal('/console/settings/records');
     expect(url.hash).to.equal('#period-exports');
     expect(url.searchParams.get('runtime_session_id')).to.equal(id);
@@ -1093,7 +1332,7 @@ describe('PreloopSessionObserver', () => {
       ).to.equal('replay');
 
       // Returning to the default mode clears the param to keep URLs clean.
-      findTab('Transcript')!.click();
+      findTab('Requests')!.click();
       await el.updateComplete;
       expect(new URLSearchParams(window.location.search).get('replay')).to.be
         .null;
@@ -1474,6 +1713,16 @@ describe('PreloopSessionObserver', () => {
           el.shadowRoot!.querySelectorAll('.toolbar sl-button')
         ).find((button) => (button.textContent || '').includes('End session'));
         expect(endButton, 'End session button').to.exist;
+        // Refresh lives in the overflow menu, never beside End session (#1689).
+        const toolbarLabels = Array.from(
+          el.shadowRoot!.querySelectorAll('.mode-row > sl-button')
+        ).map((button) => (button.textContent || '').trim());
+        expect(toolbarLabels).to.not.include('Refresh');
+        expect(
+          el.shadowRoot!.querySelector(
+            'sl-dropdown.more-actions [data-testid="session-refresh"]'
+          )
+        ).to.exist;
         expect(endButton!.getAttribute('variant')).to.equal('danger');
         expect(endButton!.hasAttribute('outline')).to.be.true;
 

@@ -298,6 +298,8 @@ export interface AttentionInputs {
   /** Notify rule hits of the last seven days, one row per rule. */
   policyNotices?: AttentionPolicyNotice[];
   mcpFindings?: MCPFinding[];
+  /** A report permalink can open its resolved evidence without adding alerts. */
+  focusedItemId?: string;
   extensionItems?: PreparedExtensionAttentionItem[];
   /**
    * Active dismissals. `undefined` (an older backend without the endpoint)
@@ -1425,15 +1427,21 @@ export function deriveAttentionItems(inputs: AttentionInputs): AttentionResult {
       now
     ),
     ...(inputs.mcpFindings || [])
-      .filter((finding) => finding.state === 'open')
+      .filter(
+        (finding) =>
+          finding.state === 'open' ||
+          inputs.focusedItemId === `mcp:${finding.id}`
+      )
       .map((finding): AttentionItem => ({
         id: `mcp:${finding.id}`,
         kind: 'mcp',
-        severity: 'warning',
+        severity: finding.state === 'open' ? 'warning' : 'low',
         title:
-          finding.evidence_class === 'observed_call'
-            ? 'Observed MCP call needs inventory review'
-            : 'Configured MCP route needs inventory review',
+          finding.state !== 'open'
+            ? `MCP inventory finding ${finding.state}`
+            : finding.evidence_class === 'observed_call'
+              ? 'Observed MCP call needs inventory review'
+              : 'Configured MCP route needs inventory review',
         detail: `Account approval: ${finding.approval_state}. ${finding.limitation}`,
         href: '/console/tools',
         at: finding.first_seen_at,
@@ -1506,11 +1514,23 @@ export function attentionItemAnchor(itemId: string): string {
   return `/console/attention#item-${encodeURIComponent(itemId)}`;
 }
 
+/**
+ * Chip nouns that differ from the section titles: a section can be called
+ * "Pricing", but "1 pricing" is not something a reader can say, and
+ * lowercasing "MCP routes" printed "mcp routes".
+ */
+const CHIP_NOUNS: Partial<Record<AttentionKind, [string, string]>> = {
+  mcp: ['MCP route to review', 'MCP routes to review'],
+  pricing: ['pricing question', 'pricing questions'],
+};
+
 /** "2 approvals", "1 agent" - the chip label used by the Attention page. */
 export function attentionKindChipLabel(
   kind: AttentionKind,
   count: number
 ): string {
+  const chip = CHIP_NOUNS[kind];
+  if (chip) return `${count} ${count === 1 ? chip[0] : chip[1]}`;
   const meta = ATTENTION_KIND_META[kind];
   const noun = count === 1 ? meta.label : meta.plural;
   return `${count} ${noun.toLowerCase()}`;

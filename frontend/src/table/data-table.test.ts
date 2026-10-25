@@ -71,7 +71,7 @@ let counter = 0;
 
 @customElement('test-data-table-host')
 class Host extends LitElement {
-  static styles = dataTableStyles;
+  static styles = [dataTableStyles, listTableStyles];
   listId = `dt-${++counter}`;
   mode: 'client' | 'server' = 'client';
   url = false;
@@ -294,6 +294,93 @@ describe('ListTable: filtering, pagination, query', () => {
 });
 
 describe('<data-table>', () => {
+  it('fits the header picker inside its header cell', async () => {
+    const host = await mount();
+    await settle(host);
+    const within = (selector: string) => {
+      const cell = q(host, selector).getBoundingClientRect();
+      const picker = q(host, `${selector} column-picker`);
+      const trigger = picker.shadowRoot!.querySelector(
+        'sl-button[slot="trigger"]'
+      ) as HTMLElement;
+      const box = trigger.getBoundingClientRect();
+      expect(box.width).to.be.greaterThan(0);
+      expect(box.left).to.be.at.least(cell.left - 0.5);
+      expect(box.right).to.be.at.most(cell.right + 0.5);
+      expect(trigger.getAttribute('aria-label')).to.equal('Columns');
+      expect(trigger.textContent!.trim()).to.equal('');
+    };
+    within('thead th.actions-cell');
+
+    const table = q(
+      host,
+      'data-table'
+    ) as import('./data-table').DataTable<Key>;
+    table.rowActions = undefined;
+    await settle(host);
+    within('thead th:last-child');
+  });
+
+  it('places the picker in the last header cell without adding a column or a toolbar control', async () => {
+    const host = await mount();
+    await settle(host);
+    expect(q(host, 'list-toolbar').querySelector('column-picker')).to.be.null;
+    expect(qa(host, 'thead tr column-picker')).to.have.length(1);
+    expect(q(host, 'thead th:last-child column-picker')).to.exist;
+    expect(qa(host, 'thead th')).to.have.length(5);
+    expect(qa(host, 'tbody tr:first-child td')).to.have.length(5);
+
+    const table = q(
+      host,
+      'data-table'
+    ) as import('./data-table').DataTable<Key>;
+    table.rowActions = undefined;
+    await table.updateComplete;
+    expect(qa(host, 'thead th')).to.have.length(4);
+    expect(q(host, 'thead th:last-child .sort-button').textContent).to.contain(
+      'Uses'
+    );
+    const picker = q(host, 'thead th:last-child column-picker');
+    const rowBounds = q(host, 'thead tr').getBoundingClientRect();
+    const pickerBounds = picker.getBoundingClientRect();
+    expect(
+      Math.abs(
+        (pickerBounds.top + pickerBounds.bottom) / 2 -
+          (rowBounds.top + rowBounds.bottom) / 2
+      )
+    ).to.be.lessThan(2);
+    picker.dispatchEvent(
+      new CustomEvent('column-toggle', {
+        detail: { id: 'uses', visible: false },
+      })
+    );
+    await settle(host);
+    expect(q(host, 'thead th:last-child column-picker')).to.exist;
+    expect(qa(host, 'thead th')).to.have.length(4);
+    q(host, 'thead column-picker').dispatchEvent(
+      new CustomEvent('columns-reset')
+    );
+    await settle(host);
+    expect(qa(host, 'thead th')).to.have.length(5);
+  });
+
+  it('leaves the picker out of a table that does not offer one', async () => {
+    const host = await mount();
+    await settle(host);
+    const table = q(
+      host,
+      'data-table'
+    ) as import('./data-table').DataTable<Key>;
+    table.columnPicker = false;
+    await settle(host);
+    expect(qa(host, 'column-picker')).to.have.length(0);
+    expect(qa(host, 'thead th')).to.have.length(5);
+    table.rowActions = undefined;
+    await settle(host);
+    expect(qa(host, 'column-picker')).to.have.length(0);
+    expect(qa(host, 'thead th')).to.have.length(4);
+  });
+
   it('renders headers, a select column, rows and an actions column', async () => {
     const host = await mount();
     await settle(host);

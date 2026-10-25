@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { renderTrackerStatus } from '../utils/tracker-status';
 import { tableScrollStyles } from '../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -147,7 +148,7 @@ export class TrackerList extends LitElement {
     this.isLoading = true;
     this.error = null;
     try {
-      const response = await fetchWithAuth('/api/v1/trackers');
+      const response = await fetchWithAuth(REST_API_PREFIX + '/trackers');
       if (!response.ok) {
         throw new Error('Failed to fetch trackers');
       }
@@ -324,9 +325,12 @@ export class TrackerList extends LitElement {
 
   private async _deleteTracker(id: string) {
     try {
-      const response = await fetchWithAuth(`/api/v1/trackers/${id}`, {
-        method: 'DELETE',
-      });
+      const response = await fetchWithAuth(
+        `${REST_API_PREFIX}/trackers/${id}`,
+        {
+          method: 'DELETE',
+        }
+      );
       if (!response.ok) {
         throw new Error('Failed to delete tracker');
       }
@@ -503,12 +507,11 @@ export class TrackerList extends LitElement {
           cursor: pointer;
           display: flex;
           font: inherit;
-          font-size: var(--sl-font-size-x-small);
+          /* Sentence case at the meta size, like every other list. */
+          font-size: var(--console-text-meta, 13px);
           font-weight: var(--sl-font-weight-semibold);
           gap: 4px;
-          letter-spacing: 0.04em;
           padding: var(--sl-spacing-small);
-          text-transform: uppercase;
           width: 100%;
         }
         .trackers-table th {
@@ -742,7 +745,7 @@ export class TrackerList extends LitElement {
   private renderDeleteDialog() {
     return html`
       <sl-dialog
-        label="Confirm Deletion"
+        label="Confirm deletion"
         ?open=${this.trackerPendingDelete !== null}
         @sl-hide=${this._cancelDelete}
       >

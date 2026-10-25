@@ -18,9 +18,9 @@
 # guarantees about 14 GB free; the job deletes preinstalled SDKs and refuses
 # to build unless 40 GiB is free.
 #
-# Buildx provenance is off on the per-arch push. Leaving it on wraps each
-# architecture in its own index, and the manifest list would nest. The index
-# digest gets one attestation after imagetools create.
+# Each per-arch push includes a BuildKit SPDX attestation. imagetools create
+# merges those indexes (including attestation manifests) into the final index.
+# The final index also gets signed build provenance.
 
 name: Publish Universal Image
 
@@ -50,6 +50,7 @@ permissions:
   contents: read
 
 env:
+  PRELOOP_DISABLE_TELEMETRY: "true"
   IMAGE: ghcr.io/${{ github.repository_owner }}/preloop-codex-universal
 
 jobs:
@@ -185,8 +186,8 @@ jobs:
           sbom: false
           tags: preloop-codex-universal:smoke
 
-      - name: Drop builder cache
-        if: matrix.arch == 'amd64'
+      - name: Drop builder cache for dry run
+        if: matrix.arch == 'amd64' && needs.gate.outputs.publish != 'true'
         run: docker buildx prune -af
 
       # The final-image smoke requires preloop-preflight before any push.
@@ -225,9 +226,22 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "$SHORT" | grep -Eq '^[0-9a-f]{12}$'
-          dest="${IMAGE}:sha-${SHORT}-amd64"
-          docker tag preloop-codex-universal:smoke "$dest"
-          docker push "$dest"
+          dest="${IMAGE}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-amd64"
+          # Docker's classic local store drops attestations on --load. Export
+          # the cached build with its SBOM, then prove its config matches the
+          # image that passed the smoke. No recipe/dependency re-resolution.
+          docker buildx build --platform linux/amd64 --provenance=false \
+            --sbom=generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9 \
+            --push -t "$dest" -f environments/universal/Dockerfile .
+          platform_digest="$(docker buildx imagetools inspect "$dest" --raw \
+            | jq -er '.manifests[] | select(.platform.architecture == "amd64") | .digest')"
+          published_config="$(docker buildx imagetools inspect "$IMAGE@$platform_digest" --raw | jq -er '.config.digest')"
+          smoked_config="$(docker image inspect preloop-codex-universal:smoke --format '{{.Id}}')"
+          test "$published_config" = "$smoked_config"
+
+      - name: Drop published amd64 builder cache
+        if: matrix.arch == 'amd64' && needs.gate.outputs.publish == 'true'
+        run: docker buildx prune -af
 
       - name: Build and push arm64
         if: needs.gate.outputs.publish == 'true' && matrix.arch == 'arm64'
@@ -239,8 +253,8 @@ jobs:
           push: true
           load: false
           provenance: false
-          sbom: false
-          tags: ${{ env.IMAGE }}:sha-${{ needs.gate.outputs.short }}-arm64
+          sbom: generator=docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+          tags: ${{ env.IMAGE }}:build-${{ github.run_id }}-${{ github.run_attempt }}-arm64
 
       - name: Build arm64
         if: needs.gate.outputs.publish != 'true' && matrix.arch == 'arm64'
@@ -270,6 +284,9 @@ jobs:
       # Attach the build provenance attestation to the digest.
       attestations: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
@@ -293,8 +310,8 @@ jobs:
             args+=(-t "${IMAGE}:${GITHUB_REF_NAME}")
           fi
           docker buildx imagetools create "${args[@]}" \
-            "${IMAGE}:sha-${SHORT}-amd64" \
-            "${IMAGE}:sha-${SHORT}-arm64"
+            "${IMAGE}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-amd64" \
+            "${IMAGE}:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-arm64"
           digest="$(
             docker buildx imagetools inspect "${IMAGE}:sha-${SHORT}" \
               --format '{{json .Manifest.Digest}}' | tr -d '"'
@@ -307,6 +324,22 @@ jobs:
             echo "- Published: \`${IMAGE}@${digest}\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "published ${IMAGE}@${digest}"
+
+      - name: Verify and export image SBOMs
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.index.outputs.digest }}
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('v0-sha-{0}', github.sha) }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python3 scripts/image_sbom.py --name universal --image "$IMAGE_REF" \
+            --tag "$RELEASE_TAG" --source-sha "$SOURCE_SHA" --output image-sbom-universal
+
+      - name: Upload image SBOM evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-sbom-universal
+          path: image-sbom-universal/
+          if-no-files-found: error
 
       - name: Attest index digest
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

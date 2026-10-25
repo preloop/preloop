@@ -64,12 +64,12 @@ in a materialized day bucket, then sort those buckets. Per-user windows filter
 `runtime_principal_id` through `ix_api_usage_account_principal_id_ts`
 (`account_id`, `runtime_principal_id`, `timestamp` for `model_gateway` rows).
 `ix_api_usage_account_principal_ts` still leads with principal type. Accounting
-rules are unchanged: replay-validation rows stay excluded, retries stay included
+rules exclude replay-validation and every `governance_` purpose; retries stay included
 unless the caller sets `exclude_retries`, and there is no daily rollup. A summary
 with no unpriced requests skips the unpriced-model aggregate.
 
 The headline totals read the newest rows through the covering partial index
-`ix_api_usage_gateway_totals`. That read stays index-only only for pages that
+`ix_api_usage_customer_totals`. That read stays index-only only for pages that
 VACUUM has marked all-visible. `api_usage` therefore has its own autovacuum
 thresholds (migration `20261015_api_usage_autovacuum`): about 1% new or
 changed rows, instead of the server default of 20% (#1583). Without them, the
@@ -284,7 +284,7 @@ page is unchanged.
 
 `preloop.services.spend_outliers` flags a developer or session whose spend
 departs from the usual pattern. It reads gateway `ApiUsage` rows
-(`action_type='model_gateway'`, replay validation excluded) grouped by user,
+(`action_type='model_gateway'`, replay validation and governance analysis excluded) grouped by user,
 UTC day and model. It does not add `flow_execution.estimated_cost`, because
 those calls are already usage rows.
 
@@ -383,3 +383,11 @@ regional feed, and report providers or cache policies that could not be verified
 Alibaba prices land in the dedicated region store of each process; scoped regional
 allowlists can admit newly reviewed SKUs, while freshness and effective dates
 prevent stale native overlays or newer tariffs from corrupting historical estimates. See [configuration and publication](../guide/model-price-refresh.md).
+
+
+Governance analysis remains visible through purpose-targeted reads for its own
+allowance and the weekly policy section. It does not consume customer budget
+buckets, monthly usage observations or ingest quotas. The customer covering
+indexes apply that exclusion in their partial predicate. The older replay-only
+indexes cannot provide an index-only customer read because evaluating the
+additional governance filter requires `meta_data`, which they do not include.

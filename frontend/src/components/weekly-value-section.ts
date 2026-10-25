@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 /** Cached outcome evidence, available when the weekly_work_value capability is on. */
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -120,7 +121,7 @@ export class WeeklyValueSection extends LitElement {
     if (this.end) params.set('end', this.end);
     try {
       const response = await fetchWithAuth(
-        `/api/v1/billing/weekly-value?${params}`
+        `${REST_API_PREFIX}/billing/weekly-value?${params}`
       );
       if (!response.ok)
         throw new Error('Recorded outcomes could not be loaded.');

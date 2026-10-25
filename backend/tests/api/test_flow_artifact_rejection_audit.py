@@ -30,6 +30,7 @@ def build(
         rows.append(kwargs)
 
     monkeypatch.setattr(flow_artifacts.crud_audit_log, "log_action", log_action)
+    monkeypatch.setattr(flow_artifacts.flow_artifact, "end_read", lambda db: None)
     monkeypatch.setattr(
         flow_artifacts.flow_artifact, "rollback", lambda db: events.append("rollback")
     )

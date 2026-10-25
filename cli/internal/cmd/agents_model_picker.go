@@ -39,12 +39,20 @@ func resolveManagedModelSelection(
 	preferred := strings.TrimSpace(opts.PreferredModel)
 	if preferred != "" {
 		choice := findGatewayModelChoice(choices, preferred)
-		if choice != nil {
+		if choice != nil && choice.Model != nil {
 			return choice.Alias, choice.Model, nil
 		}
-		// Allow an explicit alias even when it is not yet in the account catalog;
-		// syncManagedGatewayAIModel will create/update it from local upstream.
-		return strings.TrimPrefix(preferred, "preloop/"), nil, nil
+		// A new canonical model can use local credentials only for the same
+		// provider. Cross-provider picks need a configured account model.
+		alias := strings.TrimPrefix(preferred, "preloop/")
+		if provider, _, ok := strings.Cut(alias, "/"); ok && isCanonicalGatewayProvider(provider) &&
+			(inferred == nil || !gatewaySelectionMatchesProvider(provider, inferred)) {
+			return "", nil, fmt.Errorf("model %q requires a configured account model for that provider", alias)
+		}
+		if choice != nil {
+			return choice.Alias, nil, nil
+		}
+		return alias, nil, nil
 	}
 
 	if len(choices) == 0 {
@@ -130,7 +138,7 @@ func listGatewayModelChoices(
 		return choices
 	}
 	var models []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &models); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &models); err != nil {
 		// Fail soft to inferred/local choices, but tell the operator the
 		// account catalog was unavailable so the picker may be incomplete.
 		fmt.Fprintf(
@@ -142,6 +150,9 @@ func listGatewayModelChoices(
 	}
 	for i := range models {
 		model := models[i]
+		if managedGatewayAliasConflictsWithIdentity(model) {
+			continue
+		}
 		alias := strings.TrimSpace(gatewayAliasForAIModel(model))
 		if alias == "" {
 			alias = strings.TrimSpace(model.ProviderName) + "/" + strings.TrimSpace(model.ModelIdentifier)
@@ -152,7 +163,13 @@ func listGatewayModelChoices(
 		}
 		key := strings.ToLower(alias)
 		if seen[key] {
-			// Enrich the inferred row with account credential detail when aliases match.
+			// Alias equality alone cannot override a freshly discovered upstream.
+			// A stale import may advertise the requested alias for another model.
+			if inferred != nil && (model.ProviderName != inferred.ProviderName ||
+				model.ModelIdentifier != inferred.ModelIdentifier ||
+				!gatewaySelectionMatchesProvider(aiModelSourceProviderID(model), inferred)) {
+				continue
+			}
 			for j := range choices {
 				if strings.EqualFold(choices[j].Alias, alias) {
 					copyModel := model
@@ -273,8 +290,8 @@ func promptForManagedModel(
 
 // applySelectedModelToUpstream overlays an operator-selected model onto the
 // resolved upstream. When the selection is an account AI model with a stored
-// credential and local routing material is missing, the upstream is rebuilt
-// from the account model so sync can reuse the stored credential.
+// credential, sync can reuse its upstream identity and stored credential.
+// Local credentials are retained only for a compatible provider and endpoint.
 func applySelectedModelToUpstream(
 	upstream *managedGatewayUpstream,
 	selectedAlias string,
@@ -284,9 +301,16 @@ func applySelectedModelToUpstream(
 	if alias == "" {
 		return upstream
 	}
+	// A selected account row owns its provider and endpoint even when it has
+	// no stored credential. Never fill a foreign row with local credentials.
+	incompatibleLocal := selectedModel != nil && upstream != nil &&
+		(upstream.ProviderName != selectedModel.ProviderName ||
+			!gatewaySelectionMatchesProvider(aiModelSourceProviderID(*selectedModel), upstream) ||
+			normalizeAIModelEndpoint(upstream.APIEndpoint) != normalizeAIModelEndpoint(selectedModel.APIEndpoint))
 	if selectedModel != nil &&
-		(selectedModel.HasAPIKey || aiModelUsesAmbientProviderCredentials(selectedModel)) &&
-		(upstream == nil || !upstream.CanRouteThroughGateway()) {
+		(selectedModel.HasAPIKey || aiModelUsesAmbientProviderCredentials(selectedModel) || incompatibleLocal) &&
+		(incompatibleLocal || upstream == nil || !upstream.CanRouteThroughGateway() ||
+			upstream.ModelIdentifier != selectedModel.ModelIdentifier) {
 		provider := strings.TrimSpace(selectedModel.ProviderName)
 		identifier := strings.TrimSpace(selectedModel.ModelIdentifier)
 		modelAlias := strings.TrimSpace(gatewayAliasForAIModel(*selectedModel))
@@ -296,13 +320,13 @@ func applySelectedModelToUpstream(
 		modelAlias = strings.TrimPrefix(modelAlias, "preloop/")
 		return &managedGatewayUpstream{
 			SourceAgent:                "account-ai-model",
-			SourceProviderID:           provider,
+			SourceProviderID:           aiModelSourceProviderID(*selectedModel),
 			ProviderName:               provider,
 			ModelIdentifier:            identifier,
 			APIEndpoint:                normalizeAIModelEndpoint(selectedModel.APIEndpoint),
 			CredentialType:             selectedModel.CredentialType,
 			ManagedModelAlias:          modelAlias,
-			AllowServerCredentialReuse: true,
+			AllowServerCredentialReuse: selectedModel.HasAPIKey,
 			UsesAmbientAuth:            aiModelUsesAmbientProviderCredentials(selectedModel),
 			Notes: []string{
 				fmt.Sprintf("Using operator-selected account model %s.", modelAlias),
@@ -318,6 +342,22 @@ func applySelectedModelToUpstream(
 			},
 		}
 	}
+	// Defense in depth for callers that bypass selection validation: never
+	// relabel foreign credentials with a canonical provider alias.
+	if selectedModel == nil {
+		if provider, _, ok := strings.Cut(alias, "/"); ok && isCanonicalGatewayProvider(provider) &&
+			!gatewaySelectionMatchesProvider(provider, upstream) {
+			return upstream
+		}
+	}
+	// A provider/model selection changes the concrete upstream, not just its
+	// display alias. Friendly aliases keep the discovered identifier.
+	if selectedModel != nil {
+		upstream.ModelIdentifier = selectedModel.ModelIdentifier
+	} else if provider, identifier, ok := strings.Cut(alias, "/"); ok && identifier != "" &&
+		gatewaySelectionMatchesProvider(provider, upstream) {
+		upstream.ModelIdentifier = identifier
+	}
 	if !strings.EqualFold(strings.TrimSpace(upstream.ManagedModelAlias), alias) {
 		upstream.ManagedModelAlias = alias
 		upstream.Notes = append(
@@ -329,4 +369,87 @@ func applySelectedModelToUpstream(
 		upstream.AllowServerCredentialReuse = true
 	}
 	return upstream
+}
+
+// Canonical provider prefixes carry upstream identity; other prefixes can be
+// intentional friendly aliases, such as team/assistant.
+func isCanonicalGatewayProvider(provider string) bool {
+	// Coverage is checked against the backend registry snapshot and the CLI
+	// normalizer declarations in TestCanonicalGatewayProvidersCoverRegistries.
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "openai-codex", "anthropic", "google", "gemini", "bedrock", "amazon-bedrock", "deepseek", "qwen",
+		"openrouter", "mistral", "moonshot", "zai", "openai-compatible", "custom",
+		"azure", "aws", "vertex", "vertex_ai", "nous", "nous-api", "google-gemini-cli":
+		return true
+	}
+	return false
+}
+
+func gatewaySelectionMatchesProvider(provider string, upstream *managedGatewayUpstream) bool {
+	if upstream == nil {
+		return false
+	}
+	actual := strings.TrimSpace(upstream.SourceProviderID)
+	if actual == "" {
+		actual = upstream.ProviderName
+	}
+	return gatewayProviderFamily(provider) == gatewayProviderFamily(actual)
+}
+
+// ProviderName can name a protocol adapter (for example, openai for zai).
+// SourceProviderID identifies the upstream whose credentials we actually have.
+func gatewayProviderFamily(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
+	case "openai-codex":
+		return "openai"
+	case "gemini", "google-gemini-cli":
+		return "google"
+	case "amazon-bedrock", "aws":
+		return "bedrock"
+	case "vertex":
+		return "vertex_ai"
+	case "nous-api":
+		return "nous"
+	}
+	return provider
+}
+
+func aiModelSourceProviderID(model aiModelResponse) string {
+	if config, ok := asObjectMap(model.MetaData["upstream_config"]); ok {
+		if source := strings.TrimSpace(lookupString(config, "source_provider_id")); source != "" {
+			return source
+		}
+	}
+	return strings.TrimSpace(model.ProviderName)
+}
+
+// Ignore corrupted managed imports during reconciliation, without imposing
+// identity rules on user-owned aliases or friendly aliases like team/assistant.
+func managedGatewayAliasConflictsWithIdentity(model aiModelResponse) bool {
+	if !strings.HasPrefix(lookupString(model.MetaData, "managed_by"), "preloop agents onboard") {
+		return false
+	}
+	alias := strings.TrimPrefix(strings.TrimSpace(gatewayAliasForAIModel(model)), "preloop/")
+	provider, identifier, ok := strings.Cut(alias, "/")
+	if !ok || !isCanonicalGatewayProvider(provider) {
+		return false
+	}
+	if !gatewaySelectionMatchesProvider(provider, &managedGatewayUpstream{
+		ProviderName: model.ProviderName, SourceProviderID: aiModelSourceProviderID(model),
+	}) {
+		return true
+	}
+	concrete := strings.TrimSpace(model.ModelIdentifier)
+	if identifier == concrete {
+		return false
+	}
+	// The server may suffix an occupied alias. That spelling still addresses
+	// the same concrete model and must remain stable on subsequent enrollment.
+	if suffix, ok := strings.CutPrefix(identifier, concrete+"-"); ok {
+		if number, err := strconv.Atoi(suffix); err == nil && number >= 2 {
+			return false
+		}
+	}
+	return true
 }

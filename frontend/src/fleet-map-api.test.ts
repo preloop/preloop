@@ -1,28 +1,25 @@
 import { expect } from '@open-wc/testing';
 import {
-  FLEET_MAP_COLUMNS,
+  FLEET_MAP_TYPES,
   blastRadius,
   filterGraph,
+  getFleetUsage,
   layoutGraph,
   nodeGaps,
+  scopeToUsers,
 } from './fleet-map-api';
+import sinon from 'sinon';
 import { sampleFleetMap } from './test-helpers/fleet-map-graph';
 
-const all = new Set(FLEET_MAP_COLUMNS);
+const all = new Set(FLEET_MAP_TYPES);
 
 describe('fleet map graph', () => {
   it('walks a provider account back to agents, devices and people, not sideways', () => {
     const reach = blastRadius(sampleFleetMap(), 'account:prod').nodes;
     expect([...reach].sort()).to.deep.equal(
-      [
-        'account:prod',
-        'agent:codex',
-        'device:mbp',
-        'model:gpt',
-        'user:maya',
-      ].sort()
+      ['account:prod', 'agent:codex', 'device:mbp', 'user:maya'].sort()
     );
-    expect(reach.has('model:gpt')).to.equal(true);
+    expect(reach.has('model:gpt')).to.equal(false);
     expect(reach.has('agent:claude')).to.equal(false);
   });
 
@@ -55,43 +52,48 @@ describe('fleet map graph', () => {
     ).to.equal('2 open fleet findings');
   });
 
-  it('filters by provider keeping the chain that reaches it', () => {
-    const view = filterGraph(sampleFleetMap(), {
-      types: all,
-      owner: '',
-      provider: 'provider:anthropic',
-    });
+  it('scopes to a person: their devices, agents, models, providers', () => {
+    const view = scopeToUsers(sampleFleetMap(), new Set(['user:sam']));
     expect(view.nodes.map((n) => n.id).sort()).to.deep.equal(
       [
-        'account:anthropic',
-        'model:sonnet',
-        'agent:claude',
-        'device:mbp',
-        'provider:anthropic',
-        'user:maya',
+        'user:sam',
+        'device:build',
+        'runner:r2',
+        'agent:cursor',
+        'account:dev',
+        'provider:openai',
       ].sort()
     );
     expect(
-      view.edges.every((e) => view.nodes.some((n) => n.id === e.source))
+      view.edges.every(
+        (e) =>
+          view.nodes.some((n) => n.id === e.source) &&
+          view.nodes.some((n) => n.id === e.target)
+      )
     ).to.equal(true);
   });
 
   it('hides types and their incident edges', () => {
     const graph = sampleFleetMap();
     const noModels = filterGraph(graph, {
-      types: new Set(FLEET_MAP_COLUMNS.filter((t) => t !== 'model')),
-      owner: '',
-      provider: '',
+      types: new Set(FLEET_MAP_TYPES.filter((t) => t !== 'model')),
     });
     expect(noModels.nodes.some((n) => n.type === 'model')).to.equal(false);
     expect(noModels.edges.some((e) => e.kind === 'uses_model')).to.equal(false);
   });
 
-  it('lays out one column per present type, deterministically', () => {
+  it('lays out one lane per present type, models inside providers', () => {
     const graph = sampleFleetMap();
     const first = layoutGraph(graph);
     expect(first.columns.map((c) => c.type)).to.deep.equal([
-      ...FLEET_MAP_COLUMNS,
+      'user',
+      'device',
+      'agent',
+      'provider',
+    ]);
+    expect(first.groups.get('provider:anthropic')).to.deep.equal([
+      'account:anthropic',
+      'model:sonnet',
     ]);
     expect(layoutGraph(graph).positions).to.deep.equal(first.positions);
     const users = first.positions.get('user:maya')!;
@@ -153,5 +155,63 @@ describe('server summary groups', () => {
     expect(summary.count).to.equal(20);
     expect(summary.href).to.equal('');
     expect(summary.detail).to.equal('Outside this map');
+  });
+});
+
+describe('gaps only', () => {
+  it('keeps direct neighbours of gap nodes in any edge order', () => {
+    const graph = sampleFleetMap();
+    const ids = (edges: typeof graph.edges) =>
+      filterGraph({ ...graph, edges }, { types: all, gapsOnly: true })
+        .nodes.map((n) => n.id)
+        .sort();
+    const forward = ids(graph.edges);
+    expect(forward).to.deep.equal(ids([...graph.edges].reverse()));
+    // The offline runner keeps the device hosting it; an agent that only
+    // shares a model with that runner is two hops away and drops out.
+    expect(forward).to.include('device:build');
+    expect(forward).not.to.include('agent:claude');
+  });
+});
+
+describe('Fleet usage client', () => {
+  let fetchStub: sinon.SinonStub;
+  beforeEach(() => {
+    localStorage.setItem('accessToken', 'test-token');
+    fetchStub = sinon.stub(window, 'fetch');
+  });
+  afterEach(() => {
+    fetchStub.restore();
+    localStorage.removeItem('accessToken');
+  });
+  it('reads window totals from /fleet/usage, and the any window without a parameter', async () => {
+    const body = {
+      active_within_minutes: 60,
+      since: '2026-10-20T09:00:00Z',
+      until: '2026-10-20T10:00:00Z',
+      truncated: false,
+      partial: false,
+      models: {},
+      providers: {},
+    };
+    fetchStub.callsFake(
+      async () => new Response(JSON.stringify(body), { status: 200 })
+    );
+    expect(await getFleetUsage(undefined, 60)).to.deep.equal(body);
+    expect(String(fetchStub.firstCall.args[0])).to.contain(
+      '/api/v1/fleet/usage?active_within_minutes=60'
+    );
+    await getFleetUsage(undefined, null);
+    expect(String(fetchStub.secondCall.args[0])).to.match(
+      /\/api\/v1\/fleet\/usage$/
+    );
+    fetchStub.callsFake(async () => new Response('{}', { status: 404 }));
+    let failed = false;
+    try {
+      await getFleetUsage(undefined, 60);
+    } catch {
+      failed = true;
+    }
+    expect(failed, 'an older server without the route').to.equal(true);
   });
 });

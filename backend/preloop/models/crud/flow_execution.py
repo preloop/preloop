@@ -3,7 +3,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from sqlalchemy import (
     ColumnElement,
@@ -16,6 +16,7 @@ from sqlalchemy import (
     literal_column,
     or_,
     true,
+    union,
 )
 from sqlalchemy.orm import (
     Session,
@@ -259,6 +260,79 @@ def pull_request_payload_match(object_key: str) -> Optional[ColumnElement[bool]]
 
 class CRUDFlowExecution(CRUDBase[FlowExecution]):
     """CRUD operations for FlowExecution model."""
+
+    def add_published_pr(
+        self, db: Session, *, execution_id: uuid.UUID, publication: dict[str, str]
+    ) -> None:
+        """Append a wrapper publication once without changing the primary binding."""
+        with db.no_autoflush:
+            execution = (
+                db.query(FlowExecution)
+                .filter(FlowExecution.id == execution_id)
+                .populate_existing()
+                .with_for_update()
+                .one_or_none()
+            )
+        if execution is None:
+            return
+        current = execution.result if isinstance(execution.result, dict) else {}
+        publications = current.get("published_prs")
+        items = list(publications) if isinstance(publications, list) else []
+        from preloop.services.flow_pr_binding import MAX_PUBLISHED_PRS, normalize_pr_url
+
+        incoming = normalize_pr_url(publication["url"]) or publication["url"]
+        primary_url = current.get("pr_url")
+        if (
+            not items
+            and isinstance(primary_url, str)
+            and (normalize_pr_url(primary_url) or primary_url) != incoming
+        ):
+            primary = {"url": primary_url}
+            if current.get("pr_source_branch"):
+                primary["branch"] = current["pr_source_branch"]
+            items.append(primary)
+        if any(
+            isinstance(item, dict)
+            and (normalize_pr_url(item.get("url")) or item.get("url")) == incoming
+            for item in items
+        ):
+            return
+        if len(items) >= MAX_PUBLISHED_PRS:
+            if not current.get("published_prs_truncated"):
+                execution.result = {**current, "published_prs_truncated": True}
+                db.commit()
+            return
+        execution.result = {**current, "published_prs": [*items, publication]}
+        db.commit()
+
+    def add_decision(
+        self, db: Session, *, execution_id: uuid.UUID, decision: dict[str, Any]
+    ) -> None:
+        """Append an agent decision once, up to ``MAX_DECISIONS`` per execution."""
+        with db.no_autoflush:
+            execution = (
+                db.query(FlowExecution)
+                .filter(FlowExecution.id == execution_id)
+                .populate_existing()
+                .with_for_update()
+                .one_or_none()
+            )
+        if execution is None:
+            return
+        current = execution.result if isinstance(execution.result, dict) else {}
+        existing = current.get("decisions")
+        items = list(existing) if isinstance(existing, list) else []
+        from preloop.services.flow_pr_binding import MAX_DECISIONS
+
+        if decision in items:
+            return
+        if len(items) >= MAX_DECISIONS:
+            if not current.get("decisions_truncated"):
+                execution.result = {**current, "decisions_truncated": True}
+                db.commit()
+            return
+        execution.result = {**current, "decisions": [*items, decision]}
+        db.commit()
 
     def get_continuation_navigation(
         self, db: Session, *, root_id: uuid.UUID, account_id: uuid.UUID
@@ -747,12 +821,16 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         completion committed on another session is visible. External uploads
         pass ``require_open=True``; controller retention after terminal
         failure passes False.
+
+        NO KEY UPDATE still excludes the status UPDATE of a terminal close,
+        but lets concurrent usage, log and activity inserts take the KEY
+        SHARE their foreign key needs instead of queueing behind the PUT.
         """
         execution = (
             db.query(FlowExecution)
             .filter(FlowExecution.id == execution_id)
             .populate_existing()
-            .with_for_update()
+            .with_for_update(key_share=True)
             .first()
         )
         if execution is None:
@@ -988,8 +1066,13 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         flow_id: Any,
         account_id: Optional[str] = None,
         exclude_execution_id: Any = None,
+        succeeded_only: bool = False,
     ) -> Optional[FlowExecution]:
         """Newest execution of this flow that stored a result artifact.
+
+        ``succeeded_only`` skips runs that did not end SUCCEEDED, for a
+        caller whose baseline must be a completed report rather than a
+        failed run's error result.
 
         Backs the ``previous_result_execution_id: "last"`` payload
         sentinel, which is how a scheduled review run diffs against its own
@@ -1009,9 +1092,109 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         )
         if exclude_execution_id:
             query = query.filter(FlowExecution.id != exclude_execution_id)
+        if succeeded_only:
+            query = query.filter(FlowExecution.status == "SUCCEEDED")
         if account_id:
             query = query.join(Flow).filter(Flow.account_id == account_id)
         return query.order_by(FlowExecution.start_time.desc()).first()
+
+    def completed_merge_audits(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        since: Optional[datetime] = None,
+        limit: int = 500,
+    ) -> List[FlowExecution]:
+        """SUCCEEDED runs of this account's merge-audit flows, newest first.
+
+        A merge-audit flow is one whose ``agent_config.lifecycle_kind`` is
+        ``merge_audit`` (preset 013). ``agent_config`` is plain JSON, so the
+        flows are picked in Python; an account has few flows. Backs the
+        Delivery Report's audit reuse: a closed issue with a completed audit
+        is not assessed again.
+        """
+        if not account_id:
+            return []
+        flow_ids = [
+            flow.id
+            for flow in db.query(Flow).filter(Flow.account_id == account_id).all()
+            if isinstance(flow.agent_config, dict)
+            and flow.agent_config.get("lifecycle_kind") == "merge_audit"
+        ]
+        if not flow_ids:
+            return []
+        query = db.query(FlowExecution).filter(
+            FlowExecution.flow_id.in_(flow_ids),
+            FlowExecution.status == "SUCCEEDED",
+            FlowExecution.result.isnot(None),
+        )
+        if since is not None:
+            query = query.filter(FlowExecution.start_time >= since)
+        return query.order_by(FlowExecution.start_time.desc()).limit(limit).all()
+
+    def list_delivery_reports(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        skip: int = 0,
+        limit: int = 25,
+        since: Optional[datetime] = None,
+    ) -> Tuple[List[FlowExecution], int]:
+        """Runs of this account's Delivery Report flows that stored a result.
+
+        A Delivery Report flow is one whose ``agent_config.report_kind`` is
+        ``delivery_report`` (preset 022). ``agent_config`` is plain JSON, so
+        the flows are picked in Python, as for merge audits. Newest first.
+
+        Returns:
+            The page of executions and the total that matched the filter.
+        """
+        if not account_id:
+            return [], 0
+        flow_ids = [
+            flow.id
+            for flow in db.query(Flow).filter(Flow.account_id == account_id).all()
+            if isinstance(flow.agent_config, dict)
+            and flow.agent_config.get("report_kind") == "delivery_report"
+        ]
+        if not flow_ids:
+            return [], 0
+        query = db.query(FlowExecution).filter(
+            FlowExecution.flow_id.in_(flow_ids),
+            FlowExecution.result.isnot(None),
+            func.jsonb_typeof(FlowExecution.result) == "object",
+        )
+        if since is not None:
+            query = query.filter(FlowExecution.start_time >= since)
+        total = query.count()
+        rows = (
+            query.order_by(FlowExecution.start_time.desc(), FlowExecution.id.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        return rows, total
+
+    def get_delivery_report(
+        self, db: Session, *, execution_id: Any, account_id: str
+    ) -> Optional[FlowExecution]:
+        """One Delivery Report run of this account, or None."""
+        row = (
+            db.query(FlowExecution)
+            .join(Flow)
+            .filter(FlowExecution.id == execution_id, Flow.account_id == account_id)
+            .first()
+        )
+        if row is None:
+            return None
+        config = row.flow.agent_config if row.flow is not None else None
+        if not (
+            isinstance(config, dict) and config.get("report_kind") == "delivery_report"
+        ):
+            return None
+        return row
 
     def last_successful_scheduled_at(
         self, db: Session, *, flow_id: Any
@@ -1817,26 +2000,32 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
 
         resume_root = literal_column(RESUME_ROOT_SQL, type_=String)
         chain_key = func.coalesce(resume_root, cast(FlowExecution.id, String))
-        members = (
-            select(
-                chain_key.label("chain_root"),
-                FlowExecution.id.label("execution_id"),
-                FlowExecution.total_tokens.label("stored_tokens"),
-                FlowExecution.estimated_cost.label("stored_cost"),
+
+        def _members(condition: Any) -> Any:
+            return (
+                select(
+                    chain_key.label("chain_root"),
+                    FlowExecution.id.label("execution_id"),
+                    FlowExecution.total_tokens.label("stored_tokens"),
+                    FlowExecution.estimated_cost.label("stored_cost"),
+                )
+                .join(Flow, Flow.id == FlowExecution.flow_id)
+                .where(Flow.account_id == account_id, condition)
             )
-            .join(Flow, Flow.id == FlowExecution.flow_id)
-            .where(
-                Flow.account_id == account_id,
-                or_(
-                    FlowExecution.id.in_(list(roots)),
-                    resume_root.in_(list(root_texts)),
-                ),
-            )
-            .subquery()
-        )
+
+        # Two branches, each an index lookup: the publishing runs by primary
+        # key, the repair turns through the partial resume-root index (whose
+        # predicate the IS NOT NULL repeats). One OR across both made the
+        # planner filter every execution of the account's flows instead.
+        members = union(
+            _members(FlowExecution.id.in_(list(roots))),
+            _members(and_(resume_root.isnot(None), resume_root.in_(list(root_texts)))),
+        ).subquery()
+        # LATERAL: one ix_api_usage_flow_execution_id range per member. As a
+        # semi join the planner walked that whole index (every execution's
+        # usage) and kept the page's rows: ~450 ms on prod for 100 rows.
         usage = (
             select(
-                ApiUsage.flow_execution_id.label("execution_id"),
                 func.count(ApiUsage.id).label("requests"),
                 func.coalesce(func.sum(ApiUsage.total_tokens), 0).label("tokens"),
                 func.round(cast(func.sum(ApiUsage.estimated_cost), Numeric), 4).label(
@@ -1844,12 +2033,11 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 ),
             )
             .where(
+                ApiUsage.flow_execution_id == members.c.execution_id,
                 ApiUsage.action_type == "model_gateway",
-                ApiUsage.flow_execution_id.in_(select(members.c.execution_id)),
                 exclude_replay_usage_condition(),
             )
-            .group_by(ApiUsage.flow_execution_id)
-            .subquery()
+            .lateral("usage")
         )
         has_usage = func.coalesce(usage.c.requests, 0) > 0
         member_tokens = case(
@@ -1874,9 +2062,7 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                 func.count(members.c.execution_id),
                 func.coalesce(func.sum(unpriced_member), 0).label("unpriced"),
             )
-            .select_from(
-                members.outerjoin(usage, usage.c.execution_id == members.c.execution_id)
-            )
+            .select_from(members.outerjoin(usage, true()))
             .group_by(members.c.chain_root)
         ).all()
 
@@ -2127,6 +2313,63 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
                     self.token_usage = token_map.get(str(row.flow_id))
 
         return [FlowStatResponse(row) for row in exec_stats]
+
+    def get_last_runs_for_flows(
+        self, db: Session, flow_ids: List[Any]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return the most recent execution of each flow, in list-row form.
+
+        The flows list prints the last run's outcome, subject and a link to
+        it. It used to find that run in a sample of the 200 most recent
+        executions across the account, which also cost the page a second,
+        larger call; this answers it per flow from the database.
+
+        Args:
+            db: Database session.
+            flow_ids: Flows to look up.
+
+        Returns:
+            A map of flow id (as a string) to ``id``, ``status``,
+            ``start_time``, ``end_time``, ``trigger_subject``,
+            ``trigger_subject_url``, ``trigger_subject_ci`` and
+            ``trigger_subject_ci_url``. Flows that never ran are absent.
+        """
+        if not flow_ids:
+            return {}
+        subject = FlowExecution.trigger_event_details[TRIGGER_SUBJECT_KEY]
+        rows = db.execute(
+            select(
+                FlowExecution.flow_id,
+                FlowExecution.id,
+                FlowExecution.status,
+                FlowExecution.start_time,
+                FlowExecution.end_time,
+                subject["text"].astext.label("trigger_subject"),
+                subject["url"].astext.label("trigger_subject_url"),
+                subject["ci"].astext.label("trigger_subject_ci"),
+                subject["ci_url"].astext.label("trigger_subject_ci_url"),
+            )
+            .where(FlowExecution.flow_id.in_(flow_ids))
+            .distinct(FlowExecution.flow_id)
+            .order_by(
+                FlowExecution.flow_id,
+                FlowExecution.start_time.desc(),
+                FlowExecution.id.desc(),
+            )
+        ).all()
+        return {
+            str(row.flow_id): {
+                "id": str(row.id),
+                "status": row.status,
+                "start_time": row.start_time.isoformat() if row.start_time else None,
+                "end_time": row.end_time.isoformat() if row.end_time else None,
+                "trigger_subject": row.trigger_subject,
+                "trigger_subject_url": row.trigger_subject_url,
+                "trigger_subject_ci": row.trigger_subject_ci,
+                "trigger_subject_ci_url": row.trigger_subject_ci_url,
+            }
+            for row in rows
+        }
 
     def append_log(
         self, db: Session, execution_id: str, log_data: dict, *, commit: bool = True

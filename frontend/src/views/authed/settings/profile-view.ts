@@ -199,7 +199,7 @@ export class ProfileView extends LitElement {
                         ) as HTMLInputElement
                       )?.click()}
                   >
-                    Upload Photo
+                    Upload photo
                   </sl-button>
                   ${
                     this.user?.avatar_url
@@ -291,7 +291,7 @@ export class ProfileView extends LitElement {
                     : ''
                 }
                 <sl-input
-                  label="Full Name"
+                  label="Full name"
                   .value="${this.fullName}"
                   @sl-input="${(e: Event) =>
                     (this.fullName = (e.target as HTMLInputElement).value)}"
@@ -300,7 +300,7 @@ export class ProfileView extends LitElement {
                   variant="primary"
                   type="submit"
                   ?disabled=${this.signInRequired}
-                  >Update Profile</sl-button
+                  >Update profile</sl-button
                 >
                 ${
                   this.updateProfileMessage

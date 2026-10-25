@@ -68,7 +68,8 @@ export class NotFoundView extends LitElement {
     }
 
     h1 {
-      font-size: var(--sl-font-size-2x-large);
+      font-size: var(--console-text-h1, 1.625rem);
+      font-weight: 600;
       margin: 0;
     }
 

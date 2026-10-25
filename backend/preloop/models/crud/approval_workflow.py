@@ -507,19 +507,23 @@ class CRUDApprovalWorkflow(CRUDBase[models.ApprovalWorkflow]):
 
 # Async helper functions
 async def get_approval_workflow_async(
-    db: Session, workflow_id: UUID
+    db: Session, workflow_id: UUID, *, account_id: UUID | str
 ) -> Optional[models.ApprovalWorkflow]:
     """Async: Retrieve an approval workflow by its ID.
 
     Args:
         db: The async database session.
         workflow_id: The ID of the approval workflow.
+        account_id: The account that owns the workflow.
 
     Returns:
         The approval workflow object if found, otherwise None.
     """
     result = await db.execute(
-        select(models.ApprovalWorkflow).where(models.ApprovalWorkflow.id == workflow_id)
+        select(models.ApprovalWorkflow).where(
+            models.ApprovalWorkflow.id == workflow_id,
+            models.ApprovalWorkflow.account_id == account_id,
+        )
     )
     return result.scalar_one_or_none()
 

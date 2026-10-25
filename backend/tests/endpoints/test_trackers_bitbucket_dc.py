@@ -119,7 +119,7 @@ def test_stored_pat_cannot_cross_provider_or_instance(provider: str) -> None:
 @pytest.mark.asyncio
 async def test_invalid_update_does_not_mutate_scope_rules() -> None:
     tracker = stored_tracker()
-    user = SimpleNamespace(account_id=tracker.account_id)
+    user = SimpleNamespace(account_id=tracker.account_id, is_superuser=True)
     db = MagicMock()
     with (
         patch.object(
@@ -287,7 +287,7 @@ async def test_registration_rejects_invalid_dc_before_factory(details: dict) -> 
             await trackers.register_tracker(
                 body,
                 MagicMock(),
-                current_user=SimpleNamespace(account_id=uuid4()),
+                current_user=SimpleNamespace(account_id=uuid4(), is_superuser=True),
                 db=MagicMock(),
             )
     assert exc.value.status_code == 400
@@ -321,7 +321,7 @@ async def test_registration_persists_discovered_immutable_repository_id() -> Non
     }
     account_id = uuid4()
     created = SimpleNamespace(id=uuid4(), name="DC", tracker_type="bitbucket_dc")
-    user = SimpleNamespace(account_id=account_id, email=None)
+    user = SimpleNamespace(account_id=account_id, email=None, is_superuser=True)
     with (
         patch.object(
             trackers,

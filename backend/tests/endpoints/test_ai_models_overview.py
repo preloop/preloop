@@ -436,3 +436,48 @@ def test_overview_ignores_failed_since_pairs_for_other_accounts(
     )
 
     assert all(row["failed_requests_since"] is None for row in rows)
+
+
+def test_overview_returns_the_prior_window_spend_in_the_same_call(
+    client, db_session: Session, test_user: User
+) -> None:
+    """#1694: the Models page asks once per range, prior window included."""
+    model = _make_model(db_session, test_user, "spend-model")
+    # Inside the 7 day window.
+    _make_usage(
+        db_session, test_user, model=model, alias="spend-model", estimated_cost=1.0
+    )
+    # Inside the 7 days before it.
+    _make_usage(
+        db_session,
+        test_user,
+        model=model,
+        alias="spend-model",
+        minutes_ago=60 * 24 * 10,
+        estimated_cost=2.5,
+    )
+    # Older than both windows.
+    _make_usage(
+        db_session,
+        test_user,
+        model=model,
+        alias="spend-model",
+        minutes_ago=60 * 24 * 20,
+        estimated_cost=100.0,
+    )
+    db_session.commit()
+
+    response = client.get(
+        "/api/v1/ai-models/overview",
+        params={"start_date": WINDOW_START.isoformat(), "include_prior_period": True},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["models"][0]["estimated_cost"] == pytest.approx(1.0)
+    assert payload["prior_period_estimated_cost"] == pytest.approx(2.5)
+
+    plain = client.get(
+        "/api/v1/ai-models/overview",
+        params={"start_date": WINDOW_START.isoformat()},
+    ).json()
+    assert plain["prior_period_estimated_cost"] is None

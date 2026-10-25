@@ -1,6 +1,6 @@
 # Stateless allowlist forward proxy. Build from this directory:
 #   docker build -t egress-proxy environments/egress-proxy
-FROM golang:1.26@sha256:6c2a5538f964f1c82f97ad14988bf05de100d922d159d0e398b54c7b0ca0c6c9 AS build
+FROM golang:1.26.10@sha256:5c3f3f28a273c9b61698b2d34f18375929790ab1f1d3835d032d21e2b31eae0c AS build
 WORKDIR /src
 COPY go.mod ./
 COPY main.go ./

@@ -9,6 +9,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from preloop.models import models
+
 from ..models.audit_outbox import (
     AUDIT_OUTBOX_DELIVERED,
     AUDIT_OUTBOX_FAILED,
@@ -77,6 +79,16 @@ def mark_delivered(db: Session, row: AuditOutbox) -> None:
     db.flush()
 
 
+def delete_for_delivery(db: Session, row: AuditOutbox) -> None:
+    """Delete a claimed intent in the transaction that writes its audit row.
+
+    Never commit here: a delivery failure must roll this deletion back so
+    the same intent can be retried after a restart.
+    """
+    db.delete(row)
+    db.flush()
+
+
 def record_failure(
     db: Session,
     *,
@@ -134,19 +146,57 @@ def oldest_pending_age_seconds(db: Session) -> float:
     return max(0.0, (_utcnow() - oldest).total_seconds())
 
 
-def requeue_failed(db: Session, *, account_id: Optional[UUID] = None) -> int:
-    """Reset parked ``failed`` intents to pending for replay. Commits."""
-    query = db.query(AuditOutbox).filter(AuditOutbox.status == AUDIT_OUTBOX_FAILED)
+def parked_count(db: Session) -> int:
+    """Count retained failures so alerting survives a process restart."""
+    return int(
+        db.scalar(
+            select(func.count())
+            .select_from(models.AuditOutbox)
+            .where(models.AuditOutbox.status == models.AUDIT_OUTBOX_FAILED)
+        )
+        or 0
+    )
+
+
+def requeue_failed(
+    db: Session,
+    *,
+    account_id: Optional[UUID] = None,
+    limit: Optional[int] = None,
+    dry_run: bool = False,
+) -> int:
+    """Reset a bounded oldest-first batch of parked intents for replay.
+
+    A dry run counts the selected batch without changing or locking rows.
+    Apply locks the selected failed rows, skips concurrent replay claims,
+    resets their retry budget and commits. Existing callers may omit the
+    limit; operator entry points must provide a finite limit and account.
+    """
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be positive")
+    selection = select(AuditOutbox.id).where(AuditOutbox.status == AUDIT_OUTBOX_FAILED)
     if account_id is not None:
-        query = query.filter(AuditOutbox.account_id == account_id)
-    count = query.update(
-        {
-            AuditOutbox.status: AUDIT_OUTBOX_PENDING,
-            AuditOutbox.attempt_count: 0,
-            AuditOutbox.next_attempt_at: _utcnow(),
-            AuditOutbox.last_error: None,
-        },
-        synchronize_session=False,
+        selection = selection.where(AuditOutbox.account_id == account_id)
+    selection = selection.order_by(AuditOutbox.seq)
+    if limit is not None:
+        selection = selection.limit(limit)
+    if not dry_run:
+        selection = selection.with_for_update(skip_locked=True)
+    ids = list(db.execute(selection).scalars())
+    if dry_run or not ids:
+        return len(ids)
+    count = (
+        db.query(AuditOutbox)
+        .filter(AuditOutbox.id.in_(ids))
+        .update(
+            {
+                AuditOutbox.status: AUDIT_OUTBOX_PENDING,
+                AuditOutbox.attempt_count: 0,
+                AuditOutbox.next_attempt_at: _utcnow(),
+                AuditOutbox.last_error: None,
+            },
+            synchronize_session=False,
+        )
     )
     db.commit()
     return int(count)

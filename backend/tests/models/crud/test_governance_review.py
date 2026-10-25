@@ -45,6 +45,15 @@ def _window() -> tuple[datetime, datetime]:
     )
 
 
+@pytest.fixture(autouse=True)
+def fixed_digest_review_week(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep CRUD fixtures independent of the wall clock."""
+    monkeypatch.setattr(
+        "preloop.models.crud.governance_review._digest_review_start",
+        lambda: _window()[0],
+    )
+
+
 def _session(db_session: Session, account_id: UUID) -> RuntimeSession:
     row = models.RuntimeSession(
         account_id=account_id,
@@ -353,6 +362,9 @@ def test_upsert_digest_is_per_segment(db_session: Session, test_user: User) -> N
         window_end=closed,
         policy_document_version=2,
         summary={"intent": "revised"},
+        force_resummarize=True,
+        override_caller="operator/test",
+        override_reason="Explicitly revise the fixture",
         commit=False,
     )
     second = crud_governance_session_digest.upsert(
@@ -888,3 +900,334 @@ def test_category_filter_precedes_paging_and_keeps_scope(
         )
         == []
     )
+
+
+@pytest.mark.parametrize(
+    "status", ["complete", "deterministic_only", "deterministic_only_small", None]
+)
+def test_completed_segment_cannot_be_overwritten(
+    db_session: Session, test_user: User, status: str | None
+) -> None:
+    runtime = _session(db_session, test_user.account_id)
+    start, end = _window()
+    stored = crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=start,
+        window_end=end,
+        digest={"summary_status": status, "intent": "Preserve this"},
+        commit=False,
+    )
+    with pytest.raises(GovernanceReviewValidationError, match="complete"):
+        crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=start,
+            window_end=end,
+            summary={"intent": "Overwrite through summary alias"},
+            commit=False,
+        )
+    db_session.refresh(stored)
+    assert stored.digest["intent"] == "Preserve this"
+
+
+def test_historical_segment_requires_attributed_override(
+    db_session: Session, test_user: User
+) -> None:
+    from datetime import timedelta
+
+    runtime = _session(db_session, test_user.account_id)
+    end = _window()[0] - timedelta(days=30)
+    with pytest.raises(GovernanceReviewValidationError, match="review window"):
+        crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=end,
+            window_end=end,
+            digest={},
+            commit=False,
+        )
+    with pytest.raises(GovernanceReviewValidationError, match="caller and reason"):
+        crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=end,
+            window_end=end,
+            digest={},
+            include_history=True,
+            commit=False,
+        )
+
+
+def test_generic_update_cannot_bypass_completed_guard(
+    db_session: Session, test_user: User
+) -> None:
+    runtime = _session(db_session, test_user.account_id)
+    start, end = _window()
+    stored = crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=start,
+        window_end=end,
+        digest={"summary_status": "complete"},
+        commit=False,
+    )
+    with pytest.raises(GovernanceReviewValidationError, match="complete"):
+        crud_governance_session_digest.update(
+            db_session,
+            db_obj=stored,
+            obj_in={"digest": {"summary_status": "pending"}},
+            commit=False,
+        )
+
+
+def test_explicit_crud_override_records_caller_reason_in_audit(
+    db_session: Session, test_user: User, caplog: pytest.LogCaptureFixture
+) -> None:
+    from preloop.models.crud import crud_audit_log
+
+    runtime = _session(db_session, test_user.account_id)
+    start, end = _window()
+    stored = crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=start,
+        window_end=end,
+        digest={"summary_status": "complete"},
+        commit=False,
+    )
+    with pytest.raises(GovernanceReviewValidationError, match="caller and reason"):
+        crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=start,
+            window_end=end,
+            digest={"summary_status": "pending"},
+            force_resummarize=True,
+            commit=False,
+        )
+    replaced = crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=start,
+        window_end=end,
+        digest={"summary_status": "pending"},
+        force_resummarize=True,
+        override_caller="operator/test",
+        override_reason="Approved repair",
+        commit=False,
+    )
+    assert replaced.id == stored.id
+    assert replaced.digest["summary_status"] == "pending"
+    audits = crud_audit_log.get_by_account(
+        db_session,
+        account_id=test_user.account_id,
+        action="governance_review.summary_override",
+        resource_id=str(stored.id),
+    )
+    assert len(audits) == 1
+    assert audits[0].details["caller"] == "operator/test"
+    assert audits[0].details["reason"] == "Approved repair"
+    assert audits[0].details["force_resummarize"] is True
+    assert str(audits[0].id) in caplog.text
+    assert "operator/test" not in caplog.text
+    assert "Approved repair" not in caplog.text
+
+
+def test_parse_failure_enters_retry_queue_without_complete_segments(
+    db_session: Session, test_user: User
+) -> None:
+    from datetime import timedelta
+    from preloop.models.crud.governance_session_candidates import (
+        list_session_digest_retries,
+    )
+
+    start, end = _window()
+    identifiers = {}
+    for status in ("complete", "deterministic_only", "parse_failed"):
+        runtime = _session(db_session, test_user.account_id)
+        row = crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=start,
+            window_end=end,
+            digest={"summary_status": status},
+            commit=False,
+        )
+        identifiers[status] = row.id
+    found = list_session_digest_retries(
+        db_session,
+        account_id=test_user.account_id,
+        stale_before=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+    assert found == [identifiers["parse_failed"]]
+
+
+def test_older_review_boundary_cannot_implicitly_allow_history(
+    db_session: Session, test_user: User
+) -> None:
+    from datetime import timedelta
+
+    runtime = _session(db_session, test_user.account_id)
+    old = _window()[0] - timedelta(days=30)
+    with pytest.raises(GovernanceReviewValidationError, match="review window"):
+        crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=old,
+            window_end=old,
+            digest={},
+            review_window_start=old,
+            commit=False,
+        )
+
+
+def test_failed_segment_attempt_counter_cannot_be_reset_implicitly(
+    db_session: Session, test_user: User
+) -> None:
+    runtime = _session(db_session, test_user.account_id)
+    start, end = _window()
+    stored = crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=start,
+        window_end=end,
+        digest={"summary_status": "provider_failed", "summary_attempts": 3},
+        commit=False,
+    )
+    with pytest.raises(GovernanceReviewValidationError, match="summary attempts"):
+        crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=start,
+            window_end=end,
+            digest={"summary_status": "pending", "summary_attempts": 0},
+            commit=False,
+        )
+    db_session.refresh(stored)
+    assert stored.digest["summary_attempts"] == 3
+
+
+@pytest.mark.parametrize("same_claim", [True, False])
+@pytest.mark.parametrize("format_rejected", [True, False])
+def test_active_format_rejection_can_refund_only_its_own_attempt(
+    db_session: Session, test_user: User, same_claim: bool, format_rejected: bool
+) -> None:
+    runtime = _session(db_session, test_user.account_id)
+    start, end = _window()
+    claim = {
+        "summary_status": "summarizing",
+        "summary_attempts": 2,
+        "summary_attempted_at": end.isoformat(),
+    }
+    stored = crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=start,
+        window_end=end,
+        digest=claim,
+        commit=False,
+    )
+    refunded = {
+        **claim,
+        "summary_attempts": 1,
+        "provider_status_code": 400,
+        "provider_error_class": "BadRequestError",
+    }
+    if format_rejected:
+        refunded["summary_stop_reason"] = "response_format_rejected"
+    if not same_claim:
+        refunded["summary_attempted_at"] = start.isoformat()
+    if not same_claim or not format_rejected:
+        with pytest.raises(GovernanceReviewValidationError, match="summary attempts"):
+            crud_governance_session_digest.upsert(
+                db_session,
+                account_id=test_user.account_id,
+                runtime_session_id=runtime.id,
+                window_start=start,
+                window_end=end,
+                digest=refunded,
+                commit=False,
+            )
+        db_session.refresh(stored)
+        assert stored.digest["summary_attempts"] == 2
+        return
+    crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=start,
+        window_end=end,
+        digest=refunded,
+        commit=False,
+    )
+    db_session.refresh(stored)
+    assert stored.digest["summary_attempts"] == 1
+
+
+@pytest.mark.parametrize("alias", ["digest", "summary"])
+@pytest.mark.parametrize("status", ["provider_failed", "budget_limited"])
+def test_historical_retirement_preserves_attempts(
+    db_session: Session, test_user: User, alias: str, status: str
+) -> None:
+    """Retirement needs no history override and cannot reset spent attempts."""
+    from datetime import timedelta
+
+    runtime = _session(db_session, test_user.account_id)
+    old = _window()[0] - timedelta(days=30)
+    stored = crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=old,
+        window_end=old,
+        digest={"summary_status": status, "summary_attempts": 3},
+        include_history=True,
+        override_caller="test",
+        override_reason="Seed a failed historical segment",
+        commit=False,
+    )
+    crud_governance_session_digest.upsert(
+        db_session,
+        account_id=test_user.account_id,
+        runtime_session_id=runtime.id,
+        window_start=old,
+        window_end=old,
+        **{alias: {"summary_status": "outside_review_window"}},
+        commit=False,
+    )
+    db_session.refresh(stored)
+    assert (
+        stored.digest
+        == stored.summary
+        == {
+            "summary_status": "outside_review_window",
+            "summary_attempts": 3,
+        }
+    )
+    with pytest.raises(GovernanceReviewValidationError, match="summary attempts"):
+        crud_governance_session_digest.upsert(
+            db_session,
+            account_id=test_user.account_id,
+            runtime_session_id=runtime.id,
+            window_start=old,
+            window_end=old,
+            digest={"summary_status": "pending"},
+            include_history=True,
+            override_caller="test",
+            override_reason="Attempt to restart with a stale counter",
+            commit=False,
+        )

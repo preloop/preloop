@@ -51,7 +51,7 @@ describe('PoliciesView', () => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
 
-        if (url.endsWith('/api/v1/tools') && method === 'GET') {
+        if (url.endsWith('/api/v1/tools/rules') && method === 'GET') {
           if (opts.toolsFail) {
             return json({ detail: 'boom' }, 500);
           }
@@ -247,6 +247,48 @@ describe('PoliciesView', () => {
     expect(element.shadowRoot?.querySelector('sl-tab-group')).to.exist;
   });
 
+  it('builds its rules from the rules index, not the full catalogue (#1695)', async () => {
+    fetchStub = createFetchStub({
+      tools: [
+        {
+          name: 'create_issue',
+          source: 'builtin',
+          source_id: null,
+          source_name: 'Built-in',
+          is_enabled: true,
+          approval_workflow_id: null,
+          config_id: 'cfg-1',
+          has_approval_condition: false,
+          access_rules: [
+            {
+              id: 'rule-1',
+              action: 'deny',
+              condition_expression: 'args.x == 1',
+              condition_type: 'simple',
+              priority: 0,
+              description: null,
+              is_enabled: true,
+              approval_workflow_id: null,
+            },
+          ],
+        },
+      ],
+    });
+    const element = (await fixture(
+      html`<policies-view></policies-view>`
+    )) as PoliciesView;
+    await waitUntil(() => !(element as any)._loading, 'still loading');
+    const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+    expect(urls.some((url) => url.endsWith('/api/v1/tools/rules'))).to.equal(
+      true
+    );
+    expect(urls.some((url) => url.endsWith('/api/v1/tools'))).to.equal(false);
+    expect((element as any)._toolAccessRules).to.have.length(1);
+    expect((element as any)._toolAccessRules[0].toolName).to.equal(
+      'create_issue'
+    );
+  });
+
   async function mountWithProfile(
     permissions: string[],
     features: Record<string, boolean>
@@ -380,7 +422,7 @@ describe('PoliciesView', () => {
     );
   });
 
-  it('pages the rule cards ten at a time', async () => {
+  it('pages the rule cards at the chosen page size', async () => {
     fetchStub = createFetchStub({});
     const element = (await fixture(
       html`<policies-view></policies-view>`
@@ -388,6 +430,8 @@ describe('PoliciesView', () => {
     await waitUntil(() => !(element as any)._loading, 'still loading');
     const rules = Array.from({ length: 23 }, (_, i) => ({ key: `r${i}` }));
     const view = element as any;
+    // 25 is the default (F-05); the paging arithmetic is checked at 10.
+    view._rulePageSize = 10;
     expect(view.rulesOnPage(rules).map((r: any) => r.key)).to.deep.equal(
       rules.slice(0, 10).map((r) => r.key)
     );
@@ -519,6 +563,112 @@ describe('PoliciesView', () => {
     }
   });
 
+  describe('rules as hairline rows (U-04, F-05)', () => {
+    const fixtureRules = () =>
+      createFetchStub({
+        tools: [
+          {
+            ...sampleTool,
+            config_id: 'cfg-1',
+            access_rules: [
+              {
+                id: 'ar-1',
+                action: 'deny',
+                approval_workflow_id: null,
+                condition_expression: 'args.amount > 100',
+                condition_type: 'cel',
+                is_enabled: true,
+                priority: 100,
+                description: 'Big payments',
+              },
+            ],
+          },
+        ],
+        modelIORules: [
+          {
+            id: 'block-pii',
+            target: 'model.request',
+            enabled: false,
+            detectors: { pii: true },
+            conditions: [{ expression: 'pii.found', action: 'deny' }],
+          },
+          {
+            id: 'ask-on-injection',
+            target: 'model.request',
+            enabled: true,
+            detectors: { injection: true },
+            conditions: [
+              {
+                expression: 'injection.score > 0.8',
+                action: 'require_approval',
+              },
+            ],
+          },
+        ],
+      });
+
+    async function mountRules(): Promise<PoliciesView> {
+      fetchStub = fixtureRules();
+      const element = (await fixture(
+        html`<policies-view></policies-view>`
+      )) as PoliciesView;
+      await waitUntil(
+        () =>
+          element.shadowRoot?.querySelectorAll('.access-rule-card').length ===
+          3,
+        'rule rows did not render'
+      );
+      await element.updateComplete;
+      return element;
+    }
+
+    it('draws a decision as a tinted chip, not a painted pill', async () => {
+      const element = await mountRules();
+      const badges = Array.from(
+        element.shadowRoot!.querySelectorAll('.access-rule-card sl-badge')
+      );
+      expect(badges.length).to.be.greaterThan(0);
+      for (const badge of badges) {
+        expect(badge.classList.contains('chip'), badge.textContent!).to.be.true;
+      }
+      // No gray header band inside a row.
+      const header = element.shadowRoot!.querySelector(
+        '.access-rule-header'
+      ) as HTMLElement;
+      expect(getComputedStyle(header).backgroundColor).to.equal(
+        'rgba(0, 0, 0, 0)'
+      );
+      // Enabled is the default and says nothing; Disabled says so and dims.
+      const disabled = element.shadowRoot!.querySelector(
+        '[data-rule-id="block-pii"]'
+      ) as HTMLElement;
+      expect(disabled.classList.contains('is-disabled')).to.be.true;
+      expect(element.shadowRoot!.textContent).to.not.match(/\bEnabled\b/);
+    });
+
+    it('filters rules by text and by decision, 25 to a page', async () => {
+      const element = await mountRules();
+      expect((element as any)._rulePageSize).to.equal(25);
+      (element as any)._ruleQuery = 'injection';
+      await element.updateComplete;
+      let ids = Array.from(
+        element.shadowRoot!.querySelectorAll('.access-rule-card')
+      ).map((row) => row.getAttribute('data-rule-id'));
+      expect(ids).to.deep.equal(['ask-on-injection']);
+      (element as any)._ruleQuery = '';
+      (element as any)._ruleDecision = 'deny';
+      await element.updateComplete;
+      ids = Array.from(
+        element.shadowRoot!.querySelectorAll('.access-rule-card')
+      ).map((row) => row.getAttribute('data-rule-id'));
+      expect(ids.sort()).to.deep.equal(['block-pii', 'search_issues']);
+      expect(element.shadowRoot!.querySelector('[data-testid="rule-search"]'))
+        .to.exist;
+      expect(element.shadowRoot!.querySelector('[data-testid="rule-decision"]'))
+        .to.exist;
+    });
+  });
+
   it('loads approval workflows into state', async () => {
     fetchStub = createFetchStub({ workflows: [sampleWorkflow] });
     const element = (await fixture(
@@ -560,7 +710,7 @@ describe('PoliciesView', () => {
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
-        if (url.endsWith('/api/v1/tools') && method === 'GET') {
+        if (url.endsWith('/api/v1/tools/rules') && method === 'GET') {
           return json([]);
         }
         if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {
@@ -642,7 +792,7 @@ describe('PoliciesView', () => {
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
-        if (url.endsWith('/api/v1/tools') && method === 'GET') {
+        if (url.endsWith('/api/v1/tools/rules') && method === 'GET') {
           return json([]);
         }
         if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {
@@ -717,7 +867,7 @@ describe('PoliciesView', () => {
       .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
-        if (url.endsWith('/api/v1/tools') && method === 'GET') {
+        if (url.endsWith('/api/v1/tools/rules') && method === 'GET') {
           return json([]);
         }
         if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {
@@ -811,7 +961,7 @@ describe('PoliciesView', () => {
         const url = typeof input === 'string' ? input : input.toString();
         const method = (init?.method || 'GET').toUpperCase();
         if (
-          url.endsWith('/api/v1/tools') ||
+          url.endsWith('/api/v1/tools/rules') ||
           url.endsWith('/api/v1/approval-workflows')
         ) {
           return json([]);
@@ -955,7 +1105,7 @@ describe('PoliciesView', () => {
         .callsFake(async (input: RequestInfo | URL, init?: RequestInit) => {
           const url = typeof input === 'string' ? input : input.toString();
           const method = (init?.method || 'GET').toUpperCase();
-          if (url.endsWith('/api/v1/tools') && method === 'GET') {
+          if (url.endsWith('/api/v1/tools/rules') && method === 'GET') {
             return json([]);
           }
           if (url.endsWith('/api/v1/approval-workflows') && method === 'GET') {

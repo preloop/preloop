@@ -757,3 +757,76 @@ class TestRegisteredToolBehaviour:
         ):
             result = await fn(operation="deploy", context="prod", reasoning="needed")
         assert result == pending
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "outcome", ["approved", "pending_approval", "declined", "expired"]
+)
+async def test_note_approval_precedes_delivery_and_keeps_target(mcp_server, outcome):
+    tool = await mcp_server.get_tool("send_note")
+    target = str(uuid4())
+    workflow_id = str(uuid4())
+    caller = SimpleNamespace(
+        account_id=str(uuid4()),
+        managed_agent_id=str(uuid4()),
+        runtime_session_id=None,
+        api_key_id=None,
+        username="jane",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="example-machine",
+    )
+    prepared = {
+        "ok": False,
+        "status": "requires_approval",
+        "approval": {
+            "workflow_id": workflow_id,
+            "rule_context": {"rule_name": "Ask before contacting another run"},
+            "facts": {
+                "note_target_relation": "same_tree",
+                "same_owner": True,
+                "caller_user_can_steer_target": True,
+            },
+            "arguments": {"text": "Report progress.", "runtime_session_id": target},
+        },
+    }
+    delivered = {"ok": True, "note": {"note_id": "example-note"}}
+    service = MagicMock(side_effect=[prepared, delivered])
+    response = json.dumps({"status": outcome, "request_id": "example-request"})
+
+    async def approve(**kwargs):
+        assert service.call_count == 1  # Nothing has been delivered while pending.
+        assert kwargs["arguments"]["runtime_session_id"] == target
+        assert "alias" not in kwargs["arguments"]
+        assert kwargs["arguments"]["preloop_caller_session_id"] == "actual-session"
+        assert kwargs["rule_context"]["note_facts"] == prepared["approval"]["facts"]
+        return outcome == "approved", response
+
+    with (
+        patch(
+            "preloop.services.dynamic_fastmcp_http.get_current_user_context",
+            return_value=caller,
+        ),
+        patch(
+            "preloop.models.db.session.get_db_session",
+            side_effect=lambda: iter([MagicMock()]),
+        ),
+        patch(
+            "preloop.services.initialize_mcp._mcp_caller_session_ids", return_value=[]
+        ),
+        patch("preloop.services.agent_send_note.send_note_from_agent", service),
+        patch("preloop.services.initialize_mcp.require_approval", side_effect=approve),
+    ):
+        result = await tool.fn(
+            text="Report progress.",
+            alias="worker",
+            preloop_caller_session_id="actual-session",
+        )
+    if outcome == "approved":
+        assert json.loads(result) == delivered
+        assert service.call_count == 2
+        assert service.call_args.kwargs["approval_granted"] is True
+        assert service.call_args.kwargs["runtime_session_id"] == target
+    else:
+        assert result == response
+        assert service.call_count == 1

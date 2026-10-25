@@ -9,7 +9,7 @@
  */
 import { expect, fixture, html } from '@open-wc/testing';
 import './args-diff.ts';
-import { fileEditsFromArgs, type ArgsDiff } from './args-diff';
+import { fileEditsFromArgs, planCollapse, type ArgsDiff } from './args-diff';
 
 async function mount(
   args: Record<string, unknown>,
@@ -141,5 +141,56 @@ describe('args-diff', () => {
     // Content without a file path could be any string argument at all.
     expect(fileEditsFromArgs({ content: 'hello' })).to.deep.equal([]);
     expect(fileEditsFromArgs(null)).to.deep.equal([]);
+  });
+
+  it('collapses a 2,000-line Write to 40 lines behind a counted button', async () => {
+    const content = Array.from({ length: 2000 }, (_, i) => `line ${i}`).join(
+      '\n'
+    );
+    const el = await mount({ file_path: '/srv/big.txt', content });
+
+    expect(lines(el, 'added').length).to.equal(40);
+    const button = el.shadowRoot!.querySelector(
+      '[data-testid="expand-lines"]'
+    ) as HTMLElement;
+    expect(button.textContent?.trim()).to.equal(
+      'Show all 2000 lines (+2000 -0)'
+    );
+    // 40 lines plus toolbar and button stay well under three viewports.
+    expect(el.getBoundingClientRect().height).to.be.below(3 * 800);
+
+    button.click();
+    await el.updateComplete;
+    expect(lines(el, 'added').length).to.equal(2000);
+    expect(el.shadowRoot!.querySelector('[data-testid="expand-lines"]')).to.be
+      .null;
+  });
+
+  it('collapses long raw arguments without diff counts', async () => {
+    const raw = Array.from({ length: 100 }, (_, i) => `arg ${i}`).join('\n');
+    const el = await mount({ command: 'x' }, raw);
+    const text = el.shadowRoot!.querySelector(
+      '[data-testid="args-raw"]'
+    )!.textContent!;
+    expect(text.split('\n').length).to.equal(40);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="expand-lines"]')!.textContent
+    ).to.contain('Show all 100 lines');
+  });
+
+  it('plans collapse only past the limit', () => {
+    expect(planCollapse(40).collapsed).to.equal(false);
+    const plan = planCollapse([
+      ...Array(30).fill({ type: 'added' }),
+      ...Array(20).fill({ type: 'removed' }),
+      { type: 'context' },
+    ]);
+    expect(plan).to.deep.equal({
+      visible: 40,
+      total: 51,
+      collapsed: true,
+      label: 'Show all 51 lines (+30 -20)',
+    });
+    expect(planCollapse(100, true).collapsed).to.equal(false);
   });
 });

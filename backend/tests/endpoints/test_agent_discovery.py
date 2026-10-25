@@ -265,6 +265,56 @@ def test_purge_removes_candidates_unseen_for_90_days(db_session, test_user):
     assert kinds == {"edge", "fresh"}
 
 
+def test_purge_keeps_onboarded_device_links(client, db_session, test_user):
+    """An agent's device link must not expire while the agent exists."""
+    client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-purge-link",
+            "runtime_principal_name": "Claude Code Workspace",
+        },
+    )
+    agent = client.get("/api/v1/agents").json()["items"][0]
+    now = utc_now_naive()
+    crud_discovered_agent_candidate.link_onboarded(
+        db_session,
+        account_id=test_user.account_id,
+        workstation_fingerprint="e" * 64,
+        agent_kind=agent["agent_kind"],
+        managed_agent_id=agent["id"],
+        config_path_hash="4" * 64,
+        now=now,
+    )
+    crud_discovered_agent_candidate.record_report(
+        db_session,
+        account_id=test_user.account_id,
+        workstation_fingerprint="e" * 64,
+        os_family="linux",
+        cli_version="0.18.0",
+        candidates=[ReportedCandidate(agent_kind="orphan", config_path_hash="5" * 64)],
+        now=now,
+    )
+    db_session.commit()
+    for row in crud_discovered_agent_candidate.list_for_account(
+        db_session, account_id=test_user.account_id
+    ).items:
+        row.last_seen_at = now - timedelta(days=200)
+        if row.agent_kind == "orphan":
+            # Onboarded once, agent since deleted (FK set the link to NULL).
+            row.status = "onboarded"
+    db_session.commit()
+
+    deleted = crud_discovered_agent_candidate.purge_stale(
+        db_session, now=now, account_id=test_user.account_id
+    )
+    assert deleted == 1
+    remaining = crud_discovered_agent_candidate.list_for_account(
+        db_session, account_id=test_user.account_id
+    ).items
+    assert [str(row.managed_agent_id) for row in remaining] == [agent["id"]]
+
+
 def test_purge_sweeper_pass_uses_the_crud_purge(monkeypatch):
     from preloop.services import discovery_candidate_purge as purge
 
@@ -518,7 +568,7 @@ def test_validated_enrollment_links_candidate(client, db_session, test_user):
         json={"enrollment_type": "cli_managed_config", "status": "applied"},
     ).json()["id"]
 
-    # A failed validation links nothing.
+    # A failed validation still runs on this workstation: it links.
     failed = client.post(
         f"/api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate",
         json={
@@ -528,7 +578,9 @@ def test_validated_enrollment_links_candidate(client, db_session, test_user):
         },
     )
     assert failed.status_code == 200
-    assert {c["status"] for c in client.get(CANDIDATES).json()["items"]} == {"new"}
+    by_path = {c["config_path_hash"]: c for c in client.get(CANDIDATES).json()["items"]}
+    assert by_path["1" * 64]["status"] == "onboarded"
+    assert by_path["1" * 64]["managed_agent_id"] == agent_id
 
     ok = client.post(
         f"/api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate",
@@ -545,6 +597,81 @@ def test_validated_enrollment_links_candidate(client, db_session, test_user):
     assert by_path["2" * 64]["status"] == "new"
 
 
+def test_validated_enrollment_without_report_records_its_device(
+    client, db_session, test_user
+):
+    """Onboarding alone must place the agent on its workstation."""
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-no-report",
+            "runtime_principal_name": "Claude Code Workspace",
+        },
+    )
+    assert token_response.status_code == 201
+    agent = client.get("/api/v1/agents").json()["items"][0]
+    agent_id = agent["id"]
+    enrollment_id = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments",
+        json={"enrollment_type": "cli_managed_config", "status": "applied"},
+    ).json()["id"]
+    body = {
+        "status": "validated",
+        "workstation_fingerprint": "8" * 64,
+        "config_path_hash": "3" * 64,
+        "os_family": "darwin",
+        "cli_version": "0.18.0",
+    }
+    url = f"/api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate"
+    assert client.post(url, json=body).status_code == 200
+    # Re-onboarding the same install updates the one row, never duplicates.
+    assert client.post(url, json=body).status_code == 200
+    items = client.get(CANDIDATES).json()["items"]
+    assert len(items) == 1
+    assert items[0]["status"] == "onboarded"
+    assert items[0]["managed_agent_id"] == agent_id
+    assert items[0]["config_path_hash"] == "3" * 64
+    row = db_session.get(DiscoveredAgentCandidate, items[0]["id"])
+    assert row.workstation_fingerprint == "8" * 64
+    assert row.os_family == "darwin"
+    assert row.agent_kind == agent["agent_kind"]
+
+
+def test_validated_enrollment_without_path_hash_creates_nothing(client):
+    client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": "workspace-no-path",
+            "runtime_principal_name": "Claude Code Workspace",
+        },
+    )
+    agent_id = client.get("/api/v1/agents").json()["items"][0]["id"]
+    enrollment_id = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments",
+        json={"enrollment_type": "cli_managed_config", "status": "applied"},
+    ).json()["id"]
+    ok = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate",
+        json={"status": "validated", "workstation_fingerprint": "9" * 64},
+    )
+    assert ok.status_code == 200
+    assert client.get(CANDIDATES).json()["items"] == []
+
+
+@pytest.mark.parametrize(
+    "extra", [{"os_family": "macos"}, {"cli_version": "jane laptop"}]
+)
+def test_validate_rejects_free_form_device_fields(client, extra):
+    response = client.post(
+        "/api/v1/agents/00000000-0000-0000-0000-000000000000/enrollments/"
+        "00000000-0000-0000-0000-000000000000/validate",
+        json={"status": "validated", **extra},
+    )
+    assert response.status_code == 422
+
+
 def test_validate_rejects_a_clear_fingerprint(client):
     response = client.post(
         "/api/v1/agents/00000000-0000-0000-0000-000000000000/enrollments/"
@@ -556,3 +683,67 @@ def test_validate_rejects_a_clear_fingerprint(client):
 
 def test_model_table_name():
     assert DiscoveredAgentCandidate.__tablename__ == "discovered_agent_candidate"
+
+
+def _runtime_agent(client, source_id: str) -> str:
+    client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "claude_code",
+            "session_source_id": source_id,
+            "runtime_principal_name": "Claude Code Workspace",
+        },
+    )
+    return client.get("/api/v1/agents").json()["items"][0]["id"]
+
+
+def test_applied_enrollment_records_its_device(client, db_session):
+    """IDE-config and MCP-only agents often stop at ``applied``; link anyway."""
+    agent_id = _runtime_agent(client, "workspace-applied-link")
+    response = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments",
+        json={
+            "enrollment_type": "cli_managed_config",
+            "status": "applied",
+            "workstation_fingerprint": "a" * 64,
+            "config_path_hash": "b" * 64,
+            "os_family": "darwin",
+            "cli_version": "0.18.1",
+        },
+    )
+    assert response.status_code == 201
+    items = client.get(CANDIDATES).json()["items"]
+    assert [(c["managed_agent_id"], c["status"]) for c in items] == [
+        (agent_id, "onboarded")
+    ]
+    row = db_session.get(DiscoveredAgentCandidate, items[0]["id"])
+    assert row.workstation_fingerprint == "a" * 64
+    assert row.os_family == "darwin"
+
+
+def test_restore_enrollment_records_no_device(client):
+    agent_id = _runtime_agent(client, "workspace-restore-link")
+    response = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments",
+        json={
+            "enrollment_type": "cli_managed_config_restore",
+            "status": "restored",
+            "workstation_fingerprint": "a" * 64,
+            "config_path_hash": "b" * 64,
+        },
+    )
+    assert response.status_code == 201
+    assert client.get(CANDIDATES).json()["items"] == []
+
+
+def test_create_rejects_free_form_device_fields(client):
+    agent_id = _runtime_agent(client, "workspace-create-reject")
+    response = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments",
+        json={
+            "enrollment_type": "cli_managed_config",
+            "status": "applied",
+            "workstation_fingerprint": "jane-laptop",
+        },
+    )
+    assert response.status_code == 422

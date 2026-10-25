@@ -22,6 +22,11 @@ migrationJob:
   # a minute. An integer with an optional unit (us, ms, s, min, h); a bare
   # number is milliseconds. Anything else falls back to the default.
   lockTimeout: "5s"
+  # -- Only concurrent index DDL may wait longer for old writers/snapshots.
+  # Ordinary blocking DDL keeps lockTimeout above. Positive integer seconds.
+  # Lock budget must be shorter than statement budget; otherwise both default.
+  concurrentLockTimeoutSeconds: 60
+  concurrentStatementTimeoutSeconds: 120
   # -- How many times the whole `upgrade head` is retried when a revision
   # loses a lock race. A retry resumes at the first revision that did not
   # commit, so retrying is cheap.
@@ -56,6 +61,19 @@ worker:
     #   replicaCount: 2
     #   tasks: "poll_tracker"
   # Worker resources (background tasks)
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "512Mi"
+    limits:
+      cpu: "2"
+      memory: "2Gi"
+
+# Separate PostgreSQL-backed chat ingress/outbox consumer and Mattermost listener.
+# Sync worker pools do not consume chat jobs. Enable when using chat connections.
+chatWorker:
+  enabled: false
+  replicaCount: 1
   resources:
     requests:
       cpu: "50m"
@@ -182,7 +200,8 @@ serviceAccount:
 # Pod annotations
 podAnnotations: {}
 
-# Extra pod labels on the api, gateway, frontend, and spacesync-* deployments.
+# Extra pod labels on api, gateway, frontend, chat-worker, and spacesync-*
+# deployments.
 # health-monitor and the chart Jobs do not receive these labels.
 # For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set
 #   podLabels:
@@ -229,6 +248,9 @@ api:
   # A generous ceiling costs nothing when connections have drained — uvicorn
   # exits as soon as the last one closes.
   terminationGracePeriodSeconds: 900
+  # Failed liveness must recover promptly; planned rollouts keep the long
+  # streaming drain above. Includes the 10s preStop sleep (Kubernetes >=1.28).
+  livenessTerminationGracePeriodSeconds: 60
   resources:
     requests:
       cpu: "50m"
@@ -1124,3 +1146,18 @@ computeBackend:
     credentialsJsonPath: ""
     zone: ""
     machineType: ""
+
+# Optional rules for an existing Prometheus Operator and OTLP metrics pipeline.
+# This does not enable the audit outbox; PRELOOP_AUDIT_OUTBOX_ENABLED stays off.
+auditAlerts:
+  enabled: false
+  labels: {}
+  # Match only this installation's exported metrics; adjust for your collector.
+  metricSelector: 'job="preloop"'
+  lagSeconds: 60
+  lagFor: 5m
+  metrics:
+    oldestPendingAge: preloop_audit_outbox_oldest_pending_age_seconds
+    parked: preloop_audit_outbox_parked
+    failedAttempts: preloop_audit_outbox_attempts_failed_total
+    dropped: preloop_audit_writes_dropped_total

@@ -25,9 +25,11 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import TimeoutError as SQLAlchemyPoolTimeout
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
 from starlette.websockets import WebSocketState
 
 from preloop import __version__
+from preloop.api.middleware.server_version import ServerVersionMiddleware
 from preloop.config import settings
 from preloop.models.db.session import get_db_session
 from preloop.models.db.setup import setup_database
@@ -444,6 +446,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         runner_session_sweeper = get_runner_session_sweeper()
         await runner_session_sweeper.start()
 
+    # Convert Anthropic usage rows that pods on the previous release wrote
+    # while migration 20261106_anthropic_cache_input was rolling out (#1955).
+    # One idempotent pass, a delay after startup, on every API replica.
+    anthropic_cache_input_repair = None
+    if not is_testing and is_api_role:
+        from preloop.services.anthropic_cache_input_repair import (
+            AnthropicCacheInputRepair,
+        )
+
+        anthropic_cache_input_repair = AnthropicCacheInputRepair()
+        await anthropic_cache_input_repair.start()
+
     readiness_sweeper = None
     if not is_testing and is_api_role and settings.ticket_readiness_enabled:
         from preloop.services.readiness.scheduler import ReadinessSweeper
@@ -566,6 +580,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping MCP server for %s role.", service_role)
 
+    # Audit collection belongs to core in API, gateway and chat processes.
+    # Start before extensions; legacy audit plugins do not own this lifecycle.
+    from preloop.services.audit import start_audit, stop_audit
+
+    start_audit()
+
     # Initialize plugin system (skip in testing mode)
     plugin_manager = None
     if not is_testing and is_api_role:
@@ -630,7 +650,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 run_default_approval_workflow_startup_repair,
             )
 
+            from preloop.models.crud.agent_note_policy import seed_all_note_policies
+            from preloop.models.db.session import get_session_factory
+
             stats = run_default_approval_workflow_startup_repair()
+            with get_session_factory()() as note_policy_db:
+                seed_all_note_policies(note_policy_db)
             if stats["broken"] or stats["missing"]:
                 logger.info(
                     "Default approval workflow repair pass complete: "
@@ -785,6 +810,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if readiness_sweeper:
         await readiness_sweeper.stop()
 
+    if anthropic_cache_input_repair:
+        try:
+            await anthropic_cache_input_repair.stop()
+        except Exception:
+            logger.error("Error stopping Anthropic cache input repair", exc_info=True)
+
     if not is_testing and runner_session_sweeper:
         try:
             await runner_session_sweeper.stop()
@@ -869,6 +900,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         logger.debug("OTLP shutdown failed", exc_info=True)
 
+    stop_audit()
     shutdown_api_usage_recorder()
     # Restore the original jsonable_encoder
     import fastapi.encoders
@@ -926,6 +958,7 @@ def _register_control_plane_routes(
         anthropic_usage,
         artifact_search,
         audio,
+        audit,
         audit_chain,
         bitbucket_dc_webhooks,
         budget,
@@ -936,6 +969,7 @@ def _register_control_plane_routes(
     )
     from preloop.api.endpoints import embedding as embedding_router
     from preloop.api.endpoints import (
+        delivery_reports,
         employee_events,
         event_webhooks,
         exports,
@@ -1130,6 +1164,11 @@ def _register_control_plane_routes(
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(
+        audit.router,
+        prefix="/api/v1",
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
         audit_chain.router,
         prefix="/api/v1",
         dependencies=[Depends(get_current_active_user)],
@@ -1230,6 +1269,12 @@ def _register_control_plane_routes(
         cost.router,
         prefix="/api/v1",
         tags=["Cost Analytics"],
+        dependencies=[Depends(get_current_active_user)],
+    )
+    app.include_router(
+        delivery_reports.router,
+        prefix="/api/v1",
+        tags=["Delivery Reports"],
         dependencies=[Depends(get_current_active_user)],
     )
     app.include_router(
@@ -1445,6 +1490,13 @@ def _register_control_plane_routes(
         return FileResponse(str(invitation_html_path), media_type="text/html")
 
 
+class PreloopAPI(FastAPI):
+    """Keep REST diagnostics outside error handling and all user middleware."""
+
+    def build_middleware_stack(self) -> ASGIApp:
+        return ServerVersionMiddleware(super().build_middleware_stack())
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -1458,7 +1510,7 @@ def create_app() -> FastAPI:
     base_dir = Path(__file__).resolve().parent.parent.parent
 
     # Initialize FastAPI app
-    app = FastAPI(
+    app = PreloopAPI(
         title="Preloop API",
         description="REST API for Preloop issue tracking management",
         version=__version__,

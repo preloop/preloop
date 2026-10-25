@@ -29,6 +29,7 @@ from preloop.models.crud import crud_account, crud_api_key, crud_user
 from preloop.plugins import account_hooks
 from preloop.plugins.account_hooks import Decision
 from preloop.services import desktop_broker as broker
+from tests.permission_helpers import grant_permission
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -419,17 +420,26 @@ def harness(app, db_session, test_user, monkeypatch, request):
     monkeypatch.setattr(desktop, "_run_db", run_db)
     h = Harness(app, db_session, test_user, monkeypatch)
 
-    async def resolve_viewer(token: str):
-        return h.viewer_tokens.get(token)
+    def console_user(user: models.User) -> models.User:
+        # Endpoint key authentication tags the shared session's ORM instance.
+        # Console requests use their own principal, as separate requests do.
+        return models.User(
+            id=user.id,
+            account_id=user.account_id,
+            username=user.username,
+            email=user.email,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser,
+        )
+
+    async def resolve_viewer(token: str) -> models.User | None:
+        user = h.viewer_tokens.get(token)
+        return console_user(user) if user is not None else None
 
     monkeypatch.setattr(desktop, "_resolve_viewer", resolve_viewer)
 
-    def current_user():
-        # The shared test session identity-maps users, so endpoint key auth
-        # can tag this object with ``_auth_api_key``; a real request never
-        # shares it. Clear the tag so the console user stays a console user.
-        h.current_user.__dict__.pop("_auth_api_key", None)
-        return h.current_user
+    def current_user() -> models.User:
+        return console_user(h.current_user)
 
     app.dependency_overrides[get_current_active_user] = current_user
     account_hooks.reset_account_hooks()
@@ -670,6 +680,8 @@ def test_stolen_url_and_foreign_users_are_rejected(harness, db_session):
         db_session, account_id=h.user.account_id, username="colleague"
     )
     outsider = _make_user(db_session, username="outsider")
+    for user in (colleague, outsider):
+        grant_permission(db_session, user, "control_managed_agent")
 
     async def scenario() -> None:
         async with serving(h) as vnc:
@@ -910,6 +922,7 @@ def test_agent_scoped_view_and_session_linkage(harness, db_session):
                 fetched = await client.get(
                     f"/api/v1/agents/{agent.id}/desktop-views/{created.json()['view_id']}"
                 )
+            assert listed.status_code == 200, listed.text
             assert listed.json()["endpoints"][0]["active_view"]["user_id"] == str(
                 h.user.id
             )

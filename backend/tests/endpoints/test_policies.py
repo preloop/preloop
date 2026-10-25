@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException, status
+from pytest_mock import MockerFixture
 
 from preloop.api.endpoints import policies
 from preloop.models.models.account import Account
@@ -42,8 +43,18 @@ def mock_user():
 
 
 @pytest.fixture
-def mock_db():
-    """Create mock database session."""
+def mock_config_audit(mocker: MockerFixture) -> MagicMock:
+    """Keep endpoint unit transactions separate from audit persistence.
+
+    The audit writer commits its row after the policy transaction. Real
+    persistence is covered by TestPolicyChangeAudit without this fixture.
+    """
+    return mocker.patch("preloop.api.endpoints.policies.log_config_change")
+
+
+@pytest.fixture
+def mock_db(mock_config_audit: MagicMock) -> MagicMock:
+    """Create a unit session whose commits only count policy mutations."""
     return MagicMock()
 
 
@@ -1345,7 +1356,9 @@ class TestRollbackToVersion:
         # Should NOT commit when preview_only is True
         mock_db.commit.assert_not_called()
 
-    async def test_rollback_apply(self, mock_db, mock_account, mock_user, mocker):
+    async def test_rollback_apply(
+        self, mock_db, mock_account, mock_user, mocker, mock_config_audit
+    ):
         """Test rollback with preview_only=False applies changes."""
         mock_diff = PolicyDiffResult(
             has_changes=True,
@@ -1371,6 +1384,8 @@ class TestRollbackToVersion:
 
         assert result.success is True
         mock_db.commit.assert_called_once()
+        mock_config_audit.assert_called_once()
+        assert mock_config_audit.call_args.kwargs["action"] == "rolled_back"
 
     async def test_rollback_version_not_found(
         self, mock_db, mock_account, mock_user, mocker
@@ -1439,7 +1454,7 @@ class TestDeletePolicyVersion:
     """Test delete_policy_version endpoint."""
 
     async def test_delete_version_success(
-        self, mock_db, mock_account, mock_user, mocker
+        self, mock_db, mock_account, mock_user, mocker, mock_config_audit
     ):
         """Test successfully deleting a version."""
         mock_service = MagicMock()
@@ -1458,6 +1473,8 @@ class TestDeletePolicyVersion:
         )
 
         mock_db.commit.assert_called_once()
+        mock_config_audit.assert_called_once()
+        assert mock_config_audit.call_args.kwargs["action"] == "version_deleted"
 
     async def test_delete_version_not_found(
         self, mock_db, mock_account, mock_user, mocker
@@ -1510,7 +1527,7 @@ class TestPrunePolicyVersions:
     """Test prune_policy_versions endpoint."""
 
     async def test_prune_versions_success(
-        self, mock_db, mock_account, mock_user, mocker
+        self, mock_db, mock_account, mock_user, mocker, mock_config_audit
     ):
         """Test pruning old versions."""
         mock_service = MagicMock()
@@ -1540,6 +1557,8 @@ class TestPrunePolicyVersions:
             keep_count=5,
         )
         mock_db.commit.assert_called_once()
+        mock_config_audit.assert_called_once()
+        assert mock_config_audit.call_args.kwargs["action"] == "versions_pruned"
 
     async def test_prune_versions_none_deleted(
         self, mock_db, mock_account, mock_user, mocker

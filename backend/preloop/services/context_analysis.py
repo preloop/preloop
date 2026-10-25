@@ -1460,6 +1460,7 @@ def load_session_gateway_events(
     runtime_session_id: str,
     event_ids: Optional[list[str]] = None,
     limit: int = 50,
+    activity_rows: Optional[list[Any]] = None,
 ) -> list[GatewayCallEvent]:
     """Load stored gateway calls for a session as in-memory events.
 
@@ -1473,23 +1474,30 @@ def load_session_gateway_events(
         runtime_session_id: Runtime session to analyze.
         event_ids: Optional scope filter; only these activity ids are analyzed.
         limit: Maximum number of gateway calls to load.
+        activity_rows: Optional oldest-first rows already bounded by a CRUD
+            reader. The caller owns the scope and history-retention check.
 
     Returns:
         Gateway call events ordered oldest-first.
     """
     rows = (
-        crud_runtime_session_activity.list_full_model_gateway_call_payloads_for_session(
-            db,
-            start_date=history_cutoff(db, account=account),
-            account_id=account.id,
-            runtime_session_id=runtime_session_id,
-            limit=limit,
+        activity_rows
+        if activity_rows is not None
+        else (
+            crud_runtime_session_activity.list_full_model_gateway_call_payloads_for_session(
+                db,
+                start_date=history_cutoff(db, account=account),
+                account_id=account.id,
+                runtime_session_id=runtime_session_id,
+                limit=limit,
+            )
         )
     )
     allowed = set(event_ids or [])
+    ordered_rows = rows if activity_rows is not None else reversed(rows)
     selected = [
         row
-        for row in reversed(rows)
+        for row in ordered_rows
         if isinstance(row.metadata_, dict) and (not allowed or str(row.id) in allowed)
     ]
 

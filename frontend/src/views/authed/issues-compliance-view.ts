@@ -856,7 +856,7 @@ export class IssuesComplianceView extends LitElement {
 
   render() {
     return html`
-      <view-header headerText="Issue Compliance" width="wide">
+      <view-header headerText="Issue compliance" width="wide">
         <div slot="main-column">${this._renderSearchBar()}</div>
       </view-header>
 

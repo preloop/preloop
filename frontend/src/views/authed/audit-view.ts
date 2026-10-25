@@ -1,3 +1,5 @@
+import { REST_API_PREFIX } from '../../api-path';
+import { humaniseAction } from '../../utils/outcome-label';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import {
@@ -97,7 +99,6 @@ interface GroupedResponse {
 interface User {
   id: string;
   username: string;
-  email: string;
   full_name: string | null;
 }
 
@@ -120,6 +121,9 @@ const APPROVAL_DECISION_ACTIONS = [
 // Sentence case throughout: one dropdown, one dialect.
 const EVENT_TYPE_OPTIONS = [
   { value: 'tool_call', label: 'Tool calls' },
+  { value: 'query', label: 'Session searches' },
+  { value: 'user.login', label: 'Sign-ins' },
+  { value: 'audit_chain_verified', label: 'Integrity verifications' },
   { value: APPROVAL_DECISION_FILTER, label: 'Approval decisions' },
   { value: 'model_gateway_request', label: 'Gateway requests' },
   { value: 'runtime_session_created', label: 'Sessions started' },
@@ -134,13 +138,10 @@ const EVENT_TYPE_OPTIONS = [
 ];
 
 /**
- * How far back a `?event=` link is allowed to look for its event.
- *
- * There is no endpoint that fetches one audit event by id, so the only way
- * to find out when an event happened is to walk the timeline. Four pages of
- * 200 is a thousand events: minutes on a busy account, weeks on a quiet one.
- * Once the event is found, its day becomes the date filter, so the operator
- * lands on a page whose filter bar explains itself.
+ * Older cores without the focused-entry endpoint fall back to at most four
+ * pages of 200 groups to locate a `?event=` link. Current cores fetch the
+ * entry directly, so its age does not limit lookup. Its day then becomes the
+ * date filter, keeping the filter bar consistent with the focused event.
  */
 // Typing in the tool-name search refetches once the user pauses.
 const TOOL_SEARCH_DEBOUNCE_MS = 300;
@@ -186,6 +187,11 @@ export class AuditView extends AuthedElement {
   // Timeline data
   @state() private _groups: AuditGroup[] = [];
   @state() private _loading = false;
+  /**
+   * Set once the first timeline answer is in. The chain status chip mounts
+   * only then, so its read never competes with the table (#1693).
+   */
+  @state() private _chainReady = false;
   @state() private _permissionError: PermissionError | null = null;
   /** Why the timeline could not be loaded; shown instead of the empty state. */
   @state() private _loadError: string | null = null;
@@ -438,7 +444,7 @@ export class AuditView extends AuthedElement {
 
   private async _loadUsers() {
     try {
-      const res = await fetchWithAuth('/api/v1/users');
+      const res = await fetchWithAuth(REST_API_PREFIX + '/audit-logs/actors');
       if (res.ok) {
         const data = await res.json();
         this._users = data.users || data || [];
@@ -507,7 +513,7 @@ export class AuditView extends AuthedElement {
       params.set('count_limit', String(AUDIT_COUNT_LIMIT));
       const startedAt = Date.now();
       const res = await fetchWithAuth(
-        `/api/v1/audit-logs/grouped?${params}`,
+        `${REST_API_PREFIX}/audit-logs/grouped?${params}`,
         background ? { passive: true } : {}
       );
       this._lastLoadMs = Date.now() - startedAt;
@@ -545,6 +551,7 @@ export class AuditView extends AuthedElement {
     } finally {
       if (!background && generation === this._timelineGeneration) {
         this._loading = false;
+        this._chainReady = true;
       }
     }
     if (generation !== this._timelineGeneration) return;
@@ -571,8 +578,8 @@ export class AuditView extends AuthedElement {
   /**
    * Open the event a link asked for, wherever it is.
    *
-   * On the page in front of us: expand, scroll, mark. Older than that: walk
-   * back through the timeline to find when it happened, set that day as the
+   * On the page in front of us: expand, scroll, mark. Older than that: fetch
+   * the entry to find when it happened, set that day as the
    * date filter and load again, so the event is on the first page and the
    * filter bar says why. Not there at all: one toast, and the page stays a
    * normal audit page rather than an error.
@@ -606,8 +613,24 @@ export class AuditView extends AuthedElement {
     }
   }
 
-  /** Walks the timeline for an id and answers with when it happened. */
+  /** Fetch an entry's time, with a bounded timeline fallback for older cores. */
   private async _findEventTime(id: string): Promise<string | null> {
+    try {
+      const res = await fetchWithAuth(
+        `${REST_API_PREFIX}/audit-logs/${encodeURIComponent(id)}`
+      );
+      if (res.ok) {
+        const entry: AuditLog = await res.json();
+        return entry.timestamp || null;
+      }
+      // Older cores return 404; non-UUID correlation ids fail path validation.
+      // Other failures, especially permissions, must not fan out into reads.
+      const correlationId = res.status === 422 && !this._isUuid(id);
+      if (res.status !== 404 && !correlationId) return null;
+    } catch (e) {
+      console.error('Failed to fetch a linked audit event:', e);
+      return null;
+    }
     for (let page = 0; page < DEEP_LINK_PAGES; page += 1) {
       try {
         const params = this._timelineParams(
@@ -615,7 +638,9 @@ export class AuditView extends AuthedElement {
           DEEP_LINK_PAGE_SIZE
         );
         params.set('count_limit', String(AUDIT_COUNT_LIMIT));
-        const res = await fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`);
+        const res = await fetchWithAuth(
+          `${REST_API_PREFIX}/audit-logs/grouped?${params}`
+        );
         if (!res.ok) return null;
         const data: GroupedResponse = await res.json();
         const groups = data.groups || [];
@@ -1316,7 +1341,7 @@ export class AuditView extends AuthedElement {
       case 'runtime_session_ended':
         return 'Runtime session ended';
       default:
-        return sub.action.replace(/_/g, ' ');
+        return humaniseAction(sub.action.replace(/\./g, ' '));
     }
   }
 
@@ -1362,6 +1387,12 @@ export class AuditView extends AuthedElement {
             : '';
         return `${pretty} ${act}${name ? `: ${name}` : ''}`;
       }
+      case 'query':
+        return 'Session content search';
+      case 'user.login':
+        return 'User signed in';
+      case 'audit_chain_verified':
+        return 'Audit integrity verified';
       case 'permission_check':
         return `Permission: ${event.details?.permission || event.resource_id || 'check'}`;
       case 'runtime_session_created':
@@ -1393,7 +1424,9 @@ export class AuditView extends AuthedElement {
       case 'role_removed':
         return `Role removed: ${event.details?.role || ''}`;
       default:
-        return event.action.replace(/_/g, ' ');
+        // Sentence case with acronyms kept ("API key created"), dotted
+        // types read word by word, as the Overview feed words them.
+        return humaniseAction(event.action.replace(/\./g, ' '));
     }
   }
 
@@ -1451,7 +1484,7 @@ export class AuditView extends AuthedElement {
   render() {
     return html`
       <view-header
-        headerText="Audit Timeline"
+        headerText="Audit timeline"
         description="The permanent record of governed activity: tool calls, approvals, and policy decisions, with outcomes and timestamps."
         width="wide"
       >
@@ -1509,7 +1542,11 @@ export class AuditView extends AuthedElement {
                   message=${this._permissionError.message}
                 ></permission-denied>`
               : html`
-                  <audit-integrity-strip></audit-integrity-strip>
+                  ${
+                    this._chainReady
+                      ? html`<audit-integrity-strip></audit-integrity-strip>`
+                      : nothing
+                  }
                   ${this._renderFilterBar()}
                   ${
                     this._loading
@@ -1584,9 +1621,9 @@ export class AuditView extends AuthedElement {
     this._exporting = kind;
     try {
       const params = new URLSearchParams({ format: 'csv' });
-      let path = '/api/v1/exports/asset-register';
+      let path = REST_API_PREFIX + '/exports/asset-register';
       if (kind === 'incidents') {
-        path = '/api/v1/exports/incident-candidates';
+        path = REST_API_PREFIX + '/exports/incident-candidates';
         if (this._startDate) params.set('from', this._startDate);
         if (this._endDate) params.set('to', this._endDate);
       }
@@ -2295,24 +2332,21 @@ export class AuditView extends AuthedElement {
       .timeline {
         display: flex;
         flex-direction: column;
-        gap: 2px;
       }
 
       /* ── Group ─────────────────────────────── */
       /* No coloured left rule: the outcome lives in the pill, and forty green
          rules read as a wall of paint (DESIGN.md "Red lives in the pill"). */
+      /* A hairline row, not a white box per event (DESIGN.md "Surfaces":
+         what separates rows is a hairline). The hover tint is transient. */
       .timeline-group {
-        border-radius: 4px;
-        background: var(--sl-color-neutral-0);
-      }
-      .timeline-group.tool-call {
-        background: var(--sl-color-neutral-0);
+        border-bottom: 1px solid var(--console-hairline);
       }
       .timeline-group.standalone {
         opacity: 0.8;
       }
       .timeline-group:hover {
-        background: var(--sl-color-neutral-50);
+        background: var(--console-hover-tint);
       }
 
       /* The row a link asked for, said once. A tint and a ring for a couple

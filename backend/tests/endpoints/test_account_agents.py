@@ -1459,6 +1459,72 @@ def test_account_agent_detail_endpoint_includes_session_history(
     unknown = client.get(f"/api/v1/agents/{agent_id}", params={"include": "notes"})
     assert unknown.status_code == 422
 
+    # The opt-in identity and session contracts never calculate historical
+    # usage, even when counter backfill is incomplete.
+    with patch(
+        "preloop.models.crud.managed_agent._usage_aggregate_for_principal",
+        side_effect=AssertionError("unrelated historical usage read"),
+    ):
+        identity = client.get(
+            f"/api/v1/agents/{agent_id}",
+            params={"lightweight": "true", "include": ""},
+        )
+        assert identity.status_code == 200
+        assert identity.json()["aggregate"] is None
+        assert identity.json()["agent"]["usage_computed"] is False
+        assert (
+            identity.json()["agent"]["last_request_at"]
+            == detail_body["agent"]["last_request_at"]
+        )
+        assert (
+            identity.json()["agent"]["activity_status"]
+            == detail_body["agent"]["activity_status"]
+        )
+        with (
+            patch(
+                "preloop.api.endpoints.account._enrich_managed_agent_summary",
+                side_effect=AssertionError("unrelated identity enrichment"),
+            ),
+            patch(
+                "preloop.api.endpoints.account.crud_managed_agent_credential.list_for_agent",
+                side_effect=AssertionError("unrelated credentials read"),
+            ),
+        ):
+            sessions_only = client.get(
+                f"/api/v1/agents/{agent_id}",
+                params={
+                    "lightweight": "true",
+                    "include": "sessions",
+                    "session_limit": 1,
+                },
+            )
+        assert sessions_only.status_code == 200
+        assert sessions_only.json()["session_total"] == 2
+        assert len(sessions_only.json()["sessions"]) == 1
+        assert sessions_only.json()["aggregate"] is None
+
+    from preloop.models.crud.managed_agent import _usage_aggregate_for_principal
+
+    with patch(
+        "preloop.models.crud.managed_agent._usage_aggregate_for_principal",
+        wraps=_usage_aggregate_for_principal,
+    ) as aggregate_read:
+        spend = client.get(
+            f"/api/v1/agents/{agent_id}",
+            params={"lightweight": "true", "include": "aggregate"},
+        )
+        assert spend.status_code == 200
+        assert spend.json()["aggregate"] == detail_body["aggregate"]
+        assert aggregate_read.call_count == 1
+
+    # Lightweight reads retain the same visibility boundary.
+    with patch("preloop.api.endpoints.account.filter_viewable", return_value=[]):
+        hidden = client.get(
+            f"/api/v1/agents/{agent_id}",
+            params={"lightweight": "true", "include": "sessions"},
+        )
+        assert hidden.status_code == 404
+
 
 def test_account_agent_update_endpoint_controls_lifecycle_and_owner(
     client, db_session, test_user
@@ -2580,3 +2646,116 @@ def test_agent_presence_goes_offline_once_the_heartbeat_window_passes(
     assert body["control_enabled"] is True
     assert body["control_online"] is False
     assert body["control_session_mode"] == "offline"
+
+
+_CONTROL_KEYS = {
+    "control_config_written": True,
+    "control_plugin_installed": True,
+    "control_plugin_verified": True,
+    "control_channel_configured": True,
+}
+
+
+def _codex_enrollment_with_control(client, *, source_id: str) -> tuple[str, str]:
+    token_response = client.post(
+        "/api/v1/auth/runtime-sessions/token",
+        json={
+            "session_source_type": "codex",
+            "session_source_id": source_id,
+            "session_reference": "codex-session",
+            "runtime_principal_name": "Codex Workspace",
+            "allowed_mcp_servers": [],
+        },
+    )
+    assert token_response.status_code == 201
+    agents = client.get("/api/v1/agents").json()["items"]
+    agent_id = next(
+        item["id"] for item in agents if item.get("session_source_type") == "codex"
+    )
+    enrollment_response = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments",
+        json={
+            "enrollment_type": "cli_managed_config",
+            "adapter_key": "codex",
+            "status": "validated",
+            "managed_config": {},
+            "validation_result": {"ok": True, **_CONTROL_KEYS},
+        },
+    )
+    assert enrollment_response.status_code == 201
+    return agent_id, enrollment_response.json()["id"]
+
+
+def test_mark_validated_live_only_update_keeps_control_keys(client, test_user):
+    """Deferred live validation must not wipe the onboarding control keys."""
+    agent_id, enrollment_id = _codex_enrollment_with_control(
+        client, source_id="workspace-live-only"
+    )
+
+    validate_response = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate",
+        json={
+            "status": "validated",
+            "validation_result": {
+                "live_validation_status": "passed",
+                "live_validation_deferred": False,
+            },
+        },
+    )
+    assert validate_response.status_code == 200
+    result = validate_response.json()["validation_result"]
+    for key, value in _CONTROL_KEYS.items():
+        assert result[key] is value
+    assert result["live_validation_status"] == "passed"
+    assert result["ok"] is True
+
+    detail = client.get(f"/api/v1/agents/{agent_id}")
+    assert detail.status_code == 200
+    assert detail.json()["agent"]["control_state"] != "unsupported"
+
+
+def test_mark_validated_full_result_replaces_control_keys(client, test_user):
+    """A full static validation can still turn the control keys off."""
+    agent_id, enrollment_id = _codex_enrollment_with_control(
+        client, source_id="workspace-full-result"
+    )
+
+    validate_response = client.post(
+        f"/api/v1/agents/{agent_id}/enrollments/{enrollment_id}/validate",
+        json={
+            "status": "validated",
+            "validation_result": {
+                "control_channel_configured": False,
+                "control_plugin_verified": False,
+            },
+        },
+    )
+    assert validate_response.status_code == 200
+    result = validate_response.json()["validation_result"]
+    assert result == {
+        "control_channel_configured": False,
+        "control_plugin_verified": False,
+    }
+
+
+def test_managed_agent_control_fields_after_deferred_live_validation():
+    """A result holding onboarding control keys plus live keys stays supported."""
+    fields = _managed_agent_control_fields(
+        {
+            "id": "agent-codex",
+            "agent_kind": "codex",
+            "session_source_type": "codex",
+            "lifecycle_state": "active",
+        },
+        {
+            "validation_result": {
+                **_CONTROL_KEYS,
+                "live_validation_status": "passed",
+                "live_validation_deferred": False,
+            },
+            "managed_config": {},
+        },
+        ws_connected=False,
+    )
+    assert fields["control_enabled"] is True
+    assert fields["control_state"] == "plugin_configured"

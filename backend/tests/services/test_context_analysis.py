@@ -2,6 +2,13 @@
 
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+from uuid import uuid4
+
+import pytest
+
+from preloop.services import context_analysis
 
 from preloop.services.context_analysis import (
     CacheBreakingEvent,
@@ -28,6 +35,44 @@ from preloop.services.context_analysis import (
 )
 
 SYSTEM_PROMPT = "You are a helpful coding agent. " * 20
+
+
+def test_supplied_bounded_activity_rows_keep_order_and_account_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded caller bypasses the full reader and keeps usage lookup scoped."""
+    db = MagicMock()
+    account = SimpleNamespace(id=uuid4())
+    usage_ids = [str(uuid4()), str(uuid4())]
+    now = datetime.now(UTC)
+    rows = [
+        SimpleNamespace(
+            id=uuid4(),
+            timestamp=now + timedelta(seconds=index),
+            metadata_={"api_usage_id": usage_id, "request": {"messages": []}},
+        )
+        for index, usage_id in enumerate(usage_ids)
+    ]
+    full_reader = MagicMock(side_effect=AssertionError("unbounded reader called"))
+    usage_reader = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        context_analysis.crud_runtime_session_activity,
+        "list_full_model_gateway_call_payloads_for_session",
+        full_reader,
+    )
+    monkeypatch.setattr(context_analysis.crud_api_usage, "get_by_ids", usage_reader)
+    events = context_analysis.load_session_gateway_events(
+        db,
+        account=account,
+        runtime_session_id=str(uuid4()),
+        activity_rows=rows,
+    )
+    assert [event.event_id for event in events] == [str(row.id) for row in rows]
+    assert [event.api_usage_id for event in events] == usage_ids
+    full_reader.assert_not_called()
+    usage_reader.assert_called_once_with(db, ids=usage_ids, account_id=account.id)
+
+
 TOOL_DEFINITIONS = [
     {
         "type": "function",

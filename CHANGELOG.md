@@ -7,10 +7,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking or behavior changes
+
+- **Stored model gateway calls keep only what each call added.** A
+  `model_gateway_call` row in `runtime_session_activity` used to store the
+  whole conversation the call replayed, so storage grew with the square of
+  session length. It now stores the messages new to that call, with their
+  original positions, plus the response, capped at
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` (default 32768). The console
+  stitches the conversation back together across a session's rows. An hourly
+  maintenance task, `maintain_gateway_activity`, compacts rows written by
+  older releases in bounded batches (`GATEWAY_ACTIVITY_COMPACTION_ENABLED`,
+  on by default) and, when `GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED` is set,
+  removes conversation content older than the account's plan history window.
+  See the Gateway activity storage operations page.
+
+- **`apply` rejects a `sensitive_data` scope server it does not know.** A tool
+  rule or `reference_only` entry whose `scope.servers` names a server that is
+  neither in the file's `mcp_servers` nor configured in or shared with the
+  account matched no call, so a deny rule or reference-only entry applied to
+  nothing. `apply` now returns an error, as it does for a tool on an unknown
+  server. `skip_missing_servers` turns it into a warning and keeps the entry
+  (#1426).
+
+### Fixed
+
+- **Generated policies no longer set `defaults` that `apply` rejects.** The
+  policy-generation prompts asked for `unknown_tools: deny` or
+  `require_approval` (the audit-log prompt always asked for
+  `require_approval`), which `preloop policy apply` refuses. The prompts now
+  leave `defaults` out and show a `sensitive_data` rule scoped to one MCP
+  server, with a CEL allowlist, for deny-by-default; the audit-log prompt's
+  version requires approval through a workflow it defines. A generated
+  `defaults` block that `apply` would reject goes back to the model with the
+  error. Because `apply` replaces the whole `sensitive_data` block,
+  generation puts back the stored detectors, rules and `reference_only`
+  entries that the model leaves out. Audit-log generation now runs the same
+  merge as prompt generation. The policy-as-code reference and the schema
+  now say that `inherit_from_parent` is not used (#1426).
+
+## [0.17.1] - 2026-10-21
+
+### Added
+
+- **Read-only production access example.** `docs/guide/examples/production-access/`
+  gives an incident investigation flow read access to Kubernetes, PostgreSQL and
+  Sentry MCP servers with no write path: a ServiceAccount bound to ClusterRole
+  `view`, a `SELECT`-only database role, read-scoped Sentry token guidance,
+  server settings, scripts that check the credentials, and a policy that denies
+  every tool not on each server's read list, including tools a later upstream
+  release adds. A test runs write and read calls through the policy simulator
+  (#1426).
+
+### Security
+
+- Update aiohttp to 3.14.4 to fix
+  [GHSA-2g87-pp6c-29x5](https://osv.dev/GHSA-2g87-pp6c-29x5),
+  [GHSA-5wr8-gcqf-gqf3](https://osv.dev/GHSA-5wr8-gcqf-gqf3), and
+  [GHSA-494j-54xm-rwp3](https://osv.dev/GHSA-494j-54xm-rwp3).
+
+- Require explicit permissions for account details, MCP OAuth setup, and
+  optimization actions in all editions
+  ([#1926](https://github.com/preloop/preloop/pull/1926)).
+
+- Scope preset clones, flow model bindings and tool configuration references
+  to the caller's account
+  ([#1927](https://github.com/preloop/preloop/pull/1927)).
+- Model, cost and usage import controls consistently enforce their declared
+  permissions on builds without the RBAC plugin
+  ([#1928](https://github.com/preloop/preloop/pull/1928)).
+- Tracker, organization and project changes enforce their declared permissions
+  on builds without the RBAC plugin, including tracker sync, webhook setup and
+  readiness policies ([#1929](https://github.com/preloop/preloop/pull/1929)).
+- Account, agent, desktop and runner control routes enforce their declared
+  permissions on builds without the RBAC plugin
+  ([#1933](https://github.com/preloop/preloop/pull/1933)).
+- Approval decisions, policy controls, tool configuration and MCP server
+  management enforce consistent permissions on builds without the RBAC plugin
+  ([#1930](https://github.com/preloop/preloop/pull/1930)).
+
+- Flow and issue lifecycle writes consistently enforce their declared permissions
+  on builds without the RBAC plugin, and dependency commits use scoped pairs
+  ([#1931](https://github.com/preloop/preloop/pull/1931)).
+- Require explicit permissions to share saved session searches and run session
+  optimizations, while preserving personal saved searches for viewers
+  ([#1932](https://github.com/preloop/preloop/pull/1932)).
+
+- Opening an approval bypass requires `decide_approvals`, and the
+  approval-bypass endpoints enforce their permissions on builds without the
+  RBAC plugin, matching the other agent-control endpoints
+  ([#1915](https://github.com/preloop/preloop/pull/1915)).
+
+## [0.17.0] - 2026-10-19
+
 **Fleet Map** adds a Table | Map view to Device fleet and the bounded,
 permission-filtered `GET /api/v1/fleet/map` endpoint. Explore owners, devices,
 runners, agents, models and provider credentials, inspect downstream impact,
-and find governance gaps with links to existing management pages.
+and find governance gaps with links to existing management pages. The map
+shows resources active in the last 30 days by default (5 minutes, 1 hour, 24 hours,
+7, 30 or 90 days, or any time; `active_within_minutes` on the endpoint),
+refreshes itself so resources join and leave a short window live, lights the connections live model
+requests, tool calls and approvals travel, and gives instance administrators a
+draggable spatial arrangement, also as a Map alternative to the Overview
+inventory table. The spatial map is now a live canvas: people, machines and agents
+gather in islands around the models they share, nodes fade in and out with the
+window while the view follows the fleet's centre of gravity, live traffic lights
+the line it travels and the agent, flow, model or person it starts from (with
+optional Bubbles saying what happened), machines hold their agents, nodes carry
+their product, model-family and provider logos, and pull and merge requests opened, reviewed and merged show as
+counters and live events on each agent, flow and person
+(`GET /api/v1/fleet/code-activity`, realtime topic `code_activity`).
 
 Highlights: **Bitbucket Cloud on Copilot host flows** publishes a managed
 branch and pull request from a native Copilot host profile and continues
@@ -135,6 +241,14 @@ after the page scroller moved to the content area.
   the commitment is no longer a draft.
 
 ### Added
+
+- **`preloop agents pause` / `preloop agents resume`.** When the approval
+  service is unavailable, pause the native approval hooks locally for a
+  limited time (default 1h, maximum 24h; all agents or one) without editing
+  agent config files. Paused hooks skip Preloop and defer to the agent's own
+  permission prompts, and the pause expires on its own. Fail-closed deny
+  messages now lead with this command, and `preloop agents status` shows an
+  active pause.
 
 - **Unattended app enrollment.** `preloop agents onboard --unattended` exchanges
   a short-lived single-use authority for per-app MCP credentials and writes

@@ -1322,8 +1322,13 @@ def record_pull_request_event(
             or bitbucket_pull.get("updated_on"),
             now=arrival,
         )
+        first_merge = pull.merged_at is None
         if pull.merged_at is None or stamp < _aware(pull.merged_at):
             pull.merged_at = stamp
+        if first_merge:
+            from preloop.services.fleet_code_activity import emit_merge_event
+
+            emit_merge_event(db, account_id=account_id, pr_key=subject.url, at=stamp)
     db.flush()
     touched: set[Optional[uuid.UUID]] = {pull.rollup_id}
     if pull.rollup_id is None and not pull.ambiguous:

@@ -724,3 +724,54 @@ class TestPolicyDeniedWebhookOffLoop:
                 action="allow",
             )
             assert submitted == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_note_rules_defer_until_target_resolution(enabled):
+    with (
+        patch(
+            "preloop.services.policy_evaluator.is_tool_enabled_for_subject",
+            return_value=enabled,
+        ),
+        patch("preloop.services.policy_evaluator.get_scoped_tool_rules") as get_rules,
+    ):
+        decision = await evaluate_policy_async(
+            AsyncMock(),
+            tool_name="send_note",
+            tool_args={"text": "Report progress."},
+            account_id=uuid4(),
+            defer_note_scope=True,
+            server_name="preloop-mcp",
+        )
+    assert decision[0] == ("allow" if enabled else "deny")
+    get_rules.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_proxied_send_note_does_not_defer_its_deny_rule() -> None:
+    with (
+        patch(
+            "preloop.services.policy_evaluator.get_default_approval_workflow_async",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "preloop.services.policy_evaluator.is_tool_enabled_for_subject",
+            return_value=True,
+        ),
+        patch(
+            "preloop.services.policy_evaluator.get_scoped_tool_rules",
+            return_value=[{"action": "deny", "condition_expression": "true"}],
+        ),
+    ):
+        decision = await evaluate_policy_async(
+            AsyncMock(),
+            tool_name="send_note",
+            tool_args={"text": "Report progress."},
+            account_id=uuid4(),
+            defer_note_scope=True,
+            server_name="example-upstream",
+            resolve_tool_configuration=False,
+            record=False,
+        )
+    assert decision.action == "deny"

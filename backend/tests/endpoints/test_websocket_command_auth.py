@@ -14,6 +14,7 @@ from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.plugins import account_hooks
 from preloop.plugins.account_hooks import Decision
 from preloop.services.flow_execution_stop import MANUAL_STOP_MESSAGE, TeardownOutcome
+from tests.permission_helpers import grant_permission
 
 WS = "preloop.api.endpoints.websockets"
 
@@ -50,7 +51,7 @@ def other_user(db_session):
     account = crud_account.create(
         db_session, obj_in={"organization_name": "Other Org", "is_active": True}
     )
-    return crud_user.create(
+    user = crud_user.create(
         db_session,
         obj_in={
             "account_id": account.id,
@@ -63,6 +64,8 @@ def other_user(db_session):
             "user_source": "local",
         },
     )
+    grant_permission(db_session, user, "execute_flows")
+    return user
 
 
 def _deny_execute_flows():

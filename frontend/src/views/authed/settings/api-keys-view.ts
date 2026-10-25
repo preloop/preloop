@@ -3,7 +3,7 @@ import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
-  getApiKeys,
+  getApiKeysPage,
   createApiKey,
   deleteApiKey,
   getApprovalWorkflows,
@@ -46,7 +46,7 @@ import {
   listTableStyles,
   renderDataTableToolbar,
 } from '../../../table';
-import type { ListColumn } from '../../../table';
+import type { ListColumn, ListQuery } from '../../../table';
 import '../../../table/data-table';
 import { parseUTCDate } from '../../../utils/date';
 import { unifiedWebSocketManager } from '../../../services/unified-websocket-manager';
@@ -69,6 +69,14 @@ export class ApiKeysView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
   @state()
   private apiKeys: ApiKey[] = [];
+
+  /** Keys matching the search and retired filter, across every page. */
+  @state()
+  private serverTotal: number | null = null;
+
+  /** Retired keys matching the search, or null when the server sent none. */
+  @state()
+  private retiredCount: number | null = null;
 
   @state()
   private isLoading = true;
@@ -170,8 +178,12 @@ export class ApiKeysView extends LitElement {
   readonly table = new ListTable<ApiKey>(this, {
     listId: 'api-keys',
     getRowId: (key) => key.id,
-    // 25 a page keeps the list within three viewports at 1440x900 (#1585).
+    // 25 a page keeps the list within three viewports at 1440x900 (#1585),
+    // and the server sends only that page (#1694).
+    mode: 'server',
     pageSize: 25,
+    defaultSorting: [{ id: 'created', desc: true }],
+    onQueryChange: (query) => void this.fetchApiKeys(query),
     url: true,
     columns: this.keyColumns(),
   });
@@ -187,17 +199,65 @@ export class ApiKeysView extends LitElement {
     this.unsubscribeRealtime?.();
   }
 
-  async fetchApiKeys() {
+  /** Server sort keys for the sortable columns. */
+  private static readonly SERVER_SORTS: Record<string, string> = {
+    name: 'name',
+    created: 'created',
+    expires: 'expires',
+  };
+
+  /** Bumped per request so a slow page never overwrites a newer one. */
+  private fetchRequest = 0;
+
+  /**
+   * Fetch the page the table is on. Only the page in view is transferred;
+   * search, sort and the retired filter run on the server (#1694).
+   */
+  async fetchApiKeys(query: ListQuery = this.table.query) {
+    const request = ++this.fetchRequest;
     this.isLoading = true;
     this.error = null;
+    const sorted = query.sorting[0];
+    const sortKey = sorted ? ApiKeysView.SERVER_SORTS[sorted.id] : undefined;
     try {
-      this.apiKeys = await getApiKeys();
+      const page = await getApiKeysPage({
+        limit: query.pageSize || 25,
+        offset: query.offset,
+        search: query.search || undefined,
+        includeRetired: this.showAllKeys,
+        sort: sortKey ? `${sorted!.desc ? '-' : ''}${sortKey}` : '-created',
+      });
+      if (request !== this.fetchRequest) return;
+      const pageSize = query.pageSize || 25;
+      if (page.items.length === 0 && page.total > 0 && query.offset > 0) {
+        // The last key on this page was deleted or revoked: step back to the
+        // last page that still has keys. Changing the page refetches.
+        this.table.setPageIndex(
+          Math.max(0, Math.ceil(page.total / pageSize) - 1)
+        );
+        return;
+      }
+      this.apiKeys = page.items;
+      this.serverTotal = page.total;
+      this.retiredCount = page.retired;
     } catch (error) {
+      if (request !== this.fetchRequest) return;
       this.error =
         error instanceof Error ? error.message : 'Failed to fetch API keys';
     } finally {
-      this.isLoading = false;
+      if (request === this.fetchRequest) this.isLoading = false;
     }
+  }
+
+  /** Shows or hides retired keys; the server filters, so this refetches. */
+  private setShowAllKeys(show: boolean): void {
+    this.showAllKeys = show;
+    if (this.table.pageIndex !== 0) {
+      // Resetting the page fires onQueryChange, which refetches.
+      this.table.setPageIndex(0);
+      return;
+    }
+    void this.fetchApiKeys();
   }
 
   private async fetchGovernanceEditorContext(): Promise<void> {
@@ -305,11 +365,16 @@ export class ApiKeysView extends LitElement {
 
   private visibleKeys(): ApiKey[] {
     if (this.showAllKeys) return this.apiKeys;
+    // The server already leaves retired keys out; a key that expired since
+    // the page loaded is dropped here too.
     return this.apiKeys.filter((key) => !this.isRetired(key));
   }
 
   private hiddenKeyCount(): number {
-    return this.apiKeys.filter((key) => this.isRetired(key)).length;
+    return (
+      this.retiredCount ??
+      this.apiKeys.filter((key) => this.isRetired(key)).length
+    );
   }
 
   /**
@@ -318,7 +383,13 @@ export class ApiKeysView extends LitElement {
    * the table's checkboxes from ever disagreeing by one pass.
    */
   protected willUpdate(): void {
-    this.table.data = this.isLoading || this.error ? [] : this.visibleKeys();
+    const visible = this.isLoading || this.error ? [] : this.visibleKeys();
+    this.table.data = visible;
+    this.table.totalRows = Math.max(
+      visible.length,
+      (this.serverTotal ?? visible.length) -
+        (this.apiKeys.length - visible.length)
+    );
     this.selection.setItems(this.table.rows);
   }
 
@@ -340,7 +411,7 @@ export class ApiKeysView extends LitElement {
             <a href="/console/settings/api-keys/${key.id}">${key.name}</a>
             ${
               key.managed_agent_id
-                ? html`<sl-badge variant="neutral" size="small"
+                ? html`<sl-badge class="chip" pill variant="neutral"
                     >Agent</sl-badge
                   >`
                 : ''
@@ -350,7 +421,6 @@ export class ApiKeysView extends LitElement {
       {
         id: 'status',
         header: 'Status',
-        value: (key) => this.getActivityLabel(key),
         cell: (key) =>
           html`<sl-badge
             class="chip"
@@ -371,9 +441,6 @@ export class ApiKeysView extends LitElement {
       {
         id: 'last_activity',
         header: 'Last activity',
-        sort: 'number',
-        value: (key) => day(lastActivity(key)),
-        searchText: () => '',
         cell: (key) =>
           lastActivity(key)
             ? parseUTCDate(lastActivity(key)).toLocaleDateString()
@@ -382,9 +449,6 @@ export class ApiKeysView extends LitElement {
       {
         id: 'usage',
         header: 'Recent usage',
-        sort: 'number',
-        value: usage,
-        searchText: () => '',
         cell: (key) =>
           html`${usage(key)} (${key.recent_model_calls ?? 0} model /
           ${key.recent_tool_calls ?? 0} tool)`,
@@ -795,7 +859,13 @@ export class ApiKeysView extends LitElement {
 
   render() {
     const renderContent = () => {
-      if (!this.isLoading && !this.error && this.apiKeys.length === 0) {
+      if (
+        !this.isLoading &&
+        !this.error &&
+        this.apiKeys.length === 0 &&
+        !this.table.query.search &&
+        this.hiddenKeyCount() === 0
+      ) {
         return html`<sl-card class="table-card">
           <table-state
             kind="empty"
@@ -820,7 +890,7 @@ export class ApiKeysView extends LitElement {
       const hiddenLabel = `${hiddenCount} ${
         hiddenCount === 1 ? 'key is' : 'keys are'
       } revoked or expired and hidden`;
-      const shownLabel = `Showing ${this.apiKeys.length} keys, including ${hiddenCount} revoked or expired`;
+      const shownLabel = `Showing ${(this.serverTotal ?? this.apiKeys.length).toLocaleString()} keys, including ${hiddenCount} revoked or expired`;
       const shown = this.table.totalRows ?? 0;
 
       return html`
@@ -862,9 +932,7 @@ export class ApiKeysView extends LitElement {
                   <button
                     type="button"
                     class="link-button"
-                    @click=${() => {
-                      this.showAllKeys = true;
-                    }}
+                    @click=${() => this.setShowAllKeys(true)}
                   >
                     Show all
                   </button>
@@ -879,9 +947,7 @@ export class ApiKeysView extends LitElement {
                   <button
                     type="button"
                     class="link-button"
-                    @click=${() => {
-                      this.showAllKeys = false;
-                    }}
+                    @click=${() => this.setShowAllKeys(false)}
                   >
                     Hide them
                   </button>

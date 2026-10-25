@@ -177,6 +177,7 @@ def test_route_inventory_includes_lazy_hidden_and_new_routes(app: Any) -> None:
     actual = restricted_route_inventory(app)
     assert actual == declared
     assert actual["GET /api/v1/auth/api-keys"] == "deny"
+    assert actual["GET /api/v1/fleet/code-activity"] == "deny"
     assert actual["POST /api/v1/chat/setup"] == "deny"
     assert actual["POST /api/v1/chat/setup/{draft_id}/finish"] == "deny"
     assert actual["POST /api/v1/chat/setup/slack/oauth"] == "deny"
@@ -263,6 +264,19 @@ def test_real_routes_deny_valid_requests_without_side_effects(
         ("GET", "/api/v1/runners", None),
         ("POST", "/api/v1/auth/refresh", {"refresh_token": token}),
     ]
+    requests.extend(
+        ("GET", f"/api/v1/audit-logs{suffix}", None)
+        for suffix in (
+            "",
+            "/actors",
+            "/denials",
+            "/grouped",
+            "/overview",
+            "/stats",
+            f"/user/{owner.id}",
+            f"/{project.id}",
+        )
+    )
     for method, path, payload in requests:
         response = client.request(method, path, headers=headers, json=payload)
         expected = 422 if path.endswith("/trigger") else 403

@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -163,6 +164,8 @@ def test_retry_reader_limits_orders_and_excludes_completed_or_live_claims(
             "summarizing",
             "retry_exhausted",
             "parse_failed",
+            "capture_incomplete",
+            "capture_incomplete",
         ]
     ):
         row = crud_governance_session_digest.upsert(
@@ -174,11 +177,11 @@ def test_retry_reader_limits_orders_and_excludes_completed_or_live_claims(
             window_end=now - timedelta(hours=index),
             digest={"summary_status": status},
         )
-        if index == 4:
+        if index in (4, 7):
             crud_governance_session_digest.update(
                 db_session, db_obj=row, obj_in={"updated_at": now - timedelta(hours=1)}
             )
-        if index in (1, 2, 4):
+        if index in (1, 2, 4, 6, 7):
             expected.insert(0, row.id)
     assert (
         list_session_digest_retries(
@@ -228,25 +231,60 @@ def test_retry_query_uses_partial_queue_index(db_session: Session) -> None:
         )
     )
     assert gov.SESSION_DIGEST_RETRY_PREDICATE in sql
+    assert gov.SESSION_DIGEST_CAPTURE_RETRY_PREDICATE in sql
     # Prove predicate/index eligibility independently of tiny-fixture cost estimates.
     db_session.execute(text("SET LOCAL enable_seqscan = off"))
     plan = "\n".join(db_session.execute(text("EXPLAIN (COSTS OFF) " + sql)).scalars())
     assert "ix_governance_session_digest_retry_queue" in plan
+    # Check each UNION branch separately: one indexed branch must not hide a
+    # scan of all the account's completed segments in the other branch.
+    branches = statement.get_final_froms()[0].element.selects
+    assert len(branches) == 3
+    for branch, index_name in zip(
+        branches,
+        (
+            "ix_governance_session_digest_retry_queue",
+            "ix_governance_session_digest_parse_retry",
+            "ix_governance_session_digest_capture_retry",
+        ),
+        strict=True,
+    ):
+        branch_sql = str(
+            branch.compile(
+                dialect=db_session.get_bind().dialect,
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        branch_plan = "\n".join(
+            db_session.execute(text("EXPLAIN (COSTS OFF) " + branch_sql)).scalars()
+        )
+        assert index_name in branch_plan
+        assert "Index Cond:" in branch_plan and "account_id" in branch_plan
 
 
-def test_retry_index_matches_frozen_migration() -> None:
+@pytest.mark.parametrize(
+    "migration_name,predicate_name",
+    [
+        ("20261023_governance_retry_idx.py", "SESSION_DIGEST_RETRY_PREDICATE"),
+        ("20261103_governance_parse_retry.py", "SESSION_DIGEST_PARSE_RETRY_PREDICATE"),
+    ],
+)
+def test_retry_index_matches_frozen_migration(
+    migration_name: str, predicate_name: str
+) -> None:
     import importlib.util
     from pathlib import Path
     from preloop.models.models import governance_review as gov
 
     path = (
         Path(__file__).resolve().parents[2]
-        / "preloop/models/alembic/versions/20261023_governance_retry_idx.py"
+        / "preloop/models/alembic/versions"
+        / migration_name
     )
     spec = importlib.util.spec_from_file_location("retry_index_migration", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.PREDICATE == gov.SESSION_DIGEST_RETRY_PREDICATE
+    assert module.PREDICATE == getattr(gov, predicate_name)
     index = next(
         i
         for i in models.GovernanceSessionDigest.__table__.indexes

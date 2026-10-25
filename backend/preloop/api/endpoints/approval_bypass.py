@@ -35,7 +35,7 @@ from preloop.schemas.approval_bypass import (
     ApprovalBypassResponse,
     ApprovalBypassStatus,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,16 @@ router = APIRouter(
     prefix="/approval-bypasses",
     tags=["approval_bypasses"],
 )
+
+#: Permission required to open or revoke an approval bypass.
+#:
+#: A bypass is not a read: an ``auto_approve`` bypass removes the human from
+#: the approval loop, which is exactly what ``decide_approvals`` governs.
+#: Gating the write side on ``view_approvals`` would let a read-only role
+#: disarm a control it cannot otherwise decide.  ``view_approvals`` stays
+#: the gate for the listing endpoint, which really is a read.
+BYPASS_WRITE_PERMISSION = "decide_approvals"
+BYPASS_READ_PERMISSION = "view_approvals"
 
 
 @router.get("/status", response_model=ApprovalBypassStatus)
@@ -82,7 +92,7 @@ def get_bypass_status(
 
 
 @router.get("", response_model=List[ApprovalBypassResponse])
-@require_permission("view_approvals")
+@require_permission(BYPASS_READ_PERMISSION)
 def list_bypasses(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -99,13 +109,14 @@ def list_bypasses(
     Returns:
         Active bypasses, soonest-expiring last.
     """
+    ensure_permission_in_oss(db, current_user, BYPASS_READ_PERMISSION)
     return crud_approval_bypass.list_active_for_account(
         db, account_id=current_user.account_id
     )
 
 
 @router.post("", response_model=ApprovalBypassResponse, status_code=201)
-@require_permission("view_approvals")
+@require_permission(BYPASS_WRITE_PERMISSION)
 def create_bypass(
     payload: ApprovalBypassCreate,
     current_user: User = Depends(get_current_active_user),
@@ -128,6 +139,7 @@ def create_bypass(
     Raises:
         HTTPException: If the duration is outside the permitted range.
     """
+    ensure_permission_in_oss(db, current_user, BYPASS_WRITE_PERMISSION)
     expires_at = datetime.utcnow() + timedelta(minutes=payload.duration_minutes)
 
     bypass = ApprovalBypass(
@@ -163,7 +175,7 @@ def create_bypass(
 
 
 @router.delete("/{bypass_id}", response_model=ApprovalBypassResponse)
-@require_permission("view_approvals")
+@require_permission(BYPASS_WRITE_PERMISSION)
 def revoke_bypass(
     bypass_id: uuid.UUID,
     current_user: User = Depends(get_current_active_user),
@@ -171,7 +183,7 @@ def revoke_bypass(
 ) -> ApprovalBypass:
     """End a bypass early.
 
-    Any user who can view approvals in the account may revoke a bypass, even
+    Any user who can decide approvals in the account may revoke a bypass, even
     one they did not create. Re-tightening a control is always safe, so it
     should never be blocked on ownership.
 
@@ -186,6 +198,7 @@ def revoke_bypass(
     Raises:
         HTTPException: If the bypass is not found in this account.
     """
+    ensure_permission_in_oss(db, current_user, BYPASS_WRITE_PERMISSION)
     existing = crud_approval_bypass.get(
         db, id=str(bypass_id), account_id=str(current_user.account_id)
     )
@@ -209,7 +222,7 @@ def revoke_bypass(
 
 
 @router.post("/revoke-all", response_model=List[ApprovalBypassResponse])
-@require_permission("view_approvals")
+@require_permission(BYPASS_WRITE_PERMISSION)
 def revoke_all_bypasses(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
@@ -226,6 +239,7 @@ def revoke_all_bypasses(
     Returns:
         The bypasses that were revoked.
     """
+    ensure_permission_in_oss(db, current_user, BYPASS_WRITE_PERMISSION)
     active = crud_approval_bypass.list_active_for_account(
         db, account_id=current_user.account_id
     )

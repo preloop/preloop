@@ -627,3 +627,111 @@ test("full durable receipt ledger rejects new work and preserves replay after re
     assert.equal(state.starts.length, 0);
   } finally { await fs.rm(directory, {recursive: true, force: true}); }
 });
+
+test("presence lists owned threads as reachable", async () => {
+  const { sidecar } = makeSidecar();
+  const early = [];
+  sidecar.sendEnvelope = (envelope) => early.push(envelope);
+  assert.deepEqual(sidecar.reachableSessionIds(), []);
+  await sidecar.handleFrame(
+    fakeSocket(),
+    JSON.stringify({
+      type: "command",
+      name: "send_message",
+      message_id: "m-reach",
+      payload: { text: "go", start_new_session: true },
+    }),
+  );
+  assert.deepEqual(sidecar.reachableSessionIds(), ["thread-1"]);
+  // Opening the thread republishes presence without waiting for a heartbeat.
+  assert.equal(early.length, 1);
+  assert.deepEqual(early[0].payload.reachable_session_ids, ["thread-1"]);
+
+  const sent = [];
+  sidecar.sendEnvelope = (envelope) => sent.push(envelope);
+  sidecar.launcher.notifyStatus = () => {};
+  sidecar.broadcastMode();
+  assert.equal(sent[0].name, "session_mode");
+  assert.deepEqual(sent[0].payload.reachable_session_ids, ["thread-1"]);
+  sidecar.stop();
+});
+
+function fakeAppServer(reachable = ["tui-thread"]) {
+  const calls = { turns: [], interrupts: [] };
+  const driver = {
+    calls,
+    listeners: {},
+    setListeners(listeners) { Object.assign(driver.listeners, listeners); },
+    reachableThreadIds: () => [...reachable],
+    isReachable: (id) => !!id && reachable.includes(id),
+    async sendTurn(threadId, text) {
+      calls.turns.push({ threadId, text });
+      return { finalResponse: `tui: ${text}`, usage: null, turnId: "turn-1", steered: false };
+    },
+    async interrupt(threadId) { calls.interrupts.push(threadId); },
+    stop() {},
+  };
+  return driver;
+}
+
+test("send_message for a reachable TUI thread uses the app-server client, not the SDK", async () => {
+  const state = { texts: [], runs: 0, starts: [], resumes: [] };
+  const appServer = fakeAppServer();
+  const sidecar = new PreloopCodexSidecar(undefined, makeEchoFactory(state), undefined, undefined, appServer);
+  sidecar.configure(baseConfig);
+  const outcome = await sidecar.dispatch({
+    type: "command",
+    name: "send_message",
+    message_id: "m-tui",
+    payload: { text: "run the tests", session_source_id: "tui-thread", runtime_session_id: "rs-1" },
+  });
+  assert.deepEqual(appServer.calls.turns, [{ threadId: "tui-thread", text: "run the tests" }]);
+  assert.equal(outcome.reply_text, "tui: run the tests");
+  assert.equal(outcome.session_id, "tui-thread");
+  assert.equal(state.resumes.length, 0, "a live TUI thread is never resumed through the SDK");
+  assert.equal(state.starts.length, 0);
+
+  await sidecar.dispatch({
+    type: "command",
+    name: "send_message",
+    payload: { interrupt: true, session_mode: "existing", session_source_id: "tui-thread" },
+  });
+  assert.deepEqual(appServer.calls.interrupts, ["tui-thread"]);
+
+  // start_new_session still goes to the SDK.
+  await sidecar.dispatch({
+    type: "command",
+    name: "send_message",
+    payload: { text: "fresh", start_new_session: true, session_source_id: "tui-thread" },
+  });
+  assert.equal(state.starts.length, 1);
+  assert.equal(appServer.calls.turns.length, 1);
+  sidecar.stop();
+});
+
+test("presence lists loaded app-server TUI threads as reachable and forwards their progress", async () => {
+  const appServer = fakeAppServer(["tui-thread"]);
+  const sidecar = new PreloopCodexSidecar(undefined, makeEchoFactory({ texts: [], runs: 0, starts: [], resumes: [] }), undefined, undefined, appServer);
+  sidecar.configure(baseConfig);
+  assert.deepEqual(sidecar.reachableSessionIds(), ["tui-thread"]);
+  const sent = [];
+  sidecar.sendEnvelope = (envelope) => sent.push(envelope);
+  sidecar.launcher.notifyStatus = () => {};
+  appServer.listeners.onReachableChanged(["tui-thread"]);
+  assert.equal(sent[0].name, "session_mode");
+  assert.deepEqual(sent[0].payload.reachable_session_ids, ["tui-thread"]);
+  appServer.listeners.onEvent("tui-thread", { kind: "assistant_delta", turn_id: "t1", item_id: "m1", delta: "Hi" });
+  appServer.listeners.onEvent("tui-thread", { kind: "assistant_delta", turn_id: "t1", item_id: "m1", delta: " there" });
+  assert.equal(sent.length, 1, "per-token deltas are merged, not sent one by one");
+  appServer.listeners.onEvent("tui-thread", { kind: "tool_start", turn_id: "t1", call_id: "c1", tool_name: "exec_command", command: "ls" });
+  assert.equal(sent[1].type, "event");
+  assert.equal(sent[1].name, "session_progress");
+  assert.equal(sent[1].payload.session_source_id, "tui-thread");
+  assert.equal(sent[1].payload.kind, "assistant_delta");
+  assert.equal(sent[1].payload.delta, "Hi there");
+  assert.equal(sent[2].payload.kind, "tool_start", "order is kept: the delta flushes before the tool row");
+  appServer.listeners.onEvent("tui-thread", { kind: "assistant_delta", turn_id: "t1", item_id: "m2", delta: "Done" });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(sent[3].payload.delta, "Done", "a lone delta is flushed by the timer");
+  sidecar.stop();
+});

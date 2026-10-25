@@ -67,7 +67,7 @@ from preloop.utils.bitbucket_dc import (
     BitbucketDCConfigError,
     validate_bitbucket_dc_config,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 
 Tracker = models.Tracker
@@ -534,6 +534,9 @@ async def register_tracker(
     Raises:
         HTTPException: If registration fails.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "create_trackers")
+    )
     # Parse request body manually
     try:
         data = await request.json()
@@ -1101,6 +1104,9 @@ async def update_tracker(
     db: Session = Depends(get_db_session),
 ) -> Tracker:
     """Update an existing tracker."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "edit_trackers")
+    )
     account = crud_account.get(db, id=current_user.account_id)
     if not account:
         raise HTTPException(
@@ -1325,6 +1331,9 @@ async def sync_tracker(
     db: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
     """Queue a background sync for an existing tracker."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "edit_trackers")
+    )
     account = crud_account.get(db, id=current_user.account_id)
     if not account:
         raise HTTPException(
@@ -1353,6 +1362,9 @@ async def delete_tracker(
     db: Session = Depends(get_db_session),
 ) -> Dict[str, str]:
     """Delete a tracker by ID (soft delete by default, hard delete if specified)."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "delete_trackers")
+    )
     account = crud_account.get(db, id=current_user.account_id)
     if not account:
         raise HTTPException(

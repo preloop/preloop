@@ -163,6 +163,7 @@ export class BrowserStepRow extends LitElement {
         ${
           shot && shot.artifact_id
             ? html`<browser-step-thumbnail
+                budgeted
                 .sessionId=${this.sessionId}
                 .artifactId=${shot.artifact_id}
                 .availability=${String(shot.availability || 'available')}

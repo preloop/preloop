@@ -1,7 +1,9 @@
+import { randomUuid } from '../../utils/random-uuid';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
 import { formatUsd, formatUsdExact } from '../../utils/money';
 import { validFilterDate } from '../../utils/list-filter-url';
+import { agentStateChip } from '../../utils/agent-status';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import {
@@ -317,10 +319,14 @@ export class RuntimeSessionsView extends LitElement {
       /* The collection bar: the same inline row the Agents and Flows lists
          use, so the filters sit on the page instead of inside a card of
          their own. Slotted content lives in this view's tree, so these
-         rules reach the selects and the Apply/Reset pair. */
+         rules reach the selects and the Apply/Reset pair. They share one
+         row with the search at 1440 instead of claiming 180px each and
+         wrapping (#1689). */
       list-toolbar sl-select,
       list-toolbar sl-input[type='date'] {
-        min-width: 180px;
+        min-width: 140px;
+        flex: 0 1 150px;
+        width: 150px;
       }
 
       .filter-actions {
@@ -894,7 +900,7 @@ export class RuntimeSessionsView extends LitElement {
     if (sessionId === this.selectedSessionId) {
       // Create an optimistic event
       const newEvent = {
-        id: message.id || crypto.randomUUID(),
+        id: message.id || randomUuid(),
         execution_id: message.execution_id || '',
         timestamp: payload.timestamp || new Date().toISOString(),
         type: message.type,
@@ -939,7 +945,7 @@ export class RuntimeSessionsView extends LitElement {
       // Update interactions list if visible
       if (message.type === 'model_gateway_call' && this.interactions) {
         const newInteraction = {
-          id: message.id || crypto.randomUUID(),
+          id: message.id || randomUuid(),
           request: payload.request || {},
           response: payload.response || {},
           error_detail: payload.error_detail,
@@ -1772,26 +1778,15 @@ export class RuntimeSessionsView extends LitElement {
     );
   }
 
+  /** The one agent state from the server's `turn_state` (D35). */
   private getSessionVariant(
     session: RuntimeSessionSummary
-  ): 'success' | 'primary' | 'neutral' {
-    if (session.activity_status === 'active_now') {
-      return 'success';
-    }
-    if (session.activity_status === 'ended') {
-      return 'neutral';
-    }
-    return 'primary';
+  ): 'success' | 'warning' | 'neutral' {
+    return agentStateChip(session).variant;
   }
 
   private getSessionLabel(session: RuntimeSessionSummary): string {
-    if (session.activity_status === 'active_now') {
-      return 'Active now';
-    }
-    if (session.activity_status === 'ended') {
-      return 'Ended';
-    }
-    return 'Idle';
+    return agentStateChip(session).label;
   }
 
   private getSourceLabel(sourceType: string | null | undefined): string {
@@ -2978,11 +2973,18 @@ export class RuntimeSessionsView extends LitElement {
                 <sl-option value="document">Document</sl-option>
                 <sl-option value="audio">Audio</sl-option>
               </sl-select>
-              <div class="filter-actions">
-                <sl-button variant="default" @click=${this.clearFilters}>
-                  Clear filters
-                </sl-button>
-              </div>
+              ${
+                // Only when there is something to clear: on the default view
+                // the button wrapped the filters onto a second row and pushed
+                // the conversation down (#1689).
+                this.hasActiveFilters()
+                  ? html`<div class="filter-actions">
+                      <sl-button variant="default" @click=${this.clearFilters}>
+                        Clear filters
+                      </sl-button>
+                    </div>`
+                  : nothing
+              }
               <span slot="count">${this.sessionCountLabel}</span>
             </list-toolbar>
             ${this.renderEmbeddingSettings()}

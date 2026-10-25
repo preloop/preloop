@@ -434,6 +434,9 @@ export class ToolsEditorComponent extends LitElement {
   }
 
   private _renderToolGroup(group: ToolGroup, visibleTools = group.tools) {
+    const readOnly =
+      this.mode === 'global' &&
+      Boolean(group.server?.is_shared || group.server?.read_only);
     const isEnabled = (t: ToolWithRules) =>
       this.mode === 'scoped' && t.name in this.toolEnabledOverrides
         ? this.toolEnabledOverrides[t.name]
@@ -463,6 +466,7 @@ export class ToolsEditorComponent extends LitElement {
               aria-hidden="true"
             ></sl-icon>
             <span class="section-title">${group.name}</span>
+            ${readOnly ? html`<sl-badge variant="neutral">Shared server · read-only</sl-badge>` : ''}
             ${
               group.type === 'mcp' && group.server?.tool_prefix
                 ? html`<span class="section-meta"
@@ -490,7 +494,10 @@ export class ToolsEditorComponent extends LitElement {
           </button>
           <div class="section-line"></div>
           ${
-            group.type === 'mcp' && group.server && this.mode === 'global'
+            group.type === 'mcp' &&
+            group.server &&
+            this.mode === 'global' &&
+            !readOnly
               ? html`
                   <div
                     class="section-actions"
@@ -576,7 +583,9 @@ export class ToolsEditorComponent extends LitElement {
                         >
                           No tools${this.filterText ? ' matching filter' : ''}.
                           ${
-                            group.type === 'mcp' && this.mode === 'global'
+                            group.type === 'mcp' &&
+                            this.mode === 'global' &&
+                            !readOnly
                               ? html`<sl-button
                                   size="small"
                                   variant="text"
@@ -614,6 +623,7 @@ export class ToolsEditorComponent extends LitElement {
                             return html`
                               <tool-list-item
                                 .mode=${this.mode}
+                                .readOnly=${readOnly}
                                 .tool=${{ ...tool, is_enabled: toolIsEnabled }}
                                 .usageStat=${this.toolStats[tool.name] || null}
                                 .accessRules=${rules}

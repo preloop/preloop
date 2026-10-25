@@ -1599,75 +1599,6 @@ func TestEnrichDiscoveredAgentMarksManagedConfigDrift(t *testing.T) {
 	}
 }
 
-func TestFilterAgentsPendingEnrollmentSkipsRemoteManagedAgent(t *testing.T) {
-	managedAgent := managedAgentListResponse{
-		Items: []managedAgentSummary{
-			{
-				ID:                "agent-1",
-				DisplayName:       "OpenClaw",
-				SessionSourceType: "openclaw",
-				SessionSourceID:   runtimePrincipalIDForAgent(AgentConfig{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json"}),
-				LifecycleState:    "active",
-				OnboardingState:   "fully_onboarded",
-			},
-		},
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(managedAgent)
-	}))
-	defer server.Close()
-
-	client := api.NewClientWithToken(server.URL, "tok")
-	discovered := []AgentConfig{
-		{Name: "OpenClaw", ConfigPath: "/tmp/openclaw.json"},
-		{Name: "Codex CLI", ConfigPath: "/tmp/codex.json"},
-	}
-
-	candidates, err := filterAgentsPendingEnrollment(client, discovered)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(candidates) != 1 || candidates[0].Name != "Codex CLI" {
-		t.Fatalf("expected only the unenrolled agent to remain, got %#v", candidates)
-	}
-}
-
-func TestFilterAgentsPendingEnrollmentKeepsIncompleteRemoteManagedAgent(t *testing.T) {
-	managedAgent := managedAgentListResponse{
-		Items: []managedAgentSummary{
-			{
-				ID:                "agent-1",
-				DisplayName:       "Codex CLI",
-				SessionSourceType: "codex",
-				SessionSourceID:   runtimePrincipalIDForAgent(AgentConfig{Name: "Codex CLI", ConfigPath: "/tmp/codex.toml"}),
-				LifecycleState:    "active",
-				OnboardingState:   "incomplete",
-			},
-		},
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(managedAgent)
-	}))
-	defer server.Close()
-
-	client := api.NewClientWithToken(server.URL, "tok")
-	discovered := []AgentConfig{
-		{Name: "Codex CLI", ConfigPath: "/tmp/codex.toml"},
-	}
-
-	candidates, err := filterAgentsPendingEnrollment(client, discovered)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(candidates) != 1 || candidates[0].Name != "Codex CLI" {
-		t.Fatalf("expected incomplete remote agent to be re-onboarded, got %#v", candidates)
-	}
-}
-
 func TestGetManagedAgentForDiscoveredFallsBackToLegacyDesktopAgentSourceType(
 	t *testing.T,
 ) {
@@ -1708,23 +1639,6 @@ func TestGetManagedAgentForDiscoveredFallsBackToLegacyDesktopAgentSourceType(
 				t.Fatalf("expected legacy desktop agent match, got %#v", managed)
 			}
 		})
-	}
-}
-
-func TestFilterAgentsPendingEnrollmentKeepsReonboardCandidate(t *testing.T) {
-	candidates, err := filterAgentsPendingEnrollment(nil, []AgentConfig{
-		{
-			Name:                 "OpenClaw",
-			ConfigPath:           "/tmp/openclaw.json",
-			IsOnboarded:          true,
-			ReonboardRecommended: true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(candidates) != 1 || !candidates[0].ReonboardRecommended {
-		t.Fatalf("expected reonboard candidate to remain, got %#v", candidates)
 	}
 }
 

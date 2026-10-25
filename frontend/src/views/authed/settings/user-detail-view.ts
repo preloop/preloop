@@ -45,6 +45,7 @@ import {
   resolveTimeRange,
   timeRangeShortLabel,
 } from '../../../utils/time-range';
+import { renderWithoutSubscriptionsLine } from '../../../utils/subscription-estimate';
 import { usageForOwner, type UsageTotals } from '../../../utils/user-usage';
 
 /** A role as GET /users/{id} returns it; inherited ones name their team. */
@@ -488,14 +489,18 @@ export class UserDetailView extends LitElement {
           const startDate = resolveTimeRange(this.range).startDate ?? undefined;
           const [agents, summary] = await Promise.all([
             this.accountAgents(retry),
+            // The per-agent section only: the whole window, by the same
+            // attribution as the agents list (B-02). The session list is
+            // capped at the most recent sessions.
             getAccountGatewayUsageSummary({
               startDate,
               includeBreakdown: true,
+              breakdowns: ['agents'],
             }),
           ]);
           set({
             status: 'ready',
-            data: usageForOwner(userId, summary.usage_by_session || [], agents),
+            data: usageForOwner(userId, summary.usage_by_agent || [], agents),
           });
           break;
         }
@@ -630,7 +635,7 @@ export class UserDetailView extends LitElement {
         `Tokens · ${range}`,
         'stat-tokens'
       )}
-      ${stat(ready ? this.money(ready.cost) : loading, `$ est. · ${range}`, 'stat-spend')}
+      ${stat(ready ? html`${this.money(ready.cost)}${renderWithoutSubscriptionsLine(ready.withoutSubscriptions, ready.subscription)}` : loading, `$ est. · ${range}`, 'stat-spend')}
     </div>`;
   }
 

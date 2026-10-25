@@ -69,9 +69,17 @@ describe('AuditIntegrityStrip', () => {
         el.shadowRoot?.querySelector('[data-testid="audit-integrity-strip"]'),
       'strip did not render'
     );
-    const text = el.shadowRoot!.textContent || '';
-    expect(text).to.contain('Sealed through seq 40');
-    expect(text).to.contain('seal lag 15s');
+    // A compact "Sealed · Verify" chip; the detail moves to its tooltip.
+    const chip = el.shadowRoot!.querySelector(
+      '[data-testid="audit-seal-chip"]'
+    );
+    expect(chip?.textContent?.trim()).to.equal('Sealed');
+    const detail = chip?.getAttribute('title') || '';
+    expect(detail).to.contain('Sealed through seq 40');
+    expect(detail).to.contain('seal lag 15s');
+    const text = (el.shadowRoot!.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('Sealed · Verify');
+    expect(text).to.not.contain('seal lag');
     const link = el.shadowRoot!.querySelector('a');
     expect(link?.getAttribute('href')).to.equal(
       '/console/settings/records#audit-integrity'

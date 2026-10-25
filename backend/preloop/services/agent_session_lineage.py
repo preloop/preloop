@@ -311,6 +311,7 @@ def caller_session_ids(
     principal_type: Optional[str] = None,
     principal_id: Optional[str] = None,
     headers: Optional[Mapping[str, str]] = None,
+    caller_session_id: Optional[str] = None,
 ) -> List[uuid.UUID]:
     """The runtime sessions an MCP call was made from, as far as we can tell.
 
@@ -323,24 +324,39 @@ def caller_session_ids(
     found: List[uuid.UUID] = []
     bound = as_uuid(bound_runtime_session_id)
     if bound is not None:
-        found.append(bound)
-    if headers and principal_type and principal_id:
-        lowered = {str(k).lower(): v for k, v in headers.items()}
-        for name in CALLER_SESSION_HEADERS:
-            external = normalize_session_id(lowered.get(name))
-            if external is None:
-                continue
-            session = runner_session_for_external(
-                db, account_id=account_id, external_session_id=external
-            ) or crud_runtime_session.get_by_source(
+        # A bound credential cannot switch sessions through an input or header.
+        return [bound]
+    if principal_type and principal_id:
+        lowered = {str(k).lower(): v for k, v in (headers or {}).items()}
+        external = normalize_session_id(caller_session_id)
+        if external is None:
+            external = next(
+                (
+                    value
+                    for name in CALLER_SESSION_HEADERS
+                    if (value := normalize_session_id(lowered.get(name))) is not None
+                ),
+                None,
+            )
+        if external is not None:
+            session = crud_runtime_session.get_by_source(
                 db,
                 account_id=account_id,
                 session_source_type=principal_type,
                 session_source_id=session_source_id_for(principal_id, external),
             )
-            if session is not None and session.id not in found:
+            if session is None:
+                hosted = runner_session_for_external(
+                    db, account_id=account_id, external_session_id=external
+                )
+                if (
+                    hosted is not None
+                    and hosted.runtime_principal_type == principal_type
+                    and str(hosted.runtime_principal_id) == str(principal_id)
+                ):
+                    session = hosted
+            if session is not None:
                 found.append(session.id)
-            break
     return found
 
 

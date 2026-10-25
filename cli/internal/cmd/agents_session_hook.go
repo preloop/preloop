@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
 )
@@ -40,11 +41,12 @@ import (
 // exits 0: lineage is a convenience, and it must never block a session.
 
 // agentSessionStartPath is the backend endpoint the hook registers with.
-const agentSessionStartPath = "/api/v1/agents/session-start"
+const agentSessionStartPath = api.RESTPrefix + "/agents/session-start"
 
 // parentSessionEnvVar carries the runtime session id of the spawning run.
 const parentSessionEnvVar = "PRELOOP_PARENT_SESSION_ID"
 const sessionAliasEnvVar = "PRELOOP_SESSION_ALIAS"
+const currentSessionEnvVar = "PRELOOP_CURRENT_SESSION_ID"
 
 // sessionHookHTTPTimeout bounds the one request the hook makes.
 const sessionHookHTTPTimeout = 5 * time.Second
@@ -172,7 +174,7 @@ func sessionHookNonInteractive() bool {
 
 // appendClaudeEnvExport exports the run's own id to its child processes.
 // Claude Code sources CLAUDE_ENV_FILE before every Bash command it runs.
-func appendClaudeEnvExport(runtimeSessionID string) error {
+func appendClaudeEnvExport(runtimeSessionID string, externalIDs ...string) error {
 	path := strings.TrimSpace(os.Getenv("CLAUDE_ENV_FILE"))
 	if path == "" {
 		return nil
@@ -185,6 +187,11 @@ func appendClaudeEnvExport(runtimeSessionID string) error {
 		return err
 	}
 	defer f.Close() //nolint:errcheck
+	if len(externalIDs) > 0 && sessionFileIDPattern.MatchString(externalIDs[0]) {
+		if _, err := fmt.Fprintf(f, "export PRELOOP_CURRENT_SESSION_ID=%s\n", externalIDs[0]); err != nil {
+			return err
+		}
+	}
 	_, err = fmt.Fprintf(f, "export %s=%s\n", parentSessionEnvVar, runtimeSessionID)
 	return err
 }
@@ -265,8 +272,8 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 	// one stat. A prompt with no text is ignored too.
 	hasPrompt := strings.TrimSpace(event.Prompt) != ""
 	needsRegistration := !isPrompt || (hasPrompt && !(haveFile && existing.TitleSent))
-	if isPrompt && !needsRegistration {
-		// Nothing to register and (see below) nothing new to deliver.
+	carriesNotes := !sessionHookRegisterOnly(cmd) && sessionEventCarriesNotes(source, event.HookEventName)
+	if isPrompt && !needsRegistration && !carriesNotes {
 		return nil
 	}
 
@@ -309,7 +316,7 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 				if resp.Alias != "" && (!haveFile || existing.Alias != resp.Alias) {
 					fmt.Fprintf(errOut, "preloop session_alias=%s\n", resp.Alias)
 				}
-				if err := appendClaudeEnvExport(resp.RuntimeSessionID); err != nil {
+				if err := appendClaudeEnvExport(resp.RuntimeSessionID, externalID); err != nil {
 					fmt.Fprintf(errOut, "preloop session hook: could not export %s: %v\n", parentSessionEnvVar, err)
 				}
 				if sessionHookNonInteractive() && !(haveFile && existing.RuntimeSessionID == resp.RuntimeSessionID) {
@@ -318,15 +325,20 @@ func runAgentsSessionHook(cmd *cobra.Command, _ []string) error {
 			}
 		}
 	}
-	// Notes ride the same event: a note sent before the run started reaches
-	// the model before its first tool call. First turn only, so an interactive
-	// session does not pay a request per prompt; later notes land on the tool
-	// call or the Stop hook.
+	// Notes ride the same event. At SessionStart a note sent before the run
+	// started reaches the model before its first tool call. Every
+	// UserPromptSubmit claims too: for an idle terminal session the
+	// operator's next prompt is the only point a note can arrive, so it rides
+	// that prompt as additional context.
 	// The permission-hook fallback registers lineage only. Claiming notes
 	// here would mark them delivered before SessionStart and write a second
 	// JSON document onto the permission decision's stdout.
-	if !sessionHookRegisterOnly(cmd) && sessionEventCarriesNotes(source, event.HookEventName) && registered && (!isPrompt || !haveFile) {
-		if text := claimNotesForHook(cred, externalID, noteEventSessionStart); text != "" {
+	if carriesNotes && (isPrompt || registered) {
+		noteEvent := noteEventSessionStart
+		if isPrompt {
+			noteEvent = noteEventUserPromptSubmit
+		}
+		if text := claimNotesForHook(cred, externalID, noteEvent); text != "" {
 			writeSessionAdditionalContext(cmd.OutOrStdout(), event.HookEventName, text)
 		}
 	}

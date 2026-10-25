@@ -12,6 +12,8 @@ from typing import Any, Callable, Optional
 
 from fastmcp import Context
 
+from preloop.services.audit.async_writer import outbox_enabled
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,6 +120,9 @@ def with_approval(tool_func: Callable) -> Callable:
                     user_id=getattr(user_context, "user_id", None),
                     execution_id=getattr(user_context, "execution_id", None),
                 )
+                # This evaluation owns a short-lived transaction, including its audit.
+                if outbox_enabled():
+                    await db.commit()
                 action, approval_workflow_id, rule_description = policy_decision
 
                 logger.info(
@@ -148,7 +153,7 @@ def with_approval(tool_func: Callable) -> Callable:
 
                     # Get approval workflow using CRUD
                     workflow = await get_approval_workflow_async(
-                        db, workflow_id=workflow_id
+                        db, workflow_id=workflow_id, account_id=user_context.account_id
                     )
 
                     if not workflow:

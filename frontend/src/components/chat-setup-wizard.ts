@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -12,6 +13,7 @@ interface SetupDraft {
   id: string;
   name: string;
   provider: ChatProvider;
+  bot_username?: string;
   expires_at: string;
   callback_url: string;
   workspaces: { id: string; name: string }[];
@@ -56,16 +58,19 @@ export class ChatSetupWizard extends LitElement {
   }
 
   private async request(path: string, body?: unknown, method = 'POST') {
-    const response = await fetchWithAuth(`/api/v1/chat/setup${path}`, {
-      method: body === undefined && method === 'POST' ? 'GET' : method,
-      cache: 'no-store',
-      ...(body === undefined
-        ? {}
-        : {
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          }),
-    });
+    const response = await fetchWithAuth(
+      `${REST_API_PREFIX}/chat/setup${path}`,
+      {
+        method: body === undefined && method === 'POST' ? 'GET' : method,
+        cache: 'no-store',
+        ...(body === undefined
+          ? {}
+          : {
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            }),
+      }
+    );
     const data = await response.json();
     if (!response.ok)
       throw new Error(
@@ -179,9 +184,52 @@ export class ChatSetupWizard extends LitElement {
                     >
                       ${draft.workspaces.map((workspace) => html`<sl-option value=${workspace.id}>${workspace.name}</sl-option>`)}
                     </sl-select>`
-                  : html`<p role="status">
-                      ${this.provider === 'mattermost' ? 'Add the bot to a Mattermost team, then refresh.' : this.provider === 'slack' ? 'Complete Slack authorization in the opened tab, then refresh.' : 'Install the bot in your server, then refresh.'}
-                    </p>`
+                  : this.provider === 'mattermost'
+                    ? html`<div role="status">
+                        <p>
+                          This
+                          bot${draft.bot_username ? html` (<strong>@${draft.bot_username}</strong>)` : nothing}
+                          is not a member of any team. Add it to the team whose
+                          members should use Preloop:
+                        </p>
+                        <ol>
+                          <li>
+                            In Mattermost, open that team's menu →
+                            <strong>Invite People</strong> →
+                            <strong>Invite Member</strong>.
+                          </li>
+                          <li>
+                            Find the bot in
+                            <strong>Add or Invite People</strong>, then select
+                            <strong>Invite Members</strong>.
+                          </li>
+                        </ol>
+                        <p>
+                          If invitations are restricted, ask a Mattermost
+                          administrator to open
+                          <strong
+                            >System Console → User Management → Teams</strong
+                          >, select the team, then
+                          <strong>Members → Add Members</strong>, select the
+                          bot, and <strong>Add → Save</strong>.
+                        </p>
+                        <p>
+                          Return here and select
+                          <strong>Refresh installation</strong>. Your encrypted
+                          setup is kept for 30 minutes from discovery; you do
+                          not need to enter the token again. Finish becomes
+                          available after a team is found and selected.
+                        </p>
+                        <a
+                          href="https://docs.mattermost.com/developers/integrate/reference/bot-accounts/"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          >Mattermost bot invitation instructions</a
+                        >
+                      </div>`
+                    : html`<p role="status">
+                        ${this.provider === 'slack' ? 'Complete Slack authorization in the opened tab, then refresh.' : 'Install the bot in your server, then refresh.'}
+                      </p>`
               }
               ${draft.install_url ? html`<a href=${draft.install_url} target="_blank" rel="noopener noreferrer">Install in Discord</a>` : nothing}
               ${this.provider !== 'mattermost' ? html`<p>Callback URL: <code>${draft.callback_url}</code><sl-copy-button value=${draft.callback_url} copy-label="Copy callback URL"></sl-copy-button></p>` : html`<p>Send the bot a direct message. No slash command or command token is needed.</p>`}

@@ -65,6 +65,8 @@ describe('DashboardView', () => {
   /** Merged into `GET /api/v1/features`. */
   let extraFeatures: Record<string, boolean>;
   let fleetResponse: any;
+  /** `is_superuser` on the profile: instance admins get the Map toggle. */
+  let meSuperuser: boolean;
 
   beforeEach(() => {
     aiModelsGate = null;
@@ -82,6 +84,7 @@ describe('DashboardView', () => {
     failNext = new Map();
     extraFeatures = {};
     fleetResponse = null;
+    meSuperuser = false;
     localStorage.setItem('accessToken', 'test-access-token');
     localStorage.setItem('refreshToken', 'test-refresh-token');
 
@@ -135,6 +138,22 @@ describe('DashboardView', () => {
           model_alias: 'gpt-5.4',
           provider_name: 'openai',
           request_count: 8,
+          token_usage: {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+          },
+          estimated_cost: 4.2,
+          last_request_at: '2026-03-07T10:00:00Z',
+        },
+      ],
+      usage_by_agent: [
+        {
+          agent_id: 'agent-1',
+          session_count: 1,
+          request_count: 8,
+          successful_requests: 8,
+          failed_requests: 0,
           token_usage: {
             prompt_tokens: 10,
             completion_tokens: 5,
@@ -507,6 +526,7 @@ describe('DashboardView', () => {
           }
           return json({
             events_total: auditResponse.total,
+            events_total_capped: auditResponse.total_capped === true,
             tool_calls_total: auditResponse.total,
             tool_calls_failed: 0,
             exceptions: auditResponse,
@@ -531,6 +551,10 @@ describe('DashboardView', () => {
           return json(apiKeysResponse);
         }
 
+        if (url === '/api/v1/auth/api-keys/count') {
+          return json({ active: 3 });
+        }
+
         if (url === '/api/v1/attention/extension-items') {
           return json([]);
         }
@@ -540,7 +564,7 @@ describe('DashboardView', () => {
             username: 'tester',
             email: 'tester@example.com',
             email_verified: true,
-            is_superuser: false,
+            is_superuser: meSuperuser,
             permissions: mePermissions,
           });
         }
@@ -643,6 +667,19 @@ describe('DashboardView', () => {
     expect(element.shadowRoot?.querySelector('activity-feed')).to.exist;
     expect(element.shadowRoot?.textContent).to.contain('Failures and denials');
     expect(element.shadowRoot?.textContent).to.contain('need attention');
+  });
+
+  it('counts API keys without reading the key list (#1694)', async () => {
+    const element = await mountDashboard();
+    await waitUntil(
+      () => !element['fetchingMCPAndTools'] && element['apiKeysCount'] !== null,
+      'API key count never loaded'
+    );
+
+    expect(element['apiKeysCount']).to.equal(3);
+    const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+    expect(urls).to.include('/api/v1/auth/api-keys/count');
+    expect(urls).not.to.include('/api/v1/auth/api-keys');
   });
 
   it('lists failures and denials with their real reason, never "allow"', async () => {
@@ -1274,12 +1311,12 @@ describe('DashboardView', () => {
         () => element.shadowRoot?.querySelector('.welcome-container'),
         'get-started card never rendered'
       );
-      // Decorative: a screen reader must not read out the file name.
+      // The theme-aware badge is decorative for screen readers.
       expect(
         element
-          .shadowRoot!.querySelector('.welcome-container img')!
-          .getAttribute('alt')
-      ).to.equal('');
+          .shadowRoot!.querySelector('.welcome-container .welcome-badge')!
+          .getAttribute('aria-hidden')
+      ).to.equal('true');
 
       element
         .shadowRoot!.querySelector<HTMLElement>(
@@ -1954,6 +1991,80 @@ describe('DashboardView', () => {
       ).to.equal(0);
     });
 
+    for (const width of [1280, 1440, 1920]) {
+      it(`keeps the Inventory under the Gateway in both views at ${width}px`, async () => {
+        await setViewport({ width, height: 900 });
+        try {
+          // The Map toggle is for instance admins.
+          meSuperuser = true;
+          const element = await mountLoaded();
+          const root = element.shadowRoot!;
+          const inventory = () =>
+            root.querySelector('inventory-card') as HTMLElement;
+          const original = inventory();
+          const side = root.querySelector('.side-column') as HTMLElement;
+          // Prod's Activity feed is far taller than the Gateway card. A
+          // spanning column that tall stretched row 1 and opened a gap
+          // above the Inventory, then pushed it below the column in Map.
+          side.style.minHeight = '2400px';
+          const gateway = root.querySelector('.main-column')!
+            .firstElementChild as HTMLElement;
+          const check = async (view: 'table' | 'map') => {
+            const toggle = inventory().shadowRoot!.querySelector(
+              `[data-inventory-view="${view}"]`
+            ) as HTMLElement;
+            toggle.click();
+            await (inventory() as any).updateComplete;
+            await element.updateComplete;
+            expect(
+              inventory()
+                .shadowRoot!.querySelector(`[data-inventory-view="${view}"]`)!
+                .getAttribute('aria-pressed'),
+              `${view}: the toggle switched the card`
+            ).to.equal('true');
+            await new Promise((r) => requestAnimationFrame(r));
+            const g = gateway.getBoundingClientRect();
+            const inv = inventory().getBoundingClientRect();
+            const s = side.getBoundingClientRect();
+            const gap = inv.top - g.bottom;
+            expect(gap, `${view}: gap under Gateway`).to.be.within(0, 32);
+            expect(inv.right, `${view}: left of the side column`).to.be.at.most(
+              s.left
+            );
+            expect(inv.top, `${view}: beside the side column`).to.be.below(
+              s.bottom
+            );
+            expect(inventory(), 'the card was not recreated').to.equal(
+              original
+            );
+          };
+          await check('table');
+          await check('map');
+          await check('table');
+        } finally {
+          for (const key of Object.keys(localStorage))
+            if (key.startsWith('preloop:inventory:view:'))
+              localStorage.removeItem(key);
+          await setViewport({ width: 800, height: 600 });
+        }
+      });
+    }
+
+    it('states a capped audit count as a floor, not an exact figure (B-15)', async () => {
+      auditResponse = { ...auditResponse, total: 10000, total_capped: true };
+      const element = await mountLoaded();
+      await waitUntil(
+        () => element.shadowRoot?.querySelector('.audit-trail'),
+        'the audit trail line'
+      );
+      const link = Array.from(
+        element.shadowRoot!.querySelectorAll('.audit-trail a')
+      ).find((a) => a.getAttribute('href') === '/console/audit')!;
+      const text = (link.textContent || '').replace(/\s+/g, ' ').trim();
+      expect(text).to.equal('10K+ audit events');
+      expect(link.getAttribute('title')).to.contain('At least 10,000');
+    });
+
     it('states the audit trail under the Inventory, in the page range', async () => {
       const inRange = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       allApprovalRequestsResponse = [
@@ -2006,7 +2117,7 @@ describe('DashboardView', () => {
       const inventory = element.shadowRoot?.querySelector(
         'inventory-card'
       ) as HTMLElement;
-      expect(strip.closest('.main-column'), 'main column').to.exist;
+      expect(strip.closest('.inventory-stack'), 'inventory area').to.exist;
       expect(strip.getBoundingClientRect().top).to.be.greaterThan(
         inventory.getBoundingClientRect().top
       );
@@ -2151,7 +2262,7 @@ describe('DashboardView', () => {
         'usage-card'
       ) as HTMLElement;
 
-      expect(inventory.closest('.main-column'), 'Inventory column').to.exist;
+      expect(inventory.closest('.inventory-stack'), 'Inventory area').to.exist;
       expect(feed.closest('.side-column'), 'Activity column').to.exist;
       expect(gateway.getBoundingClientRect().top).to.be.lessThan(
         inventory.getBoundingClientRect().top
@@ -2179,6 +2290,85 @@ describe('DashboardView', () => {
         (tab.textContent || '').replace(/\s+/g, ' ').trim()
       );
       expect(tabs).to.eql(['Agents 1', 'Flows 1', 'Models 1', 'Tools 2']);
+    });
+
+    // B-02: the Agents tab reads the server's per-agent totals, the same
+    // attribution as the agents list and the agent page. The session list is
+    // capped at the most recent sessions and is never summed into a total.
+    it('reads agent usage from usage_by_agent, not the capped session list', async () => {
+      gatewaySummaryResponse = {
+        ...gatewaySummaryResponse,
+        usage_by_session: [
+          {
+            ...gatewaySummaryResponse.usage_by_session[0],
+            request_count: 1,
+            estimated_cost: 0.01,
+          },
+        ],
+        usage_by_agent: [
+          {
+            ...gatewaySummaryResponse.usage_by_agent[0],
+            request_count: 70,
+            estimated_cost: 0.34,
+          },
+        ],
+      };
+      const element = await mountLoaded();
+      const agents = element['inventoryAgentRows'];
+      expect(agents[0].requests).to.equal(70);
+      expect(agents[0].cost).to.equal(0.34);
+      const breakdownUrls = fetchStub
+        .getCalls()
+        .map((call: sinon.SinonSpyCall) => String(call.args[0]))
+        .filter(
+          (url: string) =>
+            url.includes('/api/v1/account/gateway-usage/summary') &&
+            url.includes('include_breakdown=true')
+        );
+      // The Inventory breakdown asks for the per-agent section.
+      expect(
+        breakdownUrls.some((url: string) => url.includes('breakdown=agents'))
+      ).to.be.true;
+    });
+
+    // D-05: the Agents tab carries the without-subscriptions estimate from
+    // the same per-agent breakdown as the spend.
+    it('carries the without-subscriptions estimate from usage_by_agent', async () => {
+      gatewaySummaryResponse = {
+        ...gatewaySummaryResponse,
+        usage_by_agent: [
+          {
+            ...gatewaySummaryResponse.usage_by_agent[0],
+            estimated_cost: 0.34,
+            subscription_usage: {
+              request_count: 10,
+              prompt_tokens: 1000,
+              completion_tokens: 100,
+              total_tokens: 1100,
+              api_equivalent_cost: 2,
+              api_equivalent_cost_is_estimate: true,
+              covered_requests: 10,
+              coverage: 1,
+              billed: null,
+              billed_available: false,
+            },
+          },
+        ],
+      };
+      const element = await mountLoaded();
+      const [agent] = element['inventoryAgentRows'];
+      expect(agent.cost).to.equal(0.34);
+      expect(agent.withoutSubscriptions.text).to.equal('$2.34');
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      await inventory.updateComplete;
+      const line = inventory.shadowRoot.querySelector(
+        '[data-testid="without-subscriptions"]'
+      );
+      expect(
+        line.querySelector('summary').textContent.replace(/\s+/g, ' ').trim()
+      ).to.equal('$2.34 w/o subs.');
     });
 
     it('reads each tab from a fetch the page already made', async () => {
@@ -2284,6 +2474,28 @@ describe('DashboardView', () => {
           .querySelector('[data-label="Spend"]')
           .textContent.trim()
       ).to.equal('—');
+    });
+
+    it('lets the Inventory period select change the page range', async () => {
+      const element = await mountLoaded();
+      const inventory = element.shadowRoot!.querySelector(
+        'inventory-card'
+      ) as any;
+      inventory.shadowRoot!.querySelector('time-range-select')!.dispatchEvent(
+        new CustomEvent('range-change', {
+          detail: { value: 'today' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      await element.updateComplete;
+      await inventory.updateComplete;
+      expect(element['gatewayTimeRange']).to.equal('today');
+      expect(inventory.timeRange).to.equal('today');
+      expect(
+        (element.shadowRoot!.querySelector('usage-card') as any).timeRange,
+        'the Usage card follows: one range on the page'
+      ).to.equal('today');
     });
 
     it('ignores a breakdown and model overview completed after the range changes', async () => {
@@ -2396,6 +2608,7 @@ describe('DashboardView', () => {
         usage_by_model: [],
         usage_by_flow: [],
         usage_by_tool: [],
+        usage_by_agent: [],
       };
       release();
       await pending;

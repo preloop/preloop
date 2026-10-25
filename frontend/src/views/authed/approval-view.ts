@@ -1,5 +1,6 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
-import { html, css, unsafeCSS } from 'lit';
+import { html, css, nothing, unsafeCSS, type PropertyValues } from 'lit';
 import { customElement, state, property } from 'lit/decorators.js';
 import {
   AuthedElement,
@@ -204,7 +205,8 @@ export class ApprovalView extends AuthedElement {
 
       .header h1 {
         margin: 0 0 0.5rem 0;
-        font-size: 1.75rem;
+        font-size: var(--console-text-h1, 1.625rem);
+        font-weight: 600;
         display: flex;
         align-items: center;
         flex-wrap: wrap;
@@ -543,7 +545,28 @@ export class ApprovalView extends AuthedElement {
     `,
   ];
 
-  async connectedCallback() {
+  // Ignore work from previous visits, including navigation back to the same ID.
+  private requestGeneration = 0;
+
+  // The router reuses this element. Read params after it commits the URL so
+  // public-token fallback also reads the destination query string.
+  onAfterEnter(location: { params: { requestId?: string } }) {
+    const requestId = location.params.requestId || '';
+    if (requestId && requestId === this.requestId && this.hasUpdated) {
+      void this.loadApprovalRequest();
+    } else {
+      this.requestId = requestId;
+    }
+  }
+
+  protected willUpdate(changed: PropertyValues) {
+    super.willUpdate(changed);
+    if (changed.has('requestId')) {
+      void this.loadApprovalRequest();
+    }
+  }
+
+  connectedCallback() {
     super.connectedCallback();
     // Extract requestId from URL if not set. Both the console route
     // (/console/approval/:id) and the legacy top-level link (/approval/:id,
@@ -555,7 +578,6 @@ export class ApprovalView extends AuthedElement {
         this.requestId = match[1];
       }
     }
-    await this.loadApprovalRequest();
 
     // Connect to WebSocket for real-time approval updates
     this.connectWebSocket();
@@ -589,6 +611,7 @@ export class ApprovalView extends AuthedElement {
   }
 
   disconnectedCallback() {
+    ++this.requestGeneration;
     super.disconnectedCallback();
     // Disconnect from WebSocket when view is destroyed
     this.unsubscribe?.();
@@ -709,19 +732,42 @@ export class ApprovalView extends AuthedElement {
   }
 
   private async loadApprovalRequest() {
+    const generation = ++this.requestGeneration;
+    const requestId = this.requestId;
+    this.history = [];
+    this.comment = '';
+    this.submitting = false;
+    this.confirming = false;
+    this.decisionTaken = false;
+    this.waitingNext = [];
+    this.waitingNextFetched = 0;
+    this.alwaysAllow = false;
+    this.nowMs = Date.now();
     this.loading = true;
     this.publicOnly = false;
     this.loadFailure = null;
     this.approvalRequest = null;
+
+    // Backend IDs are UUIDs; synthetic IDs in clients also use letters,
+    // digits, underscores and hyphens. Reject decoded URL/path syntax before
+    // constructing any authenticated endpoint (including dot segments).
+    if (!/^[A-Za-z0-9_-]+$/.test(requestId)) {
+      this.loadFailure = { kind: 'not_found', message: '' };
+      this.loading = false;
+      this.stopTicking();
+      return;
+    }
 
     try {
       // Read the status directly (not through fetchData, which folds every
       // failure into null) so the page can tell "you can't see this" from
       // "this does not exist" from "the server is down".
       const response = await fetchWithAuth(
-        `/api/v1/approval-requests/${this.requestId}`
+        `${REST_API_PREFIX}/approval-requests/${requestId}`
       );
       const data = response.ok ? await response.json() : null;
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       if (data) {
         // A request the sweeper has not caught up with yet is still `pending`
         // in the database long after its expiry. Read the clock here so the
@@ -735,16 +781,21 @@ export class ApprovalView extends AuthedElement {
       // blip. Fall back to the public token payload when the link carried
       // one, so escalation recipients can still see the request (issue
       // #335). The status only picks the message when no path worked.
-      if (await this.loadPublicRequest()) {
+      if (await this.loadPublicRequest(generation, requestId)) {
         return;
       }
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       const forbidden = response.status === 403;
       const missing = response.ok || response.status === 404;
       if (forbidden) {
-        this.loadFailure = {
-          kind: 'forbidden',
-          message: (await permissionErrorFromResponse(response)).message,
-        };
+        const error = await permissionErrorFromResponse(response);
+        if (
+          generation !== this.requestGeneration ||
+          requestId !== this.requestId
+        )
+          return;
+        this.loadFailure = { kind: 'forbidden', message: error.message };
       } else if (missing) {
         this.loadFailure = { kind: 'not_found', message: '' };
       } else {
@@ -756,32 +807,50 @@ export class ApprovalView extends AuthedElement {
     } catch (err: any) {
       console.error('Error loading approval request:', err);
       // A network error is a failed read too: try the token link first.
-      if (!this.approvalRequest && (await this.loadPublicRequest())) {
+      if (
+        !this.approvalRequest &&
+        (await this.loadPublicRequest(generation, requestId))
+      ) {
         return;
       }
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       this.loadFailure = {
         kind: 'error',
         message: err?.message || '',
       };
     } finally {
-      this.loading = false;
+      if (
+        generation === this.requestGeneration &&
+        requestId === this.requestId
+      ) {
+        this.loading = false;
+        this.startTicking();
+      }
     }
   }
 
   /** Load the request via the public token endpoint. True when it worked. */
-  private async loadPublicRequest(): Promise<boolean> {
+  private async loadPublicRequest(
+    generation: number,
+    requestId: string
+  ): Promise<boolean> {
+    if (generation !== this.requestGeneration || requestId !== this.requestId)
+      return false;
     const token = new URLSearchParams(window.location.search).get('token');
     if (!token) {
       return false;
     }
     try {
       const response = await fetch(
-        `/approval/${this.requestId}/data?token=${encodeURIComponent(token)}`
+        `/approval/${requestId}/data?token=${encodeURIComponent(token)}`
       );
       if (!response.ok) {
         return false;
       }
       const data = await response.json();
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return false;
       // The public payload is a subset of ApprovalRequest; fill the gaps the
       // render path reads so the card renders without blowing up.
       this.approvalRequest = {
@@ -801,10 +870,14 @@ export class ApprovalView extends AuthedElement {
 
   /** Fetch the workflow-history timeline (authenticated reads only). */
   private async loadHistory() {
+    const generation = this.requestGeneration;
+    const requestId = this.requestId;
     try {
       const events = await this.fetchData(
-        `/api/v1/approval-requests/${this.requestId}/history`
+        `${REST_API_PREFIX}/approval-requests/${requestId}/history`
       );
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       if (Array.isArray(events)) {
         this.history = events as ApprovalTimelineEntry[];
       }
@@ -832,6 +905,8 @@ export class ApprovalView extends AuthedElement {
   ) {
     if (!this.approvalRequest) return;
 
+    const generation = this.requestGeneration;
+    const requestId = this.requestId;
     this.submitting = true;
 
     const body: Record<string, unknown> = {
@@ -856,7 +931,7 @@ export class ApprovalView extends AuthedElement {
       const token = new URLSearchParams(window.location.search).get('token');
       try {
         const response = await fetch(
-          `/approval/${this.requestId}/decide?token=${encodeURIComponent(
+          `/approval/${requestId}/decide?token=${encodeURIComponent(
             token || ''
           )}`,
           {
@@ -874,6 +949,11 @@ export class ApprovalView extends AuthedElement {
           throw new Error(error.detail || `Failed to ${action} request`);
         }
         const updated = await response.json();
+        if (
+          generation !== this.requestGeneration ||
+          requestId !== this.requestId
+        )
+          return;
         this.approvalRequest = {
           ...this.approvalRequest!,
           status: updated.status,
@@ -888,16 +968,25 @@ export class ApprovalView extends AuthedElement {
         showToast(successMessage, action === 'approve' ? 'success' : 'neutral');
         this.comment = '';
       } catch (err: any) {
+        if (
+          generation !== this.requestGeneration ||
+          requestId !== this.requestId
+        )
+          return;
         showToast(err.message || `Failed to ${action} request`, 'danger');
       } finally {
-        this.submitting = false;
+        if (
+          generation === this.requestGeneration &&
+          requestId === this.requestId
+        )
+          this.submitting = false;
       }
       return;
     }
 
     try {
       const response = await fetch(
-        `/api/v1/approval-requests/${this.requestId}/${action}`,
+        `${REST_API_PREFIX}/approval-requests/${requestId}/${action}`,
         {
           method: 'POST',
           headers: {
@@ -910,10 +999,17 @@ export class ApprovalView extends AuthedElement {
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
+        if (
+          generation !== this.requestGeneration ||
+          requestId !== this.requestId
+        )
+          return;
         throw new Error(this.decisionErrorMessage(error, action));
       }
 
       const updated = await response.json();
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       const decided = this.approvalRequest;
       this.approvalRequest = updated;
       this.comment = '';
@@ -925,12 +1021,17 @@ export class ApprovalView extends AuthedElement {
         this.alwaysAllow = false;
         await this.applyAlwaysAllow(decided);
       }
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       this.loadHistory();
       await this.loadWaitingNext();
     } catch (err: any) {
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       showToast(err.message || `Failed to ${action} request`, 'danger');
     } finally {
-      this.submitting = false;
+      if (generation === this.requestGeneration && requestId === this.requestId)
+        this.submitting = false;
     }
   }
 
@@ -967,10 +1068,14 @@ export class ApprovalView extends AuthedElement {
    * work is: back to the list, or straight into the next request waiting.
    */
   private async loadWaitingNext() {
+    const generation = this.requestGeneration;
+    const requestId = this.requestId;
     try {
       const data = await this.fetchData(
-        `/api/v1/approval-requests?status=pending&limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
+        `${REST_API_PREFIX}/approval-requests?status=pending&limit=${APPROVAL_REQUESTS_PAGE_LIMIT}`
       );
+      if (generation !== this.requestGeneration || requestId !== this.requestId)
+        return;
       if (Array.isArray(data)) {
         this.waitingNextFetched = data.length;
         this.waitingNext = (data as ApprovalRequest[]).filter(
@@ -1038,7 +1143,7 @@ export class ApprovalView extends AuthedElement {
     } finally {
       this.confirming = false;
     }
-    if (!confirmed) return;
+    if (!confirmed || request !== this.approvalRequest) return;
     await this.submitDecision(
       'decline',
       { comment: this.comment },
@@ -1295,6 +1400,20 @@ export class ApprovalView extends AuthedElement {
 
     const isQuestion = this.isQuestion;
 
+    const argsSection = html`
+      <div class="content-section">
+        <h2>${this.argsHeading(request)}</h2>
+        <!-- A file edit is decided by reading what changes, not by
+               reading two escaped strings; args-diff falls back to the raw
+               arguments for every other kind of call. -->
+        <args-diff
+          .args=${withoutApprovalMetadata(request.tool_args)}
+          .raw=${toolArgs}
+        ></args-diff>
+      </div>
+    `;
+    const isFileDiff =
+      fileEditsFromArgs(withoutApprovalMetadata(request.tool_args)).length > 0;
     return html`
       <div class="header">
         <h1>
@@ -1389,17 +1508,10 @@ export class ApprovalView extends AuthedElement {
         ${this.renderFactStrip(request, source, isPending, countdown)}
         ${this.renderPublicationDestinations(request)}
 
-        <div class="content-section">
-          <h2>${this.argsHeading(request)}</h2>
-          <!-- A file edit is decided by reading what changes, not by
-               reading two escaped strings; args-diff falls back to the raw
-               arguments for every other kind of call. -->
-          <args-diff
-            .args=${withoutApprovalMetadata(request.tool_args)}
-            .raw=${toolArgs}
-          ></args-diff>
-        </div>
-
+        <!-- A short command reads first; a file diff can run to thousands
+             of lines, so the reasoning and rule context sit above it
+             (#1691) and stay in view of the decision. -->
+        ${isFileDiff ? nothing : argsSection}
         ${
           request.agent_reasoning
             ? html`
@@ -1422,11 +1534,12 @@ export class ApprovalView extends AuthedElement {
               `
             : ''
         }
+        ${isFileDiff ? argsSection : nothing}
         ${
           this.history.length
             ? html`
                 <div class="content-section">
-                  <h2>Workflow History</h2>
+                  <h2>Workflow history</h2>
                   <ul class="timeline">
                     ${this.history.map(
                       (event) => html`

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth } from '../api';
 import type {
   ArtifactRowMetadata,
@@ -21,9 +22,92 @@ export type SessionArtifactLoad =
 type CacheEntry = {
   refs: number;
   promise: Promise<SessionArtifactLoad>;
+  /** Set once the load settled, so a release can tell done from queued. */
+  settled: SessionArtifactLoad | null;
 };
 
 const cache = new Map<string, CacheEntry>();
+
+/**
+ * Loaded artifacts nobody holds any more, kept for a remount.
+ *
+ * A re-render that destroys and recreates a row released the last hold and
+ * fetched the same bytes again; one screencast session made 8 fetches of
+ * one artifact on prod (#1690). The newest few stay here, oldest revoked
+ * first, until something acquires them again.
+ */
+const retained = new Map<string, SessionArtifactLoad>();
+export const RETAINED_ARTIFACT_LOADS = 8;
+
+function retain(key: string, load: SessionArtifactLoad): void {
+  retained.delete(key);
+  retained.set(key, load);
+  while (retained.size > RETAINED_ARTIFACT_LOADS) {
+    const oldest = retained.keys().next().value as string;
+    const evicted = retained.get(oldest);
+    retained.delete(oldest);
+    if (evicted?.status === 'ok') URL.revokeObjectURL(evicted.url);
+  }
+}
+
+/**
+ * Previews a session may load without a click.
+ *
+ * Past this many, image previews render a placeholder and load when clicked,
+ * so a deep link to a session with many screenshots does not start them all
+ * (#1690).
+ */
+export const MAX_EAGER_ARTIFACT_PREVIEWS = 2;
+
+const eagerClaims = new Map<string, Set<string>>();
+
+/**
+ * Claim one of the session's eager previews for an artifact.
+ *
+ * An artifact that already holds a claim keeps it, so a remount does not
+ * turn a loaded preview into a placeholder.
+ *
+ * Args:
+ *   sessionId: The runtime session.
+ *   artifactId: The artifact to preview.
+ *
+ * Returns:
+ *   True when the preview may load now; false when it should wait for a click.
+ */
+export function claimEagerArtifactPreview(
+  sessionId: string,
+  artifactId: string
+): boolean {
+  let claims = eagerClaims.get(sessionId);
+  if (!claims) {
+    claims = new Set();
+    eagerClaims.set(sessionId, claims);
+  }
+  if (claims.has(artifactId)) return true;
+  if (claims.size >= MAX_EAGER_ARTIFACT_PREVIEWS) return false;
+  claims.add(artifactId);
+  return true;
+}
+
+/**
+ * Return an eager-preview claim, so another artifact in view can take it.
+ *
+ * Args:
+ *   sessionId: The runtime session.
+ *   artifactId: The artifact whose preview left the page.
+ */
+export function releaseEagerArtifactPreview(
+  sessionId: string,
+  artifactId: string
+): void {
+  const claims = eagerClaims.get(sessionId);
+  if (!claims) return;
+  claims.delete(artifactId);
+  if (claims.size === 0) eagerClaims.delete(sessionId);
+}
+
+/** Image previews larger than this wait for a click (#1690). */
+export const LARGE_PREVIEW_BYTES = 512 * 1024;
 
 function cacheKey(sessionId: string, artifactId: string): string {
   return `${sessionId}/${artifactId}`;
@@ -33,12 +117,64 @@ export function sessionArtifactPath(
   sessionId: string,
   artifactId: string
 ): string {
-  return `/api/v1/runtime-sessions/${encodeURIComponent(
+  return `${REST_API_PREFIX}/runtime-sessions/${encodeURIComponent(
     sessionId
   )}/artifacts/${encodeURIComponent(artifactId)}`;
 }
 
+/**
+ * Most artifact downloads in flight at once.
+ *
+ * Browsers open about six connections per origin. A session page that started
+ * every screenshot and screencast at once left the console's own calls
+ * (kill-switch, approvals, the session list) queued for over 30 s (#1690).
+ * Two leaves the rest of the pool to the page.
+ */
+export const MAX_CONCURRENT_ARTIFACT_LOADS = 2;
+
+let activeLoads = 0;
+const waiting: Array<() => void> = [];
+
+async function acquireLoadSlot(): Promise<void> {
+  if (activeLoads < MAX_CONCURRENT_ARTIFACT_LOADS) {
+    activeLoads += 1;
+    return;
+  }
+  await new Promise<void>((resolve) => waiting.push(resolve));
+}
+
+function releaseLoadSlot(): void {
+  const next = waiting.shift();
+  if (next) {
+    // The slot passes straight to the next waiter; the count is unchanged.
+    next();
+  } else {
+    activeLoads -= 1;
+  }
+}
+
+/** Artifact downloads currently running; for tests. */
+export function activeSessionArtifactLoads(): number {
+  return activeLoads;
+}
+
 async function loadArtifact(
+  sessionId: string,
+  artifactId: string
+): Promise<SessionArtifactLoad> {
+  await acquireLoadSlot();
+  try {
+    // Released while it waited (scrolled away, view closed): skip the bytes.
+    if (!cache.has(cacheKey(sessionId, artifactId))) {
+      return { status: 'error', message: 'Artifact load cancelled.' };
+    }
+    return await fetchArtifact(sessionId, artifactId);
+  } finally {
+    releaseLoadSlot();
+  }
+}
+
+async function fetchArtifact(
   sessionId: string,
   artifactId: string
 ): Promise<SessionArtifactLoad> {
@@ -97,10 +233,25 @@ export function acquireSessionArtifact(
     existing.refs += 1;
     return existing.promise;
   }
+  const kept = retained.get(key);
+  if (kept) {
+    retained.delete(key);
+    const reused: CacheEntry = {
+      refs: 1,
+      promise: Promise.resolve(kept),
+      settled: kept,
+    };
+    cache.set(key, reused);
+    return reused.promise;
+  }
   const entry: CacheEntry = {
     refs: 1,
     promise: loadArtifact(sessionId, artifactId),
+    settled: null,
   };
+  void entry.promise.then((result) => {
+    entry.settled = result;
+  });
   cache.set(key, entry);
   return entry.promise;
 }
@@ -115,9 +266,25 @@ export function releaseSessionArtifact(
   entry.refs -= 1;
   if (entry.refs > 0) return;
   cache.delete(key);
+  if (entry.settled?.status === 'ok') {
+    retain(key, entry.settled);
+    return;
+  }
   void entry.promise.then((result) => {
     if (result.status === 'ok') URL.revokeObjectURL(result.url);
   });
+}
+
+/**
+ * Forget retained loads and eager-preview claims; for tests, which share
+ * this module's state across cases.
+ */
+export function resetSessionArtifactCache(): void {
+  for (const load of retained.values()) {
+    if (load.status === 'ok') URL.revokeObjectURL(load.url);
+  }
+  retained.clear();
+  eagerClaims.clear();
 }
 
 /** Number of artifacts currently held; for tests. */

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { LitElement, html, css } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { fetchWithAuth } from '../api';
@@ -78,7 +79,7 @@ export class UpdateBanner extends LitElement {
       return;
     }
     try {
-      const response = await fetchWithAuth('/api/v1/version/status');
+      const response = await fetchWithAuth(REST_API_PREFIX + '/version/status');
       if (!response.ok) {
         // Non-superusers (403) and older backends (404) simply get no banner.
         this._status = null;

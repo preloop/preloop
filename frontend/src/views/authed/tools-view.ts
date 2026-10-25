@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { replaceListFilters } from '../../utils/list-filter-url';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
@@ -24,6 +25,7 @@ import {
   generatePolicy,
   getAccountGovernanceDefaults,
   updateAccountGovernanceDefaults,
+  getAccountAgent,
   getAccountAgents,
 } from '../../api';
 import type { AccountGovernanceDefaults } from '../../types';
@@ -678,7 +680,10 @@ export class ToolsView extends LitElement {
         getApprovalWorkflows().catch(() => this.approvalPolicies),
         getFeatures().catch(() => ({ features: this.features })),
         getUserProfile().catch(() => this.currentUser),
-        getAIModels().catch(() => []),
+        // Only "is there a default model" is read from this, so only the
+        // default models are fetched: the full catalog was a third of the
+        // page's first load (#1695).
+        getAIModels({ defaultOnly: true }).catch(() => []),
       ]);
 
       if (generation !== this.toolsLoadGeneration) return;
@@ -748,10 +753,13 @@ export class ToolsView extends LitElement {
       const end = new Date();
       const start = new Date(end);
       start.setDate(start.getDate() - 30);
-      const stats = await getToolUsageStats({
-        startDate: start.toISOString(),
-        endDate: end.toISOString(),
-      });
+      const stats = await getToolUsageStats(
+        {
+          startDate: start.toISOString(),
+          endDate: end.toISOString(),
+        },
+        { includeAgents: false }
+      );
       this.toolUsageStats = stats.tools || [];
     } catch {
       this.toolUsageStats = [];
@@ -774,9 +782,14 @@ export class ToolsView extends LitElement {
     return this.tools.filter((tool) => tool.source === 'agent');
   }
 
+  /**
+   * Only enabled rules count, as on the rows: a tool whose only rules are
+   * switched off reads "No rules" in its row, so the strip must not count it
+   * "with rules" either.
+   */
   private _toolHasRules(tool: ToolWithRules): boolean {
     return Boolean(
-      (tool.access_rules && tool.access_rules.length > 0) ||
+      (tool.access_rules || []).some((rule) => rule.is_enabled !== false) ||
       tool.approval_workflow_id ||
       tool.has_approval_condition
     );
@@ -1136,7 +1149,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         })
       );
 
-      const response = await fetchWithAuth('/api/v1/policies/diff', {
+      const response = await fetchWithAuth(REST_API_PREFIX + '/policies/diff', {
         method: 'POST',
         body: formData,
       });
@@ -1252,10 +1265,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         })
       );
 
-      const response = await fetchWithAuth('/api/v1/policies/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/upload',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -1284,9 +1300,18 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
   // ─── Event handlers ──────────────────────────────────
 
+  private _isSharedTool(tool: ToolWithRules): boolean {
+    if (tool.source !== 'mcp') return false;
+    const server = this.mcpServers.find(
+      (server) => server.id === tool.source_id
+    );
+    return Boolean(server?.is_shared || server?.read_only);
+  }
+
   private async _handleToggleEnabled(e: CustomEvent) {
     const detail = e.detail;
     const tool: ToolWithRules = detail.tool ? detail.tool : detail;
+    if (this._isSharedTool(tool)) return;
     const isEnabled: boolean =
       detail.isEnabled !== undefined ? detail.isEnabled : !tool.is_enabled;
 
@@ -1325,6 +1350,10 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
 
   private async _handleSaveRule(e: CustomEvent) {
     const { resolve, reject } = e.detail;
+    if (this._isSharedTool(e.detail.tool)) {
+      reject?.('Shared server configuration is read-only.');
+      return;
+    }
     if (!this.toolsSchemasReady) {
       try {
         await this.loadToolSchemas();
@@ -1406,6 +1435,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleDeleteRule(e: CustomEvent) {
+    if (e.detail.tool && this._isSharedTool(e.detail.tool)) return;
     const { rule, tool } = e.detail as {
       rule: AccessRuleSummary;
       tool?: { name?: string };
@@ -1434,6 +1464,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
   }
 
   private async _handleReorderRules(e: CustomEvent) {
+    if (e.detail.tool && this._isSharedTool(e.detail.tool)) return;
     const { reorderedRules } = e.detail as {
       tool: any;
       reorderedRules: { id: string; priority: number }[];
@@ -1520,7 +1551,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     this.isExporting = true;
     try {
       const response = await fetchWithAuth(
-        '/api/v1/policies/export?format=yaml'
+        REST_API_PREFIX + '/policies/export?format=yaml'
       );
       if (!response.ok) {
         const error = await response.json();
@@ -1580,10 +1611,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetchWithAuth('/api/v1/policies/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/upload',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json();
@@ -1797,18 +1831,34 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         // the link still works.
         try {
           const agents = await getAccountAgents({ limit: 100 });
-          const byId = new Map(
-            (agents.items || []).map((agent) => [agent.id, agent])
+          const names = new Map<string, string>(
+            (agents.items || []).map((agent) => [agent.id, agent.display_name])
+          );
+          // An override can belong to an agent the first list page did not
+          // return (retired, or past the first hundred). Ask for the ones the
+          // line actually shows, by id; anything still unknown is "Unnamed
+          // agent" with its id in the title, never a raw UUID in the text.
+          const shown = response.override_agent_ids.slice(0, 5);
+          await Promise.all(
+            shown
+              .filter((id) => !names.has(id))
+              .map(async (id) => {
+                try {
+                  const detail = await getAccountAgent(id, { include: [] });
+                  if (detail?.agent?.display_name) {
+                    names.set(id, detail.agent.display_name);
+                  }
+                } catch {
+                  // Unknown stays unnamed.
+                }
+              })
           );
           this.governanceOverrideAgents = response.override_agent_ids.map(
-            (id) => ({
-              id,
-              name: byId.get(id)?.display_name || id,
-            })
+            (id) => ({ id, name: names.get(id) || '' })
           );
         } catch {
           this.governanceOverrideAgents = response.override_agent_ids.map(
-            (id) => ({ id, name: id })
+            (id) => ({ id, name: '' })
           );
         }
       } else {
@@ -1974,7 +2024,8 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
                       (agent, index) =>
                         html`${index > 0 ? ', ' : ''}<a
                             href="/console/agents/${agent.id}"
-                            >${agent.name}</a
+                            title=${agent.name ? nothing : agent.id}
+                            >${agent.name || 'Unnamed agent'}</a
                           >`
                     )}${
                       hiddenOverrideCount > 0

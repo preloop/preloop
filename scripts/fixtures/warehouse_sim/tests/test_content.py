@@ -8,7 +8,7 @@ import re
 import wave
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from scripts.fixtures.warehouse_sim import data, server
 

@@ -70,7 +70,7 @@ from preloop.services.event_webhooks.signing import (
 )
 from preloop.services.event_webhooks.targets import blocked_target_reason
 from preloop.utils.encryption import encrypt_value
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +271,7 @@ def create_webhook_endpoint(
         )
         return WebhookEndpointCreated(**_to_read(endpoint).model_dump(), secret=secret)
 
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     _reject_blocked_target(payload.url)
     existing = (
         db.execute(
@@ -332,6 +333,7 @@ def update_webhook_endpoint(
         )
         return _to_read(endpoint)
 
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     endpoint = _get_owned(db, account.id, endpoint_id)
     _reject_shim_edit(endpoint, "Edit")
 
@@ -375,6 +377,7 @@ def delete_webhook_endpoint(
         )
         return None
 
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     endpoint = _get_owned(db, account.id, endpoint_id)
     _reject_shim_edit(endpoint, "Clear")
     db.delete(endpoint)
@@ -405,6 +408,7 @@ def rotate_webhook_endpoint_secret(
             )
         )
     else:
+        ensure_permission_in_oss(db, current_user, "manage_policies")
         endpoint, secret = _ci_operation(
             lambda: crud.crud_ci_subscription.rotate_human_secret(
                 db,
@@ -430,6 +434,7 @@ def test_webhook_endpoint(
     outcome synchronously would mean putting an HTTP call back on the request
     path, which is the thing this change removed.
     """
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     endpoint = _get_owned(db, account.id, endpoint_id)
     # A shim row only ever carries the legacy approval body, so a v1 test
     # envelope posted there would tell the operator nothing about the
@@ -536,6 +541,7 @@ def replay_webhook_event(
     The original rows are left alone: a replay is a new generation, so a
     dead-lettered attempt stays on the record.
     """
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     delivery_ids = outbox.replay_event(db, account_id=account.id, event_id=event_id)
     if not delivery_ids:
         raise HTTPException(

@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud import audit_outbox as crud_audit_outbox
 from preloop.models.crud import crud_account
 from preloop.models.models import (
@@ -117,6 +118,53 @@ def test_oldest_pending_age_ignores_intents_in_backoff(db_session, account):
     row.next_attempt_at = row.next_attempt_at + timedelta(hours=1)
     db_session.flush()
     assert crud_audit_outbox.oldest_pending_age_seconds(db_session) == 0.0
+
+
+def test_replay_is_bounded_account_scoped_and_dry_run_does_not_reset_attempts(
+    db_session: Session, account: models.Account
+) -> None:
+    other_account = crud_account.create(
+        db_session, obj_in={"organization_name": "Other Org", "is_active": True}
+    )
+    own = [_enqueue(db_session, account) for _ in range(3)]
+    foreign = _enqueue(db_session, other_account)
+    pending = _enqueue(db_session, account)
+    for row in [*own, foreign]:
+        row.status = AUDIT_OUTBOX_FAILED
+        row.attempt_count = 20
+        row.last_error = "delivery failed"
+    db_session.flush()
+
+    assert (
+        crud_audit_outbox.requeue_failed(
+            db_session, account_id=account.id, limit=2, dry_run=True
+        )
+        == 2
+    )
+    for row in [*own, foreign]:
+        db_session.refresh(row)
+        assert row.status == AUDIT_OUTBOX_FAILED
+        assert row.attempt_count == 20
+        assert row.last_error == "delivery failed"
+
+    assert (
+        crud_audit_outbox.requeue_failed(db_session, account_id=account.id, limit=2)
+        == 2
+    )
+    for row in [*own, foreign, pending]:
+        db_session.refresh(row)
+    assert [row.status for row in own] == [
+        AUDIT_OUTBOX_PENDING,
+        AUDIT_OUTBOX_PENDING,
+        AUDIT_OUTBOX_FAILED,
+    ]
+    assert all(row.attempt_count == 0 and row.last_error is None for row in own[:2])
+    assert foreign.status == AUDIT_OUTBOX_FAILED
+    assert pending.status == AUDIT_OUTBOX_PENDING
+    assert (
+        crud_audit_outbox.requeue_failed(db_session, account_id=account.id, limit=2)
+        == 1
+    )
 
 
 def test_record_failure_leaves_the_session_alone_for_a_delivered_intent(

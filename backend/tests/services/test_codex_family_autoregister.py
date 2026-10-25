@@ -16,8 +16,10 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
 from preloop.config import settings
+from preloop.models import models
 from preloop.models.crud import (
     crud_ai_model,
     crud_api_key,
@@ -396,3 +398,48 @@ def test_user_token_never_autoregisters(db_session, test_user):
 )
 def test_codex_autoregister_identifier(raw, expected):
     assert OpenAIGatewayService._codex_autoregister_identifier(raw) == expected
+
+
+def test_reonboard_replaces_stale_bindings_and_routes_concrete_model(
+    db_session: Session, test_user: models.User
+) -> None:
+    """A new selection replaces configured slots without mutating old models."""
+    agent = _make_agent(db_session, test_user)
+    old = _make_subscription_model(db_session, test_user, alias="openai/gpt-5.6-sol")
+    secondary = _make_subscription_model(db_session, test_user, alias="openai/gpt-5.4")
+    fresh = _make_subscription_model(db_session, test_user, alias="openai/gpt-6.1-sol")
+    crud_managed_agent_ai_model_binding.replace_for_agent(
+        db_session,
+        account_id=str(test_user.account_id),
+        agent_id=str(agent.id),
+        bindings=[
+            {
+                "config_key": "model.default",
+                "gateway_alias": "openai/gpt-5.6-sol",
+                "ai_model_id": str(old.id),
+            },
+            {
+                "config_key": "secondary",
+                "gateway_alias": "openai/gpt-5.4",
+                "ai_model_id": str(secondary.id),
+            },
+        ],
+    )
+    for _ in range(2):
+        _bind(db_session, test_user, agent, fresh, alias="openai/gpt-6.1-sol")
+    active = crud_managed_agent_ai_model_binding.list_for_agent(
+        db_session, account_id=str(test_user.account_id), agent_id=str(agent.id)
+    )
+    assert [str(row.ai_model_id) for row in active] == [str(fresh.id)]
+    assert old.model_identifier == "gpt-5.6-sol"
+    assert secondary.model_identifier == "gpt-5.4"
+    service = OpenAIGatewayService(
+        db_session, _agent_context(db_session, test_user, agent)
+    )
+    _restrict_to_account(service, test_user.account_id)
+    resolved = service._resolve_requested_model("openai/gpt-6.1-sol", provider="openai")
+    assert resolved.id == fresh.id
+    payload = service._build_openai_codex_payload(
+        resolved, {"model": "openai/gpt-6.1-sol", "input": "Hello"}
+    )
+    assert payload["model"] == "gpt-6.1-sol"

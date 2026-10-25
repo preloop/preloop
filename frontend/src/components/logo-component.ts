@@ -14,6 +14,10 @@ export class LogoComponent extends LitElement {
   @state()
   private theme: 'light' | 'dark' = 'dark';
 
+  private readonly themeObserver = new MutationObserver(() => {
+    this.setThemeFromClass();
+  });
+
   static styles = css`
     :host {
       display: block;
@@ -31,12 +35,17 @@ export class LogoComponent extends LitElement {
       this.setTheme(this.themeOverride);
     } else {
       this.setThemeFromClass();
+      this.themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class'],
+      });
       window.addEventListener('theme-change', this.handleThemeChange);
     }
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.themeObserver.disconnect();
     window.removeEventListener('theme-change', this.handleThemeChange);
   }
 

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/preloop/preloop/cli/internal/api/paths"
 	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/telemetry"
 )
@@ -22,7 +23,7 @@ import (
 // Build-time variables (set via ldflags).
 var (
 	// Version is the current CLI version. Build pipelines can override this via ldflags.
-	Version = "0.16.0"
+	Version = "0.17.1"
 
 	// Commit is the git commit hash.
 	Commit = "unknown"
@@ -69,11 +70,11 @@ const (
 	// CliVersionCheckPath is the rich check-in endpoint (instance_tracker
 	// plugin): carries the install id, configured server URL, and a
 	// non-secret token fingerprint so installed clients are distinguishable.
-	CliVersionCheckPath = "/api/v1/cli/version-check"
+	CliVersionCheckPath = paths.RESTPrefix + "/cli/version-check"
 
 	// LegacyVersionPath is the pre-0.10 endpoint, used as a fallback when
 	// the server does not know the rich one yet.
-	LegacyVersionPath = "/api/v1/version"
+	LegacyVersionPath = paths.RESTPrefix + "/version"
 
 	// LastCheckFile is the filename for storing last check timestamp.
 	LastCheckFile = "last_version_check"

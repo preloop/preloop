@@ -1,3 +1,4 @@
+import { randomUuid } from '../utils/random-uuid';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import { parseUTCDate } from '../utils/date';
 import { LitElement, html, css } from 'lit';
@@ -76,7 +77,7 @@ export class SessionHistoryWidget extends LitElement {
           this.loadedEvents[sessionId]
         ) {
           const newEvent: FlowGatewayEvent = {
-            id: message.id || crypto.randomUUID(),
+            id: message.id || randomUuid(),
             execution_id: message.execution_id || '',
             timestamp: payload.timestamp || new Date().toISOString(),
             type: message.type,

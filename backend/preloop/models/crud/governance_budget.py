@@ -2,12 +2,12 @@
 
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Iterator
+from typing import Any, Iterator
 from uuid import UUID, uuid4
 
-from sqlalchemy import Numeric, and_, cast, func, or_
+from sqlalchemy import Numeric, and_, cast, func, literal_column, or_, text
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from preloop.models import models
 from preloop.models.crud.governance_review import default_review_mode
@@ -30,18 +30,42 @@ def run_spend(
     timestamp. The OR predicate counts a row once even if both selectors match.
     Unknown funding is deliberately excluded rather than charged to the platform.
     """
+    rows = _run_spend_query(
+        db,
+        account_id=account_id,
+        window_start=window_start,
+        window_end=window_end,
+        run_id=run_id,
+    ).all()
+    return {"platform": 0.0, "account": 0.0, **{k: float(v) for k, v in rows}}
+
+
+def _run_spend_query(
+    db: Session,
+    *,
+    account_id: UUID,
+    window_start: datetime,
+    window_end: datetime,
+    run_id: UUID,
+) -> Query[Any]:
+    """Build the authoritative weekly/run spend selector for plan verification."""
     usage = models.ApiUsage
-    funding = usage.meta_data["funding"].astext
-    rows = (
+    funding = literal_column("(api_usage.meta_data ->> 'funding')")
+    return (
         db.query(
             funding,
             func.coalesce(func.sum(cast(usage.estimated_cost, Numeric)), 0.0),
         )
         .filter(
             usage.account_id == account_id,
-            usage.action_type == "model_gateway",
-            usage.meta_data["purpose"].astext.in_(PURPOSES),
-            funding.in_(("platform", "account")),
+            # The partial index must remain provable for generic plans. Keep
+            # its predicate and funding expression literal, as Stage A does.
+            text(
+                "api_usage.action_type = 'model_gateway' AND "
+                "(api_usage.meta_data ->> 'purpose') IN "
+                "('governance_session_digest', 'governance_review') AND "
+                "(api_usage.meta_data ->> 'funding') IN ('platform', 'account')"
+            ),
             or_(
                 and_(
                     usage.timestamp >= window_start,
@@ -52,9 +76,7 @@ def run_spend(
             ),
         )
         .group_by(funding)
-        .all()
     )
-    return {"platform": 0.0, "account": 0.0, **{k: float(v) for k, v in rows}}
 
 
 @contextmanager

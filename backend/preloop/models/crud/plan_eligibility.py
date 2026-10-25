@@ -41,7 +41,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 
-from .api_usage import exclude_replay_usage_condition
+from .api_usage import exclude_customer_overhead_condition
 from .history_policy import (
     HISTORY_RETENTION_KEY,
     longest_history_promise,
@@ -385,7 +385,7 @@ def ingest_tokens_this_month(
 ) -> int:
     """Tokens ingested since the start of the current UTC month.
 
-    Counts the same rows the quota counts: gateway traffic, replay-validation
+    Counts the same rows the quota counts: gateway traffic, replay-validation and governance
     measurement excluded, negative or missing token counts ignored rather than
     guessed.
 
@@ -407,7 +407,7 @@ def ingest_tokens_this_month(
         usage.action_type == INGEST_ACTION_TYPE,
         usage.total_tokens.is_not(None),
         usage.total_tokens >= 0,
-        exclude_replay_usage_condition(),
+        exclude_customer_overhead_condition(),
     ]
     if model_ids is not None:
         if not model_ids:

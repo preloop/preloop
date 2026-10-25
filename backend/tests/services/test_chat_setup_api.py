@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 import hashlib
+import ipaddress
+import json
 import os
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -18,7 +20,7 @@ from preloop.api.endpoints import chat_setup
 from preloop.models import models
 from preloop.models.crud import crud_chat
 from preloop.services.chat_providers import ChatProviderError
-from preloop.utils.encryption import encrypt_value
+from preloop.utils.encryption import decrypt_value, encrypt_value
 
 
 @pytest.mark.asyncio
@@ -297,3 +299,101 @@ async def test_discord_persists_before_install_and_retries_after_failure(
             await client.post(path, json={"workspace_id": "guild"})
         ).status_code == 201
         assert install.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_mattermost_draft_refresh_preserves_credentials_and_finishes(
+    setup_rig, monkeypatch
+) -> None:
+    """A valid new bot can join a team after discovery without a new token."""
+    from preloop.services.chat_setup import discover
+
+    teams = []
+    unavailable = False
+    calls = []
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        assert request.headers["authorization"] == "Bearer synthetic-bot-token"
+        if unavailable:
+            return httpx.Response(503)
+        if request.url.path == "/api/v4/users/me":
+            return httpx.Response(
+                200,
+                json={
+                    "id": "synthetic-bot",
+                    "is_bot": True,
+                    "username": "team-assistant",
+                    "first_name": "Team assistant",
+                },
+            )
+        assert request.url.path == "/api/v4/users/synthetic-bot/teams"
+        return httpx.Response(200, json=teams)
+
+    monkeypatch.setattr(
+        "preloop.services.ai_model_provider._resolve_endpoint_host",
+        lambda _: [ipaddress.ip_address("93.184.216.34")],
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as upstream:
+
+        async def discovery(config, **kwargs):
+            return await discover(config, client=upstream, **kwargs)
+
+        monkeypatch.setattr(chat_setup, "discover", discovery)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=setup_rig.app),
+            base_url="https://preloop.example.com",
+        ) as client:
+            response = await client.post(
+                "/api/v1/chat/setup",
+                json={
+                    "provider": "mattermost",
+                    "bot_token": "synthetic-bot-token",
+                    "base_url": "https://chat.example.com",
+                },
+            )
+            assert response.status_code == 201, response.text
+            draft = response.json()
+            assert draft["workspaces"] == []
+            assert draft["bot_username"] == "team-assistant"
+            assert "synthetic-bot-token" not in response.text
+            draft_id = UUID(draft["id"])
+            with setup_rig.factory() as db:
+                stored = crud_chat.drafts.get(db, draft_id)
+                assert "synthetic-bot-token" not in stored.state_encrypted
+                credentials = json.loads(decrypt_value(stored.state_encrypted))
+            path = f"/api/v1/chat/setup/{draft_id}"
+            blocked = await client.post(
+                path + "/finish", json={"workspace_id": "team-one"}
+            )
+            assert blocked.status_code == 422
+            unavailable = True
+            assert (await client.post(path + "/refresh", json={})).status_code == 422
+            unavailable = False
+            teams.append({"id": "team-one", "display_name": "Engineering"})
+            refreshed = await client.post(path + "/refresh", json={})
+            assert refreshed.status_code == 200, refreshed.text
+            assert refreshed.json()["id"] == draft["id"]
+            assert refreshed.json()["expires_at"] == draft["expires_at"]
+            assert refreshed.json()["workspaces"] == [
+                {"id": "team-one", "name": "Engineering"}
+            ]
+            assert "synthetic-bot-token" not in refreshed.text
+            with setup_rig.factory() as db:
+                state = json.loads(
+                    decrypt_value(crud_chat.drafts.get(db, draft_id).state_encrypted)
+                )
+                assert state["bot_token"] == credentials["bot_token"]
+                assert state["bot_user_id"] == credentials["bot_user_id"]
+                assert state["base_url"] == credentials["base_url"]
+            finished = await client.post(
+                path + "/finish", json={"workspace_id": "team-one"}
+            )
+            assert finished.status_code == 201, finished.text
+            assert finished.json()["id"] == draft["id"]
+            with setup_rig.factory() as db:
+                connection = crud_chat.connections.get(db, draft_id)
+                assert connection.workspace_id == "team-one"
+                saved = json.loads(decrypt_value(connection.credentials_encrypted))
+                assert saved["bot_token"] == "synthetic-bot-token"
+    assert all(method == "GET" for method, _ in calls)

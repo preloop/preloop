@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, List
 from uuid import uuid4
 
 import pytest
@@ -28,6 +28,22 @@ class FrozenDateTime(datetime):
     @classmethod
     def now(cls, tz: Any = None) -> datetime:
         return NOW if tz is not None else NOW.replace(tzinfo=None)
+
+
+def _list_all_keys(current_user: Any, db: Any) -> List[Any]:
+    """Call the unpaged list endpoint directly, outside FastAPI's injection."""
+    from fastapi import Response
+
+    return auth_router.list_api_keys(
+        response=Response(),
+        limit=None,
+        offset=0,
+        q=None,
+        include_retired=True,
+        sort="-created",
+        current_user=current_user,
+        db=db,
+    )
 
 
 def _current_user(user: models.User) -> AuthUserResponse:
@@ -156,7 +172,7 @@ def test_list_key_summaries_use_three_queries(
     connection = db_session.connection()
     event.listen(connection, "before_cursor_execute", capture)
     try:
-        actual = auth_router.list_api_keys(current, db_session)
+        actual = _list_all_keys(current, db_session)
     finally:
         event.remove(connection, "before_cursor_execute", capture)
     assert [row.model_dump() for row in actual] == [
@@ -187,7 +203,7 @@ def test_empty_key_list_avoids_activity_queries(
     connection = db_session.connection()
     event.listen(connection, "before_cursor_execute", capture)
     try:
-        assert auth_router.list_api_keys(_current_user(test_user), db_session) == []
+        assert _list_all_keys(_current_user(test_user), db_session) == []
     finally:
         event.remove(connection, "before_cursor_execute", capture)
     assert len(statements) == 1
@@ -207,7 +223,7 @@ def test_key_summary_last_use_without_calls_and_nullable_context(
     keys[2].context_data = []
     db_session.flush()
     expected = [auth_router._build_api_key_summary(db_session, key) for key in keys]
-    actual = auth_router.list_api_keys(_current_user(test_user), db_session)
+    actual = _list_all_keys(_current_user(test_user), db_session)
     assert [row.model_dump() for row in actual] == [
         row.model_dump() for row in expected
     ]
@@ -233,7 +249,7 @@ def test_foreign_users_keys_are_not_listed(
     db_session.add(foreign)
     db_session.flush()
     _keys(db_session, foreign, 1)
-    actual = auth_router.list_api_keys(_current_user(test_user), db_session)
+    actual = _list_all_keys(_current_user(test_user), db_session)
     assert [row.id for row in actual] == [keys[0].id]
     assert crud_api_key.get_by_user(db_session, username=test_user.username) == keys
 

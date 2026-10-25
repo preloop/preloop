@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.models.crud.runtime_session import (
     _latest_gateway_usage_for_sessions,
     _runtime_session_columns_cache,
@@ -61,6 +64,94 @@ def test_get_latest_by_principal_scopes_to_account(db_session, create_account) -
     assert latest is not None
     assert str(latest.id) == str(current_session.id)
     assert str(latest.account_id) == str(current_account.id)
+
+
+@pytest.mark.parametrize("reverse_insertion", [False, True])
+@pytest.mark.parametrize("same_start", [False, True])
+def test_latest_principal_session_breaks_creation_timestamp_ties(
+    db_session: Session,
+    create_account: Callable[..., models.Account],
+    reverse_insertion: bool,
+    same_start: bool,
+) -> None:
+    """Transaction-wide created_at defaults must not make latest arbitrary."""
+    account = create_account()
+    created_at = datetime(2026, 1, 2, tzinfo=UTC)
+    later_start = created_at - timedelta(hours=1)
+    sessions = [
+        models.RuntimeSession(
+            id=UUID(int=index),
+            account_id=account.id,
+            session_source_type="claude_code",
+            session_source_id=f"principal-{index}",
+            session_reference=str(index),
+            runtime_principal_type="claude_code",
+            runtime_principal_id="principal",
+            created_at=created_at,
+            started_at=(
+                later_start
+                if same_start or index == 2
+                else later_start - timedelta(days=1)
+            ),
+            last_activity_at=later_start,
+        )
+        for index in (1, 2)
+    ]
+    for session in reversed(sessions) if reverse_insertion else sessions:
+        db_session.add(session)
+        db_session.flush()
+
+    latest = crud_runtime_session.get_latest_by_principal(
+        db_session,
+        account_id=str(account.id),
+        principal_type="claude_code",
+        principal_id="principal",
+    )
+
+    assert latest is not None
+    assert latest.id == sessions[1].id
+
+
+def test_latest_principal_session_prioritizes_creation_time(
+    db_session: Session, create_account: Callable[..., models.Account]
+) -> None:
+    """Tie breakers do not change existing newest-created semantics."""
+    account = create_account()
+    now = datetime(2026, 1, 2, tzinfo=UTC)
+    newest = models.RuntimeSession(
+        id=uuid4(),
+        account_id=account.id,
+        session_source_type="claude_code",
+        session_source_id="principal-new",
+        session_reference="new",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="principal",
+        created_at=now,
+        started_at=now - timedelta(days=2),
+        last_activity_at=now,
+    )
+    older = models.RuntimeSession(
+        id=uuid4(),
+        account_id=account.id,
+        session_source_type="claude_code",
+        session_source_id="principal-old",
+        session_reference="old",
+        runtime_principal_type="claude_code",
+        runtime_principal_id="principal",
+        created_at=now - timedelta(days=1),
+        started_at=now,
+        last_activity_at=now,
+    )
+    db_session.add_all([older, newest])
+    db_session.flush()
+    latest = crud_runtime_session.get_latest_by_principal(
+        db_session,
+        account_id=str(account.id),
+        principal_type="claude_code",
+        principal_id="principal",
+    )
+    assert latest is not None
+    assert latest.id == newest.id
 
 
 def test_latest_gateway_usage_for_sessions_returns_latest_per_session(
@@ -455,3 +546,114 @@ def test_session_list_and_detail_support_unmigrated_optional_columns(
     assert detail["parent_session_id"] is None
     if not summary_available:
         assert detail["summary"] is None
+
+
+def _gateway_usage(account_id, *, session_id=None, execution_id=None, tokens=10):
+    return ApiUsage(
+        id=uuid4(),
+        account_id=account_id,
+        endpoint="/v1/messages",
+        method="POST",
+        status_code=200,
+        duration=0.1,
+        action_type="model_gateway",
+        runtime_session_id=session_id,
+        flow_execution_id=execution_id,
+        prompt_tokens=tokens,
+        completion_tokens=0,
+        total_tokens=tokens,
+        estimated_cost=0.01,
+        timestamp=datetime.now(UTC) - timedelta(minutes=5),
+    )
+
+
+def test_session_summary_matches_usage_by_the_sessions_own_ids(
+    db_session, create_account
+) -> None:
+    """The detail summary names the session in its usage join (#1689).
+
+    Matched through the correlated OR, Postgres read every gateway row of the
+    account to keep one session's: 0.39 s on the founder's 294k rows, 13 ms
+    with the ids as constants. Totals stay the same, legacy flow-execution
+    usage included.
+    """
+    from sqlalchemy import event
+
+    from preloop.models.crud import crud_flow, crud_flow_execution
+    from preloop.models.schemas.flow import FlowCreate
+    from preloop.models.schemas.flow_execution import FlowExecutionCreate
+
+    account = create_account()
+    started = datetime.now(UTC) - timedelta(hours=1)
+    flow = crud_flow.create(
+        db=db_session,
+        flow_in=FlowCreate(
+            name="Summary join flow",
+            prompt_template="Test",
+            trigger_event_source="github",
+            trigger_event_types=["test"],
+            agent_type="codex",
+            agent_config={},
+            allowed_mcp_servers=[],
+            allowed_mcp_tools=[],
+            account_id=account.id,
+        ),
+        account_id=account.id,
+    )
+    execution_id = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="RUNNING")
+    ).id
+    session = RuntimeSession(
+        id=uuid4(),
+        account_id=account.id,
+        session_source_type="flow_execution",
+        session_source_id=str(execution_id),
+        started_at=started,
+        last_activity_at=started,
+    )
+    other = RuntimeSession(
+        id=uuid4(),
+        account_id=account.id,
+        session_source_type="managed_agent",
+        session_source_id="other",
+        started_at=started,
+        last_activity_at=started,
+    )
+    db_session.add_all([session, other])
+    db_session.flush()
+    db_session.add_all(
+        [
+            _gateway_usage(account.id, session_id=session.id, tokens=10),
+            # Legacy rows: bound to the execution, not the session.
+            _gateway_usage(account.id, execution_id=execution_id, tokens=20),
+            _gateway_usage(account.id, session_id=other.id, tokens=400),
+        ]
+    )
+    db_session.flush()
+
+    statements: list[str] = []
+
+    def record(conn, cursor, statement, *args):
+        statements.append(" ".join(statement.split()))
+
+    engine = db_session.get_bind().engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        summary = crud_runtime_session.get_account_session_summary(
+            db_session, account_id=str(account.id), runtime_session_id=str(session.id)
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert summary["total_requests"] == 2
+    assert summary["total_tokens"] == 30
+    aggregate = next(sql for sql in statements if "count(api_usage.id)" in sql)
+    assert "api_usage.runtime_session_id = runtime_session.id" not in aggregate
+    assert "api_usage.runtime_session_id = %(" in aggregate
+
+    assert (
+        crud_runtime_session.get_account_session_summary(
+            db_session, account_id=str(account.id), runtime_session_id=str(uuid4())
+        )
+        is None
+    )

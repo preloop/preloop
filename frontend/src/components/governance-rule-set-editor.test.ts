@@ -38,6 +38,35 @@ describe('GovernanceRuleSetEditor', () => {
     };
   }
 
+  it('keeps shared rules visible while disabling edits and reordering', async () => {
+    const el = await fixture<GovernanceRuleSetEditor>(html`
+      <governance-rule-set-editor
+        .readOnly=${true}
+        .rules=${[rule('r1', 'deny', 1), rule('r2', 'allow', 2)]}
+      ></governance-rule-set-editor>
+    `);
+    const root = el.shadowRoot!;
+    expect(root.querySelectorAll('.rule-item').length).to.equal(2);
+    for (const button of root.querySelectorAll('sl-icon-button, sl-button')) {
+      expect((button as any).disabled).to.equal(true);
+    }
+    const events: string[] = [];
+    el.addEventListener('reorder-rules', () => events.push('reorder'));
+    el.addEventListener('delete-rule', () => events.push('delete'));
+    root.querySelector('.rule-item')!.dispatchEvent(
+      new KeyboardEvent('keydown', {
+        key: 'ArrowDown',
+        altKey: true,
+        bubbles: true,
+      })
+    );
+    (el as any)._handleDeleteRule(rule('r1', 'deny', 1));
+    expect(events).to.deep.equal([]);
+    expect(
+      root.querySelector('.rule-item')!.getAttribute('draggable')
+    ).to.equal('false');
+  });
+
   it('names rule actions in sentence case with the shared colours', async () => {
     const el = (await fixture(html`
       <governance-rule-set-editor

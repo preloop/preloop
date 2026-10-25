@@ -1,5 +1,7 @@
 """Retired global models preserve history without serving new default selection."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -13,7 +15,7 @@ from preloop.models.crud import crud_ai_model
 def _model(
     *, owned: bool = False, retired: object = None, default: bool = False
 ) -> models.AIModel:
-    return models.AIModel(
+    return ai_model_with_secret(
         id=uuid4(),
         account_id=uuid4() if owned else None,
         name="Example model",
@@ -109,18 +111,17 @@ def test_selectable_catalog_and_built_in_availability_share_retirement(
     retirement: dict[str, object],
 ) -> None:
     from preloop.services.built_in_models import (
-        BUILT_IN_MODEL_ALIAS,
         is_available_built_in_model,
     )
 
     retired = _model()
     retired.meta_data = {
-        "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS},
+        "gateway": {"enabled": True, "model_alias": "example/operator-model"},
         **retirement,
     }
     active = _model()
     active.meta_data = {
-        "gateway": {"enabled": True, "model_alias": BUILT_IN_MODEL_ALIAS}
+        "gateway": {"enabled": True, "model_alias": "example/operator-model"}
     }
     own = _model(owned=True, retired=True)
     selected = crud_ai_model.get_selectable_for_account(

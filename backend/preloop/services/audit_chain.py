@@ -60,6 +60,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -289,6 +290,7 @@ def note_pruned(db: Session, *, account_id: Any, up_to_seq: int, now: Any) -> No
         state.pruned_below_seq = int(up_to_seq)
         state.pruned_at = now
         db.add(state)
+        invalidate_chain_status(account_id)
 
 
 def _write_checkpoint(
@@ -425,6 +427,8 @@ def seal_account(
             )
             result.checkpoints += 1
         db.commit()
+        # After the commit: a status read that starts now sees the new head.
+        invalidate_chain_status(account_id)
         result.sealed += len(rows)
         result.batches += 1
         if last_timestamp is not None:
@@ -484,6 +488,40 @@ def run_seal_pass(
     return summary
 
 
+def _sealed_row_count(db: Session, *, account_id: Any, state: Any) -> int:
+    """Sealed rows still stored, without counting the whole sealed history.
+
+    The sealer hands out ``chain_seq`` 1..``last_seq`` without gaps, and a
+    retention purge raises ``pruned_below_seq`` to the highest position it
+    deleted, so every purged row sits at or under the floor. Above the floor
+    the count is therefore ``last_seq - pruned_below_seq``; only the rows at
+    or under it (the survivors of a purge that did not delete a clean prefix,
+    normally none) are counted, through ``ix_audit_log_account_chain_seq``.
+    Counting every sealed row read 1.2M index entries for the founder account
+    on prod: 1.7 s cold (#1693). A row missing above the floor is tampering,
+    which is the verifier's job to report, not this figure's.
+    """
+    if state is None:
+        return 0
+    head = int(state.last_seq or 0)
+    floor = min(int(state.pruned_below_seq or 0), head)
+    if floor <= 0:
+        return head
+    survivors = int(
+        db.execute(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.account_id == account_id,
+                AuditLog.chain_seq.is_not(None),
+                AuditLog.chain_seq <= floor,
+            )
+        ).scalar_one()
+        or 0
+    )
+    return head - floor + survivors
+
+
 def chain_status(db: Session, *, account_id: Any) -> dict[str, Any]:
     """Head, floor, pending count and the newest checkpoint."""
     state = get_state(db, account_id=account_id, create=False)
@@ -495,14 +533,7 @@ def chain_status(db: Session, *, account_id: Any) -> dict[str, Any]:
         ).scalar_one()
         or 0
     )
-    sealed = int(
-        db.execute(
-            select(func.count())
-            .select_from(AuditLog)
-            .where(AuditLog.account_id == account_id, AuditLog.chain_seq.is_not(None))
-        ).scalar_one()
-        or 0
-    )
+    sealed = _sealed_row_count(db, account_id=account_id, state=state)
     latest = db.execute(
         select(AuditChainCheckpoint)
         .where(AuditChainCheckpoint.account_id == account_id)
@@ -523,6 +554,61 @@ def chain_status(db: Session, *, account_id: Any) -> dict[str, Any]:
         "latest_checkpoint": checkpoint_summary(latest) if latest else None,
         "active_key_id": active_key.key_id if active_key else None,
     }
+
+
+#: How long a computed chain status is served from memory. The two row counts
+#: behind it scan every audit row of the account (3.5 to 4.1 s on prod, #1693),
+#: and the seal pass only moves the head once a minute, so a short-lived copy
+#: is as current as the page needs.
+CHAIN_STATUS_TTL_SECONDS = 30.0
+
+_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_status_cache_lock = threading.Lock()
+#: Bumped by every invalidation. A fill that started before one is dropped, so
+#: a slow read that overlaps a seal cannot store the pre-seal snapshot.
+_status_generation = 0
+
+
+def cached_chain_status(
+    db: Session, *, account_id: Any, ttl: float = CHAIN_STATUS_TTL_SECONDS
+) -> dict[str, Any]:
+    """Chain status, served from a per-process cache for ``ttl`` seconds.
+
+    Args:
+        db: Database session used when the cache misses.
+        account_id: Account whose chain is described.
+        ttl: Seconds a computed status stays fresh.
+
+    Returns:
+        The same payload as :func:`chain_status`.
+    """
+    key = str(account_id)
+    now = time.monotonic()
+    with _status_cache_lock:
+        hit = _status_cache.get(key)
+        generation = _status_generation
+    if hit is not None and now - hit[0] < ttl:
+        return dict(hit[1])
+    status = chain_status(db, account_id=account_id)
+    with _status_cache_lock:
+        if _status_generation == generation:
+            _status_cache[key] = (now, status)
+    return dict(status)
+
+
+def invalidate_chain_status(account_id: Any | None = None) -> None:
+    """Drop cached chain status for one account, or for all when ``None``.
+
+    Args:
+        account_id: Account to forget; ``None`` clears the whole cache.
+    """
+    global _status_generation
+    with _status_cache_lock:
+        _status_generation += 1
+        if account_id is None:
+            _status_cache.clear()
+        else:
+            _status_cache.pop(str(account_id), None)
 
 
 def checkpoint_summary(checkpoint: AuditChainCheckpoint) -> dict[str, Any]:

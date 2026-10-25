@@ -278,9 +278,10 @@ SEND_NOTE_TOOL: Dict[str, Any] = {
         "children='latest' / 'all' for the live runs your session started. "
         "Delivered at its next turn boundary, recorded with you as author. "
         "Name exactly one target; none or two is refused and writes nothing. "
-        "Scope: the runs you started, at any depth. A sibling, the run that "
-        "started you, and anything outside your account are refused unless "
-        "an access rule grants more. Rate limited per author, per target, "
+        "Scope: your own run and the runs you started, at any depth. Other "
+        "runs require your human's approval when that human can control them; "
+        "tool access rules can change this. Other accounts are never reachable. "
+        "Rate limited per author, per target, "
         "per hour."
     ),
     "source": "builtin",
@@ -295,6 +296,11 @@ SEND_NOTE_TOOL: Dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "preloop_caller_session_id": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Harness session id supplied by the Preloop hook; validated against your credential.",
+            },
             "text": {
                 "type": "string",
                 "description": (
@@ -615,6 +621,11 @@ LIST_SESSIONS_TOOL: Dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "preloop_caller_session_id": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Harness session id supplied by the Preloop hook; validated against your credential.",
+            },
             "parent_session_id": {
                 "type": "string",
                 "description": (
@@ -917,6 +928,28 @@ DEPOSIT_ARTIFACT_TOOL: Dict[str, Any] = {
                 "type": "object",
                 "description": "labels.source_tool names the tool that made it.",
             },
+            "media_timing": {
+                "type": "object",
+                "description": "Recording/screencast timebase: started_at (RFC3339), clock (agent/server), optional duration_ms and step_offsets (source_step_id, offset_ms).",
+                "required": ["started_at", "clock"],
+                "properties": {
+                    "started_at": {"type": "string", "format": "date-time"},
+                    "clock": {"type": "string", "enum": ["agent", "server"]},
+                    "duration_ms": {"type": "integer", "minimum": 0},
+                    "step_offsets": {
+                        "type": "array",
+                        "maxItems": 5000,
+                        "items": {
+                            "type": "object",
+                            "required": ["source_step_id", "offset_ms"],
+                            "properties": {
+                                "source_step_id": {"type": "string"},
+                                "offset_ms": {"type": "integer", "minimum": 0},
+                            },
+                        },
+                    },
+                },
+            },
             "parent_artifact_id": {"type": "string"},
             "activity_id": {"type": "string"},
         },
@@ -1041,4 +1074,119 @@ GET_ARTIFACT_TOOL: Dict[str, Any] = {
 TOOL_NAME_ALIASES: Dict[str, str] = {
     "search": "search_issues",
     "search_issues": "search",
+}
+
+
+def _annotations(
+    title: str,
+    *,
+    read_only: bool,
+    open_world: bool,
+    idempotent: bool = False,
+    destructive: bool = False,
+) -> Dict[str, Any]:
+    """Build one MCP ``ToolAnnotations`` payload.
+
+    Args:
+        title: Human-readable tool title shown by MCP clients.
+        read_only: True when the tool never modifies its environment.
+        open_world: True when the tool reaches systems outside Preloop
+            (issue trackers, code hosts, public registries, humans).
+        idempotent: True when repeating a call with the same arguments has
+            no additional effect. Always True for read-only tools.
+        destructive: True when the tool may perform updates that are not
+            purely additive (overwrite or delete existing data), per the MCP
+            spec. Always False for read-only tools.
+
+    Returns:
+        A dict with the MCP annotation keys (camelCase, as on the wire).
+    """
+    return {
+        "title": title,
+        "readOnlyHint": read_only,
+        "destructiveHint": False if read_only else destructive,
+        "idempotentHint": True if read_only else idempotent,
+        "openWorldHint": open_world,
+    }
+
+
+#: MCP tool annotations for every builtin tool, keyed by tool name. These are
+#: hints for clients (and catalog reviewers); policy enforcement never relies
+#: on them. Proxied tools keep their upstream annotations instead.
+BUILTIN_TOOL_ANNOTATIONS: Dict[str, Dict[str, Any]] = {
+    # Issue trackers (external systems).
+    "get_issue": _annotations("Get issue", read_only=True, open_world=True),
+    "search_issues": _annotations("Search issues", read_only=True, open_world=True),
+    "search": _annotations("Search issues", read_only=True, open_world=True),
+    "create_issue": _annotations("Create issue", read_only=False, open_world=True),
+    # Updates overwrite existing fields, so they are not additive-only and
+    # carry destructiveHint per the MCP spec.
+    "update_issue": _annotations(
+        "Update issue", read_only=False, open_world=True, destructive=True
+    ),
+    "estimate_compliance": _annotations(
+        "Estimate issue compliance", read_only=True, open_world=True
+    ),
+    "improve_compliance": _annotations(
+        "Suggest issue compliance improvements", read_only=True, open_world=True
+    ),
+    # Code hosts (external systems).
+    "add_comment": _annotations("Add comment", read_only=False, open_world=True),
+    "update_comment": _annotations(
+        "Update or resolve comment",
+        read_only=False,
+        open_world=True,
+        idempotent=True,
+        destructive=True,
+    ),
+    "get_pull_request": _annotations(
+        "Get pull request", read_only=True, open_world=True
+    ),
+    "update_pull_request": _annotations(
+        "Update pull request", read_only=False, open_world=True, destructive=True
+    ),
+    "create_pull_request": _annotations(
+        "Create pull request", read_only=False, open_world=True
+    ),
+    # Humans in the loop (notifications leave Preloop).
+    "request_approval": _annotations(
+        "Request human approval", read_only=False, open_world=True
+    ),
+    "ask_user": _annotations("Ask a human", read_only=False, open_world=True),
+    "permission_prompt": _annotations(
+        "Permission prompt", read_only=False, open_world=True
+    ),
+    # Once the request is approved, this call executes the approved tool,
+    # which may be any builtin or proxied tool, so it inherits the worst case.
+    "get_approval_status": _annotations(
+        "Get approval status",
+        read_only=False,
+        open_world=True,
+        destructive=True,
+    ),
+    # Public package registries.
+    "resolve_sbom_upstreams": _annotations(
+        "Resolve SBOM upstreams", read_only=True, open_world=True
+    ),
+    # Agents, flows and sessions inside Preloop.
+    "send_note": _annotations("Send note to agent", read_only=False, open_world=False),
+    # A flow runs an agent whose own tools may overwrite or delete data.
+    "run_flow": _annotations(
+        "Run flow", read_only=False, open_world=True, destructive=True
+    ),
+    "get_execution": _annotations(
+        "Get flow execution", read_only=True, open_world=False
+    ),
+    "list_sessions": _annotations("List sessions", read_only=True, open_world=False),
+    "search_sessions": _annotations(
+        "Search sessions", read_only=True, open_world=False
+    ),
+    # Artifacts stored by Preloop.
+    "deposit_artifact": _annotations(
+        "Deposit artifact", read_only=False, open_world=False
+    ),
+    "search_artifacts": _annotations(
+        "Search artifacts", read_only=True, open_world=False
+    ),
+    "get_artifact": _annotations("Get artifact", read_only=True, open_world=False),
 }

@@ -13,8 +13,6 @@ export const consoleRouteLoaders = {
     import('../views/authed/issues-compliance-view'),
   'issues-dependencies-view': () =>
     import('../views/authed/issues-dependencies-view'),
-  'duplicates-view': () => import('../views/authed/issues/duplicates-view'),
-  'assignments-view': () => import('../views/authed/issues/assignments-view'),
   'api-usage-view': () => import('../views/authed/api-usage-view'),
   'cost-view': () => import('../views/authed/cost-view'),
   'issue-cost-view': () => import('../views/authed/issue-cost-view'),
@@ -50,6 +48,9 @@ export const consoleRouteLoaders = {
   'runtime-sessions-view': () =>
     import('../views/authed/runtime-sessions-view'),
   'artifacts-view': () => import('../views/authed/artifacts-view'),
+  'delivery-reports-view': () =>
+    import('../views/authed/delivery-reports-view'),
+  'delivery-report-view': () => import('../views/authed/delivery-report-view'),
   'approval-view': () => import('../views/authed/approval-view'),
   'approvals-view': () => import('../views/authed/approvals-view'),
   'policies-view': () => import('../views/authed/policies-view'),

@@ -14,6 +14,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     status,
 )
 from fastapi.security import OAuth2PasswordRequestForm
@@ -46,6 +47,7 @@ from preloop.config import settings
 from preloop.plugins import account_hooks
 from preloop.schemas.auth import (
     LogoutResponse,
+    ApiKeyCount,
     ApiKeyCreate,
     ApiKeyResponse,
     ApiKeySummary,
@@ -1602,26 +1604,23 @@ def create_api_key(
 
     try:
         # Create a new API key
-        new_key = ApiKey(
-            name=key_data.name,
-            key=key_value,
-            key_hash=crud_api_key.build_key_hash(key_value),
-            key_prefix=crud_api_key.build_key_prefix(key_value),
-            scopes=key_data.scopes,
-            account_id=current_user.account_id,
-            user_id=current_user.id,
-            expires_at=key_data.expires_at,
-            context_data=context_data,
+        new_key, key_value = crud_api_key.issue(
+            session,
+            key_value=key_value,
+            obj_in={
+                "name": key_data.name,
+                "scopes": key_data.scopes,
+                "account_id": current_user.account_id,
+                "user_id": current_user.id,
+                "expires_at": key_data.expires_at,
+                "context_data": context_data,
+            },
         )
-
-        session.add(new_key)
-        session.commit()
-        session.refresh(new_key)
 
         return ApiKeyResponse(
             id=new_key.id,
             name=new_key.name,
-            key=new_key.key,
+            key=key_value,
             created_at=new_key.created_at,
             expires_at=new_key.expires_at,
             scopes=new_key.scopes,
@@ -1636,14 +1635,14 @@ def create_api_key(
                 detail="API key with this name already exists",
             )
 
-        logger.error(f"Integrity error creating API key: {str(e)}")
+        logger.error("Integrity error creating API key")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating API key",
         )
     except Exception as e:
         session.rollback()
-        logger.error(f"Error creating API key: {str(e)}")
+        logger.error("Error creating API key")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error creating API key",
@@ -1924,21 +1923,62 @@ async def create_runtime_session_token(
 
 @router.get("/api-keys", response_model=List[ApiKeySummary])
 def list_api_keys(
+    response: Response,
+    limit: Optional[int] = Query(
+        None, ge=1, le=200, description="Page size. Omit to list every key."
+    ),
+    offset: int = Query(0, ge=0, description="Rows to skip when paging."),
+    q: Optional[str] = Query(
+        None, max_length=200, description="Case-insensitive key name search."
+    ),
+    include_retired: bool = Query(
+        True, description="Whether revoked and expired keys are listed."
+    ),
+    sort: str = Query(
+        "-created",
+        pattern=r"^-?(name|created|expires)$",
+        description="name, created or expires; a leading '-' sorts descending.",
+    ),
     current_user: AuthUserResponse = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> List[ApiKeySummary]:
-    """List all API keys for the current user.
+    """List the current user's API keys, optionally one page at a time.
+
+    With ``limit`` the list is paged on the server and the response carries
+    ``X-Total-Count`` (rows matching the filters) and ``X-Retired-Count``
+    (revoked or expired keys matching the search) headers (#1694). Without
+    it every key is returned, as before.
 
     Args:
+        response: The outgoing response, for the count headers.
+        limit: Page size, or None for every key.
+        offset: Rows to skip.
+        q: Name search, applied only when paging.
+        include_retired: Whether retired keys are listed, when paging.
+        sort: Sort key, when paging.
         current_user: The current authenticated user.
+        db: The database session.
 
     Returns:
         List of API keys.
     """
     session = db
 
-    # Get API keys using CRUD layer
-    keys = crud_api_key.get_by_user(session, username=current_user.username)
+    if limit is None:
+        keys = crud_api_key.get_by_user(session, username=current_user.username)
+    else:
+        keys, total, retired = crud_api_key.page_by_user(
+            session,
+            username=current_user.username,
+            limit=limit,
+            offset=offset,
+            search=(q or "").strip() or None,
+            include_retired=include_retired,
+            sort=sort.lstrip("-"),
+            descending=sort.startswith("-"),
+        )
+        response.headers["X-Total-Count"] = str(total)
+        response.headers["X-Retired-Count"] = str(retired)
     if not keys:
         return []
     key_ids = [key.id for key in keys]
@@ -1966,6 +2006,27 @@ def list_api_keys(
         )
         for key in keys
     ]
+
+
+@router.get("/api-keys/count", response_model=ApiKeyCount)
+def count_api_keys(
+    current_user: AuthUserResponse = Depends(get_current_active_user),
+    db: Session = Depends(get_db_session),
+) -> ApiKeyCount:
+    """Count the current user's usable API keys (active, not expired).
+
+    Declared before ``/api-keys/{key_id}`` so the literal path wins.
+
+    Args:
+        current_user: The current authenticated user.
+        db: The database session.
+
+    Returns:
+        The number of usable keys.
+    """
+    return ApiKeyCount(
+        active=crud_api_key.count_usable_by_user(db, username=current_user.username)
+    )
 
 
 @router.get("/api-keys/{key_id}", response_model=ApiKeySummary)

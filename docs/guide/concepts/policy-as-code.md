@@ -53,11 +53,6 @@ tools:
         action: deny
         condition_type: cel
         description: Block destructive commands
-
-defaults:
-  unknown_tools: require_approval
-  require_approval_for_new_tools: true
-  default_approval_workflow: sre-review
 ```
 
 ---
@@ -142,10 +137,18 @@ Tool conditions do not accept `redact`. A `sensitive_data` rule does:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `unknown_tools` | string | `allow` | `allow`, `deny`, or `require_approval` |
-| `require_approval_for_new_tools` | bool | `false` | Require approval for newly discovered tools |
-| `default_approval_workflow` | string | n/a | Fallback approval workflow |
-| `inherit_from_parent` | bool | `true` | Inherit from parent policy |
+| `unknown_tools` | string | `allow` | Only `allow` is supported; `apply` rejects `deny` and `require_approval` |
+| `require_approval_for_new_tools` | bool | `false` | Only `false` is supported; `apply` rejects `true` |
+| `default_approval_workflow` | string | n/a | Not implemented yet; `apply` rejects any value |
+| `inherit_from_parent` | bool | `true` | Not used; `apply` accepts any value and ignores it |
+
+`apply` rejects the unsupported values, also with `--dry-run`, so that a policy
+does not look stricter than it is. A tool the policy does not list is allowed.
+To put a tool behind approval, list it under `tools:` with an
+`approval_workflow`. To deny every tool on an MCP server except a list, add a
+`sensitive_data` rule scoped to that server with a CEL `condition`, as the
+[read-only production access example](../examples/production-access/README.md#why-the-policy-is-an-allowlist)
+does.
 
 ---
 
@@ -228,7 +231,7 @@ The schema validates:
 2. **Valid references**: Tools, `model_io` rules and escalation settings that reference approval workflows or MCP servers must point to a name defined in the file or already configured in your account
 3. **AI policy completeness**: AI-driven workflows require `ai_model` (`ai_guidelines` is optional)
 4. **Expression syntax**: Tool condition expressions cannot be empty
-5. **Default references**: `default_approval_workflow` must reference a workflow defined in the file or in your account
+5. **Default references**: `default_approval_workflow` must reference a workflow defined in the file or in your account (`apply` does not support the setting yet; see [`defaults`](#defaults))
 
 If validation fails, you get detailed error messages pointing to the exact issue:
 

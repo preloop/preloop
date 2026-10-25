@@ -1,9 +1,11 @@
+import { Router } from '../../router';
 import { expect, fixture, html, nextFrame, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 
 import './agents-view.ts';
 import type { AgentListRow, AgentsView } from './agents-view';
 import { ListTable } from '../../table';
+import { invalidateApiCaches } from '../../api';
 import { loadShoelaceTokens } from '../../utils/test-shoelace-theme';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
 import { bulkActionButton, bulkCountText } from '../../utils/test-bulk-bar';
@@ -30,6 +32,7 @@ function makeAgent(
     lifecycle_reason: null,
     lifecycle_updated_at: '2026-03-10T10:00:00Z',
     is_active_now: true,
+    turn_state: 'your_turn',
     activity_status: 'active_now',
     last_seen_at: '2026-03-10T10:00:00Z',
     started_at: '2026-03-10T09:00:00Z',
@@ -91,6 +94,7 @@ function makeRow(overrides: Partial<AgentListRow>): AgentListRow {
 }
 
 describe('AgentsView', () => {
+  const originalUrl = window.location.href;
   let fetchStub: sinon.SinonStub;
   let agentItems: Array<Record<string, unknown>>;
   let flowItems: Array<Record<string, unknown>>;
@@ -173,9 +177,213 @@ describe('AgentsView', () => {
     fetchStub.callsFake(defaultFetch);
   });
 
+  it('mounts Copilot inventory gaps only with the extension feature', async () => {
+    localStorage.setItem('preloop.agents.view_mode', 'list');
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    expect(el.shadowRoot!.querySelector('copilot-activity-panel')).to.equal(
+      null
+    );
+    el['featureFlags'] = { copilot_seat_activity: true };
+    await el.updateComplete;
+    const panel = el.shadowRoot!.querySelector('copilot-activity-panel');
+    expect(panel).to.not.equal(null);
+    expect(panel?.hasAttribute('inventory')).to.equal(true);
+  });
+
   afterEach(() => {
+    window.history.replaceState(null, '', originalUrl);
     fetchStub.restore();
     localStorage.clear();
+  });
+
+  it('restores multiple pages and shell scroll after an actual browser Back navigation', async () => {
+    agentItems = Array.from({ length: 75 }, (_, i) =>
+      makeAgent(`agent-${i}`, `Example agent ${i}`, 'claude_code')
+    );
+    const pageOffsets: number[] = [];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/api/v1/agents/discovery-candidates') {
+        return new Response(
+          JSON.stringify({ items: [], total: 0, truncated: false })
+        );
+      }
+      if (url.pathname === '/api/v1/agents') {
+        const offset = Number(url.searchParams.get('offset') || 0);
+        const limit = Number(url.searchParams.get('limit') || 50);
+        pageOffsets.push(offset);
+        return new Response(
+          JSON.stringify({
+            items: agentItems.slice(offset, offset + limit),
+            total: agentItems.length,
+            offset,
+            limit,
+          })
+        );
+      }
+      return defaultFetch(input);
+    });
+    const shell = document.createElement('console-shell');
+    const shadow = shell.attachShadow({ mode: 'open' });
+    shadow.innerHTML =
+      '<div class="main-content" style="height:300px;overflow:auto"><slot></slot></div>';
+    const scroll = shadow.querySelector('.main-content') as HTMLElement;
+    const outlet = document.createElement('div');
+    shell.append(outlet);
+    document.body.append(shell);
+    const router = new Router(outlet);
+    try {
+      await router.setRoutes(
+        [
+          { path: '/console/agents', component: 'agents-view' },
+          { path: '/console/agents/:agentId', component: 'div' },
+        ],
+        true
+      );
+      await router.render(
+        '/console/agents?q=Example&seen=last_7_days&kinds=claude_code&table.sort=agent',
+        { history: 'push' }
+      );
+      const el = outlet.querySelector('agents-view') as AgentsView;
+      await waitForAgents(el);
+      expect((el as any).agents.items).to.have.length(50);
+      await (el as any).loadMoreAgents();
+      await el.updateComplete;
+      expect((el as any).agents.items).to.have.length(75);
+      scroll.scrollTop = 250;
+      expect(scroll.scrollTop).to.equal(250);
+      await router.render('/console/agents/agent-1', { history: 'push' });
+      window.history.back();
+      await waitUntil(() => !!outlet.querySelector('agents-view'));
+      const restored = outlet.querySelector('agents-view') as AgentsView;
+      await waitForAgents(restored);
+      await waitUntil(
+        () => scroll.scrollTop === 250,
+        `Scroll restoration: ${JSON.stringify(window.history.state)} / ${scroll.scrollTop}`
+      );
+      expect((restored as any).agents.items).to.have.length(75);
+      expect(pageOffsets).to.deep.equal([0, 50, 0, 50]);
+      expect((restored as any).searchQuery).to.equal('Example');
+      expect((restored as any).lastSeenAfter).to.equal('last_7_days');
+      expect(restored.agentTable.sorting).to.deep.equal([
+        { id: 'agent', desc: false },
+      ]);
+    } finally {
+      router.unsubscribe();
+      shell.remove();
+    }
+  });
+
+  it('does not restore an old scroll position after the user changes filters', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const port = { scrollTop: 0 };
+    const stub = sinon.stub(el as any, 'scrollPort').returns(port);
+    try {
+      (el as any).restoreListPosition = { top: 250, count: 0 };
+      const restoring = (el as any).restorePosition();
+      (el as any).searchQuery = 'new search';
+      (el as any).syncListFilters();
+      await restoring;
+      expect(port.scrollTop).to.equal(0);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('round trips investigation filters, sorting and position through the URL and Back state', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    (el as any).handleSearchChange(
+      new CustomEvent('search-change', { detail: { value: 'demo agent' } })
+    );
+    (el as any).handleLastSeenAfterChange({ target: { value: 'last_7_days' } });
+    (el as any).handleAgentKindChange('all', false);
+    (el as any).handleAgentKindChange('claude_code', true);
+    el.agentTable.setSorting([{ id: 'agent', desc: false }]);
+    (el as any).onBeforeLeave();
+    expect(new URLSearchParams(location.search).get('q')).to.equal(
+      'demo agent'
+    );
+    expect(new URLSearchParams(location.search).get('seen')).to.equal(
+      'last_7_days'
+    );
+    expect(window.history.state.agentsPosition).to.have.property('top');
+    el.remove();
+    const restored = await fixture<AgentsView>(
+      html`<agents-view></agents-view>`
+    );
+    await waitForAgents(restored);
+    expect((restored as any).searchQuery).to.equal('demo agent');
+    expect((restored as any).lastSeenAfter).to.equal('last_7_days');
+    expect((restored as any).agentKinds).to.deep.equal(['claude_code']);
+    expect(restored.agentTable.sorting).to.deep.equal([
+      { id: 'agent', desc: false },
+    ]);
+  });
+
+  it('links only known model IDs in cards and keeps alias-only models readable', async () => {
+    agentItems = [
+      {
+        ...makeAgent('known', 'Known model', 'claude_code'),
+        configured_model_id: 'model-1',
+        configured_model_alias: 'provider/long-model-alias',
+      },
+      {
+        ...makeAgent('alias', 'Alias only', 'claude_code'),
+        configured_model_alias: 'provider/alias-only',
+      },
+      {
+        ...makeAgent('missing', 'No metadata', 'claude_code'),
+        latest_model_alias: null,
+      },
+    ];
+    localStorage.setItem('preloop.agents.view_mode', 'cards');
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const links = Array.from(
+      el.shadowRoot!.querySelectorAll<HTMLAnchorElement>(
+        'a[href*="/ai-models/"]'
+      )
+    );
+    expect(links.map((link) => link.getAttribute('href'))).to.deep.equal([
+      '/console/ai-models/model-1',
+    ]);
+    expect(el.shadowRoot?.textContent).to.contain('provider/alias-only');
+    const cards = el.shadowRoot!.querySelectorAll('.agent-card');
+    expect(cards[1].querySelector('details')?.open).to.equal(false);
+    expect(cards[1].textContent).to.contain('Last seen');
+  });
+
+  it('does not mount or fetch deployment-only catalogs until the dialog opens', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    expect(el.shadowRoot!.querySelector('preloop-agent-deployer')).to.equal(
+      null
+    );
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) =>
+          String(call.args[0]).includes('/agent-deployments/capabilities')
+        )
+    ).to.have.length(0);
+    expect(
+      fetchStub
+        .getCalls()
+        .filter((call) => String(call.args[0]) === '/api/v1/ai-models')
+    ).to.have.length(1);
+    (el as any).showDeployDialog = true;
+    await el.updateComplete;
+    expect(el.shadowRoot!.querySelector('preloop-agent-deployer')).to.exist;
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).includes('/agent-deployments/capabilities')
+        )
+    );
   });
 
   it('renders agents while flows and editor catalogs are still pending', async () => {
@@ -379,9 +587,9 @@ describe('AgentsView', () => {
 
     // The section description renders inside the shared view-header.
     const header = el.shadowRoot?.querySelector('view-header');
-    expect(header?.getAttribute('description')).to.contain(
-      'Onboard agents you already run with the CLI, or deploy new ones.'
-    );
+    expect(
+      el.shadowRoot?.querySelector('view-header')?.getAttribute('description')
+    ).to.equal('');
 
     // Nothing persisted means the table, not the canvas.
     const table = el.shadowRoot?.querySelector('table.agents-table');
@@ -484,23 +692,34 @@ describe('AgentsView', () => {
       // consequence of it.
       'Tokens',
       '$ est.',
+      'W/o subs.',
       'Last seen',
       'Actions',
     ]);
 
     // "$ est." is short enough to read as "dollar est." out loud, so the
     // sort button carries the full name. Index 0 is the select-all checkbox.
+    // The totals are all time, whatever the Last seen filter says, so the
+    // headers say so (U-16).
     const spendButton = headers[5].querySelector('.sort-button');
-    expect(spendButton?.getAttribute('aria-label')).to.equal('Estimated spend');
-    expect(spendButton?.getAttribute('title')).to.equal('Estimated spend');
+    expect(spendButton?.getAttribute('aria-label')).to.equal(
+      'Estimated spend, all time'
+    );
+    expect(spendButton?.getAttribute('title')).to.equal(
+      'Estimated spend, all time'
+    );
     // The cell states one total, so the header names that rather than the
     // split it no longer shows.
     const tokensButton = headers[4].querySelector('.sort-button');
     expect(tokensButton?.getAttribute('aria-label')).to.equal(
-      'Total tokens, input plus output'
+      'Total tokens, input plus output, all time'
+    );
+    const requestsButton = headers[3].querySelector('.sort-button');
+    expect(requestsButton?.getAttribute('title')).to.equal(
+      'Requests, all time'
     );
 
-    const lastSeen = headers[6];
+    const lastSeen = headers[7];
     expect(lastSeen.getAttribute('aria-sort'), 'default sort').to.equal(
       'descending'
     );
@@ -518,7 +737,7 @@ describe('AgentsView', () => {
     await settle();
     expect(
       el.shadowRoot
-        ?.querySelectorAll('table.agents-table thead th')[6]
+        ?.querySelectorAll('table.agents-table thead th')[7]
         .getAttribute('aria-sort')
     ).to.equal('ascending');
 
@@ -528,7 +747,7 @@ describe('AgentsView', () => {
       'table.agents-table thead th'
     );
     expect(after?.[1].getAttribute('aria-sort')).to.equal('ascending');
-    expect(after?.[6].getAttribute('aria-sort')).to.equal('none');
+    expect(after?.[7].getAttribute('aria-sort')).to.equal('none');
 
     // The picker offers the two hidden columns back.
     const picker = el.agentTable.pickerColumns;
@@ -579,15 +798,16 @@ describe('AgentsView', () => {
     await waitForAgents(el);
 
     const chip = el.shadowRoot?.querySelector('tbody sl-badge.status-chip');
-    expect(chip?.textContent?.trim()).to.equal('Active now');
-    expect(chip?.getAttribute('variant')).to.equal('success');
+    // The server's turn state, never recency ("Active now" lives in Last seen).
+    expect(chip?.textContent?.trim()).to.equal('Your turn');
+    expect(chip?.getAttribute('variant')).to.equal('neutral');
     // Wave 4: a state is a tint. The class carries the soft recipe; only a
     // header count or a failed run opts back into a solid pill.
     expect(chip?.classList.contains('solid'), 'row state is a solid pill').to.be
       .false;
 
     const numeric = el.shadowRoot?.querySelectorAll('tbody td.numeric');
-    expect(numeric?.[0].textContent?.trim()).to.equal((1234).toLocaleString());
+    expect(numeric?.[0].textContent?.trim()).to.equal('1.2K');
   });
 
   it('states the token total before cost, with the split in the tooltip', async () => {
@@ -1164,11 +1384,12 @@ describe('AgentsView', () => {
     const widths = Array.from(table?.querySelectorAll('thead th') || []).map(
       (th) => (th as HTMLElement).style.width
     );
-    expect(widths.slice(2, 7)).to.deep.equal([
+    expect(widths.slice(2, 8)).to.deep.equal([
       '150px',
       '110px',
       '110px',
       '110px',
+      '160px',
       '128px',
     ]);
 
@@ -1381,6 +1602,191 @@ describe('AgentsView', () => {
         ?.textContent?.trim()
     ).to.equal('2 agents');
   });
+
+  // B-02: the list's numbers are lifetime totals and the page says so next
+  // to the count, not only in the column tooltips.
+  it('states that the list totals cover all time', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const window = el.shadowRoot!.querySelector(
+      '[data-testid="agents-usage-window"]'
+    );
+    expect(window?.textContent?.replace(/\s+/g, ' ').trim()).to.equal(
+      '· all time'
+    );
+    expect(window?.getAttribute('slot')).to.equal('count');
+  });
+
+  it('shows stored subscription pricing in a separate column after metered spend', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Claude Code Workspace', 'claude_code'),
+        estimated_cost: 0.42,
+        subscription_usage_computed: true,
+        subscription_usage: {
+          request_count: 2,
+          prompt_tokens: 2000,
+          completion_tokens: 200,
+          total_tokens: 2200,
+          api_equivalent_cost: 0.5,
+          api_equivalent_cost_is_estimate: true,
+          covered_requests: 1,
+          coverage: 0.5,
+          billed: null,
+          billed_available: false,
+        },
+      },
+    ];
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const row = el.shadowRoot!.querySelector('table.agents-table tbody tr')!;
+    const estimate = row.querySelector('[data-testid="without-subscriptions"]');
+    expect(estimate?.textContent?.trim()).to.equal('≥ $0.92');
+    expect(estimate?.getAttribute('title')).to.contain('1 of 2');
+    const spendCell = Array.from(row.querySelectorAll('td')).find(
+      (cell) => cell.textContent?.trim() === '$0.42'
+    );
+    expect(estimate?.closest('td')).to.equal(spendCell?.nextElementSibling);
+    expect(row.textContent).to.contain('$0.42');
+  });
+
+  it('retains a labeled previous subscription estimate through partial reads and replaces it with real zero', async () => {
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Example Agent', 'codex'),
+        estimated_cost: 0.42,
+        subscription_usage_computed: true,
+        subscription_usage: {
+          request_count: 1,
+          covered_requests: 1,
+          api_equivalent_cost: 0.5,
+        },
+      },
+    ];
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    const estimate = () =>
+      el.shadowRoot!.querySelector('[data-testid="without-subscriptions"]');
+    expect(estimate()?.textContent?.trim()).to.equal('$0.92');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (input.toString().startsWith('/api/v1/agents')) await held;
+      return defaultFetch(input);
+    });
+    agentItems = [
+      {
+        ...makeAgent('agent-1', 'Example Agent', 'codex'),
+        estimated_cost: 9,
+        subscription_usage_computed: false,
+      },
+    ];
+    const refresh = (el as any).loadAgents();
+    try {
+      await el.updateComplete;
+      expect(estimate()?.textContent).to.contain('$0.92');
+      expect(estimate()?.textContent).to.contain('previous');
+    } finally {
+      release();
+    }
+    await refresh;
+    await el.updateComplete;
+    expect(estimate()?.textContent).to.contain('$0.92');
+    expect(estimate()?.textContent).to.contain('previous');
+    expect(estimate()?.getAttribute('title')).to.contain(
+      'previous successful read'
+    );
+    // A nominally computed response missing the block is still partial.
+    agentItems[0].subscription_usage_computed = true;
+    await (el as any).loadAgents();
+    await el.updateComplete;
+    expect(estimate()?.textContent).to.contain('$0.92');
+    expect(estimate()?.textContent).to.contain('previous');
+    // Explicit null means no subscription traffic, and zero is real data.
+    agentItems[0].estimated_cost = 0;
+    agentItems[0].subscription_usage = null;
+    await (el as any).loadAgents();
+    await el.updateComplete;
+    expect(estimate()?.textContent?.trim()).to.equal('$0.00');
+    agentItems[0].subscription_usage_computed = false;
+    await (el as any).loadAgents();
+    await el.updateComplete;
+    expect(estimate()?.textContent).to.contain('$0.00');
+    expect(estimate()?.textContent).to.contain('previous');
+    // Sign-out/account changes cannot lend a previous account's value.
+    invalidateApiCaches();
+    await waitUntil(() => !!(el as any).agents && !(el as any).loading);
+    await el.updateComplete;
+    expect(estimate()).to.not.exist;
+  });
+
+  it('automatically replaces an in-flight list read after auth cache invalidation', async () => {
+    const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+    await waitForAgents(el);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const response = await defaultFetch(input);
+      if (input.toString().startsWith('/api/v1/agents') && ++reads === 1)
+        await gate;
+      return response;
+    });
+    const obsolete = (el as any).loadAgents();
+    await waitUntil(() => reads === 1);
+    agentItems = [makeAgent('agent-2', 'Fresh identity', 'codex')];
+    try {
+      window.dispatchEvent(new CustomEvent('auth-change'));
+      await waitUntil(
+        () =>
+          (el as any).agents?.items[0]?.id === 'agent-2' && !(el as any).loading
+      );
+    } finally {
+      release();
+    }
+    await obsolete;
+    expect((el as any).agents.items[0].id).to.equal('agent-2');
+    expect((el as any).loading).to.equal(false);
+  });
+
+  for (const [label, computed, requests, expected] of [
+    ['no subscription traffic', true, 0, '$0.42'],
+    ['unpriced subscription traffic', true, 1, 'No estimate'],
+    ['totals not ready', false, 1, null],
+  ] as const) {
+    it(`shows an honest separate estimate for ${label}`, async () => {
+      agentItems = [
+        {
+          ...makeAgent('agent-1', 'Example Agent', 'codex'),
+          estimated_cost: 0.42,
+          subscription_usage_computed: computed,
+          subscription_usage: {
+            request_count: requests,
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            total_tokens: 110,
+            api_equivalent_cost: 0,
+            api_equivalent_cost_is_estimate: true,
+            covered_requests: 0,
+            coverage: 0,
+            billed: null,
+            billed_available: false,
+          },
+        },
+      ];
+      const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);
+      await waitForAgents(el);
+      const estimate = el.shadowRoot!.querySelector(
+        '[data-testid="without-subscriptions"]'
+      );
+      if (expected === null) expect(estimate).to.not.exist;
+      else expect(estimate?.textContent?.trim()).to.equal(expected);
+    });
+  }
 
   it('labels the header actions by what they do', async () => {
     const el = await fixture<AgentsView>(html`<agents-view></agents-view>`);

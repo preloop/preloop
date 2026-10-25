@@ -295,6 +295,11 @@ class PluginManager:
 
     def get_service(self, name: str) -> Any:
         """Get registered service by name."""
+        if name == "audit_service":
+            # Audit has one core owner even with legacy extensions installed.
+            from preloop.services.audit import get_audit_service
+
+            return get_audit_service()
         return self._services.get(name)
 
     def get_condition_evaluator(
@@ -364,6 +369,7 @@ class PluginManager:
                     # Preserve non-boolean values (e.g. lists) as-is
                     features["features"][feature_name] = value
 
+        features["features"]["audit_logs"] = True
         return features
 
     async def startup_gateway(self) -> None:

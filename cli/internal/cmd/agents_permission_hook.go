@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
 )
@@ -50,6 +53,39 @@ const maxApprovalWorkflowTimeoutSeconds = 86400
 // The host must give the HTTP client time to receive and render its result.
 const approvalHookProcessHeadroomSeconds = 30
 
+// claudeCodeHookHostTimeoutCapSeconds is Claude Code's default hook timeout.
+// A held approval hook must finish on its own deadline before the host (or a
+// proxy holding the same request) gives up, so Claude Code waits are capped.
+const claudeCodeHookHostTimeoutCapSeconds = 600
+
+// approvalHookExpirePathFormat expires an approval whose hook stopped waiting.
+const approvalHookExpirePathFormat = api.RESTPrefix + "/approvals/%s/expire"
+
+// approvalHookWaitBudgetSeconds is how long the hook waits for a decision,
+// before the HTTP headroom. The hook's own deadline is this plus
+// permissionCheckHTTPHeadroom, and the host timeout adds
+// approvalHookProcessHeadroomSeconds on top, so the hook always ends first.
+func approvalHookWaitBudgetSeconds(source string, configured int) int {
+	seconds := configured
+	if seconds <= 0 || seconds > maxApprovalWorkflowTimeoutSeconds {
+		seconds = maxApprovalWorkflowTimeoutSeconds
+	}
+	if source == permissionSourceClaudeCode {
+		limit := claudeCodeHookHostTimeoutCapSeconds - approvalHookProcessHeadroomSeconds
+		if seconds > limit {
+			seconds = limit
+		}
+	}
+	return seconds
+}
+
+// approvalHookHostTimeoutSeconds is the timeout written into the host's hook
+// entry: the wait budget plus process headroom, which is larger than the
+// HTTP headroom, so the hook's own deadline always comes first.
+func approvalHookHostTimeoutSeconds(source string, configured int) int {
+	return approvalHookWaitBudgetSeconds(source, configured) + approvalHookProcessHeadroomSeconds
+}
+
 // permissionCheckHTTPHeadroom is added on top of the workflow timeout so the
 // server-side deny-on-expiry fires before the HTTP client gives up.
 const permissionCheckHTTPHeadroom = 15 * time.Second
@@ -57,7 +93,7 @@ const permissionCheckHTTPHeadroom = 15 * time.Second
 // permissionCheckPath is the validated backend endpoint that resolves a native
 // tool-permission prompt into an allow/deny decision (blocking for human
 // approval when required).
-const permissionCheckPath = "/api/v1/agents/permission-check"
+const permissionCheckPath = api.RESTPrefix + "/agents/permission-check"
 
 // permissionCheckRequest is the request body for permissionCheckPath. Only
 // tool_name is required by the backend; everything else is optional context.
@@ -77,6 +113,9 @@ type permissionCheckRequest struct {
 	// for (PRELOOP_FLOW_EXECUTION_ID, set by the Agent Control sidecar). The
 	// backend applies that flow's approval policy to this session only.
 	FlowExecutionID string `json:"flow_execution_id,omitempty"`
+	// ApprovalRequestID is the id the hook proposes for an approval this call
+	// creates, so it can expire that approval when its own deadline passes.
+	ApprovalRequestID string `json:"approval_request_id,omitempty"`
 }
 
 // permissionCheckResponse is the (blocking) response from permissionCheckPath.
@@ -88,6 +127,9 @@ type permissionCheckResponse struct {
 	// TimedOut distinguishes unanswered approval expiry from explicit denial.
 	// Both remain deny: a local prompt cannot replace required central approval.
 	TimedOut bool `json:"timed_out,omitempty"`
+	// DecidedBy names who decided a held approval (username, "AI review" or
+	// "policy"); empty when no approval was involved.
+	DecidedBy string `json:"decided_by,omitempty"`
 }
 
 // hookDecision is the normalized outcome the adapter maps into each agent's
@@ -96,13 +138,17 @@ type permissionCheckResponse struct {
 // Central enforcement returns allow or deny. The renderer also understands
 // native "ask" envelopes for callers that explicitly need a local prompt.
 type hookDecision struct {
-	Behavior string // "allow", "deny", or "ask"
-	Reason   string
+	UpdatedInput map[string]interface{}
+	Behavior     string // "allow", "deny", or "ask"
+	Reason       string
 	// OperatorNote is the rendered operator-note block this response carries
 	// back to the model, empty on the (overwhelmingly common) turn with no
 	// pending note. See agents_permission_hook_notes.go for the per-harness
 	// field it lands in.
 	OperatorNote string
+	// SystemMessage is shown to the terminal user (not the model): who
+	// decided a Preloop approval the call waited on.
+	SystemMessage string
 }
 
 // permissionHookCredential is the small per-agent file written at onboarding
@@ -202,6 +248,9 @@ func runAgentsPermissionHook(cmd *cobra.Command, args []string) error {
 	// of its hooks from one command, so only the payload names the event.
 	var eventRaw []byte
 	writeDecision := func(decision hookDecision) error {
+		if decision.Behavior == "allow" || decision.Behavior == hookBehaviorPass {
+			decision.UpdatedInput = callerLineageInput(eventRaw)
+		}
 		decision = applyOperatorNoteDelivery(
 			decision,
 			source,
@@ -311,6 +360,12 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		}
 	}
 
+	// A local pause defers to the agent's own permission handling without
+	// calling Preloop, so an unavailable approval service does not block work.
+	if decision, paused := pausedPermissionDecision(source); paused {
+		return decision
+	}
+
 	registerSpawnFromPermissionHook(source, raw)
 
 	// Cursor's preToolUse fires for every tool, including Shell and MCP tools
@@ -364,7 +419,12 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 		baseURL = config.DefaultAPIURL
 	}
 
-	resp, err := callPermissionCheck(baseURL, cred.Token, req, permissionCheckTimeoutFor(cred))
+	req.ApprovalRequestID = newApprovalRequestID()
+	deadline := permissionHookDeadline(cred)
+	resp, err := callPermissionCheck(baseURL, cred.Token, req, deadline)
+	if err != nil && isPermissionCheckDeadline(err) && req.ApprovalRequestID != "" {
+		return hookDeadlineDecision(baseURL, cred.Token, req.ApprovalRequestID, deadline)
+	}
 	if err != nil {
 		var unavailable *permissionCheckUnavailableError
 		return clientFallbackDecision(req, source, failOpen && errors.As(err, &unavailable), fmt.Sprintf(
@@ -395,7 +455,132 @@ func resolvePermissionDecision(source string, raw []byte, failOpen bool) hookDec
 	if resp.OperatorNote != nil {
 		note = strings.TrimSpace(*resp.OperatorNote)
 	}
-	return hookDecision{Behavior: behavior, Reason: reason, OperatorNote: note}
+	return hookDecision{
+		Behavior:      behavior,
+		Reason:        reason,
+		OperatorNote:  note,
+		SystemMessage: approvalDecidedMessage(behavior, resp),
+	}
+}
+
+// approvalDecidedMessage tells the terminal who decided a held approval.
+func approvalDecidedMessage(behavior string, resp permissionCheckResponse) string {
+	by := strings.TrimSpace(resp.DecidedBy)
+	if by == "" || resp.TimedOut {
+		return ""
+	}
+	if behavior == "allow" {
+		return "Approved in Preloop by " + by
+	}
+	message := "Denied in Preloop by " + by
+	if comment := strings.TrimSpace(resp.Reason); comment != "" && !strings.HasPrefix(comment, "Approval ") {
+		message += ": " + comment
+	}
+	return message
+}
+
+// newApprovalRequestID returns a random UUIDv4, or "" if randomness fails.
+func newApprovalRequestID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// isPermissionCheckDeadline reports whether the call ended on the hook's own
+// deadline, as opposed to a transport failure.
+func isPermissionCheckDeadline(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var networkError net.Error
+	return errors.As(err, &networkError) && networkError.Timeout()
+}
+
+// permissionHookDeadline is the hook's own wait deadline; tests shorten it.
+var permissionHookDeadline = permissionCheckTimeoutFor
+
+// approvalExpireTimeout bounds the expire call made after the deadline.
+var approvalExpireTimeout = 5 * time.Second
+
+// hookDeadlineDecision expires the held approval on the server so no surface
+// keeps offering Approve or Deny, and denies with a reason that names the
+// timeout. A decision that landed just before the expire still wins.
+func hookDeadlineDecision(baseURL, token, approvalID string, deadline time.Duration) hookDecision {
+	base := strings.TrimRight(baseURL, "/")
+	waited := int((deadline - permissionCheckHTTPHeadroom) / time.Second)
+	if waited < 0 {
+		waited = 0
+	}
+	if waited > maxApprovalWorkflowTimeoutSeconds {
+		waited = maxApprovalWorkflowTimeoutSeconds
+	}
+	expired := expireApprovalOnServer(base, token, approvalID, waited)
+	switch expired.Status {
+	case "approved", "declined":
+		// Answered just before the expiry: the decision wins.
+		behavior := "deny"
+		reason := firstNonEmptyString(strings.TrimSpace(expired.Comment), "Denied via Preloop.")
+		if expired.Status == "approved" {
+			behavior = "allow"
+			reason = firstNonEmptyString(strings.TrimSpace(expired.Comment), "Approved via Preloop.")
+		}
+		resp := permissionCheckResponse{Decision: behavior, Reason: strings.TrimSpace(expired.Comment), DecidedBy: expired.DecidedBy}
+		return hookDecision{Behavior: behavior, Reason: reason, SystemMessage: approvalDecidedMessage(behavior, resp)}
+	}
+	short := approvalID
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	minutes := int((deadline + 30*time.Second) / time.Minute)
+	if minutes < 1 {
+		minutes = 1
+	}
+	return hookDecision{
+		Behavior: "deny",
+		Reason: fmt.Sprintf(
+			"Preloop approval %s was not answered within %d min (open it at %s/console/approval/%s)",
+			short, minutes, base, approvalID,
+		),
+	}
+}
+
+// approvalExpireResult is the approval as the expire call left it.
+type approvalExpireResult struct {
+	Status    string `json:"status"`
+	Comment   string `json:"approver_comment"`
+	DecidedBy string `json:"decided_by"`
+}
+
+// expireApprovalOnServer posts the expiry and returns the approval afterwards
+// (status "expired", or the decision that landed first). Errors return a
+// zero result.
+func expireApprovalOnServer(baseURL, token, approvalID string, waitedSeconds int) approvalExpireResult {
+	body, _ := json.Marshal(map[string]interface{}{"reason": "hook_deadline", "waited_seconds": waitedSeconds})
+	httpReq, err := http.NewRequest(http.MethodPost, baseURL+fmt.Sprintf(approvalHookExpirePathFormat, url.PathEscape(approvalID)), bytes.NewReader(body))
+	if err != nil {
+		return approvalExpireResult{}
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
+	version.SetClientIdentityHeaders(httpReq.Header)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	resp, err := (&http.Client{Timeout: approvalExpireTimeout}).Do(httpReq)
+	if err != nil {
+		return approvalExpireResult{}
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return approvalExpireResult{}
+	}
+	var decoded approvalExpireResult
+	if json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&decoded) != nil {
+		return approvalExpireResult{}
+	}
+	return decoded
 }
 
 // cursorPreToolUseDuplicateReason is the allow reason for a Cursor preToolUse
@@ -491,10 +676,7 @@ func cursorToolHasDedicatedBeforeHook(event map[string]interface{}, toolName str
 // permissionCheckTimeoutFor returns the HTTP client timeout for a blocking
 // permission-check call: workflow timeout + headroom.
 func permissionCheckTimeoutFor(cred permissionHookCredential) time.Duration {
-	seconds := cred.TimeoutSeconds
-	if seconds <= 0 || seconds > maxApprovalWorkflowTimeoutSeconds {
-		seconds = maxApprovalWorkflowTimeoutSeconds
-	}
+	seconds := approvalHookWaitBudgetSeconds(cred.Source, cred.TimeoutSeconds)
 	return time.Duration(seconds)*time.Second + permissionCheckHTTPHeadroom
 }
 
@@ -553,7 +735,10 @@ func permissionSourceDisplayName(source string) string {
 // hook or disable it, for use in fail-closed deny reasons.
 func permissionHookRemediation(source string) string {
 	remediation := fmt.Sprintf(
-		"Re-run `preloop agents onboard %q --approvals` to repair it",
+		"To keep working, run `%s` (resumes automatically in %s). "+
+			"To repair: re-run `preloop agents onboard %q --approvals`",
+		approvalsPauseCommand,
+		defaultPauseLabel,
 		permissionSourceDisplayName(source),
 	)
 	if configPath, err := approvalHookConfigPath(source); err == nil {
@@ -827,6 +1012,7 @@ func callPermissionCheck(
 	destinations := map[string]interface{}{
 		"decision": &decoded.Decision, "reason": &decoded.Reason, "timed_out": &decoded.TimedOut,
 		"request_id": &decoded.RequestID, "operator_note": &decoded.OperatorNote,
+		"decided_by": &decoded.DecidedBy,
 	}
 	for name, destination := range destinations {
 		raw, present := fields[name]
@@ -856,18 +1042,26 @@ func callPermissionCheck(
 // which Codex delivers to the model whether or not the hook blocks the call.
 func writeCodexPreToolUseDecision(out io.Writer, decision hookDecision) error {
 	payload := map[string]interface{}{}
-	if decision.Behavior != "allow" {
+	if decision.Behavior != "allow" && decision.Behavior != hookBehaviorPass {
 		payload["hookSpecificOutput"] = map[string]interface{}{
 			"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": decision.Reason,
 		}
 	}
-	if decision.OperatorNote != "" {
+	if decision.OperatorNote != "" || decision.UpdatedInput != nil {
 		specific, ok := payload["hookSpecificOutput"].(map[string]interface{})
 		if !ok {
 			specific = map[string]interface{}{"hookEventName": "PreToolUse"}
 			payload["hookSpecificOutput"] = specific
 		}
-		specific["additionalContext"] = decision.OperatorNote
+		if decision.OperatorNote != "" {
+			specific["additionalContext"] = decision.OperatorNote
+		}
+		if decision.UpdatedInput != nil {
+			specific["updatedInput"] = decision.UpdatedInput
+		}
+	}
+	if decision.SystemMessage != "" {
+		payload["systemMessage"] = decision.SystemMessage
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -881,6 +1075,18 @@ func writeCodexPreToolUseDecision(out io.Writer, decision hookDecision) error {
 // hook response format and writes it to out.
 func writeHookDecision(out io.Writer, source string, decision hookDecision) error {
 	payload := renderHookDecision(source, decision)
+	if decision.UpdatedInput != nil {
+		if source == permissionSourceClaudeCode {
+			specific, ok := payload["hookSpecificOutput"].(map[string]interface{})
+			if !ok {
+				specific = map[string]interface{}{"hookEventName": "PreToolUse"}
+				payload["hookSpecificOutput"] = specific
+			}
+			specific["updatedInput"] = decision.UpdatedInput
+		} else if source == permissionSourceCursor {
+			payload["updatedInput"] = decision.UpdatedInput
+		}
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to encode hook decision: %w", err)
@@ -903,6 +1109,9 @@ func writeHookDecision(out io.Writer, source string, decision hookDecision) erro
 func renderHookDecision(source string, decision hookDecision) map[string]interface{} {
 	allow := decision.Behavior == "allow"
 	ask := decision.Behavior == "ask"
+	if decision.Behavior == hookBehaviorPass {
+		return renderPassHookDecision(source, decision)
+	}
 	switch source {
 	case permissionSourceDevinCLI:
 		if allow {
@@ -925,7 +1134,11 @@ func renderHookDecision(source string, decision hookDecision) map[string]interfa
 		if decision.OperatorNote != "" {
 			specific["additionalContext"] = decision.OperatorNote
 		}
-		return map[string]interface{}{"hookSpecificOutput": specific}
+		payload := map[string]interface{}{"hookSpecificOutput": specific}
+		if decision.SystemMessage != "" {
+			payload["systemMessage"] = decision.SystemMessage
+		}
+		return payload
 	case permissionSourceCodexCLI:
 		inner := map[string]interface{}{}
 		if allow {
@@ -934,12 +1147,16 @@ func renderHookDecision(source string, decision hookDecision) map[string]interfa
 			inner["behavior"] = "deny"
 			inner["message"] = decision.Reason
 		}
-		return map[string]interface{}{
+		payload := map[string]interface{}{
 			"hookSpecificOutput": map[string]interface{}{
 				"hookEventName": "PermissionRequest",
 				"decision":      inner,
 			},
 		}
+		if decision.SystemMessage != "" {
+			payload["systemMessage"] = decision.SystemMessage
+		}
+		return payload
 	case permissionSourceCursor:
 		payload := map[string]interface{}{}
 		switch {
@@ -980,6 +1197,19 @@ func renderHookDecision(source string, decision hookDecision) map[string]interfa
 		return payload
 	default:
 		return map[string]interface{}{"permission": "deny"}
+	}
+}
+
+// renderPassHookDecision answers without a verdict, so the agent falls back
+// to its own permission handling. Devin requires a decision, so it approves.
+func renderPassHookDecision(source string, decision hookDecision) map[string]interface{} {
+	switch source {
+	case permissionSourceDevinCLI:
+		return map[string]interface{}{"decision": "approve"}
+	case permissionSourceClaudeCode:
+		return map[string]interface{}{"systemMessage": decision.Reason}
+	default:
+		return map[string]interface{}{}
 	}
 }
 

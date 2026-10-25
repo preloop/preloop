@@ -8,6 +8,7 @@ import {
   ARTIFACT_EXPANDED_LINES,
   ARTIFACT_KIND_ICONS,
   ARTIFACT_STORAGE_SETTINGS_HREF,
+  LARGE_PREVIEW_BYTES,
   acquireSessionArtifact,
   artifactUnavailableReason,
   downloadSessionArtifact,
@@ -45,6 +46,7 @@ export class SessionArtifactRow extends LitElement {
     null;
   @property({ attribute: false }) artifact: ArtifactView | null = null;
   @property({ type: String }) sessionId = '';
+  @property({ type: Boolean }) syncedRecordingPlayer = false;
   /** Name of the parent artifact when it is in this session. */
   @property({ type: String }) parentName = '';
   @property({ type: Boolean, reflect: true }) highlighted = false;
@@ -189,6 +191,11 @@ export class SessionArtifactRow extends LitElement {
       width: min(100%, 360px);
       height: 36px;
     }
+    video {
+      width: min(100%, 480px);
+      max-height: 320px;
+      border-radius: 6px;
+    }
     .error {
       font-size: 0.8rem;
       color: var(--sl-color-danger-700, #b91c1c);
@@ -229,6 +236,25 @@ export class SessionArtifactRow extends LitElement {
 
   private get isGone(): boolean {
     return this.availability !== 'available';
+  }
+
+  /** A video artifact (a screencast, a recording): played on request only. */
+  private get isVideo(): boolean {
+    return (
+      this.artifact?.group === 'other' &&
+      String(this.artifact.contentType || '').startsWith('video/')
+    );
+  }
+
+  /**
+   * Whether the screenshot preview always waits for a click: a large image.
+   * The two-per-session eager budget is claimed by the thumbnail once it is
+   * visible, not here at render time (#1690).
+   */
+  private get previewDeferred(): boolean {
+    const artifact = this.artifact;
+    if (!artifact) return true;
+    return (artifact.sizeBytes ?? 0) > LARGE_PREVIEW_BYTES;
   }
 
   private get isText(): boolean {
@@ -300,7 +326,9 @@ export class SessionArtifactRow extends LitElement {
     if (result.status === 'gone') this.goneAs = result.availability;
     this.audio = result;
     await this.updateComplete;
-    const player = this.renderRoot.querySelector('audio');
+    const player = this.renderRoot.querySelector(
+      'audio, video'
+    ) as HTMLMediaElement | null;
     void player?.play?.().catch(() => undefined);
   }
 
@@ -367,7 +395,7 @@ export class SessionArtifactRow extends LitElement {
     if (!artifact || this.isGone) return;
     if (artifact.group === 'screenshot') this.emit('artifact-open');
     else if (this.isText) void this.toggleExpand();
-    else if (artifact.group === 'audio') void this.playAudio();
+    else if (artifact.group === 'audio' || this.isVideo) void this.playAudio();
     else void this.download();
   }
 
@@ -444,22 +472,31 @@ ${shown}${more ? '\n...' : ''}</pre>
 
   private renderAudio() {
     const load = this.audio;
+    const video = this.isVideo;
     if (load?.status === 'ok') {
-      return html`<audio
-        controls
-        preload="none"
-        src=${load.url}
-        data-testid="artifact-audio"
-      ></audio>`;
+      return video
+        ? html`<video
+            controls
+            preload="metadata"
+            src=${load.url}
+            data-testid="artifact-video"
+          ></video>`
+        : html`<audio
+            controls
+            preload="none"
+            src=${load.url}
+            data-testid="artifact-audio"
+          ></audio>`;
     }
+    const noun = video ? 'video' : 'audio';
     return html`<div class="actions">
         <button
           class="link"
-          data-testid="artifact-play"
+          data-testid=${video ? 'artifact-play-video' : 'artifact-play'}
           ?disabled=${this.audioLoading}
           @click=${() => this.playAudio()}
         >
-          ${this.audioLoading ? 'Loading audio...' : 'Play audio'}
+          ${this.audioLoading ? `Loading ${noun}...` : `Play ${noun}`}
         </button>
         <button class="link" @click=${() => this.download()}>Download</button>
       </div>
@@ -480,7 +517,7 @@ ${shown}${more ? '\n...' : ''}</pre>
       </div>`;
     }
     if (this.isText) return this.renderText();
-    if (artifact.group === 'audio') return this.renderAudio();
+    if (artifact.group === 'audio' || this.isVideo) return this.renderAudio();
     if (artifact.group === 'screenshot') return nothing;
     return html`<div class="actions">
       <button
@@ -515,6 +552,7 @@ ${shown}${more ? '\n...' : ''}</pre>
         ></sl-icon>
         <div class="main">
           <div class="headline">
+            ${this.syncedRecordingPlayer && (this.artifact?.kind === 'recording' || this.artifact?.kind === 'screencast') ? html`<button type="button" class="link" @click=${() => this.dispatchEvent(new CustomEvent('recording-open', { detail: { artifactId: this.artifact?.id }, bubbles: true, composed: true }))}>Open in synced player</button>` : nothing}
             <span class="name">${artifact.name}</span>
             <span class="kind">${artifact.kind}</span>
           </div>
@@ -579,6 +617,9 @@ ${shown}${more ? '\n...' : ''}</pre>
                 .artifactId=${artifact.id}
                 .availability=${this.availability}
                 .label=${artifact.name}
+                .deferred=${this.previewDeferred}
+                .budgeted=${!this.highlighted}
+                .sizeLabel=${formatArtifactBytes(artifact.sizeBytes)}
                 @thumbnail-open=${() => this.emit('artifact-open')}
               ></browser-step-thumbnail>`
             : nothing

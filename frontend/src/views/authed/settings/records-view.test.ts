@@ -217,7 +217,12 @@ describe('RecordsView', () => {
     install({});
     const el = await mount();
     const text = el.shadowRoot!.textContent || '';
-    expect(text).to.contain('11990');
+    // The sealed count is compact with the exact figure in its title (U-01).
+    const sealed = el.shadowRoot!.querySelector(
+      '[data-testid="sealed-rows"]'
+    ) as HTMLElement;
+    expect(sealed.textContent!.trim()).to.equal('12K');
+    expect(sealed.getAttribute('title')).to.equal('11,990');
     expect(text).to.contain('Seal lag 60s');
     expect(text).to.contain('not that they were true when written');
     const button = el.shadowRoot!.querySelector(

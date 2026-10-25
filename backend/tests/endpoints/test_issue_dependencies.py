@@ -12,6 +12,72 @@ from preloop.models.models import Issue, AIModel, Project, Account
 from preloop.services.secret_service import ResolvedModelCredentials
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("relation_succeeds", [True, False])
+async def test_commit_dependencies_uses_only_scoped_pairs(
+    mocker: MockerFixture, relation_succeeds: bool
+) -> None:
+    """Pairs rejected by the scoped lookup do not enter the bulk commit."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import UUID
+
+    from preloop.api.endpoints import issue_dependencies as endpoint
+    from preloop.models import models
+    from preloop.schemas.issue_dependency import (
+        CommitDependenciesRequest,
+        DependencyPair,
+    )
+
+    user = models.User(id=UUID(int=1), account_id=UUID(int=2), is_superuser=False)
+    pairs = [
+        DependencyPair(
+            source_issue_id=str(UUID(int=i)),
+            dependent_issue_id=str(UUID(int=i + 1)),
+            issue_key=f"EXAMPLE-{i}",
+            dependency_key=f"EXAMPLE-{i + 1}",
+            reason="Related work",
+            confidence_score=0.9,
+        )
+        for i in (10, 20)
+    ]
+    request = CommitDependenciesRequest(dependencies=pairs)
+    tracker = SimpleNamespace(id=UUID(int=3), is_active=True)
+    organization = SimpleNamespace(id=UUID(int=4), tracker=tracker)
+    project = SimpleNamespace(id=UUID(int=5), organization=organization)
+    source = SimpleNamespace(project=project)
+    lookup = mocker.patch.object(
+        endpoint.crud_issue, "get_with_full_hierarchy", side_effect=[source, None]
+    )
+    relation = AsyncMock(
+        side_effect=None if relation_succeeds else RuntimeError("Tracker unavailable")
+    )
+    client = SimpleNamespace(add_relation=relation)
+    get_client = mocker.patch.object(
+        endpoint, "get_tracker_client", AsyncMock(return_value=client)
+    )
+    commit = mocker.patch.object(
+        endpoint.crud_issue_relationship, "commit_relationships", return_value=[]
+    )
+    db = MagicMock()
+
+    result = await endpoint.commit_issue_dependencies(
+        request=request, db=db, current_user=user
+    )
+
+    assert result.dependencies == []
+    assert request.dependencies == pairs
+    assert len(request.dependencies) == 2
+    for pair, call in zip(pairs, lookup.call_args_list, strict=True):
+        assert call.kwargs == {
+            "id": pair.source_issue_id,
+            "account_id": user.account_id,
+        }
+    get_client.assert_awaited_once()
+    relation.assert_awaited_once()
+    commit.assert_called_once_with(db, relationships=[pairs[0].model_dump()])
+
+
 @pytest.fixture
 def mock_project() -> MagicMock:
     """Provides a mock Project object."""

@@ -7,6 +7,7 @@ import { invalidateApiCaches } from '../../api';
 import { historyStateForNavigation } from '../../utils/in-app-history';
 
 describe('AgentDetailView', () => {
+  const originalUrl = window.location.href;
   let fetchStub: sinon.SinonStub;
   let defaultFetch: (
     input: RequestInfo | URL,
@@ -60,6 +61,7 @@ describe('AgentDetailView', () => {
               lifecycle_updated_at: '2026-03-10T10:00:00Z',
               is_active_now: true,
               activity_status: 'active_now',
+              turn_state: 'your_turn',
               last_seen_at: '2026-03-10T10:00:00Z',
               started_at: '2026-03-10T09:00:00Z',
               last_activity_at: '2026-03-10T10:00:00Z',
@@ -434,8 +436,75 @@ describe('AgentDetailView', () => {
   });
 
   afterEach(() => {
+    window.history.replaceState(null, '', originalUrl);
     fetchStub.restore();
     localStorage.clear();
+  });
+
+  it('honors a pinned session deep link and clears it when the next agent has no session parameter', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/console/agents/old-agent?session=old-session'
+    );
+    const element = document.createElement(
+      'agent-detail-view'
+    ) as AgentDetailView;
+    element.onBeforeEnter({
+      params: { agentId: 'agent-1' },
+      search: '?session=runtime-session-1',
+    });
+    await fixture(element);
+    await waitUntil(
+      () => !!element.shadowRoot?.querySelector('preloop-session-observer')
+    );
+    const observer = element.shadowRoot!.querySelector(
+      'preloop-session-observer'
+    ) as any;
+    expect(observer.selectedSessionId).to.equal('runtime-session-1');
+    observer.dispatchEvent(
+      new CustomEvent('session-selected', {
+        detail: { sessionId: 'runtime-session-2' },
+      })
+    );
+    expect(new URLSearchParams(location.search).get('session')).to.equal(
+      'runtime-session-2'
+    );
+    window.history.replaceState(null, '', '/console/agents/agent-2');
+    element.onBeforeEnter({ params: { agentId: 'agent-2' } });
+    expect((element as any).selectedSessionId).to.equal(null);
+  });
+
+  it('distinguishes never-run, failed and unsupported checks without claiming they are disabled', async () => {
+    const element = await fixture<AgentDetailView>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(
+      () => !!(element as any).agent && !(element as any).loading
+    );
+    for (const [status, supported, label] of [
+      ['not_run', true, 'Not checked'],
+      ['failed', true, 'Last check failed'],
+      ['not_run', false, 'No live check'],
+    ] as const) {
+      (element as any).agent = {
+        ...(element as any).agent,
+        live_validation_status: status,
+        live_validation_supported: supported,
+      };
+      await element.updateComplete;
+      expect(
+        element.shadowRoot?.querySelector('.agent-settings')?.textContent
+      ).to.contain(label);
+      expect(
+        element.shadowRoot?.querySelector('.badge-row')?.textContent
+      ).not.to.contain('Live check: off');
+    }
+    (element as any).agent = { ...(element as any).agent, is_shared: true };
+    await element.updateComplete;
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings summary')?.textContent
+    ).not.to.contain('Session permissions:');
   });
 
   describe('live desktop (#870)', () => {
@@ -543,6 +612,39 @@ describe('AgentDetailView', () => {
     });
   });
 
+  // D-05: the strip states the without-subscriptions estimate beside spend.
+  it('states what the spend would have been without subscriptions', async () => {
+    const el = await fixture<any>(
+      html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
+    );
+    await waitUntil(() => el.agent, 'agent loaded');
+    el.aggregate = {
+      ...el.aggregate,
+      estimated_cost: 0.16,
+      subscription_usage: {
+        request_count: 3,
+        prompt_tokens: 3000,
+        completion_tokens: 300,
+        total_tokens: 3300,
+        api_equivalent_cost: 1.75,
+        api_equivalent_cost_is_estimate: true,
+        covered_requests: 3,
+        coverage: 1,
+        billed: null,
+        billed_available: false,
+      },
+    };
+    el.requestUpdate();
+    await el.updateComplete;
+    const line = el.shadowRoot.querySelector(
+      '[data-testid="agent-without-subscriptions"]'
+    );
+    expect(line.textContent.replace(/\s+/g, ' ').trim()).to.equal(
+      'Without subscriptions: $1.91 (estimate)'
+    );
+    expect(line.getAttribute('title')).to.contain('Estimate, not a bill');
+  });
+
   it('defers all editor catalogs on the sessions tab and shares a single load across editors', async () => {
     const el = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
@@ -599,6 +701,11 @@ describe('AgentDetailView', () => {
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
     );
     try {
+      window.history.replaceState(
+        null,
+        '',
+        '/console/agents/agent-2?tab=tools'
+      );
       (el as any).onBeforeEnter({ params: { agentId: 'agent-2' } });
       expect((el as any).agent).to.equal(null);
     } finally {
@@ -620,6 +727,10 @@ describe('AgentDetailView', () => {
     const governance = new Promise<void>((resolve) => {
       releaseGovernance = resolve;
     });
+    let releaseNextGovernance!: () => void;
+    const nextGovernance = new Promise<void>((resolve) => {
+      releaseNextGovernance = resolve;
+    });
     let holdGovernance = false;
     fetchStub.callsFake(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -627,6 +738,7 @@ describe('AgentDetailView', () => {
         if (url === '/api/v1/users') await users;
         if (url.includes('agent-1/governance') && holdGovernance)
           await governance;
+        if (url.includes('agent-2/governance')) await nextGovernance;
         const isNext = url.includes('agent-2');
         if (isNext) url = url.replace('agent-2', 'agent-1');
         const response = await defaultFetch(url, init);
@@ -649,7 +761,10 @@ describe('AgentDetailView', () => {
     holdGovernance = true;
     const staleContext = (el as any).ensureEditorContext(true);
     try {
-      (el as any).onBeforeEnter({ params: { agentId: 'agent-2' } });
+      (el as any).onBeforeEnter({
+        params: { agentId: 'agent-2' },
+        search: '?tab=tools',
+      });
       expect((el as any).editorContextReady).to.equal(false);
       await (el as any).saveGovernance();
       await (el as any).saveAllowedModels(['old-model']);
@@ -662,6 +777,7 @@ describe('AgentDetailView', () => {
     } finally {
       releaseUsers();
       releaseGovernance();
+      releaseNextGovernance();
     }
     await waitUntil(() => (el as any).agent?.id === 'agent-2');
     await waitUntil(() => (el as any).editorContextReady);
@@ -1140,9 +1256,11 @@ describe('AgentDetailView', () => {
     const chips = Array.from(
       element.shadowRoot?.querySelectorAll('.badge-row sl-badge') || []
     ).map((chip) => chip.textContent?.replace(/\s+/g, ' ').trim());
-    expect(chips).to.deep.equal(['Active now']);
+    expect(chips).to.deep.equal(['Your turn']);
     expect(content).to.not.contain('Live check: off');
-    expect(content).to.not.contain('Live validated');
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Live validated');
     // Enrolment method is plumbing, not a feature: no blue chip for it.
     expect(content).to.not.contain('runtime_session_token');
 
@@ -1170,10 +1288,6 @@ describe('AgentDetailView', () => {
       'Agent detail view did not finish loading'
     );
 
-    // The CLI persisted an upstream-refused probe: the gateway plumbing is
-    // proven but model traffic is unverified. The header chip says "Live
-    // check: off" and the detail is on its tooltip; the old fallthrough
-    // rendered an eternal "Live check pending".
     (element as any).agent = {
       ...(element as any).agent,
       live_validation_passed: false,
@@ -1181,16 +1295,13 @@ describe('AgentDetailView', () => {
     };
     await element.updateComplete;
 
-    const chip = element.shadowRoot?.querySelector(
-      '.badge-row sl-badge.capability-chip'
-    );
-    expect(chip?.textContent?.trim()).to.equal('Live check: off');
-    expect(chip?.getAttribute('variant')).to.equal('warning');
-    expect(chip?.closest('sl-tooltip')?.getAttribute('content')).to.equal(
-      'Live check throttled, unverified'
-    );
+    expect(
+      element.shadowRoot?.querySelector('.badge-row')?.textContent
+    ).not.to.contain('Live check: off');
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Live check throttled, unverified');
     expect(getDeepText(element)).to.not.contain('Live check pending');
-    expect((element as any).getLiveValidationVariant()).to.equal('warning');
 
     (element as any).agent = {
       ...(element as any).agent,
@@ -1198,14 +1309,11 @@ describe('AgentDetailView', () => {
     };
     await element.updateComplete;
     expect(
-      element.shadowRoot
-        ?.querySelector('.badge-row sl-badge.capability-chip')
-        ?.closest('sl-tooltip')
-        ?.getAttribute('content')
-    ).to.equal('Upstream refused, unverified');
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Upstream refused, unverified');
   });
 
-  it('labels a timed out live check as unverified with a warning', async () => {
+  it('renders a timed out live check as unverified in agent settings', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
     );
@@ -1219,13 +1327,9 @@ describe('AgentDetailView', () => {
       live_validation_status: 'timeout',
     };
     await element.updateComplete;
-    const chip = element.shadowRoot?.querySelector(
-      '.badge-row sl-badge.capability-chip'
-    );
-    expect(chip?.getAttribute('variant')).to.equal('warning');
-    expect(chip?.closest('sl-tooltip')?.getAttribute('content')).to.equal(
-      'Live check timed out, unverified'
-    );
+    expect(
+      element.shadowRoot?.querySelector('.agent-settings')?.textContent
+    ).to.contain('Live check timed out, unverified');
   });
 
   describe('progressive load', () => {
@@ -1257,12 +1361,17 @@ describe('AgentDetailView', () => {
       const element = await mount();
       await waitUntil(() => (element as any).loadedSections.has('sessions'));
       const calls = agentCalls();
-      expect(calls[0].searchParams.get('include')).to.equal('');
-      const sections = calls
-        .slice(1)
-        .map((url) => url.searchParams.get('include'));
-      expect(sections).to.deep.equal(['sessions']);
-      expect(calls[1].searchParams.has('start_date')).to.equal(false);
+      expect(
+        calls.map((url) => url.searchParams.get('include')).sort()
+      ).to.deep.equal(['', 'aggregate', 'sessions']);
+      expect(
+        calls.every((url) => url.searchParams.get('lightweight') === 'true')
+      ).to.equal(true);
+      expect(
+        calls
+          .find((url) => url.searchParams.get('include') === 'sessions')!
+          .searchParams.has('start_date')
+      ).to.equal(false);
 
       (element as any).activeTab = 'models';
       await (element as any).loadActiveTabData();
@@ -1271,7 +1380,205 @@ describe('AgentDetailView', () => {
       expect(models.searchParams.has('start_date')).to.equal(true);
       // Opening it again does not read it again.
       await (element as any).loadActiveTabData();
-      expect(agentCalls()).to.have.length(3);
+      expect(agentCalls()).to.have.length(4);
+    });
+
+    it('keeps identity and the selected transcript mounted during a slow range read', async () => {
+      const element = await mount();
+      await waitUntil(
+        () =>
+          (element as any).loadedSections.has('sessions') &&
+          !(element as any).spendLoading
+      );
+      await element.updateComplete;
+      const heading = element.shadowRoot!.querySelector('view-header');
+      expect(heading).to.exist;
+      const observer = element.shadowRoot!.querySelector(
+        'preloop-session-observer'
+      );
+      expect(observer).to.exist;
+      const previous = (element as any).aggregate;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).includes('include=aggregate')) await gate;
+          return defaultFetch(input, init);
+        }
+      );
+      const before = agentCalls().length;
+      (element as any).budgetTimeRange = 'week';
+      (element as any).refreshSpendRange();
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('view-header')).to.equal(
+        heading
+      );
+      expect(
+        element.shadowRoot!.querySelector('preloop-session-observer')
+      ).to.equal(observer);
+      expect((element as any).aggregate).to.equal(previous);
+      expect((element as any).loading).to.equal(false);
+      expect(
+        element
+          .shadowRoot!.querySelector('.strip-spend')!
+          .getAttribute('aria-busy')
+      ).to.equal('true');
+      expect(element.shadowRoot!.textContent).to.contain('Updating spend');
+      expect(
+        agentCalls()
+          .slice(before)
+          .map((url) => url.searchParams.get('include'))
+      ).to.deep.equal(['aggregate']);
+      release();
+      await waitUntil(() => !(element as any).spendLoading);
+    });
+
+    it('ignores unrelated realtime bursts and refreshes only matching sessions', async () => {
+      const element = await mount();
+      await waitUntil(() => (element as any).loadedSections.has('sessions'));
+      const clock = sinon.useFakeTimers({
+        now: Date.now(),
+        toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      });
+      const full = sinon.stub(element as any, 'loadData').resolves();
+      const sessions = sinon.stub(element as any, 'loadSessions').resolves();
+      const spend = sinon.stub(element as any, 'loadSpend').resolves();
+      try {
+        for (let i = 0; i < 100; i++)
+          (element as any).handleResourceEvent(
+            {
+              payload: {
+                managed_agent_id: 'another-agent',
+                runtime_session_id: 'another-session',
+              },
+            },
+            true
+          );
+        await clock.tickAsync(1000);
+        expect(full.callCount + sessions.callCount + spend.callCount).to.equal(
+          0
+        );
+        for (let i = 0; i < 100; i++)
+          (element as any).handleResourceEvent(
+            { payload: { managed_agent_id: 'agent-1' } },
+            true
+          );
+        await clock.tickAsync(300);
+        expect(sessions.callCount).to.equal(1);
+        expect(full.callCount + spend.callCount).to.equal(0);
+      } finally {
+        clock.restore();
+      }
+    });
+
+    it('matches agent summaries and merges without a bound session, and top-level session ids', async () => {
+      const element = await mount();
+      await waitUntil(() => (element as any).loadedSections.has('sessions'));
+      (element as any).agent = {
+        ...(element as any).agent,
+        runtime_session_id: null,
+      };
+      const refresh = sinon.stub(element as any, 'scheduleRefresh');
+      for (const message of [
+        {
+          topic: 'managed_agents',
+          type: 'managed_agent_updated',
+          payload: { id: 'agent-1', runtime_session_id: null },
+        },
+        {
+          topic: 'managed_agents',
+          type: 'managed_agent_merged',
+          payload: { survivor_id: 'other', duplicate_id: 'agent-1' },
+        },
+        {
+          topic: 'managed_agents',
+          type: 'managed_agent_merged',
+          payload: { survivor_id: 'agent-1', duplicate_id: 'other' },
+        },
+        { runtime_session_id: (element as any).sessions[0].id, payload: {} },
+      ])
+        (element as any).handleResourceEvent(message, false);
+      expect(refresh.callCount).to.equal(4);
+      (element as any).handleResourceEvent(
+        { type: 'managed_agent_updated', payload: { id: 'other' } },
+        false
+      );
+      (element as any).handleResourceEvent(
+        { type: 'unrelated', payload: { id: 'agent-1' } },
+        false
+      );
+      expect(refresh.callCount).to.equal(4);
+    });
+
+    it('shows unavailable figures instead of zero while initial spend is pending or fails', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      fetchStub.callsFake(
+        async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input).includes('include=aggregate')) {
+            await gate;
+            return new Response('{}', { status: 500 });
+          }
+          return defaultFetch(input, init);
+        }
+      );
+      const element = await mount();
+      const assertUnavailable = () => {
+        expect(
+          element.shadowRoot!.querySelector('.strip-value')?.textContent?.trim()
+        ).to.equal('—');
+        expect(
+          element.shadowRoot!.querySelector('.strip-requests')?.textContent
+        ).to.not.contain('0 requests');
+        expect(element.shadowRoot!.querySelector('.strip-tokens token-figures'))
+          .to.not.exist;
+      };
+      try {
+        await element.updateComplete;
+        expect(element.shadowRoot!.textContent).to.contain('Loading spend');
+        assertUnavailable();
+      } finally {
+        release();
+      }
+      await waitUntil(() => !(element as any).spendLoading);
+      await element.updateComplete;
+      expect(element.shadowRoot!.textContent).to.contain('Spend unavailable');
+      assertUnavailable();
+    });
+
+    it('defers hidden-view invalidations and reconciles once when visible', async () => {
+      const element = await mount();
+      await waitUntil(() => (element as any).loadedSections.has('sessions'));
+      let hidden = true;
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => hidden,
+      });
+      const clock = sinon.useFakeTimers({
+        now: Date.now(),
+        toFake: ['setTimeout', 'clearTimeout', 'Date'],
+      });
+      const load = sinon.stub(element as any, 'loadData').resolves();
+      try {
+        for (let i = 0; i < 100; i++)
+          (element as any).handleResourceEvent(
+            { payload: { managed_agent_id: 'agent-1' } },
+            false
+          );
+        await clock.tickAsync(30000);
+        expect(load.callCount).to.equal(0);
+        hidden = false;
+        document.dispatchEvent(new Event('visibilitychange'));
+        await clock.tickAsync(300);
+        expect(load.callCount).to.equal(1);
+      } finally {
+        delete (document as unknown as { hidden?: boolean }).hidden;
+        clock.restore();
+      }
     });
 
     it('shows skeleton rows until the first session page arrives', async () => {
@@ -1556,13 +1863,13 @@ describe('AgentDetailView', () => {
       const load = sinon.stub(element as any, 'loadData').resolves();
       try {
         for (let i = 0; i < 10; i++) (element as any).scheduleRefresh();
-        clock.tick(300);
+        await clock.tickAsync(300);
         expect(load.callCount, 'one refresh for a burst').to.equal(1);
         expect(load.firstCall.args[0]).to.equal(true);
         (element as any).scheduleRefresh();
-        clock.tick(5_000);
+        await clock.tickAsync(5_000);
         expect(load.callCount, 'not again within the interval').to.equal(1);
-        clock.tick(10_100);
+        await clock.tickAsync(10_100);
         expect(load.callCount, 'the trailing refresh lands').to.equal(2);
       } finally {
         load.restore();
@@ -1570,14 +1877,20 @@ describe('AgentDetailView', () => {
       }
     });
 
-    it('keeps Decommission and Remove in the More menu', async () => {
+    it('keeps metadata and lifecycle actions in the More menu', async () => {
       const element = await mount();
       const actions = (element as any).agentActions as Array<{
         id: string;
         menu?: boolean;
       }>;
       const pinned = actions.filter((action) => action.menu).map((a) => a.id);
-      expect(pinned).to.deep.equal(['decommission', 'remove']);
+      expect(pinned).to.deep.equal([
+        'rename',
+        'edit-tags',
+        'pause',
+        'decommission',
+        'remove',
+      ]);
     });
   });
 
@@ -1981,12 +2294,15 @@ describe('AgentDetailView', () => {
     expect(stripText).to.contain('claude-session-2');
     expect(
       strip?.querySelector('.badge-row sl-badge.status-chip')?.textContent
-    ).to.contain('Active now');
+    ).to.contain('Your turn');
 
     // The spend is stated with the window it covers and what it is based on.
     expect(stripText).to.contain('Estimated spend · 30d');
     expect(stripText).to.contain('$0.57');
     expect(stripText).to.contain('4 requests');
+    expect(
+      strip?.querySelector('.strip-requests')?.getAttribute('title')
+    ).to.equal('4 requests');
 
     // Volume leads the money on the strip as it does in the lists, so the
     // card this replaced did not take the token split down with it.
@@ -2065,7 +2381,7 @@ describe('AgentDetailView', () => {
     expect(strip?.textContent).to.not.contain('4b7e-4c21');
   });
 
-  it('calls the session history panel Session History', async () => {
+  it('calls the session history panel in sentence case (U-13)', async () => {
     const element = await fixture<AgentDetailView>(
       html`<agent-detail-view agentId="agent-1"></agent-detail-view>`
     );
@@ -2077,7 +2393,7 @@ describe('AgentDetailView', () => {
 
     const text = getDeepText(element).replace(/\s+/g, ' ');
     expect(text).to.not.contain('Sessions History');
-    expect(text).to.contain('Session History');
+    expect(text).to.contain('Session history');
     await element.updateComplete;
     const refresh = element.shadowRoot!.querySelector(
       'sl-icon-button[name="arrow-clockwise"]'

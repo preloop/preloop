@@ -55,6 +55,7 @@ def test_get_by_id_and_token(crud_approval_request, mock_db_session):
 
     mock_query = MagicMock()
     mock_db_session.query.return_value = mock_query
+    mock_query.options.return_value = mock_query
     mock_query.filter.return_value = mock_query
     mock_query.first.return_value = mock_request
 

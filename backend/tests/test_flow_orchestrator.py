@@ -1,5 +1,7 @@
 """Tests for FlowExecutionOrchestrator."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -320,7 +322,13 @@ class TestFlowExecutionOrchestrator:
             # The prompt should contain the resolved template
             # (plus the success sentinel instruction appended by the orchestrator)
             resolved_prompt = orchestrator.execution_log.resolved_input_prompt
-            assert resolved_prompt.startswith("Commit: Fixed bug #123")
+            # Commit message text is trigger prose: the template keeps a
+            # reference and the value travels in the data block.
+            assert resolved_prompt.startswith(
+                'Commit: [see field "payload.message" in the trigger_data block'
+            )
+            assert "<trigger_data>" in resolved_prompt
+            assert "\nFixed bug #123\n</field>" in resolved_prompt
             # Verify the success sentinel instruction is appended
             assert "FLOW_EXECUTION_SUCCESS" in resolved_prompt
             assert resolved_prompt.endswith(FLOW_SUCCESS_INSTRUCTION)
@@ -482,9 +490,10 @@ class TestFlowExecutionOrchestrator:
         resolved_prompt = await orchestrator._resolve_prompt()
 
         # The cut marker is set off by a blank line, so each capped value
-        # ends its own line.
-        assert "Short: " + "X" * 10 + "\n\n[truncated by Preloop" in resolved_prompt
-        assert "Long: " + "X" * 2000 + "\n\n[truncated by Preloop" in resolved_prompt
+        # ends its own line. Both live in the data block, one entry each.
+        assert "\n" + "X" * 10 + "\n\n[truncated by Preloop" in resolved_prompt
+        assert "\n" + "X" * 2000 + "\n\n[truncated by Preloop" in resolved_prompt
+        assert resolved_prompt.count('<field name="payload.description">') == 2
         assert "X" * 2001 not in resolved_prompt
         assert resolved_prompt.count("[truncated by Preloop") == 2
 
@@ -1808,12 +1817,11 @@ class TestFlowExecutionOrchestrator:
         """Test AI model query with UUID string conversion."""
         from preloop.models.crud import crud_flow
         from preloop.models.schemas.flow import FlowCreate
-        from preloop.models.models import AIModel
         from uuid import uuid4
 
         # Create an AI model
         ai_model_id = uuid4()
-        ai_model = AIModel(
+        ai_model = ai_model_with_secret(
             id=str(ai_model_id),
             name="Test Model",
             model_identifier="gpt-5.4",
@@ -1867,10 +1875,9 @@ class TestFlowExecutionOrchestrator:
         test_account: Account,
     ):
         """Gemini should now retain full gateway routing when configured."""
-        from preloop.models.models import AIModel
         from uuid import uuid4
 
-        ai_model = AIModel(
+        ai_model = ai_model_with_secret(
             id=str(uuid4()),
             name="Gemini Gateway Model",
             model_identifier="gemini-2.5-pro",
@@ -2858,6 +2865,41 @@ class TestSuccessConfirmationChannels:
         assert result["status"] == "FAILED"
         assert "result.json" in result["error_message"]
         assert result["result"] == artifact
+
+    @pytest.mark.asyncio
+    async def test_grace_success_stops_runtime_after_artifact_capture(
+        self, mock_nats_client, event_data
+    ):
+        """A confirmed completion cannot leave a Kubernetes Job retrying."""
+        executor = _confirmation_executor(
+            monitor_status=AgentStatus.RUNNING,
+            artifact={"status": "success"},
+        )
+        executor.stop = AsyncMock()
+        orchestrator = self._monitor_orchestrator(
+            mock_nats_client, event_data, sentinel_seen=True
+        )
+        order = []
+
+        async def capture(*args):
+            order.append("capture")
+            return {"status": "success"}
+
+        async def stop(*args):
+            order.append("stop")
+
+        orchestrator._capture_result_artifact = AsyncMock(side_effect=capture)
+        executor.stop.side_effect = stop
+        with patch(
+            "preloop.services.flow_orchestrator.asyncio.sleep",
+            new_callable=AsyncMock,
+        ):
+            result = await orchestrator._monitor_agent_execution(
+                "session-confirmation-123", executor
+            )
+        assert result["status"] == "SUCCEEDED"
+        assert order == ["capture", "stop"]
+        executor.stop.assert_awaited_once_with("session-confirmation-123")
 
     @pytest.mark.asyncio
     async def test_grace_period_failure_override_includes_exit_code(

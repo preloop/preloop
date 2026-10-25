@@ -246,8 +246,8 @@ async def sync_account_model_catalog(
         actor: Attribution for the run. Defaults to the acting ``user`` when
             omitted; the scheduled job passes :meth:`CatalogSyncActor.system`.
         user: The operator running a manual sync. Also feeds the EE
-            config-change audit plugin, which is user-centric; system runs
-            record only the OSS audit event.
+            config-change audit service, which is user-centric; system runs
+            record only the system audit event.
         provider: Optional provider filter, e.g. ``"anthropic"``.
         dry_run: When True, report what would be added without writing.
         request: Optional FastAPI request for audit IP/user-agent context.

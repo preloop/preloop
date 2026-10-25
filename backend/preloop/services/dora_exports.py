@@ -28,17 +28,11 @@ have one format to sign. What the digest proves is narrow: the bytes served
 are the bytes Preloop built. It says nothing about whether the underlying
 records were true when they were written.
 
-**Edition awareness is a column that is present and empty, never a column that
-disappears.** A register whose shape changes with the deployment cannot be
-diffed across two exports, and an absent column silently reads as "nothing to
-report". So the CSV header is identical in every edition, and the manifest's
-``edition`` block names each field the running deployment cannot fill and why.
-The two that matter: configuration-change history (only the Enterprise audit
-plugin writes ``configuration_change`` rows) and policy denies (only that
-plugin persists ``policy_deny`` rows, see
-``preloop/services/policy_evaluator.py``). In OSS both are empty because
-nothing wrote them, which is not the same fact as "no policy ever denied
-anything", and the manifest says exactly that.
+Audit-backed configuration history and policy denials are collected by core
+in every edition. Export columns remain identical, and the manifest separates
+collection capability from the deployment edition. Historical periods before
+collection was enabled can still have incomplete data.
+
 """
 
 from __future__ import annotations
@@ -143,23 +137,7 @@ ASSET_COLUMNS = (
     "source_table",
 )
 
-#: Columns only an Enterprise deployment can fill, with the reason. Present
-#: and empty everywhere else (see the module docstring).
-ASSET_EE_FIELDS = (
-    (
-        "last_config_change_at",
-        "configuration_change audit rows are written by the Enterprise audit "
-        "plugin (preloop/utils/audit.py log_config_change returns early "
-        "without it), so this column is empty on this deployment; empty here "
-        "means unrecorded, not unchanged",
-    ),
-    (
-        "last_config_change_by",
-        "same source as last_config_change_at",
-    ),
-)
-
-#: config_type values the audit plugin uses, mapped to the record type they
+#: config_type values the audit service uses, mapped to the record type they
 #: describe. Used to attach a change-control timestamp to an asset.
 CONFIG_TYPE_RECORD_TYPES = {
     "mcp_server": ASSET_MCP_SERVER,
@@ -364,18 +342,10 @@ def _guard(rows: Sequence[Any], record_class: str) -> Sequence[Any]:
 
 
 def edition_snapshot() -> dict[str, Any]:
-    """What this deployment can and cannot record, detected, not configured.
+    """Report runtime edition and audit collection independently."""
+    from preloop.plugins import get_plugin_manager
+    from preloop.services.instance_service import instance_edition
 
-    Import probes rather than a settings flag: the question is whether the
-    plugin that writes those rows is actually loaded in this process, and a
-    flag can be wrong about that.
-    """
-    try:  # pragma: no cover - the EE plugin is absent in the OSS test matrix
-        from plugins.audit.service import get_audit_service  # noqa: F401
-
-        audit_plugin = True
-    except ImportError:
-        audit_plugin = False
     try:  # pragma: no cover - same
         from preloop.plugins.proprietary.rbac.permissions import (  # noqa: F401
             require_permission,
@@ -385,8 +355,9 @@ def edition_snapshot() -> dict[str, Any]:
     except ImportError:
         rbac_plugin = False
     return {
-        "edition": "enterprise" if audit_plugin else "oss",
-        "audit_plugin": audit_plugin,
+        "edition": instance_edition(),
+        "audit_plugin": "audit" in get_plugin_manager()._plugins,
+        "audit_collection": True,
         "rbac_plugin": rbac_plugin,
     }
 
@@ -396,7 +367,7 @@ def _edition_block(fields: Sequence[tuple[str, str]]) -> dict[str, Any]:
     snapshot = edition_snapshot()
     absent = (
         []
-        if snapshot["audit_plugin"]
+        if snapshot["audit_collection"]
         else [{"field": name, "reason": reason} for name, reason in fields]
     )
     return {
@@ -539,7 +510,7 @@ def _budget_label(policy: BudgetPolicy) -> str:
 def _config_change_index(db: Session, account_id: Any) -> dict[tuple[str, str], Any]:
     """(record_type, identifier) -> latest configuration_change row.
 
-    Enterprise only. ``resource_id`` on those rows is the config type, not the
+    ``resource_id`` on those rows is the config type, not the
     asset, so the asset is matched through the id or name inside the recorded
     value. A row that names neither is skipped rather than guessed at.
     """
@@ -1115,7 +1086,7 @@ def build_asset_register(
         extra={
             "format": export_format,
             "record_types": list(ASSET_RECORD_TYPES),
-            "edition": _edition_block(ASSET_EE_FIELDS),
+            "edition": _edition_block(()),
             "account_policies": [
                 _budget_label(policy)
                 for policy in sorted(
@@ -1320,10 +1291,9 @@ def _policy_deny_rows(
 ) -> list[dict[str, Any]]:
     """Policy denials, where a deployment persists them.
 
-    Only the Enterprise audit plugin writes ``policy_deny`` rows
-    (``preloop/services/policy_evaluator.py`` returns early without it), so
-    on OSS this list is empty and the manifest says why rather than letting
-    an empty column read as "nothing was ever denied".
+    The core audit service writes ``policy_deny`` rows in every edition.
+    Historical periods before collection was enabled can be incomplete;
+    an empty export cannot prove that no tool call was denied.
     """
     rows = _guard(
         _audit_rows(
@@ -1569,17 +1539,6 @@ def build_incident_candidates(
     stamp = generated_at or datetime.now(UTC)
     member = f"{INCIDENT_MEMBER_STEM}.{export_format}"
     edition = _edition_block(())
-    if not edition["audit_plugin"]:
-        edition["record_types_absent"] = [
-            {
-                "record_type": INCIDENT_POLICY_DENY,
-                "reason": (
-                    "policy decisions are persisted by the Enterprise audit "
-                    "plugin; this deployment has none, so zero policy_deny "
-                    "rows means unrecorded, not that no tool call was denied"
-                ),
-            }
-        ]
     manifest = _build_manifest(
         schema=INCIDENT_MANIFEST_SCHEMA,
         account_id=account_id,

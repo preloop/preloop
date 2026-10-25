@@ -17,7 +17,10 @@ from preloop.utils.agent_kind import (
 )
 
 UsageBreakdown = Literal["models", "flows", "sessions", "tools", "days", "imported"]
-GatewayUsageBreakdown = Literal["models", "flows", "sessions", "tools", "days"]
+#: ``agents`` is opt-in: an omitted selection keeps the historical sections.
+GatewayUsageBreakdown = Literal[
+    "models", "flows", "sessions", "tools", "days", "agents"
+]
 
 
 def _agree_direction_pair(
@@ -390,6 +393,10 @@ class RuntimeSessionSummary(BaseModel):
     latest_provider_name: Optional[str] = None
     is_active_now: bool = False
     activity_status: str = "idle"
+    turn_state: Optional[str] = None
+    turn_started_at: Optional[datetime] = None
+    turn_ended_at: Optional[datetime] = None
+    turn_interrupted: Optional[bool] = None
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
@@ -441,8 +448,8 @@ class RuntimeSessionSummary(BaseModel):
     tool_call_count: int = Field(
         0,
         description=(
-            "Tool calls recorded for this session, or the count its usage hook "
-            "reported when no tool call was recorded server side"
+            "Largest observed tool-call count from session activity, usage-hook "
+            "reports, or parsed events in linked flow executions"
         ),
     )
     pending_approval_count: int = Field(
@@ -481,6 +488,47 @@ class AccountRuntimeSessionListResponse(BaseModel):
     items: List[RuntimeSessionSummary] = Field(default_factory=list)
 
 
+class SubscriptionUsageSummary(BaseModel):
+    """Subscription-covered gateway workload, kept apart from marginal spend.
+
+    Subscription rows record $0 marginal API spend. ``api_equivalent_cost``
+    is an ESTIMATE of what the same calls would cost at pay-per-use API
+    prices; it is not a bill. Billed subscription dollars and provider
+    credits are not tracked, so ``billed`` is always null and
+    ``billed_available`` false until an authoritative reconciliation source
+    exists. They are never derived from token totals (#1401).
+    """
+
+    request_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    api_equivalent_cost: float = Field(
+        0.0,
+        description=(
+            "Estimate: sum of the API-equivalent cost over covered rows. "
+            "Not a billed amount."
+        ),
+    )
+    api_equivalent_cost_is_estimate: Literal[True] = True
+    covered_requests: int = Field(
+        0, description="Subscription requests that carry an API-equivalent estimate."
+    )
+    coverage: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Fraction of subscription requests with an API-equivalent "
+            "estimate; null when there are none."
+        ),
+    )
+    billed: None = Field(
+        None, description="Billed subscription dollars: not tracked, always null."
+    )
+    billed_available: Literal[False] = False
+
+
 class ManagedAgentSummary(BaseModel):
     """Read-only summary for one enrolled external agent."""
 
@@ -504,10 +552,18 @@ class ManagedAgentSummary(BaseModel):
     lifecycle_updated_at: Optional[datetime] = None
     is_active_now: bool = False
     activity_status: str = "idle"
+    turn_state: Optional[str] = None
+    turn_started_at: Optional[datetime] = None
+    turn_ended_at: Optional[datetime] = None
+    turn_interrupted: Optional[bool] = None
     last_seen_at: datetime
     started_at: Optional[datetime] = None
     last_activity_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
+    usage_computed: bool = Field(
+        True,
+        description="False for lightweight identity reads; usage totals are unavailable.",
+    )
     total_requests: int = 0
     successful_requests: int = 0
     failed_requests: int = 0
@@ -516,6 +572,17 @@ class ManagedAgentSummary(BaseModel):
     #: aggregate instead of cost alone.
     token_usage: GatewayTokenUsage = Field(default_factory=GatewayTokenUsage)
     estimated_cost: float = 0.0
+    subscription_usage: Optional[SubscriptionUsageSummary] = Field(
+        None,
+        description=(
+            "Subscription-routed requests: $0 spend, with an API-equivalent "
+            "estimate and its coverage. Null when pricing was not computed or there are no subscription requests. See subscription_usage_computed for list responses."
+        ),
+    )
+    subscription_usage_computed: bool = Field(
+        False,
+        description="Whether subscription usage was computed. List responses require complete stored totals.",
+    )
     configured_model_alias: Optional[str] = None
     configured_model_id: Optional[str] = None
     configured_models: List[ManagedAgentModelBindingSummary] = Field(
@@ -564,6 +631,31 @@ class ManagedAgentSummary(BaseModel):
         return value
 
 
+class GatewayUsageByAgent(BaseModel):
+    """One managed agent's gateway usage in a window.
+
+    A row counts for an agent when its runtime principal is the agent's base
+    source id, or when it ran in a session the agent owns (the bound session,
+    or a per-run ``<base>:<run>`` / ``<base>-<run>`` session).
+    """
+
+    agent_id: str
+    session_count: int = 0
+    request_count: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    token_usage: GatewayTokenUsage
+    estimated_cost: float = 0.0
+    last_request_at: Optional[datetime] = None
+    subscription_usage: Optional[SubscriptionUsageSummary] = Field(
+        None,
+        description=(
+            "Subscription-routed requests in the period: $0 spend, with an "
+            "API-equivalent estimate and its coverage. Null without any."
+        ),
+    )
+
+
 class ManagedAgentUsageAggregate(BaseModel):
     """Historical usage aggregate across all sessions for one managed agent."""
 
@@ -576,6 +668,7 @@ class ManagedAgentUsageAggregate(BaseModel):
     latest_model_alias: Optional[str] = None
     latest_provider_name: Optional[str] = None
     last_request_at: Optional[datetime] = None
+    subscription_usage: Optional[SubscriptionUsageSummary] = None
 
 
 class ManagedAgentServerActivitySummary(BaseModel):
@@ -692,7 +785,28 @@ class ManagedAgentEnrollmentSummary(BaseModel):
     updated_at: datetime
 
 
-class ManagedAgentEnrollmentCreateRequest(BaseModel):
+class ManagedAgentDeviceLinkFields(BaseModel):
+    """Optional device link sent with any enrollment write.
+
+    The CLI sends the same salted hashes it would report with
+    ``agents discover --report`` so the managed agent is attached to the
+    workstation it was onboarded from, whatever the enrollment's status.
+    Never a clear id or path.
+    """
+
+    workstation_fingerprint: Optional[str] = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    config_path_hash: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # Same enumerated values a discovery report carries; recorded on the
+    # workstation candidate the link creates.
+    os_family: Optional[Literal["darwin", "linux", "windows", "other"]] = None
+    cli_version: Optional[str] = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9.+_\-]{0,63}$"
+    )
+
+
+class ManagedAgentEnrollmentCreateRequest(ManagedAgentDeviceLinkFields):
     """Request to persist an enrollment record for one managed agent."""
 
     enrollment_type: str = Field(..., min_length=1, max_length=64)
@@ -709,18 +823,11 @@ class ManagedAgentEnrollmentCreateRequest(BaseModel):
     last_restored_at: Optional[datetime] = None
 
 
-class ManagedAgentEnrollmentValidateRequest(BaseModel):
+class ManagedAgentEnrollmentValidateRequest(ManagedAgentDeviceLinkFields):
     """Request to update validation state for one enrollment."""
 
     status: str = Field(default="validated", min_length=1, max_length=32)
     validation_result: dict = Field(default_factory=dict)
-    # Optional discovery link. The CLI sends the same salted hashes it would
-    # report with ``agents discover --report`` so a reported candidate from
-    # this workstation can be marked onboarded. Never a clear id or path.
-    workstation_fingerprint: Optional[str] = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    config_path_hash: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class ManagedAgentEnrollmentRestoreRequest(BaseModel):
@@ -759,7 +866,7 @@ class ManagedAgentDetailResponse(BaseModel):
 
     agent: ManagedAgentSummary
     devices: List[ManagedAgentDeviceSummary] = Field(default_factory=list)
-    aggregate: ManagedAgentUsageAggregate
+    aggregate: Optional[ManagedAgentUsageAggregate] = None
     usage_by_model: List[GatewayUsageByModel] = Field(default_factory=list)
     activity_by_server: List[ManagedAgentServerActivitySummary] = Field(
         default_factory=list
@@ -1257,6 +1364,13 @@ class AccountGatewayUsageSummaryResponse(BaseModel):
         ),
     )
     usage_by_tool: List[GatewayUsageByTool] = Field(default_factory=list)
+    usage_by_agent: List[GatewayUsageByAgent] = Field(
+        default_factory=list,
+        description=(
+            "Per-agent totals in the period, by the same attribution as the "
+            "agents list and agent detail. Only with breakdown=agents."
+        ),
+    )
 
 
 class ApiKeyGatewayUsageSummaryResponse(BaseModel):

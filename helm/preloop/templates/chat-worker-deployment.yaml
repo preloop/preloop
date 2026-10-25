@@ -1,0 +1,153 @@
+{{- if .Values.chatWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "preloop.fullname" . }}-chat-worker
+  labels:
+    {{- include "preloop.labels" . | nindent 4 }}
+    app.kubernetes.io/component: chat-worker
+spec:
+  replicas: {{ .Values.chatWorker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "preloop.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: chat-worker
+  template:
+    metadata:
+      annotations:
+        {{- include "preloop.credentialsChecksum" . | nindent 8 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "preloop.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        app.kubernetes.io/component: chat-worker
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "preloop.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: chat-worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "preloop.services.chat_worker"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          # This process has no HTTP listener. Provider health is persisted per
+          # connection and shown in Settings > Chat connections.
+          env:
+            - name: PRELOOP_SERVICE_ROLE
+              value: "chat"
+            - name: PRELOOP_URL
+              value: {{ .Values.environment.preloopUrl | quote }}
+            - name: DEBUG
+              value: {{ .Values.environment.debug | quote }}
+            {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
+            - name: DATABASE_POOL_SIZE
+              value: {{ .Values.database.pool.worker.size | quote }}
+            - name: DATABASE_MAX_OVERFLOW
+              value: {{ .Values.database.pool.worker.maxOverflow | quote }}
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: jwt-secret
+            {{- if .Values.security.encryptionKey }}
+            - name: SECURITY__ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: encryption-key
+            {{- end }}
+            - name: JWT_ALGORITHM
+              value: {{ .Values.environment.jwtAlgorithm | quote }}
+            - name: ACCESS_TOKEN_EXPIRE_MINUTES
+              value: {{ .Values.environment.jwtExpireMinutes | quote }}
+            - name: NATS_URL
+              value: {{ .Values.nats.url | default (printf "nats://%s-nats:4222" .Release.Name) | quote }}
+            - name: PRELOOP_API_SERVICE_HTTP_ENDPOINT
+              value: "http://{{ include "preloop.fullname" . }}-api:80"
+            - name: PRELOOP_MODEL_GATEWAY_URL_K8S
+              value: {{ include "preloop.modelGatewayUrlK8s" . | quote }}
+            {{- include "preloop.executionEnv" . | nindent 12 }}
+            - name: USE_KUBERNETES
+              value: "true"
+            - name: AGENT_EXECUTION_NAMESPACE
+              value: {{ include "preloop.executionNamespace" . | quote }}
+            - name: AGENT_MEMORY_LIMIT
+              value: {{ .Values.agentExecution.limitRange.container.defaultMemory | quote }}
+            - name: AGENT_MEMORY_REQUEST
+              value: {{ .Values.agentExecution.limitRange.container.defaultRequestMemory | quote }}
+            {{- if .Values.agentExecution.runtimeClassName }}
+            - name: AGENT_RUNTIME_CLASS_NAME
+              value: {{ .Values.agentExecution.runtimeClassName | quote }}
+            {{- end }}
+            {{- if .Values.agentExecution.nodeSelector }}
+            - name: AGENT_NODE_SELECTOR
+              value: {{ .Values.agentExecution.nodeSelector | toJson | quote }}
+            {{- end }}
+            {{- if .Values.agentExecution.tolerations }}
+            - name: AGENT_TOLERATIONS
+              value: {{ .Values.agentExecution.tolerations | toJson | quote }}
+            {{- end }}
+            {{- include "preloop.codexImageEnv" . | nindent 12 }}
+            - name: LOG_LEVEL
+              value: "INFO"
+            - name: LOG_FORMAT
+              value: "json"
+            {{- if .Values.sentry.enabled }}
+            - name: SENTRY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: sentry-dsn
+            {{- end }}
+            {{- include "preloop.extraEnv" . | nindent 12 }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if or .Values.agentExecution.kubeconfigSecret .Values.extraVolumeMounts }}
+          volumeMounts:
+            {{- if .Values.agentExecution.kubeconfigSecret }}
+            - name: execution-kubeconfig
+              mountPath: /var/run/preloop/execution
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.chatWorker.resources | nindent 12 }}
+      {{- if or .Values.agentExecution.kubeconfigSecret .Values.extraVolumes }}
+      volumes:
+        {{- if .Values.agentExecution.kubeconfigSecret }}
+        - name: execution-kubeconfig
+          secret:
+            secretName: {{ .Values.agentExecution.kubeconfigSecret }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

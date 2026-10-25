@@ -60,6 +60,7 @@ const NAV_PERMISSIONS: Record<string, string[]> = {
   '/console/ai-models': ['view_ai_models'],
   '/console/runtime-sessions': ['view_runtime_sessions'],
   '/console/artifacts': ['view_runtime_sessions'],
+  '/console/delivery-reports': ['view_flows'],
   '/console/cost': ['view_cost'],
   '/console/cost/spend': ['view_cost'],
   '/console/cost/gateway': ['view_cost'],
@@ -994,17 +995,14 @@ export class ConsoleShell extends LitElement {
       this._canAccess('/console/runtime-sessions') ||
       this._canShowAuditEvents() ||
       this._canShowWeeklyReview() ||
+      this._canAccess('/console/delivery-reports') ||
       this._canAccess('/console/artifacts') ||
       this._canAccess('/console/settings/records')
     );
   }
 
   private _canShowAuditEvents(): boolean {
-    return (
-      this._featuresLoaded &&
-      !!this.features['audit_logs'] &&
-      this._canAccess('/console/audit')
-    );
+    return this._canAccess('/console/audit');
   }
 
   /**
@@ -1021,6 +1019,7 @@ export class ConsoleShell extends LitElement {
   private _isAuditActive(): boolean {
     return (
       this._isNavActive('/console/governance') ||
+      this._isNavActive('/console/delivery-reports') ||
       this._isNavActive('/console/approvals') ||
       this._isNavActive('/console/runtime-sessions') ||
       this._isNavActive('/console/audit') ||
@@ -1365,6 +1364,14 @@ export class ConsoleShell extends LitElement {
                                         )
                                       : nothing
                                   }
+                                  ${this._renderNavLink(
+                                    '/console/delivery-reports',
+                                    html`<span
+                                      class="nav-row"
+                                      title="What landed each period and what the evidence supports against stated criteria"
+                                      >Delivery reports</span
+                                    >`
+                                  )}
                                   ${
                                     this._canShowAuditEvents()
                                       ? this._renderNavLink(

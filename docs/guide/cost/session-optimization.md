@@ -27,7 +27,11 @@ In the console, open **Audit → Sessions**, pick a session, and switch to the *
 
 ### 1. Analyze
 
-`POST /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations` (requires the `view_cost` permission) inspects the session's captured gateway traffic and produces a context profile (cache behavior, retry waste, oversized tool outputs, tools that were advertised but never invoked) plus actionable suggestions.
+`POST /api/v1/billing/cost/runtime-sessions/{runtime_session_id}/optimizations` (requires `run_session_optimizations`) inspects the session's captured gateway traffic and produces a context profile (cache behavior, retry waste, oversized tool outputs, tools that were advertised but never invoked) plus actionable suggestions.
+
+The owner, admin, editor and executor roles can submit analysis by default.
+Viewer and analyst roles do not receive `run_session_optimizations`; cost reads
+continue to use `view_cost`.
 
 Two analysis modes, chosen automatically:
 
@@ -36,7 +40,7 @@ Two analysis modes, chosen automatically:
 
 If no model is configured, analysis does not fail, you get the deterministic result. If the model call errors out or hits the daily cap, the response falls back to deterministic and tells you why in `llm_skipped_reason`.
 
-Analysis also has an async variant, which the console uses: `POST .../optimizations/jobs` (same request body and permission) returns `202 Accepted` with a `job_id`; poll `GET .../optimizations/jobs/{job_id}` until `status` is `succeeded` (the `result` field is shaped exactly like the synchronous response) or `failed` (`error` carries the message). Submitting again while a job for the session is still pending or running returns that job instead of queuing a second model pass. The synchronous endpoint above remains available.
+Analysis also has an async variant, which the console uses: `POST .../optimizations/jobs` (same request body; requires `run_session_optimizations`) returns `202 Accepted` with a `job_id`; poll `GET .../optimizations/jobs/{job_id}` (requires `view_cost`) until `status` is `succeeded` (the `result` field is shaped exactly like the synchronous response) or `failed` (`error` carries the message). Submitting again while a job for the session is still pending or running returns that job instead of queuing a second model pass. The synchronous endpoint above remains available.
 
 ### 2. Apply
 
@@ -73,7 +77,8 @@ The split is simple:
 | LLM-assisted on **your own model** (BYOK) | You, through your own gateway budget | Always, every edition |
 | LLM-assisted on a **hosted built-in model** | The operator (Preloop Cloud) | Metered on Cloud |
 
-Self-hosted OSS never gates analysis: there is no hosted model to meter.
+Self-hosted OSS has no hosted-model metering gate. The
+`run_session_optimizations` role permission still applies.
 
 !!! cloud "Cloud"
     On Preloop Cloud, hosted-model analysis is compute the operator pays for, so it can be metered: the server exposes an authorizer hook (`optimization_gating`) that a billing plugin can register; a denial comes back as HTTP 402 at request time. The UI is never hidden and BYOK analysis is never touched by that hook.

@@ -36,7 +36,11 @@ describe('RunnersView', () => {
   function createFetchStub(
     runners: unknown[] = [],
     account: { default_runner_pool?: string | null } = {},
-    options: { failPatch?: boolean; deleteConflict?: boolean } = {}
+    options: {
+      failPatch?: boolean;
+      deleteConflict?: boolean;
+      permissions?: string[] | null;
+    } = {}
   ) {
     return sinon
       .stub(window, 'fetch')
@@ -86,6 +90,9 @@ describe('RunnersView', () => {
               ? ['22222222-2222-4222-8222-222222222222']
               : [],
           });
+        }
+        if (url.includes('/api/v1/auth/users/me') && options.permissions) {
+          return json({ id: 'user-1', permissions: options.permissions });
         }
         if (url.includes('/session-options')) {
           return json(SESSION_OPTIONS);
@@ -714,6 +721,59 @@ describe('RunnersView', () => {
     expect(
       JSON.parse(String((patch?.args[1] as RequestInit).body))
     ).to.deep.equal({ default_runner_pool: 'server' });
+  });
+
+  it('shows the default pool read-only without manage_account', async () => {
+    fetchStub = createFetchStub(
+      [],
+      { default_runner_pool: 'server' },
+      { permissions: ['view_flows', 'edit_ai_models'] }
+    );
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector('preloop-runner-pool-select')).to
+      .not.exist;
+    const readonly = element.shadowRoot?.querySelector(
+      '[data-testid="default-pool-readonly"]'
+    );
+    const text = (readonly?.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.contain('Default runner pool:');
+    expect(text).to.contain('Preloop hosted only');
+    expect(text).to.contain('needs the manage account permission');
+  });
+
+  it('shows the default pool control to an owner', async () => {
+    fetchStub = createFetchStub(
+      [],
+      {},
+      {
+        permissions: [
+          'view_flows',
+          'edit_ai_models',
+          'manage_account',
+          'manage_budgets',
+        ],
+      }
+    );
+    const element = (await fixture(
+      html`<runners-view></runners-view>`
+    )) as RunnersView;
+    await waitUntil(
+      () => !(element as unknown as { loading: boolean }).loading
+    );
+    await element.updateComplete;
+
+    expect(element.shadowRoot?.querySelector('preloop-runner-pool-select')).to
+      .exist;
+    expect(
+      element.shadowRoot?.querySelector('[data-testid="default-pool-readonly"]')
+    ).to.not.exist;
   });
 
   it('keeps an offline saved default visible in the select', async () => {

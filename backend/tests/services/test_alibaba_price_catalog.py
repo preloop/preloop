@@ -1,5 +1,7 @@
 """Native Model Studio catalog parsing keeps token pairs, unit rates, and both time bands."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from typing import Any, Callable
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -112,7 +114,7 @@ def test_native_refresh_preparation_does_not_download(
 
 
 def _sg_classic(model_id: str = "qwen3.8-flash") -> models.AIModel:
-    return models.AIModel(
+    return ai_model_with_secret(
         provider_name="qwen",
         model_identifier=model_id,
         api_endpoint="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
@@ -121,7 +123,7 @@ def _sg_classic(model_id: str = "qwen3.8-flash") -> models.AIModel:
 
 
 def _sg_workspace(model_id: str = "qwen3.8-flash") -> models.AIModel:
-    return models.AIModel(
+    return ai_model_with_secret(
         provider_name="qwen",
         model_identifier=model_id,
         api_endpoint="https://ws.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",

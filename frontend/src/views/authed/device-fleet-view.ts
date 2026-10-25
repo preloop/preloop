@@ -33,6 +33,11 @@ import {
 import '../../components/view-header';
 import '../../components/fleet-map';
 import { getFleetMap, type FleetMapGraph } from '../../fleet-map-api';
+import {
+  loadFleetMapWindow,
+  windowMinutes,
+  type FleetMapWindow,
+} from '../../utils/fleet-map-activity';
 import { loadViewMode, saveViewMode } from '../../utils/view-mode';
 import consoleStyles from '../../styles/console-styles.css?inline';
 
@@ -158,6 +163,13 @@ export class DeviceFleetView extends LitElement {
   @state() private map: FleetMapGraph | null = null;
   @state() private mapLoading = false;
   @state() private mapError = '';
+  @state() private mapWindow: FleetMapWindow = loadFleetMapWindow();
+  @state() private mapIncludeIdle = false;
+  /** Users the map is scoped to: node ids for the map, ids for `users=`. */
+  @state() private mapUsers: string[] = [];
+  private mapUserIds: string[] = [];
+  @state() private instanceAdmin = false;
+  @state() private userId = '';
   private controller?: AbortController;
   private mapController?: AbortController;
   private routeSearch = location.search;
@@ -173,6 +185,7 @@ export class DeviceFleetView extends LitElement {
     css`
       :host {
         display: block;
+        min-width: 0;
         font-size: var(--console-text-body);
       }
       .content {
@@ -182,6 +195,21 @@ export class DeviceFleetView extends LitElement {
         display: flex;
         flex-direction: column;
         gap: var(--sl-spacing-large);
+      }
+      .content.map-content {
+        height: var(--fleet-content-height, calc(100dvh - 220px));
+        min-height: 0;
+        padding: 0;
+        gap: 12px;
+      }
+      .map-content fleet-map:not([fullscreen]) {
+        flex: 1 1 0;
+        min-height: 0;
+        height: auto;
+      }
+      .map-content .limits {
+        flex: none;
+        margin: 0;
       }
       .view-switch {
         display: inline-flex;
@@ -202,6 +230,14 @@ export class DeviceFleetView extends LitElement {
         background: var(--console-button-face);
         color: var(--console-meta-color);
         cursor: pointer;
+      }
+      /* Phones: the switch wraps under the title; a negative margin there
+         pulled the subtitle up under it (390 px). */
+      @media (max-width: 640px) {
+        .view-switch {
+          align-self: flex-start;
+          margin-bottom: 0;
+        }
       }
       .view-switch button + button {
         border-left: 1px solid var(--console-button-border);
@@ -460,13 +496,44 @@ export class DeviceFleetView extends LitElement {
       }
     `,
   ];
+  private hostObserver?: ResizeObserver;
+  private sizeFrame?: number;
+  // Resizing a descendant during observer delivery can resize this host again.
+  // Defer layout writes until the next frame and coalesce repeated notifications.
+  private scheduleSizeMap = (): void => {
+    if (this.sizeFrame !== undefined) return;
+    this.sizeFrame = requestAnimationFrame(() => {
+      this.sizeFrame = undefined;
+      if (this.isConnected) this.sizeMap();
+    });
+  };
+  private sizeMap = (): void => {
+    const content = this.shadowRoot?.querySelector<HTMLElement>('.map-content');
+    if (!content) return;
+    const top = content.getBoundingClientRect().top;
+    const bottom = 32;
+    content.style.setProperty(
+      '--fleet-content-height',
+      `${Math.max(300, window.innerHeight - top - bottom)}px`
+    );
+  };
+  protected updated(): void {
+    this.scheduleSizeMap();
+  }
   connectedCallback(): void {
     super.connectedCallback();
+    this.hostObserver = new ResizeObserver(this.scheduleSizeMap);
+    this.hostObserver.observe(this);
+    window.addEventListener('resize', this.scheduleSizeMap);
     void this.load();
   }
   disconnectedCallback(): void {
     this.controller?.abort();
     this.mapController?.abort();
+    this.hostObserver?.disconnect();
+    window.removeEventListener('resize', this.scheduleSizeMap);
+    if (this.sizeFrame !== undefined) cancelAnimationFrame(this.sizeFrame);
+    this.sizeFrame = undefined;
     super.disconnectedCallback();
   }
 
@@ -485,6 +552,8 @@ export class DeviceFleetView extends LitElement {
       }
       this.active = true;
       this.manage = access.manage;
+      this.instanceAdmin = access.instanceAdmin === true;
+      this.userId = access.userId ?? '';
       if (this.tab === 'settings' && !access.manage) this.tab = 'devices';
       const key = new URLSearchParams(this.routeSearch).get('device');
       if (!key && this.tab !== 'settings' && this.view === 'canvas') {
@@ -518,16 +587,22 @@ export class DeviceFleetView extends LitElement {
     }
   }
   /** The map is its own request, so a slow graph never holds the table. */
-  private async loadMap(): Promise<void> {
+  /** ``quiet``: a background refresh keeps the current map on failure. */
+  private async loadMap(quiet = false): Promise<void> {
     this.mapController?.abort();
     const controller = (this.mapController = new AbortController());
     this.mapLoading = true;
     this.mapError = '';
     try {
-      const map = await getFleetMap(controller.signal);
+      const map = await getFleetMap(
+        controller.signal,
+        windowMinutes(this.mapWindow),
+        this.mapIncludeIdle,
+        this.mapUserIds
+      );
       if (!controller.signal.aborted) this.map = map;
     } catch (error) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted && !(quiet && this.map))
         this.mapError =
           error instanceof Error
             ? error.message
@@ -588,7 +663,36 @@ export class DeviceFleetView extends LitElement {
           >
         </div>
       </sl-alert>`;
-    return html`<fleet-map .graph=${this.map}></fleet-map>`;
+    return html`<fleet-map
+      wheel-mode="pan"
+      .graph=${this.map}
+      .activityWindow=${this.mapWindow}
+      .includeIdle=${this.mapIncludeIdle}
+      .users=${this.mapUsers}
+      live
+      ?instance-admin=${this.instanceAdmin}
+      user-id=${this.userId}
+      @fleet-map-window-change=${(
+        event: CustomEvent<{ window: FleetMapWindow }>
+      ) => {
+        this.mapWindow = event.detail.window;
+        void this.loadMap();
+      }}
+      @fleet-map-stale=${() => void this.loadMap(true)}
+      @fleet-map-users-change=${(
+        event: CustomEvent<{ users: string[]; userIds: string[] }>
+      ) => {
+        this.mapUsers = event.detail.users;
+        this.mapUserIds = event.detail.userIds;
+        void this.loadMap();
+      }}
+      @fleet-map-idle-change=${(
+        event: CustomEvent<{ includeIdle: boolean }>
+      ) => {
+        this.mapIncludeIdle = event.detail.includeIdle;
+        void this.loadMap();
+      }}
+    ></fleet-map>`;
   }
 
   private async save(event: Event): Promise<void> {
@@ -763,8 +867,7 @@ export class DeviceFleetView extends LitElement {
   }
 
   private renderDevices() {
-    if (this.view === 'canvas')
-      return html`${this.renderViewSwitch()} ${this.renderMap()}`;
+    if (this.view === 'canvas') return this.renderMap();
     const page = this.page;
     if (!page) return nothing;
     const firstDevice = html`<span
@@ -778,7 +881,7 @@ export class DeviceFleetView extends LitElement {
     // No devices: say how to get the first one, even when agents have
     // already been seen in traffic. Filters over nothing would only mislead.
     if (!page.items.length)
-      return html`${this.renderViewSwitch()}<sl-card class="table-card">
+      return html`<sl-card class="table-card">
           <div class="empty-state" data-testid="fleet-empty">
             ${firstDevice}
           </div>
@@ -787,7 +890,7 @@ export class DeviceFleetView extends LitElement {
 
     const devices = this.filteredDevices(page);
     const filtered = Boolean(this.search || this.runnerState);
-    return html`${this.renderStrip(page)} ${this.renderViewSwitch()}
+    return html`${this.renderStrip(page)}
       <div class="filters">
         <label
           >Search
@@ -1181,6 +1284,7 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
               >`
             : nothing
         }
+        ${!onDevice && this.tab !== 'settings' ? html`<div slot="main-column">${this.renderViewSwitch()}</div>` : nothing}
         <div slot="description">
           ${
             device
@@ -1189,7 +1293,9 @@ ${JSON.stringify(finding.evidence, null, 2)}</pre>
           }
         </div>
       </view-header>
-      <div class="content">
+      <div
+        class="content ${!onDevice && this.tab !== 'settings' && this.view === 'canvas' ? 'map-content' : ''}"
+      >
         ${
           onDevice
             ? nothing

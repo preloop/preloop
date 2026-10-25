@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, List
 from uuid import UUID
 
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from preloop.services.mcp_client_pool import (
@@ -24,6 +25,28 @@ from preloop.services.mcp_tool_collisions import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def upstream_annotations(tool: Any) -> dict[str, Any] | None:
+    """Return an upstream tool's MCP annotations as a JSON-ready dict.
+
+    Args:
+        tool: An ``mcp.types.Tool`` from an upstream ``tools/list``.
+
+    Returns:
+        The SDK-decoded annotations with wire (camelCase) keys, or None
+        when absent. SDK v2 ignores fields outside the annotation schema;
+        dictionary inputs retain the keys they already contain.
+    """
+    annotations = getattr(tool, "annotations", None)
+    if annotations is None:
+        return None
+    if isinstance(annotations, dict):
+        return dict(annotations) or None
+    if not isinstance(annotations, BaseModel):
+        return None
+    dumped = annotations.model_dump(by_alias=True, exclude_none=True, mode="json")
+    return dumped or None
 
 
 async def scan_mcp_server_tools(
@@ -86,7 +109,8 @@ async def scan_mcp_server_tools(
                 # Update existing tool
                 existing_tool = next(t for t in existing_tools if t.name == tool.name)
                 existing_tool.description = tool.description
-                existing_tool.input_schema = tool.inputSchema
+                existing_tool.input_schema = tool.input_schema
+                existing_tool.annotations = upstream_annotations(tool)
                 existing_tool.discovered_at = discovered_at
                 updated_count += 1
             else:
@@ -95,7 +119,8 @@ async def scan_mcp_server_tools(
                     mcp_server_id=mcp_server_id,
                     name=tool.name,
                     description=tool.description,
-                    input_schema=tool.inputSchema,
+                    input_schema=tool.input_schema,
+                    annotations=upstream_annotations(tool),
                     discovered_at=discovered_at,
                 )
                 db.add(new_tool)

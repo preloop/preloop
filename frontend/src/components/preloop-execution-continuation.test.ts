@@ -109,6 +109,20 @@ describe('Execution PR follow-up adoption', () => {
     await element.updateComplete;
   };
 
+  it('takes no space when the run is not eligible (#1692)', async () => {
+    const element = await fixture<PreloopExecutionContinuation>(
+      html`<preloop-execution-continuation
+        .execution=${{ id: 'exec-2', status: 'RUNNING' }}
+      ></preloop-execution-continuation>`
+    );
+    await element.updateComplete;
+    expect(element.hasAttribute('data-empty')).to.equal(true);
+    expect(getComputedStyle(element).display).to.equal('none');
+    const eligible = await mount();
+    await eligible.updateComplete;
+    expect(eligible.hasAttribute('data-empty')).to.equal(false);
+  });
+
   it('keeps the recovery preview accessible on an already registered publisher', async () => {
     const element = await mount();
     element.execution = {

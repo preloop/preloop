@@ -1,5 +1,9 @@
 import { tableScrollStyles } from '../styles/table-scroll';
 import { formatUsd, formatUsdExact } from '../utils/money';
+import {
+  renderWithoutSubscriptionsLine,
+  type SubscriptionEstimate,
+} from '../utils/subscription-estimate';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
@@ -7,8 +11,6 @@ import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
 import '@shoelace-style/shoelace/dist/components/card/card.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
-import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
-import '@shoelace-style/shoelace/dist/components/spinner/spinner.js';
 import '@shoelace-style/shoelace/dist/components/option/option.js';
 import '@shoelace-style/shoelace/dist/components/select/select.js';
 import '@shoelace-style/shoelace/dist/components/skeleton/skeleton.js';
@@ -16,11 +18,16 @@ import '@shoelace-style/shoelace/dist/components/tab/tab.js';
 import '@shoelace-style/shoelace/dist/components/tab-group/tab-group.js';
 import '@shoelace-style/shoelace/dist/components/tooltip/tooltip.js';
 import './user-avatar';
+import './time-range-select';
+import './fleet-map';
+import { getFleetMap, type FleetMapGraph } from '../fleet-map-api';
+import {
+  loadFleetMapWindow,
+  windowMinutes,
+  type FleetMapWindow,
+} from '../utils/fleet-map-activity';
+import { DEFAULT_USAGE_RANGE, USAGE_RANGE_OPTIONS } from './usage-card';
 import { userHref } from '../utils/user-href';
-// The map component and its API load on first use, not with the Overview:
-// most readers never open the map and many may not see the fleet at all.
-import type { FleetMapGraph } from '../fleet-map-api';
-import type { FleetMap } from './fleet-map';
 
 import consoleStyles from '../styles/console-styles.css?inline';
 import { parseUTCDate, formatRelativeTime } from '../utils/date';
@@ -35,15 +42,19 @@ import { renderAgentIcon } from '../utils/agent-icons';
 import type { AgentStatusChip } from '../utils/agent-display';
 import type { GatewayTokenUsage } from '../types';
 import './token-figures';
+import {
+  ListTable,
+  dataTableStyles,
+  listTableStyles,
+  type ListColumn,
+} from '../table';
+import '../table/data-table';
 
 /** Which inventory the box is showing. */
 export type InventoryTab =
   'agents' | 'devices' | 'flows' | 'models' | 'tools' | 'users';
 
 export const INVENTORY_TAB_STORAGE_KEY = 'overview_inventory_tab';
-/** Table or Map, remembered like the tab. */
-export const INVENTORY_VIEW_STORAGE_KEY = 'overview_inventory_view';
-export type InventoryView = 'table' | 'map';
 
 /** The last run of a flow, as the executions list returns it. */
 export interface InventoryFlowRun extends ExecutionSubjectSource {
@@ -67,6 +78,10 @@ export interface InventoryAgentRow {
   /** The in/out/cache split behind `tokens`, or null when unmeasured. */
   tokenUsage?: GatewayTokenUsage | null;
   cost: number;
+  /** Spend plus the API-equivalent cost of subscription requests (D-05). */
+  withoutSubscriptions?: SubscriptionEstimate | null;
+  /** Subscription-routed requests behind that estimate; 0 without any. */
+  subscriptionRequests?: number;
   lastSeenAt: string | null;
 }
 
@@ -137,6 +152,9 @@ export interface InventoryUserRow {
   tokens: number;
   tokenUsage?: GatewayTokenUsage | null;
   cost: number;
+  /** Spend plus the API-equivalent cost of their agents' subscription use. */
+  withoutSubscriptions?: SubscriptionEstimate | null;
+  subscriptionRequests?: number;
 }
 
 /** One machine from the device fleet, as the fleet page names it. */
@@ -200,11 +218,11 @@ const SORT_OPTIONS: Record<InventoryTab, SortOption[]> = {
 
 const TAB_ORDER: InventoryTab[] = [
   'agents',
-  'devices',
   'flows',
   'models',
   'tools',
   'users',
+  'devices',
 ];
 
 const TAB_LABELS: Record<InventoryTab, string> = {
@@ -283,8 +301,8 @@ function timeValue(value: string | null | undefined): number {
  * below it listed the same things in three different shapes. The counts are
  * now the tab labels, and one table shape serves all four inventories: the
  * question "what do I have, and which of it is busy" is answered in one
- * place, at one depth. The range comes from the Usage card, because a page
- * with two time ranges has two truths.
+ * place, at one depth. The range select here is the page range, shared with
+ * the Usage card, because a page with two time ranges has two truths.
  */
 @customElement('inventory-card')
 export class InventoryCard extends LitElement {
@@ -310,11 +328,6 @@ export class InventoryCard extends LitElement {
   @property({ type: Boolean }) showUsers = false;
   /** Only where the device fleet is licensed and this reader may view it. */
   @property({ type: Boolean }) showDevices = false;
-  /**
-   * Offer the Fleet Map in place of the tables. Same gate as Devices: the
-   * map reads `GET /api/v1/fleet/map`, which needs view_device_fleet.
-   */
-  @property({ type: Boolean }) showMap = false;
   /**
    * Tabs whose list could not be read. Their count and body say so instead
    * of "0" and "No agents yet", which would be a statement about the account
@@ -367,12 +380,33 @@ export class InventoryCard extends LitElement {
   /** The page range, already worded ("30d"), shown but not editable here. */
   @property({ type: String }) rangeLabel = '30d';
   /**
+   * The page range key. The select here and the one on the Usage card both
+   * emit `range-change` to the page, which owns the one range for both.
+   */
+  @property({ type: String }) timeRange: string = DEFAULT_USAGE_RANGE;
+  /**
    * True when the run counts came off a full page of the most recent 100
    * executions whose oldest row is still inside the range: they are then a
    * floor, not the range's total, and every cell that shows one says so.
    */
   @property({ type: Boolean }) flowRunsCapped = false;
 
+  /**
+   * Instance administrators may swap the table for the spatial fleet map.
+   * Everyone else keeps the table and never sees the choice.
+   */
+  @property({ type: Boolean }) instanceAdmin = false;
+  /** Whose inventory view and map positions are stored. */
+  @property({ type: String }) userId = '';
+  @state() private inventoryView: 'table' | 'map' = 'table';
+  @state() private map: FleetMapGraph | null = null;
+  @state() private mapError = '';
+  @state() private mapWindow: FleetMapWindow = loadFleetMapWindow();
+  @state() private mapIncludeIdle = false;
+  /** Users the map is scoped to: node ids for the map, ids for `users=`. */
+  @state() private mapUsers: string[] = [];
+  private mapUserIds: string[] = [];
+  private mapController: AbortController | null = null;
   @state() private tab: InventoryTab = 'agents';
   @state() private sorts: Record<InventoryTab, string> = {
     agents: SORT_OPTIONS.agents[0].value,
@@ -383,52 +417,19 @@ export class InventoryCard extends LitElement {
     devices: SORT_OPTIONS.devices[0].value,
   };
   @state() private rowLimit = ROWS_DEFAULT;
-  @state() private view: InventoryView = 'table';
-  @state() private map: FleetMapGraph | null = null;
-  @state() private mapLoading = false;
-  @state() private mapError = '';
-  @state() private mapFullscreen = false;
-  private mapController?: AbortController;
 
   /**
-   * Whether the map had a selection when this Esc was pressed. Read in the
-   * capture phase, before the map's own handler clears it, so the dialog's
-   * `cancel` (which fires after the keydown) knows what the key undid.
+   * The Agents tab, on the shared console list: resizable headers, a column
+   * picker, and widths and visibility kept per browser like every other
+   * console list. Rows stay in the card's own sort and row limit, so no
+   * column is sortable here; the sort select in the header orders them.
    */
-  private escHadSelection = false;
-
-  private mapInOverlay(): FleetMap | null {
-    return this.shadowRoot?.querySelector('.map-overlay fleet-map') ?? null;
-  }
-
-  private onOverlayKeydown = (event: KeyboardEvent) => {
-    if (event.key !== 'Escape') return;
-    this.escHadSelection = this.mapInOverlay()?.hasSelection() ?? false;
-  };
-
-  /**
-   * The browser may close the modal itself: after a cancelled `cancel`, the
-   * next Esc without user activation closes it without asking. Follow it.
-   */
-  private onOverlayClose = () => {
-    if (this.mapFullscreen) void this.setFullscreen(false);
-  };
-
-  /**
-   * Esc on the modal: one key press undoes one thing. With a map selection
-   * it clears the selection (wherever focus is, the map's own handler only
-   * hears keys from inside the canvas), and only without one does it leave
-   * full screen.
-   */
-  private onOverlayCancel = (event: Event) => {
-    event.preventDefault();
-    if (this.escHadSelection) {
-      this.escHadSelection = false;
-      this.mapInOverlay()?.clearSelection();
-      return;
-    }
-    void this.setFullscreen(false);
-  };
+  readonly agentTable = new ListTable<InventoryAgentRow>(this, {
+    listId: 'overview-inventory-agents',
+    getRowId: (row) => row.id,
+    pageSize: 0,
+    columns: this.agentColumns(),
+  });
 
   private onResize = () => {
     const limit = window.innerHeight > TALL_VIEWPORT ? ROWS_TALL : ROWS_DEFAULT;
@@ -441,16 +442,22 @@ export class InventoryCard extends LitElement {
     tableScrollStyles,
     [
       unsafeCSS(consoleStyles),
+      listTableStyles,
+      dataTableStyles,
       unsafeCSS(executionSubjectCss),
       css`
         :host {
           display: block;
           width: 100%;
+          min-width: 0;
+          max-width: 100%;
         }
 
         .content-card,
         .content-card::part(base) {
           width: 100%;
+          min-width: 0;
+          box-sizing: border-box;
         }
 
         .content-card::part(body) {
@@ -459,9 +466,11 @@ export class InventoryCard extends LitElement {
 
         /* Not ".header": the console sheet gives that class a page-header
          min-height and bottom margin, which pads a card header by 40px. */
+        /* Wraps on phones: two selects do not fit next to the title. */
         .card-head {
           align-items: center;
           display: flex;
+          flex-wrap: wrap;
           gap: var(--sl-spacing-small);
           justify-content: space-between;
         }
@@ -471,10 +480,42 @@ export class InventoryCard extends LitElement {
           font-weight: 600;
         }
 
+        .inventory-view {
+          display: inline-flex;
+          border: 1px solid var(--console-button-border);
+          border-radius: var(--sl-border-radius-medium);
+          overflow: hidden;
+        }
+        .inventory-view button {
+          font: inherit;
+          font-size: var(--console-text-meta);
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 10px;
+          min-height: 30px;
+          border: 0;
+          background: var(--console-button-face);
+          color: var(--console-meta-color);
+          cursor: pointer;
+        }
+        .inventory-view button[aria-pressed='true'] {
+          color: var(--console-body-color);
+          background: var(--console-hover-tint);
+        }
+        .inventory-map:not([fullscreen]) {
+          --fleet-map-height: clamp(360px, calc(100dvh - 240px), 720px);
+          padding: 0 12px 12px;
+          width: 100%;
+          min-width: 0;
+        }
+
         .header-controls {
           align-items: center;
           display: flex;
+          flex-wrap: wrap;
           gap: var(--sl-spacing-small);
+          max-width: 100%;
         }
 
         /* The sort is read next to the column it orders, so its label is for
@@ -498,86 +539,12 @@ export class InventoryCard extends LitElement {
           padding-block: 0;
         }
 
-        /* The range is a fact about the numbers below, not a control: the one
-         control lives on the Usage card. */
-        .view-switch {
-          border: 1px solid var(--console-button-border);
-          border-radius: var(--sl-border-radius-medium);
-          display: inline-flex;
-          overflow: hidden;
-        }
-
-        .view-switch button {
-          align-items: center;
-          background: var(--console-button-face);
-          border: 0;
-          color: var(--console-meta-color);
-          cursor: pointer;
-          display: inline-flex;
-          font: inherit;
-          font-size: var(--console-text-meta);
-          gap: 6px;
-          min-height: 32px;
-          padding: 4px 12px;
-        }
-
-        .view-switch button + button {
-          border-left: 1px solid var(--console-button-border);
-        }
-
-        .view-switch button[aria-pressed='true'] {
-          background: var(--console-selected-tint);
-          color: var(--console-body-color);
-          font-weight: 600;
-        }
-
-        .map-body {
-          --fleet-map-stage-height: 520px;
-          padding: var(--sl-spacing-medium);
-        }
-
-        /* A native modal dialog: the top layer, an inert page behind it and
-           a focus trap come with showModal(). */
-        .map-overlay {
-          --fleet-map-stage-height: calc(100dvh - 150px);
-          background: var(--console-page);
-          border: 0;
-          box-sizing: border-box;
-          color: inherit;
-          height: 100dvh;
-          margin: 0;
-          max-height: none;
-          max-width: none;
-          overflow: auto;
-          padding: var(--sl-spacing-medium) var(--sl-spacing-large);
-          width: 100vw;
-        }
-
-        .map-overlay-head {
-          align-items: center;
-          display: flex;
-          gap: var(--sl-spacing-small);
-          margin-bottom: var(--sl-spacing-small);
-        }
-
-        .map-overlay-head .title {
-          flex: 1;
-        }
-
-        .link-button {
-          background: none;
-          border: 0;
-          color: var(--console-link-color);
-          cursor: pointer;
-          font: inherit;
-          padding: 0 0 0 var(--sl-spacing-x-small);
-        }
-
-        .range-label {
-          color: var(--console-meta-color);
-          font-size: var(--console-text-meta);
-          font-variant-numeric: tabular-nums;
-          white-space: nowrap;
+        /* The page range, editable here too: it is the same range as the
+         Usage card's, so changing either changes both. */
+        /* A fixed width: the host's min(width, 100%) resolves against the
+           flex row's max-content and left a gap at the card's edge. */
+        .range-select {
+          width: 128px;
         }
 
         .tabs {
@@ -641,6 +608,7 @@ export class InventoryCard extends LitElement {
         /* Numbers pay less for their gutters than words do: the columns are
          narrow, and "Requests" has to fit its own heading. */
         .inventory-table th.num,
+        .inventory-table th.numeric,
         .inventory-table td.num {
           font-variant-numeric: tabular-nums;
           padding-inline: var(--sl-spacing-x-small);
@@ -648,6 +616,7 @@ export class InventoryCard extends LitElement {
         }
 
         .inventory-table th.num:last-child,
+        .inventory-table th.numeric:last-child,
         .inventory-table td.num:last-child {
           padding-right: var(--sl-spacing-medium);
         }
@@ -871,9 +840,6 @@ export class InventoryCard extends LitElement {
       if (stored && (TAB_ORDER as string[]).includes(stored)) {
         this.tab = stored as InventoryTab;
       }
-      if (localStorage.getItem(INVENTORY_VIEW_STORAGE_KEY) === 'map') {
-        this.view = 'map';
-      }
     } catch {
       // Private mode or a blocked storage partition: keep Agents.
     }
@@ -884,93 +850,7 @@ export class InventoryCard extends LitElement {
   disconnectedCallback(): void {
     window.removeEventListener('resize', this.onResize);
     this.mapController?.abort();
-    this.lockPageScroll(false);
     super.disconnectedCallback();
-  }
-
-  protected updated(): void {
-    const overlay =
-      this.shadowRoot?.querySelector<HTMLDialogElement>('dialog.map-overlay');
-    if (overlay && !overlay.open) overlay.showModal();
-    // A remembered Map view loads once the host says the map is allowed.
-    if (
-      this.activeView === 'map' &&
-      !this.map &&
-      !this.mapLoading &&
-      !this.mapError
-    ) {
-      void this.loadMap();
-    }
-  }
-
-  /** The view on screen: never a map this reader may not see. */
-  private get activeView(): InventoryView {
-    return this.showMap ? this.view : 'table';
-  }
-
-  private setView(view: InventoryView): void {
-    if (view === this.view) return;
-    this.view = view;
-    if (view === 'table' && this.mapFullscreen) {
-      this.mapFullscreen = false;
-      this.lockPageScroll(false);
-      // Leaving the modal by its Table button lands on the same control in
-      // the card, not on the document.
-      void this.updateComplete.then(() =>
-        this.shadowRoot
-          ?.querySelector<HTMLElement>(
-            '.card-head .view-switch button[aria-pressed="true"]'
-          )
-          ?.focus()
-      );
-    }
-    try {
-      localStorage.setItem(INVENTORY_VIEW_STORAGE_KEY, view);
-    } catch {
-      // Non-fatal: the view still switches for this session.
-    }
-  }
-
-  /** One read for the whole canvas, and only when the map is asked for. */
-  private async loadMap(): Promise<void> {
-    this.mapController?.abort();
-    const controller = (this.mapController = new AbortController());
-    this.mapLoading = true;
-    this.mapError = '';
-    try {
-      const [{ getFleetMap }] = await Promise.all([
-        import('../fleet-map-api'),
-        import('./fleet-map'),
-      ]);
-      const map = await getFleetMap(controller.signal);
-      if (!controller.signal.aborted) this.map = map;
-    } catch (error) {
-      if (!controller.signal.aborted) {
-        this.mapError =
-          error instanceof Error
-            ? error.message
-            : 'The fleet map could not be loaded. Retry to refresh it.';
-      }
-    } finally {
-      if (!controller.signal.aborted) this.mapLoading = false;
-    }
-  }
-
-  /** The page behind a full-screen map does not scroll under it. */
-  private lockPageScroll(lock: boolean): void {
-    document.documentElement.style.overflow = lock ? 'hidden' : '';
-  }
-
-  private async setFullscreen(open: boolean): Promise<void> {
-    this.mapFullscreen = open;
-    this.lockPageScroll(open);
-    await this.updateComplete;
-    // Focus follows the toggle, so a keyboard reader lands on the control
-    // that undoes it.
-    const target = this.shadowRoot?.querySelector<HTMLElement>(
-      open ? '.map-overlay .fullscreen-toggle' : '.card-head .fullscreen-toggle'
-    );
-    target?.focus();
   }
 
   /** Users and Devices exist only where their features do. */
@@ -1201,10 +1081,62 @@ export class InventoryCard extends LitElement {
     return rows;
   }
 
-  private renderViewSwitch() {
-    if (!this.showMap) return nothing;
+  private get inventoryViewKey(): string {
+    return `preloop:inventory:view:${this.userId || 'anonymous'}`;
+  }
+
+  protected willUpdate(changed: Map<string, unknown>): void {
+    super.willUpdate?.(changed);
+    if (changed.has('userId') || changed.has('instanceAdmin')) {
+      let saved: string | null = null;
+      try {
+        saved = localStorage.getItem(this.inventoryViewKey);
+      } catch {
+        saved = null;
+      }
+      this.inventoryView =
+        this.instanceAdmin && saved === 'map' ? 'map' : 'table';
+      if (this.inventoryView === 'map' && !this.map) void this.loadMap();
+    }
+  }
+
+  private setInventoryView(view: 'table' | 'map'): void {
+    if (!this.instanceAdmin || view === this.inventoryView) return;
+    this.inventoryView = view;
+    try {
+      localStorage.setItem(this.inventoryViewKey, view);
+    } catch {
+      // A preference, not a requirement.
+    }
+    if (view === 'map' && !this.map) void this.loadMap();
+  }
+
+  /** ``quiet``: a background refresh keeps the current map on failure. */
+  private async loadMap(quiet = false): Promise<void> {
+    this.mapController?.abort();
+    const controller = (this.mapController = new AbortController());
+    this.mapError = '';
+    try {
+      const map = await getFleetMap(
+        controller.signal,
+        windowMinutes(this.mapWindow),
+        this.mapIncludeIdle,
+        this.mapUserIds
+      );
+      if (!controller.signal.aborted) this.map = map;
+    } catch (error) {
+      if (!controller.signal.aborted && !(quiet && this.map))
+        this.mapError =
+          error instanceof Error
+            ? error.message
+            : 'The fleet map could not be loaded.';
+    }
+  }
+
+  private renderViewChoice() {
+    if (!this.instanceAdmin) return nothing;
     return html`<div
-      class="view-switch"
+      class="inventory-view"
       role="group"
       aria-label="Inventory view"
     >
@@ -1217,8 +1149,9 @@ export class InventoryCard extends LitElement {
         ([view, label, icon]) =>
           html`<button
             type="button"
-            aria-pressed=${this.activeView === view ? 'true' : 'false'}
-            @click=${() => this.setView(view)}
+            data-inventory-view=${view}
+            aria-pressed=${this.inventoryView === view ? 'true' : 'false'}
+            @click=${() => this.setInventoryView(view)}
           >
             <sl-icon name=${icon} aria-hidden="true"></sl-icon>${label}
           </button>`
@@ -1226,28 +1159,51 @@ export class InventoryCard extends LitElement {
     </div>`;
   }
 
-  private renderFullscreenToggle() {
-    const open = this.mapFullscreen;
-    return html`<sl-icon-button
-      class="fullscreen-toggle"
-      name=${open ? 'fullscreen-exit' : 'arrows-fullscreen'}
-      label=${open ? 'Exit full screen' : 'Full screen'}
-      title=${open ? 'Exit full screen (Esc)' : 'Full screen'}
-      @click=${() => void this.setFullscreen(!open)}
-    ></sl-icon-button>`;
+  private renderMap() {
+    if (this.mapError)
+      return html`<div class="empty" role="status">${this.mapError}</div>`;
+    if (!this.map)
+      return html`<div class="empty" role="status">Mapping the fleet...</div>`;
+    return html`<fleet-map
+      class="inventory-map"
+      wheel-mode="page"
+      .graph=${this.map}
+      .activityWindow=${this.mapWindow}
+      .includeIdle=${this.mapIncludeIdle}
+      .users=${this.mapUsers}
+      live
+      instance-admin
+      default-arrangement="spatial"
+      positions-scope="inventory"
+      user-id=${this.userId}
+      @fleet-map-window-change=${(
+        event: CustomEvent<{ window: FleetMapWindow }>
+      ) => {
+        this.mapWindow = event.detail.window;
+        void this.loadMap();
+      }}
+      @fleet-map-stale=${() => void this.loadMap(true)}
+      @fleet-map-users-change=${(
+        event: CustomEvent<{ users: string[]; userIds: string[] }>
+      ) => {
+        this.mapUsers = event.detail.users;
+        this.mapUserIds = event.detail.userIds;
+        void this.loadMap();
+      }}
+      @fleet-map-idle-change=${(
+        event: CustomEvent<{ includeIdle: boolean }>
+      ) => {
+        this.mapIncludeIdle = event.detail.includeIdle;
+        void this.loadMap();
+      }}
+    ></fleet-map>`;
   }
 
   private renderHeader() {
-    if (this.activeView === 'map') {
-      return html`
-        <div slot="header" class="card-head">
-          <span class="title">Inventory</span>
-          <div class="header-controls">
-            ${this.renderViewSwitch()} ${this.renderFullscreenToggle()}
-          </div>
-        </div>
-      `;
-    }
+    if (this.instanceAdmin && this.inventoryView === 'map')
+      return html`<div slot="header" class="card-head">
+        <span class="title">Inventory</span>${this.renderViewChoice()}
+      </div>`;
     const options = SORT_OPTIONS[this.activeTab];
     const sortHeld =
       this.activeTab === 'flows'
@@ -1257,7 +1213,7 @@ export class InventoryCard extends LitElement {
       <div slot="header" class="card-head">
         <span class="title">Inventory</span>
         <div class="header-controls">
-          ${this.renderViewSwitch()}
+          ${this.renderViewChoice()}
           <sl-select
             class="sort-select"
             label="Sort ${TAB_LABELS[this.activeTab].toLowerCase()} by"
@@ -1282,9 +1238,12 @@ export class InventoryCard extends LitElement {
                 >`
             )}
           </sl-select>
-          <span class="range-label" title="Range set on the Usage card"
-            >${this.rangeLabel}</span
-          >
+          <time-range-select
+            class="range-select"
+            ariaLabel="Inventory time range"
+            .value=${this.timeRange}
+            .options=${USAGE_RANGE_OPTIONS}
+          ></time-range-select>
         </div>
       </div>
     `;
@@ -1373,97 +1332,129 @@ export class InventoryCard extends LitElement {
     `;
   }
 
+  private agentColumns(): Array<ListColumn<InventoryAgentRow>> {
+    return [
+      {
+        id: 'name',
+        header: 'Agent',
+        hideable: false,
+        // The name is what a reader scans for; it gets the room and keeps
+        // at least enough for "claude-code on a laptop" before cutting.
+        // Widths are content widths: every cell adds 32px of padding, and
+        // at 280 + four numeric columns the table measured 776px in a
+        // 735px card at 1440, clipping Last seen and leaving Model at 0px.
+        // 240 keeps a name and its status chip on one line and leaves Model
+        // about 60px, enough for "No model" and an ellipsised alias.
+        // 212, not 240: the spend column took 28px for the line under it
+        // that says what the spend would be without subscriptions (D-05).
+        width: 180,
+        minWidth: 160,
+        truncate: true,
+        cellClass: 'identity-cell',
+        cellTitle: (row) => row.name,
+        cell: (row) => html`
+          <span class="identity">
+            ${renderAgentIcon(row.kind)}
+            <a
+              class="row-name"
+              href="/console/agents/${row.id}"
+              title=${row.name}
+              >${row.name}</a
+            >
+            <sl-badge class="chip" pill variant=${row.status.variant}
+              >${row.status.label}</sl-badge
+            >
+          </span>
+        `,
+      },
+      {
+        id: 'model',
+        header: 'Model',
+        minWidth: 120,
+        // Absorbs what the other columns leave, so it has no handle.
+        resizable: false,
+        cellClass: 'secondary muted inventory-model',
+        cellTitle: (row) => row.modelAlias || '',
+        cell: (row) =>
+          html`<span style="white-space: normal; overflow-wrap: anywhere;"
+            >${row.modelAlias || 'No model'}</span
+          >`,
+      },
+      {
+        id: 'requests',
+        visible: false,
+        cellClass: 'num',
+        cellLabel: 'Requests',
+        header: 'Requests',
+        numeric: true,
+        width: 64,
+        cell: (row) =>
+          this.renderUsageCell(this.formatCompactNumber(row.requests)),
+      },
+      {
+        // Tokens before cost, as one compact total (#1647); the split is in
+        // the tooltip.
+        id: 'tokens',
+        cellClass: 'num',
+        cellLabel: 'Tokens',
+        header: 'Tokens',
+        numeric: true,
+        width: 72,
+        cell: (row) =>
+          this.renderUsageCell(
+            html`<token-figures
+              total-only
+              .usage=${row.tokenUsage}
+            ></token-figures>`
+          ),
+      },
+      {
+        id: 'cost',
+        cellClass: 'num',
+        cellLabel: 'Spend',
+        header: '$ est.',
+        headerLabel: 'Estimated spend',
+        pickerLabel: 'Estimated spend',
+        numeric: true,
+        width: 100,
+        cell: (row) =>
+          this.renderUsageCell(
+            html`<span title=${formatUsdExact(row.cost)}
+                >${formatUsd(row.cost)}</span
+              >${renderWithoutSubscriptionsLine(row.withoutSubscriptions, row.subscriptionRequests)}`
+          ),
+      },
+      {
+        id: 'last_seen',
+        cellClass: 'num',
+        cellLabel: 'Seen',
+        header: 'Last seen',
+        numeric: true,
+        // The last column also hosts the column picker in its header, so it
+        // is sized for the heading plus the icon trigger, not the value alone.
+        width: 112,
+        cellTitle: (row) => this.absolute(row.lastSeenAt),
+        cell: (row) => this.relative(row.lastSeenAt),
+      },
+    ];
+  }
+
   private renderAgents() {
     const rows = this.sortedAgents.slice(0, this.rowLimit);
+    this.agentTable.data = rows;
     return html`
       <div class="table-scroll">
-        <table class="inventory-table">
-          <!-- Same trade as the Models tab: an alias is 24 characters and a
-             count is five, so the counts give up the four points that stop
-             "deepseek/deepseek-v4-pro" reading as "deepseek/deepse...". -->
-          <colgroup>
-            <col style="width: 28%" />
-            <col style="width: 27%" />
-            <col style="width: 11%" />
-            <col style="width: 11%" />
-            <col style="width: 10%" />
-            <col style="width: 13%" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>Agent</th>
-              <th>Model</th>
-              <th class="num">Requests</th>
-              <th class="num">Tokens</th>
-              <th class="num">$ est.</th>
-              <th class="num">Last seen</th>
-            </tr>
-          </thead>
-          ${
-            this.isTabLoading('agents') && rows.length === 0
-              ? this.renderSkeleton(6)
-              : html`
-                  <tbody>
-                    ${repeat(
-                      rows,
-                      (row) => row.id,
-                      (row) => html`
-                        <tr>
-                          <td class="identity-cell">
-                            <span class="identity">
-                              ${renderAgentIcon(row.kind)}
-                              <a
-                                class="row-name"
-                                href="/console/agents/${row.id}"
-                                >${row.name}</a
-                              >
-                              <sl-badge
-                                class="chip"
-                                pill
-                                variant=${row.status.variant}
-                                >${row.status.label}</sl-badge
-                              >
-                            </span>
-                          </td>
-                          <td
-                            class="secondary muted"
-                            title=${row.modelAlias || ''}
-                          >
-                            ${row.modelAlias || 'No model'}
-                          </td>
-                          <td class="num" data-label="Requests">
-                            ${this.renderUsageCell(
-                              this.formatCompactNumber(row.requests)
-                            )}
-                          </td>
-                          <!-- Tokens before cost, as one compact total: an
-                             11% column cut "734.6M in · 2.3M out" mid-figure
-                             (#1647). The split is in the tooltip. -->
-                          <td class="num" data-label="Tokens">
-                            ${this.renderUsageCell(
-                              html`<token-figures
-                                total-only
-                                .usage=${row.tokenUsage}
-                              ></token-figures>`
-                            )}
-                          </td>
-                          <td class="num" data-label="Spend">
-                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>`)}
-                          </td>
-                          <td
-                            class="num"
-                            data-label="Seen"
-                            title=${this.absolute(row.lastSeenAt)}
-                          >
-                            ${this.relative(row.lastSeenAt)}
-                          </td>
-                        </tr>
-                      `
-                    )}
-                  </tbody>
-                `
-          }
-        </table>
+        <data-table
+          class="agent-table"
+          table-class="inventory-table"
+          .table=${this.agentTable}
+          .rows=${this.agentTable.rows}
+          .loading=${this.isTabLoading('agents') && rows.length === 0}
+          .stickyHeader=${false}
+          skeleton-rows="3"
+          label="Agents"
+          noun="agents"
+        ></data-table>
       </div>
     `;
   }
@@ -1787,7 +1778,7 @@ export class InventoryCard extends LitElement {
                             )}
                           </td>
                           <td class="num" data-label="Spend">
-                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>`)}
+                            ${this.renderUsageCell(html`<span title=${formatUsdExact(row.cost)}>${formatUsd(row.cost)}</span>${renderWithoutSubscriptionsLine(row.withoutSubscriptions, row.subscriptionRequests)}`)}
                           </td>
                         </tr>
                       `
@@ -2021,66 +2012,13 @@ export class InventoryCard extends LitElement {
     `;
   }
 
-  private renderMapBody() {
-    if (this.mapLoading && !this.map) {
-      return html`<div class="empty" role="status">
-        <sl-spinner></sl-spinner> Mapping people, devices, agents and
-        providers...
-      </div>`;
-    }
-    if (this.mapError) {
-      return html`<div class="empty map-error" role="alert">
-        ${this.mapError}
-        <button
-          type="button"
-          class="link-button"
-          @click=${() => void this.loadMap()}
-        >
-          Retry
-        </button>
-      </div>`;
-    }
-    if (!this.map) return nothing;
-    return html`<fleet-map .graph=${this.map}></fleet-map>`;
-  }
-
-  private renderMapCard() {
-    return html`
-      <sl-card class="content-card">
-        ${this.renderHeader()}
-        ${
-          this.mapFullscreen
-            ? html`<div class="empty">
-                The fleet map is open in full screen.
-              </div>`
-            : html`<div class="map-body">${this.renderMapBody()}</div>`
-        }
-        <div class="footer">
-          <a href="/console/settings/device-fleet">Open the device fleet →</a>
-        </div>
-      </sl-card>
-      ${
-        this.mapFullscreen
-          ? html`<dialog
-              class="map-overlay"
-              aria-label="Fleet map"
-              @keydown=${{ handleEvent: this.onOverlayKeydown, capture: true }}
-              @cancel=${this.onOverlayCancel}
-              @close=${this.onOverlayClose}
-            >
-              <div class="map-overlay-head">
-                <span class="title">Fleet map</span>
-                ${this.renderViewSwitch()} ${this.renderFullscreenToggle()}
-              </div>
-              ${this.renderMapBody()}
-            </dialog>`
-          : nothing
-      }
-    `;
-  }
-
   render() {
-    if (this.activeView === 'map') return this.renderMapCard();
+    if (this.instanceAdmin && this.inventoryView === 'map')
+      return html`
+        <sl-card class="content-card">
+          ${this.renderHeader()} ${this.renderMap()}
+        </sl-card>
+      `;
     return html`
       <sl-card class="content-card">
         ${this.renderHeader()} ${this.renderTabs()} ${this.renderBody()}

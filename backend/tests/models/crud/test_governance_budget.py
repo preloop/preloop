@@ -2,8 +2,11 @@
 
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
+from time import perf_counter
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session
 
 from preloop.models import models
@@ -13,6 +16,81 @@ from preloop.models.crud import (
     crud_governance_review_settings,
 )
 from preloop.models.crud.governance_budget import finalization_transaction, run_spend
+from preloop.models.crud.governance_budget import _run_spend_query
+
+
+def test_weekly_spend_with_500k_rows_uses_generic_index_within_default_timeout(
+    db_session: Session, test_user: models.User
+) -> None:
+    """Both weekly guard reads must remain indexed under the worker's 30s limit."""
+    start = datetime.now(timezone.utc) - timedelta(days=7)
+    end = start + timedelta(days=7)
+    run_id = uuid4()
+    db_session.execute(
+        text("""
+        INSERT INTO api_usage
+            (id, account_id, timestamp, endpoint, method, status_code,
+             duration, action_type, estimated_cost, meta_data)
+        SELECT gen_random_uuid(), :account, :when, 'weekly-plan', 'POST',
+               200, 0, 'model_gateway', 0.001,
+               CASE WHEN n <= 1000 THEN
+                 jsonb_build_object('purpose', 'governance_session_digest',
+                   'funding', CASE WHEN n % 2 = 0 THEN 'platform' ELSE 'account' END)
+                 || CASE WHEN n <= 100 THEN
+                    jsonb_build_object('governance_run_id', CAST(:run AS text))
+                    ELSE '{}'::jsonb END
+               ELSE '{"funding":"platform"}'::jsonb END
+        FROM generate_series(1, 500000) n
+        """),
+        {"account": test_user.account_id, "when": start, "run": str(run_id)},
+    )
+    db_session.execute(text("ANALYZE api_usage"))
+    db_session.execute(text("SET LOCAL statement_timeout = '30s'"))
+    db_session.execute(text("SET LOCAL plan_cache_mode = force_generic_plan"))
+    for window, expected in [(start, 0.5), (end, 0.05)]:
+        query = _run_spend_query(
+            db_session,
+            account_id=test_user.account_id,
+            window_start=window,
+            window_end=end,
+            run_id=run_id,
+        )
+        compiled = query.statement.compile(
+            dialect=postgresql.dialect(paramstyle="numeric_dollar"),
+            compile_kwargs={"render_postcompile": True},
+        )
+        db_session.connection().exec_driver_sql(
+            "PREPARE weekly_spend_probe AS " + str(compiled)
+        )
+        values = {
+            f"p{i}": compiled.params[name]
+            for i, name in enumerate(compiled.positiontup or [])
+        }
+        invocation = text(
+            "EXPLAIN (COSTS OFF) EXECUTE weekly_spend_probe ("
+            + ", ".join(":" + name for name in values)
+            + ")"
+        ).bindparams(**values)
+        explain = invocation.compile(
+            dialect=db_session.get_bind().dialect,
+            compile_kwargs={"literal_binds": True},
+        )
+        try:
+            plan = db_session.execute(text(str(explain))).all()
+        finally:
+            db_session.execute(text("DEALLOCATE weekly_spend_probe"))
+        plan_text = "\n".join(row[0] for row in plan)
+        assert "ix_api_usage_governance_spend" in plan_text
+        started = perf_counter()
+        assert run_spend(
+            db_session,
+            account_id=test_user.account_id,
+            window_start=window,
+            window_end=end,
+            run_id=run_id,
+        ) == pytest.approx({"platform": expected, "account": expected})
+        print(f"Weekly spend ({window.isoformat()}): {perf_counter() - started:.3f}s")
+        print(plan_text)
 
 
 def test_spend_filters_funding_purpose_account_and_window(db_session, test_user):

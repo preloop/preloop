@@ -30,6 +30,12 @@ import type {
 } from '../types';
 import type { LiveToolCall } from './live-session';
 import { normalizeToolCalls } from './live-session';
+import { isHarnessSideRequestEvent } from './harness-side-request';
+
+export {
+  HARNESS_SIDE_REQUEST_PREFIXES,
+  isHarnessSideRequest,
+} from './harness-side-request';
 
 export type TranscriptStepKind =
   'tool_call' | 'tool_result' | 'system' | 'injected' | 'intermediate';
@@ -76,6 +82,8 @@ export interface TranscriptNoteDelivery {
   authorDisplay: string | null;
   authorAuthMethod: string | null;
   turnIndex: number | null;
+  /** Hook event that read the note (`pre_tool_use`, `stop`, ...), if any. */
+  deliveryEvent?: string | null;
 }
 
 export interface TranscriptStepGroupItem {
@@ -354,6 +362,34 @@ function previewMessages(
   return Array.isArray(messages) ? messages : [];
 }
 
+function hasResponse(event: FlowGatewayEvent): boolean {
+  return previewMessages(event).some(
+    (message) =>
+      (message.source || '').toLowerCase() === 'response' &&
+      Boolean((message.text || '').trim())
+  );
+}
+
+/** Readable error for a failed request, from what the gateway stored. */
+function gatewayErrorText(event: FlowGatewayEvent): string {
+  const detail: unknown = event.payload?.error_detail ?? event.payload?.error;
+  const pick = (value: unknown): string | null => {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+    if (value && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      return pick(record.message) ?? pick(record.error) ?? pick(record.detail);
+    }
+    return null;
+  };
+  const text = pick(detail);
+  const status = Number(event.payload?.status_code || 0);
+  if (text)
+    return status
+      ? `Request failed (${status}): ${text}`
+      : `Request failed: ${text}`;
+  return status ? `Request failed (${status}).` : 'Request failed.';
+}
+
 function eventIsFailure(event: FlowGatewayEvent): boolean {
   const outcome = String(event.payload?.outcome || '').toLowerCase();
   if (outcome === 'error' || outcome === 'budget_denied') return true;
@@ -433,6 +469,7 @@ export function buildConversation(
       stats.eventsWithPartialToolResults += 1;
     }
     const failed = eventIsFailure(event);
+    const sideRequest = isHarnessSideRequestEvent(event);
 
     previewMessages(event).forEach((message, messageIndex) => {
       const text = (message.text || '').trim();
@@ -466,6 +503,22 @@ export function buildConversation(
         truncated: Boolean(message.truncated),
         toolCallIds: message.tool_call_ids,
       };
+
+      if (sideRequest && (source === 'response' || role === 'user')) {
+        stats.injectedCount += 1;
+        atoms.push({
+          type: 'step',
+          order: order++,
+          step: {
+            kind: 'injected',
+            label: 'Harness side request',
+            injectedPatternId: 'harness_side_request',
+            detectionExact: false,
+            ...base,
+          },
+        });
+        return;
+      }
 
       if (source === 'response') {
         // Provisional agent response; the grouping pass demotes all but the
@@ -579,6 +632,25 @@ export function buildConversation(
         },
       });
     });
+    // A failed request with no response (for example a model the key is not
+    // authorized for) would otherwise leave no trace in the conversation;
+    // the terminal prints the error, so the transcript shows a failed turn.
+    if (failed && !hasResponse(event)) {
+      atoms.push({
+        type: 'message',
+        order: order++,
+        item: {
+          type: 'message',
+          key: `${event.id}:error`,
+          kind: 'agent_response',
+          role: 'assistant',
+          text: gatewayErrorText(event),
+          timestamp: event.timestamp || null,
+          event,
+          failed: true,
+        },
+      });
+    }
   }
 
   // Named tool rows, from gateway `tool_activity` entries and native
@@ -765,5 +837,6 @@ function noteDelivery(
     authorAuthMethod: text(metadata.author_auth_method),
     turnIndex:
       typeof metadata.turn_index === 'number' ? metadata.turn_index : null,
+    deliveryEvent: text(metadata.delivery_event),
   };
 }

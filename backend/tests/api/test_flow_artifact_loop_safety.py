@@ -73,6 +73,7 @@ async def test_upload_consumes_stream_on_app_loop_before_worker_persistence(
     }
     app.dependency_overrides[flow_artifacts.artifact_claims] = lambda: claims
     monkeypatch.setattr(flow_artifacts, "authorize", lambda *args: None)
+    monkeypatch.setattr(flow_artifacts.flow_artifact, "end_read", lambda db: None)
     monkeypatch.setattr(
         flow_artifacts.settings, "workspace_snapshot_max_bytes", 5 if oversized else 6
     )

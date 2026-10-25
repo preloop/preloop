@@ -164,6 +164,7 @@ func init() {
 
 // initializeCommandSelection runs only after offline commands have been excluded.
 func initializeCommandSelection(cmd *cobra.Command) {
+	config.SetConfigFile(cfgFile)
 	if cmd == agentsDiscoverCmd {
 		if asJSON, _ := cmd.Flags().GetBool("json"); asJSON {
 			config.Select(FlagProfile, FlagAccount)

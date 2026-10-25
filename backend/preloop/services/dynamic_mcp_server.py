@@ -14,8 +14,11 @@ from typing import Dict, List, Optional, Any
 from uuid import UUID
 
 from mcp.server import Server
+from mcp.server.context import ServerRequestContext
 from mcp import types
 from sqlalchemy.orm import Session
+
+from preloop.services.audit.async_writer import outbox_enabled
 
 from preloop.models.models.account import Account
 
@@ -23,14 +26,10 @@ logger = logging.getLogger(__name__)
 
 
 def _get_audit_service():
-    """Get the audit service instance (lazy import to avoid circular deps)."""
-    try:
-        from plugins.audit.service import get_audit_service
+    """Resolve the core audit singleton lazily to avoid circular imports."""
+    from preloop.services.audit import get_audit_service
 
-        return get_audit_service()
-    except ImportError:
-        logger.debug("Audit service not available")
-        return None
+    return get_audit_service()
 
 
 def _get_db_factory():
@@ -64,6 +63,7 @@ def _log_tool_execution_async(
     runtime_principal_name: Optional[str] = None,
     api_key_id: Optional[str] = None,
     api_key_name: Optional[str] = None,
+    db: Optional[Session] = None,
 ) -> None:
     """Log a tool execution asynchronously (fire-and-forget)."""
     try:
@@ -71,10 +71,6 @@ def _log_tool_execution_async(
 
         audit_service = _get_audit_service()
         if not audit_service:
-            return
-
-        db_factory = _get_db_factory()
-        if not db_factory:
             return
 
         # Redact sensitive fields before audit
@@ -96,8 +92,7 @@ def _log_tool_execution_async(
                 # execution_id may be a non-UUID flow id; omit it from audit metadata.
                 pass
 
-        audit_service.log_tool_call_async(
-            db_factory=db_factory,
+        fields = dict(
             account_id=account_id,
             user_id=user_uuid,
             tool_name=tool_name,
@@ -117,8 +112,36 @@ def _log_tool_execution_async(
             api_key_id=api_key_id,
             api_key_name=api_key_name,
         )
+        if db is not None:
+            audit_service.enqueue_in_transaction(db, "log_tool_call", **fields)
+        else:
+            audit_service.log_tool_call_async(db_factory=_get_db_factory(), **fields)
     except Exception as e:
+        if db is not None and outbox_enabled():
+            raise
         logger.debug(f"Failed to log tool execution to audit: {e}")
+
+
+async def _enqueue_tool_execution(**fields: Any) -> None:
+    """Await local intent admission off-loop; remote delivery belongs to the relay."""
+    if not outbox_enabled():
+        _log_tool_execution_async(**fields)
+        return
+    from preloop.services.db_executor import run_db_async
+
+    def persist(db: Session) -> None:
+        _log_tool_execution_async(db=db, **fields)
+        db.commit()
+
+    try:
+        await run_db_async(persist)
+    except Exception:
+        # The tool's external effects have already happened. Preserve its
+        # outcome so an audit outage cannot turn success into a retry request.
+        from preloop.services.audit.outbox import record_admission_failure
+
+        record_admission_failure("tool_outcome_admission")
+        logger.error("Could not admit the tool outcome audit intent")
 
 
 class UserContext:
@@ -145,6 +168,7 @@ class UserContext:
         mcp_tools_cache: Optional[List[Any]] = None,
         flow_id: Optional[str] = None,
         credential_type: str = "legacy",
+        api_key_scopes: Optional[tuple[Any, ...]] = None,
     ):
         self.user_id = user_id
         self.account_id = account_id
@@ -168,6 +192,7 @@ class UserContext:
         # governance override (subject type ``flows``).
         self.flow_id = flow_id
         self.credential_type = credential_type
+        self.api_key_scopes = api_key_scopes
 
 
 class DynamicMCPServer:
@@ -200,12 +225,11 @@ class DynamicMCPServer:
     def _setup_handlers(self):
         """Register MCP protocol handlers for list_tools and call_tool."""
 
-        @self.server.list_tools()
-        async def handle_list_tools() -> list[types.Tool]:
+        async def handle_list_tools(ctx: ServerRequestContext) -> list[types.Tool]:
             """Return tools based on current request context.
 
             This handler is called for every MCP tools/list request.
-            It extracts user context from server.request_context (as per POC findings)
+            It reads authenticated context established by the HTTP middleware
             and returns a filtered tool list based on user configuration.
 
             Returns:
@@ -213,8 +237,13 @@ class DynamicMCPServer:
             """
             logger.info("handle_list_tools called")
             try:
-                # Access request context (as per OPTION_B_FINDINGS.md)
-                user_context = self._extract_user_context(self.server.request_context)
+                # SDK v2 ctx.meta is client-supplied protocol metadata, not
+                # authenticated identity. Reuse the HTTP middleware context.
+                from preloop.services.dynamic_fastmcp_http import (
+                    get_current_user_context,
+                )
+
+                user_context = get_current_user_context()
 
                 if not user_context:
                     logger.warning("No user context available in request")
@@ -243,9 +272,8 @@ class DynamicMCPServer:
                 logger.error(f"Error in handle_list_tools: {e}", exc_info=True)
                 return []
 
-        @self.server.call_tool()
         async def handle_call_tool(
-            name: str, arguments: dict | None
+            ctx: ServerRequestContext, name: str, arguments: dict | None
         ) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
             """Call a tool if user has access.
 
@@ -262,8 +290,13 @@ class DynamicMCPServer:
             """
             logger.info(f"handle_call_tool called for tool: {name}")
             try:
-                # Access request context (as per OPTION_B_FINDINGS.md)
-                user_context = self._extract_user_context(self.server.request_context)
+                # SDK v2 ctx.meta is client-supplied protocol metadata, not
+                # authenticated identity. Reuse the HTTP middleware context.
+                from preloop.services.dynamic_fastmcp_http import (
+                    get_current_user_context,
+                )
+
+                user_context = get_current_user_context()
 
                 if not user_context:
                     logger.warning("No user context available for tool call")
@@ -395,7 +428,7 @@ class DynamicMCPServer:
                 )
 
                 # Log successful tool execution to audit (fire-and-forget)
-                _log_tool_execution_async(
+                await _enqueue_tool_execution(
                     account_id=user_context.account_id,
                     user_id=user_context.user_id,
                     tool_name=name,
@@ -417,7 +450,7 @@ class DynamicMCPServer:
             except Exception as e:
                 logger.error(f"Error executing tool {name}: {e}", exc_info=True)
                 # Log failed tool execution to audit
-                _log_tool_execution_async(
+                await _enqueue_tool_execution(
                     account_id=user_context.account_id if user_context else "unknown",
                     user_id=user_context.user_id if user_context else None,
                     tool_name=name,
@@ -445,54 +478,24 @@ class DynamicMCPServer:
                     )
                 ]
 
-    def _extract_user_context(self, request_context) -> Optional[UserContext]:
-        """Extract user context from MCP request metadata.
+        async def list_adapter(
+            ctx: ServerRequestContext, params: types.PaginatedRequestParams
+        ) -> types.ListToolsResult:
+            return types.ListToolsResult(tools=await handle_list_tools(ctx))
 
-        The middleware should inject user data into request_context.session.meta
-        which is accessible here.
-
-        Args:
-            request_context: MCP request context from server.request_context
-
-        Returns:
-            UserContext if available, None otherwise
-        """
-        try:
-            # Try to get user context from session metadata
-            if hasattr(request_context, "session") and hasattr(
-                request_context.session, "meta"
-            ):
-                user_data = request_context.session.meta
-                logger.info(f"Found user context in session.meta: {user_data}")
-            elif hasattr(request_context, "meta"):
-                user_data = request_context.meta
-                logger.info(f"Found user context in meta: {user_data}")
-            else:
-                logger.warning(
-                    f"Request context has no session.meta or meta. Attributes: {dir(request_context)}"
-                )
-                return None
-
-            if not user_data:
-                return None
-
-            return UserContext(
-                user_id=user_data.get("user_id", "unknown"),
-                account_id=user_data.get("account_id", "unknown"),
-                username=user_data.get("username", "unknown"),
-                has_tracker=user_data.get("has_tracker", False),
-                enabled_default_tools=user_data.get("enabled_default_tools", []),
-                enabled_proxied_tools=user_data.get("enabled_proxied_tools", []),
-                runtime_session_id=user_data.get("runtime_session_id"),
-                runtime_principal_type=user_data.get("runtime_principal_type"),
-                runtime_principal_id=user_data.get("runtime_principal_id"),
-                runtime_principal_name=user_data.get("runtime_principal_name"),
-                api_key_id=user_data.get("api_key_id"),
-                api_key_name=user_data.get("api_key_name"),
+        async def call_adapter(
+            ctx: ServerRequestContext, params: types.CallToolRequestParams
+        ) -> types.CallToolResult:
+            return types.CallToolResult(
+                content=await handle_call_tool(ctx, params.name, params.arguments)
             )
-        except Exception as e:
-            logger.error(f"Error extracting user context: {e}", exc_info=True)
-            return None
+
+        self.server.add_request_handler(
+            "tools/list", types.PaginatedRequestParams, list_adapter
+        )
+        self.server.add_request_handler(
+            "tools/call", types.CallToolRequestParams, call_adapter
+        )
 
     async def _evaluate_policy(
         self, user_context: UserContext, tool_name: str, tool_args: dict
@@ -606,6 +609,9 @@ class DynamicMCPServer:
                         "api_key_name": getattr(user_context, "api_key_name", None),
                     },
                 )
+                # This evaluation owns a short-lived transaction, including its audit.
+                if outbox_enabled():
+                    await db.commit()
 
                 action, approval_workflow_id, rule_description = decision
 
@@ -697,7 +703,9 @@ class DynamicMCPServer:
 
                 # Get approval workflow using CRUD
                 policy = await get_approval_workflow_async(
-                    db, workflow_id=final_workflow_id
+                    db,
+                    workflow_id=final_workflow_id,
+                    account_id=user_context.account_id,
                 )
 
                 if not policy:

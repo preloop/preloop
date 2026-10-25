@@ -152,10 +152,10 @@ def test_crosschat_delivery_between_call_and_output_still_400s():
 
 
 def test_non_message_item_between_call_and_output_still_400s_naming_role():
-    reasoning = {"type": "reasoning", "summary": [], "id": "rs_1"}
+    unknown = {"type": "unknown_item", "id": "unknown_1"}
     with pytest.raises(ModelGatewayAPIError) as caught:
-        _normalize([_call(), reasoning, _output()])
-    assert "index=1 type='reasoning'" in caught.value.message
+        _normalize([_call(), unknown, _output()])
+    assert "index=1 type='unknown_item'" in caught.value.message
     assert "item between a tool call and its result" in caught.value.message
 
 
@@ -197,3 +197,85 @@ def test_message_between_custom_tool_call_and_output_is_kept_and_pairs():
     _assert_tool_pairing(messages)
     assert [m["role"] for m in messages] == ["user", "assistant", "tool", "developer"]
     assert messages[2]["tool_call_id"] == "call_c"
+
+
+@pytest.mark.parametrize(
+    "reasoning",
+    [
+        {"type": "reasoning", "id": "rs_207302", "summary": []},
+        {
+            "type": "reasoning",
+            "id": "rs_opaque",
+            "encrypted_content": SECRET,
+            "summary": [{"type": "summary_text", "text": SECRET}],
+        },
+    ],
+)
+def test_reasoning_between_tool_call_and_result_is_not_a_chat_message(reasoning):
+    messages = _normalize(
+        [
+            _user("Compute 137 * 29"),
+            reasoning,
+            _call(),
+            reasoning,
+            _output(output="3973"),
+            reasoning,
+            _user("next"),
+        ]
+    )
+    _assert_tool_pairing(messages)
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool", "user"]
+    assert messages[2]["content"] == "3973"
+    assert SECRET not in str(messages)
+
+
+def test_reasoning_between_parallel_calls_and_partial_results_keeps_pairs():
+    reasoning = {"type": "reasoning", "summary": [], "id": "rs_parallel"}
+    messages = _normalize(
+        [_call("a"), reasoning, _call("b"), _output("a"), reasoning, _output("b")]
+    )
+    _assert_tool_pairing(messages)
+    assert [m["role"] for m in messages] == ["assistant", "tool", "tool"]
+
+
+def test_reasoning_cannot_satisfy_missing_result_or_hide_wrong_call_id():
+    reasoning = {"type": "reasoning", "encrypted_content": SECRET}
+    with pytest.raises(ModelGatewayAPIError) as missing:
+        _normalize([_call(), reasoning])
+    assert "tool calls without results" in missing.value.message
+    assert SECRET not in missing.value.message
+    with pytest.raises(ModelGatewayAPIError) as orphan:
+        _normalize([_call(), reasoning, _output("other")])
+    assert "index=2" in orphan.value.message
+    assert "call_id does not match" in orphan.value.message
+    assert SECRET not in orphan.value.message
+
+
+def test_non_deepseek_outer_normalizer_accepts_codex_reasoning_tool_roundtrip():
+    from preloop.models import models
+    from tests.services.test_codex_crosschat import _bare_service
+
+    service = _bare_service()
+    model = models.AIModel(
+        provider_name="openai-compatible", model_identifier="local-qwen"
+    )
+    messages = service._normalize_responses_input(
+        {
+            "input": [
+                _user("Compute 137 * 29"),
+                _call(),
+                {
+                    "type": "reasoning",
+                    "id": "rs_207302",
+                    "summary": [],
+                    "encrypted_content": SECRET,
+                },
+                _output(output="3973"),
+            ]
+        },
+        ai_model=model,
+    )
+    _assert_tool_pairing(messages)
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
+    assert messages[-1]["content"] == "3973"
+    assert SECRET not in str(messages)

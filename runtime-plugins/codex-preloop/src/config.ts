@@ -57,6 +57,16 @@ export type ControlConfig = {
   codex_allow_full_access?: boolean;
   /** Optional override of the `codex` binary the SDK spawns. */
   codex_path?: string;
+  /**
+   * Drive interactive Codex TUI sessions that run on the shared
+   * `codex app-server` daemon. Defaults to enabled; a missing daemon socket
+   * simply means no TUI session is reachable.
+   */
+  codex_app_server_enabled?: boolean;
+  /** How often to list the daemon's loaded threads. Defaults to 5000. */
+  codex_app_server_poll_ms?: number;
+  /** CODEX_HOME holding the daemon control socket. Defaults to ~/.codex. */
+  codex_home?: string;
 };
 
 export const PROTOCOL = "preloop.agent_control.v1";

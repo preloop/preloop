@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -334,6 +336,11 @@ func TestHermesAdapterValidateManagedConfig_Passes(t *testing.T) {
 }
 
 func TestHermesAdapterValidateManagedConfig_PassesWithControlChannel(t *testing.T) {
+	// This is the missing-plugin case, independent of installed host runtimes.
+	testenv.SetTempHome(t)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("PATH", t.TempDir())
+	stubRuntimeProbes(t, nil)
 	agent := AgentConfig{
 		Name:       hermesAgentName,
 		ConfigPath: "/tmp/hermes/config.yaml",
@@ -1783,5 +1790,127 @@ func TestHermesPluginInstallUsesManagedUVWhenVenvHasNoPip(t *testing.T) {
 	want := "pip\ninstall\n--python\n" + filepath.Join(bin, "python3") + "\n--upgrade\npreloop-hermes-plugin\n"
 	if string(args) != want {
 		t.Fatalf("uv must target Hermes' interpreter: %q", args)
+	}
+}
+
+// Re-onboarding must not resurrect the restore snapshot's removed model.
+func TestHermesReonboardingUsesCurrentModel(t *testing.T) {
+	for _, managed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("managed=%v", managed), func(t *testing.T) {
+			home := testenv.SetTempHome(t)
+			agent := AgentConfig{Name: "Hermes", ConfigPath: filepath.Join(home, ".hermes", "config.yaml")}
+			original := map[string]interface{}{"model": map[string]interface{}{
+				"default": "gpt-5.6-sol", "provider": "openai", "api_key": "synthetic-upstream-key",
+			}}
+			current, err := deepCopyMap(original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			model := current["model"].(map[string]interface{})
+			model["default"] = "gpt-6.1-sol"
+			if managed {
+				model["default"] = "openai/gpt-6.1-sol"
+				model["provider"] = "custom"
+				model["base_url"] = "https://example.com/openai/v1"
+				model["api_key"] = "synthetic-preloop-token"
+			}
+			if err := writeHermesAgentConfigDocument(agent.ConfigPath, current); err != nil {
+				t.Fatal(err)
+			}
+			state := &localEnrollmentState{AgentName: agent.Name, ConfigPath: agent.ConfigPath,
+				DiscoveredConfig: original, ManagedServerURL: "https://example.com/mcp/v1"}
+			if err := saveLocalEnrollmentState(state); err != nil {
+				t.Fatal(err)
+			}
+			upstream, err := parseHermesManagedGatewayUpstream(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if upstream == nil || upstream.ManagedModelAlias != "openai/gpt-6.1-sol" || upstream.ModelIdentifier != "gpt-6.1-sol" {
+				t.Fatalf("current model lost: %#v", upstream)
+			}
+			if managed {
+				if upstream.APIKey != "" || upstream.CanRouteThroughGateway() || !upstream.AllowServerCredentialReuse {
+					t.Fatalf("managed bearer must only reuse account credentials: %#v", upstream)
+				}
+				// The old model is absent: reuse the configured model without recreating it.
+				match := findReusableManagedGatewayAIModel([]aiModelResponse{{
+					ID: "model-new", ProviderName: "openai", ModelIdentifier: "gpt-6.1-sol", HasAPIKey: true,
+				}}, upstream)
+				if match == nil || match.ID != "model-new" {
+					t.Fatalf("did not reuse current account model: %#v", match)
+				}
+			}
+		})
+	}
+}
+
+func TestHermesManagedFallbackReconciliation(t *testing.T) {
+	for _, chain := range []bool{false, true} {
+		t.Run(fmt.Sprintf("chain=%v", chain), func(t *testing.T) {
+			testenv.SetTempHome(t)
+			gateway := "https://example.com/openai/v1"
+			stale := map[string]interface{}{"provider": "custom", "model": "openai/gpt-5.6-sol", "base_url": gateway, "api_key": "old-token", "extra": "keep"}
+			userFallback := map[string]interface{}{"provider": "openai", "model": "openai/gpt-5.6-sol", "api_key": "user-key"}
+			otherManagedFallback := map[string]interface{}{"provider": "custom", "model": "openai/another-model", "base_url": gateway}
+			var fallback interface{} = stale
+			if chain {
+				fallback = []interface{}{stale, userFallback, otherManagedFallback}
+			}
+			plan := managedMCPEnrollmentPlan{ManagedDocument: map[string]interface{}{
+				"model":          map[string]interface{}{"provider": "custom", "base_url": gateway, "default": "openai/gpt-5.6-sol", "temperature": 0.5, "model": "openai/gpt-5.6-sol", "name": "openai/gpt-5.6-sol"},
+				"fallback_model": fallback, "unrelated": "keep",
+			}}
+			updated, err := applyHermesManagedGateway(plan, "https://example.com", "new-token", "openai/gpt-6.1-sol")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stale["model"] != "openai/gpt-6.1-sol" || stale["api_key"] != "new-token" || stale["extra"] != "keep" {
+				t.Fatalf("stale fallback: %#v", stale)
+			}
+			if userFallback["model"] != "openai/gpt-5.6-sol" || userFallback["api_key"] != "user-key" || otherManagedFallback["model"] != "openai/another-model" {
+				t.Fatal("user fallback changed")
+			}
+			model := updated.ManagedDocument["model"].(map[string]interface{})
+			if model["model"] != nil || model["name"] != nil {
+				t.Fatalf("stale model aliases: %#v", model)
+			}
+			if model["temperature"] != 0.5 || updated.ManagedDocument["unrelated"] != "keep" {
+				t.Fatal("unrelated config changed")
+			}
+			// Snapshot before the second apply, which mutates the document in place.
+			before, err := deepCopyMap(updated.ManagedDocument)
+			if err != nil {
+				t.Fatal(err)
+			}
+			again, err := applyHermesManagedGateway(updated, "https://example.com", "new-token", "openai/gpt-6.1-sol")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before, again.ManagedDocument) {
+				t.Fatal("reconciliation is not idempotent")
+			}
+		})
+	}
+}
+
+func TestHermesFallbackReconciliationUsesLastManagedSelection(t *testing.T) {
+	home := testenv.SetTempHome(t)
+	agent := AgentConfig{Name: "Hermes", ConfigPath: filepath.Join(home, ".hermes/config.yaml")}
+	previous := map[string]interface{}{"model": map[string]interface{}{"provider": "custom", "base_url": "https://example.com/openai/v1", "default": "openai/gpt-5.6-sol"}}
+	if err := saveLocalEnrollmentState(&localEnrollmentState{AgentName: agent.Name, ConfigPath: agent.ConfigPath, ManagedConfig: previous, ManagedServerURL: "https://example.com/mcp/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	fallback := map[string]interface{}{"provider": "custom", "base_url": "https://example.com/openai/v1", "model": "openai/gpt-5.6-sol"}
+	plan := managedMCPEnrollmentPlan{Agent: agent, ManagedDocument: map[string]interface{}{
+		"model":          map[string]interface{}{"provider": "custom", "base_url": "https://example.com/openai/v1", "default": "openai/gpt-6.1-sol"},
+		"fallback_model": fallback,
+	}}
+	_, err := applyHermesManagedGateway(plan, "https://example.com", "synthetic-token", "openai/gpt-6.1-sol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fallback["model"] != "openai/gpt-6.1-sol" {
+		t.Fatalf("last managed fallback survived: %#v", fallback)
 	}
 }

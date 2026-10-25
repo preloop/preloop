@@ -140,6 +140,14 @@ def create_default_approval_workflow_for_account(
             exc_info=True,
         )
     finally:
+        try:
+            from preloop.models.crud.agent_note_policy import seed_note_policy
+
+            seed_note_policy(db, account_id=account_id)
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception("Failed to seed note policy for account %s", account_id)
         db.close()
 
 

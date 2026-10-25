@@ -139,7 +139,7 @@ def test_endpoints_release_auth_transaction_before_provider_and_sanitize_error(
     from preloop.api.endpoints import flows
 
     db, account, execution = MagicMock(), uuid4(), uuid4()
-    user = SimpleNamespace(account_id=account)
+    user = SimpleNamespace(account_id=account, is_superuser=True)
     function = (
         flows.preview_continuation
         if route.startswith("preview")

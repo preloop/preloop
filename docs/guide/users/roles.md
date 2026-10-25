@@ -109,6 +109,7 @@ Preloop (OSS) exposes **admin** and **member**, together with the existing **own
 - Connect trackers and projects
 - View cost analytics
 - Decide approval requests and control managed agents
+- Run session optimization analysis and share saved session searches
 
 **Cannot:**
 
@@ -141,6 +142,7 @@ Preloop (OSS) exposes **admin** and **member**, together with the existing **own
 - View agents, sessions, models, and cost
 - Control managed agents
 - Create/comment issues
+- Run session optimization analysis and share saved session searches
 
 **Cannot:**
 
@@ -205,6 +207,7 @@ Preloop (OSS) exposes **admin** and **member**, together with the existing **own
 - View cost analytics and audit logs
 - Run compliance checks
 - Detect duplicate issues and manage dependencies
+- Create, edit and delete personal saved session searches
 
 **Cannot:**
 
@@ -212,6 +215,7 @@ Preloop (OSS) exposes **admin** and **member**, together with the existing **own
 - Execute flows or decide approvals
 - Control managed agents
 - Manage users, teams, or billing
+- Submit session optimization analysis or share saved session searches
 
 **Use cases:**
 
@@ -236,11 +240,13 @@ Preloop (OSS) exposes **admin** and **member**, together with the existing **own
 
 - View flows, tools, policies, MCP servers, trackers, projects, issues
 - View models, agents, sessions, and compliance results
+- Create, edit and delete personal saved session searches
 
 **Cannot:**
 
 - View users, teams, cost, audit logs, or approvals
 - Execute, configure, or decide anything
+- Submit session optimization analysis or share saved session searches
 
 **Use cases:**
 
@@ -266,20 +272,31 @@ Preloop (OSS) exposes **admin** and **member**, together with the existing **own
 | Control managed agents | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | Execute flows / decide approvals | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
 | View cost analytics | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ❌ |
+| Run session optimization analysis | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Share saved session searches | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Manage personal saved session searches | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ |
 | Manage budgets | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Manage trackers / projects / issues | ✅ | ✅ | ✅ | limited | ✅ | ❌ | ❌ |
 | Run compliance / duplicates / deps | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
 | View audit logs | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Read-only core resources | ✅ | ✅ | ✅ | ✅ | partial | ✅ | ✅ |
 
-Permission names use `verb_resource` underscores (for example `view_cost`, `decide_approvals`, `create_projects`). Re-run `python scripts/init_system_roles.py` after upgrades to reconcile system roles on existing deployments.
+Permission names use `verb_resource` underscores (for example `view_cost`,
+`decide_approvals`, `create_projects`). Session analysis uses
+`run_session_optimizations`; sharing saved searches uses `share_session_searches`.
+The system-role initializer reconciles the catalogue and grants. An Alembic data
+migration also installs these two permissions and their grants automatically
+when upgrading existing deployments. The migration grants them to the system roles
+only. A custom role that should keep sharing saved searches or running session
+analysis needs an explicit `share_session_searches` or `run_session_optimizations`
+grant after the upgrade.
 
 **Notes:**
 
 - Owner bypasses explicit permission rows and is treated as having every permission.
-- Executor can create/comment issues and view sessions/cost, but cannot change tool/policy/model configuration.
+- Executor can create/comment issues, view sessions/cost, submit optimization analysis and share saved searches, but cannot change tool/policy/model configuration.
 - Tracker Manager is specialized for tracker/project/org/issue data and does not manage the agent control plane.
-- Analyst is read-heavy plus compliance/cost/audit analysis; it cannot mutate control-plane config or decide approvals.
+- Analyst is read-heavy plus compliance/cost/audit analysis; it can keep personal saved searches but cannot submit optimization analysis, share saved searches, mutate control-plane config or decide approvals.
 ---
 
 ## Managing User Roles

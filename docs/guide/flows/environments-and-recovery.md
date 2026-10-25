@@ -289,8 +289,9 @@ names the status, a short reason code and the operation, for example
 `PRELOOP_CHECKPOINT failed HTTPError status=409 detail=artifact_execution_closed op=capture`.
 The reason comes from the API's JSON error body. An error page from a proxy in
 front of the API (ingress, console nginx) reports `detail=not_json`, an empty
-body reports `detail=empty`, and any other body reports `detail=unrecognized`;
-the URL, token and body are never printed. When the API refuses a capture
+body reports `detail=empty`, an API 5xx without a reason code (its generic
+"Internal server error") reports `detail=server_error`, and any other body
+reports `detail=unrecognized`; the URL, token and body are never printed. When the API refuses a capture
 or evidence upload (PUT) after verifying its capability, it also writes an
 audit log row with action `flow_artifact_rejected` (status code, reason,
 execution id). Three refusals that do come from the API leave no row: a 401

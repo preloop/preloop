@@ -15,6 +15,21 @@ alembic upgrade head
 python -m preloop.services.chat_worker
 ```
 
+For Helm deployments, enable the optional worker in your deployment values:
+
+```yaml
+chatWorker:
+  enabled: true
+```
+
+This creates a separate `-chat-worker` Deployment running the command above.
+The sync worker pools do not process chat jobs. The chat worker shares the API's
+image, database, signing/encryption secrets, NATS connection, and operator
+`extraEnv`, `extraEnvFrom`, `extraVolumes`, and `extraVolumeMounts`. If you supply
+an encryption key or provider CA through those hooks, apply the same settings to
+both processes. Run migrations before starting the worker. See the
+[Helm chart guide](https://github.com/preloop/preloop/blob/main/helm/preloop/README.md#chat-worker).
+
 Set `PRELOOP_URL` to your externally reachable HTTPS origin before setting up
 Slack or Discord. Provider callbacks cannot use a localhost or placeholder URL.
 Configure encryption for stored credentials. Setup secrets live in encrypted,
@@ -34,10 +49,24 @@ not mean a worker or provider callback has connected.
 
 1. Create a Mattermost bot account and copy its **bot access token secret**. A
    Token ID is not a credential. Do not use a human or system-admin token.
-2. Add the bot to the team whose members may use Preloop.
+2. Add the bot to the team whose members may use Preloop. In Mattermost, open
+   that team's menu → **Invite People → Invite Member**, find the bot in
+   **Add or Invite People**, and select **Invite Members**. Bot accounts can be
+   invited using this flow; see [Mattermost's bot account instructions](https://docs.mattermost.com/developers/integrate/reference/bot-accounts/).
+   If invitations are restricted, ask an administrator to open **System Console →
+   User Management → Teams**, select the team, then **Members → Add Members**,
+   select the bot, and **Add → Save**. See the official
+   [team membership administration guide](https://docs.mattermost.com/administration-guide/configure/user-management-configuration-settings).
 3. Enter the server's HTTPS origin (for example `https://chat.example.com`) and
    the token. Preloop verifies `/api/v4/users/me` and lists that bot's teams by
-   display name. With no teams, add the bot to one and refresh.
+   display name. A verified bot with no team memberships is a valid incomplete
+   setup: **Finish** stays disabled and the wizard shows its `@username` and
+   invitation instructions. Add that bot to a team, return to the same wizard,
+   and select **Refresh installation**. Refresh reuses the encrypted draft and
+   token, including after a temporary provider error; it does not extend the
+   30-minute expiry. Once one team appears it selects automatically; choose
+   explicitly if several appear. Do not create a new token or give the bot
+   administrator privileges to solve missing membership.
 4. Select the team and finish. The default is a bot WebSocket listener for direct
    messages: **no `/preloop` command or slash-command token is required**.
 5. Select **Link my account**, then privately message the bot with `link CODE`.
@@ -46,6 +75,14 @@ not mean a worker or provider callback has connected.
 Advanced team lookup accepts the team name or normal team URL, such as
 `https://chat.example.com/engineering`. It resolves the name through the API and
 checks bot membership. Invite links, channel URLs, and guessed IDs are rejected.
+
+Saving the connection does not start a worker. Check **Worker ready** and
+**Provider event received** in the connection, then link your account and send a
+fresh DM to verify delivery. A running Kubernetes pod alone does not verify
+provider connectivity. The worker has no HTTP health endpoint; inspect connection
+health and worker logs for credentials, outbound policy, TLS, or WebSocket errors.
+The Cloud documentation support service below has a separate lifecycle; enabling
+it does not start this chat worker.
 
 The initial WebSocket transport accepts one-to-one DMs only. Public mentions and
 group DMs are not supported. Both the bot and human must still be members of the

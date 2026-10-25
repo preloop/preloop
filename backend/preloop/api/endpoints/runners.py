@@ -89,7 +89,7 @@ from preloop.cra.persist import (
     apply_cra_persist_boundary,
     resolve_persist_authority,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from preloop.schemas.ai_model import AIModelCreate, AIModelRead
 from preloop.models.crud import crud_ai_model
 from preloop.services.runner_model_proxy import RunnerModelConnection
@@ -325,6 +325,7 @@ def register_runner(
     current_user: User = Depends(get_current_active_user),
 ):
     """Register a new runner or resume an existing one for this account."""
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     advertised = body.host_exec_profiles or []
     capabilities = normalize_host_exec_advertisements(
         [profile.model_dump() for profile in advertised]
@@ -439,6 +440,7 @@ def register_runner_model(
     current_user: User = Depends(get_current_active_user),
 ) -> models.AIModel:
     """Register an explicitly approved local model for an account-owned runner."""
+    ensure_permission_in_oss(db, current_user, "create_ai_models")
     if not crud_flow_runner.get(
         db, id=runner_id, account_id=str(current_user.account_id)
     ):
@@ -519,6 +521,7 @@ def update_runner_consent(
     current_user: User = Depends(get_current_active_user),
 ) -> schemas.RunnerResponse:
     """Let the runner owner decide when flows may execute on their machine."""
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     row = crud_flow_runner.get(
         db, id=runner_id, account_id=str(current_user.account_id)
     )
@@ -556,6 +559,7 @@ def update_runner_scheduling(
     current_user: User = Depends(get_current_active_user),
 ) -> schemas.RunnerResponse:
     """Pause new leases or opt into jobs without tags."""
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     row = crud_flow_runner.get(
         db, id=runner_id, account_id=str(current_user.account_id)
     )
@@ -581,6 +585,7 @@ def update_runner_concurrency(
     ``--concurrency`` still lowers it while connected; raising it here does
     not make someone's laptop run more than that process agreed to.
     """
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     row = crud_flow_runner.get(
         db, id=runner_id, account_id=str(current_user.account_id)
     )
@@ -613,6 +618,7 @@ def delete_runner(
     replica ends on its next frame. Flows that route to the runner's labels
     see one runner fewer and fall back to their configured behaviour.
     """
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     account_id = current_user.account_id
     try:
         halted = crud_flow_runner.delete_runner(
@@ -667,6 +673,7 @@ def rotate_runner_token(
     authenticated with the old token is closed: in this process now, on
     another replica at its next frame.
     """
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     account_id = current_user.account_id
     token = mint_runner_token()
     row = crud_flow_runner.rotate_token(

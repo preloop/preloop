@@ -79,3 +79,17 @@ describe('MCP inventory attention', () => {
     expect(new Date(body.expires_at).getTime()).to.be.greaterThan(Date.now());
   });
 });
+
+it('opens the exact resolved MCP finding from a weekly report link', () => {
+  const items = deriveAttentionItems({
+    focusedItemId: 'mcp:resolved',
+    mcpFindings: [
+      { ...finding, id: 'resolved', state: 'resolved' },
+      { ...finding, id: 'other-resolved', state: 'resolved' },
+    ],
+  }).items.filter((item) => item.kind === 'mcp');
+  expect(items).to.have.length(1);
+  expect(items[0].id).to.equal('mcp:resolved');
+  expect(items[0].title).to.equal('MCP inventory finding resolved');
+  expect(items[0].severity).to.equal('low');
+});

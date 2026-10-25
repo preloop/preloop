@@ -9,6 +9,11 @@ already enrolled. Discovery reporting is the opt-in way to tell Preloop which
 agent tools exist on workstations that were never onboarded, so they show up
 in the console under **Agents > Not yet governed**.
 
+For the per-OS distinction between installed, configured, observed active and
+governed, read the [coverage guide](endpoint-coverage.md#platform-scope).
+Its [collector data and retention inventory](endpoint-coverage.md#data-minimization-and-retention)
+includes DPIA inputs and the limits of report-only credentials.
+
 ## Turning it on
 
 Either pass the flag or set the environment variable:
@@ -40,11 +45,16 @@ Such a key can call `GET /api/v1/agents/discovery-salt` and
 route and every console WebSocket refuses it with `403 api_key_scope_denied`.
 Run the job with `PRELOOP_TOKEN=<key>` and `PRELOOP_DISCOVERY_REPORT=1`.
 
+Here, the scope limits API access; it does not itself bind the key to one
+workstation fingerprint. Provision a distinct credential per device and check
+any additional device restrictions supplied by your deployment. See the
+[stolen collector key threat](endpoint-coverage.md#threat-model).
+
 ## What is sent
 
 | Field | Content |
 | --- | --- |
-| `workstation_fingerprint` | HMAC-SHA256 of the OS machine id, keyed with a per-account salt the server issues. The raw machine id is never sent. Another account's salt gives an unrelated value, so fingerprints cannot be joined across accounts. |
+| `workstation_fingerprint` | HMAC-SHA256 of the OS machine id or explicit `--device-ref`, keyed with a per-account salt the server issues. The raw identifier is not sent. Different account salts produce different references; these remain pseudonymous, not anonymous. |
 | `cli_version` | The CLI version. |
 | `os` | OS family only: `darwin`, `linux`, `windows` or `other`. |
 | `candidates[].agent_kind` | The product kind, for example `cursor` or `claude_code`. |
@@ -52,17 +62,26 @@ Run the job with `PRELOOP_TOKEN=<key>` and `PRELOOP_DISCOVERY_REPORT=1`.
 | `candidates[].mcp_server_count` | How many MCP servers the config defines. A count, not names. |
 | `candidates[].enrolled` | Whether the CLI already saw an enrollment for it. |
 
+The API also accepts optional `candidates[].agent_version`; the current CLI
+report builder does not populate it. Optional evidence fields and the exact
+hash inputs are documented in the [collector field inventory](endpoint-coverage.md#fields-and-data-paths).
+
 The machine id is `/etc/machine-id` on Linux, `IOPlatformUUID` on macOS and
-`MachineGuid` on Windows. When none is available the CLI generates a random
-id once and keeps it in its config directory.
+`MachineGuid` on Windows. When none is available current-user reporting
+generates a random id once and keeps it in the CLI config directory. All-user
+reporting reuses an existing fallback or requires `--device-ref`; it does not
+create an identity file.
 
 ## What is never sent
 
-User names, hostnames, home or config paths in clear, prompts, API keys or
-other credentials, environment variables, MCP server names, URLs, commands or
-arguments. The server enforces this too: the report schema accepts only hex
-hashes and enumerated values and rejects unknown fields, so a client that
-tries to send any of these gets `422` and nothing is stored.
+The shipped report serializers omit user names, hostnames, home or config paths
+in clear, prompts, API keys or other credentials, environment variables, MCP
+server names, URLs, commands or arguments. The server rejects unknown fields
+and constrains hashes, enums,
+counts and agent-kind/version strings. This validates shape, not the truth or
+sensitivity of an arbitrary client's schema-valid values. The narrow report
+body does not establish what HTTP access logs, session records or downstream
+webhook recipients retain. See the [DPIA boundaries](endpoint-coverage.md#dpia-decisions-still-required).
 
 ## What the server keeps
 
@@ -72,12 +91,31 @@ status: `new`, `onboarded` or `ignored`.
 
 - A new row fires the [`agent.discovered`](webhooks.md) webhook once. A
   re-report of the same tool only moves `last_seen_at` and emits nothing.
-- For current-user discovery, when an agent from the same workstation is onboarded and its enrollment
-  validates, the CLI sends the same two hashes with the validation and the
-  matching candidate becomes `onboarded`, linked to the managed agent.
+- For current-user discovery, every enrollment write for an agent from the
+  same workstation (applied, validated or failing validation, for any agent
+  kind including MCP-only and IDE-config agents) carries the same two hashes,
+  and the matching candidate becomes `onboarded`, linked to the managed
+  agent. A restore carries no link. When no report was ever sent for that
+  install, the enrollment records an `onboarded` candidate itself (the two
+  hashes plus the OS family and CLI version, nothing else), so onboarding
+  alone places the agent on its device in the device fleet. Re-onboarding
+  updates the same row.
+- Agents enrolled by an older CLI have no such link. The fleet map and the
+  agent page then place the agent on a device by evidence already held, never
+  rewriting it: first a runner-reported harness of the agent's kind on a
+  device its owner uses, when exactly one managed agent fits; otherwise the
+  agent's enrollment hostname, when exactly one device has that hostname
+  (compared case-insensitively, ignoring `.local` or a domain, with `-`, `_`
+  and spaces alike) and the agent's owner, when known, uses that device.
+  Ambiguous matches stay unplaced.
 - **Mark ignored** in the console hides a candidate. **Copy onboard command**
   copies `preloop agents onboard <kind>` to run on that workstation.
-- Candidates nobody has reported for 90 days are deleted by a daily purge.
+- Candidates nobody has reported for 90 days are deleted by a daily purge,
+  except `onboarded` candidates still linked to a managed agent: those are
+  the agent's device link. Deleting the agent clears the link and makes a
+  stale candidate eligible for a later purge. The
+  [retention table](endpoint-coverage.md#retention-and-deletion-boundaries)
+  distinguishes expiry from actual deletion and other data stores.
 
 ## API
 
@@ -154,8 +192,11 @@ The scan enumerates local profiles from `/Users` on macOS, `/home` and `/root`
 on Linux, or Windows `ProfileList`. It covers the known application registry,
 not every possible install location or network/directory-service profile.
 It scans at most 64 profiles, reads at most 4 MiB per configuration file, and
-reports at most 100 application contexts. Symlinks and unsafe configuration
-paths are refused. Reaching a limit or failing to read a profile leaves the
+reports at most 100 application contexts. Symlinks, hard-linked configurations,
+special files and unsafe configuration paths are refused. Configuration files
+are opened relative to the selected profile with link checks at open time;
+the collector never executes a discovered application or reads its credential
+store. Reaching a limit or failing to read a profile leaves the
 coverage incomplete rather than treating that scope as an empty successful scan.
 
 All-user reports send `evidence.schema_version: 2` on the existing report
@@ -172,8 +213,15 @@ Offline v2 output also associates probe results with `profile_ref`. Its fresh
 per-run random salt makes profile references unrelated across offline runs.
 Reported references use the account salt and workstation context instead.
 
-If profile enumeration fails, the inventory has `completeness: failed` and
-`scope.error_code: profiles_unavailable`. A profile limit produces partial
+If no profiles can be enumerated, the inventory has `completeness: failed` and
+`scope.error_code: profiles_unavailable`. An unreadable Windows `ProfileList`
+entry produces its own hashed failed profile, and collection continues for
+other profiles. Unsafe registry paths (including network paths, alternate data
+streams and traversal) also produce a failed profile without being opened.
+If enumeration returns readable profiles alongside an error, those profiles
+are scanned and the inventory is partial with `profiles_unavailable`. On Linux,
+`/root` is still scanned when `/home` cannot be enumerated.
+A profile limit produces partial
 inventory with `scope.error_code: profile_limit`. The report retains enumerated
 profile states even when no apps were readable; its evidence records partial
 or failed completeness and an `unavailable` error. A report truncated at 100
@@ -200,8 +248,18 @@ Matching hashes correlate administrative identifiers and do not attest a device,
 its executable identity or effective governance. Candidate-only reports establish
 receipt history, not collection completeness or trusted control verification.
 
+`--all-users --report --device-ref synthetic-device` uses this same identifier
+for both the workstation fingerprint and its profile references. All-user
+reporting never creates a fallback identity file: if the OS identifier is
+unavailable, it reuses an existing CLI workstation id or fails with a request
+to supply `--device-ref`. Offline inventory does not look up machine identity.
+macOS identity lookup uses the fixed system `ioreg` path, and Windows reads
+`MachineGuid` directly from the registry, so inherited `PATH` cannot select a
+program to execute with collector privileges.
+
 ## Deployment and coverage
 
 See the [MDM recipes](../operations/mdm-recipes.md) for staged delivery and separate
-credential provisioning, and the [coverage and threat model](endpoint-coverage.md)
-for evidence boundaries, bypass risks and data minimization.
+credential provisioning, the [threat model](endpoint-coverage.md#threat-model)
+for bypass risks, and [planned work](endpoint-coverage.md#planned-work-and-separate-controls)
+for features that must not be treated as shipped coverage.

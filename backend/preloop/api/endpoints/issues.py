@@ -41,8 +41,9 @@ from preloop.models.models.tracker import Tracker
 from preloop.api.auth import get_current_active_user
 from preloop.services.aux_model_retry import call_with_aux_retry_async
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from preloop.config import settings
+from preloop.api.loop_safety import run_db_off_loop
 
 # Initialize CRUD operations
 crud_comment = CRUDComment(Comment)
@@ -106,7 +107,7 @@ async def search_issues(
     ),
     search_type: str = Query(
         "fulltext",
-        enum=["fulltext", "similarity"],
+        json_schema_extra={"enum": ["fulltext", "similarity"]},
         description="Type of search to perform ('fulltext' or 'similarity')",
     ),
     status: Optional[str] = Query(None, description="Filter by issue status"),
@@ -620,6 +621,9 @@ async def create_issue(
     - Name (organization_name/project_name)
     - Slug (organization/project)
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "create_issues")
+    )
     try:
         # Resolve organization and project using either ID, name, or identifier
         from preloop.models.crud import crud_organization, crud_project
@@ -1258,6 +1262,9 @@ async def update_issue(
     current_user: User = Depends(get_current_active_user),
 ):
     """Update an existing issue using its internal ID or external key."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "edit_issues")
+    )
     # URL decode the issue_id in case it's still encoded
     from urllib.parse import unquote
 

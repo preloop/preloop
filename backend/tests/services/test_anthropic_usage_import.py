@@ -6,6 +6,8 @@ payloads shaped like the public API reference; no live Anthropic call is made.
 
 from __future__ import annotations
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import json
 import logging
 from dataclasses import dataclass, field
@@ -112,7 +114,7 @@ def _connect(
 
 
 def _upstream_model(db: Session, account_id: Any) -> models.AIModel:
-    model = models.AIModel(
+    model = ai_model_with_secret(
         name="Anthropic upstream",
         provider_name="anthropic",
         model_identifier="claude-upstream",

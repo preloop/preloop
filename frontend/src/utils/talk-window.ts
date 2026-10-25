@@ -225,3 +225,31 @@ export function openTalkWindow(
   win.focus();
   return { outcome: 'window', win };
 }
+
+/** Longest subject a window title carries before it is cut. */
+const TITLE_SUBJECT_MAX = 48;
+
+/**
+ * `<agent> · <subject>` for a Talk window (DESIGN.md "Talking to an
+ * agent"). The subject is often the first prompt, which can carry absolute
+ * paths from the operator's machine; those are replaced with an ellipsis so
+ * they never reach the OS window list, and a long subject is cut at a word.
+ */
+export function talkWindowTitle(
+  agentName: string,
+  subject: string | null | undefined
+): string {
+  const cleaned = (subject || '')
+    .replace(/(?:[A-Za-z]:\\|\/)(?:[^\s/\\]+[/\\])+[^\s/\\]*/g, '…')
+    .replace(/(?:[A-Za-z]:\\)[^\s]*/g, '…')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return `${agentName} · Talk`;
+  let short = cleaned;
+  if (short.length > TITLE_SUBJECT_MAX) {
+    const cut = short.slice(0, TITLE_SUBJECT_MAX);
+    const space = cut.lastIndexOf(' ');
+    short = `${(space > 20 ? cut.slice(0, space) : cut).replace(/[\s,;:.]+$/, '')}…`;
+  }
+  return `${agentName} · ${short}`;
+}

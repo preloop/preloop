@@ -1,7 +1,7 @@
 """Pydantic schemas for approval requests."""
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import UUID
 
@@ -23,6 +23,22 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 _MORE_RECIPIENTS = re.compile(r"\+(\d+) more")
+
+
+def utc_isoformat(value: Optional[datetime]) -> Optional[str]:
+    """ISO 8601 with a UTC offset; naive values are stored UTC by convention."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Attach UTC to a naive value; convert an aware one to UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _recipient_count(recipients: str) -> int:
@@ -371,6 +387,21 @@ class ApprovalRequestResponse(ApprovalRequestBase):
     def serialize_uuid(self, value: Optional[UUID]) -> Optional[str]:
         """Serialize UUID to string."""
         return str(value) if value else None
+
+    @field_serializer("requested_at")
+    def serialize_requested_at(self, value: datetime) -> datetime:
+        """Emit the stored naive UTC time as an aware UTC date-time.
+
+        Without the offset, browsers parse the value as local time and an
+        approval seconds old reads as hours old in any non-UTC timezone. The
+        model keeps the naive value, so server-side arithmetic is unchanged.
+        """
+        return _as_utc(value)
+
+    @field_serializer("resolved_at", "expires_at")
+    def serialize_optional_utc(self, value: Optional[datetime]) -> Optional[datetime]:
+        """Same as ``requested_at`` for the optional timestamps."""
+        return _as_utc(value) if value is not None else None
 
 
 class ApprovalEventResponse(BaseModel):

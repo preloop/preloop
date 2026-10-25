@@ -598,10 +598,12 @@ def _raise_chain_floor(
     gap at the bottom of the range until the next purge pass raises the floor.
     """
     try:
-        from preloop.services.audit_chain import note_pruned
+        from preloop.services.audit_chain import invalidate_chain_status, note_pruned
 
         note_pruned(db, account_id=account_id, up_to_seq=up_to_seq, now=now)
         db.commit()
+        # Again after the commit, so a status read that raced it is dropped.
+        invalidate_chain_status(account_id)
     except Exception:
         db.rollback()
         logger.error(

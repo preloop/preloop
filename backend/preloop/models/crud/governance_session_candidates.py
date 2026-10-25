@@ -77,15 +77,22 @@ def list_session_digest_retries(
     runtime_session_id: UUID | None = None,
     limit: int = 50,
 ) -> list[UUID]:
-    """Return only the oldest failed or abandoned summaries for an account.
+    """Return the oldest provider, parse, and capture retry candidates.
 
-    Filter and limit in SQL using the partial retry queue index, so completed
-    history is excluded from both the returned rows and the indexed scan. Stale claims use the typed update timestamp rather
-    than parsing optional JSON diagnostics. No traffic watermark is required.
+    Three indexed UNION branches keep completed history out of retry scans.
+    Stale summarizing claims and capture-incomplete rows wait until
+    ``stale_before``; parse failures can retry immediately. No traffic
+    watermark is required.
     """
     digest = models.GovernanceSessionDigest
     status = digest.digest["summary_status"].astext
-    statement = select(digest.id).where(
+    columns = (
+        digest.id,
+        digest.window_end,
+        digest.runtime_session_id,
+        digest.segment_index,
+    )
+    statement = select(*columns).where(
         digest.account_id == account_id,
         text(gov.SESSION_DIGEST_RETRY_PREDICATE),
         or_(
@@ -93,15 +100,35 @@ def list_session_digest_retries(
             and_(status == "summarizing", digest.updated_at <= stale_before),
         ),
     )
+    parse_failures = select(*columns).where(
+        digest.account_id == account_id,
+        text(gov.SESSION_DIGEST_PARSE_RETRY_PREDICATE),
+    )
+    incomplete_captures = select(*columns).where(
+        digest.account_id == account_id,
+        text(gov.SESSION_DIGEST_CAPTURE_RETRY_PREDICATE),
+        digest.updated_at <= stale_before,
+    )
     if runtime_session_id is not None:
         statement = statement.where(digest.runtime_session_id == runtime_session_id)
+        parse_failures = parse_failures.where(
+            digest.runtime_session_id == runtime_session_id
+        )
+        incomplete_captures = incomplete_captures.where(
+            digest.runtime_session_id == runtime_session_id
+        )
+    # Each branch has its own partial index. An OR would defeat the existing
+    # queue predicate and scan completed history on every sweep.
+    candidates = statement.union_all(parse_failures, incomplete_captures).subquery()
     return list(
         db.scalars(
-            statement.order_by(
-                digest.window_end,
-                digest.runtime_session_id,
-                digest.segment_index,
-                digest.id,
-            ).limit(min(max(limit, 1), 50))
+            select(candidates.c.id)
+            .order_by(
+                candidates.c.window_end,
+                candidates.c.runtime_session_id,
+                candidates.c.segment_index,
+                candidates.c.id,
+            )
+            .limit(min(max(limit, 1), 50))
         ).all()
     )

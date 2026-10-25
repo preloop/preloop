@@ -4,6 +4,7 @@ import { router, Router, LOCATION_CHANGED } from '../router';
 import { CapabilityRouteGate } from '../lazy-routes';
 
 import type { LitApp } from './lit-app';
+import { consoleRouteLoaders } from './console-route-loaders';
 import './lit-app';
 
 // Tag names rather than the element classes: a failing assertion on a class
@@ -406,6 +407,25 @@ describe('LitApp routing', () => {
     );
     expect(el.shadowRoot?.querySelector('console-shell')).to.equal(null);
   });
+
+  for (const legacy of ['duplicates', 'assignments']) {
+    it(`redirects the legacy /console/issues/${legacy} stub to Similar issues (B-20)`, async () => {
+      await fixture(html`<lit-app></lit-app>`);
+
+      Router.go(`/console/issues/${legacy}`);
+
+      await waitUntil(
+        () => window.location.pathname === '/console/issues',
+        `Expected /console/issues/${legacy} to redirect`,
+        { timeout: 5000 }
+      );
+      // The stub views were deleted (#1957); the redirect is all that is
+      // left, so no element or lazy chunk exists for the old route.
+      expect(document.querySelector(`${legacy}-view`)).to.equal(null);
+      expect(customElements.get(`${legacy}-view`)).to.equal(undefined);
+      expect(Object.keys(consoleRouteLoaders)).to.not.include(`${legacy}-view`);
+    });
+  }
 
   it('redirects the old bell link to the executions list', async () => {
     await fixture(html`<lit-app></lit-app>`);

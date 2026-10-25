@@ -30,7 +30,13 @@ async def test_mattermost_named_teams(count: int) -> None:
         assert request.headers["authorization"] == "Bearer secret-token"
         if request.url.path.endswith("/users/me"):
             return httpx.Response(
-                200, json={"id": "bot", "is_bot": True, "username": "Team assistant"}
+                200,
+                json={
+                    "id": "bot",
+                    "is_bot": True,
+                    "username": "team-assistant",
+                    "first_name": "Team assistant",
+                },
             )
         return httpx.Response(
             200,
@@ -42,6 +48,8 @@ async def test_mattermost_named_teams(count: int) -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = await discover(config(), client=client)
     assert result["bot_user_id"] == "bot"
+    assert result["bot_username"] == "team-assistant"
+    assert result["name"] == "Team assistant"
     assert len(result["workspaces"]) == count
     assert "secret-token" not in json.dumps(result)
 

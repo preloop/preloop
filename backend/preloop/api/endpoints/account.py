@@ -87,6 +87,7 @@ from preloop.schemas.gateway_usage import (
     ManagedAgentEnrollmentSummary,
     ManagedAgentModelBindingSummary,
     ManagedAgentModelBindingSyncRequest,
+    ManagedAgentDeviceLinkFields,
     ManagedAgentEnrollmentValidateRequest,
     ManagedAgentIdentityMutationCounts,
     ManagedAgentMergeRequest,
@@ -167,7 +168,7 @@ from preloop.services.subject_governance import (
     set_account_governance_defaults,
     set_subject_governance,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 from preloop.utils.redaction import redact_dict
 from preloop.schemas.gateway_usage import GatewayUsageBreakdown
 from preloop.api.heavy_routes import heavy_route
@@ -947,7 +948,9 @@ def _enrich_managed_agent_summaries(
             agent_kind=summary.get("agent_kind") or summary.get("session_source_type"),
             model_gateway_configured=bool(summary.get("model_gateway_configured")),
             control_enabled=bool(summary.get("control_enabled")),
-            total_requests=int(summary.get("total_requests") or 0),
+            total_requests=int(
+                summary.get("total_requests") or bool(summary.get("last_request_at"))
+            ),
         )
 
     if unresolved_model_summaries:
@@ -990,10 +993,12 @@ def _enrich_managed_agent_summary(
     )[0]
 
 
-#: Optional sections of the agent detail response. The page reads the header
-#: (agent, aggregate, credentials, enrollments) first and each tab's data when
-#: the tab opens, so a busy agent's header never waits for its session list.
-MANAGED_AGENT_DETAIL_SECTIONS = frozenset({"usage_by_model", "activity", "sessions"})
+#: Optional sections of the agent detail response. Lightweight reads let
+#: identity, session pages and range usage load independently. Legacy reads
+#: retain their all-time summary and always include the range aggregate.
+MANAGED_AGENT_DETAIL_SECTIONS = frozenset(
+    {"usage_by_model", "activity", "sessions", "aggregate"}
+)
 
 
 def _parse_detail_sections(include: Optional[str]) -> frozenset[str]:
@@ -1022,6 +1027,7 @@ def _build_managed_agent_detail_response(
     end_date: Optional[datetime] = None,
     background_tasks: Optional[BackgroundTasks] = None,
     sections: frozenset[str] = MANAGED_AGENT_DETAIL_SECTIONS,
+    lightweight: bool = False,
     session_limit: int = 20,
     session_offset: int = 0,
     current_user: Optional[UserModel] = None,
@@ -1030,8 +1036,22 @@ def _build_managed_agent_detail_response(
         start_date = start_date.astimezone(UTC).replace(tzinfo=None)
     if end_date and end_date.tzinfo:
         end_date = end_date.astimezone(UTC).replace(tzinfo=None)
-    summary = crud_managed_agent.get_summary_for_account(
+    agent_row = crud_managed_agent.get_for_account(
         db, account_id=account_id, agent_id=agent_id
+    )
+    if agent_row is None:
+        return None
+    # The agent's sessions are resolved once and shared by the summary, the
+    # windowed aggregate and the per-model rows below.
+    ownership = crud_managed_agent.session_ownership(
+        db, account_id=account_id, agent=agent_row
+    )
+    summary = crud_managed_agent.get_summary_for_account(
+        db,
+        account_id=account_id,
+        agent_id=agent_id,
+        ownership=ownership,
+        include_usage=not lightweight,
     )
     if summary is None:
         return None
@@ -1039,13 +1059,22 @@ def _build_managed_agent_detail_response(
         db, current_user, VISIBLE_MANAGED_AGENT, [summary]
     ):
         raise HTTPException(404, "Managed agent not found")
-    summary = _enrich_managed_agent_summary(db, account_id=account_id, summary=summary)
-    aggregate = crud_managed_agent.get_usage_aggregate_for_account(
-        db,
-        account_id=account_id,
-        agent_id=agent_id,
-        start_date=start_date,
-        end_date=end_date,
+    include_identity = not lightweight or not sections
+    if include_identity:
+        summary = _enrich_managed_agent_summary(
+            db, account_id=account_id, summary=summary
+        )
+    aggregate = (
+        crud_managed_agent.get_usage_aggregate_for_account(
+            db,
+            account_id=account_id,
+            agent_id=agent_id,
+            start_date=start_date,
+            end_date=end_date,
+            ownership=ownership,
+        )
+        if not lightweight or "aggregate" in sections
+        else None
     )
     usage_by_model = (
         crud_managed_agent.get_usage_by_model_for_account(
@@ -1054,6 +1083,7 @@ def _build_managed_agent_detail_response(
             agent_id=agent_id,
             start_date=start_date,
             end_date=end_date,
+            ownership=ownership,
         )
         if "usage_by_model" in sections
         else []
@@ -1096,19 +1126,34 @@ def _build_managed_agent_detail_response(
 
     return ManagedAgentDetailResponse(
         agent=ManagedAgentSummary(**summary),
-        devices=agent_device_links(db, user=current_user, agent_id=agent_id),
-        aggregate=ManagedAgentUsageAggregate(
-            session_count=aggregate["session_count"] if aggregate else 0,
-            total_requests=aggregate["total_requests"] if aggregate else 0,
-            successful_requests=aggregate["successful_requests"] if aggregate else 0,
-            failed_requests=aggregate["failed_requests"] if aggregate else 0,
-            token_usage=GatewayTokenUsage.from_row(aggregate),
-            estimated_cost=aggregate["estimated_cost"] if aggregate else 0.0,
-            latest_model_alias=aggregate["latest_model_alias"] if aggregate else None,
-            latest_provider_name=(
-                aggregate["latest_provider_name"] if aggregate else None
-            ),
-            last_request_at=aggregate["last_request_at"] if aggregate else None,
+        devices=(
+            agent_device_links(db, user=current_user, agent_id=agent_id)
+            if include_identity
+            else []
+        ),
+        aggregate=(
+            ManagedAgentUsageAggregate(
+                session_count=aggregate["session_count"] if aggregate else 0,
+                total_requests=aggregate["total_requests"] if aggregate else 0,
+                successful_requests=aggregate["successful_requests"]
+                if aggregate
+                else 0,
+                failed_requests=aggregate["failed_requests"] if aggregate else 0,
+                token_usage=GatewayTokenUsage.from_row(aggregate),
+                estimated_cost=aggregate["estimated_cost"] if aggregate else 0.0,
+                latest_model_alias=aggregate["latest_model_alias"]
+                if aggregate
+                else None,
+                latest_provider_name=(
+                    aggregate["latest_provider_name"] if aggregate else None
+                ),
+                last_request_at=aggregate["last_request_at"] if aggregate else None,
+                subscription_usage=(
+                    aggregate.get("subscription_usage") if aggregate else None
+                ),
+            )
+            if aggregate is not None
+            else None
         ),
         usage_by_model=[
             ModelGatewayUsageService._model_row_to_schema(row) for row in usage_by_model
@@ -1126,14 +1171,22 @@ def _build_managed_agent_detail_response(
         session_total=sessions.get("total"),
         credentials=[
             ManagedAgentCredentialSummary(**item)
-            for item in crud_managed_agent_credential.list_for_agent(
-                db, account_id=account_id, agent_id=agent_id
+            for item in (
+                crud_managed_agent_credential.list_for_agent(
+                    db, account_id=account_id, agent_id=agent_id
+                )
+                if include_identity
+                else []
             )
         ],
         enrollments=[
             ManagedAgentEnrollmentSummary(**item)
-            for item in crud_managed_agent_enrollment.list_for_agent(
-                db, account_id=account_id, agent_id=agent_id
+            for item in (
+                crud_managed_agent_enrollment.list_for_agent(
+                    db, account_id=account_id, agent_id=agent_id
+                )
+                if include_identity
+                else []
             )
         ],
     )
@@ -1378,6 +1431,7 @@ def update_session_artifact_settings(
     audit row with the before and after value of each changed field; a
     request that changes nothing writes no row.
     """
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     from sqlalchemy.orm.attributes import flag_modified
 
     from preloop.services import audio_storage
@@ -1422,21 +1476,27 @@ def update_session_artifact_settings(
 
 
 @router.patch("/account/details", response_model=AccountDetailsResponse)
+@require_permission("manage_account")
 async def update_account_details(
     update_data: AccountDetailsUpdate,
     account: Annotated[Account, Depends(get_account_for_user)],
     db: Session = Depends(get_db_session),
-):
+    current_user: UserModel = Depends(get_current_active_user),
+) -> AccountDetailsResponse:
     """Update current account details.
 
     Args:
         update_data: Account update data
         account: Current user's account
         db: Database session
+        current_user: Authenticated account manager
 
     Returns:
         Updated account details
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_account")
+    )
     # Update account
     update_dict = update_data.model_dump(exclude_unset=True)
     updated_account = crud_account.update(db=db, db_obj=account, obj_in=update_dict)
@@ -1471,7 +1531,8 @@ def get_account_gateway_usage_summary(
     include_breakdown: bool = Query(
         True,
         description=(
-            "When true, include per-model/flow/session/tool/day breakdowns. "
+            "When true, include per-model/flow/session/tool/day breakdowns "
+            "(and per-agent totals when breakdown=agents is selected). "
             "Default true preserves the historical response shape for API "
             "clients; lightweight card callers (Overview/Agents) should pass "
             "false. Prefer /cost/summary for full cost analytics."
@@ -1481,7 +1542,10 @@ def get_account_gateway_usage_summary(
         None,
         description=(
             "Selected breakdowns, repeated for multiple sections. Omitted "
-            "preserves all sections; ignored when include_breakdown=false."
+            "preserves the historical sections (models, flows, sessions, "
+            "tools, days); 'agents' is opt-in and returns usage_by_agent, "
+            "account-wide only (empty when runtime_principal_id is set). "
+            "Ignored when include_breakdown=false."
         ),
     ),
     session_limit: Optional[int] = Query(
@@ -1789,8 +1853,18 @@ def get_account_managed_agent(
         None,
         description=(
             "Comma list of optional sections: usage_by_model, activity, "
-            "sessions. Omitted returns all of them; an empty value returns "
-            "the agent, its aggregate, credentials and enrollments only."
+            "sessions, aggregate. Omitted returns all sections; an empty value "
+            "returns identity. Legacy reads always include the aggregate. "
+            "Lightweight section reads omit unrelated identity enrichment, "
+            "devices, credentials and enrollments."
+        ),
+    ),
+    lightweight: bool = Query(
+        False,
+        description=(
+            "Return identity and recency without all-time usage totals. "
+            "Aggregate is null unless its section is included. Identity totals "
+            "are not computed (agent.usage_computed=false)."
         ),
     ),
     session_limit: int = Query(20, ge=1, le=100),
@@ -1818,6 +1892,7 @@ def get_account_managed_agent(
         end_date=end_date,
         background_tasks=background_tasks,
         sections=sections,
+        lightweight=lightweight,
         session_limit=session_limit,
         session_offset=session_offset,
         current_user=current_user,
@@ -1872,7 +1947,7 @@ def list_owned_agent_shared_sessions(
     response_model=list[ManagedAgentModelBindingSummary],
 )
 @require_permission("view_agents")
-async def list_account_managed_agent_model_bindings(
+def list_account_managed_agent_model_bindings(
     agent_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
     current_user: UserModel = Depends(get_current_active_user),
@@ -1903,6 +1978,9 @@ async def replace_account_managed_agent_model_bindings(
     db: Session = Depends(get_db_session),
 ):
     """Replace explicit AI model bindings for one managed agent."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     agent = crud_managed_agent.get_for_account(
         db, account_id=str(account.id), agent_id=agent_id
     )
@@ -1978,6 +2056,9 @@ async def update_account_governance_defaults_endpoint(
     db: Session = Depends(get_db_session),
 ) -> AccountGovernanceDefaultsResponse:
     """Update account-wide native tool-approval defaults."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_policies")
+    )
     if payload.approval_workflow_id:
         try:
             workflow_id = UUID(payload.approval_workflow_id)
@@ -2102,6 +2183,7 @@ def update_account_flow_governance(
     db: Session = Depends(get_db_session),
 ) -> FlowGovernanceResponse:
     """Store a governance override for one flow's executions."""
+    ensure_permission_in_oss(db, current_user, "edit_flows")
     _require_account_flow(db, account, flow_id)
     _validate_governance_workflow(db, account, payload.approval_workflow_id)
     account.meta_data = set_subject_governance(
@@ -2129,6 +2211,7 @@ def reset_account_flow_governance(
     db: Session = Depends(get_db_session),
 ) -> FlowGovernanceResponse:
     """Drop the flow's override so it inherits the account policy again."""
+    ensure_permission_in_oss(db, current_user, "edit_flows")
     _require_account_flow(db, account, flow_id)
     account.meta_data = set_subject_governance(
         account.meta_data or {},
@@ -2189,6 +2272,9 @@ async def update_account_managed_agent_governance(
     current_user: UserModel = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ):
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     agent = crud_managed_agent.get_visible_target(
         db, account_id=str(account.id), agent_id=agent_id
     )
@@ -2258,6 +2344,9 @@ async def create_account_managed_agent(
     Returns:
         The managed-agent summary for the newly registered agent.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     agent = crud_managed_agent.create_custom_agent(
         db,
         account_id=account.id,
@@ -2333,6 +2422,9 @@ async def create_account_managed_agent_credential(
     db: Session = Depends(get_db_session),
 ):
     """Create a durable credential for one managed agent."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     agent = crud_managed_agent.get_for_account(
         db, account_id=str(account.id), agent_id=agent_id
     )
@@ -2435,6 +2527,9 @@ async def revoke_account_managed_agent_credential(
     db: Session = Depends(get_db_session),
 ):
     """Revoke one durable credential for a managed agent."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     credential = crud_managed_agent_credential.revoke_for_agent(
         db,
         account_id=str(account.id),
@@ -2502,6 +2597,9 @@ async def create_account_managed_agent_enrollment(
     db: Session = Depends(get_db_session),
 ):
     """Persist one enrollment record for a managed agent."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     agent = crud_managed_agent.get_for_account(
         db, account_id=str(account.id), agent_id=agent_id
     )
@@ -2549,6 +2647,13 @@ async def create_account_managed_agent_enrollment(
         )
     db.commit()
     db.refresh(enrollment)
+    _link_discovery_candidates(
+        db,
+        account=account,
+        agent_id=str(agent.id),
+        payload=payload,
+        status_value=payload.status,
+    )
     emit_account_event(
         build_account_event(
             account_id=str(account.id),
@@ -2572,6 +2677,8 @@ async def create_account_managed_agent_enrollment(
 
 
 ENROLLMENT_STATUS_VALIDATED = "validated"
+# A restore removes Preloop's management; it is not evidence of a device link.
+ENROLLMENT_STATUSES_WITHOUT_DEVICE_LINK = frozenset({"restored"})
 
 
 def _link_discovery_candidates(
@@ -2579,18 +2686,20 @@ def _link_discovery_candidates(
     *,
     account: Account,
     agent_id: str,
-    payload: ManagedAgentEnrollmentValidateRequest,
+    payload: ManagedAgentDeviceLinkFields,
+    status_value: str,
 ) -> None:
-    """Mark reported discovery candidates from this workstation onboarded.
+    """Attach the managed agent to the workstation it was enrolled from.
 
-    Runs only for a successful validation that carries the salted
-    workstation fingerprint. Linking is best effort: a failure here must not
-    fail the enrollment it decorates. Call it after the enrollment transaction
-    commits so a link failure cannot roll back ``agent.onboarded``.
+    Runs for any enrollment write that carries the salted workstation
+    fingerprint, except a restore: an agent applied, or onboarded but failing
+    validation, still runs on that device, and MCP-only or IDE-config agents
+    are often never ``validated``. Linking is best effort: a failure here must
+    not fail the enrollment it decorates. Call it after the enrollment
+    transaction commits so a link failure cannot roll back ``agent.onboarded``.
     """
-    if (
-        payload.status != ENROLLMENT_STATUS_VALIDATED
-        or not payload.workstation_fingerprint
+    if status_value in ENROLLMENT_STATUSES_WITHOUT_DEVICE_LINK or (
+        not payload.workstation_fingerprint
     ):
         return
     agent = crud_managed_agent.get_for_account(
@@ -2606,6 +2715,8 @@ def _link_discovery_candidates(
             agent_kind=agent.agent_kind,
             managed_agent_id=agent.id,
             config_path_hash=payload.config_path_hash,
+            os_family=payload.os_family,
+            cli_version=payload.cli_version,
         )
         db.commit()
     except Exception:
@@ -2681,6 +2792,9 @@ async def validate_account_managed_agent_enrollment(
     The first time an enrollment reaches ``validated`` the agent counts as
     onboarded and ``agent.onboarded`` is enqueued in the same transaction.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     existing = crud_managed_agent_enrollment.get_for_agent(
         db,
         account_id=str(account.id),
@@ -2713,7 +2827,13 @@ async def validate_account_managed_agent_enrollment(
         )
     db.commit()
     db.refresh(enrollment)
-    _link_discovery_candidates(db, account=account, agent_id=agent_id, payload=payload)
+    _link_discovery_candidates(
+        db,
+        account=account,
+        agent_id=agent_id,
+        payload=payload,
+        status_value=payload.status,
+    )
     emit_account_event(
         build_account_event(
             account_id=str(account.id),
@@ -2746,6 +2866,9 @@ async def restore_account_managed_agent_enrollment(
     db: Session = Depends(get_db_session),
 ):
     """Persist restore state for one managed-agent enrollment."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     enrollment = crud_managed_agent_enrollment.mark_restored(
         db,
         account_id=str(account.id),
@@ -2790,6 +2913,9 @@ async def update_account_managed_agent(
     db: Session = Depends(get_db_session),
 ):
     """Update managed-agent ownership or lifecycle controls."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     # Locked for the whole handler: ``lifecycle_state`` is read here and the
     # credential restore/revoke decision below is made from that read, so a
     # concurrent operator action (a resume racing a decommission) must not
@@ -3027,6 +3153,9 @@ async def delete_account_managed_agent(
     db: Session = Depends(get_db_session),
 ):
     """Remove one managed-agent registry entry without touching the actual agent."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     agent = crud_managed_agent.get_for_account(
         db, account_id=str(account.id), agent_id=agent_id
     )
@@ -3105,6 +3234,9 @@ async def rekey_account_managed_agent(
     db: Session = Depends(get_db_session),
 ):
     """Rewrite one managed agent's durable principal id and dependent rows."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     identity = None
     if body.principal_identity is not None:
         identity = PrincipalIdentity(
@@ -3174,6 +3306,9 @@ async def merge_account_managed_agents(
     db: Session = Depends(get_db_session),
 ):
     """Merge a duplicate managed agent into a survivor (dry-run capable)."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     try:
         survivor, duplicate, counts = merge_managed_agents(
             db,
@@ -3674,6 +3809,16 @@ async def get_account_runtime_session_gateway_events(
             "The event detail endpoint still returns the full payload."
         ),
     ),
+    history_window: int | None = Query(
+        None,
+        ge=1,
+        le=500,
+        description=(
+            "With `history=delta`, each event keeps at most its last N "
+            "messages and tool entries, so the oldest event on a page of a "
+            "long session does not carry the whole conversation (#1689)."
+        ),
+    ),
 ) -> dict[str, Any]:
     """Return one compact page of stored gateway event metadata for a session."""
     from preloop.models.crud.runtime_session_activity import (
@@ -3721,7 +3866,7 @@ async def get_account_runtime_session_gateway_events(
             for row in rows
         ]
         if history == "delta" and not metadata_only:
-            events = elide_replayed_history(events)
+            events = elide_replayed_history(events, window=history_window)
         next_offset = offset + len(events)
         return {
             "source": "database",
@@ -3861,6 +4006,9 @@ async def update_account_runtime_session(
     db: Session = Depends(get_db_session),
 ):
     """Update runtime-session lifecycle controls for the current account."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_runtime_sessions")
+    )
     session = crud_runtime_session.get_account_session(
         db, account_id=str(account.id), runtime_session_id=runtime_session_id
     )
@@ -4371,6 +4519,9 @@ async def upsert_attention_dismissal(
     Writing takes ``manage_agents``: an operator who may reconfigure the fleet
     may also declare that one of its states is expected.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     if payload.reason == "snoozed" and not payload.snooze_days:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -4415,6 +4566,9 @@ async def delete_attention_dismissal(
     db: Session = Depends(get_db_session),
 ) -> None:
     """Restore a silenced item so it shows in the inbox again."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_agents")
+    )
     # Read before the delete commits: the row's attributes expire with it.
     existing = crud_attention_dismissal.get_by_item(
         db, account_id=account.id, item_id=item_id

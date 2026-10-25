@@ -2534,7 +2534,7 @@ class TestEscalationBehavior:
                     ApprovalService,
                     "_broadcast_approval_update",
                     new_callable=AsyncMock,
-                ):
+                ) as mock_broadcast:
                     result = await approval_service.wait_for_approval(
                         sample_approval_request.id, poll_interval=0.1
                     )
@@ -2542,6 +2542,17 @@ class TestEscalationBehavior:
                     # Escalation should have been triggered
                     assert mock_escalation.called
                     assert result.status == "approved"
+                    # The new deadline travels with a UTC offset, like expires_at.
+                    escalated = [
+                        call
+                        for call in mock_broadcast.call_args_list
+                        if call.args[1] == "escalated"
+                    ]
+                    assert escalated
+                    assert all(
+                        call.kwargs["extra_data"]["new_expires_at"].endswith("+00:00")
+                        for call in escalated
+                    )
 
     async def test_wait_for_approval_no_escalation_when_already_triggered(
         self, approval_service, sample_approval_request, sample_approval_workflow
@@ -4112,3 +4123,68 @@ async def test_create_and_notify_owns_summary_session_until_finished(
             assert created is sample_approval_request
     assert phases == ["created", "summary", "closed"]
     assert all(thread != loop_thread for thread in worker_threads)
+
+
+@pytest.mark.parametrize("decision", ["approve_request", "decline_request"])
+async def test_note_approval_requires_bound_human(approval_service, decision):
+    from fastapi import HTTPException
+    from types import SimpleNamespace
+
+    owner_id = uuid.uuid4()
+    request = SimpleNamespace(
+        id=uuid.uuid4(),
+        tool_name="send_note",
+        approval_workflow=SimpleNamespace(
+            approval_config={"note_caller_user_id": str(owner_id)}
+        ),
+    )
+    approval_service.get_approval_request_for_update = AsyncMock(return_value=request)
+    with pytest.raises(HTTPException) as exc:
+        await getattr(approval_service, decision)(request.id, user_id=uuid.uuid4())
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.parametrize("bypass_kind", ["standing", "time_boxed", "ai_driven"])
+async def test_bound_note_ignores_automatic_bypasses(
+    approval_service: ApprovalService,
+    sample_approval_request: ApprovalRequest,
+    sample_approval_workflow: ApprovalWorkflow,
+    bypass_kind: str,
+) -> None:
+    sample_approval_workflow.approval_config = {
+        "note_caller_user_id": str(uuid.uuid4())
+    }
+    sample_approval_workflow.approval_mode = (
+        "ai_driven" if bypass_kind == "ai_driven" else "standard"
+    )
+    approval_service.create_approval_request = AsyncMock(
+        return_value=sample_approval_request
+    )
+    approval_service.update_approval_request = AsyncMock(
+        return_value=sample_approval_request
+    )
+    approval_service.send_notifications = AsyncMock()
+    approval_service._resolve_bypass = AsyncMock(return_value=MagicMock())
+    approval_service._auto_approve_without_review = AsyncMock()
+    approval_service._auto_approve_via_bypass = AsyncMock()
+    with patch(
+        "preloop.services.approval_summary.generate_approval_summary",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await approval_service.create_and_notify(
+            account_id="test-account",
+            tool_configuration_id=uuid.uuid4(),
+            approval_workflow=sample_approval_workflow,
+            tool_name="send_note",
+            tool_args={"text": "Report progress."},
+            standing_bypass_reason=(
+                "native_tool_approvals_off" if bypass_kind == "standing" else None
+            ),
+        )
+    assert result.status == "pending"
+    approval_service.send_notifications.assert_awaited_once_with(
+        sample_approval_request, sample_approval_workflow
+    )
+    approval_service._resolve_bypass.assert_not_awaited()
+    approval_service._auto_approve_without_review.assert_not_awaited()
+    approval_service._auto_approve_via_bypass.assert_not_awaited()

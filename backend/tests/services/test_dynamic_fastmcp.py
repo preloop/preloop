@@ -1,6 +1,7 @@
 """Tests for DynamicFastMCP."""
 
 import inspect
+from typing import AsyncIterator
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -8,7 +9,9 @@ from uuid import uuid4
 from mcp import types
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
+from sqlalchemy.orm import Session
 
+from preloop.models import models
 from preloop.services.dynamic_fastmcp import (
     DynamicFastMCP,
     _python_type_for_schema,
@@ -1136,7 +1139,7 @@ class TestMCPCallTool:
 
     async def test_call_tool_no_user_context(self, dynamic_mcp):
         """Test calling tool with no user context."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         result = await dynamic_mcp.call_tool("tool1", {})
 
@@ -1147,7 +1150,7 @@ class TestMCPCallTool:
 
     async def test_call_tool_unauthorized(self, dynamic_mcp, user_context):
         """Test calling unauthorized tool."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1162,7 +1165,7 @@ class TestMCPCallTool:
 
     async def test_call_builtin_tool(self, dynamic_mcp, user_context):
         """Test calling builtin tool."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1203,7 +1206,7 @@ class TestMCPCallTool:
 
     async def test_call_proxied_tool_translates_name(self, dynamic_mcp, user_context):
         """Test calling proxied tool translates name."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
         dynamic_mcp._proxied_tool_servers["proxied_tool"] = "server-id"
@@ -1254,14 +1257,13 @@ class TestMCPCallTool:
                     {},
                     version=None,
                     run_middleware=True,
-                    task_meta=None,
                 )
 
     async def test_call_proxied_tool_audits_client_name(
         self, dynamic_mcp, user_context
     ):
         """The tool_call audit row names the tool the client called."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
         dynamic_mcp._proxied_tool_servers["proxied_tool"] = "server-id"
@@ -1301,7 +1303,7 @@ class TestMCPCallTool:
 
     async def test_call_disabled_builtin_tool_rejected(self, dynamic_mcp, user_context):
         """A builtin tool disabled by ToolConfiguration cannot be invoked by name."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1319,6 +1321,7 @@ class TestMCPCallTool:
                 return_value=[disabled_config],
             ),
             patch("preloop.services.dynamic_fastmcp.crud_account.get") as get_account,
+            patch.object(dynamic_mcp, "_audit_refused_tool_call") as audit_refused,
             patch.object(
                 dynamic_mcp.__class__.__bases__[0],
                 "call_tool",
@@ -1333,6 +1336,7 @@ class TestMCPCallTool:
 
         mock_super.assert_not_called()
         get_account.assert_not_called()
+        audit_refused.assert_called_once()
         assert isinstance(result, ToolResult)
         assert result.is_error
         assert "disabled" in result.content[0].text.lower()
@@ -1341,7 +1345,7 @@ class TestMCPCallTool:
         self, dynamic_mcp, user_context
     ):
         """A ToolConfiguration disable of either search name blocks both calls."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1364,6 +1368,7 @@ class TestMCPCallTool:
                 patch(
                     "preloop.services.dynamic_fastmcp.crud_account.get",
                 ) as get_account,
+                patch.object(dynamic_mcp, "_audit_refused_tool_call") as audit_refused,
                 patch.object(
                     dynamic_mcp.__class__.__bases__[0],
                     "call_tool",
@@ -1375,6 +1380,7 @@ class TestMCPCallTool:
                 result = await dynamic_mcp.call_tool(called, {"query": "auth"})
             mock_super.assert_not_called()
             get_account.assert_not_called()
+            audit_refused.assert_called_once()
             assert isinstance(result, ToolResult)
             return result
 
@@ -1390,7 +1396,7 @@ class TestMCPCallTool:
         self, dynamic_mcp, user_context
     ):
         """A required justification on either search name is required on both."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1435,7 +1441,7 @@ class TestMCPCallTool:
         self, dynamic_mcp, user_context
     ):
         """A default-disabled builtin tool with no config cannot be invoked."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1468,7 +1474,7 @@ class TestMCPCallTool:
         self, dynamic_mcp, user_context
     ):
         """Calling deprecated search alias outside flow is rejected for fresh accounts."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
         user_context.allowed_flow_tools = None
@@ -1565,7 +1571,7 @@ class TestMCPCallTool:
         self, dynamic_mcp, user_context
     ):
         """A deny rule naming search does not make the alias callable."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
         from preloop.services.subject_governance import (
             SUBJECT_TYPE_API_KEYS,
             set_subject_governance,
@@ -1620,7 +1626,7 @@ class TestMCPCallTool:
         """
         import json as _json
 
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1655,7 +1661,7 @@ class TestMCPCallTool:
         self, dynamic_mcp, user_context
     ):
         """An agent-scoped enable permits the call for exactly that agent."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         user_context.managed_agent_id = "agent-1"
         dynamic_mcp._user_context_provider = lambda: user_context
@@ -1712,7 +1718,7 @@ class TestMCPCallTool:
         schema."""
         import json as _json
 
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         user_context.managed_agent_id = "agent-2"
         dynamic_mcp._user_context_provider = lambda: user_context
@@ -1762,7 +1768,7 @@ class TestMCPCallTool:
         rule whose workflow is unset would behave like ``allow``, which is
         the exact silent-bypass bug we're guarding against.
         """
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -1823,7 +1829,7 @@ class TestMCPCallTool:
         fail with ``Access denied`` and break every proxied tool that has an
         access rule (e.g. ``require_approval``).
         """
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
         safe_account_id = user_context.account_id.replace("-", "_")
@@ -1856,7 +1862,6 @@ class TestMCPCallTool:
             {"amount": 10, "recipient": "alice"},
             version=None,
             run_middleware=True,
-            task_meta=None,
         )
         assert isinstance(result, ToolResult)
         assert result.content[0].text == "Paid"
@@ -2369,7 +2374,7 @@ class TestCreateProxiedToolWrapper:
         self, dynamic_mcp, user_context, monkeypatch, property_name
     ):
         """Advertised property keys reach upstream unchanged via call_tool."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp.set_user_context_provider(lambda: user_context)
         captured_upstream = {}
@@ -2751,7 +2756,7 @@ class TestSendNoteToolExposure:
         self, dynamic_mcp, user_context
     ):
         """Hidden is not enough: calling it by name must be refused too."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
 
@@ -2779,6 +2784,102 @@ class TestSendNoteToolExposure:
         assert isinstance(result, ToolResult)
         assert result.is_error
         assert "disabled" in result.content[0].text.lower()
+
+
+@pytest.mark.parametrize("server_name", ["example-upstream", "preloop-mcp"])
+async def test_proxied_send_note_enforces_deny_before_dispatch(
+    dynamic_mcp: DynamicFastMCP,
+    user_context: UserContext,
+    db_session: Session,
+    test_user: models.User,
+    server_name: str,
+) -> None:
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    from preloop.models.db.session import SyncApprovalSession
+    from preloop.services import policy_evaluator
+
+    user_context.account_id = str(test_user.account_id)
+    user_context.user_id = str(test_user.id)
+    user_context.allowed_flow_tools = ["send_note"]
+    dynamic_mcp._user_context_provider = lambda: user_context
+    dynamic_mcp._proxied_tool_servers["send_note"] = str(uuid4())
+    dynamic_mcp._proxied_tool_server_names["send_note"] = server_name
+    config = models.ToolConfiguration(
+        account_id=test_user.account_id,
+        tool_name="send_note",
+        tool_source="mcp",
+        is_enabled=True,
+    )
+    db_session.add(config)
+    db_session.flush()
+    db_session.add(
+        models.ToolAccessRule(
+            account_id=test_user.account_id,
+            tool_configuration_id=config.id,
+            action="deny",
+            condition_expression="true",
+            description="Upstream notes are blocked",
+        )
+    )
+    db_session.flush()
+
+    @asynccontextmanager
+    async def session() -> AsyncIterator[SyncApprovalSession]:
+        yield SyncApprovalSession(db_session)
+
+    with (
+        patch(
+            "preloop.services.dynamic_fastmcp._prepare_grant_dispatch",
+            new=AsyncMock(
+                return_value=(SimpleNamespace(server_name=server_name), None)
+            ),
+        ),
+        patch.object(dynamic_mcp, "_audit_refused_tool_call"),
+        patch.object(dynamic_mcp, "_persist_tool_call_activity"),
+        patch("preloop.services.dynamic_fastmcp.get_db", lambda: iter([MagicMock()])),
+        patch(
+            "preloop.services.dynamic_fastmcp.kill_switch_service.tools_halted",
+            return_value=False,
+        ),
+        patch(
+            "preloop.services.dynamic_fastmcp._load_sensitive_data_policy",
+            return_value=(None, None),
+        ),
+        patch(
+            "preloop.services.dynamic_fastmcp._shared_tool_ceiling", return_value=None
+        ),
+        patch(
+            "preloop.services.dynamic_fastmcp.crud_tool_configuration.get_multi_by_account",
+            return_value=[],
+        ),
+        patch("preloop.models.db.session.get_async_db_session", new=session),
+        patch.object(
+            dynamic_mcp,
+            "list_tools",
+            new=AsyncMock(
+                return_value=[
+                    Tool(name="send_note", description="Upstream", parameters={})
+                ]
+            ),
+        ),
+        patch.object(
+            dynamic_mcp, "_restricted_runtime_denial", new=AsyncMock(return_value=None)
+        ),
+        patch.object(policy_evaluator, "_log_policy_decision_async"),
+        patch.object(
+            policy_evaluator,
+            "evaluate_policy_async",
+            wraps=policy_evaluator.evaluate_policy_async,
+        ) as evaluate,
+        patch.object(FastMCP, "call_tool", new=AsyncMock()) as dispatch,
+    ):
+        result = await dynamic_mcp.call_tool("send_note", {"text": "Report progress."})
+    assert result.is_error
+    assert "Upstream notes are blocked" in result.content[0].text
+    assert evaluate.call_args.kwargs["defer_note_scope"] is False
+    dispatch.assert_not_awaited()
 
 
 class TestToolCallUsageOutcome:
@@ -2872,6 +2973,46 @@ class TestToolCallUsageOutcome:
         assert len(metadata["arguments_hash"]) == 16
         assert "arguments" not in metadata
         assert "which project should I review?" not in str(metadata)
+
+    def test_work_tool_call_records_a_parsed_reference_only(self):
+        from preloop.models.crud import crud_runtime_session_activity
+        from preloop.services.dynamic_fastmcp import DynamicFastMCP
+
+        mcp = DynamicFastMCP("test-mcp")
+        activity = MagicMock()
+        activity.timestamp = None
+        with (
+            patch("preloop.services.dynamic_fastmcp.get_db") as mock_get_db,
+            patch.object(
+                crud_runtime_session_activity, "log_tool_call", return_value=activity
+            ) as log_call,
+            patch("preloop.services.account_realtime.emit_account_event"),
+        ):
+            mock_get_db.side_effect = lambda: iter([MagicMock()])
+            mcp._persist_tool_call_activity(
+                self._context(),
+                tool_name="update_pull_request",
+                client_tool_name="update_pull_request",
+                status="succeeded",
+                summary=None,
+                arguments={
+                    "pull_request": "https://github.com/acme/api/pull/9",
+                    "review_action": "approve",
+                    "review_body": "a private review body",
+                },
+                correlation_id="corr-work",
+            )
+        metadata = log_call.call_args.kwargs["metadata"]
+        assert metadata["work_ref"] == {
+            "via": "builtin",
+            "kind": "pull_request",
+            "action": "reviewed",
+            "ref": "#9",
+            "repo": "acme/api",
+            "host": "github.com",
+            "review_state": "approved",
+        }
+        assert "a private review body" not in str(metadata)
 
     def test_refused_call_records_the_refusal_string(self):
         refusal = "Unsupported item key 'severity'; allowed keys are id, label."
@@ -2967,7 +3108,7 @@ class TestToolCallUsageOutcome:
         run_middleware=False. Both entries used to authorize and persist,
         so every MCP call showed up twice.
         """
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         dynamic_mcp._user_context_provider = lambda: user_context
         available_tools = [Tool(name="get_issue", description="x", parameters={})]
@@ -2983,7 +3124,6 @@ class TestToolCallUsageOutcome:
             *,
             version=None,
             run_middleware=True,
-            task_meta=None,
         ):
             if run_middleware:
                 return await dynamic_mcp.call_tool(
@@ -2991,7 +3131,6 @@ class TestToolCallUsageOutcome:
                     arguments or {},
                     version=version,
                     run_middleware=False,
-                    task_meta=task_meta,
                 )
             return tool_result
 
@@ -3033,7 +3172,7 @@ class TestApprovalDenialUsageOutcome:
         self, dynamic_mcp, user_context, monkeypatch
     ):
         """require_approval returning False persists refused, not succeeded."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         user_context.runtime_session_id = str(uuid4())
         dynamic_mcp.set_user_context_provider(lambda: user_context)
@@ -3129,7 +3268,7 @@ class TestProxiedTransportFailureUsageOutcome:
         self, dynamic_mcp, user_context, monkeypatch
     ):
         """The wrapper's except path stamps failed, not a success string."""
-        from fastmcp.tools.tool import ToolResult
+        from fastmcp.tools import ToolResult
 
         user_context.runtime_session_id = str(uuid4())
         dynamic_mcp.set_user_context_provider(lambda: user_context)

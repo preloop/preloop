@@ -1,3 +1,6 @@
+import { REST_API_PREFIX } from '../../api-path';
+import { formatUsd, formatUsdExact } from '../../utils/money';
+import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -32,7 +35,7 @@ import {
   executionStatusVariant,
 } from '../../utils/execution-presentation';
 import { flowTriggerSummary } from '../../utils/flow-trigger';
-import { getAgentKindPresentation } from '../../utils/agent-kinds';
+import { flowRuntimeLabel } from '../../utils/flow-runtime';
 import {
   executionSubjectCss,
   renderExecutionSubject,
@@ -120,23 +123,15 @@ export function referenceListsSentence(
   return joined.charAt(0).toUpperCase() + joined.slice(1);
 }
 
-const FLOW_RUNTIME_LABELS: Record<string, string> = {
-  codex: 'Codex CLI',
-  gemini: 'Gemini CLI',
-  opencode: 'OpenCode',
-  pi: 'Pi',
-  deepseek: 'DeepSeek Harness',
-};
+export { flowRuntimeLabel } from '../../utils/flow-runtime';
 
-/** The label for a flow's `agent_type`. */
-export function flowRuntimeLabel(agentType: string | null | undefined): string {
-  const raw = (agentType || '').trim();
-  if (!raw) return 'Unknown';
-  return (
-    FLOW_RUNTIME_LABELS[raw.toLowerCase()] ||
-    getAgentKindPresentation(raw)?.label ||
-    raw
-  );
+/** "2m 40s", "45s", "1h 05m" for an average run time. */
+function flowDurationText(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
 @customElement('flow-view')
@@ -189,11 +184,44 @@ export class FlowView extends LitElement {
           white-space: nowrap;
           border: 0;
         }
+        /* One hairline row of facts above the runs, as on the execution
+         page: label-free, meta ink, numbers tabular. */
+        .flow-summary-strip {
+          align-items: baseline;
+          border-bottom: 1px solid var(--console-hairline);
+          color: var(--sl-color-neutral-700);
+          display: flex;
+          flex-wrap: wrap;
+          font-size: var(--console-text-body);
+          font-variant-numeric: tabular-nums;
+          gap: var(--sl-spacing-x-small);
+          margin-bottom: var(--sl-spacing-medium);
+          padding-bottom: var(--sl-spacing-small);
+        }
+        .flow-summary-strip .strip-sep {
+          color: var(--console-meta-color);
+        }
+        .flow-summary-strip .strip-sample {
+          color: var(--console-meta-color);
+        }
         /* The subject column takes the slack: fixed layout plus a zero max
          width makes the cell shrink to its share and ellipsise inside it,
          instead of a long repo name widening the whole table. */
         .executions-table {
           table-layout: fixed;
+        }
+        /* Fixed layout with no widths split the table in four equal
+         columns, so the subject truncated beside hundreds of empty pixels.
+         The short columns get what their content needs; Subject takes the
+         rest. */
+        .executions-table .col-status {
+          width: 112px;
+        }
+        .executions-table .col-started {
+          width: 96px;
+        }
+        .executions-table .col-duration {
+          width: 104px;
         }
         .executions-table .subject-cell {
           max-width: 0;
@@ -269,6 +297,29 @@ export class FlowView extends LitElement {
           margin-bottom: 0;
         }
 
+        pre.prompt-template {
+          white-space: pre-wrap;
+          word-wrap: break-word;
+          font-family: var(--sl-font-mono);
+          font-size: var(--sl-font-size-small);
+          line-height: 1.5;
+          padding: var(--sl-spacing-medium);
+          border-radius: var(--sl-border-radius-medium);
+          background: var(--console-page);
+          margin: 0;
+        }
+        /* #1692: the prompt shows its first 10 lines until expanded. */
+        pre.prompt-template.collapsed {
+          /* content-box: max-height excludes the padding, so this is
+             exactly ten 1.5em lines (it was 10 + padding = ~11.5 lines). */
+          box-sizing: content-box;
+          max-height: calc(10 * 1.5em);
+          overflow: hidden;
+        }
+        .prompt-toggle {
+          margin-top: var(--sl-spacing-x-small);
+        }
+
         sl-textarea.prompt {
           max-height: 50rem;
           overflow: auto;
@@ -315,6 +366,8 @@ export class FlowView extends LitElement {
     is_enabled: true,
   };
 
+  /** Whether the prompt template card shows the whole prompt (#1692). */
+  @state() private promptExpanded = false;
   @state() private longRunningAgents: any[] = [];
   /** Whether `longRunningAgents` is the server's answer, not a fallback. */
   private agentsLoaded = false;
@@ -995,9 +1048,83 @@ export class FlowView extends LitElement {
       </view-header>
       <div class="column-layout wide">
         <div class="main-column">
-          ${this.renderReferenceDataWarning()}
+          ${this.renderReferenceDataWarning()} ${this.renderSummaryStrip()}
+          <!-- Recent executions come before the prompt (#1692): the runs are
+               why the page is opened, the prompt is reference. -->
+          <sl-card data-recent-executions>
+            <div slot="header">
+              <sl-icon name="clock-history"></sl-icon>
+              Recent executions
+            </div>
+            ${
+              this.recentExecutions.length === 0
+                ? html`<p>No executions yet. Run now starts one.</p>`
+                : html`
+                    <div class="table-scroll">
+                      <table class="styled-table executions-table">
+                        <thead>
+                          <tr>
+                            <th>Subject</th>
+                            <th class="col-status">Status</th>
+                            <th class="col-started">Started</th>
+                            <th class="col-duration">Duration</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          ${this.recentExecutions.map(
+                            (exec) => html`
+                              <!-- The Started cell is the anchor to the run and
+                                 the whole row is a convenience on top of it,
+                                 as on the executions list, so the keyboard
+                                 and cmd-click keep a route the View column
+                                 used to provide. -->
+                              <tr
+                                class="execution-row"
+                                @click=${(event: MouseEvent) =>
+                                  this.openExecution(event, exec.id)}
+                              >
+                                <!-- Every row on this page is the same flow, so
+                                   the subject is the only column that says
+                                   which run is which; it keeps its link to
+                                   the pull request or issue it came from. -->
+                                <td class="subject-cell">
+                                  ${renderExecutionSubject(exec)}
+                                </td>
+                                <td>
+                                  <sl-badge
+                                    class="chip"
+                                    pill
+                                    variant=${this.getStatusVariant(exec.status)}
+                                  >
+                                    ${executionStatusLabel(exec.status)}
+                                  </sl-badge>
+                                </td>
+                                <!-- Relative, absolute in the title, as every
+                                   other list in the console states a time. -->
+                                <td
+                                  title=${formatLocalDateTime(exec.start_time)}
+                                >
+                                  <a
+                                    class="row-link"
+                                    href=${`/console/flows/executions/${exec.id}`}
+                                    >${formatRelativeTime(exec.start_time)}</a
+                                  >
+                                </td>
+                                <td>${executionDurationText(exec) || 'n/a'}</td>
+                              </tr>
+                            `
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    ${this.renderAllExecutionsLink()}
+                  `
+            }
+          </sl-card>
+
+          <!-- #1692: the definition follows the runs. -->
           <!-- Flow Info Card -->
-          <sl-card>
+          <sl-card data-flow-details>
             <div slot="header">
               <sl-icon name="info-circle"></sl-icon>
               Flow details
@@ -1103,9 +1230,30 @@ export class FlowView extends LitElement {
                       Prompt Template
                     </div>
                     <pre
-                      style="white-space: pre-wrap; word-wrap: break-word; font-family: var(--sl-font-mono); font-size: var(--sl-font-size-small); background: var(--sl-color-neutral-50); padding: var(--sl-spacing-medium); border-radius: var(--sl-border-radius-medium); margin: 0; max-height: 300px; overflow-y: auto;"
+                      class="prompt-template ${this.promptExpanded ? '' : 'collapsed'}"
+                      data-prompt-template
                     >
 ${this.flow.prompt_template}</pre>
+                    ${
+                      this.flow.prompt_template.split('\n').length > 10 ||
+                      this.flow.prompt_template.length > 1200
+                        ? html`<sl-button
+                            class="prompt-toggle"
+                            size="small"
+                            variant="text"
+                            data-prompt-toggle
+                            aria-expanded=${this.promptExpanded ? 'true' : 'false'}
+                            @click=${() => {
+                              this.promptExpanded = !this.promptExpanded;
+                            }}
+                            >${
+                              this.promptExpanded
+                                ? 'Show less'
+                                : 'Show full prompt'
+                            }</sl-button
+                          >`
+                        : ''
+                    }
                   </sl-card>
                 `
               : ''
@@ -1154,7 +1302,7 @@ ${this.flow.review_instructions}</pre>
                           style="flex: 1;"
                           value="${
                             window.location.origin
-                          }/api/v1/webhooks/flows/${this.flowId}/${
+                          }${REST_API_PREFIX}/webhooks/flows/${this.flowId}/${
                             this.flow.webhook_config.webhook_secret
                           }"
                         ></sl-input>
@@ -1280,78 +1428,6 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                 `
               : ''
           }
-
-          <!-- Recent executions -->
-          <sl-card>
-            <div slot="header">
-              <sl-icon name="clock-history"></sl-icon>
-              Recent executions
-            </div>
-            ${
-              this.recentExecutions.length === 0
-                ? html`<p>No executions yet. Run now starts one.</p>`
-                : html`
-                    <div class="table-scroll">
-                      <table class="styled-table executions-table">
-                        <thead>
-                          <tr>
-                            <th>Subject</th>
-                            <th>Status</th>
-                            <th>Started</th>
-                            <th>Duration</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          ${this.recentExecutions.map(
-                            (exec) => html`
-                              <!-- The Started cell is the anchor to the run and
-                                 the whole row is a convenience on top of it,
-                                 as on the executions list, so the keyboard
-                                 and cmd-click keep a route the View column
-                                 used to provide. -->
-                              <tr
-                                class="execution-row"
-                                @click=${(event: MouseEvent) =>
-                                  this.openExecution(event, exec.id)}
-                              >
-                                <!-- Every row on this page is the same flow, so
-                                   the subject is the only column that says
-                                   which run is which; it keeps its link to
-                                   the pull request or issue it came from. -->
-                                <td class="subject-cell">
-                                  ${renderExecutionSubject(exec)}
-                                </td>
-                                <td>
-                                  <sl-badge
-                                    class="chip"
-                                    pill
-                                    variant=${this.getStatusVariant(exec.status)}
-                                  >
-                                    ${executionStatusLabel(exec.status)}
-                                  </sl-badge>
-                                </td>
-                                <!-- Relative, absolute in the title, as every
-                                   other list in the console states a time. -->
-                                <td
-                                  title=${formatLocalDateTime(exec.start_time)}
-                                >
-                                  <a
-                                    class="row-link"
-                                    href=${`/console/flows/executions/${exec.id}`}
-                                    >${formatRelativeTime(exec.start_time)}</a
-                                  >
-                                </td>
-                                <td>${executionDurationText(exec) || 'n/a'}</td>
-                              </tr>
-                            `
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                    ${this.renderAllExecutionsLink()}
-                  `
-            }
-          </sl-card>
         </div>
       </div>
     `;
@@ -1394,17 +1470,90 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
    * key is `flow_id`, which is what the executions view parses and what the
    * Flows list already links with.
    */
+  /**
+   * What this flow has done, before the runs that show it (F-02): runs and
+   * spend over its lifetime, from the stats the flow read already carries,
+   * and how the most recent finished runs went (failure rate, average
+   * duration, last success), from the runs this page already loaded. The
+   * sample is named in the title, never passed off as the lifetime.
+   */
+  private renderSummaryStrip() {
+    const stats = this.flow?.execution_stats;
+    if (!stats) return nothing;
+    const total = Number(stats.total_execs || 0);
+    const running = Number(stats.running_execs || 0);
+    const cost = Number(stats.estimated_cost || 0);
+    const finished = this.recentExecutions.filter((exec: any) =>
+      ['SUCCEEDED', 'FAILED', 'STOPPED', 'CANCELLED', 'TIMEOUT'].includes(
+        String(exec.status || '').toUpperCase()
+      )
+    );
+    const failed = finished.filter((exec: any) =>
+      ['FAILED', 'TIMEOUT'].includes(String(exec.status || '').toUpperCase())
+    ).length;
+    // Only runs that recorded both ends have a duration: parseUTCDate reads
+    // a missing end as now, which would turn a legacy row into days.
+    const durations = finished
+      .filter((exec: any) => exec.start_time && exec.end_time)
+      .map(
+        (exec: any) =>
+          parseUTCDate(exec.end_time).getTime() -
+          parseUTCDate(exec.start_time).getTime()
+      )
+      .filter((ms: number) => Number.isFinite(ms) && ms > 0);
+    const average = durations.length
+      ? durations.reduce((sum: number, ms: number) => sum + ms, 0) /
+        durations.length
+      : null;
+    const lastSuccess = finished.find(
+      (exec: any) => String(exec.status || '').toUpperCase() === 'SUCCEEDED'
+    );
+    const sep = html`<span class="strip-sep" aria-hidden="true">·</span>`;
+    return html`
+      <div class="flow-summary-strip" data-testid="flow-summary-strip">
+        <span title=${`${formatCountExact(total)} runs`}
+          >${formatCount(total)} run${total === 1 ? '' : 's'}</span
+        >
+        ${running > 0 ? html`${sep}<span>${running} running</span>` : nothing}
+        ${sep}<span title=${formatUsdExact(cost)}>${formatUsd(cost)} est.</span>
+        ${
+          finished.length
+            ? html`${sep}<span
+                  class="strip-sample"
+                  data-testid="flow-summary-sample"
+                  title=${`From the last ${finished.length} finished runs`}
+                  >${Math.round((failed / finished.length) * 100)}%
+                  failed${
+                    average !== null
+                      ? html` · avg ${flowDurationText(average)}`
+                      : nothing
+                  }${
+                    lastSuccess
+                      ? html` · last success
+                        ${formatRelativeTime(lastSuccess.start_time)}`
+                      : html` · no recent success`
+                  }</span
+                >`
+            : nothing
+        }
+      </div>
+    `;
+  }
+
   private renderAllExecutionsLink() {
     const total = Number(this.flow?.execution_stats?.total_execs || 0);
     if (total > 0 && total <= this.recentExecutions.length) return '';
     const label =
-      total > 0 ? `View all ${total} executions` : 'View all executions';
+      total > 0
+        ? `View all ${formatCount(total)} executions`
+        : 'View all executions';
     return html`
       <div class="all-executions">
         <a
           href=${`/console/flows/executions?flow_id=${encodeURIComponent(
             this.flowId || ''
           )}`}
+          title=${total > 0 ? `${formatCountExact(total)} executions` : nothing}
           >${label}</a
         >
       </div>
@@ -1674,7 +1823,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
 
   copyWebhookUrl() {
     if (!this.flow.webhook_config?.webhook_secret) return;
-    const webhookUrl = `${window.location.origin}/api/v1/webhooks/flows/${this.flowId}/${this.flow.webhook_config.webhook_secret}`;
+    const webhookUrl = `${window.location.origin}${REST_API_PREFIX}/webhooks/flows/${this.flowId}/${this.flow.webhook_config.webhook_secret}`;
     navigator.clipboard.writeText(webhookUrl).then(() => {
       alert('Webhook URL copied to clipboard!');
     });
@@ -2195,7 +2344,7 @@ ${(this.flow.custom_commands.commands || []).join('\n')}</pre>
                 readonly
                 label="Webhook URL"
                 style="flex: 1;"
-                value="${window.location.origin}/api/v1/webhooks/flows/${
+                value="${window.location.origin}${REST_API_PREFIX}/webhooks/flows/${
                   this.flowId
                 }/${this.flow.webhook_config.webhook_secret}"
               ></sl-input>

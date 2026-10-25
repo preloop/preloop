@@ -412,6 +412,11 @@ jobs:
       - name: Run ruff
         run: ruff check .
 
+      # server.json is what the release workflow publishes to the official MCP
+      # registry; validate it against the vendored registry schema.
+      - name: Validate MCP registry server.json
+        run: python scripts/validate_server_json.py
+
       # Fixture MCP server for artifact tests (#1091). Outside
       # backend/tests, so the backend shards do not collect it.
       - name: warehouse-sim fixture tests

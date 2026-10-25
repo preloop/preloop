@@ -30,6 +30,12 @@ from .flow import Flow
 from .flow_feedback import FlowFeedback, FlowThread
 from .flow_execution import FlowExecution
 from .fleet import FleetFinding, FleetAlertSettings
+from .live_activity import (
+    ActivityRollup,
+    ActivitySettings,
+    ActivityWorkerWatermark,
+    PresenceState,
+)
 from .flow_runner import (
     DEFAULT_RUNNER_CONCURRENCY,
     MAX_RUNNER_CONCURRENCY,
@@ -171,8 +177,14 @@ from .hosted_credit import (
     HostedCreditTopupSetting,
 )
 
-from .issue_cost import IssueCostExecution, IssueCostPullRequest, IssueCostRollup
+from .issue_cost import (
+    IssueCostExecution,
+    IssueCostPullRequest,
+    IssueCostPullRequestIssue,
+    IssueCostRollup,
+)
 from .issue_lifecycle import IssueLifecycle
+from .assessment import Assessment
 from .security_maintenance import (
     SecurityMaintenanceBaseline,
     SecurityMaintenanceDecision,
@@ -184,6 +196,9 @@ from .security_maintenance import (
 from .callback_receipt import CallbackKeyBinding, CallbackReceipt
 
 __all__ = [
+    "AgentUsageTotal",
+    "AgentUsageCounted",
+    "AgentUsageBackfill",
     "ObservationVerification",
     "ChatSetupDraft",
     "ChatListener",
@@ -197,6 +212,10 @@ __all__ = [
     "MCPInventoryReview",
     "FleetFinding",
     "FleetAlertSettings",
+    "ActivityRollup",
+    "ActivitySettings",
+    "ActivityWorkerWatermark",
+    "PresenceState",
     "DESKTOP_VIEW_OPEN_STATES",
     "DesktopEndpoint",
     "DesktopView",
@@ -228,6 +247,8 @@ __all__ = [
     "IssueCostPullRequest",
     "IssueCostRollup",
     "IssueLifecycle",
+    "Assessment",
+    "IssueCostPullRequestIssue",
     "SecurityMaintenanceRelease",
     "SecurityMaintenanceItem",
     "SecurityMaintenanceDecision",
@@ -417,3 +438,5 @@ from .support import (
 )
 
 from .observation_verification import ObservationVerification
+
+from .agent_usage_total import AgentUsageTotal, AgentUsageCounted, AgentUsageBackfill

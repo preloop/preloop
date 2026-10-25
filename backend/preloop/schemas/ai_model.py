@@ -785,6 +785,14 @@ class AIModelsOverviewResponse(BaseModel):
     period_start: datetime
     period_end: datetime
     models: List[AIModelOverviewItem] = Field(default_factory=list)
+    prior_period_estimated_cost: Optional[float] = Field(
+        None,
+        description=(
+            "Estimated cost of the same models over the window of equal "
+            "length that ends where this one starts. Only set when the "
+            "request asked for it with include_prior_period."
+        ),
+    )
 
 
 class AIModelGatewayUsageSummaryResponse(BaseModel):

@@ -82,6 +82,11 @@ export class PreloopExecutionTree extends LitElement {
     :host {
       display: block;
     }
+    /* #1692: an element that renders nothing must not take a flex gap in the
+       execution page's column; two empty ones made a ~100px hole. */
+    :host([data-empty]) {
+      display: none;
+    }
     .tree {
       border: 1px solid var(--sl-color-neutral-200);
       border-radius: var(--sl-border-radius-medium);
@@ -336,6 +341,15 @@ export class PreloopExecutionTree extends LitElement {
       </div>
       ${open ? children.map((child) => this.renderRow(child, depth + 1)) : nothing}
     `;
+  }
+
+  protected updated(changed: Map<PropertyKey, unknown>): void {
+    super.updated?.(changed);
+    // Only Lit's comment markers remain when render() returned nothing.
+    this.toggleAttribute(
+      'data-empty',
+      (this.shadowRoot?.childElementCount ?? 0) === 0
+    );
   }
 
   render() {

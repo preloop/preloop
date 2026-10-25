@@ -341,10 +341,10 @@ is never stored. `redact` is reserved on the column. A redact match is
 audited as counts by type and is not stored as a hit, because an excerpt
 would keep the value the rule exists to remove.
 
-When the EE audit plugin is installed, each stored hit also writes an
-audit row. Notify rows use action `notify`. Deny and require_approval
+The core audit service records an audit row for each stored hit in every
+edition. Notify rows use action `notify`. Deny and require_approval
 rows use those actions. The hit's `audit_event_id` is that audit row's
-id. The plugin nests tool arguments under `details.tool_args` and then
+id. The audit service nests tool arguments under `details.tool_args` and then
 copies `extra_details` onto the top level of `details`, which is where
 `audit_event_id` has to sit.
 

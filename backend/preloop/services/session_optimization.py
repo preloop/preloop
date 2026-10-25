@@ -91,6 +91,7 @@ from preloop.services.openai_gateway import OpenAIGatewayService
 from preloop.services.runtime_session_explorer import RuntimeSessionExplorerService
 from preloop.services.tool_schema_tokens import estimate_tool_schema_tokens
 from preloop.services.tool_usage_stats import ToolUsageStatsService
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -122,13 +123,16 @@ ACTION_OPEN_EVENTS = "open_events"
 ACTION_ENABLE_COMPRESSION = "enable_compression"
 ACTION_CAP_TOOL_RESULTS = "cap_tool_results"
 ACTION_MANAGE_OUTPUT_FILTER = "manage_output_filter"
-APPLYABLE_ACTION_TYPES = (
-    ACTION_SCOPE_TOOLS,
-    ACTION_DISABLE_BUILTIN_TOOLS,
-    ACTION_SET_BUDGET,
-    ACTION_ENABLE_COMPRESSION,
-    ACTION_CAP_TOOL_RESULTS,
-)
+ACTION_PERMISSIONS: dict[str, str | None] = {
+    ACTION_SCOPE_TOOLS: "manage_tools",
+    ACTION_DISABLE_BUILTIN_TOOLS: "manage_tools",
+    ACTION_SET_BUDGET: "manage_budgets",
+    ACTION_ENABLE_COMPRESSION: "manage_policies",
+    ACTION_CAP_TOOL_RESULTS: "manage_policies",
+    # These actions navigate to a separate UI rather than applying a change.
+    ACTION_OPEN_EVENTS: None,
+    ACTION_MANAGE_OUTPUT_FILTER: None,
+}
 
 # Default gateway tool-result cap suggested when oversized outputs are found.
 DEFAULT_TOOL_RESULT_CAP_CHARS = 8_000
@@ -1742,6 +1746,19 @@ class SessionOptimizationService:
             HTTPException: When the session is missing, the action type is
                 not server-applicable, or parameters are invalid.
         """
+        action = request.action
+        permission = ACTION_PERMISSIONS.get(action.type)
+        if permission is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(f"Action type '{action.type}' cannot be applied server-side"),
+            )
+
+        @require_permission(permission)
+        def check_action_permission(*, db: Session, current_user: User) -> None:
+            ensure_permission_in_oss(db, current_user, permission)
+
+        check_action_permission(db=self.db, current_user=current_user)
         summary_row = crud_runtime_session.get_account_session_summary(
             self.db,
             account_id=str(account.id),
@@ -1750,12 +1767,6 @@ class SessionOptimizationService:
         if summary_row is None:
             raise HTTPException(status_code=404, detail="Runtime session not found")
         summary = RuntimeSessionExplorerService._summary_row_to_schema(summary_row)
-        action = request.action
-        if action.type not in APPLYABLE_ACTION_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=(f"Action type '{action.type}' cannot be applied server-side"),
-            )
         if crud_runtime_session_optimization_action.exists_for_suggestion(
             self.db,
             account_id=account.id,
@@ -1777,8 +1788,12 @@ class SessionOptimizationService:
             result = self._apply_context_optimization_settings(
                 account=account, params=action.params
             )
-        else:
+        elif action.type == ACTION_SET_BUDGET:
             result = self._apply_set_budget(account=account, params=action.params)
+        else:
+            raise HTTPException(
+                status_code=400, detail="Unsupported optimization action"
+            )
         baseline = self._principal_baseline(account=account, summary=summary)
         row = crud_runtime_session_optimization_action.create_applied(
             self.db,

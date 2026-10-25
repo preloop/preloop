@@ -6,42 +6,18 @@ model, so the blast radius is the other agent's behaviour, not just its
 transcript. This module is the answer to "who may do that to whom", so that
 enabling ``send_note`` is not itself a decision that needs a threat model.
 
-**The default is descent.** An agent may note the runs it started, directly or
-transitively: its children, their children, and so on. Nothing else. Lineage
-is the key because it is the only relationship here that Preloop can verify
-rather than accept from the caller: ``parent_execution_id`` is written by the
-platform when the child execution is created (#626), never supplied by an
-agent, while "we are on the same team" is a claim an agent could simply make.
+The seeded policy allows self and descendants, asks the sender's human before
+contacting another run that human can control, and denies the rest. Rules are
+ordinary editable ``ToolAccessRule`` rows. Every target is resolved before
+policy evaluation, so the rule sees verified execution/session lineage and
+human permission facts rather than model claims. An explicit allow rule can
+widen scope; implicit tool availability cannot.
 
-Four consequences, all of them deliberate:
-
-* A **sibling** is out of scope. Two children of the same parent cannot steer
-  each other; the parent that started both can steer either.
-* A **grandchild is in scope**: delegation is transitive, and a scope that
-  stopped at one hop would be widened by inserting a middleman, which is not
-  a boundary.
-* An **ancestor** is out of scope. A child cannot write into the turn of the
-  run that is supervising it.
-* A caller with **no lineage** can note nothing. A top level execution that
-  started no children, and an enrolled agent that is not running inside an
-  execution at all, both have an empty descendant set, so every target is
-  refused. This is the quiet case that makes the default safe: no lineage is
-  no reach, rather than no restriction.
-
-**Wider than that is a grant, not a setting.** When the default refuses, the
-call is put to the tool policy path every other tool call already goes through
-(:func:`preloop.services.policy_evaluator.evaluate_policy`) as a rule
-evaluation on ``send_note``, with the scope facts visible as arguments
-(``note_scope``, ``note_target_relation``, the author and target ids). Only a
-rule that explicitly allows it is a grant: the default allow that a tool with
-no rules returns is not, or enabling the tool would silently mean "note
-anyone". A rule that denies refuses the call, and rules are evaluated in
-priority order exactly as everywhere else, so a deny placed above a grant wins.
-
-That choice is what makes a grant auditable and revocable like everything else:
-it is a ``ToolAccessRule`` row, it shows up in the policy decision audit, and
-deleting or disabling it takes the reach away on the next call with nothing to
-restart.
+The MCP handler prepares the note without writing it, carries these facts into
+the existing approval service when required, and delivers only after approval.
+Async workflows use the standard ``get_approval_status`` replay rail. Deny rules
+also apply to descendants. Approval requests bind the resolved target, so alias
+changes cannot redirect an approved note.
 
 The account boundary is not part of this model and cannot be granted away:
 targets are resolved inside the calling agent's account before scope is even
@@ -138,6 +114,8 @@ class NoteScopeDecision:
     message: Optional[str] = None
     rule_description: Optional[str] = None
     facts: Dict[str, Any] = field(default_factory=dict)
+    approval_workflow_id: Optional[str] = None
+    rule_context: Optional[Dict[str, Any]] = None
 
 
 def _as_uuid(value: Any) -> Optional[uuid.UUID]:
@@ -317,6 +295,7 @@ def _relation(
 
 
 def _grant_facts(
+    db: Session,
     *,
     account_id: str,
     author_agent_id: Any,
@@ -336,7 +315,16 @@ def _grant_facts(
     author and target unambiguously. Top-level ``execution_id`` in the
     rule context is the author run only on grant evaluation.
     """
+    from preloop.services.agent_note_permissions import human_note_facts
+
     return {
+        **human_note_facts(
+            db,
+            account_id=account_id,
+            author_agent_id=author_agent_id,
+            target_agent_id=target_agent_id,
+            target_session_id=target_session_id,
+        ),
         "text": text,
         "agent_id": str(target_agent_id) if target_agent_id else None,
         "runtime_session_id": str(target_session_id) if target_session_id else None,
@@ -387,6 +375,7 @@ def caller_subject_context(
     if subject_context:
         for key in (
             "api_key_id",
+            "flow_id",
             "managed_agent_id",
             "runtime_session_id",
             "runtime_principal_type",
@@ -432,10 +421,10 @@ def evaluate_note_scope(
 ) -> NoteScopeDecision:
     """Decide whether this agent may note this target.
 
-    The default scope is evaluated first and needs no policy read: a note to a
-    run the caller started is the case the tool exists for. Only a call the
-    default refuses is put to the policy path, so a grant rule is consulted
-    exactly when it can change the answer.
+    Resolve execution and session relations, then evaluate standard policy with
+    the human permission facts. Explicit denies and approval rules apply to
+    every relation. With no matching rule, self and descendants remain allowed;
+    wider reach needs an explicit grant.
 
     Args:
         db: Database session. Read only here; nothing is written on the
@@ -478,6 +467,7 @@ def evaluate_note_scope(
         target_ids=target_ids,
     )
     facts = _grant_facts(
+        db,
         account_id=account_id,
         author_agent_id=author_agent_id,
         author_execution_id=author_execution,
@@ -489,33 +479,39 @@ def evaluate_note_scope(
     )
 
     author_sessions = [s for s in (author_session_ids or []) if s]
-    if (
-        relation != RELATION_DESCENDANT
-        and author_sessions
-        and target_session_id
-        and named_execution_id in (None, "")
-    ):
-        from preloop.services.agent_session_lineage import session_descends_from
+    if author_sessions and target_session_id and named_execution_id in (None, ""):
+        from preloop.services.agent_session_lineage import session_ancestor_chain
 
-        # Session lineage: a run started from a shell by a governed session
-        # records that session as its parent (#1045). It is the same
-        # relationship as a child execution, recorded on a different row.
-        if session_descends_from(
-            db,
-            account_id=account_id,
-            target_session_id=target_session_id,
-            ancestor_session_ids=author_sessions,
-        ):
-            relation = RELATION_DESCENDANT
-            facts["note_target_relation"] = relation
-
-    if relation == RELATION_DESCENDANT:
-        return NoteScopeDecision(
-            allowed=True,
-            scope=SCOPE_DESCENDANTS,
-            relation=relation,
-            facts=facts,
+        target_chain = session_ancestor_chain(
+            db, account_id=account_id, runtime_session_id=target_session_id
         )
+        ranking = {
+            RELATION_NO_LINEAGE: 0,
+            RELATION_UNRELATED: 1,
+            RELATION_SAME_TREE: 2,
+            RELATION_ANCESTOR: 3,
+            RELATION_SELF: 4,
+            RELATION_DESCENDANT: 5,
+        }
+        for author_session in author_sessions:
+            author_chain = session_ancestor_chain(
+                db, account_id=account_id, runtime_session_id=author_session
+            )
+            if not author_chain or not target_chain:
+                continue
+            if target_chain[0] == author_chain[0]:
+                candidate = RELATION_SELF
+            elif author_chain[0] in target_chain[1:]:
+                candidate = RELATION_DESCENDANT
+            elif target_chain[0] in author_chain[1:]:
+                candidate = RELATION_ANCESTOR
+            elif author_chain[-1] == target_chain[-1]:
+                candidate = RELATION_SAME_TREE
+            else:
+                candidate = RELATION_UNRELATED
+            if ranking[candidate] > ranking[relation]:
+                relation = candidate
+        facts["note_target_relation"] = relation
 
     base_reason = (
         REASON_NO_LINEAGE
@@ -530,7 +526,9 @@ def evaluate_note_scope(
         facts=facts,
         subject_context=subject_context,
     )
-    action, rule_description, from_rule = grant
+    action, rule_description, from_rule = grant[:3]
+    workflow_id = grant[3] if len(grant) > 3 else None
+    rule_context = grant[4] if len(grant) > 4 else None
 
     if action == "deny":
         return NoteScopeDecision(
@@ -545,10 +543,27 @@ def evaluate_note_scope(
             ),
             facts=facts,
         )
-    if action == "allow" and from_rule:
+    if action == "require_approval":
+        return NoteScopeDecision(
+            allowed=False,
+            required_scope=SCOPE_ACCOUNT,
+            relation=relation,
+            reason_code="note_scope_requires_approval",
+            rule_description=rule_description,
+            facts=facts,
+            approval_workflow_id=str(workflow_id) if workflow_id else None,
+            rule_context=rule_context,
+        )
+    if action == "allow" and (
+        from_rule or relation in (RELATION_SELF, RELATION_DESCENDANT)
+    ):
         return NoteScopeDecision(
             allowed=True,
-            scope=SCOPE_ACCOUNT,
+            scope=(
+                SCOPE_DESCENDANTS
+                if relation in (RELATION_SELF, RELATION_DESCENDANT)
+                else SCOPE_ACCOUNT
+            ),
             relation=relation,
             rule_description=rule_description,
             facts=facts,
@@ -601,7 +616,7 @@ def _consult_policy(
     author_execution_id: Optional[uuid.UUID],
     facts: Dict[str, Any],
     subject_context: Optional[Dict[str, Any]] = None,
-) -> tuple[str, Optional[str], bool]:
+) -> tuple[Any, ...]:
     """Ask the tool policy path whether a rule widens the scope.
 
     The same evaluator, the same ``ToolAccessRule`` rows, the same subject
@@ -643,10 +658,23 @@ def _consult_policy(
     source = getattr(decision, "source", None)
     from_rule = source in (SOURCE_TOOL_ACCESS_RULE, SOURCE_SUBJECT_SCOPED_RULE)
     if action == "require_approval":
-        # There is no one to ask at this point: the call already passed its
-        # approval gate, and a rule asking for approval of a scope widening is
-        # not a grant. Refuse and say so.
-        return "unavailable", rule_description, from_rule
+        from preloop.models.crud.agent_note_policy import caller_approval_workflow
+
+        workflow_id = decision[1]
+        if workflow_id:
+            workflow_id = caller_approval_workflow(
+                db,
+                account_id=account_id,
+                workflow_id=workflow_id,
+                user_id=facts.get("note_caller_user_id"),
+            )
+        return (
+            action,
+            rule_description,
+            from_rule,
+            workflow_id,
+            getattr(decision, "rule_context", None),
+        )
     if action == "deny":
         return "deny", rule_description, from_rule
     return "allow", rule_description if from_rule else None, from_rule

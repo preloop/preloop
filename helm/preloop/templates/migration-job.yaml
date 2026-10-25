@@ -34,12 +34,28 @@ spec:
           env:
             - name: PRELOOP_MIGRATION_LOCK_TIMEOUT
               value: {{ .Values.migrationJob.lockTimeout | quote }}
+            - name: PRELOOP_MIGRATION_CONCURRENT_LOCK_TIMEOUT_SECONDS
+              value: {{ .Values.migrationJob.concurrentLockTimeoutSeconds | default 60 | quote }}
+            - name: PRELOOP_MIGRATION_CONCURRENT_STATEMENT_TIMEOUT_SECONDS
+              value: {{ .Values.migrationJob.concurrentStatementTimeoutSeconds | default 120 | quote }}
             - name: PRELOOP_MIGRATION_MAX_ATTEMPTS
               value: {{ .Values.migrationJob.maxAttempts | quote }}
             - name: PRELOOP_MIGRATION_RETRY_MIN_SECONDS
               value: {{ .Values.migrationJob.retryMinSeconds | quote }}
             - name: PRELOOP_MIGRATION_RETRY_MAX_SECONDS
               value: {{ .Values.migrationJob.retryMaxSeconds | quote }}
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: jwt-secret
+            {{- if .Values.security.encryptionKey }}
+            - name: SECURITY__ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "preloop.secretName" . }}
+                  key: encryption-key
+            {{- end }}
             {{- include "preloop.databaseUrlEnv" . | nindent 12 }}
             {{- include "preloop.extraEnv" . | nindent 12 }}
           {{- with .Values.extraEnvFrom }}

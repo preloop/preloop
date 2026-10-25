@@ -163,7 +163,9 @@ async def test_scanner_registers_hooks_per_repository(
         force_update=False,
     )
 
-    client.client.register_webhook.assert_awaited_once()
+    # register_webhook is idempotent, so every repository is reconciled.
+    assert client.client.register_webhook.await_count == 2
+    client.client.is_webhook_registered_for_project.assert_not_awaited()
     kwargs = client.client.register_webhook.await_args.kwargs
     assert kwargs["project"] is second
     assert kwargs["secret"] == "secret"

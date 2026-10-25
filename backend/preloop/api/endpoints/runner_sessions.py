@@ -55,7 +55,11 @@ from preloop.plugins.account_hooks import (
     AuthorizationContext,
     may_start_runner_session,
 )
-from preloop.utils.permissions import require_permission, user_holds_permission
+from preloop.utils.permissions import (
+    ensure_permission_in_oss,
+    require_permission,
+    user_holds_permission,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -1034,6 +1038,7 @@ def start_runner_session(
     never blocks the event loop. Only the service call, which talks to the
     runner socket owned by the loop, is handed back to it.
     """
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     service, plan, audit = _prepare_start(db, current_user, runner_id, body)
     try:
         persist = getattr(service, "persist_start", None)
@@ -1085,6 +1090,7 @@ def send_runner_session_turn(
     current_user: User = Depends(get_current_active_user),
 ) -> RunnerSessionTurnResponse:
     """Send the next prompt. Wave 1 allows one running turn at a time."""
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     service, record, audit = _prepare_turn(db, current_user, session_id)
     turn_id = str(uuid4())
     try:
@@ -1119,6 +1125,7 @@ def stop_runner_session(
     current_user: User = Depends(get_current_active_user),
 ) -> RunnerSessionStopResponse:
     """Ask the runner to end the session (``graceful``) or kill the harness."""
+    ensure_permission_in_oss(db, current_user, "execute_flows")
     service, record, audit = _session_audit(db, current_user, session_id)
     mode = (body or RunnerSessionStopRequest()).mode
     if record.state in ACTIVE_STATES:

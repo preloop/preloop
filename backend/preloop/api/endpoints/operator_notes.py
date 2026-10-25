@@ -631,7 +631,6 @@ def _end_session(
     ended keeps its timestamp and the sweep only looks at uncarried rows.
     """
     from preloop.models.crud import crud_runtime_session
-    from preloop.services.event_webhooks.emitters import emit_session_ended
 
     with get_session_factory()() as db:
         context = authenticate_runtime_bearer_token(
@@ -672,17 +671,18 @@ def _end_session(
             runtime_session_id=session.id,
             reason=f"session ended ({reason})",
         )
-        if session.ended_at is None:
-            ended = crud_runtime_session.update_operator_state(
-                db,
-                account_id=account_id,
-                runtime_session_id=str(session.id),
-                ended_at=datetime.now(timezone.utc),
-                commit=True,
-            )
-            if ended is not None:
-                emit_session_ended(db, ended, reason=reason)
-                db.commit()
+        # One conditional end shared with /agents/session-event (#1889):
+        # whichever route ends the session records and announces it.
+        from preloop.services.session_hook_events import end_session_by_hook
+
+        end_session_by_hook(
+            db,
+            session=session,
+            api_key_id=context.api_key.id,
+            actor_user_id=context.api_key.user_id,
+            source="session_end_route",
+            reason=reason,
+        )
         return OperatorSessionEndResponse(
             runtime_session_id=session.id,
             marked=marked,

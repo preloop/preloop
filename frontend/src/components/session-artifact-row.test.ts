@@ -17,7 +17,11 @@ import type {
   RuntimeSessionActivityItem,
   RuntimeSessionArtifactDescriptor,
 } from '../types';
-import { heldSessionArtifactCount } from '../utils/session-artifacts';
+import {
+  heldSessionArtifactCount,
+  resetSessionArtifactCache,
+  type ArtifactView,
+} from '../utils/session-artifacts';
 import { listRuntimeSessionArtifacts, SESSION_ARTIFACT_LIST_CAP } from '../api';
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
@@ -236,6 +240,7 @@ describe('artifacts in the session timeline', () => {
   let audioFailures: number;
 
   beforeEach(() => {
+    resetSessionArtifactCache();
     localStorage.setItem('accessToken', 'test-access-token');
     artifactList = Object.values(DESCRIPTORS).reverse();
     activityRows = ROWS;
@@ -824,6 +829,7 @@ describe('listRuntimeSessionArtifacts', () => {
     Array.from({ length: n }, (_, i) => ({ id: `art-${offset + i}` }));
 
   beforeEach(() => {
+    resetSessionArtifactCache();
     localStorage.setItem('accessToken', 'test-access-token');
     fetchStub = sinon.stub(window, 'fetch');
   });
@@ -873,5 +879,177 @@ describe('listRuntimeSessionArtifacts', () => {
     expect(fetchStub.callCount).to.equal(2);
     expect(out.items).to.have.length(400);
     expect(out.truncated).to.equal(false);
+  });
+});
+
+describe('artifact previews load on demand (#1690)', () => {
+  let fetchStub: sinon.SinonStub;
+
+  beforeEach(() => {
+    resetSessionArtifactCache();
+    localStorage.setItem('accessToken', 'test-access-token');
+    fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes('/artifacts/video')) {
+        return new Response(
+          new Blob([new Uint8Array(8)], { type: 'video/mp4' })
+        );
+      }
+      return new Response(new Blob([PNG], { type: 'image/png' }));
+    });
+  });
+
+  afterEach(() => {
+    fetchStub.restore();
+    localStorage.clear();
+  });
+
+  function view(
+    id: string,
+    overrides: Partial<ArtifactView> = {}
+  ): ArtifactView {
+    return {
+      id,
+      kind: 'screenshot',
+      group: 'screenshot',
+      name: `${id}.png`,
+      contentType: 'image/png',
+      sizeBytes: 1234,
+      labels: {},
+      producer: null,
+      toolName: null,
+      sha256: null,
+      parentArtifactId: null,
+      availability: 'available',
+      ...overrides,
+    };
+  }
+
+  function byteFetches(): string[] {
+    return fetchStub
+      .getCalls()
+      .map((c) => String(c.args[0]))
+      .filter((u) => /\/artifacts\/[^?]/.test(u));
+  }
+
+  async function rows(views: ArtifactView[]): Promise<SessionArtifactRow[]> {
+    const el = await fixture<HTMLElement>(
+      html`<div>
+        ${views.map(
+          (artifact) =>
+            html`<session-artifact-row
+              .sessionId=${'s-on-demand'}
+              .artifact=${artifact}
+            ></session-artifact-row>`
+        )}
+      </div>`
+    );
+    const found = Array.from(
+      el.querySelectorAll<SessionArtifactRow>('session-artifact-row')
+    );
+    await Promise.all(found.map((row) => row.updateComplete));
+    return found;
+  }
+
+  function thumbnail(row: SessionArtifactRow): BrowserStepThumbnail {
+    return row.shadowRoot!.querySelector(
+      'browser-step-thumbnail'
+    ) as BrowserStepThumbnail;
+  }
+
+  it('previews two screenshots eagerly and waits for a click on the third', async () => {
+    const found = await rows([view('i1'), view('i2'), view('i3')]);
+    await waitUntil(() => byteFetches().length === 2, 'two eager previews');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(byteFetches()).to.have.length(2);
+
+    // All three are visible, so whichever observer fires last finds the
+    // budget spent; that one shows the click-to-load placeholder.
+    const placeholderOf = (row: SessionArtifactRow) =>
+      thumbnail(row).shadowRoot!.querySelector(
+        '[data-testid="preview-on-demand"]'
+      ) as HTMLButtonElement | null;
+    await waitUntil(
+      () => found.filter((row) => placeholderOf(row)).length === 1,
+      'one click-to-load placeholder'
+    );
+    const placeholder = found.map(placeholderOf).find(Boolean)!;
+    placeholder.click();
+    await waitUntil(() => byteFetches().length === 3, 'loads on click');
+  });
+
+  it('spends the eager budget on visible rows, not off-screen ones', async () => {
+    const el = await fixture<HTMLElement>(
+      html`<div>
+        <div style="height: 6000px"></div>
+        ${['far1', 'far2'].map(
+          (id) =>
+            html`<session-artifact-row
+              .sessionId=${'s-visible'}
+              .artifact=${view(id)}
+            ></session-artifact-row>`
+        )}
+      </div>`
+    );
+    el.prepend(
+      ...(['near1', 'near2'].map((id) => {
+        const row = document.createElement(
+          'session-artifact-row'
+        ) as SessionArtifactRow;
+        row.sessionId = 's-visible';
+        row.artifact = view(id);
+        return row;
+      }) as HTMLElement[])
+    );
+    await waitUntil(() => byteFetches().length === 2, 'two eager previews');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const fetched = byteFetches().join(' ');
+    expect(fetched).to.contain('near1');
+    expect(fetched).to.contain('near2');
+    expect(fetched).not.to.contain('far');
+  });
+
+  it('returns the claim when a previewed row leaves the page', async () => {
+    const found = await rows([view('c1'), view('c2'), view('c3')]);
+    await waitUntil(() => byteFetches().length === 2, 'two eager previews');
+    found[0].remove();
+    // Remounting the third row re-checks the freed budget.
+    found[1].parentElement!.append(found[2]);
+    await waitUntil(
+      () => byteFetches().some((u) => u.includes('c3')),
+      'freed claim reused'
+    );
+  });
+
+  it('never loads a large image until it is clicked', async () => {
+    const found = await rows([view('big', { sizeBytes: 3 * 1024 * 1024 })]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(byteFetches()).to.have.length(0);
+    const placeholder = thumbnail(found[0]).shadowRoot!.querySelector(
+      '[data-testid="preview-on-demand"]'
+    ) as HTMLButtonElement;
+    expect(placeholder.textContent).to.contain('3.0 MB');
+  });
+
+  it('plays a video only when asked', async () => {
+    const found = await rows([
+      view('video-1', {
+        kind: 'screencast',
+        group: 'other',
+        name: 'run.mp4',
+        contentType: 'video/mp4',
+      }),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(byteFetches()).to.have.length(0);
+    const play = found[0].shadowRoot!.querySelector(
+      '[data-testid="artifact-play-video"]'
+    ) as HTMLButtonElement;
+    expect(play.textContent!.trim()).to.equal('Play video');
+    play.click();
+    await waitUntil(() =>
+      found[0].shadowRoot!.querySelector('[data-testid="artifact-video"]')
+    );
+    expect(byteFetches()).to.have.length(1);
   });
 });

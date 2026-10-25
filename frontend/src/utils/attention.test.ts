@@ -1805,6 +1805,13 @@ describe('ATTENTION_KIND_META', () => {
     expect(attentionKindChipLabel('approval', 2)).to.equal('2 approvals');
     expect(attentionKindChipLabel('agent', 1)).to.equal('1 agent');
     expect(attentionKindChipLabel('flow', 0)).to.equal('0 flows');
+    // Nouns a reader can say: no lowercase acronym, no bare adjective (U-05).
+    expect(attentionKindChipLabel('mcp', 4)).to.equal('4 MCP routes to review');
+    expect(attentionKindChipLabel('mcp', 1)).to.equal('1 MCP route to review');
+    expect(attentionKindChipLabel('pricing', 1)).to.equal('1 pricing question');
+    expect(attentionKindChipLabel('pricing', 2)).to.equal(
+      '2 pricing questions'
+    );
   });
 });
 

@@ -1,3 +1,5 @@
+import { REST_API_PREFIX } from '../../api-path';
+import { formatCount, formatCountExact } from '../../utils/count-format';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { replaceListFilters } from '../../utils/list-filter-url';
 import { html, css, nothing, unsafeCSS } from 'lit';
@@ -935,7 +937,9 @@ export class ApprovalsView extends AuthedElement {
     total: number | null;
   } | null> {
     const query = new URLSearchParams(params).toString();
-    const response = await fetchWithAuth(`/api/v1/approval-requests?${query}`);
+    const response = await fetchWithAuth(
+      `${REST_API_PREFIX}/approval-requests?${query}`
+    );
     if (!response.ok) return null;
     const data = await response.json();
     if (!Array.isArray(data)) return null;
@@ -1033,7 +1037,9 @@ export class ApprovalsView extends AuthedElement {
   /** Account-wide counts; the strip falls back to the loaded rows without. */
   private async loadStats(): Promise<void> {
     try {
-      const response = await fetchWithAuth('/api/v1/approval-requests/stats');
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/approval-requests/stats'
+      );
       const data = response.ok ? await response.json() : null;
       this.serverStats = isStatsResponse(data) ? data : null;
     } catch {
@@ -1060,6 +1066,15 @@ export class ApprovalsView extends AuthedElement {
   private reloadFromFirstPage() {
     this.historyPage = 0;
     void this.loadApprovalRequests();
+  }
+
+  /**
+   * The default view lists pending requests only, so an empty list there
+   * says nothing about the history. The stats total does: "No approval
+   * requests yet" over a history of thousands is wrong.
+   */
+  private get hasApprovalHistory(): boolean {
+    return (this.stats?.total || 0) > 0 || (this.historyTotal || 0) > 0;
   }
 
   private calculateStats() {
@@ -1694,20 +1709,31 @@ export class ApprovalsView extends AuthedElement {
                       <sl-icon name="inbox"></sl-icon>
                       <p>
                         ${
-                          this.approvalRequests.length === 0
+                          this.approvalRequests.length === 0 &&
+                          !this.hasApprovalHistory
                             ? 'No approval requests yet. Configure tools to require approval in the Tools section.'
                             : this.showsHistory
                               ? 'No requests match your filters.'
-                              : 'Nothing is waiting for you. Pick a status to see the history.'
+                              : this.approvalRequests.length === 0
+                                ? 'Nothing is waiting for a decision.'
+                                : 'Nothing is waiting for you. Pick a status to see the history.'
                         }
                       </p>
                       ${
-                        this.approvalRequests.length === 0
+                        this.approvalRequests.length === 0 &&
+                        !this.hasApprovalHistory
                           ? html`<sl-button href="/console/tools">
                               <sl-icon slot="prefix" name="gear"></sl-icon>
                               Configure tools
                             </sl-button>`
-                          : ''
+                          : !this.showsHistory
+                            ? html`<sl-button
+                                data-testid="show-all-approvals"
+                                href="/console/approvals?status=all"
+                              >
+                                Show all
+                              </sl-button>`
+                            : ''
                       }
                     </div>
                   `
@@ -1776,14 +1802,19 @@ export class ApprovalsView extends AuthedElement {
           ? `${stats.avgResponseTimeMinutes}m`
           : `${Math.round(stats.avgResponseTimeMinutes / 60)}h`
         : null;
+    // Compact at 1000 and above, exact in the title (DESIGN.md "Numbers").
+    const count = (value: number) =>
+      html`<strong title=${formatCountExact(value)}
+        >${formatCount(value)}</strong
+      >`;
     const facts: Array<unknown> = [
       capped
-        ? html`Last <strong>${loaded}</strong> requests`
-        : html`<strong>${loaded}</strong> requests`,
-      html`<strong>${this.waitingRequests.length}</strong> waiting`,
-      html`<strong>${stats.approved}</strong> approved`,
-      html`<strong>${stats.declined}</strong> denied`,
-      html`<strong>${stats.expired}</strong> timed out`,
+        ? html`Last ${count(loaded)} requests`
+        : html`${count(loaded)} requests`,
+      html`${count(this.waitingRequests.length)} waiting`,
+      html`${count(stats.approved)} approved`,
+      html`${count(stats.declined)} denied`,
+      html`${count(stats.expired)} timed out`,
     ];
     if (stats.approved + stats.declined > 0) {
       facts.push(

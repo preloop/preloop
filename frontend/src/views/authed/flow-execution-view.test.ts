@@ -562,6 +562,77 @@ describe('FlowExecutionView', () => {
     expect(drawn()).to.be.greaterThan(100);
   });
 
+  it('prints the billing line once per run of same-billed calls (#1692)', async () => {
+    const element = (await fixture(
+      html`<flow-execution-view></flow-execution-view>`
+    )) as FlowExecutionView;
+    element.executionId = 'exec-1';
+    await element.updateComplete;
+    await waitUntil(
+      () =>
+        (element as any).execution?.id === 'exec-1' &&
+        !(element as any).isLoading,
+      'Execution view did not finish loading'
+    );
+
+    const billed = {
+      billing_path: 'your_key',
+      billing_model_name: 'Deepseek',
+      billing_model_id: 'model-1',
+    };
+    (element as any).gatewayEvents = Array.from({ length: 4 }, (_, i) => ({
+      id: `billed-${i}`,
+      execution_id: 'exec-1',
+      timestamp: new Date(
+        Date.parse('2026-03-09T10:00:00Z') + i * 1000
+      ).toISOString(),
+      type: 'model_gateway_call',
+      payload: {
+        api_usage_id: `usage-b${i}`,
+        request_id: `req-b${i}`,
+        ...(i === 3 ? { billing_path: 'allowance' } : billed),
+      },
+    }));
+    await element.updateComplete;
+
+    const rows = Array.from(
+      element.shadowRoot!.querySelectorAll('preloop-gateway-event')
+    ) as Array<HTMLElement & { hideBilling: boolean }>;
+    expect(rows.length).to.be.at.least(4);
+    const shown = rows.filter((row) => !row.hideBilling);
+    // One "your key" line for the three same-billed calls, one for allowance.
+    expect(shown.length).to.equal(rows.length - 2);
+  });
+
+  it('never prints "Billing path not recorded" in the timeline (#1692)', async () => {
+    const element = (await fixture(
+      html`<flow-execution-view></flow-execution-view>`
+    )) as FlowExecutionView;
+    element.executionId = 'exec-1';
+    await element.updateComplete;
+    await waitUntil(
+      () =>
+        (element as any).execution?.id === 'exec-1' &&
+        !(element as any).isLoading,
+      'Execution view did not finish loading'
+    );
+    (element as any).gatewayEvents = Array.from({ length: 3 }, (_, i) => ({
+      id: `unbilled-${i}`,
+      execution_id: 'exec-1',
+      timestamp: new Date(
+        Date.parse('2026-03-09T10:00:00Z') + i * 1000
+      ).toISOString(),
+      type: 'model_gateway_call',
+      payload: { api_usage_id: `usage-u${i}`, request_id: `req-u${i}` },
+    }));
+    await element.updateComplete;
+    const rows = Array.from(
+      element.shadowRoot!.querySelectorAll('preloop-gateway-event')
+    ) as Array<HTMLElement & { hideBilling: boolean }>;
+    expect(rows.length).to.be.at.least(3);
+    expect(rows.every((row) => row.hideBilling)).to.equal(true);
+  });
+
   it('puts what the run was about under the flow name (wave 4)', async () => {
     const element = (await fixture(
       html`<flow-execution-view></flow-execution-view>`
@@ -620,6 +691,46 @@ describe('FlowExecutionView', () => {
       'https://github.com/preloop/preloop/issues/77',
       'https://github.com/preloop/preloop/pull/78',
     ]);
+  });
+
+  it('shows each published repository and branch without changing follow-up', async () => {
+    const element = await load('exec-1');
+    (element as any).execution = {
+      ...(element as any).execution,
+      result: {
+        pr_url: 'https://gitlab.example.com/team/lib/-/merge_requests/1',
+        pr_source_branch: 'feature/change',
+        published_prs: [
+          {
+            url: 'https://gitlab.example.com/team/lib/-/merge_requests/1',
+            branch: 'feature/change',
+            provider: 'gitlab',
+          },
+          {
+            url: 'https://gitlab.example.com/team/app/-/merge_requests/2',
+            branch: 'feature/change',
+            provider: 'gitlab',
+          },
+          { url: 'javascript:alert(1)', branch: 'unsafe' },
+          { url: 'http://', branch: 'invalid' },
+        ],
+        published_prs_truncated: true,
+      },
+    };
+    await element.updateComplete;
+    const list = element.shadowRoot!.querySelector(
+      '[data-testid="published-prs"]'
+    )!;
+    expect(
+      Array.from(list.querySelectorAll('a')).map((a) => a.getAttribute('href'))
+    ).to.deep.equal([
+      'https://gitlab.example.com/team/lib/-/merge_requests/1',
+      'https://gitlab.example.com/team/app/-/merge_requests/2',
+    ]);
+    expect(list.textContent).to.contain('team/lib');
+    expect(list.textContent).to.contain('team/app');
+    expect(list.textContent).to.contain('feature/change');
+    expect(list.textContent).to.contain('Additional published pull requests');
   });
 
   it('links follow-ups from the original execution', async () => {
@@ -1130,7 +1241,7 @@ describe('FlowExecutionView', () => {
           ?.getAttribute('title')
       ).to.contain('1,000 input tokens');
       expect(stripValue(element, 'strip-cost')).to.equal('$0.10');
-      expect(pageText(element)).to.contain('codex');
+      expect(pageText(element)).to.contain('Codex CLI');
       expect(
         strip.querySelector('sl-copy-button')?.getAttribute('value')
       ).to.equal('exec-1');
@@ -2545,6 +2656,8 @@ describe('FlowExecutionView', () => {
       '[data-testid="resume-line"]'
     ) as HTMLElement;
     expect(line.textContent).to.contain('$0.78');
+    // The runtime reads as the flow page names it, not its raw id (B-11).
+    expect(stripValue(element, 'strip-agent')).to.equal('Codex CLI');
   });
 
   describe('delegation tree', () => {

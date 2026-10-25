@@ -1,7 +1,7 @@
 """Startup backfill that encrypts legacy plaintext tracker credentials.
 
-Older rows stored the tracker API key (and Jira webhook secret) directly in the
-``tracker.api_key`` / ``tracker.jira_webhook_secret`` columns. This pass moves
+Older rows stored the tracker API key directly in ``tracker.api_key``.
+Webhook secrets were moved by the staged credential migration. This pass moves
 any such plaintext value into an encrypted ``SecretReference`` and clears the
 column. Idempotent and safe to run on every boot; per-tracker failures are
 logged and skipped so one bad row cannot abort the whole pass.

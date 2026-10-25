@@ -17,7 +17,7 @@ from preloop.models.db.session import get_db_session as get_db
 from preloop.models.models.user import User  # Import Account model
 from preloop.models.models.organization import Organization
 from preloop.models.models.tracker import Tracker
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 # Initialize CRUD operations for Organization
 crud_organization = CRUDOrganization(Organization)
@@ -34,6 +34,7 @@ def create_organization(
     current_user: User = Depends(get_current_active_user),
 ) -> Organization:
     """Create a new organization, ensuring it's linked to the current user's tracker."""
+    ensure_permission_in_oss(db, current_user, "create_organizations")
     # Check if organization with this identifier already exists
     existing_org = crud_organization.get_by_identifier(
         db, identifier=organization.identifier
@@ -164,6 +165,7 @@ def update_organization(
     current_user: User = Depends(get_current_active_user),
 ) -> Organization:
     """Update an organization, ensuring user has access."""
+    ensure_permission_in_oss(db, current_user, "edit_organizations")
     organization = crud_organization.get(
         db, id=organization_id, account_id=current_user.account_id
     )
@@ -187,6 +189,7 @@ def delete_organization(
     current_user: User = Depends(get_current_active_user),
 ) -> None:
     """Delete an organization, ensuring user has access."""
+    ensure_permission_in_oss(db, current_user, "delete_organizations")
     organization = crud_organization.get(
         db, id=organization_id, account_id=current_user.account_id
     )

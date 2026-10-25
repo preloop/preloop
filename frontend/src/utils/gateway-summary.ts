@@ -1,4 +1,11 @@
-import type { AccountGatewayUsageSummaryResponse } from '../types';
+import type {
+  AccountGatewayUsageSummaryResponse,
+  GatewayTokenUsage,
+} from '../types';
+import {
+  subscriptionEstimate,
+  type SubscriptionEstimate,
+} from './subscription-estimate';
 
 /**
  * Reading one gateway summary two ways.
@@ -35,6 +42,7 @@ export function mergeGatewaySummaryPreservingBreakdown(
     usage_by_flow: previous.usage_by_flow,
     usage_by_session: previous.usage_by_session,
     usage_by_tool: previous.usage_by_tool,
+    usage_by_agent: previous.usage_by_agent,
     requests_by_day: previous.requests_by_day,
   };
 }
@@ -47,6 +55,49 @@ export function hasUsageBreakdown(
   }
   return (
     (summary.usage_by_session?.length || 0) > 0 ||
-    (summary.usage_by_model?.length || 0) > 0
+    (summary.usage_by_model?.length || 0) > 0 ||
+    (summary.usage_by_agent?.length || 0) > 0
   );
+}
+
+/** One agent's usage in the summary period, as the Inventory shows it. */
+export interface AgentPeriodUsage {
+  requests: number;
+  tokens: number;
+  tokenUsage: GatewayTokenUsage | null;
+  cost: number;
+  /** Spend plus the API-equivalent cost of subscription requests (D-05). */
+  withoutSubscriptions: SubscriptionEstimate;
+  /** Subscription-routed requests behind that estimate; 0 without any. */
+  subscriptionRequests: number;
+}
+
+/**
+ * Per-agent usage for the summary period, keyed by agent id.
+ *
+ * Read from the server's `usage_by_agent` breakdown, which applies the same
+ * attribution as the agents list and the agent page (the agent's own
+ * principal plus every session it owns, per-run sessions included). Summing
+ * the session breakdown here instead disagreed with both pages: that list is
+ * capped at the most recent sessions and the pages did not count a session's
+ * rows written under a per-run principal.
+ */
+export function agentUsageById(
+  summary: AccountGatewayUsageSummaryResponse | null | undefined
+): Map<string, AgentPeriodUsage> {
+  const usage = new Map<string, AgentPeriodUsage>();
+  for (const row of summary?.usage_by_agent || []) {
+    usage.set(row.agent_id, {
+      requests: row.request_count || 0,
+      tokens: row.token_usage?.total_tokens || 0,
+      tokenUsage: row.token_usage ?? null,
+      cost: row.estimated_cost || 0,
+      withoutSubscriptions: subscriptionEstimate(
+        row.estimated_cost,
+        row.subscription_usage
+      ),
+      subscriptionRequests: row.subscription_usage?.request_count ?? 0,
+    });
+  }
+  return usage;
 }

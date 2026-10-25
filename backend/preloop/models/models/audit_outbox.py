@@ -3,7 +3,7 @@
 An ``AuditOutbox`` row is an audit record that has been promised but not yet
 written to ``audit_log``. It is added to the same session as the business
 write that triggered it, so the intent commits or rolls back with that write.
-A relay in the audit plugin drains pending rows on its own sessions, writes
+A relay in the audit service drains pending rows on its own sessions, writes
 the ``audit_log`` row and marks the intent delivered in one commit, so a
 crash between the two cannot duplicate or lose the record.
 

@@ -108,10 +108,13 @@ func useDiscoveryServer(t *testing.T, url string) {
 	oldURL, oldToken := FlagURL, FlagToken
 	FlagURL, FlagToken = url, "tok"
 	oldReader := readMachineID
+	oldInventoryReader := readInventoryMachineID
 	readMachineID = func() (string, error) { return testMachineID, nil }
+	readInventoryMachineID = readMachineID
 	t.Cleanup(func() {
 		FlagURL, FlagToken = oldURL, oldToken
 		readMachineID = oldReader
+		readInventoryMachineID = oldInventoryReader
 	})
 }
 
@@ -336,6 +339,21 @@ func TestDiscoveryLinkFieldsUseTheSameHashes(t *testing.T) {
 	}
 	if fields["config_path_hash"] != report.Candidates[0].ConfigPathHash {
 		t.Fatalf("link path hash differs from report: %v", fields)
+	}
+	// Onboarding records the device without a prior report, so it carries
+	// the same enumerated OS family the report would.
+	if fields["os_family"] != report.OS {
+		t.Fatalf("link os_family differs from report: %v", fields)
+	}
+	if fields["cli_version"] != report.CLIVersion {
+		t.Fatalf("link cli_version differs from report: %v", fields)
+	}
+	for key := range fields {
+		switch key {
+		case "workstation_fingerprint", "config_path_hash", "os_family", "cli_version":
+		default:
+			t.Fatalf("unexpected link field %q", key)
+		}
 	}
 }
 

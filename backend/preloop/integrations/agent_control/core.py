@@ -180,6 +180,7 @@ class AgentControlResult:
     status: Literal["completed", "accepted", "failed"] = "completed"
     session_reference: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentControlRuntimeHooks(Protocol):
@@ -233,6 +234,9 @@ class AgentControlClient:
         self._session_factory = session_factory or _default_session_factory
         self._sleep = sleep
         self._stopped = asyncio.Event()
+        # Process-lifetime outbox: retain completed inference through transport
+        # or database disconnects. A process restart is not covered by this cache.
+        self._pending_results: dict[str, OutboundEnvelope] = {}
 
     def stop(self) -> None:
         """Request the connection loop to stop after the current iteration."""
@@ -276,9 +280,31 @@ class AgentControlClient:
         async with self._session_factory(headers) as session:
             async with session.ws_connect(self.config.control_ws_url) as websocket:
                 await self._send_json(websocket, self.capability_envelope())
+                for receipt_id, result in list(self._pending_results.items()):
+                    await self._send_result_with_receipt(websocket, receipt_id, result)
                 heartbeat_task = asyncio.create_task(self._heartbeat_loop(websocket))
+                # aiohttp services WebSocket protocol PING/PONG only while
+                # receive is being awaited. Keep reading during native model
+                # calls; a heartbeat writer alone does not prevent ping timeout.
+                inbox: asyncio.Queue[Any] = asyncio.Queue()
+                end_of_stream = object()
+
+                async def receive_messages() -> None:
+                    try:
+                        async for message in websocket:
+                            if inbox.qsize() >= 128:
+                                raise RuntimeError("Control receive queue overflow")
+                            inbox.put_nowait(message)
+                    finally:
+                        inbox.put_nowait(end_of_stream)
+
+                receiver_task = asyncio.create_task(receive_messages())
                 try:
-                    async for message in websocket:
+                    while True:
+                        message = await inbox.get()
+                        if message is end_of_stream:
+                            await receiver_task
+                            break
                         if self._stopped.is_set():
                             break
                         envelope = _parse_inbound_message(message)
@@ -304,7 +330,10 @@ class AgentControlClient:
                             break
                 finally:
                     heartbeat_task.cancel()
-                    await asyncio.gather(heartbeat_task, return_exceptions=True)
+                    receiver_task.cancel()
+                    await asyncio.gather(
+                        heartbeat_task, receiver_task, return_exceptions=True
+                    )
                 # Detect server-initiated eviction after the message loop ends.
                 close_code = getattr(websocket, "close_code", None)
                 if close_code == EVICTION_CLOSE_CODE:
@@ -335,16 +364,72 @@ class AgentControlClient:
     async def _handle_text_message(
         self, websocket: aiohttp.ClientWebSocketResponse, envelope: dict[str, Any]
     ) -> None:
+        if envelope.get("type") == "ack" and envelope.get("name") == "heartbeat":
+            if envelope.get("payload", {}).get("status") == "ok":
+                self._pending_results.pop(str(envelope.get("message_id")), None)
+            return
         if envelope.get("type") == "ping":
             await self._send_json(websocket, {"type": "heartbeat", "payload": {}})
             return
+        if envelope.get("type") == "command":
+            for receipt_id, result in self._pending_results.items():
+                if result.get("message_id") == envelope.get("message_id"):
+                    await self._send_result_with_receipt(websocket, receipt_id, result)
+                    return
+            if len(self._pending_results) >= 128:
+                raise RuntimeError("Control result outbox is full; reconnect to drain")
+            await self._send_json(
+                websocket,
+                {
+                    "type": "status",
+                    "name": "command_ack",
+                    "message_id": str(envelope.get("message_id") or uuid4()),
+                    "payload": {"command_id": str(envelope.get("message_id") or "")},
+                },
+            )
         for outbound in await dispatch_operator_command(self.hooks, envelope):
-            await self._send_json(websocket, outbound)
+            if outbound.get("name") in {"command_result", "command_error"}:
+                receipt_id = str(uuid4())
+                self._pending_results[receipt_id] = outbound
+                await self._send_result_with_receipt(websocket, receipt_id, outbound)
+            else:
+                await self._send_json(websocket, outbound)
+
+    async def _send_result_with_receipt(
+        self,
+        websocket: aiohttp.ClientWebSocketResponse,
+        receipt_id: str,
+        result: OutboundEnvelope,
+    ) -> None:
+        await self._send_json(websocket, result)
+        # The backend processes and commits inbound frames serially, then
+        # acknowledges a heartbeat. Its matching ACK is therefore a barrier
+        # proving the preceding result transaction completed. Replayed results
+        # are deduplicated by command_id on the backend.
+        await self._send_json(
+            websocket,
+            {
+                "type": "heartbeat",
+                "name": "heartbeat",
+                "message_id": receipt_id,
+                "payload": {"observed_at": _now_iso()},
+            },
+        )
 
     async def _send_json(
         self, websocket: aiohttp.ClientWebSocketResponse, envelope: OutboundEnvelope
     ) -> None:
-        await websocket.send_json(envelope)
+        try:
+            await websocket.send_json(envelope)
+        except Exception:
+            # The concurrent reader can observe eviction while inference is
+            # running. Its later send fails before the normal loop-exit check.
+            # Never reconnect and evict the newer owner in that case.
+            if getattr(websocket, "close_code", None) == EVICTION_CLOSE_CODE:
+                raise ConnectionEvictedError(
+                    "Connection evicted by server: superseded by a newer connection"
+                ) from None
+            raise
 
     def capability_envelope(self) -> OutboundEnvelope:
         """Build the initial capability advertisement envelope."""
@@ -403,9 +488,18 @@ async def dispatch_operator_command(
     outbound: list[OutboundEnvelope] = [
         {
             "type": "status",
-            "name": "command_status",
+            "name": (
+                "command_ack"
+                if result.status == "accepted"
+                else "command_error"
+                if result.status == "failed"
+                else "command_result"
+            ),
             "message_id": command.command_id,
             "payload": {
+                "command_id": command.command_id,
+                "reply_text": result.reply_text,
+                **({"usage": result.usage} if result.usage else {}),
                 "status": result.status,
                 "command": "send_message",
                 "session_reference": result.session_reference
@@ -481,9 +575,14 @@ def _error_envelope(
 ) -> OutboundEnvelope:
     return {
         "type": "status",
-        "name": name,
+        "name": "invalid_json" if name == "invalid_json" else "command_error",
         "message_id": message_id,
-        "payload": {"status": "error", **payload},
+        "payload": {
+            "command_id": message_id,
+            "status": "error" if name == "invalid_json" else "failed",
+            "error": name,
+            **payload,
+        },
     }
 
 

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 
-from .api_usage import exclude_replay_usage_condition
+from .api_usage import exclude_customer_overhead_condition
 from .base import CRUDBase
 
 ApiUsage = models.ApiUsage
@@ -344,7 +344,7 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id.is_not(None),
                 ApiUsage.estimated_cost > 0,
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
                 ApiUsage.timestamp >= _day_start(day),
                 ApiUsage.timestamp < _day_start(day + timedelta(days=1)),
             )
@@ -381,7 +381,7 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
             ApiUsage.account_id == account_id,
             ApiUsage.user_id.is_not(None),
             ApiUsage.estimated_cost > 0,
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
             ApiUsage.timestamp >= _day_start(start_day),
             ApiUsage.timestamp < _day_start(end_day + timedelta(days=1)),
         )
@@ -439,7 +439,7 @@ class CRUDSpendOutlierFinding(CRUDBase[SpendOutlierFinding]):
                 ApiUsage.action_type == "model_gateway",
                 ApiUsage.account_id == account_id,
                 ApiUsage.runtime_session_id.in_(db.query(active.c.runtime_session_id)),
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
             )
             .group_by(ApiUsage.runtime_session_id)
             .having(total > threshold_usd)

@@ -10,7 +10,7 @@ same send, scope and delivery code the tool uses.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -541,3 +541,103 @@ def test_list_sessions_limit_is_clamped_to_the_schema_maximum(
     result = _list(db_session, account, agent, parent, limit=10_000)
     assert len(result["results"]) == LIST_SESSIONS_MAX_LIMIT
     assert result["truncated"] is True
+
+
+def test_hook_caller_id_is_principal_scoped(db_session, account, family):
+    parent, _, _ = family
+    assert caller_session_ids(
+        db_session,
+        account_id=account.id,
+        principal_type=PRINCIPAL_TYPE,
+        principal_id=PRINCIPAL_ID,
+        caller_session_id="ext-parent",
+    ) == [UUID(parent.runtime_session_id)]
+    assert (
+        caller_session_ids(
+            db_session,
+            account_id=account.id,
+            principal_type=PRINCIPAL_TYPE,
+            principal_id="other-machine",
+            caller_session_id="ext-parent",
+        )
+        == []
+    )
+    assert (
+        caller_session_ids(
+            db_session,
+            account_id=account.id,
+            principal_type=PRINCIPAL_TYPE,
+            principal_id=PRINCIPAL_ID,
+            caller_session_id=parent.runtime_session_id,
+        )
+        == []
+    )
+
+
+def test_bound_credential_cannot_switch_session(db_session, account, family):
+    parent, child, _ = family
+    assert caller_session_ids(
+        db_session,
+        account_id=account.id,
+        bound_runtime_session_id=child.runtime_session_id,
+        principal_type=PRINCIPAL_TYPE,
+        principal_id=PRINCIPAL_ID,
+        caller_session_id="ext-parent",
+        headers={"X-Mcp-Client-Session-Id": "ext-parent"},
+    ) == [UUID(child.runtime_session_id)]
+    assert parent.runtime_session_id != child.runtime_session_id
+
+
+@pytest.mark.parametrize(
+    "caller_index,target_index,relation",
+    [
+        (0, 0, "self"),
+        (0, 1, "descendant"),
+        (1, 0, "ancestor"),
+        (1, 2, "same_tree"),
+    ],
+)
+def test_runtime_session_relations(
+    db_session, account, agent, family, caller_index, target_index, relation
+):
+    decision = agent_note_scope.evaluate_note_scope(
+        db_session,
+        account_id=str(account.id),
+        author_agent_id=agent.id,
+        author_execution_id=None,
+        target_agent_id=None,
+        target_session_id=family[target_index].runtime_session_id,
+        named_execution_id=None,
+        text="Report progress.",
+        author_session_ids=[family[caller_index].runtime_session_id],
+    )
+    assert decision.relation == relation
+    assert decision.allowed == (relation in ("self", "descendant"))
+
+
+def test_caller_id_rejects_another_principals_hosted_session(
+    monkeypatch, db_session, account
+):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        crud_runtime_session, "get_by_source", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        "preloop.services.agent_session_lineage.runner_session_for_external",
+        lambda *args, **kwargs: SimpleNamespace(
+            id=uuid4(),
+            runtime_principal_type="managed_agent",
+            runtime_principal_id="another-agent",
+        ),
+    )
+    assert (
+        caller_session_ids(
+            db_session,
+            account_id=account.id,
+            principal_type=PRINCIPAL_TYPE,
+            principal_id=PRINCIPAL_ID,
+            caller_session_id="other-hosted-run",
+        )
+        == []
+    )

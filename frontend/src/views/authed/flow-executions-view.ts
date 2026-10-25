@@ -73,11 +73,11 @@ import '../../components/token-figures.ts';
 import {
   ListTable,
   listTableStyles,
+  renderHeaderColumnPicker,
   renderListCells,
   renderListHeaders,
 } from '../../table';
 import type { ListColumn } from '../../table';
-import '../../table/column-picker';
 import {
   cacheSplitOf,
   formatCacheHitRate,
@@ -257,9 +257,16 @@ export class FlowExecutionsView extends AuthedElement {
         /* The subject is the primary way to tell executions apart, so it gets
          the width the fixed columns leave over. */
         .subject-cell {
-          overflow: hidden;
-          text-overflow: ellipsis;
-          white-space: nowrap;
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+        .subject-cell .execution-subject-text {
+          white-space: normal;
+          overflow-wrap: anywhere;
+        }
+        .subject-cell .execution-subject {
+          white-space: normal;
+          overflow-wrap: anywhere;
         }
         .subject-cell .execution-subject.is-fallback {
           font-family: var(--sl-font-mono);
@@ -844,7 +851,7 @@ export class FlowExecutionsView extends AuthedElement {
       count: (usage: GatewayTokenUsage | null) => number
     ) => {
       const usage = row.token_usage || null;
-      if (!usage) return '\u2014';
+      if (!usage) return '-';
       return formatTokenCount(count(usage));
     };
     return [
@@ -873,6 +880,7 @@ export class FlowExecutionsView extends AuthedElement {
       {
         id: 'subject',
         header: 'Subject',
+        minWidth: 200,
         // No width and no resize handle: this is the column that takes what
         // the others leave, which is how the table fits its wrapper.
         resizable: false,
@@ -912,15 +920,13 @@ export class FlowExecutionsView extends AuthedElement {
         cellClass: 'duration-cell',
         value: (row) => durationOf(row),
         cell: (row) => {
-          const label =
-            executionDurationText(row, this.durationNow) || '\u2014';
+          const label = executionDurationText(row, this.durationNow) || '-';
           // The span gives the layout test the text box to measure; the
           // cell's ellipsis already clips the row when an operator drags the
           // column narrower.
           return html`<span class="duration-text">${label}</span>`;
         },
-        cellTitle: (row) =>
-          executionDurationText(row, this.durationNow) || '\u2014',
+        cellTitle: (row) => executionDurationText(row, this.durationNow) || '-',
       },
       {
         id: 'model',
@@ -1346,6 +1352,7 @@ export class FlowExecutionsView extends AuthedElement {
         }
 
         <time-range-select
+          size="medium"
           ariaLabel="Executions time range"
           .value=${this.range}
           .options=${RANGE_OPTIONS.map(({ value, label }) => ({
@@ -1361,17 +1368,6 @@ export class FlowExecutionsView extends AuthedElement {
           Refresh
         </sl-button>
 
-        <!-- Which columns the table shows sits with the filters that decide
-             which rows it shows, not in a header cell: the header row is the
-             table's own vocabulary and a control in it would be read as a
-             tenth column. -->
-        <column-picker
-          .columns=${this.table.pickerColumns}
-          ?can-reset=${this.table.hasColumnChanges}
-          @column-toggle=${(event: CustomEvent) =>
-            this.table.setVisible(event.detail.id, event.detail.visible)}
-          @columns-reset=${() => this.table.resetColumns()}
-        ></column-picker>
         <span slot="count">${this.resultsLabel}</span>
       </list-toolbar>
     `;
@@ -1447,7 +1443,11 @@ export class FlowExecutionsView extends AuthedElement {
                         <thead>
                           <tr>
                             ${renderListHeaders(this.table)}
-                            <th class="actions-cell"></th>
+                            <th class="actions-cell">
+                              <div class="table-header-content">
+                                ${renderHeaderColumnPicker(this.table, false)}
+                              </div>
+                            </th>
                           </tr>
                         </thead>
                         <tbody>
@@ -1545,7 +1545,14 @@ export class FlowExecutionsView extends AuthedElement {
         <!-- "Failed" says that it broke; the category says what broke, which
              is the difference between a provider hiccup and a flow that never
              confirms it finished. -->
-        ${renderFailureCategoryChip(exec.failure_category)}
+        ${
+          // A stopped run whose category is "cancelled" said the same thing
+          // twice ("Stopped" over "Cancelled"): one chip is enough (U-14).
+          ['STOPPED', 'CANCELLED'].includes(exec.status) &&
+          String(exec.failure_category || '').toLowerCase() === 'cancelled'
+            ? nothing
+            : renderFailureCategoryChip(exec.failure_category)
+        }
         ${this.renderResumeLine(exec)}
       </div>
     `;
@@ -1586,7 +1593,7 @@ export class FlowExecutionsView extends AuthedElement {
    */
   private renderCachedCell(exec: FlowExecution) {
     const split = cacheSplitOf(exec.token_usage || null);
-    if (!split) return '\u2014';
+    if (!split) return '-';
     return formatTokenCount(split.hit);
   }
 

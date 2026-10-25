@@ -35,6 +35,7 @@ from .cli_session import (
     build_session_restore_shell,
     resume_cli_session,
 )
+from .codex_events import codex_event_filter_command
 from .errors import AgentStartError
 from .completion_nudge import (
     AGENT_OUTPUT_LOG_PATH,
@@ -456,11 +457,13 @@ fi
         )
         # The live reminder is delivered later on this same executor. A
         # read-only run must not resume under --yolo.
-        self.live_nudge_command = (
-            "codex exec resume --last --skip-git-repo-check "
+        self.live_nudge_command = "bash -c " + shlex.quote(
+            "set -o pipefail; codex exec resume --last --json --skip-git-repo-check "
             f"{sandbox_flags} "
-            f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" >> {LIVE_NUDGE_LOG_PATH} 2>&1'
+            f'"$(cat {LIVE_NUDGE_PROMPT_PATH})" 2>&1 | '
+            f"{codex_event_filter_command()} >> {LIVE_NUDGE_LOG_PATH}"
         )
+        event_filter = codex_event_filter_command()
         prompt = execution_context["prompt"]
         native_resume_guard = (
             '"0"'
@@ -557,10 +560,14 @@ fi
                 resume_probe="codex exec --help 2>&1 | grep -qw resume",
                 resume_command=(
                     '$PRELOOP_NUDGE_TIMEOUT codex exec resume "$_pl_codex_sid" '
-                    "--skip-git-repo-check "
+                    "--json --skip-git-repo-check "
                     f'--model "{model}" {sandbox_flags} '
                     f'"$(cat {NUDGE_PROMPT_PATH})" 2>&1 '
-                    f'| tee -a "{AGENT_OUTPUT_LOG_PATH}"'
+                    f'| {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}"\n'
+                    '        _pl_nudge_codes=("${PIPESTATUS[@]}")\n'
+                    '        ( if [ "${_pl_nudge_codes[0]:-1}" -ne 0 ]; then '
+                    'exit "${_pl_nudge_codes[0]:-1}"; '
+                    'else exit "${_pl_nudge_codes[1]:-1}"; fi )'
                 ),
                 timeout_seconds=completion_nudge_timeout_seconds(),
             )
@@ -612,11 +619,14 @@ fi
             resume_probe="codex exec --help 2>&1 | grep -qw resume",
             resume_command=(
                 '$PRELOOP_RECOVERY_TIMEOUT codex exec resume "$_pl_recovery_sid" '
-                f'--skip-git-repo-check --model "{model}" {sandbox_flags} '
+                f'--json --skip-git-repo-check --model "{model}" {sandbox_flags} '
                 f'"$(cat {RECOVERY_PROMPT_PATH})" 2>&1 '
-                f'| tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
+                f'| {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"\n'
                 '    _pl_recovery_codes=("${PIPESTATUS[@]}")\n'
-                "    CODEX_EXIT_CODE=${_pl_recovery_codes[0]:-1}"
+                "    CODEX_EXIT_CODE=${_pl_recovery_codes[0]:-1}\n"
+                '    if [ "$CODEX_EXIT_CODE" -eq 0 ]; then\n'
+                "        CODEX_EXIT_CODE=${_pl_recovery_codes[1]:-1}\n"
+                "    fi"
             ),
         )
         script = f"""
@@ -723,13 +733,16 @@ echo "PRELOOP_AGENT_EXEC_START"
 # Run codex in non-interactive mode with the prompt.
 # The output is tee'd so the in-place completion nudge can check for the
 # success sentinel on a line of its own, exactly as the orchestrator does.
-# PIPESTATUS[1] is codex's own exit code (echo | codex | tee).
+# PIPESTATUS[1] is codex's own exit code (cat | codex | filter | tee).
 set +e
 : > "{AGENT_OUTPUT_LOG_PATH}"
 : > "{ATTEMPT_LOG_PATH}"
-cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
+cat "{PROMPT_FILE_PATH}" | codex exec $CODEX_RESUME_ARGS --json --skip-git-repo-check --model "{model}" {sandbox_flags} 2>&1 | {event_filter} | tee -a "{AGENT_OUTPUT_LOG_PATH}" "{ATTEMPT_LOG_PATH}"
 CODEX_PIPE_CODES=("${{PIPESTATUS[@]}}")
-CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-0}}
+CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[1]:-1}}
+if [ "$CODEX_EXIT_CODE" -eq 0 ]; then
+    CODEX_EXIT_CODE=${{CODEX_PIPE_CODES[2]:-1}}
+fi
 set -e
 {session_blocks["capture"]}
 {stream_recovery_block}

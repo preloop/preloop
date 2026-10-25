@@ -1,5 +1,7 @@
 """Tool summaries preserve policy semantics without sending input definitions."""
 
+import asyncio
+import inspect
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -168,3 +170,64 @@ def test_new_account_default_disabled_builtins_carry_no_configuration(
         assert row.approval_workflow_id is None
         assert row.access_rules == []
     assert all(row.config_id is None for row in summary)
+
+
+def test_rules_index_carries_policy_state_without_descriptions(
+    catalogue: tuple[Any, ...],
+) -> None:
+    """Policies builds its rules list from names, sources and access rules only."""
+    account, _servers, _batch, _individual, _agent_id = catalogue
+    db, user = MagicMock(), MagicMock()
+    full = tools.list_all_tools(account=account, current_user=user, db=db)
+    index = tools.list_tool_rules(account=account, current_user=user, db=db)
+    assert [row.name for row in index] == [row["name"] for row in full]
+    row = next(r for r in index if r.name == "external_0").model_dump()
+    assert set(row) == {
+        "name",
+        "source",
+        "source_id",
+        "source_name",
+        "is_enabled",
+        "approval_workflow_id",
+        "config_id",
+        "has_approval_condition",
+        "access_rules",
+    }
+    assert row["is_enabled"] is False
+    assert row["has_approval_condition"] is True
+    assert row["access_rules"][0]["condition_expression"] == "amount > 10"
+    summary = tools.list_tool_summaries(account=account, current_user=user, db=db)
+    assert (
+        len(json.dumps([r.model_dump() for r in index]))
+        < len(json.dumps([r.model_dump() for r in summary])) / 2
+    )
+
+
+def test_rules_index_has_typed_openapi_response() -> None:
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(tools.router)
+    schema = app.openapi()
+    response = schema["paths"]["/tools/rules"]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]
+    assert response["items"]["$ref"].endswith("/ToolRuleIndexRow")
+
+
+def test_tool_stats_passes_include_agents_through(mocker: Any) -> None:
+    """``tools/stats?include_agents=false`` skips the per-agent breakdown."""
+    service = mocker.patch.object(tools, "ToolUsageStatsService")
+    service.return_value.get_account_usage_by_tool.return_value = []
+    result = tools.get_tool_usage_stats(
+        start_date=None,
+        end_date=None,
+        include_agents=False,
+        account=SimpleNamespace(id=uuid4()),
+        current_user=MagicMock(),
+        db=MagicMock(),
+    )
+    if inspect.isawaitable(result):
+        asyncio.run(result)
+    kwargs = service.return_value.get_account_usage_by_tool.call_args.kwargs
+    assert kwargs["include_agents"] is False

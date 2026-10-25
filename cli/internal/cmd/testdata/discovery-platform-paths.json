@@ -1,0 +1,156 @@
+{
+  "Pi": {
+    "darwin": {
+      "path": ".pi/agent/preloop.json"
+    },
+    "windows": {
+      "path": ".pi/agent/preloop.json"
+    },
+    "linux": {
+      "path": ".pi/agent/preloop.json"
+    }
+  },
+  "DeepSeek Harness": {
+    "darwin": {
+      "path": ".dsh/preloop.json"
+    },
+    "windows": {
+      "path": ".dsh/preloop.json"
+    },
+    "linux": {
+      "path": ".dsh/preloop.json"
+    }
+  },
+  "Claude Code": {
+    "darwin": {
+      "path": ".claude/settings.json"
+    },
+    "windows": {
+      "path": ".claude/settings.json"
+    },
+    "linux": {
+      "path": ".claude/settings.json"
+    }
+  },
+  "Claude Desktop": {
+    "darwin": {
+      "path": "Library/Application Support/Claude/claude_desktop_config.json"
+    },
+    "windows": {
+      "path": "AppData/Roaming/Claude/claude_desktop_config.json"
+    },
+    "linux": {
+      "path": ".config/claude/claude_desktop_config.json"
+    }
+  },
+  "Cursor": {
+    "darwin": {
+      "path": ".cursor/mcp.json"
+    },
+    "windows": {
+      "path": ".cursor/mcp.json"
+    },
+    "linux": {
+      "path": ".cursor/mcp.json"
+    }
+  },
+  "VSCode / Copilot": {
+    "darwin": {
+      "path": ".vscode/mcp.json"
+    },
+    "windows": {
+      "path": ".vscode/mcp.json"
+    },
+    "linux": {
+      "path": ".vscode/mcp.json"
+    }
+  },
+  "Gemini CLI": {
+    "darwin": {
+      "path": ".gemini/settings.json"
+    },
+    "windows": {
+      "path": ".gemini/settings.json"
+    },
+    "linux": {
+      "path": ".gemini/settings.json"
+    }
+  },
+  "OpenCode": {
+    "darwin": {
+      "path": ".config/opencode/config.json"
+    },
+    "windows": {
+      "path": ".config/opencode/config.json"
+    },
+    "linux": {
+      "path": ".config/opencode/config.json"
+    }
+  },
+  "Codex CLI": {
+    "darwin": {
+      "path": ".codex/config.toml"
+    },
+    "windows": {
+      "path": ".codex/config.toml"
+    },
+    "linux": {
+      "path": ".codex/config.toml"
+    }
+  },
+  "OpenClaw": {
+    "darwin": {
+      "path": ".openclaw/openclaw.json"
+    },
+    "windows": {
+      "path": ".openclaw/openclaw.json"
+    },
+    "linux": {
+      "path": ".openclaw/openclaw.json"
+    }
+  },
+  "Hermes": {
+    "darwin": {
+      "path": ".hermes/config.yaml"
+    },
+    "windows": {
+      "path": ".hermes/config.yaml"
+    },
+    "linux": {
+      "path": ".hermes/config.yaml"
+    }
+  },
+  "Antigravity": {
+    "darwin": {
+      "path": ".gemini/antigravity/mcp_config.json"
+    },
+    "windows": {
+      "path": ".gemini/antigravity/mcp_config.json"
+    },
+    "linux": {
+      "path": ".gemini/antigravity/mcp_config.json"
+    }
+  },
+  "Devin": {
+    "darwin": {
+      "path": ".config/devin/mcp_config.json"
+    },
+    "windows": {
+      "path": ".config/devin/mcp_config.json"
+    },
+    "linux": {
+      "path": ".config/devin/mcp_config.json"
+    }
+  },
+  "Copilot CLI": {
+    "darwin": {
+      "path": ".copilot/mcp-config.json"
+    },
+    "windows": {
+      "path": ".copilot/mcp-config.json"
+    },
+    "linux": {
+      "path": ".copilot/mcp-config.json"
+    }
+  }
+}

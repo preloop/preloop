@@ -8,7 +8,7 @@ from fastapi import HTTPException, Response
 from pytest_mock import MockerFixture
 
 from preloop.api.endpoints import flows
-from preloop.models import schemas
+from preloop.models import models, schemas
 from preloop.models.models.account import Account
 
 from tests.conftest import maybe_await
@@ -55,6 +55,12 @@ async def test_create_flow(mock_account: Account, mocker: MockerFixture):
         id=uuid.uuid4(),
         created_at=datetime.now(ZoneInfo("UTC")),
         updated_at=datetime.now(ZoneInfo("UTC")),
+    )
+
+    mocker.patch.object(
+        flows.crud_ai_model,
+        "get",
+        return_value=models.AIModel(account_id=mock_account.account_id),
     )
 
     # Act
@@ -140,6 +146,7 @@ async def test_update_flow(mock_account: Account, mocker: MockerFixture):
         new_callable=MagicMock,
     )
     mock_flow = MagicMock()
+    mock_flow.ai_model_id = None
     mock_flow.name = "Original Name"  # Different from update name
     mock_flow.is_preset = False
     mock_crud_flow.get.return_value = mock_flow
@@ -200,6 +207,7 @@ async def test_update_flow_merges_run_limits_onto_stored_agent_config(
         new_callable=MagicMock,
     )
     mock_flow = MagicMock()
+    mock_flow.ai_model_id = None
     mock_flow.name = "Nightly triage"
     mock_flow.is_preset = False
     mock_flow.source_preset_id = None
@@ -552,6 +560,7 @@ def _make_preset(flow_id: uuid.UUID, ai_model_id=None):
         pass
 
     preset = PresetObj()
+    preset.account_id = None
     preset.id = flow_id
     preset.name = "Preset Flow"
     preset.description = "A preset"
@@ -586,8 +595,10 @@ def _make_ai_model(
     model.account_id = account_id
     model.is_default = is_default
     model.provider_name = provider_name
-    model.credentials_secret_id = credentials_secret_id
-    model.api_key = api_key
+    model.credentials_secret_id = credentials_secret_id or (
+        uuid.uuid4() if api_key else None
+    )
+    model.api_key = None
     model.meta_data = meta_data
     model.api_endpoint = api_endpoint
     model.model_kind = "llm"
@@ -3113,6 +3124,7 @@ async def test_update_flow_switch_to_webhook_generates_secret(
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     flow_id = uuid.uuid4()
     mock_flow = MagicMock()
+    mock_flow.ai_model_id = None
     mock_flow.name = "Cloned Preset Flow"
     mock_flow.trigger_event_source = None
     mock_flow.webhook_config = None
@@ -3158,6 +3170,7 @@ async def test_update_flow_webhook_keeps_existing_secret(
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     flow_id = uuid.uuid4()
     mock_flow = MagicMock()
+    mock_flow.ai_model_id = None
     mock_flow.name = "Webhook Flow"
     mock_flow.trigger_event_source = "webhook"
     mock_flow.webhook_config = {"webhook_secret": "existing-secret"}
@@ -3192,6 +3205,7 @@ async def test_update_flow_webhook_keeps_existing_secret(
 def _webhook_update_flow(mocker, *, source, webhook_config):
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     mock_flow = MagicMock()
+    mock_flow.ai_model_id = None
     mock_flow.name = "Reviewer"
     mock_flow.trigger_event_source = source
     mock_flow.webhook_config = webhook_config
@@ -3295,6 +3309,66 @@ async def test_create_webhook_flow_keeps_supersede_flag(
     assert flow_in.webhook_config.dedupe_path == "data.id"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("supplied_config", "trigger_source", "expected_supersede"),
+    [
+        (None, "github", True),
+        (None, "webhook", True),
+        ({}, "github", False),
+        ({"supersede_on_update": False}, "github", False),
+    ],
+)
+async def test_create_from_preset_inherits_only_omitted_webhook_config(
+    mock_account: Account,
+    mocker: MockerFixture,
+    supplied_config: dict | None,
+    trigger_source: str,
+    expected_supersede: bool,
+):
+    """Preset defaults apply only when the caller leaves the config unspecified."""
+    mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
+    preset_id = uuid.uuid4()
+    mock_crud_flow.get.return_value = MagicMock(
+        id=preset_id,
+        is_preset=True,
+        account_id=None,
+        name="Pull Request Reviewer",
+        prompt_template="Review this pull request.",
+        allowed_mcp_tools=[],
+        webhook_config={
+            "supersede_on_update": True,
+            "webhook_secret": "preset-secret-must-not-be-copied",
+        },
+    )
+    payload = {
+        "name": "Reviewer from preset",
+        "prompt_template": "Review this pull request.",
+        "agent_type": "codex",
+        "agent_config": {},
+        "trigger_event_source": trigger_source,
+        "trigger_event_types": ["pull_request_opened"],
+        "source_preset_id": preset_id,
+    }
+    if supplied_config is not None:
+        payload["webhook_config"] = supplied_config
+    flow_in = schemas.FlowCreate(**payload)
+
+    await maybe_await(
+        flows.create_flow(db=MagicMock(), flow_in=flow_in, current_user=mock_account)
+    )
+
+    assert flow_in.webhook_config is not None
+    assert flow_in.webhook_config.supersede_on_update is expected_supersede
+    if trigger_source == "webhook":
+        assert flow_in.webhook_config.webhook_secret
+        assert (
+            flow_in.webhook_config.webhook_secret != "preset-secret-must-not-be-copied"
+        )
+    else:
+        assert flow_in.webhook_config.webhook_secret is None
+
+
 def test_webhook_config_defaults_to_no_supersede():
     """Off unless a flow opts in (#1032); a secret is no longer required."""
     config = schemas.WebhookConfig()
@@ -3310,6 +3384,7 @@ async def test_update_flow_switch_to_schedule_forces_event_types(
     mock_crud_flow = _mock_crud_flow_no_conflicts(mocker)
     flow_id = uuid.uuid4()
     mock_flow = MagicMock()
+    mock_flow.ai_model_id = None
     mock_flow.name = "Webhook Flow"
     mock_flow.trigger_event_source = "webhook"
     mock_flow.schedule_config = None

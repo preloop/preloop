@@ -132,11 +132,12 @@ def _names(value: Any) -> tuple[str, ...]:
     return tuple(str(name) for name in value if name)
 
 
-_NOT_REPLAY = """
+_CUSTOMER_USAGE_FILTER = """
     AND (
         meta_data IS NULL
         OR (meta_data ->> 'purpose') IS NULL
-        OR (meta_data ->> 'purpose') <> :replay_purpose
+        OR ((meta_data ->> 'purpose') <> :replay_purpose
+            AND LEFT(meta_data ->> 'purpose', 11) <> 'governance_')
     )
 """
 
@@ -237,7 +238,7 @@ def first_seen_signals(
 
     Tool names come from ``api_usage.tools_meta``. A name is first seen when
     the earliest gateway row that carries it, across the whole account and
-    not only the window, falls inside the window. Replay-validation rows are
+    not only the window, falls inside the window. Replay-validation and governance-analysis rows are
     ignored, so a tool that exists only on those rows is not reported.
 
     Args:
@@ -263,7 +264,7 @@ def first_seen_signals(
                         ) AS label,
                         first_seen_at,
                         linked_user_id AS user_id,
-                        (SELECT COUNT(*) FROM api_usage u WHERE u.account_id = gateway_subject.account_id AND u.meta_data ->> 'gateway_subject_id' = gateway_subject.id::text AND u.timestamp >= :start AND u.timestamp < :end AND u.action_type = 'model_gateway')::int AS usage_count
+                        (SELECT COUNT(*) FROM api_usage u WHERE u.account_id = gateway_subject.account_id AND u.meta_data ->> 'gateway_subject_id' = gateway_subject.id::text AND u.timestamp >= :start AND u.timestamp < :end AND u.action_type = 'model_gateway' AND ((u.meta_data ->> 'purpose') IS NULL OR ((u.meta_data ->> 'purpose') <> :replay_purpose AND LEFT(u.meta_data ->> 'purpose', 11) <> 'governance_')))::int AS usage_count
                     FROM gateway_subject
                     WHERE account_id = CAST(:account_id AS uuid)
                       AND first_seen_at >= :start
@@ -284,7 +285,7 @@ def first_seen_signals(
                          AND (u.runtime_session_id = m.runtime_session_id OR
                               (u.runtime_principal_type = 'managed_agent' AND u.runtime_principal_id = m.id::text))
                          AND u.action_type = 'model_gateway'
-                         AND u.timestamp >= :start AND u.timestamp < :end)::int
+                         AND u.timestamp >= :start AND u.timestamp < :end AND ((u.meta_data ->> 'purpose') IS NULL OR ((u.meta_data ->> 'purpose') <> :replay_purpose AND LEFT(u.meta_data ->> 'purpose', 11) <> 'governance_')))::int
                     FROM discovered_agent_candidate
                     WHERE account_id = CAST(:account_id AS uuid)
                       AND (first_seen_at AT TIME ZONE 'UTC') >= :start
@@ -336,7 +337,7 @@ def first_seen_signals(
                           AND action_type = 'model_gateway'
                           AND COALESCE(elem ->> 'name', '') <> ''
                           AND (timestamp AT TIME ZONE 'UTC') < :end
-                          {_NOT_REPLAY}
+                          {_CUSTOMER_USAGE_FILTER}
                         GROUP BY elem ->> 'name'
                     ) tools
                     WHERE (first_seen AT TIME ZONE 'UTC') >= :start
@@ -370,7 +371,7 @@ def gateway_latency_signals(
 
     Percentiles are ``percentile_cont`` in SQL. Error rate is the share of
     gateway rows with ``status_code >= 400``. The top error classes are the
-    three ``error_class`` values with the most such rows. Replay-validation
+    three ``error_class`` values with the most such rows. Replay-validation, governance-analysis
     rows and non-gateway rows are excluded.
 
     Args:
@@ -401,7 +402,7 @@ def gateway_latency_signals(
                       AND action_type = 'model_gateway'
                       AND (timestamp AT TIME ZONE 'UTC') >= :start
                       AND (timestamp AT TIME ZONE 'UTC') < :end
-                      {_NOT_REPLAY}
+                      {_CUSTOMER_USAGE_FILTER}
                 ),
                 overall AS (
                     SELECT
@@ -575,7 +576,7 @@ def session_efficiency_signals(
                       AND runtime_session_id IS NOT NULL
                       AND (timestamp AT TIME ZONE 'UTC') >= :start
                       AND (timestamp AT TIME ZONE 'UTC') < :end
-                      {_NOT_REPLAY}
+                      {_CUSTOMER_USAGE_FILTER}
                 ),
                 signed AS (
                     SELECT

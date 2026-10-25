@@ -41,10 +41,10 @@ def mock_user():
 
 
 @pytest.fixture
-def mock_account():
+def mock_account(mock_user):
     """Create mock account for testing."""
     account = MagicMock(spec=Account)
-    account.id = uuid.uuid4()
+    account.id = mock_user.account_id
     account.username = "testuser"
     return account
 

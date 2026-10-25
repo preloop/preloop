@@ -1,6 +1,7 @@
 """Server entry point for Preloop REST API."""
 
 import argparse
+import faulthandler
 import importlib
 import os
 import sys
@@ -38,6 +39,13 @@ def start_server(
         debug: Whether to run in debug mode, defaults to DEBUG env var or False
         init_test_data: Whether to initialize test data, defaults to INIT_TEST_DATA env var or False
     """
+    # Native faults bypass Python exception handling. Emit thread stacks to
+    # stderr so container logs retain evidence even without a core dump.
+    faulthandler.enable(all_threads=True)
+    # Uvicorn reload/workers spawn fresh interpreters rather than inheriting
+    # the parent handler. Enable diagnostics before their imports, too.
+    os.environ["PYTHONFAULTHANDLER"] = "1"
+
     # Configure logging first
     preloop_logging.configure_logging()
 

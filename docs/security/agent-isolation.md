@@ -214,6 +214,15 @@ The limits worth knowing:
   WebSockets refuse it (`backend/preloop/api/auth/key_scopes.py`).
   `API_KEY_SCOPE_ENFORCEMENT` switches this to `audit` (log and allow) or
   `off`; the default is `enforce`.
+- **MCP capabilities are checked before dispatch.** For scoped API keys,
+  `mcp:read` permits discovery and resource/prompt reads; `mcp:write` permits
+  tool invocation, including tools annotated as read-only. Neither implies
+  the other. These checks also apply on middleware re-entry and approval
+  replay. Legacy personal keys without scopes and the existing `*` grant
+  retain access subject to account and tool authorization. Discovery,
+  telemetry and enrollment-only credentials cannot authenticate MCP or
+  runtime channels. The REST rollout setting above does not disable these
+  capability checks.
 - **The key dies with its execution, on most routes.** Beside the
   revocation above, the generic REST dependency, the MCP endpoint and the
   model gateway refuse a flow execution key once its execution has reached

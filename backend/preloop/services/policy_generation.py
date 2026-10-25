@@ -17,7 +17,7 @@ import json
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import litellm
 import yaml
@@ -35,8 +35,10 @@ from preloop.services.model_credentials import (
     resolve_model_call_credentials,
 )
 from preloop.services.policy import export_current_policy
+from preloop.services.policy.loader import unsupported_default_settings
 from preloop.services.policy.schema import (
     PolicyDocument,
+    SensitiveDataConfig,
     ToolDefinition,
     is_known_tool_source,
 )
@@ -45,6 +47,48 @@ logger = logging.getLogger(__name__)
 
 # Mapping from our provider_name to litellm prefix.
 # litellm uses prefixes like "openai/", "anthropic/", etc.
+
+#: ``preloop policy apply`` only accepts the built-in ``defaults``, so the
+#: prompts ask the model to leave them out and show this rule for
+#: deny-by-default instead, the pattern of
+#: docs/guide/examples/production-access/readonly-policy.yaml. The names
+#: are placeholders: apply rejects a scope server the account does not
+#: have, so a copied placeholder fails instead of matching no call.
+SERVER_ALLOWLIST_EXAMPLE = """\
+sensitive_data:
+  rules:
+    - id: <mcp-server-name>-allowlist
+      description: Only the listed tools run on <mcp-server-name>.
+      "on": [tool.args]
+      scope:
+        servers: [<mcp-server-name>]
+      condition: "!(tool.name in ['<tool-name>', '<other-tool-name>'])"
+      action: deny
+"""
+
+#: The audit-log prompt's version: tools the logs never show need approval.
+UNSEEN_TOOLS_APPROVAL_EXAMPLE = """\
+approval_workflows:
+  - name: unseen-tool-review
+    timeout_seconds: 300
+sensitive_data:
+  rules:
+    - id: <mcp-server-name>-unseen-tools
+      description: Tools the logs never show on <mcp-server-name> need approval.
+      "on": [tool.args]
+      scope:
+        servers: [<mcp-server-name>]
+      condition: "!(tool.name in ['<seen-tool-name>', '<other-seen-tool-name>'])"
+      action: require_approval
+      approval_workflow: unseen-tool-review
+"""
+
+#: Sent only with a CURRENT ACCOUNT CONFIGURATION block. Without one the
+#: model cannot see the stored entries.
+KEEP_SENSITIVE_DATA_RULE = """
+- `preloop policy apply` replaces the whole `sensitive_data` block. Keep
+  the account's existing detectors, rules and reference_only entries in
+  it."""
 
 
 class PolicyGenerationError(Exception):
@@ -155,6 +199,9 @@ class PolicyGenerationService:
         system_prompt = self._build_audit_system_prompt(schema_json, context_block)
 
         yaml_output = self._call_llm(model, system_prompt, summary)
+        # The audit summary asks to remove nothing, so put back everything
+        # configured that the model left out.
+        yaml_output = self._merge_preserving_unrelated(yaml_output, "")
         warnings = self._validate_output(yaml_output)
 
         return {"yaml": yaml_output, "warnings": warnings}
@@ -276,8 +323,9 @@ class PolicyGenerationService:
         """Restore current items the model omitted unless the prompt drops them.
 
         The LLM is asked to emit a complete document. When it drops unrelated
-        tools, workflows, MCP servers, or model_io rules, put them back so an
-        edit cannot silently wipe the rest of the policy.
+        tools, workflows, MCP servers, model_io rules or ``sensitive_data``
+        entries, put them back so an edit cannot silently wipe the rest of
+        the policy.
 
         Starter-policy generation still filters the raw LLM tools list to the
         target MCP server so ``source: agent`` rows never land in the parsed
@@ -393,6 +441,15 @@ class PolicyGenerationService:
             )
             or None
         )
+        # Apply replaces the stored sensitive_data block with a generated
+        # one. A document without the block keeps the stored one.
+        if generated.sensitive_data is not None and current.sensitive_data is not None:
+            merged_sensitive_data = self._merge_sensitive_data(
+                current.sensitive_data, generated.sensitive_data, _restore
+            )
+            if merged_sensitive_data != generated.sensitive_data:
+                restored = True
+            generated.sensitive_data = merged_sensitive_data
 
         if not restored and not scoped_generated_yaml:
             return generated_yaml
@@ -401,6 +458,55 @@ class PolicyGenerationService:
             generated.model_dump(mode="json", exclude_none=True),
             default_flow_style=False,
             sort_keys=False,
+        )
+
+    @staticmethod
+    def _merge_sensitive_data(
+        current: SensitiveDataConfig,
+        generated: SensitiveDataConfig,
+        restore: Callable[..., List[Any]],
+    ) -> SensitiveDataConfig:
+        """Add the stored ``sensitive_data`` entries the generated block lacks.
+
+        Rules and reference_only entries match by id, custom patterns and
+        keyword lists by name. A detector setting the model did not write
+        keeps its stored value. ``restore`` is the merge's list helper, so
+        an entry the prompt asks to drop stays out.
+        """
+        detectors = generated.detectors
+        if detectors is None:
+            detectors = current.detectors
+        elif current.detectors is not None:
+            unwritten = {
+                field: getattr(current.detectors, field)
+                for field in type(current.detectors).model_fields
+                if field not in detectors.model_fields_set
+            }
+            detectors = detectors.model_copy(
+                update={
+                    **unwritten,
+                    "custom_patterns": restore(
+                        current.detectors.custom_patterns,
+                        detectors.custom_patterns,
+                        lambda item: item.name,
+                    ),
+                    "keywords": restore(
+                        current.detectors.keywords,
+                        detectors.keywords,
+                        lambda item: item.name,
+                    ),
+                }
+            )
+        return generated.model_copy(
+            update={
+                "detectors": detectors,
+                "rules": restore(current.rules, generated.rules, lambda item: item.id),
+                "reference_only": restore(
+                    current.reference_only,
+                    generated.reference_only,
+                    lambda item: item.id,
+                ),
+            }
         )
 
     def _build_context_block(
@@ -470,6 +576,7 @@ class PolicyGenerationService:
             return ""
 
     def _build_system_prompt(self, schema_json: str, context_block: str) -> str:
+        keep_sensitive_data = KEEP_SENSITIVE_DATA_RULE if context_block else ""
         return f"""\
 You are an expert at generating Preloop access-policy YAML files.
 
@@ -489,8 +596,17 @@ No markdown fences, no explanation.
 - If the user describes async behaviour, set `async_approval: true`.
 - If the user mentions justification, set `justification: required`.
 - Fill in sensible `timeout_seconds` (default 300).
-- For `defaults`, set `unknown_tools` appropriately based on the user's
-  security posture (allow / deny / require_approval).
+- Leave out `defaults`. `preloop policy apply` only accepts
+  `unknown_tools: allow`, so a tool call that no rule matches is
+  allowed.
+- To deny every tool on an MCP server except a list, add a
+  `sensitive_data` rule scoped to that server whose CEL `condition` is
+  true for any tool not on the list, as in the example below. Replace
+  `<mcp-server-name>` with a server name from the CURRENT ACCOUNT
+  CONFIGURATION block or the user's description, and the tool
+  placeholders with that server's tool names. `preloop policy apply`
+  rejects a scope server the account does not have. Quote the "on" key:
+  YAML reads a bare on as true.{keep_sensitive_data}
 - Model input/output rules live under `model_io` with target
   `model.request` or `model.response`. Actions are allow, deny, or
   require_approval. Detector attributes include pii.found,
@@ -515,6 +631,10 @@ follow these rules:
 6. Preserve enabled/disabled state. If an existing tool or rule is
    disabled, keep it disabled unless the user asks otherwise.
 
+### EXAMPLE: ONLY LISTED TOOLS ON ONE MCP SERVER
+```yaml
+{SERVER_ALLOWLIST_EXAMPLE}```
+
 ### JSON SCHEMA
 ```json
 {schema_json}
@@ -523,6 +643,7 @@ follow these rules:
 """
 
     def _build_audit_system_prompt(self, schema_json: str, context_block: str) -> str:
+        keep_sensitive_data = KEEP_SENSITIVE_DATA_RULE if context_block else ""
         return f"""\
 You are an expert at generating Preloop access-policy YAML files.
 
@@ -545,8 +666,17 @@ Output ONLY the raw YAML. No fences, no explanation.
 - Use `version: "1.0"`.
 - Every `approval_workflow` referenced MUST be defined.
 - Prefer `condition_type: simple` for straightforward conditions.
-- Set `defaults.unknown_tools` to `require_approval` since we're
-  generating a norm-based policy.
+- Leave out `defaults`. `preloop policy apply` only accepts
+  `unknown_tools: allow`, so a tool call that no rule matches is
+  allowed.
+- To require approval for tools the logs never show, add a
+  `sensitive_data` rule like the example below. Its condition lists the
+  tools seen in the logs, its action is `require_approval`, and its
+  `approval_workflow` is defined (reuse an existing one when it fits).
+  Add one rule per MCP server and replace `<mcp-server-name>` with a
+  server name from the CURRENT ACCOUNT CONFIGURATION block.
+  `preloop policy apply` rejects a scope server the account does not
+  have. Quote the "on" key: YAML reads a bare on as true.{keep_sensitive_data}
 
 ### REUSE EXISTING CONFIGURATION
 If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
@@ -556,6 +686,10 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
 3. **Merge with existing tool configs** — add or tighten rules based
    on the audit data, but preserve existing rules that don't conflict.
 4. **Do not drop** tools, servers, or policies already configured.
+
+### EXAMPLE: APPROVAL FOR TOOLS THE LOGS NEVER SHOW
+```yaml
+{UNSEEN_TOOLS_APPROVAL_EXAMPLE}```
 
 ### JSON SCHEMA
 ```json
@@ -660,12 +794,23 @@ If a "CURRENT ACCOUNT CONFIGURATION" block is provided below:
             raise PolicyGenerationError("Generated output is not a YAML mapping.")
 
         try:
-            PolicyDocument(**data)
+            document = PolicyDocument(**data)
         except ValidationError as exc:
             errors = "; ".join(f"{e['loc']}: {e['msg']}" for e in exc.errors())
             raise PolicyGenerationError(
                 f"Generated policy has schema errors: {errors}"
             ) from exc
+
+        if document.defaults is not None:
+            unsupported = unsupported_default_settings(document.defaults)
+            if unsupported:
+                raise PolicyGenerationError(
+                    "Generated policy sets defaults that `preloop policy apply` "
+                    f"rejects: {'; '.join(unsupported)}. Leave out `defaults`. "
+                    "To deny the tools an MCP server does not list, use a "
+                    "sensitive_data rule scoped to that server with a CEL "
+                    "condition."
+                )
 
         return warnings
 

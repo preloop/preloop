@@ -45,8 +45,13 @@ export class PreloopExecutionContinuation extends LitElement {
       :host {
         display: block;
       }
+      /* #1692: renders nothing for most runs; take no flex gap then. */
+      :host([data-empty]) {
+        display: none;
+      }
+      /* #1692: inline in the execution status row, no block margin. */
       .action {
-        margin: var(--sl-spacing-medium) 0;
+        margin: 0;
       }
       sl-alert,
       sl-checkbox {
@@ -305,6 +310,15 @@ export class PreloopExecutionContinuation extends LitElement {
     this.acknowledged = false;
   }
 
+  protected updated(changed: Map<PropertyKey, unknown>): void {
+    super.updated?.(changed);
+    // Only Lit's comment markers remain when render() returned nothing.
+    this.toggleAttribute(
+      'data-empty',
+      (this.shadowRoot?.childElementCount ?? 0) === 0
+    );
+  }
+
   render() {
     if (!this.eligible()) return nothing;
     if (this.adopted)
@@ -320,7 +334,10 @@ export class PreloopExecutionContinuation extends LitElement {
         : '';
     return html`
       <div class="action">
-        <sl-button data-continuation-preview @click=${this.loadPreview}
+        <sl-button
+          size="small"
+          data-continuation-preview
+          @click=${this.loadPreview}
           >Manage PR follow-up</sl-button
         >
       </div>

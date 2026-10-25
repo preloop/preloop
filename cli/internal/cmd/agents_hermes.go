@@ -316,6 +316,9 @@ func applyHermesManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 	if !ok {
 		model = make(map[string]interface{})
 	}
+	// Only retarget fallbacks that repeat a previous CLI-managed selection.
+	// Direct-provider fallbacks and other user-selected models remain intact.
+	reconcileHermesManagedFallbacks(plan, baseURL, token, modelAlias)
 	model["provider"] = hermesGatewayProviderName
 	model["base_url"] = strings.TrimRight(baseURL, "/") + hermesGatewayPath
 	model["api_key"] = token
@@ -324,6 +327,7 @@ func applyHermesManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 	// mapping. If we leave a stale shorthand around it will silently win, so we
 	// drop it once we've populated the mapping.
 	delete(model, "model")
+	delete(model, "name")
 	plan.ManagedDocument["model"] = model
 	plan.ManagedModelAlias = modelAlias
 	plan.ManagedProviderName = "preloop"
@@ -332,6 +336,68 @@ func applyHermesManagedGateway(plan managedMCPEnrollmentPlan, baseURL, token, mo
 		fmt.Sprintf("Model traffic will route through Preloop using %s.", modelAlias),
 	)
 	return refreshManagedPlanSnapshots(plan)
+}
+
+// hermesUsesManagedGateway identifies the CLI's gateway by its URL, rather
+// than treating every custom provider as managed.
+func hermesUsesManagedGateway(agent AgentConfig, doc map[string]interface{}) bool {
+	_, provider, endpoint := extractHermesModelSelection(doc)
+	if provider != hermesGatewayProviderName || endpoint == "" {
+		return false
+	}
+	if endpoint == strings.TrimRight(clientBaseURLForFlags(), "/")+hermesGatewayPath {
+		return true
+	}
+	state, err := loadLocalEnrollmentState(agent)
+	if err != nil {
+		return false
+	}
+	return endpoint == strings.TrimSuffix(state.ManagedServerURL, "/mcp/v1")+hermesGatewayPath
+}
+
+func reconcileHermesManagedFallbacks(plan managedMCPEnrollmentPlan, baseURL, token, alias string) {
+	gateway := strings.TrimRight(baseURL, "/") + hermesGatewayPath
+	// Include the last applied selection: the user may already have changed the
+	// primary model while a fallback still names the previous managed default.
+	previous := map[string]string{}
+	remember := func(doc map[string]interface{}) {
+		ref, provider, endpoint := extractHermesModelSelection(doc)
+		if provider == hermesGatewayProviderName && endpoint != "" && ref != "" &&
+			(endpoint == gateway || hermesUsesManagedGateway(plan.Agent, doc)) {
+			previous[ref] = endpoint
+		}
+	}
+	remember(plan.ManagedDocument)
+	if state, err := loadLocalEnrollmentState(plan.Agent); err == nil {
+		remember(state.ManagedConfig)
+	}
+	reconcile := func(raw interface{}) {
+		entry, ok := asObjectMap(raw)
+		if !ok {
+			return
+		}
+		ref := lookupString(entry, "model")
+		endpoint, managed := previous[ref]
+		if !managed {
+			return
+		}
+		entryEndpoint := lookupString(entry, "base_url")
+		if entryEndpoint != endpoint && !(entryEndpoint == "" && lookupString(entry, "provider") == "preloop") {
+			return
+		}
+		entry["model"] = alias
+		entry["provider"] = hermesGatewayProviderName
+		entry["base_url"] = gateway
+		entry["api_key"] = token
+	}
+	switch fallback := plan.ManagedDocument["fallback_model"].(type) {
+	case []interface{}:
+		for _, entry := range fallback {
+			reconcile(entry)
+		}
+	default:
+		reconcile(fallback)
+	}
 }
 
 // hermesAuthFile is the path Hermes uses to persist provider OAuth tokens
@@ -364,6 +430,18 @@ func parseHermesManagedGatewayUpstream(agent AgentConfig) (*managedGatewayUpstre
 	notes := []string{}
 
 	modelRef, providerHint, configBaseURL := extractHermesModelSelection(document)
+	if hermesUsesManagedGateway(agent, document) && modelRef != "" {
+		// The saved discovered config is a restore snapshot, not the current model
+		// choice. Reuse the account's credential for the current alias; never import
+		// the local Preloop bearer token as an upstream provider API key.
+		alias := strings.TrimPrefix(modelRef, "preloop/")
+		provider, identifier := splitHermesModelRef(alias, "")
+		return &managedGatewayUpstream{
+			SourceAgent: hermesSourceType, SourceProviderID: provider,
+			ProviderName: provider, ModelIdentifier: identifier,
+			ManagedModelAlias: alias, AllowServerCredentialReuse: true,
+		}, nil
+	}
 	if modelRef == "" {
 		// No upstream model declared yet: nothing to mirror in Preloop. We
 		// still run the MCP-only enrollment flow above this layer.

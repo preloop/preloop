@@ -171,7 +171,10 @@ export class AttentionView extends AuthedElement {
           margin-bottom: var(--sl-spacing-large);
         }
 
-        .chip {
+        /* Scoped to the strip: as a bare .chip it also boxed the category
+           chips inside the evidence rows, which follow the borderless chip
+           recipe (U-14). */
+        .chip-strip .chip {
           align-items: center;
           background: var(--console-surface);
           border: 1px solid var(--console-hairline);
@@ -185,12 +188,7 @@ export class AttentionView extends AuthedElement {
           padding: var(--sl-spacing-2x-small) var(--sl-spacing-small);
         }
 
-        .chip.empty {
-          color: var(--console-meta-color);
-          cursor: default;
-        }
-
-        .chip sl-icon {
+        .chip-strip .chip sl-icon {
           color: var(--console-meta-color);
         }
 
@@ -787,11 +785,28 @@ export class AttentionView extends AuthedElement {
     this.loading = false;
     // The header's bell has no budget for these nine requests; it states the
     // counts this page just derived.
-    publishAttentionSummary(this.items);
+    publishAttentionSummary(
+      this.items.filter(
+        (item) =>
+          !item.evidence?.mcpFinding ||
+          item.evidence.mcpFinding.state === 'open'
+      )
+    );
   }
 
   private get derived() {
+    let focusedItemId: string | undefined;
+    try {
+      if (window.location.hash.startsWith('#item-')) {
+        focusedItemId = decodeURIComponent(
+          window.location.hash.slice('#item-'.length)
+        );
+      }
+    } catch {
+      // A malformed link must not prevent the rest of Attention from loading.
+    }
     return deriveAttentionItems({
+      focusedItemId,
       approvals: this.approvals,
       agents: this.agents,
       sessions: this.sessions,
@@ -935,17 +950,15 @@ export class AttentionView extends AuthedElement {
     return html`
       <div class="chip-strip">
         ${ATTENTION_KIND_ORDER.filter(
+          // No counter says zero (DESIGN.md "Attention"): a kind with
+          // nothing in it gets no chip at all.
           (kind) =>
             (kind !== 'mcp' || this.mcpFindingsEnabled) &&
-            (kind !== 'extension' || (grouped.get(kind)?.length || 0) > 0)
+            (grouped.get(kind)?.length || 0) > 0
         ).map((kind) => {
           const count = grouped.get(kind)?.length || 0;
           return html`
-            <button
-              class="chip ${count === 0 ? 'empty' : ''}"
-              ?disabled=${count === 0}
-              @click=${() => this.scrollToSection(kind)}
-            >
+            <button class="chip" @click=${() => this.scrollToSection(kind)}>
               <sl-icon name=${ATTENTION_KIND_META[kind].icon}></sl-icon>
               ${attentionKindChipLabel(kind, count)}
             </button>
@@ -1580,6 +1593,7 @@ export class AttentionView extends AuthedElement {
       <p>${finding.limitation}</p>
       <div class="evidence-actions">
         ${
+          finding.state === 'open' &&
           hasPermission(this.permissions, 'approve_mcp_servers')
             ? html`
                 <sl-button
@@ -1591,6 +1605,7 @@ export class AttentionView extends AuthedElement {
             : nothing
         }
         ${
+          finding.state === 'open' &&
           hasPermission(this.permissions, 'ignore_mcp_findings')
             ? html`
                 <sl-button

@@ -1,5 +1,7 @@
+import { REST_API_PREFIX } from '../../../api-path';
 import '../../../components/runner-policy-settings';
 import '../../../components/weekly-report-settings';
+import { hasPermission, type UserPermissions } from '../../../permissions';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { billingStatusLabel } from '../../../utils/billing-status';
@@ -11,6 +13,7 @@ import {
   updateAccountOrganization,
   AccountOrganization,
   getFeatures,
+  getUserProfile,
   FeaturesResponse,
   BILLING_SUBSCRIPTION_CHANGED,
 } from '../../../api';
@@ -40,6 +43,12 @@ import type {
 @customElement('account-view')
 export class AccountView extends LitElement {
   private readonly accessibilityStatus = new ConsoleStatus(this);
+  /**
+   * Current user's permissions. Undefined until the profile loads, which
+   * leaves the controls usable (the server still enforces), matching the
+   * runners page rather than showing a wrong "needs permission" note.
+   */
+  @state() private permissions: UserPermissions = undefined;
   @state() private accountOrganization: AccountOrganization | null = null;
   @state() private features: FeaturesResponse | null = null;
   @state() private organizationName: string = '';
@@ -89,11 +98,16 @@ export class AccountView extends LitElement {
 
       this.accountOrganization = accountOrganization;
       this.features = features;
+      void getUserProfile()
+        .then((profile) => {
+          this.permissions = profile?.permissions;
+        })
+        .catch(() => undefined);
       this.organizationName = accountOrganization.organization_name || '';
 
       try {
         const usageRes = await fetchWithAuth(
-          '/api/v1/account/session-artifacts/usage'
+          REST_API_PREFIX + '/account/session-artifacts/usage'
         );
         if (usageRes.ok) {
           const body = await usageRes.json();
@@ -117,7 +131,9 @@ export class AccountView extends LitElement {
       const isProprietary = features.features['billing'] === true;
 
       if (isProprietary) {
-        const summaryRes = await fetchWithAuth('/api/v1/billing/summary');
+        const summaryRes = await fetchWithAuth(
+          REST_API_PREFIX + '/billing/summary'
+        );
         if (!summaryRes.ok) throw new Error('Failed to load billing summary.');
         this._billingSummary = await summaryRes.json();
         this.subscription = this._billingSummary?.subscription ?? null;
@@ -200,7 +216,7 @@ export class AccountView extends LitElement {
   private async _loadArtifactSettings(): Promise<void> {
     try {
       const res = await fetchWithAuth(
-        '/api/v1/account/session-artifacts/settings'
+        REST_API_PREFIX + '/account/session-artifacts/settings'
       );
       if (!res.ok) return;
       const body = await res.json();
@@ -226,7 +242,7 @@ export class AccountView extends LitElement {
     this._artifactSettingsError = '';
     try {
       const res = await fetchWithAuth(
-        '/api/v1/account/session-artifacts/settings',
+        REST_API_PREFIX + '/account/session-artifacts/settings',
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -410,9 +426,12 @@ export class AccountView extends LitElement {
 
   private async _refreshBillingSummary(): Promise<void> {
     try {
-      const response = await fetchWithAuth('/api/v1/billing/summary', {
-        cache: 'no-store',
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/billing/summary',
+        {
+          cache: 'no-store',
+        }
+      );
       if (response.ok) {
         this._billingSummary = await response.json();
         this.subscription = this._billingSummary?.subscription ?? null;
@@ -661,6 +680,7 @@ export class AccountView extends LitElement {
   ];
 
   render() {
+    const canManageAccount = hasPermission(this.permissions, 'manage_account');
     if (this._loading) {
       return html`
         <view-header headerText="Account" width="narrow"></view-header>
@@ -740,10 +760,14 @@ export class AccountView extends LitElement {
                 value=${this.organizationName}
                 @sl-input=${(e: any) =>
                   (this.organizationName = e.target.value)}
-                ?disabled=${this.isSavingOrg}
+                ?disabled=${this.isSavingOrg || !canManageAccount}
               >
                 <span slot="help-text">
-                  This name will be displayed across the application
+                  ${
+                    canManageAccount
+                      ? 'This name will be displayed across the application'
+                      : 'Changing the account name needs the manage account permission.'
+                  }
                 </span>
               </sl-input>
 
@@ -752,6 +776,8 @@ export class AccountView extends LitElement {
                   variant="primary"
                   @click=${this._handleSaveOrganization}
                   ?loading=${this.isSavingOrg}
+                  ?disabled=${!canManageAccount}
+                  data-testid="save-account-name"
                 >
                   Save account name
                 </sl-button>

@@ -32,6 +32,12 @@ export const BLOG_BASE_PATH = '/blog';
 /** Slug charset accepted from disk and from the router. */
 export const BLOG_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
+/** A silent hero loop with at least one playable source. */
+export type BlogHeroVideo = {
+  alt: string;
+  caption?: string;
+} & ({ mp4: string; webm?: string } | { mp4?: string; webm: string });
+
 /**
  * A single blog post. `body_html` is the rendered markdown body and is only
  * populated by the build; the pure helpers here never need it except when
@@ -56,6 +62,8 @@ export type BlogPost = {
   tags?: string[];
   /** Route-specific social image. Falls back to the brand default. */
   og_image?: string;
+  /** Optional hero loop. `og_image` supplies its poster and static fallback. */
+  hero_video?: BlogHeroVideo;
   /**
    * Internal routes this post should link to (e.g. `/vs/litellm`). Rendered as
    * a "Related" block so link equity flows into the pages that already rank.
@@ -362,6 +370,19 @@ export function buildBlogPostingSchema(
   if (image) {
     schema.image = absolute_url(image, config);
   }
+  if (post.hero_video) {
+    schema.video = {
+      '@type': 'VideoObject',
+      name: post.title,
+      description: post.description,
+      ...(image ? { thumbnailUrl: absolute_url(image, config) } : {}),
+      contentUrl: absolute_url(
+        (post.hero_video.mp4 || post.hero_video.webm)!,
+        config
+      ),
+      uploadDate: post.date,
+    };
+  }
   if (post.tags && post.tags.length > 0) {
     schema.keywords = post.tags.join(', ');
     schema.about = post.tags.map((tag) => ({ '@type': 'Thing', name: tag }));
@@ -520,11 +541,27 @@ export const BLOG_ARTICLE_STYLES = `
         padding: 0;
         border: none;
       }
-      .blog-hero img {
+      .blog-hero img,
+      .blog-hero video {
         display: block;
         width: 100%;
         height: auto;
         border-radius: 4px;
+      }
+      .blog-hero .blog-hero-poster {
+        display: none;
+      }
+      .blog-hero figcaption {
+        margin-top: 0.75rem;
+        font-size: 1rem;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .blog-hero video {
+          display: none;
+        }
+        .blog-hero .blog-hero-poster {
+          display: block;
+        }
       }
       .blog-index-hero {
         display: block;
@@ -663,11 +700,31 @@ export function render_blog_post_html(
   const reading_html = post.reading_minutes
     ? `<span class="blog-sep">·</span><span>${post.reading_minutes} min read</span>`
     : '';
-  const hero_html = post.og_image
+  let hero_html = post.og_image
     ? `<figure class="blog-hero"><img src="${escape_html(
         post.og_image
       )}" alt=""></figure>`
     : '';
+  if (post.hero_video) {
+    const video = post.hero_video;
+    const poster_image = post.og_image || config.landing?.meta?.og_image;
+    const sources = [
+      video.webm
+        ? `<source src="${escape_html(video.webm)}" type="video/webm">`
+        : '',
+      video.mp4
+        ? `<source src="${escape_html(video.mp4)}" type="video/mp4">`
+        : '',
+    ].join('');
+    const poster = poster_image ? ` poster="${escape_html(poster_image)}"` : '';
+    const fallback = poster_image
+      ? `<img class="blog-hero-poster" src="${escape_html(poster_image)}" alt="${escape_html(video.alt)}">`
+      : '';
+    const caption = video.caption
+      ? `<figcaption>${escape_html(video.caption)}</figcaption>`
+      : '';
+    hero_html = `<figure class="blog-hero"><video autoplay muted loop playsinline preload="metadata"${poster} aria-label="${escape_html(video.alt)}">${sources}</video>${fallback}${caption}</figure>`;
+  }
   const body_html = strip_duplicate_title_heading(
     post.body_html || '',
     post.title

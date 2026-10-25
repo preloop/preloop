@@ -35,6 +35,20 @@ export function parseUTCDate(dateTimeString: string): Date {
 }
 
 /**
+ * Epoch milliseconds for a backend timestamp, read as UTC when it carries no
+ * offset. Returns null for an empty or unparseable value, so callers can tell
+ * "no time" from "the epoch".
+ *
+ * @param value - Datetime string from the backend, with or without an offset
+ * @returns Epoch milliseconds, or null
+ */
+export function parseUtc(value: string | null | undefined): number | null {
+  if (!value || !value.trim()) return null;
+  const parsed = parseUTCDate(value).getTime();
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
  * Formats a datetime string for display in the user's local timezone.
  *
  * @param dateTimeString - Datetime string from backend

@@ -487,13 +487,13 @@ class TriggerEventResolver(PromptResolver):
                 container[WORKSPACE_FILES_KEY] = _redact_list(files)
         return event_data
 
-    async def resolve(self, path: str, context: ResolverContext) -> Optional[str]:
+    async def resolve(self, path: str, context: ResolverContext) -> Any:
         """
         Resolve trigger event placeholders.
 
         Args:
             path: Path after the prefix (e.g., "payload.issue.title")
-                  If empty, returns the entire trigger event as JSON
+                  If empty, returns the entire trigger event as a dict
             context: Resolver context
 
         Returns:
@@ -514,20 +514,19 @@ class TriggerEventResolver(PromptResolver):
         if lookup == "" or lookup.startswith("payload.repository"):
             _attach_bound_repository(normalized_data, context)
 
-        # If no path specified, return entire event as JSON
+        # No path: the entire event, as an object. The orchestrator
+        # serializes it to JSON inside the prompt's data block.
         if not path or path.strip() == "":
-            import json
-
-            try:
-                return json.dumps(normalized_data, indent=2)
-            except Exception as e:
-                self.logger.error(f"Failed to serialize trigger event data: {e}")
-                return None
+            return normalized_data
 
         # Handle direct event fields using normalized data
-        value = self._safe_get_nested(normalized_data, path)
+        raw = self._get_nested_raw(normalized_data, path)
 
-        if value is None:
+        if raw is None:
             self.logger.debug(f"Could not resolve trigger_event.{path} in event data")
-
-        return value
+            return None
+        # An object or list is returned as is, so the orchestrator can tell it
+        # carries author-written fields and move it out of the template.
+        if isinstance(raw, (dict, list)):
+            return raw
+        return str(raw)

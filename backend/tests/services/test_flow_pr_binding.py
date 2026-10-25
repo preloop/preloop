@@ -16,6 +16,8 @@ from preloop.services.flow_pr_binding import (
     normalize_pr_url,
     record_cli_session,
     record_opened_pr,
+    record_published_pr,
+    record_runner_handoff_markers,
 )
 
 
@@ -121,6 +123,21 @@ class TestExtractPrUrlFromCommentEvent:
 
 
 class TestMergeResultPreservingPrBinding:
+    def test_published_prs_survive_terminal_result_merge(self):
+        publications = [{"url": "https://gitlab.example.com/a/-/merge_requests/1"}]
+        existing = {"published_prs": publications, "pr_url": publications[0]["url"]}
+        incoming = {"published_prs": [], "summary": "complete"}
+        merged = merge_result_preserving_pr_binding(existing, incoming)
+        assert merged["published_prs"] == publications
+        assert merged["summary"] == "complete"
+
+    def test_publication_overflow_flag_survives_terminal_merge(self):
+        merged = merge_result_preserving_pr_binding(
+            {"published_prs_truncated": True},
+            {"published_prs_truncated": False},
+        )
+        assert merged["published_prs_truncated"] is True
+
     def test_none_incoming_keeps_existing(self):
         existing = {"pr_url": "https://github.com/a/b/pull/1"}
         assert merge_result_preserving_pr_binding(existing, None) == existing
@@ -135,6 +152,107 @@ class TestMergeResultPreservingPrBinding:
         assert merged["verdict"] == "ship"
         assert merged["pr_url"] == "https://github.com/a/b/pull/1"
         assert merged["pr_source_branch"] == "feat/x"
+
+
+def test_published_pr_collection_keeps_primary_and_deduplicates_url():
+    execution = MagicMock()
+    execution.result = {
+        "pr_url": "https://gitlab.example.com/team/lib/-/merge_requests/1"
+    }
+    db = MagicMock()
+    db.query.return_value.filter.return_value.populate_existing.return_value.with_for_update.return_value.one_or_none.return_value = execution
+    publication = {
+        "url": "https://gitlab.example.com/team/app/-/merge_requests/2",
+        "branch": "feature/change",
+        "provider": "gitlab",
+    }
+
+    crud_flow_execution.add_published_pr(
+        db, execution_id=uuid4(), publication=publication
+    )
+    crud_flow_execution.add_published_pr(
+        db, execution_id=uuid4(), publication=publication
+    )
+
+    assert (
+        execution.result["pr_url"]
+        == "https://gitlab.example.com/team/lib/-/merge_requests/1"
+    )
+    assert execution.result["published_prs"] == [
+        {"url": "https://gitlab.example.com/team/lib/-/merge_requests/1"},
+        publication,
+    ]
+    db.commit.assert_called_once()
+
+
+def test_published_pr_collection_caps_commits_and_records_overflow():
+    from preloop.services.flow_pr_binding import MAX_PUBLISHED_PRS
+
+    execution = MagicMock()
+    execution.result = {
+        "pr_url": "https://github.com/team/app/pull/0",
+        "published_prs": [
+            {"url": f"https://github.com/team/app/pull/{index}"}
+            for index in range(MAX_PUBLISHED_PRS)
+        ],
+    }
+    db = MagicMock()
+    db.query.return_value.filter.return_value.populate_existing.return_value.with_for_update.return_value.one_or_none.return_value = execution
+
+    for index in (MAX_PUBLISHED_PRS, MAX_PUBLISHED_PRS + 1):
+        crud_flow_execution.add_published_pr(
+            db,
+            execution_id=uuid4(),
+            publication={"url": f"https://github.com/team/app/pull/{index}"},
+        )
+
+    assert len(execution.result["published_prs"]) == MAX_PUBLISHED_PRS
+    assert execution.result["published_prs_truncated"] is True
+    db.commit.assert_called_once()
+
+
+def test_runner_handoff_records_second_pr_without_rebinding_primary():
+    execution = SimpleNamespace(
+        id=uuid4(),
+        result={"pr_url": "https://gitlab.example.com/team/lib/-/merge_requests/1"},
+    )
+    marker = (
+        'PRELOOP_PR_OPENED {"url":"https://gitlab.example.com/team/app/'
+        '-/merge_requests/2","branch":"feature/change","provider":"gitlab"}'
+    )
+    with (
+        patch("preloop.services.flow_pr_binding.record_opened_pr") as primary,
+        patch("preloop.services.flow_pr_binding.record_published_pr") as outputs,
+    ):
+        record_runner_handoff_markers(
+            MagicMock(), execution, marker, isolated_publication=False
+        )
+    primary.assert_not_called()
+    assert outputs.call_args.args[1] == execution.id
+    assert outputs.call_args.args[2]["url"].endswith("/merge_requests/2")
+
+
+@pytest.mark.parametrize(
+    ("url", "repository"),
+    [
+        (
+            "https://gitlab.example.com/team/app/-/merge_requests/2",
+            "gitlab.example.com/team/app",
+        ),
+        (
+            "https://github.com/team/app/pull/" + "0" * 4096 + "/files",
+            "github.com/team/app",
+        ),
+        (
+            "https://bitbucket.org/team/app/pull-requests/2",
+            "bitbucket.org/team/app",
+        ),
+    ],
+)
+def test_published_pr_repository_uses_fixed_path_separator(url, repository):
+    with patch.object(crud_flow_execution, "add_published_pr") as save:
+        record_published_pr(MagicMock(), uuid4(), {"url": url})
+    assert save.call_args.kwargs["publication"]["repository"] == repository
 
 
 class TestFlowRequiresPrCommentResume:

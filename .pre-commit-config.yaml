@@ -53,3 +53,12 @@ repos:
         types: [python] # Run when Python files are committed
         pass_filenames: false # The script doesn't need filenames
         stages: [pre-commit] # Run during the commit stage
+
+-   repo: local
+    hooks:
+    -   id: gateway-provider-registry
+        name: Check backend gateway provider registry snapshot
+        entry: python cli/scripts/check_gateway_provider_registry.py
+        language: system
+        files: ^(backend/preloop/services/(litellm_routing|ai_model_provider|azure_openai)\.py|cli/scripts/check_gateway_provider_registry\.py|cli/internal/cmd/testdata/backend_gateway_providers\.json)$
+        pass_filenames: false

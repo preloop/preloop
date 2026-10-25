@@ -35,6 +35,14 @@ from preloop.services.approval_attribution import (
 from preloop.services.approval_service import ApprovalService
 
 
+@pytest.fixture(autouse=True)
+def _permission_fallback_passes():
+    """These tests pin attribution, not authorization; the OSS permission
+    fallback is covered by the permission test modules."""
+    with patch.object(approval_requests, "ensure_permission_in_oss"):
+        yield
+
+
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
 

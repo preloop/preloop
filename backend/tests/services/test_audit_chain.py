@@ -339,6 +339,66 @@ def test_status_reports_the_head_and_the_pending_tail(db_session, account_id):
     assert status["head_hash"] != GENESIS_HASH
 
 
+def _sealed_in_db(db_session, account_id):
+    return len(
+        db_session.execute(
+            select(AuditLog.id).where(
+                AuditLog.account_id == account_id, AuditLog.chain_seq.is_not(None)
+            )
+        ).all()
+    )
+
+
+@pytest.mark.parametrize(
+    "deleted_seqs, floor",
+    [
+        ((), 0),  # nothing purged
+        ((1, 2), 2),  # a clean prefix
+        ((1, 3, 4), 4),  # a purge whose cutoff skipped seq 2
+    ],
+)
+def test_sealed_rows_matches_the_rows_still_stored(
+    db_session, account_id, deleted_seqs, floor
+):
+    rows = _rows(db_session, account_id, 6)
+    _seal(db_session, account_id)
+    for row in rows:
+        if row.chain_seq in deleted_seqs:
+            db_session.delete(row)
+    if floor:
+        audit_chain.note_pruned(
+            db_session, account_id=account_id, up_to_seq=floor, now=datetime.now(UTC)
+        )
+    db_session.flush()
+
+    status = audit_chain.chain_status(db_session, account_id=account_id)
+
+    assert status["sealed_rows"] == _sealed_in_db(db_session, account_id)
+    assert status["sealed_rows"] == 6 - len(deleted_seqs)
+
+
+def test_sealed_rows_does_not_count_the_sealed_history(db_session, account_id):
+    """The count reads the floor's survivors only, not every sealed row (#1693)."""
+    from sqlalchemy import event
+
+    _rows(db_session, account_id, 4)
+    _seal(db_session, account_id)
+    statements = []
+
+    def record(conn, cursor, statement, *args):
+        statements.append(" ".join(statement.split()))
+
+    engine = db_session.get_bind().engine
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        status = audit_chain.chain_status(db_session, account_id=account_id)
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+
+    assert status["sealed_rows"] == 4
+    assert not [sql for sql in statements if "audit_log.chain_seq IS NOT NULL" in sql]
+
+
 def test_one_account_chain_ignores_another_accounts_rows(db_session, test_user):
     other = models.Account(organization_name="other-co", is_active=True)
     db_session.add(other)
@@ -358,3 +418,61 @@ def test_one_account_chain_ignores_another_accounts_rows(db_session, test_user):
     assert (
         audit_chain.chain_status(db_session, account_id=other.id)["unsealed_rows"] == 2
     )
+
+
+def test_cached_status_skips_the_row_counts_until_it_expires(
+    db_session, account_id, monkeypatch
+):
+    """#1693: chain/status must not rescan the audit log on every page load."""
+    audit_chain.invalidate_chain_status()
+    calls = []
+    real = audit_chain.chain_status
+
+    def counting(db, *, account_id):
+        calls.append(account_id)
+        return real(db, account_id=account_id)
+
+    monkeypatch.setattr(audit_chain, "chain_status", counting)
+
+    first = audit_chain.cached_chain_status(db_session, account_id=account_id)
+    second = audit_chain.cached_chain_status(db_session, account_id=account_id)
+    assert first == second
+    assert len(calls) == 1
+
+    audit_chain.cached_chain_status(db_session, account_id=account_id, ttl=0)
+    assert len(calls) == 2
+
+
+def test_sealing_invalidates_the_cached_status(db_session, account_id):
+    audit_chain.invalidate_chain_status()
+    _rows(db_session, account_id, 3)
+    before = audit_chain.cached_chain_status(db_session, account_id=account_id)
+    assert before["unsealed_rows"] == 3
+
+    _seal(db_session, account_id, batch_size=10, max_batches=1)
+
+    after = audit_chain.cached_chain_status(db_session, account_id=account_id)
+    assert after["unsealed_rows"] == 0
+    assert after["sealed_rows"] == 3
+
+
+def test_a_fill_that_overlaps_an_invalidation_is_not_stored(
+    db_session, account_id, monkeypatch
+):
+    """A slow status read racing a seal must not cache the pre-seal head."""
+    audit_chain.invalidate_chain_status()
+    real = audit_chain.chain_status
+    calls = []
+
+    def racing(db, *, account_id):
+        calls.append(account_id)
+        status = real(db, account_id=account_id)
+        # A seal commits and invalidates while this read is still computing.
+        audit_chain.invalidate_chain_status(account_id)
+        return status
+
+    monkeypatch.setattr(audit_chain, "chain_status", racing)
+    audit_chain.cached_chain_status(db_session, account_id=account_id)
+    audit_chain.cached_chain_status(db_session, account_id=account_id)
+
+    assert len(calls) == 2

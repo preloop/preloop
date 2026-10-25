@@ -1,3 +1,5 @@
+import { REST_API_PREFIX } from '../../../api-path';
+import { formatCount, formatCountExact } from '../../../utils/count-format';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
@@ -539,8 +541,8 @@ export class RecordsView extends LitElement {
     try {
       const path =
         type === 'execution'
-          ? '/api/v1/flows/executions?limit=25'
-          : '/api/v1/approval-requests?limit=25';
+          ? REST_API_PREFIX + '/flows/executions?limit=25'
+          : REST_API_PREFIX + '/approval-requests?limit=25';
       const { fetchWithAuth } = await import('../../../api');
       const response = await fetchWithAuth(path);
       if (!response.ok) {
@@ -720,7 +722,14 @@ export class RecordsView extends LitElement {
               ? html`<sl-spinner></sl-spinner>`
               : html`<dl class="facts" data-testid="chain-status">
                   ${this.fact('Enabled', status.enabled ? 'Yes' : 'No')}
-                  ${this.fact('Sealed rows', status.sealed_rows)}
+                  ${this.fact(
+                    'Sealed rows',
+                    html`<span
+                      data-testid="sealed-rows"
+                      title=${formatCountExact(status.sealed_rows)}
+                      >${formatCount(status.sealed_rows)}</span
+                    >`
+                  )}
                   ${this.fact(
                     'Unsealed rows',
                     html`${status.unsealed_rows}

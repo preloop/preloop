@@ -805,14 +805,6 @@ def _download_catalog(
     return models_out, complete
 
 
-def _legacy_api_key(ai_model: models.AIModel) -> str | None:
-    """Return a non-empty legacy ``ai_model.api_key``, if present."""
-    legacy = getattr(ai_model, "api_key", None)
-    if isinstance(legacy, str) and legacy.strip():
-        return legacy.strip()
-    return None
-
-
 def _api_key(ai_model: models.AIModel) -> str | None:
     try:
         from preloop.services.secret_service import get_secret_service
@@ -829,8 +821,8 @@ def _api_key(ai_model: models.AIModel) -> str | None:
             return resolved.value.strip()
     except Exception:  # noqa: BLE001 - optional secret backends
         logger.debug("Alibaba catalog could not resolve credentials", exc_info=True)
-        return _legacy_api_key(ai_model)
-    return _legacy_api_key(ai_model)
+        return None
+    return None
 
 
 def reviewed_before_effective(

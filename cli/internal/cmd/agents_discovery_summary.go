@@ -28,7 +28,7 @@ func completeDiscoveryOutcomes(discovered []AgentConfig, attempted []agentOnboar
 			outcome.Reason = runtimeMissingListingLabel
 			outcome.MissingExecutable = true
 		case agent.IsOnboarded && !agent.ReonboardRecommended:
-			outcome.Status = "unchanged"
+			outcome.Status = agentOnboardingStatusUnchanged
 			outcome.Reason = "existing enrollment; " + onboardingStateLabel(agent.OnboardingState)
 			capabilities := capabilitiesForAgent(agent)
 			outcome.Reason += "; model routing: " + controlSupportLabel(capabilities.ModelRoute)

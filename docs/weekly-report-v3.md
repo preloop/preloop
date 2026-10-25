@@ -20,7 +20,8 @@ The read-only report projections filter by account and optional attributed user
 before aggregation. Personal approvals count requests triggered through that
 user's keys or managed agents and requests on which they recorded a vote. Raw
 finding evidence is excluded from personal projections. Adjacent report windows
-are half-open, and replay-validation traffic is excluded from usage totals.
+are half-open, and replay-validation plus every `governance_` purpose are excluded from customer
+usage totals. Governance cost appears only on its policy-section analysis line.
 
 ## Most valuable work: recorded outcomes
 

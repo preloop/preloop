@@ -167,6 +167,7 @@ class PreloopClient:
         data: bytes,
         idempotency_key: str,
         labels: dict[str, Any] | None = None,
+        media_timing: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Deposit one artifact as multipart; return the descriptor or None.
 
@@ -174,6 +175,8 @@ class PreloopClient:
             DepositUnavailableError: the route does not exist on this server.
         """
         metadata = {"kind": kind, "name": name, "labels": labels or {}}
+        if media_timing is not None:
+            metadata["media_timing"] = media_timing
         response = self._send(
             "POST",
             self.target.url("artifacts"),

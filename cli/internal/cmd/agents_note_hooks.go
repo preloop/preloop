@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
@@ -25,9 +26,11 @@ import (
 // sent after its last tool call, or before its first, is lost. Two more
 // lifecycle hooks close that gap, both fail open:
 //
-//   - SessionStart (and the first UserPromptSubmit) claims notes for the run
-//     as soon as the session is registered. This is where a note sent before
-//     the child starts lands, before the first tool call.
+//   - SessionStart claims notes for the run as soon as the session is
+//     registered. This is where a note sent before the child starts lands,
+//     before the first tool call.
+//   - Every UserPromptSubmit claims notes too, so a note sent to an idle
+//     terminal session rides the operator's next prompt.
 //   - Stop asks once more as the turn ends. If something is pending it blocks
 //     the stop with the rendered block as the continuation reason, so the
 //     model reads it and may act. At most `stopBlockSessionMax` blocks per
@@ -42,8 +45,8 @@ import (
 // not pull it: the cap is checked before the pull, not after.
 
 const (
-	agentNotesPendingPath = "/api/v1/agents/notes/pending"
-	agentSessionEndPath   = "/api/v1/agents/session-end"
+	agentNotesPendingPath = api.RESTPrefix + "/agents/notes/pending"
+	agentSessionEndPath   = api.RESTPrefix + "/agents/session-end"
 
 	// notePullChannelHook is the transport these hooks carry notes on.
 	notePullChannelHook = "hook"
@@ -52,6 +55,9 @@ const (
 	noteEventSessionStart = "session_start"
 	// noteEventStop is the Stop rescue that continues a headless run.
 	noteEventStop = "stop"
+	// noteEventUserPromptSubmit is the operator's next prompt in the
+	// terminal; the note rides it as additional context.
+	noteEventUserPromptSubmit = "user_prompt_submit"
 
 	// stopBlockSessionMax caps how many Stop blocks one session may cause. A
 	// sender must not be able to keep a worker alive in a loop.
@@ -249,6 +255,13 @@ func runAgentsStopHook(cmd *cobra.Command, _ []string) error {
 	if sessionID == "" {
 		return nil
 	}
+	// Unless a note continues the turn, this Stop ends it: tell the console.
+	blocked := false
+	defer func() {
+		if !blocked {
+			reportTurnEnd(cmd, raw, event.HookEventName, sessionID)
+		}
+	}()
 	// Respect the harness's own loop guard: `stop_hook_active` means this
 	// Stop already follows a block, so blocking again would spin.
 	if event.StopHookActive || event.LoopCount >= stopBlockSessionMax {
@@ -275,6 +288,7 @@ func runAgentsStopHook(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	recordStopBlock(sessionID)
+	blocked = true
 	payload := map[string]interface{}{"decision": "block", "reason": text}
 	if cred.Source == permissionSourceCursor {
 		payload = map[string]interface{}{"followup_message": text}

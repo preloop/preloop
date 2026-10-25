@@ -227,7 +227,11 @@ class CRUDRole(CRUDBase[models.Role]):
         return (
             db.query(models.Role)
             .filter(
-                (models.Role.is_system_role) | (models.Role.account_id == account_id)
+                (
+                    models.Role.is_system_role.is_(True)
+                    & models.Role.account_id.is_(None)
+                )
+                | (models.Role.account_id == account_id)
             )
             .offset(skip)
             .limit(limit)

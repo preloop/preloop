@@ -2,15 +2,18 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/preloop/preloop/cli/internal/testenv"
+	"github.com/spf13/cobra"
 )
 
 func TestSpawnAliasHookReadsEnvAndReportsFinalAlias(t *testing.T) {
@@ -174,5 +177,78 @@ func TestSpawnAliasFallbackRegistersFromPermissionEventOnce(t *testing.T) {
 	registerSpawnFromPermissionHook(permissionSourceCodexCLI, event)
 	if registrations != 1 {
 		t.Fatalf("want one registration, got %d", registrations)
+	}
+}
+
+func TestSpawnUsesCurrentSessionHandoff(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	if err := writeSessionHandoff(sessionHandoffFile{ExternalSessionID: "codex-thread", RuntimeSessionID: "11111111-2222-3333-4444-555555555555"}); err != nil {
+		t.Fatal(err)
+	}
+	env, err := spawnEnvironment("codex-thread", "api-worker", []string{"KEEP=yes", "PRELOOP_PARENT_SESSION_ID=stale", "PRELOOP_SESSION_ALIAS=old", "PRELOOP_CURRENT_SESSION_ID=conductor", "CODEX_THREAD_ID=conductor-codex", "CURSOR_CONVERSATION_ID=conductor-cursor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(env, "\n")
+	for _, key := range []string{currentSessionEnvVar, "CODEX_THREAD_ID", "CURSOR_CONVERSATION_ID"} {
+		if strings.Contains(got, key+"=") {
+			t.Fatalf("child inherited conductor identity: %s", got)
+		}
+	}
+	if !strings.Contains(got, "PRELOOP_PARENT_SESSION_ID=11111111-2222-3333-4444-555555555555") || !strings.Contains(got, "PRELOOP_SESSION_ALIAS=api-worker") || strings.Contains(got, "stale") || !strings.Contains(got, "KEEP=yes") {
+		t.Fatalf("incorrect child environment: %s", got)
+	}
+	for _, id := range []string{"", "missing", "../escape"} {
+		if _, err := spawnEnvironment(id, "api-worker", nil); err == nil {
+			t.Errorf("accepted unknown session %q", id)
+		}
+	}
+}
+
+func TestCallerLineageInput(t *testing.T) {
+	for _, tool := range []string{"mcp__preloop__send_note", "mcp__preloop__list_sessions"} {
+		raw, _ := json.Marshal(map[string]interface{}{"tool_name": tool, "session_id": "actual-session", "tool_input": map[string]interface{}{"text": "hi", "preloop_caller_session_id": "forged"}})
+		input := callerLineageInput(raw)
+		if input["preloop_caller_session_id"] != "actual-session" || input["text"] != "hi" {
+			t.Fatalf("incorrect updated input: %v", input)
+		}
+	}
+	for _, raw := range []string{`{"tool_name":"Bash","session_id":"s","tool_input":{}}`, `{"tool_name":"mcp__other__send_note","session_id":"s","tool_input":{}}`, `{"tool_name":"mcp__preloop__send_note","tool_input":{}}`} {
+		if callerLineageInput([]byte(raw)) != nil {
+			t.Errorf("injected unrelated or unidentified tool: %s", raw)
+		}
+	}
+}
+
+func TestCallerLineageHandlesCursorStringInput(t *testing.T) {
+	input := callerLineageInput([]byte(`{"tool_name":"send_note","mcp_server_name":"preloop","conversation_id":"cursor-run","tool_input":"{\"text\":\"hi\"}"}`))
+	if input["preloop_caller_session_id"] != "cursor-run" || input["text"] != "hi" {
+		t.Fatalf("Cursor input lost: %v", input)
+	}
+}
+
+func TestSpawnRunsCodexWorkerWithParentAndAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell to inspect the child environment")
+	}
+	testenv.SetHome(t, t.TempDir())
+	t.Setenv("CODEX_THREAD_ID", "current-codex-thread")
+	if err := writeSessionHandoff(sessionHandoffFile{ExternalSessionID: "current-codex-thread", RuntimeSessionID: "11111111-2222-3333-4444-555555555555"}); err != nil {
+		t.Fatal(err)
+	}
+	command := &cobra.Command{}
+	command.SetContext(context.Background())
+	command.Flags().String("session", "", "")
+	command.Flags().String("alias", "api-worker", "")
+	var output bytes.Buffer
+	command.SetOut(&output)
+	if err := runSpawn(command, []string{"sh", "-c", `printf '%s|%s' "$PRELOOP_PARENT_SESSION_ID" "$PRELOOP_SESSION_ALIAS"`}); err != nil {
+		t.Fatal(err)
+	}
+	if code := ProcessExitCode(runSpawn(command, []string{"sh", "-c", "exit 7"})); code != 7 {
+		t.Fatalf("child exit code lost: %d", code)
+	}
+	if output.String() != "11111111-2222-3333-4444-555555555555|api-worker" {
+		t.Fatalf("incorrect worker environment: %s", output.String())
 	}
 }

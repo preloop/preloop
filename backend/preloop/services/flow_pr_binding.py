@@ -21,6 +21,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from preloop.models.crud import crud_flow_execution
 from preloop.models.models.flow_execution import FlowExecution
+from preloop.utils.pr_metadata import read_result_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,37 @@ _GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
 # Single line the container wrapper prints after creating (or finding) the PR:
 #   PRELOOP_PR_OPENED {"url": "...", "branch": "...", "provider": "github"}
 PR_OPENED_MARKER = "PRELOOP_PR_OPENED"
+MAX_PUBLISHED_PRS = 32
+
+# One line per non-trivial choice the agent made, printed by the agent itself:
+#   PRELOOP_DECISION {"summary": "...", "reason": "...", "alternatives": ["..."]}
+# These are the agent's own claims, kept for reports to cite, never trusted
+# for control flow.
+DECISION_MARKER = "PRELOOP_DECISION"
+MAX_DECISIONS = 50
+MAX_DECISION_TEXT = 1000
+MAX_DECISION_ALTERNATIVES = 10
+# Template filler such as "...", "<why>" or "___": an echoed prompt, issue or
+# PR body that shows the marker's shape must not record a decision.
+_DECISION_PLACEHOLDER_RE = re.compile(r"^(?:[\s.\u2026_\-]*|<[^<>]*>)$")
+
+# Change brief the implementer writes into its PR body, between these markers:
+#   <!-- PRELOOP_BRIEF --> ### What changed ... <!-- /PRELOOP_BRIEF -->
+# Like decisions it is the author's claim, stored for reports to cite.
+BRIEF_START = "<!-- PRELOOP_BRIEF -->"
+BRIEF_END = "<!-- /PRELOOP_BRIEF -->"
+BRIEF_SECTIONS = {
+    "what changed": "what_changed",
+    "why": "why",
+    "assumptions": "assumptions",
+    "not verified": "not_verified",
+    "rollback": "rollback",
+    "decisions": "decisions",
+}
+MAX_BRIEF_SCAN_BYTES = 60000
+MAX_BRIEF_BULLETS = 50
+MAX_BRIEF_TEXT = 1000
+_BRIEF_NONE = frozenset({"none", "none.", "n/a", "-"})
 
 # Comment marker written by the PR reviewer flow, e.g.
 #   <!-- preloop-review:flow-id:pr-reviewer:severity:HIGH -->
@@ -167,6 +199,186 @@ def parse_pr_opened_marker(line: str) -> Optional[Dict[str, str]]:
     if isinstance(provider, str) and provider.strip():
         out["provider"] = provider.strip()
     return out
+
+
+def _decision_text(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or _DECISION_PLACEHOLDER_RE.match(text):
+        return None
+    return text[:MAX_DECISION_TEXT]
+
+
+def parse_decision_marker(line: str) -> Optional[Dict[str, Any]]:
+    """Parse an agent's ``PRELOOP_DECISION {...}`` log line.
+
+    Args:
+        line: One log line.
+
+    Returns:
+        ``{"summary": str, "reason": str, "alternatives": [str, ...]}``, or
+        None when the line is not the marker. A marker line that is not a JSON
+        object with a summary and a reason (neither empty nor a placeholder)
+        is logged and ignored.
+    """
+
+    if not line or not isinstance(line, str):
+        return None
+    idx = line.find(DECISION_MARKER)
+    if idx < 0:
+        return None
+    payload = line[idx + len(DECISION_MARKER) :].strip()
+    start = payload.find("{")
+    parsed: Any = None
+    if start >= 0:
+        try:
+            parsed, _ = json.JSONDecoder().raw_decode(payload[start:])
+        except ValueError:
+            parsed = None
+    if not isinstance(parsed, dict):
+        logger.warning(
+            "Ignoring malformed %s line (%d chars)", DECISION_MARKER, len(line)
+        )
+        return None
+    summary = _decision_text(parsed.get("summary"))
+    reason = _decision_text(parsed.get("reason"))
+    if summary is None or reason is None:
+        logger.warning(
+            "Ignoring %s line without a summary and a reason", DECISION_MARKER
+        )
+        return None
+    raw_alternatives = parsed.get("alternatives")
+    alternatives: List[str] = []
+    if isinstance(raw_alternatives, list):
+        for item in raw_alternatives:
+            text = _decision_text(item)
+            if text is not None:
+                alternatives.append(text)
+            if len(alternatives) >= MAX_DECISION_ALTERNATIVES:
+                break
+    return {"summary": summary, "reason": reason, "alternatives": alternatives}
+
+
+def parse_decisions(transcript: Optional[str]) -> List[Dict[str, Any]]:
+    """Return every well-formed decision marker in ``transcript``, in order."""
+
+    if not transcript:
+        return []
+    decisions: List[Dict[str, Any]] = []
+    for line in transcript.splitlines():
+        if DECISION_MARKER not in line:
+            continue
+        decision = parse_decision_marker(line)
+        if decision is not None:
+            decisions.append(decision)
+    return decisions
+
+
+def record_decision(
+    db: Session,
+    execution_id: Any,
+    decision: Dict[str, Any],
+    *,
+    raise_errors: bool = False,
+) -> bool:
+    """Append one parsed decision to ``result["decisions"]`` once.
+
+    Returns:
+        False when the write failed, so a caller can retry it later.
+    """
+
+    try:
+        if execution_id:
+            crud_flow_execution.add_decision(
+                db, execution_id=execution_id, decision=decision
+            )
+        return True
+    except Exception:
+        logger.warning(
+            "Failed to record decision on execution %s", execution_id, exc_info=True
+        )
+        db.rollback()
+        if raise_errors:
+            raise
+        return False
+
+
+def parse_brief(body: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Parse the ``PRELOOP_BRIEF`` block out of a pull request body.
+
+    Args:
+        body: Pull request description; only its first 60,000 bytes are read.
+
+    Returns:
+        None when there is no complete block. Otherwise one key per section
+        (``what_changed``, ``why``, ``assumptions``, ``not_verified``,
+        ``decisions`` as lists of bullets; ``rollback`` as one line or None),
+        ``missing`` listing sections the block does not have, and
+        ``truncated`` when a bullet or a section was cut to the caps.
+    """
+
+    if not body or not isinstance(body, str):
+        return None
+    text = body.encode("utf-8")[:MAX_BRIEF_SCAN_BYTES].decode("utf-8", "ignore")
+    start = text.find(BRIEF_START)
+    if start < 0:
+        return None
+    end = text.find(BRIEF_END, start + len(BRIEF_START))
+    if end < 0:
+        return None
+    sections: Dict[str, List[str]] = {}
+    current: Optional[List[str]] = None
+    truncated = False
+    for raw in text[start + len(BRIEF_START) : end].splitlines():
+        line = raw.strip()
+        if line.startswith("#"):
+            key = BRIEF_SECTIONS.get(line.lstrip("#").strip().lower())
+            current = sections.setdefault(key, []) if key else None
+            continue
+        if current is None or not line:
+            continue
+        if line[:2] in ("- ", "* "):
+            line = line[2:].strip()
+        if not line or line.lower() in _BRIEF_NONE:
+            continue
+        if _DECISION_PLACEHOLDER_RE.match(line):
+            continue
+        if len(current) >= MAX_BRIEF_BULLETS:
+            truncated = True
+            continue
+        if len(line) > MAX_BRIEF_TEXT:
+            line = line[:MAX_BRIEF_TEXT]
+            truncated = True
+        current.append(line)
+    brief: Dict[str, Any] = {}
+    for key in BRIEF_SECTIONS.values():
+        if key == "rollback":
+            lines = sections.get(key) or []
+            brief[key] = lines[0] if lines else None
+        else:
+            brief[key] = sections.get(key, [])
+    brief["missing"] = [k for k in BRIEF_SECTIONS.values() if k not in sections]
+    brief["truncated"] = truncated
+    return brief
+
+
+def brief_from_result(result: Any) -> Optional[Dict[str, Any]]:
+    """Parse the brief from the PR body an agent result carries, if any.
+
+    The body is chosen exactly as the publisher chooses it
+    (:func:`preloop.utils.pr_metadata.read_result_metadata`), so the stored
+    brief always describes the published body.
+    """
+
+    if not isinstance(result, dict):
+        return None
+    try:
+        raw = json.dumps(result).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    _title, body, _warnings = read_result_metadata(raw)
+    return parse_brief(body)
 
 
 def parse_review_marker(body: Optional[str]) -> Optional[str]:
@@ -426,12 +638,15 @@ def take_pending_followup(db: Session, execution: Any) -> Optional[Dict[str, Any
 def merge_result_preserving_pr_binding(
     existing: Optional[Any], incoming: Optional[Any]
 ) -> Optional[Any]:
-    """Keep ``pr_url`` / ``pr_source_branch`` when the agent result overwrites."""
+    """Keep ``pr_url`` / ``pr_source_branch``, recorded decisions and the
+    parsed brief when the agent result overwrites."""
 
     if incoming is None:
         return existing
     if not isinstance(incoming, dict):
         return incoming
+    # Only the parser writes ``brief``; an agent-authored key never lands.
+    incoming = {key: value for key, value in incoming.items() if key != "brief"}
     if not isinstance(existing, dict):
         return incoming
     merged = dict(existing)
@@ -442,7 +657,53 @@ def merge_result_preserving_pr_binding(
     for key in ("native_resume", "continuation"):
         if key in existing:
             merged[key] = existing[key]
+    if "published_prs" in existing:
+        merged["published_prs"] = existing["published_prs"]
+    if "published_prs_truncated" in existing:
+        merged["published_prs_truncated"] = existing["published_prs_truncated"]
+    for key in ("decisions", "decisions_truncated"):
+        if key in existing:
+            merged[key] = existing[key]
+    if "brief" in existing:
+        merged["brief"] = existing["brief"]
     return merged
+
+
+def record_published_pr(
+    db: Session,
+    execution_id: Any,
+    publication: Dict[str, str],
+    *,
+    raise_errors: bool = False,
+) -> None:
+    """Save a wrapper publication as an inspectable output without rebinding follow-up."""
+    try:
+        if execution_id and publication.get("url"):
+            parsed_url = urlparse(publication["url"])
+            repository_path = parsed_url.path
+            for separator in (
+                "/-/merge_requests/",
+                "/merge_requests/",
+                "/pull/",
+                "/pull-requests/",
+            ):
+                if separator in repository_path:
+                    repository_path = repository_path.split(separator, 1)[0]
+                    break
+            output = {
+                **publication,
+                "repository": f"{parsed_url.netloc}{repository_path}",
+            }
+            crud_flow_execution.add_published_pr(
+                db, execution_id=execution_id, publication=output
+            )
+    except Exception:
+        logger.warning(
+            "Failed to record published PR on execution %s", execution_id, exc_info=True
+        )
+        db.rollback()
+        if raise_errors:
+            raise
 
 
 def record_cli_session(
@@ -702,6 +963,11 @@ def record_runner_handoff_markers(
     from preloop.agents.cli_session import parse_agent_session_marker, valid_session_id
     from preloop.agents.session_runtime import parse_native_artifact_marker
 
+    if DECISION_MARKER in line:
+        decision = parse_decision_marker(line)
+        if decision is not None:
+            # Report-only: a failed write must not fail the log batch's ack.
+            record_decision(db, execution.id, decision)
     if not isolated_publication:
         opened = parse_pr_opened_marker(line)
         if opened:
@@ -719,6 +985,8 @@ def record_runner_handoff_markers(
                     source_branch=opened.get("branch"),
                     raise_errors=True,
                 )
+            if not current.get("published_prs_truncated"):
+                record_published_pr(db, execution.id, opened, raise_errors=True)
     artifact = parse_native_artifact_marker(line)
     if artifact:
         expected_thread = (execution.trigger_event_details or {}).get(

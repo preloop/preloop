@@ -727,7 +727,7 @@ export class UserManagementView extends LitElement {
         <div class="form-grid">
           <p>
             ${this.selectedUser?.full_name || this.selectedUser?.username || 'Identity unavailable'}
-            ${this.selectedUser?.email ? `(${this.selectedUser.email})` : ''} —
+            ${this.selectedUser?.email ? `(${this.selectedUser.email})` : ''}.
             Membership: ${this.selectedUser?.id}
           </p>
           <p>

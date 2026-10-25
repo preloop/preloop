@@ -33,6 +33,16 @@ _WINDOW_START = BASE - timedelta(days=2)
 _WINDOW_END = BASE + timedelta(days=10)
 
 
+@pytest.fixture(autouse=True, params=[1, 20000], ids=["sql-fallback", "recency-walk"])
+def session_scan_budget(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Exercise the same accounting contracts through both selection paths."""
+    monkeypatch.setattr(
+        type(crud_api_usage), "_SESSION_KEY_SCAN_MAX_ROWS", request.param
+    )
+
+
 def _create_session(db, account_id, **overrides):
     """Create (or fetch) a runtime session with stable test defaults."""
     data = {

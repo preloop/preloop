@@ -2106,7 +2106,7 @@ class TestInputIntegrity:
 class TestBaselineAuditEntry:
     @pytest.mark.asyncio
     async def test_http_schedules_commits_then_dispatches_and_retries(
-        self, db_session, world, test_user, test_viewer_user
+        self, db_session, world, test_user, test_viewer_user, test_editor_user
     ) -> None:
         from preloop.api.app import create_app
         from preloop.api.auth import get_current_active_user
@@ -2211,7 +2211,13 @@ class TestBaselineAuditEntry:
 
             app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
             foreign = client.post(path, json={"sbom_content_base64": SBOM_B64})
-            assert foreign.status_code == 404
+            assert foreign.status_code == 403
+            assert "edit_flows" in foreign.json()["detail"]
+
+            app.dependency_overrides[get_current_active_user] = lambda: test_editor_user
+            hidden = client.post(path, json={"sbom_content_base64": SBOM_B64})
+            assert hidden.status_code == 404
+            assert calls == [execution_id, execution_id]
 
 
 class _Clock:

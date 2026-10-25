@@ -30,7 +30,8 @@ from preloop.models.models.project import Project
 from preloop.models.models.tracker import Tracker
 from preloop.services.aux_model_retry import call_with_aux_retry_async
 from preloop.services.model_gateway_errors import ModelGatewayAPIError
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
+from preloop.api.loop_safety import run_db_off_loop
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -118,6 +119,9 @@ async def add_issue_comment(
     current_user: User = Depends(get_current_active_user),
 ) -> CommentResponse:
     """Add a new comment to a specific issue. Requires authentication."""
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "edit_issues")
+    )
     try:
         # Get the tracker client, passing current user for auth check
         tracker_client = await get_tracker_client(
@@ -158,7 +162,7 @@ async def search_comments(
     ),
     search_type: str = Query(
         "fulltext",
-        enum=["fulltext", "similarity"],
+        json_schema_extra={"enum": ["fulltext", "similarity"]},
         description="Type of search to perform ('fulltext' or 'similarity')",
     ),
     limit: int = Query(

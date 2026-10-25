@@ -1,0 +1,37 @@
+# kubernetes-mcp-server v0.0.67 settings for the k8s-readonly profile.
+# Run it in the cluster as the agent-readonly ServiceAccount from
+# k8s-readonly-rbac.yaml and start it with --config pointing at this file.
+# Option names: docs/configuration.md in containers/kubernetes-mcp-server.
+
+# Streamable HTTP at /mcp. Register http://<service>:8080/mcp in Preloop.
+port = "8080"
+stateless = true
+
+# Only expose tools annotated read-only, and of those only the read list in
+# readonly-policy.yaml. The config toolset (kubeconfig tools) is not loaded.
+read_only = true
+toolsets = ["core"]
+enabled_tools = [
+  "resources_list",
+  "resources_get",
+  "pods_list",
+  "pods_list_in_namespace",
+  "pods_get",
+  "pods_log",
+  "pods_top",
+  "events_list",
+  "namespaces_list",
+  "nodes_top",
+]
+
+# Use the pod's own ServiceAccount, never an Authorization header sent by a
+# caller. The upstream default, passthrough, forwards that header to the API
+# server when one is present.
+cluster_provider_strategy = "in-cluster"
+cluster_auth_mode = "kubeconfig"
+
+# view already leaves Secrets out; this refuses them in the server as well.
+[[denied_resources]]
+group = ""
+version = "v1"
+kind = "Secret"

@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import Date, cast, func
 from sqlalchemy.orm import Session
 from preloop.models import models
-from preloop.models.crud.api_usage import exclude_replay_usage_condition
+from preloop.models.crud.api_usage import exclude_customer_overhead_condition
 
 
 def usage_rows(
@@ -67,7 +67,7 @@ def usage_rows(
             usage.action_type == "model_gateway",
             usage.timestamp >= start.astimezone(timezone.utc).replace(tzinfo=None),
             usage.timestamp < end.astimezone(timezone.utc).replace(tzinfo=None),
-            exclude_replay_usage_condition(),
+            exclude_customer_overhead_condition(),
         )
         .group_by(*dimensions)
         .order_by(func.min(usage.timestamp), usage.runtime_session_id)

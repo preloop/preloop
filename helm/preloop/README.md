@@ -398,6 +398,8 @@ The `pre-upgrade` hook runs against the pods that are still serving. See
 | Name                               | Description                                           | Value       |
 |------------------------------------|-------------------------------------------------------|-------------|
 | `migrationJob.lockTimeout`         | Per-session lock_timeout for the migration connection | `5s`        |
+| `migrationJob.concurrentLockTimeoutSeconds` | Lock wait for explicit concurrent-index blocks only | `60` |
+| `migrationJob.concurrentStatementTimeoutSeconds` | Whole-statement limit for concurrent-index blocks | `120` |
 | `migrationJob.maxAttempts`         | Attempts at `upgrade head` before the Job fails       | `20`        |
 | `migrationJob.retryMinSeconds`     | Lower bound of the jittered backoff between attempts  | `3`         |
 | `migrationJob.retryMaxSeconds`     | Upper bound of the jittered backoff between attempts  | `15`        |
@@ -491,7 +493,7 @@ helm install preloop ./helm/preloop \
 | `serviceAccount.annotations`   | Annotations for the service account                   | `{}`        |
 | `serviceAccount.name`          | The name of the service account                       | `""`        |
 | `podAnnotations`               | Annotations for pods                                  | `{}`        |
-| `podLabels`                    | Extra labels on the api, gateway, frontend, and spacesync-* deployments (not health-monitor or Jobs). For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set `azure.workload.identity/use: "true"` and annotate the service account with `azure.workload.identity/client-id` | `{}`        |
+| `podLabels`                    | Extra labels on the api, gateway, frontend, chat-worker, and spacesync-* deployments (not health-monitor or Jobs). For Azure OpenAI with Microsoft Entra ID on AKS workload identity, set `azure.workload.identity/use: "true"` and annotate the service account with `azure.workload.identity/client-id` | `{}`        |
 | `podSecurityContext`           | Pod security context                                  | `{}`        |
 | `securityContext`              | Container security context                            | `{}`        |
 | `nodeSelector`                 | Node selector                                         | `{}`        |
@@ -958,6 +960,9 @@ traffic, so the Job runs `python -m preloop.models.migrate` rather than bare
   change `database.cnpg.resilience.lock_timeout`. Short on purpose: a pending
   ACCESS EXCLUSIVE request blocks every query queued behind it, so a long wait
   stalls reads of that table for just as long;
+- explicit concurrent-index blocks use separate bounded lock/statement budgets
+  (60/120 seconds). They can wait for older writers and snapshots while normal
+  writes continue; both session settings are restored before ordinary DDL;
 - lock contention (deadlock, lock timeout, serialization failure) is retried up
   to `migrationJob.maxAttempts` times with `migrationJob.retryMinSeconds` to
   `migrationJob.retryMaxSeconds` of jittered backoff. Any other error fails on
@@ -1013,3 +1018,40 @@ chart skips local agent namespace/RBAC/quota/network-policy resources. Provision
 those resources separately in the execution cluster. Drain
 existing hosted executions before changing clusters, including before rollback,
 because existing runtime references do not record their cluster.
+
+
+### Chat worker
+
+Chat connections require a separate durable consumer; `preloop-sync worker`
+pools do not process chat ingress/outbox jobs. Set this in the values used by
+your normal Helm deployment:
+
+```yaml
+chatWorker:
+  enabled: true
+```
+
+The optional `-chat-worker` Deployment runs
+`python -m preloop.services.chat_worker` using the API image and shared database,
+signing/encryption secrets, NATS, service account, and execution configuration.
+`chatWorker.replicaCount` and `chatWorker.resources` configure this deployment
+independently. It defaults to disabled. Database leases coordinate queue claims
+and Mattermost listeners across replicas. Existing accepted jobs survive restarts;
+Mattermost messages sent while offline are not replayed.
+
+Global `podLabels`, `podAnnotations`, `nodeSelector`, `affinity`, and `tolerations`
+also apply to the chat worker, including workload-identity labels and placement
+constraints. Global `extraEnv`, `extraEnvFrom`, `extraVolumes`, and
+`extraVolumeMounts` apply as well. Keep encryption settings identical to the API. For a private
+Mattermost server, supply the required `MODEL_ENDPOINT_ALLOWED_CIDRS` and CA trust
+(for example `SSL_CERT_FILE` with a mounted certificate) to both workloads.
+Restart workloads when operator-managed Secrets change; their contents are not
+part of the chart-managed credentials checksum.
+
+Run schema migrations before the worker. This process has no HTTP server or
+HTTP probes. Kubernetes running status does not prove provider connectivity:
+check per-connection worker/provider health in **Settings → Chat connections**,
+then link an account and send a fresh message to verify delivery. The optional
+Cloud documentation support service does not replace this worker. See
+[Chat connections](../../docs/chat-connections.md) for enrollment, authorization,
+and delivery limits.

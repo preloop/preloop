@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import httpx
+import httpx2 as httpx
+
+from preloop.services.mcp_httpx_client import MCPResponsePolicy
 
 from tests.integration.http_client import (
-    _INTEGRATION_LIMITS,
     integration_ssl_context,
 )
 
@@ -32,7 +33,7 @@ def create_streamable_mcp_http_client(
 
     transport = httpx.AsyncHTTPTransport(
         http2=False,
-        limits=_INTEGRATION_LIMITS,
+        limits=httpx.Limits(max_keepalive_connections=0, max_connections=1),
         retries=0,
         verify=integration_ssl_context(),
     )
@@ -42,4 +43,5 @@ def create_streamable_mcp_http_client(
         timeout=timeout,
         headers=merged_headers,
         auth=auth,
+        event_hooks={"response": [MCPResponsePolicy().on_response]},
     )

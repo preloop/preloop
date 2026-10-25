@@ -15,11 +15,13 @@ last 30d" heading. ``stats_since`` answers both from the same window.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 
 import pytest
 
 from preloop.api.endpoints import flows
 from preloop.models import schemas
+from preloop.models import models
 from preloop.models.crud import (
     crud_api_usage,
     crud_flow,
@@ -31,6 +33,7 @@ from preloop.models.crud.api_usage import REPLAY_VALIDATION_PURPOSE
 from preloop.models.schemas.flow import FlowCreate
 from preloop.models.schemas.flow_execution import FlowExecutionCreate
 from preloop.services.execution_metrics import ExecutionMetricsService
+from preloop.services.flow_execution_logger import FlowExecutionLogger
 
 from tests.conftest import maybe_await
 
@@ -165,6 +168,75 @@ async def test_projection_does_not_write_the_rollup_columns(db_session, test_use
     db_session.expire_all()
     stored = crud_flow_execution.get(db_session, id=execution.id)
     assert float(stored.estimated_cost) == pytest.approx(0.03)
+
+
+@pytest.mark.asyncio
+async def test_codex_command_is_not_counted_twice_from_persisted_event_copy(
+    db_session, test_user
+):
+    """Matching stream copies dedupe while independent rows still count."""
+    flow = _create_flow(db_session, test_user, name="Native command flow")
+    execution = crud_flow_execution.create(
+        db_session, FlowExecutionCreate(flow_id=flow.id, status="SUCCEEDED")
+    )
+    parsed = FlowExecutionLogger()
+    command = {
+        "id": "item_3",
+        "type": "command_execution",
+        "command": "/bin/bash -lc 'python -m unittest'",
+        "aggregated_output": "OK",
+        "exit_code": 0,
+        "status": "completed",
+    }
+    events = [
+        json.dumps(
+            {"type": "item.started", "item": {**command, "status": "in_progress"}}
+        ),
+        json.dumps({"type": "item.completed", "item": command}),
+    ]
+    parsed.parse_agent_logs(events + events)
+    execution.mcp_usage_logs = parsed.mcp_usage_logs
+    execution.tool_calls_count = 1
+    for _ in range(2):
+        db_session.add(
+            models.FlowExecutionLog(
+                execution_id=execution.id,
+                log_type="mcp_call",
+                metadata_=parsed.mcp_usage_logs[0],
+            )
+        )
+    db_session.add_all(
+        [
+            models.FlowExecutionLog(
+                execution_id=execution.id,
+                log_type="tool_call",
+                metadata_={"call_id": "independent-call"},
+            ),
+            models.FlowExecutionLog(
+                execution_id=execution.id,
+                log_type="tool_call",
+                metadata_={"tool_name": "anonymous-shell"},
+            ),
+        ]
+    )
+    db_session.flush()
+
+    listed = await maybe_await(
+        flows.read_flow_executions(
+            db=db_session, flow_id=flow.id, current_user=test_user
+        )
+    )
+    detail = await maybe_await(
+        flows.read_flow_execution(
+            db=db_session, execution_id=execution.id, current_user=test_user
+        )
+    )
+    metrics = ExecutionMetricsService(db_session).get_execution_metrics(
+        str(execution.id)
+    )
+    assert listed[0].tool_calls_count == 3
+    assert detail.tool_calls_count == 3
+    assert metrics["tool_calls"] == 3
 
 
 @pytest.mark.asyncio

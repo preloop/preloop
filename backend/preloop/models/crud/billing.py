@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from preloop.models import models
 from preloop.plugins.account_hooks import billing_account_id
-from .api_usage import exclude_replay_usage_condition
+from .api_usage import exclude_customer_overhead_condition
 from .entitlement import (
     ENTITLED_STATUSES,
     entitlement_clause,
@@ -811,7 +811,7 @@ class CRUDBilling:
         hosted_model_ids: list[str],
         byok_model_ids: list[str],
     ) -> dict[str, dict[str, Any]]:
-        """One bounded aggregate; unknown funding/currency never becomes zero-fit."""
+        """Customer traffic, excluding replay/governance, with unknown pricing kept."""
         usage = models.ApiUsage
         hosted = usage.ai_model_id.in_(hosted_model_ids)
         byok = usage.ai_model_id.in_(byok_model_ids)
@@ -873,7 +873,7 @@ class CRUDBilling:
                 usage.timestamp >= start,
                 usage.timestamp < end,
                 usage.action_type == "model_gateway",
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
             )
             .group_by(month)
             .all()

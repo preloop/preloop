@@ -393,6 +393,11 @@ export class CiIdentitiesView extends LitElement {
         ci-identities-view code {
           overflow-wrap: anywhere;
         }
+        ci-identities-view h1 {
+          font-size: var(--console-text-h1, 1.625rem);
+          font-weight: 600;
+          margin: 0 0 var(--sl-spacing-x-small);
+        }
         ci-identities-view .ci-secret {
           user-select: all;
           display: block;

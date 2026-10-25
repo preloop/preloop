@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
@@ -18,7 +23,10 @@ var updateCmd = &cobra.Command{
 and replace the current binary in place.
 
 Use --check to print the latest version and exit without installing.
-Use --yes to skip the confirmation prompt (required when stdin is not a TTY).
+Use --yes to skip confirmation and new setup (required when stdin is not a TTY).
+Existing runner services are always refreshed and restarted after an update.
+Interactive updates without --yes offer runner setup and discovered agent integration
+installation or reconciliation, including managed hooks and plugins.
 
 Version lookup uses the same check-in as 'preloop version --check' and is
 skipped when PRELOOP_DISABLE_TELEMETRY is set.`,
@@ -26,8 +34,10 @@ skipped when PRELOOP_DISABLE_TELEMETRY is set.`,
 }
 
 func init() {
-	updateCmd.Flags().BoolP("yes", "y", false, "install without prompting")
+	updateCmd.Flags().BoolP("yes", "y", false, "update without prompting or installing new integrations")
 	updateCmd.Flags().Bool("check", false, "print the latest version and exit")
+	updateCmd.AddCommand(updateSetupCmd)
+	updateSetupCmd.Flags().Bool("yes", false, "skip new setup")
 }
 
 func runUpdate(cmd *cobra.Command, args []string) error {
@@ -57,6 +67,9 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 			fmt.Println("newer than latest release")
 		} else {
 			fmt.Println("up to date")
+		}
+		if !checkOnly && !autoYes && loginTerminal() {
+			return runUpdateSetup(cmd, nil)
 		}
 		return nil
 	}
@@ -88,6 +101,104 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 	if err := version.ApplyUpdate(context.Background(), info.LatestVersion, dest); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "Updated to %s. Restart preloop to use the new binary.\n", info.LatestVersion)
+	fmt.Fprintf(os.Stdout, "Updated to %s.\n", info.LatestVersion)
+	if err := updateSetupLifecycle(cmd, dest, autoYes); err != nil {
+		return fmt.Errorf("CLI updated, but post-update setup failed: %w; retry with preloop runner setup or preloop agents onboard", err)
+	}
 	return nil
+}
+
+// Use the installed release's service templates and defaults, rather than
+// those compiled into the updater that is still running.
+var updateSetupLifecycle = func(cmd *cobra.Command, binary string, yes bool) error {
+	args := []string{"update", "post-update-setup"}
+	if yes || strings.TrimSpace(FlagToken) != "" {
+		args = append(args, "--yes")
+	}
+	if FlagURL != "" {
+		args = append(args, "--url", FlagURL)
+	}
+	// Preserve the caller's selected config context. The replacement binary is
+	// a new process, so the parsed global flags would otherwise be lost and its
+	// setup pass could reconcile the default profile/account instead.
+	if cfgFile != "" {
+		args = append(args, "--config", cfgFile)
+	}
+	if FlagProfile != "" {
+		args = append(args, "--profile", FlagProfile)
+	}
+	if FlagAccount != "" {
+		args = append(args, "--account", FlagAccount)
+	}
+	child := exec.CommandContext(cmd.Context(), binary, args...)
+	child.Stdin, child.Stdout, child.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
+	return child.Run()
+}
+
+var updateSetupCmd = &cobra.Command{
+	Use:    "post-update-setup",
+	Hidden: true,
+	// Initialize selection without the root update notice: this command is
+	// already running as part of an update and must never trigger another one.
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		initializeCommandSelection(cmd)
+		silenceUsageForRuntimeErrors(cmd)
+	},
+	RunE: runUpdateSetup,
+}
+
+func runUpdateRunner(cmd *cobra.Command, args []string) error {
+	out := cmd.OutOrStdout()
+	if runnerServiceInstalled() {
+		if err := setupInstallRunner(out); err != nil {
+			return fmt.Errorf("runner service refresh failed: %w", err)
+		}
+		if err := runnerServiceAction("restart"); err != nil {
+			return fmt.Errorf("runner service restart failed: %w", err)
+		}
+		fmt.Fprintln(out, "Refreshed and restarted the runner service")
+		return nil
+	}
+	yes, _ := cmd.Flags().GetBool("yes")
+	tty := loginTerminal()
+	if yes || !tty {
+		fmt.Fprintln(out, "Runner not installed. Configure it with: preloop runner setup")
+		return nil
+	}
+	cfg, err := config.Resolve(FlagToken, FlagURL)
+	if err != nil || strings.TrimSpace(cfg.AccessToken) == "" {
+		fmt.Fprintln(out, "Log in first with: preloop login; then run preloop runner setup")
+		return nil
+	}
+	return performRunnerSetup(runnerSetupRequest{
+		Out: out, In: cmd.InOrStdin(), Policy: fetchRunnerPolicy(), Instance: cfg.APIURL, TTY: &tty,
+		Env: runnerSetupEnv{
+			Force:       true,
+			TokenAuth:   strings.TrimSpace(FlagToken) != "",
+			EnvAuth:     strings.TrimSpace(os.Getenv(config.EnvToken)) != "",
+			NoRunnerEnv: os.Getenv("PRELOOP_NO_RUNNER") == "1",
+		},
+	})
+}
+
+// Keep buffered input across phases so prompts cannot consume later answers.
+// Attempt agent setup even if runner refresh fails.
+func runUpdateSetup(cmd *cobra.Command, args []string) error {
+	cmd.SetIn(bufio.NewReader(cmd.InOrStdin()))
+	runnerErr := runUpdateRunner(cmd, args)
+	yes, _ := cmd.Flags().GetBool("yes")
+	if yes || !loginTerminal() || strings.TrimSpace(FlagToken) != "" ||
+		strings.TrimSpace(os.Getenv(config.EnvToken)) != "" {
+		return runnerErr
+	}
+	return errors.Join(runnerErr, updateAgentIntegrations(cmd))
+}
+
+var updateAgentIntegrations = func(cmd *cobra.Command) error {
+	fmt.Fprintln(cmd.OutOrStdout(), "\nAgent integrations: install missing integrations or refresh existing MCP config, hooks and plugins.")
+	discovered, err := discoverAgents(cmd.OutOrStdout(), true)
+	if err != nil {
+		return err
+	}
+	return promptToOnboardDiscoveredAgentsWithIO(discovered, false, false, cmd.InOrStdin(), cmd.OutOrStdout())
 }

@@ -1,0 +1,45 @@
+{{- if .Values.auditAlerts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "preloop.fullname" . }}-audit
+  labels:
+    {{- include "preloop.labels" . | nindent 4 }}
+    {{- with .Values.auditAlerts.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: preloop.audit
+      rules:
+        - alert: PreloopAuditDrainLag
+          expr: max({{ .Values.auditAlerts.metrics.oldestPendingAge }}{ {{ .Values.auditAlerts.metricSelector }} }) > {{ .Values.auditAlerts.lagSeconds }}
+          for: {{ .Values.auditAlerts.lagFor }}
+          labels:
+            severity: warning
+          annotations:
+            summary: Audit delivery is behind
+            description: Check relay health and database availability. Committed intents remain queued.
+        - alert: PreloopAuditDeliveryFailures
+          expr: sum(increase({{ .Values.auditAlerts.metrics.failedAttempts }}{ {{ .Values.auditAlerts.metricSelector }} }[5m])) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: Audit relay attempts are failing
+            description: Inspect relay errors and repair the delivery cause before replaying failed intents.
+        - alert: PreloopAuditParkedIntents
+          expr: max({{ .Values.auditAlerts.metrics.parked }}{ {{ .Values.auditAlerts.metricSelector }} }) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Audit intents need operator replay
+            description: Parked intents survive restart and are excluded from drain lag. Use the bounded audit replay command after repairing delivery.
+        - alert: PreloopAuditAdmissionDrops
+          expr: sum(increase({{ .Values.auditAlerts.metrics.dropped }}{ {{ .Values.auditAlerts.metricSelector }} }[5m])) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: Best-effort audit writes were dropped
+            description: Default-off and remaining asynchronous callers still use bounded admission. Transactional callers bypass this queue when the outbox is enabled.
+{{- end }}

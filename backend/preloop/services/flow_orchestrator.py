@@ -82,14 +82,20 @@ from preloop.services.flow_execution_notifications import (
 )
 from preloop.config import settings
 from preloop.services.flow_pr_binding import (
+    DECISION_MARKER,
     PR_OPENED_MARKER,
+    MAX_PUBLISHED_PRS,
+    brief_from_result,
     find_bound_execution,
     max_resumes_per_pr,
     merge_result_preserving_pr_binding,
     note_resume_started,
+    parse_decision_marker,
     parse_pr_opened_marker,
     record_cli_session,
+    record_decision,
     record_opened_pr,
+    record_published_pr,
     resume_cli_session_of,
     resume_count,
     take_pending_followup,
@@ -126,6 +132,10 @@ from preloop.services.follow_up_filing import (
     parse_platform_follow_up_gate,
     resolve_follow_up_filing,
 )
+from preloop.services.delivery_report import (
+    finalize_for_execution as finalize_delivery_report_for_execution,
+)
+from preloop.services.delivery_report import is_delivery_report_flow
 from preloop.services.report_publication import (
     REPORT_PUBLICATION_MARKER,
     REPORT_PUBLICATION_OUTCOMES,
@@ -147,6 +157,7 @@ from preloop.services.managed_credentials import (
     ManagedCredentialError,
 )
 from preloop.sync.event_normalizer import attach_trigger_subject
+from preloop.services.fleet_flow_context import build_fleet_flow_context
 from preloop.sync.trackers.base import BaseTracker
 from preloop.services.model_runtime_resolver import resolve_ai_model_runtime
 from preloop.utils.git_credentials import (
@@ -155,7 +166,18 @@ from preloop.utils.git_credentials import (
     strip_url_credentials,
     temporary_credential_file,
 )
-from preloop.utils.prompt_filters import parse_placeholders, truncate_value
+from preloop.utils.prompt_data import (
+    TRIGGER_PREFIXES,
+    field_reference,
+    is_free_text_field,
+    render_data_block,
+)
+from preloop.utils.prompt_filters import (
+    PLACEHOLDER_RE,
+    Placeholder,
+    parse_placeholders,
+    truncate_value,
+)
 from preloop.utils.repo_urls import repo_url_log_location, tracker_host_kind
 from preloop.utils.workspace_seed import (
     attach_workspace_file_paths,
@@ -920,6 +942,8 @@ class FlowExecutionOrchestrator:
         # PR/MR the container wrapper opened in its post-execution step, read
         # from the PRELOOP_PR_OPENED log line and bound at terminal status.
         self._opened_pr: Optional[Dict[str, str]] = None
+        self._published_pr_urls: set[str] = set()
+        self._published_prs_overflow_noted = False
         # True after this orchestrator has already persisted ``_opened_pr``.
         # Live log frames bind immediately; terminal rescan must not bind twice.
         self._opened_pr_bound = False
@@ -1311,6 +1335,58 @@ class FlowExecutionOrchestrator:
 
         return "the triggering repository"
 
+    def _describe_incomplete_review(
+        self, stored_status: str, merged_result: Any
+    ) -> Optional[str]:
+        """Describe a review this run submitted before ending unsuccessfully.
+
+        Args:
+            stored_status: The execution's terminal status.
+            merged_result: The result document the run stored.
+
+        Returns:
+            The commit status description, or None when the run submitted no
+            review (or its tool calls cannot be read).
+        """
+        if not self.execution_log or not self.flow:
+            return None
+        try:
+            from preloop.models.crud import crud_runtime_session_activity
+            from preloop.services.review_completion import (
+                describe_incomplete_review,
+                summarize_review_progress,
+            )
+
+            activities = (
+                crud_runtime_session_activity.list_tool_calls_for_flow_execution(
+                    self.db,
+                    account_id=self.flow.account_id,
+                    flow_execution_id=self.execution_log.id,
+                )
+            )
+            confirmed = (
+                isinstance(merged_result, dict)
+                and str(merged_result.get("status") or "").lower() == "success"
+            )
+            progress = summarize_review_progress(activities, result_confirmed=confirmed)
+        except Exception:
+            logger.warning(
+                "Could not read the review progress of execution %s",
+                self.execution_log.id,
+                exc_info=True,
+            )
+            return None
+        if progress is None:
+            return None
+        logger.info(
+            "Execution %s ended %s after submitting a review (%s); remaining: %s",
+            self.execution_log.id,
+            stored_status,
+            progress.review_state,
+            ", ".join(progress.remaining) or "none",
+        )
+        return describe_incomplete_review(progress, stored_status)
+
     async def _update_commit_status(
         self,
         state: str,
@@ -1520,6 +1596,19 @@ class FlowExecutionOrchestrator:
             return
 
         try:
+            if message_type in {"execution_started", "status_update"}:
+                payload = {
+                    **payload,
+                    "fleet_context": build_fleet_flow_context(
+                        flow_name=self.flow.name if self.flow else None,
+                        trigger_details=self.execution_log.trigger_event_details,
+                        trigger_event_id=self.execution_log.trigger_event_id,
+                        parent_execution_id=self.execution_log.parent_execution_id,
+                        root_execution_id=self.execution_log.root_execution_id,
+                        retry_of_execution_id=self.execution_log.retry_of_execution_id,
+                        resume_execution_id=self.execution_log.resume_execution_id,
+                    ),
+                }
             message = {
                 "execution_id": str(self.execution_log.id),
                 "flow_id": str(self.flow_id),
@@ -1639,6 +1728,18 @@ class FlowExecutionOrchestrator:
                     logger.warning(
                         f"Recorded routing model {effective_ai_model_id} is not available; falling back to flow model {self.flow.ai_model_id}."
                     )
+            if self.ai_model and (
+                self.ai_model.account_id is not None
+                and str(self.ai_model.account_id) != str(self.flow.account_id)
+            ):
+                unavailable_model_id = self.ai_model.id
+                self.ai_model = None
+                logger.warning(
+                    "AI model %s is not available to flow account %s; refusing to start",
+                    unavailable_model_id,
+                    self.flow.account_id,
+                )
+                raise ValueError("AI model is not available to this flow account")
             if not self.ai_model:
                 routing_record = (self.trigger_event_data or {}).get(
                     ROUTING_RECORD_KEY
@@ -1714,6 +1815,48 @@ class FlowExecutionOrchestrator:
             )
         return effort
 
+    @staticmethod
+    def _stage_placeholder(
+        item: Placeholder,
+        value: Any,
+        *,
+        trigger_sourced: bool,
+        replacements: Dict[str, str],
+        data_fields: List[Tuple[str, str]],
+    ) -> None:
+        """Record how one resolved placeholder enters the prompt.
+
+        Trigger-payload prose goes to the data block and leaves a reference
+        in the template; anything else is substituted in place. A whole
+        object or list from the trigger event (``{{trigger_event.payload.issue}}``)
+        carries the same prose in its fields, so it goes to the block too,
+        as JSON. The ``truncate`` filter applies to the text either way.
+
+        Args:
+            item: The parsed placeholder.
+            value: Its resolved value, not yet stringified.
+            trigger_sourced: Whether the value was read from the trigger event.
+            replacements: Raw placeholder text to replacement, updated.
+            data_fields: Data block entries, appended to.
+        """
+        container = isinstance(value, (Mapping, list, tuple))
+        if trigger_sourced and container:
+            text = truncate_value(
+                json.dumps(value, indent=2, ensure_ascii=False, default=str),
+                item.limit,
+            )
+        else:
+            text = truncate_value(str(value), item.limit)
+        if (trigger_sourced and container) or is_free_text_field(
+            item.name, trigger_sourced=trigger_sourced
+        ):
+            replacements[item.raw] = field_reference(item.name)
+            # Two caps on one field are two entries; same name and value once.
+            if (item.name, text) not in data_fields:
+                data_fields.append((item.name, text))
+        else:
+            replacements[item.raw] = text
+
     async def _resolve_prompt(self) -> str:
         """
         Resolve dynamic placeholders in the prompt template using registered resolvers.
@@ -1736,7 +1879,12 @@ class FlowExecutionOrchestrator:
         self._ensure_resolvers_registered()
 
         prompt_template = self.flow.prompt_template
-        resolved_prompt = prompt_template
+        # Raw placeholder text -> what replaces it. Applied in one pass at the
+        # end, so a resolved value is never itself scanned for placeholders.
+        replacements: Dict[str, str] = {}
+        # Trigger-payload prose, carried in a data block after the template
+        # rather than spliced into it (see preloop.utils.prompt_data).
+        data_fields: List[Tuple[str, str]] = []
 
         # Create resolver context
         from preloop.services.persistent_workspace import workspace_mode
@@ -1781,9 +1929,12 @@ class FlowExecutionOrchestrator:
                     value = await resolver.resolve(path, resolver_context)
 
                     if value is not None:
-                        # Replace the placeholder with the value
-                        resolved_prompt = resolved_prompt.replace(
-                            item.raw, truncate_value(str(value), item.limit)
+                        self._stage_placeholder(
+                            item,
+                            value,
+                            trigger_sourced=prefix in TRIGGER_PREFIXES,
+                            replacements=replacements,
+                            data_fields=data_fields,
                         )
                         logger.debug(f"Resolved {item.raw}: {value}")
                     else:
@@ -1799,14 +1950,25 @@ class FlowExecutionOrchestrator:
                 # Try simple replacement from trigger_event_data for backwards compatibility
                 value = self._simple_resolve(placeholder, self.trigger_event_data)
                 if value is not None:
-                    resolved_prompt = resolved_prompt.replace(
-                        item.raw, truncate_value(str(value), item.limit)
+                    self._stage_placeholder(
+                        item,
+                        value,
+                        trigger_sourced=True,
+                        replacements=replacements,
+                        data_fields=data_fields,
                     )
                     logger.debug(f"Simple resolved {item.raw}: {value}")
                 else:
                     logger.warning(
                         f"No resolver found for prefix '{prefix}' and simple resolution failed for {item.raw}"
                     )
+
+        resolved_prompt = PLACEHOLDER_RE.sub(
+            lambda m: replacements.get(m.group(0), m.group(0)), prompt_template
+        )
+        data_block = render_data_block(data_fields)
+        if data_block:
+            resolved_prompt += "\n\n" + data_block
 
         from preloop.services.verification import verification_prompt_instructions
 
@@ -2095,7 +2257,7 @@ class FlowExecutionOrchestrator:
 
         self._revoke_execution_runtime_tokens()
 
-    def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Optional[str]:
+    def _simple_resolve(self, placeholder: str, data: Dict[str, Any]) -> Any:
         """
         Simple fallback resolver for backwards compatibility.
 
@@ -2104,7 +2266,9 @@ class FlowExecutionOrchestrator:
             data: Dictionary to resolve from
 
         Returns:
-            Resolved value or None
+            Resolved value or None. An object or list is returned as is, so
+            the caller can keep its fields out of the template; anything
+            else as a string.
         """
         keys = placeholder.split(".")
         value = data
@@ -2116,7 +2280,9 @@ class FlowExecutionOrchestrator:
                 else:
                     return None
 
-            return str(value) if value is not None else None
+            if value is None or isinstance(value, (dict, list)):
+                return value
+            return str(value)
         except Exception:
             return None
 
@@ -3445,6 +3611,11 @@ class FlowExecutionOrchestrator:
         if baseline is not None:
             execution_context["baseline_delivery"] = baseline.model_dump()
 
+        if is_delivery_report_flow(self.flow):
+            execution_context["trigger_event_data"] = self._delivery_report_inputs(
+                execution_context.get("trigger_event_data")
+            )
+
         from preloop.services.flow_feedback import resolve_native_checkpoint
         from preloop.services.model_routing import validate_native_resume_identity
 
@@ -3711,6 +3882,10 @@ class FlowExecutionOrchestrator:
         # channel (MCP create_pull_request binds directly instead).
         if PR_OPENED_MARKER in stripped_line:
             self._note_opened_pr(stripped_line)
+
+        # A non-trivial choice the agent reported about its own work.
+        if DECISION_MARKER in stripped_line:
+            self._note_decision(stripped_line)
 
         # Native CLI session id reported by the agent script, so a
         # later PR-comment resume can invoke the CLI resume flag.
@@ -4974,26 +5149,58 @@ class FlowExecutionOrchestrator:
             return []
         return [line for line in logs if isinstance(line, str)]
 
+    def _note_decision(self, line: str) -> None:
+        """Record an agent decision marker on this execution's result once."""
+        decision = parse_decision_marker(line)
+        if decision is None or self.execution_log is None:
+            return
+        seen = getattr(self, "_recorded_decisions", None)
+        if seen is None:
+            seen = []
+            self._recorded_decisions = seen
+        if decision in seen:
+            return
+        # Remember only stored decisions, so the rescan retries a failed write.
+        if record_decision(self.db, self.execution_log.id, decision):
+            seen.append(decision)
+
     def _note_opened_pr(self, line: str) -> None:
-        """Remember the PR/MR the wrapper opened (first one wins)."""
+        """Remember each wrapper publication; retain the first as the follow-up binding."""
         if getattr(self, "_isolated_publication_policy", None) is not None:
             return  # Only the trusted publisher can bind an isolated execution.
         parsed = parse_pr_opened_marker(line)
         if not parsed:
             return
-        if self._opened_pr is not None:
+        seen = getattr(self, "_published_pr_urls", None)
+        if seen is None:
+            seen = set()
+            self._published_pr_urls = seen
+        from preloop.services.flow_pr_binding import normalize_pr_url
+
+        key = normalize_pr_url(parsed["url"]) or parsed["url"]
+        if key in seen:
             return
-        self._opened_pr = parsed
+        if len(seen) >= MAX_PUBLISHED_PRS:
+            if not getattr(self, "_published_prs_overflow_noted", False):
+                if self.execution_log is not None:
+                    record_published_pr(self.db, self.execution_log.id, parsed)
+                self._published_prs_overflow_noted = True
+            return
+        seen.add(key)
+        is_primary = self._opened_pr is None
+        if is_primary:
+            self._opened_pr = parsed
         if self.execution_log is not None:
-            # Persist while the publication marker is available. A lost final
-            # runner report must not erase the PR's continuation binding.
-            record_opened_pr(
-                self.db,
-                self.execution_log.id,
-                parsed["url"],
-                source_branch=parsed.get("branch"),
-            )
-            self._opened_pr_bound = True
+            if is_primary:
+                # Keep existing follow-up semantics tied to the first PR.
+                record_opened_pr(
+                    self.db,
+                    self.execution_log.id,
+                    parsed["url"],
+                    source_branch=parsed.get("branch"),
+                )
+                self._opened_pr_bound = True
+            record_published_pr(self.db, self.execution_log.id, parsed)
         logger.info("Wrapper opened a pull request for this execution")
         self.execution_logger.log_milestone(
             "pull_request_opened",
@@ -5388,6 +5595,56 @@ class FlowExecutionOrchestrator:
             # turns that review into a failed execution.
             logger.exception("Filing the approved follow ups failed")
 
+    def _delivery_report_inputs(
+        self, trigger_event_data: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """Seed the window's completed merge audits for a Delivery Report run.
+
+        The run reads them as ``previous/merge_audits.json`` beside the
+        previous report, so an audited closed issue is not assessed again.
+        A failed read leaves the trigger data as it was; the report pass
+        applies the audits again when the run ends.
+        """
+        from preloop.services.delivery_report import (
+            load_merge_audits,
+            with_merge_audits_seed,
+        )
+        from preloop.utils.workspace_seed import MAX_SINGLE_SEED_ENCODED_BYTES
+
+        payload = (trigger_event_data or {}).get("payload")
+        window = payload.get("window") if isinstance(payload, dict) else None
+        try:
+            document = load_merge_audits(
+                self.db,
+                account_id=self.flow.account_id,
+                window=window,
+                # Base64 grows the document by 4/3; keep the seed under cap.
+                max_bytes=MAX_SINGLE_SEED_ENCODED_BYTES * 3 // 4 - 1024,
+            )
+        except Exception:
+            logger.warning("Could not read merge audits for the report", exc_info=True)
+            return trigger_event_data
+        return with_merge_audits_seed(trigger_event_data, document)
+
+    def _finalize_delivery_report(self, merged_result: Any) -> Any:
+        """Apply the Delivery Report pass to a marked flow's result (#2019).
+
+        Any other flow's result is returned unchanged. A failure here keeps
+        the agent's result rather than failing a run whose report exists.
+        """
+        if not is_delivery_report_flow(self.flow) or self.execution_log is None:
+            return merged_result
+        try:
+            return finalize_delivery_report_for_execution(
+                self.db,
+                flow=self.flow,
+                execution=self.execution_log,
+                result=merged_result,
+            )
+        except Exception:
+            logger.exception("Finalizing the delivery report failed")
+            return merged_result
+
     def _resolve_verification_evidence(self) -> Optional[Dict[str, Any]]:
         """Gate evidence from the live stream, or from the stored log tail.
 
@@ -5447,11 +5704,12 @@ class FlowExecutionOrchestrator:
         trusted publication receipt that never went through the wrapper
         marker. The same URL is not written twice.
         """
-        if self._opened_pr is None and output_summary:
+        if output_summary:
             for line in output_summary.splitlines():
                 if PR_OPENED_MARKER in line:
                     self._note_opened_pr(line)
-                    break
+                if DECISION_MARKER in line:
+                    self._note_decision(line)
         if getattr(self, "_opened_pr_bound", False):
             return
         if self._opened_pr is None or self.execution_log is None:
@@ -7450,6 +7708,10 @@ class FlowExecutionOrchestrator:
                                     else None
                                 ),
                             }
+                        # A terminal execution must not leave the runtime
+                        # retrying or performing post-execution work. Capture
+                        # artifacts above before deleting a Kubernetes Job.
+                        await agent_executor.stop(session_reference)
                         cra_status, cra_error = self._apply_cra_fail_closed(
                             "SUCCEEDED", None
                         )
@@ -9482,6 +9744,10 @@ class FlowExecutionOrchestrator:
                 getattr(self.execution_log, "result", None),
                 agent_result.get("result"),
             )
+            # The change brief the agent wrote into the PR body it published.
+            brief = brief_from_result(agent_result.get("result"))
+            if brief is not None and isinstance(merged_result, dict):
+                merged_result["brief"] = brief
 
             # Only the executor's runtime observation owns this key. Agent
             # result.json claims cannot overwrite or fabricate termination.
@@ -9509,6 +9775,11 @@ class FlowExecutionOrchestrator:
                 if not isinstance(merged_result, dict):
                     merged_result = {}
                 merged_result[REPORT_PUBLICATION_RESULT_KEY] = dict(report_publication)
+
+            # Delivery Report (#2019): the platform applies the honesty
+            # rules, the delta and the spend to the agent's report. The agent
+            # cannot author what the run spent or what the last report asked.
+            merged_result = self._finalize_delivery_report(merged_result)
 
             verification_evidence = self._resolve_verification_evidence()
             if verification_evidence is not None and isinstance(merged_result, dict):
@@ -9622,6 +9893,15 @@ class FlowExecutionOrchestrator:
             elif stored_status != "SUCCEEDED":
                 detail = agent_result.get("error_message") or "Unknown error"
                 status_description = f"Preloop review failed: {str(detail)[:80]}"
+            if stored_status != "SUCCEEDED":
+                # A run that already submitted its review says so, and names
+                # the post-review step it never completed (#1683). It still
+                # fails: the review alone is not a completed run.
+                incomplete = self._describe_incomplete_review(
+                    stored_status, merged_result
+                )
+                if incomplete:
+                    status_description = incomplete
             await self._update_commit_status(
                 state=status_state,
                 description=status_description,

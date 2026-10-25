@@ -54,6 +54,13 @@ describe('PreloopFlowForm model routing roundtrip', () => {
           JSON.stringify([
             { id: MODEL_A, name: 'Fast model' },
             { id: MODEL_B, name: 'Default model' },
+            { id: 'shared-model', name: 'Shared model', is_shared: true },
+            {
+              id: 'global-model',
+              name: 'Built-in model',
+              is_built_in: true,
+              read_only: true,
+            },
           ])
         );
       }
@@ -97,6 +104,105 @@ describe('PreloopFlowForm model routing roundtrip', () => {
     expect(listener.callCount).to.equal(1);
     return listener.firstCall.args[0].detail.flow;
   };
+
+  it('offers owned and built-in models but excludes shared models from binding pickers', async () => {
+    const element = await mount();
+    (element as any).addRoutingRule();
+    await element.updateComplete;
+    const options = Array.from(
+      element.shadowRoot!.querySelectorAll('sl-option')
+    ).map((option: any) => option.value);
+    expect(options).to.include(MODEL_A);
+    expect(options).to.include('global-model');
+    expect(options).not.to.include('shared-model');
+  });
+
+  it('does not choose a shared model when populating preset defaults', async () => {
+    const element = await mount();
+    (element as any).models = [
+      { id: MODEL_A, name: 'Account model' },
+      { id: 'shared-model', name: 'Shared model', is_shared: true },
+    ];
+    await (element as any).selectPreset({ ...preset, agent_type: 'openhands' });
+    expect(element.flow.ai_model_id).to.equal(MODEL_A);
+  });
+
+  it('explains how to replace an existing shared model binding', async () => {
+    const element = await mount();
+    element.flow.ai_model_id = 'shared-model';
+    element.requestUpdate();
+    await element.updateComplete;
+    expect(
+      element.shadowRoot!.querySelector('[data-shared-binding-warning]')!
+        .textContent
+    ).to.include('Replace shared models');
+  });
+
+  for (const agentType of ['cursor', 'devin', 'copilot', 'claude_code']) {
+    it(`can remove a shared binding from a ${agentType} flow`, async () => {
+      const element = await mount();
+      element.flow.agent_type = agentType;
+      element.flow.ai_model_id = 'shared-model';
+      element.requestUpdate();
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('[data-shared-binding-warning]'))
+        .to.exist;
+      (
+        element.shadowRoot!.querySelector(
+          '[data-clear-shared-bindings]'
+        ) as HTMLElement
+      ).click();
+      await element.updateComplete;
+      expect(element.flow.ai_model_id).to.equal(null);
+      expect(element.shadowRoot!.querySelector('[data-shared-binding-warning]'))
+        .not.to.exist;
+      const payload = await submit(element);
+      expect(payload.ai_model_id).to.equal(null);
+    });
+  }
+
+  it('removes only shared nested bindings and preserves owned models and unrelated settings', async () => {
+    const element = await mount({
+      max_iterations: 6,
+      model_routing: {
+        version: 1,
+        rules: [
+          {
+            id: 'owned',
+            labels: { any: ['owned'] },
+            ai_model_id: MODEL_A,
+            agent_type: 'codex',
+          },
+          {
+            id: 'shared',
+            labels: { any: ['shared'] },
+            ai_model_id: 'shared-model',
+            agent_type: 'codex',
+          },
+        ],
+      },
+      model_by_label: [
+        { label: 'owned', ai_model_id: MODEL_A, reasoning_effort: '' },
+        { label: 'shared', ai_model_id: 'shared-model', reasoning_effort: '' },
+      ],
+    });
+    (
+      element.shadowRoot!.querySelector(
+        '[data-clear-shared-bindings]'
+      ) as HTMLElement
+    ).click();
+    await element.updateComplete;
+    const payload = await submit(element);
+    expect(payload.ai_model_id).to.equal(MODEL_B);
+    const config = payload.agent_config as any;
+    expect(config.max_iterations).to.equal(6);
+    expect(
+      config.model_routing.rules.map((rule: any) => rule.id)
+    ).to.deep.equal(['owned']);
+    expect(config.model_by_label.map((rule: any) => rule.label)).to.deep.equal([
+      'owned',
+    ]);
+  });
 
   it('loads saved rules and preserves unrelated agent_config keys', async () => {
     const saved = {
@@ -212,6 +318,13 @@ describe('PreloopFlowForm model by label roundtrip', () => {
           JSON.stringify([
             { id: MODEL_A, name: 'Fast model' },
             { id: MODEL_B, name: 'Default model' },
+            { id: 'shared-model', name: 'Shared model', is_shared: true },
+            {
+              id: 'global-model',
+              name: 'Built-in model',
+              is_built_in: true,
+              read_only: true,
+            },
           ])
         );
       }

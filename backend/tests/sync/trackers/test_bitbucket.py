@@ -2,7 +2,8 @@
 
 import json
 from typing import Any, Callable, Dict, List
-from unittest.mock import MagicMock, patch
+from urllib.parse import unquote
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -973,3 +974,240 @@ async def test_managed_only_refreshes_once_across_redirect_chain() -> None:
         await tracker.get_pull_request_diff(2)
     assert grant.calls == [False, True, False]
     assert len(requests) == 3
+
+
+HOOK_URL = "https://preloop.test/hook"
+
+
+class FakeBitbucketHooks:
+    """In-memory Bitbucket hooks API with two-page listing."""
+
+    def __init__(self, hooks: List[Dict[str, Any]]) -> None:
+        self.hooks = hooks
+        self.counter = 0
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET":
+            if request.url.params.get("page") == "2":
+                return ok({"values": self.hooks[1:]})
+            data: Dict[str, Any] = {"values": self.hooks[:1]}
+            if len(self.hooks) > 1:
+                data["next"] = f"{API}/repositories/ws/repo/hooks?page=2"
+            return ok(data)
+        if request.method == "POST":
+            self.counter += 1
+            hook = {"uuid": f"{{new-{self.counter}}}", **json.loads(request.content)}
+            self.hooks.append(hook)
+            return ok(hook)
+        uuid = unquote(path.rsplit("/", 1)[-1])
+        if request.method == "DELETE":
+            self.hooks = [h for h in self.hooks if h["uuid"] != uuid]
+            return httpx.Response(204)
+        hook = next(h for h in self.hooks if h["uuid"] == uuid)
+        hook.update(json.loads(request.content))
+        return ok(hook)
+
+
+async def _register(tracker: BitbucketTracker, crud: MagicMock) -> bool:
+    project = MagicMock(id="p-1", slug="ws/repo", meta_data={})
+    return await tracker.register_webhook(
+        db=MagicMock(), project=project, webhook_url=HOOK_URL, secret="s"
+    )
+
+
+def _stored_crud(store: Dict[str, Any]) -> Callable[..., Any]:
+    def get_by_external_id(db: Any, external_id: str, tracker_id: str) -> Any:
+        return store.get(external_id)
+
+    return get_by_external_id
+
+
+async def test_repeated_registration_keeps_one_hook() -> None:
+    api = FakeBitbucketHooks([])
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(api, requests)
+    store: Dict[str, Any] = {}
+    with patch("preloop.sync.trackers.bitbucket.crud_webhook") as crud:
+        crud.get_by_external_id.side_effect = _stored_crud(store)
+        crud.create.side_effect = lambda db, obj_in: store.setdefault(
+            obj_in["external_id"], MagicMock(id="w", secret=obj_in["secret"])
+        )
+        for _ in range(3):
+            assert await _register(tracker, crud)
+    assert len(api.hooks) == 1
+    assert [r.method for r in requests].count("POST") == 1
+    assert "PUT" not in [r.method for r in requests]
+    assert "DELETE" not in [r.method for r in requests]
+
+
+async def test_outdated_events_are_reconciled() -> None:
+    api = FakeBitbucketHooks(
+        [{"uuid": "{old}", "url": HOOK_URL, "active": True, "events": ["repo:push"]}]
+    )
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(api, requests)
+    with patch("preloop.sync.trackers.bitbucket.crud_webhook") as crud:
+        crud.get_by_external_id.return_value = MagicMock(id="w", secret="s")
+        assert await _register(tracker, crud)
+    assert len(api.hooks) == 1
+    assert sorted(api.hooks[0]["events"]) == sorted(BITBUCKET_WEBHOOK_EVENTS)
+    assert [r.method for r in requests if r.method != "GET"] == ["PUT"]
+
+
+async def test_unrelated_urls_preserved_and_duplicates_collapsed() -> None:
+    events = list(BITBUCKET_WEBHOOK_EVENTS)
+    other = {"uuid": "{other}", "url": "https://ci.test/hook", "events": events}
+    api = FakeBitbucketHooks(
+        [
+            other,
+            {"uuid": "{a}", "url": HOOK_URL, "active": True, "events": events},
+            {"uuid": "{b}", "url": HOOK_URL, "active": True, "events": events},
+            {"uuid": "{c}", "url": HOOK_URL, "active": True, "events": events},
+        ]
+    )
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(api, requests)
+    stored_b = MagicMock(id="w-b", secret="s")
+    stored_c = MagicMock(id="w-c", secret="s")
+    store = {"{b}": stored_b, "{c}": stored_c}
+    with patch("preloop.sync.trackers.bitbucket.crud_webhook") as crud:
+        crud.get_by_external_id.side_effect = _stored_crud(store)
+        assert await _register(tracker, crud)
+        crud.create.assert_not_called()
+        removed = [call.kwargs["id"] for call in crud.remove.call_args_list]
+    assert {h["uuid"] for h in api.hooks} == {"{other}", "{b}"}
+    assert removed == ["w-c"]
+    assert "POST" not in [r.method for r in requests]
+    assert "PUT" not in [r.method for r in requests]
+    assert not any(r.url.path.endswith("other%7D") for r in requests)
+
+
+def _crud_with_store(crud: MagicMock, store: Dict[str, Any]) -> None:
+    """Wire a patched crud_webhook to an in-memory row store."""
+
+    def create(db: Any, obj_in: Dict[str, Any]) -> Any:
+        row = MagicMock(id=f"w-{obj_in['external_id']}", **obj_in)
+        store[obj_in["external_id"]] = row
+        return row
+
+    def update(db: Any, db_obj: Any, obj_in: Dict[str, Any]) -> Any:
+        for key, value in obj_in.items():
+            setattr(db_obj, key, value)
+        return db_obj
+
+    def remove(db: Any, id: str) -> int:
+        for key, row in list(store.items()):
+            if row.id == id:
+                del store[key]
+        return 1
+
+    crud.get_by_external_id.side_effect = _stored_crud(store)
+    crud.create.side_effect = create
+    crud.update.side_effect = update
+    crud.remove.side_effect = remove
+
+
+async def test_secret_rotation_updates_row_so_next_run_skips_put() -> None:
+    api = FakeBitbucketHooks([])
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(api, requests)
+    store: Dict[str, Any] = {}
+    project = MagicMock(id="p-1", slug="ws/repo", meta_data={})
+    with patch("preloop.sync.trackers.bitbucket.crud_webhook") as crud:
+        _crud_with_store(crud, store)
+        for secret in ("s1", "s2", "s2"):
+            assert await tracker.register_webhook(
+                db=MagicMock(), project=project, webhook_url=HOOK_URL, secret=secret
+            )
+    writes = [r.method for r in requests if r.method != "GET"]
+    assert writes == ["POST", "PUT"]
+    assert store["{new-1}"].secret == "s2"
+
+
+async def test_removed_duplicate_row_is_committed() -> None:
+    events = list(BITBUCKET_WEBHOOK_EVENTS)
+    api = FakeBitbucketHooks(
+        [
+            {"uuid": "{a}", "url": HOOK_URL, "active": True, "events": events},
+            {"uuid": "{b}", "url": HOOK_URL, "active": True, "events": events},
+        ]
+    )
+    tracker = make_tracker(api, [])
+    store: Dict[str, Any] = {
+        "{a}": MagicMock(id="w-a", url=HOOK_URL, secret="s", events=events),
+        "{b}": MagicMock(id="w-b", url=HOOK_URL, secret="s", events=events),
+    }
+    db = MagicMock()
+    project = MagicMock(id="p-1", slug="ws/repo", meta_data={})
+    with patch("preloop.sync.trackers.bitbucket.crud_webhook") as crud:
+        _crud_with_store(crud, store)
+        assert await tracker.register_webhook(
+            db=db, project=project, webhook_url=HOOK_URL, secret="s"
+        )
+    assert set(store) == {"{a}"}
+    assert [h["uuid"] for h in api.hooks] == ["{a}"]
+    db.commit.assert_called()
+
+
+async def test_overlapping_registration_converges_on_one_hook() -> None:
+    """A racer's hook appearing between list and POST is collapsed."""
+    events = list(BITBUCKET_WEBHOOK_EVENTS)
+
+    class RacingHooks(FakeBitbucketHooks):
+        def __call__(self, request: httpx.Request) -> httpx.Response:
+            if request.method == "POST":
+                # The other registration lands first, with a lower uuid.
+                self.hooks.append(
+                    {"uuid": "{0-racer}", "url": HOOK_URL, "events": events}
+                )
+            return super().__call__(request)
+
+    api = RacingHooks([])
+    requests: List[httpx.Request] = []
+    tracker = make_tracker(api, requests)
+    store: Dict[str, Any] = {}
+    project = MagicMock(id="p-1", slug="ws/repo", meta_data={})
+    with patch("preloop.sync.trackers.bitbucket.crud_webhook") as crud:
+        _crud_with_store(crud, store)
+        assert await tracker.register_webhook(
+            db=MagicMock(), project=project, webhook_url=HOOK_URL, secret="s"
+        )
+    assert [h["uuid"] for h in api.hooks] == ["{0-racer}"]
+    assert set(store) == {"{0-racer}"}
+    assert [r.method for r in requests].count("DELETE") == 1
+
+
+async def test_scanner_collapses_preexisting_duplicates(monkeypatch: Any) -> None:
+    """The scan path reconciles even when a same-URL hook already exists."""
+    from preloop.sync.scanner.core import TrackerClient, _process_organization
+
+    monkeypatch.setenv("PRELOOP_URL", "https://preloop.test")
+    events = list(BITBUCKET_WEBHOOK_EVENTS)
+    url = "https://preloop.test/api/v1/private/webhooks/bitbucket/org-1"
+    api = FakeBitbucketHooks(
+        [
+            {"uuid": "{a}", "url": url, "active": True, "events": events},
+            {"uuid": "{b}", "url": url, "active": True, "events": events},
+        ]
+    )
+    tracker = make_tracker(api, [])
+    project = MagicMock(id="p-1", slug="ws/repo", meta_data={}, identifier="ws/repo")
+    client = MagicMock(spec=TrackerClient)
+    client.tracker = MagicMock(id="tracker-1", meta_data={})
+    client.tracker_type = "bitbucket"
+    client.client = tracker
+    client.scan_projects = AsyncMock(return_value=[project])
+    client.scan_issues = AsyncMock(return_value=([], 0))
+    org = MagicMock(id="org-1", webhook_secret="s")
+    store: Dict[str, Any] = {}
+    with (
+        patch("preloop.sync.trackers.bitbucket.crud_webhook") as crud,
+        patch("preloop.sync.scanner.core.crud_organization"),
+    ):
+        _crud_with_store(crud, store)
+        stats = await _process_organization(
+            db=MagicMock(), client=client, org=org, since=None, force_update=False
+        )
+    assert stats["errors"] == 0
+    assert len([h for h in api.hooks if h["url"] == url]) == 1

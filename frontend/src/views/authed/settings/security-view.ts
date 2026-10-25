@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../../api-path';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { parseUTCDate } from '../../../utils/date';
 import { LitElement, html, css, unsafeCSS } from 'lit';
@@ -247,7 +248,7 @@ export class SecurityView extends LitElement {
       return;
     }
     try {
-      await fetchWithAuth('/api/v1/auth/sessions/revoke-all', {
+      await fetchWithAuth(REST_API_PREFIX + '/auth/sessions/revoke-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
@@ -276,13 +277,13 @@ export class SecurityView extends LitElement {
         <div class="main-column">
           <div class="card">
             <div class="card-header">
-              <h3>Change Password</h3>
+              <h3>Change password</h3>
             </div>
             <div class="card-body">
               <form @submit="${this.handleChangePassword}">
                 <sl-input
                   type="password"
-                  label="Current Password"
+                  label="Current password"
                   .value="${this.currentPassword}"
                   @sl-input="${(e: Event) =>
                     (this.currentPassword = (
@@ -293,7 +294,7 @@ export class SecurityView extends LitElement {
                 ></sl-input>
                 <sl-input
                   type="password"
-                  label="New Password"
+                  label="New password"
                   .value="${this.newPassword}"
                   @sl-input="${(e: Event) =>
                     (this.newPassword = (e.target as HTMLInputElement).value)}"
@@ -303,7 +304,7 @@ export class SecurityView extends LitElement {
                 ></sl-input>
                 <sl-input
                   type="password"
-                  label="Confirm New Password"
+                  label="Confirm new password"
                   .value="${this.confirmNewPassword}"
                   @sl-input="${(e: Event) =>
                     (this.confirmNewPassword = (
@@ -313,7 +314,7 @@ export class SecurityView extends LitElement {
                   password-toggle
                 ></sl-input>
                 <sl-button variant="primary" type="submit"
-                  >Change Password</sl-button
+                  >Change password</sl-button
                 >
                 ${
                   this.changePasswordMessage
@@ -368,7 +369,7 @@ export class SecurityView extends LitElement {
                         variant="primary"
                         ?loading="${this.passkeyBusy}"
                         @click="${this.handleAddPasskey}"
-                        >Add Passkey</sl-button
+                        >Add passkey</sl-button
                       >
                       ${
                         this.passkeyMessage

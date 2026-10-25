@@ -68,7 +68,7 @@ export class AppearanceView extends LitElement {
         <div class="main-column">
           <sl-card>
             <sl-radio-group
-              label="Theme Preference"
+              label="Theme preference"
               value=${this.selectedTheme}
               @sl-change=${this.handleThemeChange}
             >

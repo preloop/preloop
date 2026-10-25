@@ -219,6 +219,14 @@ export class TokenFigures extends LitElement {
   @property({ type: Boolean, attribute: 'total-only' })
   totalOnly = false;
 
+  /**
+   * Let the figures wrap onto a second line, for a stat card narrower than
+   * the breakdown. Without it the figures stay on one line, which is what a
+   * table cell wants.
+   */
+  @property({ type: Boolean, reflect: true })
+  wrap = false;
+
   /** What to render when there is no usage at all. */
   @property({ type: String })
   empty = '-';
@@ -234,6 +242,18 @@ export class TokenFigures extends LitElement {
       align-items: baseline;
       gap: 6px;
       white-space: nowrap;
+    }
+
+    :host([wrap]) {
+      display: block;
+      max-width: 100%;
+    }
+
+    :host([wrap]) .figures {
+      column-gap: 6px;
+      flex-wrap: wrap;
+      max-width: 100%;
+      row-gap: 0;
     }
 
     .direction {

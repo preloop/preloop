@@ -38,9 +38,16 @@ day the image was built; `db_updated_at` tells you how old it is.
 
 The `Publish Scanner Image` workflow pushes
 `ghcr.io/preloop/preloop-codex-scanner` on Preloop version tags and writes
-the published digest to the run summary. Its daily and manual runs build and
-smoke the image without pushing. To get a fresher database between
-releases, build the image yourself with the commands in
+the published digest to the run summary. Its daily runs and manual runs with
+the default inputs build and smoke the image without pushing.
+
+To recover a failed scanner publication, run the workflow from a corrected
+recipe branch with `publish=true` and `release_tag` set to an existing version
+tag, such as `v0.17.0`. This publishes only that scanner image tag, never moves
+`latest`, and leaves the git tag unchanged. The summary records the recipe
+commit separately from the image tag and published digest.
+
+To get a fresher database between releases, build the image yourself with the commands in
 `environments/scanner/README.md` and push it to your own registry.
 
 ## Register it as an environment profile

@@ -139,6 +139,11 @@ export interface ListColumn<TRow extends RowData> {
   /** Extra class on the `<td>`. */
   cellClass?: string;
   /**
+   * `data-label` on the `<td>`: the word a stacked phone row prints before
+   * the value once the header row is hidden.
+   */
+  cellLabel?: string;
+  /**
    * `title` for the whole cell, for the pattern the console uses on
    * timestamps: the relative time is read, the absolute one is hovered.
    */

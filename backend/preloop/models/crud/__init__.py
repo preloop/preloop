@@ -48,12 +48,14 @@ from ..models import (
 from . import restricted_runtime as crud_restricted_runtime
 from . import notification_preferences
 from . import runtime_session_artifact as crud_runtime_session_artifact
+from . import runtime_session_turn_state  # noqa: F401
 from . import tool_approval_condition
 from .access_rule import crud_access_rule
 from .account import CRUDAccount
 from .account_halt import CRUDAccountHalt, crud_account_halt
 from .expected_device import crud_expected_device
 from .fleet import crud_fleet_finding, crud_fleet_alert_settings
+from .live_activity import crud_live_activity
 from .account_milestone import CRUDAccountMilestone, crud_account_milestone
 from .agent_control_command import CRUDAgentControlCommand
 from .ai_model import CRUDAIModel
@@ -134,6 +136,7 @@ from .issue_compliance_result import (
     CRUDIssueComplianceResult,
     issue_compliance_result,
 )
+from .assessment import crud_assessment
 from .issue_cost import crud_issue_cost
 from .issue_duplicate import CRUDIssueDuplicate, crud_issue_duplicate
 from .issue_lifecycle import crud_issue_lifecycle
@@ -314,6 +317,7 @@ __all__ = [
     "crud_mcp_inventory",
     "crud_fleet_finding",
     "crud_fleet_alert_settings",
+    "crud_live_activity",
     "identity_directory",
     "CRUDPerson",
     "IdentityConflictError",
@@ -332,6 +336,7 @@ __all__ = [
     "CRUDCliSession",
     "crud_cli_session",
     "crud_issue_lifecycle",
+    "crud_assessment",
     "crud_security_maintenance",
     "CRUDBase",
     "CRUDAccount",

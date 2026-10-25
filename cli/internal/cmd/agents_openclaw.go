@@ -308,6 +308,9 @@ type managedEnrollmentOptions struct {
 	// installs by default (`preloop agents onboard Cursor --no-usage-hooks`).
 	// Other agents are unaffected.
 	NoUsageHooks bool
+	// NoSidecar skips installing and starting the Codex Agent Control
+	// sidecar service during onboarding (`--no-sidecar`).
+	NoSidecar bool
 	// StoreTranscript opts the Cursor usage hooks into shipping transcript
 	// text as session activities (`--store-transcript`). Off by default:
 	// only counts, the title and a short summary leave the machine.
@@ -1062,6 +1065,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 		}
 	}
 	pluginInstallResult := installAgentControlRuntimePlugin(agent, output)
+	maybeEnableCodexSidecarOnOnboard(agent, opts, pluginInstallResult, output)
 	gatewayRestartResult := restartHermesGatewayAfterReconfig(agent, output)
 	if err := saveLocalEnrollmentState(backupState); err != nil {
 		return err
@@ -1114,7 +1118,7 @@ func executeManagedEnrollment(agent AgentConfig, opts managedEnrollmentOptions) 
 			ValidationResult: validationResult,
 			RestoreAvailable: true,
 			LastAppliedAt:    &appliedAt,
-		},
+		}.withDeviceLink(client, agent),
 	)
 	if err != nil {
 		return err
@@ -1808,7 +1812,7 @@ func waitForManagedValidationUsage(
 			values.Set("model_alias", modelAlias)
 		}
 		var response gatewayUsageSearchResponse
-		if err := client.Get("/api/v1/account/gateway-usage/search?"+values.Encode(), &response); err == nil {
+		if err := client.Get(api.RESTPrefix+"/account/gateway-usage/search?"+values.Encode(), &response); err == nil {
 			for _, item := range response.Items {
 				if item.APIUsageID != "" {
 					return &item, nil
@@ -1969,6 +1973,10 @@ func readAgentConfigForGatewayResolution(agent AgentConfig) (map[string]interfac
 }
 
 func shouldPreferCurrentConfigForGatewayResolution(agent AgentConfig, current map[string]interface{}) bool {
+	if isHermesAgent(agent) {
+		model, _, _ := extractHermesModelSelection(current)
+		return model != ""
+	}
 	if !isCodexCLIAgent(agent) {
 		return false
 	}
@@ -2694,7 +2702,7 @@ func serverHasReusableGatewayCredential(
 		return false
 	}
 	var existing []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &existing); err != nil {
 		return false
 	}
 	target := findReusableManagedGatewayAIModel(existing, upstream)
@@ -2787,7 +2795,7 @@ func repairCodexOAuthSecretInPlace(
 		"credential_payload": upstream.CredentialPayload,
 	}
 	var updated aiModelResponse
-	if err := client.Put("/api/v1/ai-models/"+owner.ID, update, &updated); err != nil {
+	if err := client.Put(api.RESTPrefix+"/ai-models/"+owner.ID, update, &updated); err != nil {
 		return fmt.Errorf(
 			"failed to refresh OAuth credential on AI model %q: %w",
 			owner.Name,
@@ -4421,7 +4429,7 @@ func applyManagedAgentControlConfig(
 		}
 		plan.Notes = append(
 			plan.Notes,
-			"Codex CLI Agent Control config written to ~/.codex/preloop-control.json. Run `preloop codex sidecar enable` to keep the sidecar up.",
+			"Codex CLI Agent Control config written to ~/.codex/preloop-control.json. Onboarding installs the sidecar service unless --no-sidecar is set; otherwise run `preloop codex sidecar enable`.",
 		)
 	}
 	if isOpenCodeAgent(plan.Agent) {
@@ -6067,7 +6075,7 @@ func syncSingleOpenClawAIModel(
 	}
 
 	var existing []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &existing); err != nil {
 		return nil, nil, fmt.Errorf("failed to list AI models: %w", err)
 	}
 
@@ -6110,7 +6118,7 @@ func syncSingleOpenClawAIModel(
 		}
 		if len(update) > 0 {
 			var updated aiModelResponse
-			if err := client.Put("/api/v1/ai-models/"+target.ID, update, &updated); err != nil {
+			if err := client.Put(api.RESTPrefix+"/ai-models/"+target.ID, update, &updated); err != nil {
 				return nil, nil, fmt.Errorf("failed to update AI model %q: %w", target.Name, err)
 			}
 			target = &updated
@@ -6152,7 +6160,7 @@ func syncSingleOpenClawAIModel(
 	}
 
 	var created aiModelResponse
-	if err := client.Post("/api/v1/ai-models", create, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/ai-models", create, &created); err != nil {
 		return nil, nil, fmt.Errorf("failed to create AI model for %s: %w", managedModelAlias, err)
 	}
 	notes = append(
@@ -6438,7 +6446,7 @@ func syncManagedGatewayAIModel(
 	}
 
 	var existing []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &existing); err != nil {
 		return nil, nil, fmt.Errorf("failed to list AI models: %w", err)
 	}
 
@@ -6544,7 +6552,7 @@ func syncManagedGatewayAIModel(
 		}
 		if len(update) > 0 {
 			var updated aiModelResponse
-			if err := client.Put("/api/v1/ai-models/"+target.ID, update, &updated); err != nil {
+			if err := client.Put(api.RESTPrefix+"/ai-models/"+target.ID, update, &updated); err != nil {
 				return nil, nil, fmt.Errorf(
 					"failed to update AI model %q: %w",
 					target.Name,
@@ -6633,7 +6641,7 @@ func syncManagedGatewayAIModel(
 	}
 
 	var created aiModelResponse
-	if err := client.Post("/api/v1/ai-models", create, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/ai-models", create, &created); err != nil {
 		return nil, nil, fmt.Errorf(
 			"failed to create AI model for %s: %w",
 			upstream.ManagedModelAlias,
@@ -6667,7 +6675,7 @@ func syncManagedAgentModelBindings(
 	payload := managedAgentModelBindingSyncRequest{Bindings: bindings}
 	var response []managedAgentModelBindingSummary
 	if err := client.Put(
-		"/api/v1/agents/"+managedAgentID+"/model-bindings",
+		api.RESTPrefix+"/agents/"+managedAgentID+"/model-bindings",
 		payload,
 		&response,
 	); err != nil {
@@ -6913,7 +6921,11 @@ func findReusableManagedGatewayAIModel(
 	fingerprintMatches := make([]*aiModelResponse, 0)
 	aliasMatches := make([]*aiModelResponse, 0)
 	for i := range models {
-		if models[i].ProviderName != upstream.ProviderName {
+		if managedGatewayAliasConflictsWithIdentity(models[i]) {
+			continue
+		}
+		if models[i].ProviderName != upstream.ProviderName ||
+			!gatewaySelectionMatchesProvider(aiModelSourceProviderID(models[i]), upstream) {
 			continue
 		}
 		if models[i].ModelIdentifier != upstream.ModelIdentifier {

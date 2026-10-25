@@ -91,6 +91,13 @@ class ManagedAgent(Base):
         UUID(as_uuid=True), nullable=True
     )
     control_last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(nullable=True)
+    # Native session ids the connected plugin can drive (SDK-owned sessions
+    # and a launcher session in local mode), as last reported in a presence
+    # frame. NULL means the plugin never reported the list (older plugins).
+    # Stored here, not only in process memory, so every api replica agrees.
+    control_reachable_session_ids: Mapped[Optional[list[str]]] = mapped_column(
+        JSONB, nullable=True
+    )
 
     account: Mapped["Account"] = relationship(
         "Account", back_populates="managed_agents"

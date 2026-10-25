@@ -1,4 +1,5 @@
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
+import sinon from 'sinon';
 import { mockApi, type MockApi } from '../../test-helpers/capability-api';
 import { invalidateApiCaches } from '../../api';
 import { capabilityRoutesFor } from '../../lazy-routes';
@@ -153,6 +154,41 @@ describe('Device fleet', () => {
     await view.updateComplete;
     return view;
   }
+  it('defers observer layout writes and cancels them on disconnect', async () => {
+    setup();
+    let notify!: ResizeObserverCallback;
+    const observer = { observe() {}, unobserve() {}, disconnect() {} };
+    const stub = sinon
+      .stub(window, 'ResizeObserver')
+      .callsFake(function (callback) {
+        notify = callback;
+        return observer;
+      });
+    try {
+      const view = await mount();
+      const content = document.createElement('div');
+      content.className = 'map-content';
+      view.shadowRoot.append(content);
+      notify([], observer);
+      notify([], observer);
+      expect(content.style.getPropertyValue('--fleet-content-height')).to.equal(
+        ''
+      );
+      await new Promise(requestAnimationFrame);
+      expect(content.style.getPropertyValue('--fleet-content-height')).to.match(
+        /^\d+(\.\d+)?px$/
+      );
+      content.style.removeProperty('--fleet-content-height');
+      notify([], observer);
+      view.remove();
+      await new Promise(requestAnimationFrame);
+      expect(content.style.getPropertyValue('--fleet-content-height')).to.equal(
+        ''
+      );
+    } finally {
+      stub.restore();
+    }
+  });
   it('registers only with the fleet capability', () => {
     expect(
       capabilityRoutesFor(new Set()).some(
@@ -481,5 +517,84 @@ describe('Device fleet', () => {
     expect(text).to.include('Could not load the fleet map');
     expect(text).to.include('Back to the table');
     localStorage.removeItem('preloop.device_fleet.view_mode');
+  });
+  it('asks for the stored activity window and refetches when it changes', async () => {
+    localStorage.setItem('preloop.device_fleet.view_mode', 'canvas');
+    localStorage.removeItem('preloop:fleet-map:window');
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet'] },
+      routes: [
+        {
+          path: '/api/v1/fleet/map',
+          body: { ...sampleFleetMap(), active_within_minutes: 43200 },
+        },
+      ],
+    });
+    const view = await mount();
+    await waitUntil(() => view.shadowRoot.querySelector('fleet-map')?.graph);
+    expect(api.callsTo('/api/v1/fleet/map')[0].search).to.equal(
+      '?active_within_minutes=43200'
+    );
+    const map = view.shadowRoot.querySelector('fleet-map');
+    await map.updateComplete;
+    expect(
+      map.shadowRoot.querySelector('[data-window="30d"]').checked
+    ).to.equal(true);
+    map.shadowRoot.querySelector('[data-window="24h"]').click();
+    await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 2);
+    expect(api.callsTo('/api/v1/fleet/map')[1].search).to.equal(
+      '?active_within_minutes=1440'
+    );
+    expect(localStorage.getItem('preloop:fleet-map:window')).to.equal('24h');
+    map.shadowRoot.querySelector('[data-window="any"]').click();
+    await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 3);
+    expect(api.callsTo('/api/v1/fleet/map')[2].search).to.equal('');
+    localStorage.removeItem('preloop:fleet-map:window');
+    localStorage.removeItem('preloop.device_fleet.view_mode');
+  });
+
+  it('passes the users chosen on the map to the server as users=', async () => {
+    localStorage.setItem('preloop.device_fleet.view_mode', 'canvas');
+    api = mockApi({
+      capabilities: ['fleet_coverage'],
+      profile: { permissions: ['view_device_fleet'] },
+      routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
+    });
+    const view = await mount();
+    await waitUntil(() => view.shadowRoot.querySelector('fleet-map')?.graph);
+    const map = view.shadowRoot.querySelector('fleet-map');
+    await map.updateComplete;
+    map.shadowRoot.querySelector('[data-user="user:maya"]').click();
+    await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 2);
+    expect(api.callsTo('/api/v1/fleet/map')[1].search).to.contain('users=maya');
+    await view.updateComplete;
+    expect(map.users).to.deep.equal(['user:maya']);
+    localStorage.removeItem('preloop.device_fleet.view_mode');
+  });
+
+  it('keeps the Table/Map switch clear of the subtitle at 390 px', async () => {
+    const { setViewport } = await import('@web/test-runner-commands');
+    await setViewport({ width: 390, height: 844 });
+    try {
+      localStorage.setItem('preloop.device_fleet.view_mode', 'canvas');
+      api = mockApi({
+        capabilities: ['fleet_coverage'],
+        profile: { permissions: ['view_device_fleet'] },
+        routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
+      });
+      const view = await mount();
+      await view.updateComplete;
+      const header = view.shadowRoot.querySelector('view-header');
+      await header.updateComplete;
+      const sw = view.shadowRoot.querySelector('.view-switch');
+      const subtitle = view.shadowRoot.querySelector('[slot="description"]');
+      expect(sw.getBoundingClientRect().bottom).to.be.at.most(
+        subtitle.getBoundingClientRect().top
+      );
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+      localStorage.removeItem('preloop.device_fleet.view_mode');
+    }
   });
 });

@@ -14,7 +14,7 @@ operator still has to act.
 ## What the hook does
 
 The Job runs `python -m preloop.models.migrate`, not bare
-`alembic upgrade head`. Three things differ.
+`alembic upgrade head`. It separates the following budgets.
 
 **One transaction per revision.** Alembic can apply a whole batch of pending
 revisions inside a single transaction. It then holds every lock it has taken
@@ -31,25 +31,38 @@ configured: a pending ACCESS EXCLUSIVE request also blocks every query that
 queues behind it, so a migration that waits a minute for a lock stalls reads of
 that table for a minute.
 
+**A separate budget for concurrent indexes.** Explicit
+`concurrent_index_ddl` blocks allow 60 seconds to acquire a lock and 120 seconds
+for the entire statement. Concurrent index operations wait for older writers
+and snapshots while ordinary reads and writes can continue. Canceling every
+five seconds can leave an invalid index and repeatedly restart its repair.
+The longer budget applies only to these explicit blocks, including invalid-index
+cleanup; the previous lock and statement settings are restored on success or
+failure. Blocking schema changes keep the five-second lock timeout. New
+migrations that build or drop concurrent indexes must use this context in
+both upgrade and downgrade; keep ordinary table DDL outside that scope.
+
 **A bounded retry loop** (`migrationJob.maxAttempts`, default 20, with
 `migrationJob.retryMinSeconds` to `migrationJob.retryMaxSeconds` of jittered
 backoff). Only lock contention is retried: deadlocks (`40P01`), lock timeouts
 (`55P03`) and serialization failures (`40001`). A revision with a bug fails on
 the first attempt with its own error, because retrying it twenty times would
-only delay the report. So does a revision killed by the cluster
-`statement_timeout` (`57014`): that one is too slow rather than unlucky, it
-would fail identically on every attempt, and each attempt would hold the
-exclusive lock for the full timeout. Drain the API for it instead.
+only delay the report. A statement timeout (`57014`) also ends the container
+attempt. For blocking DDL, investigate whether a drain is needed. For concurrent
+indexes, inspect older transactions and index progress before tuning only the
+concurrent budgets; the deployment deadline is unchanged.
 
-Together these turn "the release fails after six long attempts" into "a
-revision that loses a lock race gives up in five seconds and wins on the next
-pass".
+The shorter blocking-DDL budget limits disruption to serving traffic. The
+separate concurrent-index budget allows safe waiting without repeatedly
+canceling a build that is making progress.
 
 ## Defaults
 
 | Value | Default | What it controls |
 | --- | --- | --- |
 | `migrationJob.lockTimeout` | `5s` | How long one revision waits for a lock before giving up. |
+| `migrationJob.concurrentLockTimeoutSeconds` | `60` | Lock wait only inside concurrent-index blocks; positive integer, maximum 300. |
+| `migrationJob.concurrentStatementTimeoutSeconds` | `120` | Whole concurrent statement budget; positive integer, maximum 240. |
 | `migrationJob.maxAttempts` | `20` | Attempts at `upgrade head` before the Job fails. |
 | `migrationJob.retryMinSeconds` | `3` | Lower bound of the jittered backoff. |
 | `migrationJob.retryMaxSeconds` | `15` | Upper bound of the jittered backoff. |
@@ -59,6 +72,24 @@ The same settings are read from the environment
 (`PRELOOP_MIGRATION_LOCK_TIMEOUT`, `PRELOOP_MIGRATION_MAX_ATTEMPTS`,
 `PRELOOP_MIGRATION_RETRY_MIN_SECONDS`, `PRELOOP_MIGRATION_RETRY_MAX_SECONDS`),
 so the same behaviour applies when migrations are run by hand in a pod.
+Concurrent index overrides are
+`PRELOOP_MIGRATION_CONCURRENT_LOCK_TIMEOUT_SECONDS` and
+`PRELOOP_MIGRATION_CONCURRENT_STATEMENT_TIMEOUT_SECONDS`. Zero, negative,
+non-integer or out-of-range values fall back to the finite defaults. The lock
+budget must be shorter than the statement budget, which includes lock waits;
+conflicting combinations fall back to both defaults so lock contention times
+out first with a retryable SQLSTATE. The
+deployment deadline remains unchanged. Per-statement limits do not guarantee
+the total duration of multiple pending revisions.
+
+Concurrent blocks log their start, elapsed duration and SQLSTATE on failure
+through Alembic logging. An unsuccessful operation points to
+`pg_stat_activity`, `pg_blocking_pids(pid)` and
+`pg_stat_progress_create_index`: inspect transaction age, lock relationships
+and build phase before retrying. Check `pg_index.indisvalid` and `indisready`
+for interrupted builds. A current snapshot cannot identify a historical
+blocker once its transaction has ended. Do not increase deployment timeouts
+to hide a repeatedly canceled build.
 
 ## Application sessions must not idle in a transaction
 
@@ -124,11 +155,11 @@ The defaults are meant to make draining unnecessary. Drain anyway when:
   `ALTER COLUMN ... TYPE` that rewrites rows is not). Such a revision holds its
   ACCESS EXCLUSIVE lock for the length of the rewrite regardless of any
   timeout, and every query on that table waits;
-- **the retry budget is exhausted** and the Job has failed. Draining is the
-  answer, not a longer `lockTimeout`: a longer wait makes the stall worse, not
-  shorter;
-- **a revision was cancelled by `statement_timeout`** (SQLSTATE `57014` in the
-  Job log). It is not retried, on purpose;
+- **blocking DDL has exhausted its retry budget**. A longer generic
+  `lockTimeout` makes queued traffic wait longer. For concurrent indexes,
+  inspect old writers/snapshots and tune only their separate budgets instead;
+- **blocking DDL was canceled by `statement_timeout`** (SQLSTATE `57014` in
+  the Job log). It is not retried within the container, on purpose;
 - **the release notes say so** for a specific revision.
 
 To drain, scale the serving deployments to zero, run the upgrade, then scale
@@ -149,8 +180,10 @@ kubectl logs job/preloop-migration-job
 ```
 
 - `retrying in Ns` lines with a SQLSTATE mean lock contention. The upgrade is
-  working as designed; if it never converges, something is idling in a
-  transaction (see above) or a revision needs a drain.
+  retrying safely. If it never converges, inspect old transactions and the
+  blocking operation. Concurrent indexes can also be waiting on a legitimate
+  older writer or snapshot; do not infer an idle-session bug from a timeout
+  alone.
 - Any other traceback is a revision that needs fixing. The database is left at
   the last revision that committed, which is a consistent state: the same
   upgrade can be re-run after the fix.

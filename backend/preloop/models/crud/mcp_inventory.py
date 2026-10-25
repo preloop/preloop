@@ -3,10 +3,11 @@
 import logging
 from datetime import datetime
 from uuid import UUID, uuid4
+from typing import Any
 
-from sqlalchemy import and_, case, func, select
+from sqlalchemy import String, and_, case, cast, func, or_, select, true
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from preloop.models import models
 
@@ -89,6 +90,143 @@ class CRUDMCPInventory:
             .execution_options(populate_existing=True)
         )
         return [(row[0], row[1], row[2]) for row in rows]
+
+    def digest_context(
+        self, db: Session, *, account_id: UUID, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        """Read names, safe attribution and revision history in one SELECT.
+
+        All identity joins prove membership in the finding's account. No
+        registry URL or credential leaves this projection.
+        """
+        finding, review, server = (
+            models.MCPInventoryFinding,
+            models.MCPInventoryReview,
+            models.MCPServer,
+        )
+        agent, user = models.ManagedAgent, models.User
+        previous = aliased(finding)
+        prior = (
+            select(previous.id)
+            .where(
+                previous.account_id == finding.account_id,
+                previous.server_id == finding.server_id,
+                previous.registry_revision != finding.registry_revision,
+                previous.first_seen_at < finding.first_seen_at,
+            )
+            .exists()
+        )
+        audit = models.AuditLog
+        change_event = (
+            select(
+                case(
+                    (audit.details["action"].astext == "deleted", audit.timestamp),
+                    else_=None,
+                ).label("removed_at"),
+                audit.details["action"].astext.label("change_action"),
+                audit.user_id.label("actor_id"),
+                func.coalesce(
+                    audit.details["new_value"]["name"].astext,
+                    audit.details["old_value"]["name"].astext,
+                ).label("server_name"),
+            )
+            .where(
+                audit.account_id == finding.account_id,
+                audit.action == "configuration_change",
+                audit.resource_type == "configuration",
+                audit.resource_id == "mcp_server",
+                audit.status == "success",
+                audit.details["action"].astext.in_(["created", "updated", "deleted"]),
+                or_(
+                    audit.details["old_value"]["id"].astext
+                    == cast(finding.server_id, String),
+                    audit.details["new_value"]["id"].astext
+                    == cast(finding.server_id, String),
+                ),
+                audit.timestamp >= start,
+                audit.timestamp < end,
+            )
+            .order_by(audit.timestamp.desc(), audit.id)
+            .limit(1)
+            .correlate(finding)
+            .lateral("change_event")
+        )
+        query = (
+            select(
+                finding,
+                review.approval_state.label("approval"),
+                server.updated_at.label("updated_at"),
+                func.coalesce(server.name, change_event.c.server_name).label(
+                    "server_name"
+                ),
+                change_event.c.removed_at.label("removed_at"),
+                change_event.c.change_action.label("change_action"),
+                agent.display_name.label("agent_name"),
+                user.id.label("user_id"),
+                func.coalesce(user.full_name, user.username).label("user_name"),
+                prior.label("prior_revision"),
+            )
+            .select_from(finding)
+            .outerjoin(change_event, true())
+            .outerjoin(
+                review,
+                and_(
+                    review.account_id == finding.account_id,
+                    review.server_id == finding.server_id,
+                    review.registry_revision == finding.registry_revision,
+                ),
+            )
+            .outerjoin(
+                server,
+                and_(
+                    server.account_id == finding.account_id,
+                    server.id == finding.server_id,
+                ),
+            )
+            .outerjoin(
+                agent,
+                and_(
+                    agent.account_id == finding.account_id,
+                    agent.id == finding.agent_id,
+                ),
+            )
+            .outerjoin(
+                user,
+                and_(
+                    user.account_id == finding.account_id,
+                    or_(
+                        and_(
+                            change_event.c.actor_id.is_not(None),
+                            or_(
+                                finding.evidence_class == "configured_route",
+                                server.id.is_(None),
+                            ),
+                            user.id == change_event.c.actor_id,
+                        ),
+                        and_(
+                            or_(
+                                change_event.c.actor_id.is_(None),
+                                and_(
+                                    finding.evidence_class == "observed_call",
+                                    server.id.is_not(None),
+                                ),
+                            ),
+                            user.person_id == finding.person_id,
+                        ),
+                    ),
+                ),
+            )
+            .where(
+                finding.account_id == account_id,
+                or_(
+                    and_(finding.first_seen_at >= start, finding.first_seen_at < end),
+                    and_(server.id.is_(None), change_event.c.removed_at.is_not(None)),
+                ),
+            )
+            .order_by(finding.first_seen_at.desc(), finding.id)
+            .limit(500)
+        )
+        return [dict(row) for row in db.execute(query).mappings()]
 
     def lock(self, db: Session, *, account_id: UUID) -> None:
         """Serialize observations and decisions for one account."""

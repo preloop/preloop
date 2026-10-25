@@ -169,6 +169,9 @@ describe('agent-notes-tab', () => {
           .getCalls()
           .some((call) => String(call.args[0]).includes('/session-targets'))
       );
+      // Wait for the session read to finish, not just to start: session names
+      // on notes come from it, and one macrotask is not enough on a busy runner.
+      await waitUntil(() => (el as any).targetsState !== 'loading');
       await new Promise((resolve) => setTimeout(resolve, 0));
       await el.updateComplete;
     }

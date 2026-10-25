@@ -420,6 +420,65 @@ def account_meta_data(db: Session, *, account_id: Any) -> Optional[Dict[str, Any
     return meta_data if isinstance(meta_data, dict) else None
 
 
+def record_denied_endpoint_search(
+    *, permission: str, kwargs: Dict[str, Any], surface: str = "search_endpoint"
+) -> None:
+    """Record a permission refusal before the search handler can run.
+
+    Use the authenticated user's account, never a request-supplied account.
+    The permission integration calls this on its existing database worker.
+    Query text follows the same opt-in policy as completed searches.
+    """
+    try:
+        payload = kwargs.get("payload")
+        user = kwargs.get("current_user")
+        db = kwargs.get("db")
+        account_id = getattr(user, "account_id", None)
+        if (
+            not isinstance(payload, SessionSearchRequest)
+            or db is None
+            or account_id is None
+        ):
+            return
+        http_request = kwargs.get("request")
+        client = getattr(http_request, "client", None)
+        headers = getattr(http_request, "headers", {})
+        from preloop.models.crud.ci_principal import CiAuthorizationContext
+
+        if isinstance(user, CiAuthorizationContext):
+            actor = SearchActor(
+                actor_type="restricted_ci",
+                source=SOURCE_API,
+                api_key_id=str(user.key_id),
+                runtime_principal_id=str(user.principal_id),
+                ip_address=getattr(client, "host", None),
+                user_agent=headers.get("user-agent"),
+            )
+        else:
+            actor = user_actor(
+                user,
+                ip_address=getattr(client, "host", None),
+                user_agent=headers.get("user-agent"),
+            )
+        record_search(
+            db,
+            account_id=account_id,
+            actor=actor,
+            query=payload.query,
+            mode=payload.mode,
+            status=STATUS_DENIED,
+            filters=applied_filters(payload),
+            include_query_text=query_text_audit_enabled(
+                account_meta_data(db, account_id=account_id)
+            ),
+            limit=payload.limit,
+            offset=payload.offset,
+            reason=f"permission:{permission}",
+        )
+    except Exception:  # noqa: BLE001 - refusal must survive a failed audit write
+        logger.warning("Could not audit a refused session search", exc_info=True)
+
+
 def audited_search(
     db: Session,
     *,

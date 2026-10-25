@@ -238,6 +238,14 @@ SYSTEM_PERMISSIONS: Dict[str, List[Dict[str, str]]] = {
             "name": "view_runtime_sessions",
             "description": "View runtime sessions and activity timelines",
         },
+        {
+            "name": "share_session_searches",
+            "description": "Share saved session searches with the account",
+        },
+        {
+            "name": "run_session_optimizations",
+            "description": "Run and store runtime session optimization analysis",
+        },
         # Deliberately separate from view_runtime_sessions, and deliberately
         # absent from _READ_CORE. Opening a session someone pointed you at is
         # not the same act as asking every transcript in the account a
@@ -330,6 +338,8 @@ _CONFIGURE_CONTROL_PLANE = [
     "control_managed_agent",
     "report_discovery",
     "manage_runtime_sessions",
+    "share_session_searches",
+    "run_session_optimizations",
 ]
 
 _ALL_PERMISSION_NAMES = [
@@ -407,6 +417,8 @@ SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
             "view_agents",
             "control_managed_agent",
             "view_runtime_sessions",
+            "share_session_searches",
+            "run_session_optimizations",
         ],
     },
     "tracker_manager": {

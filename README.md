@@ -8,21 +8,30 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15223/badge)](https://www.bestpractices.dev/projects/15223)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/preloop/preloop/badge)](https://scorecard.dev/viewer/?uri=github.com/preloop/preloop)
 
-**The open-source AI agent control plane.** See them, govern them, cut their cost.
+**The open-source AI agent control plane and software factory.**
 
-Preloop is one self-hostable service that sits between your AI agents and everything they reach, so every tool call and every model call is governed, attributed, and visible. Four pillars:
+Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see gateway spend by model, agent, session, API key and flow, and cap it with budgets. Imported Copilot usage is displayed separately as vendor-reported data.
 
-- **MCP firewall.** Allow, deny, or require approval on any tool call. Optional [delegated grant introspection](docs/guide/grant-introspection.md) checks upstream bearer grants and required scopes before policy matching.
-- **AI model gateway.** OpenAI-, Anthropic- and Gemini-compatible ingress, with budgets, allowed-model lists, token accounting, and attribution.
-- **Policy-as-code with human approvals.** YAML plus CEL. Approve from mobile, watch, Slack, Mattermost, email, or the CLI.
-- **Users and teams.** Invite colleagues, assign admin/member roles, and organize teams in Preloop (OSS). Each user can connect devices, runners and agents.
-- **Runtime session observability.** One timeline per session: tool calls, model calls, policy, approvals, spend, outcomes.
+It has two halves, and the same policies, budgets and session timeline apply to both:
 
-Onboard existing agents with one command. Talk to long-running ones from the console, phone, or watch. Deploy event-driven automations when GitHub, GitLab, Bitbucket Cloud, Jira, or a webhook fires. Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
+- **Control plane.** An MCP firewall that allows, denies or holds any tool call for human approval; an AI model gateway with budgets and attribution; policy-as-code in YAML and CEL; one runtime timeline per session.
+- **Software factory.** Flows run agents, in hosted containers or on your own runners, when GitHub, GitLab, Bitbucket Cloud, Jira, a webhook or a CI job fires. Presets review pull requests, implement issues, triage tickets, scan for vulnerabilities and collect evidence packs. A human can steer a running agent from the console, phone or watch, and the work lands as pull requests you can review.
 
-Flow presets can review pull requests, implement issues, scan for vulnerabilities, collect machine evidence for CRA- and EU AI Act-style reviews (SBOM verify, exploit check); Runtime Observability keeps the session timeline next to it. That is not a conformity assessment, certification, or legal advice. Presets: [security audit presets](docs/guide/flows/security-audit-presets.md).
+Both halves are multi-user: invite colleagues, assign admin/member roles, and organize teams in Preloop (OSS). Each user can connect devices, runners and agents.
 
-Your first five minutes, start to finish:
+**Who it is for:**
+
+- Platform and security teams that need agents governed before they reach production systems.
+- Engineering teams running coding agents that want to see the cost and keep an audit trail.
+- Teams that want tickets and events turned into bounded agent work they can review.
+
+MCP clients connect to `/mcp`; existing `/mcp/v1` configurations remain compatible.
+See the [tested MCP protocol matrix](docs/architecture/mcp-protocol-compatibility.md)
+for modern discovery, legacy initialization, and SDK migration details.
+
+Works with OpenClaw, Claude Code, Codex CLI, Cursor, Gemini CLI, Hermes, OpenCode, Devin, Copilot CLI, and any MCP-compatible agent.
+
+## Your first five minutes
 
 ```bash
 # 1. Install the CLI (macOS / Linux / WSL)
@@ -39,9 +48,7 @@ preloop login --url http://localhost:3000    # your self-hosted instance
 preloop agents discover
 ```
 
-`preloop agents discover` finds local agent configs and reports adapter support for model routing, native action gates, and managed MCP separately. `preloop agents onboard` configures supported integrations: only calls routed through the managed MCP entry reach the **MCP Firewall**, while supported model routes use the **Gateway**. Support and configuration do not verify application behavior; live validation sends a direct gateway route/accounting probe without launching the application. For Talk (operator commands), the CLI can install the runtime plugin (`preloop agents install-plugin`, or `preloop claude` for Claude Code). The plugin is what keeps the control channel connected.
-
-[Pi and DeepSeek Harness](runtime-plugins/harness-preloop/README.md) support CLI onboarding, gateway routing, native tool approvals, active-session remote control, and ephemeral flows. Onboard with `preloop agents onboard Pi --approvals` or `preloop agents onboard "DeepSeek Harness" --approvals`.
+`preloop agents discover` finds local agent configs and reports what each adapter supports. `preloop agents onboard` configures them: calls routed through the managed MCP entry reach the **MCP Firewall**, supported model routes use the **Gateway**. To talk to a running agent, install the runtime plugin with `preloop agents install-plugin` (or `preloop claude` for Claude Code). Full walkthrough: [onboard local agents](https://docs.preloop.ai/quickstart-cli/).
 
 <p align="center">
   <img alt="Preloop onboarding local agents into the control plane" src="frontend/public/assets/screenshots/quickstart/dark/agents-onboarding.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" />
@@ -59,22 +66,6 @@ Onboarding, the MCP firewall, human approvals, and cutting session cost. Recorde
 
 <p align="center"><a href="https://www.youtube.com/watch?v=Y_geb2Or8zM&list=PLr2Jp0c-Qn2hoYL3aRZGUtBjTCVygWIXt"><b>Watch the full playlist &rarr;</b></a></p>
 
-Guides: [docs.preloop.ai](https://docs.preloop.ai). Start here: [onboard local agents (60s)](https://docs.preloop.ai/quickstart-cli/).
-
-For an authorized corporate Claude pilot, see the experimental
-[Anthropic Enterprise hook guide](docs/operations/anthropic-inference-hooks.md),
-[self-hosted runner identity](docs/operations/anthropic-self-hosted-runner.md),
-[managed endpoint rollout](docs/operations/anthropic-managed-rollout.md) and
-[acceptance record](docs/operations/anthropic-acceptance.md). These distinguish
-synthetic fixtures and merged source from released, deployed and app-verified
-controls; tenant validation remains pending.
-
-[Event-driven employees](docs/guide/virtual-employees.md) reuse managed-agent identities and persistent Flows for bounded Codex or Nanobot tasks from tracker events, GlitchTip errors and selected Discord activity, with durable replay protection and scoped model credentials.
-
-A run in progress is not out of reach. [Operator notes](docs/guide/operator-notes.md) let an identified human (or, with an opt-in tool, another agent) steer a running agent: the note is delivered at the next turn boundary through the gateway or a hook, adds no model input tokens when there is none, and is recorded with who sent it. Send one from the console, the API, or `preloop notes send`. Lifecycle hooks deliver startup and final-turn notes on Claude Code, Codex CLI and Cursor where supported; OpenCode, DeepSeek Harness, Hermes and OpenClaw plugins carry notes into native model input where their SDKs support it. The guide lists each harness's carrier and end-receipt limits. The [account kill switch](docs/guide/account-kill-switch.md) goes the other way: it blocks gateway and tool traffic, freezes pending approval deadlines, and requests termination of active managed flow executions, with audited staged recovery.
-
-Finished runs stay searchable, in the console, from `preloop sessions search`, and by an agent that has been given the `search_sessions` tool. Keyword ranking is always available, semantic and hybrid ranking are a per-account opt-in, every search is audited, and a question worth repeating can be [saved under a name](docs/guide/session-saved-searches.md). Two exports turn the agent inventory and the failure record into files an auditor can read: [DORA: the AI-agent slice](docs/guide/dora-agent-slice.md). They feed an Art. 8 inventory and an Art. 28 register, and list Art. 17 incident candidates. Classification stays with your firm, and Preloop covers the agent slice of the ICT estate only.
-
 ## What you get
 
 Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
@@ -84,36 +75,37 @@ Jobs teams otherwise buy from several vendors, in one Apache 2.0 stack:
 | **MCP Firewall** | Govern every tool call. Allow, deny, require approval, require justification. YAML + CEL. | MintMCP, Lunar.dev MCPX, TrueFoundry |
 | **AI Model Gateway** | OpenAI-, Anthropic- and Gemini-compatible. Budgets, allowed-model lists, token accounting, attribution. | Portkey, Helicone, LiteLLM, Kong AI |
 | **Flows** | Start an agent when a tracker, webhook, or CI job fires, with the same firewall, approvals, and cost. `preloop flow trigger`. | Custom CI glue, AgentCore Runtime |
-| **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including usage you import when the model never hits the gateway, such as [GitHub Copilot seats and premium-request spend](docs/guide/copilot-usage-import.md). | FinOps dashboards, vendor billing exports |
+| **Private runners** | Run flow agents on your own machines over an outbound WebSocket, no inbound ports. | Self-managed CI runners |
+| **Agent Control** | Talk to long-running agents from the console, phone, or watch. Steer runs with [operator notes](docs/guide/operator-notes.md). | Terminal access |
+| **Cost & Budgets** | Spend by model, agent, session, API key, flow, and user, including [imported Copilot usage](docs/guide/copilot-usage-import.md). | FinOps dashboards, vendor billing exports |
 | **Human Approvals** | Mobile, watch, Slack, Mattermost, email, webhook, or `preloop approvals`. Native `Bash`/`Edit`. Agents can `ask_user`. | Custom Slack bots, Peta Desk |
-| **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes. | AgentOps, Langfuse, LangSmith |
+| **Runtime Observability** | One session timeline: tool calls, model calls, policy, approvals, spend, outcomes, and [synchronized recordings](docs/guide/artifacts.md#recordings-synchronized-to-the-timeline). | AgentOps, Langfuse, LangSmith |
+| **Fleet Map** | People, devices, agents, models and observed work in one [map](docs/guide/fleet-map.md). | Spreadsheets |
 | **Evidence packs** | Apache flow presets write `result.json` plus an evidence directory for CRA / AI Act-style work. Not a certification. | Custom GRC folders |
-
-Upstream providers include OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guide/providers/bedrock.md) (Bedrock API keys or IAM credentials), [Azure OpenAI](docs/guide/providers/azure-openai.md), [Alibaba Cloud Model Studio (Qwen)](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot (Kimi), Z.ai (GLM), OpenRouter, and any OpenAI-compatible endpoint you configure. [Reviewed model pricing](docs/guide/model-price-refresh.md) distributes verified tariffs to gateway, API, and worker processes, and Alibaba tariffs preserve regional and cache-policy differences. The weekly review preset prepares tested pricing PRs after you bind its repository and model; historical repricing is a separate operation. Models or billing modes without verified rates remain visibly unpriced. [OTLP export](docs/guide/observability-otlp.md) is off by default; turn it on and governed model calls and MCP tool calls emit OpenTelemetry GenAI spans to any OTLP backend, without replacing the spend ledger.
 
 ```text
 AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execute
                    → [Gateway] → Budget + attribution             → Model
 ```
 
-[Bitbucket Data Center 10.2 LTS](docs/guide/bitbucket-data-center.md) is available as an opt-in, fixture-tested provider for manual PAT discovery and pull request review. It is off by default; live certification and execution/publication routing are separate.
+## The software factory
 
-Connect GitHub, GitLab, Bitbucket Cloud, or Jira as flow triggers and issue tools ([Bitbucket Cloud setup](docs/guide/bitbucket-tracker.md), [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md)). Automations ship as presets, including the [Issue Triage Assistant](./docs/guide/flows/issue-triage.md), [Pull Request Reviewer](./docs/guide/flows/pull-request-review.md) and [Observe / Eval](./backend/presets/003-observe-eval.yaml). Or write your own. A flow can also start another flow of the same account as a child of itself, and the execution page shows the resulting tree: [flow delegation](docs/guide/flows/flow-delegation.md). [Automated issue implementation](docs/guide/flows/durable-implementation-feedback.md) can resume its PR branch and native agent conversation after review or CI feedback, with durable turn budgets and current-head gates. A finished run whose PR publication was not recorded can be recovered by explicitly selecting and verifying its published PR and branch; when the native checkpoint is unavailable, follow-up requires acknowledgment that it starts a fresh conversation.
+One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Cloud or Jira. A flow starts an agent in a hosted container or on your own runner. Every tool call it makes passes the same firewall and approvals as your own agents, and every model call is charged to the flow's budget. The agent opens a pull request; the [Pull Request Reviewer](docs/guide/flows/pull-request-review.md) reviews it; review or CI feedback resumes [the implementation](docs/guide/flows/durable-implementation-feedback.md) on the same branch, and the result is a pull request you can review. You can steer the run with an operator note at any point, and the whole run is one timeline.
 
-Preset copies start disabled so their event types cannot subscribe to every connected repository before configuration. Select the tracker and project scope, save the copy, then explicitly enable it from Flows. Confirmed ad-hoc preset runs remain enabled with tracker event subscriptions cleared.
+[21 presets](backend/presets/README.md) ship in this repository, including:
 
-CI can trigger a flow too: the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md) (`.github/actions/run-flow`) starts a flow from a workflow job, streams the execution log, and fails the job on the execution's verdict. Where the agent container runs is your choice. [Private runners](docs/guide/runners/quickstart-linux.md) run it on your own machines over an outbound WebSocket, with no inbound ports: `preloop runner fg` holds several executions at once (default 2), and `--once --ephemeral` is a one-shot runner that exists for a single CI job.
+- [Issue Triage Assistant](docs/guide/flows/issue-triage.md) and issue refinement
+- [Pull Request Reviewer](docs/guide/flows/pull-request-review.md)
+- [Delivery Report](docs/guide/flows/delivery-report.md): a weekly, read-only report. See what landed, what the available evidence supports against stated criteria, and which gaps deserve investigation
+- [Automated issue implementation](docs/guide/flows/automated-issue-implementation.md)
+- [Security audit presets](docs/guide/flows/security-audit-presets.md): SBOM verify, exploit check, release audit. They collect machine evidence for CRA- and EU AI Act-style reviews. That is not a conformity assessment, certification, or legal advice.
+- [Observe / Eval](./backend/presets/003-observe-eval.yaml)
+- Component due diligence, architecture and strategy review, repo code health review
+- Standards compliance walk, release backport, weekly model price review
 
-Runners advertise `docker` only after a timed `docker ps` succeeds, and installed, enabled, signed-in agents contribute capability tags such as `cursor_cli` and `copilot_cli`. Personal runners default to asking their owner before each flow execution. Set `--flow-execution-consent always|ask_me|never` during runner setup, or change the owner preference in the console. Agent owners can also require approval before another member starts a new session; existing sessions continue.
+Or write your own. Trigger from CI with the [`run-flow` GitHub Action](docs/guide/flows/github-actions.md); run agents on [private runners](docs/guide/runners/quickstart-linux.md); let a flow start child flows with [flow delegation](docs/guide/flows/flow-delegation.md). Tracker setup: [Bitbucket and Jira quickstart](docs/guide/bitbucket-jira-quickstart.md); [Bitbucket Data Center](docs/guide/bitbucket-data-center.md) is available as an opt-in provider.
 
-New runners accept tagged work by default; the console can enable untagged jobs or pause new work without stopping current jobs. Native Cursor and Copilot execution works without Docker.
-
-With an Enterprise runner policy provider, Account settings exposes account, role and team requirements; Runners shows member compliance and harness governance. Non-compliant members see a warning when the policy requests it. The console gates these controls on the provider feature and user permissions.
-
-
-[Native restricted CI setup](docs/guide/flows/restricted-ci.md) provides OSS console and `preloop ci` commands for a separate machine identity bound to one project and dedicated hosted flow. Its rotating keys can access only that principal's executions, results and completion subscriptions. Human administration uses safe metadata and one-time secrets; the operator-run Actions example verifies the current approved PR head and persisted completion before separately confirming review publication. The legacy action uses broader account credentials and rejects restricted CI tokens.
-
-### Policy-as-code
+## Policy-as-code
 
 ```yaml
 version: "1.0"
@@ -136,22 +128,27 @@ tools:
         action: require_approval
 ```
 
-Before saving, use **Test this rule** in the tool rule dialog or **Simulate** in
-the Policies YAML editor to check a sample call without running it. Results show
-the decision, rule order and condition errors.
-
-Ship it with `preloop policy apply <file>` (`validate` / `diff` / `export` also exist).
+Check a sample call before saving with **Test this rule** or **Simulate** in the console. Ship it with `preloop policy apply <file>` (`validate` / `diff` / `export` also exist).
 
 <p align="center">
   <a href="frontend/public/assets/screenshots/quickstart/dark/dashboard.png"><img alt="Preloop dashboard with live agent and gateway usage" src="frontend/public/assets/screenshots/quickstart/dark/dashboard-1600.webp" style="width: 100%; max-width: 1135px; border-radius: 12px;" /></a>
 </p>
 
-<div align="center">
-  <a href="frontend/public/assets/screenshots/quickstart/dark/rules_configured.png"><img alt="Preloop MCP tool policy rules configured for an example pay tool" src="frontend/public/assets/screenshots/quickstart/dark/rules_configured-800.webp" style="width: 49%; min-width: 320px; border-radius: 12px; margin-right: 1%;" /></a>
-  <a href="frontend/public/assets/screenshots/quickstart/dark/audit_page.png"><img alt="Governed agent activity in the Preloop console" src="frontend/public/assets/screenshots/quickstart/dark/audit_page-800.webp" style="width: 49%; min-width: 320px; border-radius: 12px; margin-left: 1%;" /></a>
-</div>
+## More capabilities
 
-Talk details for OpenClaw, Hermes, and Claude Code: [OpenClaw](https://docs.preloop.ai/integrations/openclaw/), [Hermes](docs/guide/hermes.md), [runtime adapters](https://docs.preloop.ai/integrations/agent-control-runtime-adapters/).
+- **Model providers:** OpenAI, Anthropic, Google, [Amazon Bedrock](docs/guide/providers/bedrock.md), [Azure OpenAI](docs/guide/providers/azure-openai.md), [Alibaba Cloud Model Studio](docs/guide/alibaba-model-studio.md), DeepSeek, Mistral, Moonshot, Z.ai, OpenRouter, any OpenAI-compatible endpoint, and [runner-proxied local models](docs/guide/runner-local-models.md). [Reviewed model pricing](docs/guide/model-price-refresh.md); unpriced models stay visibly unpriced.
+- **Restricted CI identity:** a machine identity bound to one project and one flow for CI jobs. [Guide](docs/guide/flows/restricted-ci.md).
+- **Account kill switch:** blocks gateway and tool traffic and stops managed flow runs, with audited recovery. [Guide](docs/guide/account-kill-switch.md).
+- **Durable audit delivery:** opt-in transactional intents for approvals, policy decisions and tool outcomes, with restart replay and backlog alerts. [Operations guide](docs/operations/audit-outbox.md).
+- **Session search:** keyword search by default, semantic as an opt-in, every search audited. [Saved searches](docs/guide/session-saved-searches.md).
+- **DORA exports:** the AI-agent slice of the ICT inventory and incident record. [Guide](docs/guide/dora-agent-slice.md).
+- **OTLP export:** off by default; emits OpenTelemetry GenAI spans. [Guide](docs/guide/observability-otlp.md).
+- **Chat:** Slack, Mattermost, and Discord for questions, approval votes and operator notes. [Chat connections](docs/chat-connections.md).
+- **Event-driven employees:** managed agents doing bounded tasks from tracker and error events. [Guide](docs/guide/virtual-employees.md).
+- **Remote sessions and deployment:** [remote sessions](docs/guide/runners/remote-sessions.md), [SSH and GCP agent deployment](docs/operations/agent-deployment.md), [environments and recovery](docs/guide/flows/environments-and-recovery.md).
+- **Runtime plugins:** [Pi and DeepSeek Harness](runtime-plugins/harness-preloop/README.md), [Nanobot](runtime-plugins/nanobot-preloop/README.md), [OpenClaw](https://docs.preloop.ai/integrations/openclaw/), [Hermes](docs/guide/hermes.md), [runtime adapters](https://docs.preloop.ai/integrations/agent-control-runtime-adapters/).
+
+Everything else: [docs.preloop.ai](https://docs.preloop.ai).
 
 ## Getting started
 
@@ -174,28 +171,11 @@ preloop login --url http://localhost:3000
 preloop agents discover
 ```
 
-Console: `http://localhost:3000`. The CLI stores the instance URL in `~/.preloop/config.yaml`. Without `--url` or `PRELOOP_URL`, it defaults to `https://preloop.ai`. `preloop auth logout` revokes this machine's login and clears it; `preloop auth logout --all` also revokes every other CLI and console session; `preloop auth sessions list` and `revoke <id>` manage individual CLI logins. Command list: [CLI authentication](cli/README.md#authentication).
+Console: `http://localhost:3000`. CLI login commands: [CLI authentication](cli/README.md#authentication). TLS, SMTP, upgrades and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), Helm chart [`helm/preloop`](helm/preloop), [compatibility policy](docs/compatibility.md). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules. The [local upgrade acceptance harness](docs/operations/upgrade-acceptance.md) verifies release-to-candidate migrations, data and credentials in disposable Compose and kind stacks.
 
-Public TLS, SMTP (approvals, invites, password resets), upgrades, and Kubernetes: [Install the OSS stack](https://docs.preloop.ai/self-hosting/installation/), [TLS](https://docs.preloop.ai/self-hosting/tls/), [Upgrading](https://docs.preloop.ai/upgrade/). Helm chart: [`helm/preloop`](helm/preloop) ([private cluster](helm/preloop/README.md#private-cluster)). Docker Compose and Helm are the supported install surfaces; this repository does not ship Terraform modules.
-
-What stays stable across those upgrades, and how a breaking change is announced, is the [compatibility policy](docs/compatibility.md).
+Credential storage upgrades require a maintenance window and the existing encryption key; follow the [staged upgrade guide](docs/operations/credential-storage-upgrade.md) before upgrading an existing installation.
 
 Production self-host: `SECRET_KEY` is required or the app refuses to start, and the Helm chart refuses to install while `environment.jwtSecret` is empty or a placeholder (see [helm/preloop/README.md](helm/preloop/README.md#jwt-authentication)). The development `docker-compose.yml` ships development-only credential defaults; override them with a `.env` file (start from `.env.example`). Telemetry is a daily pseudonymous version check-in; set `PRELOOP_DISABLE_TELEMETRY=true` to disable. Event list: [SECURITY.md](SECURITY.md#telemetry).
-
-## Working in this repository
-
-This file is the product intro. It is not the architecture and not the coding contract.
-
-| If you need | Read |
-|---|---|
-| How the system fits together | [ARCHITECTURE.md](ARCHITECTURE.md) is the map. Read one chapter under [`docs/architecture/`](docs/architecture/) for the subsystem you are changing. Do not load every chapter "for context." |
-| Commands, DB/CRUD rules, Lit frontend | [AGENTS.md](AGENTS.md) |
-| PR process | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Operator and client guides | [docs.preloop.ai](https://docs.preloop.ai) |
-| Compatibility of public surfaces | [docs/compatibility.md](docs/compatibility.md) |
-| Policy examples | [`backend/presets/`](./backend/presets/) |
-
-Do not load this README plus ARCHITECTURE.md end-to-end "for context." Pick the row above.
 
 ## Open-source alternative to AWS Bedrock AgentCore
 
@@ -214,16 +194,15 @@ Also compare: [LiteLLM](https://preloop.ai/vs/litellm), [Portkey](https://preloo
 
 ## Editions
 
+Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop Cloud** is the hosted service at [preloop.ai](https://preloop.ai). **Preloop Enterprise** is the commercial self-hosted edition. Cloud and Enterprise include support plans. Cloud billing owners can compare usage from the previous three completed months in Account settings before requesting a plan-change quote.
+
 Your data: self-hosted, nothing leaves your network except the optional daily version check. On Preloop Cloud, sessions are stored only to give you search, audit trails, cost reports and policy enforcement; they are not used to train models and are not sold or shared. Details: [Security & Privacy](docs/security/security-privacy.md#your-data).
 
-Unqualified **Preloop** is this repository (Apache 2.0, self-hosted). **Preloop Cloud** is the hosted service at [preloop.ai](https://preloop.ai). **Preloop Enterprise** is the commercial self-hosted edition.
-
-Cloud is managed hosting. Cloud and Enterprise include support plans. Cloud billing owners can compare the available usage from the previous three completed months in Account settings before requesting a plan-change quote. Missing history is labeled explicitly; a change requires confirmation of its price, limits and effective date. Cloud plan limits do not apply to the open-source self-hosted edition.
-
-Governance itself is open source: every model provider, flows, private runners, session search, operator notes, single-approver workflows and budgets scoped to the account, a flow, an API key or a managed agent all ship in this repository. What is commercial is the organizational layer on top of them: more than one approver, quorum, escalations, budgets scoped to a user or a team, budget notification routing, custom roles, fine-grained RBAC/ABAC, resource access rules and sharing, subaccounts and pooled billing, SSO/SAML/SCIM, fleet findings, governance reviews, advanced reporting and audit export/retention. Cloud usage allowances and hosted credits are a separate thing from governance budgets.
+Governance itself is open source: every model provider, flows, private runners, session search, operator notes, the audit trail, single-approver workflows and budgets scoped to the account, a flow, an API key or a managed agent. What is commercial is the organizational layer on top:
 
 | Feature | Preloop (OSS) | Preloop Cloud / Preloop Enterprise |
 |---|:---:|:---:|
+| Audit collection, query API, and console | Yes | Yes |
 | Multiple users, invitations, admin/member roles, teams and membership | Yes | Yes |
 | Per-user devices, runners and agents; basic approvals and usage views | Yes | Yes |
 | Custom roles, fine-grained RBAC/ABAC, resource access rules and sharing | No | Yes |
@@ -234,7 +213,15 @@ Governance itself is open source: every model provider, flows, private runners, 
 
 Preloop (OSS) supports multiple users on one account. Admins invite colleagues and manage teams; members have basic operation and usage access without user, role or team administration. Public signup, if enabled, creates a separate account. Preloop Cloud and Preloop Enterprise add advanced organizational controls through plugins.
 
-Enterprise licensing: sales@preloop.ai.
+## Working in this repository
+
+| If you need | Read |
+|---|---|
+| How the system fits together | [ARCHITECTURE.md](ARCHITECTURE.md), then one chapter under [`docs/architecture/`](docs/architecture/) |
+| Commands, DB/CRUD rules, Lit frontend | [AGENTS.md](AGENTS.md) |
+| PR process | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Operator and client guides | [docs.preloop.ai](https://docs.preloop.ai) |
+| Policy examples | [`backend/presets/`](./backend/presets/) |
 
 ## Community
 
@@ -242,82 +229,10 @@ Enterprise licensing: sales@preloop.ai.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-The [disposable capacity lab](scripts/capacity/README.md) measures authenticated MCP, model-gateway and execution-log workloads using local simulated providers.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Maintainers: follow the [protected-branch release process](./docs/releasing.md).
 
 ## License
 
 [Apache License 2.0](LICENSE). Copyright (c) 2026 Spacecode AI Inc.
 
-Release assets carry signed Sigstore build provenance and checksums. See [verification instructions](./docs/release-verification.md).
-
-Windows CLI release binaries pass a required Defender scan and ten-minute observation before publication. Optional VirusTotal scanning and SignPath Authenticode signing provide additional release checks; signing is pending. [windows-cli.md](./docs/windows-cli.md), [windows-code-signing.md](./docs/windows-code-signing.md), [code-signing-policy.md](./docs/code-signing-policy.md).
-
-Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).
-
-Execution environment profiles and hosted checkpoint recovery are documented in [Environments and recovery](docs/guide/flows/environments-and-recovery.md).
-
-Operators can enable verified SSH and GCP agent deployment from the console.
-See [remote agent deployment](docs/operations/agent-deployment.md) for host-key
-verification, dedicated cloud credentials, and proxy timeout configuration.
-
-Cost links can carry an exact UTC `start_date` / `end_date` interval, with an
-optional `account_id` context. The console displays a **Digest period** without
-changing the saved preset. Account context is checked against the signed-in
-account; switching accounts and authentication retain the requested window.
-
-Nanobot can run as a governed managed employee through the optional
-[Nanobot integration](runtime-plugins/nanobot-preloop/README.md), with bounded
-conversations and DeepSeek or another authorized model through Preloop.
-
-Chat assistant connections for Slack, Mattermost, and Discord are described in
-[Chat connections](docs/chat-connections.md), including identity linking, scoped
-questions, approval votes, operator notes, and the separate durable worker.
-
-Ticket readiness reporting can be explicitly enabled with versioned project policies. See [sampled ticket readiness](docs/guide/ticket-readiness.md) for coverage, provenance and runtime requirements.
-
-### Restricted external runtime credentials (experimental)
-
-Trusted provider adapters can exchange verified external session identity through
-`preloop.models.crud.crud_restricted_runtime`. Set
-`PRELOOP_RESTRICTED_RUNTIME_CREDENTIALS=true` explicitly to enable issuance and
-current-state authentication. The adapter must independently verify its provider
-identity and resolve an account-owned policy reference; this core primitive
-accepts no external bearer token. Operator policy uses the existing
-SecretReference, managed agent, validated enrollment and active policy snapshot.
-
-Credentials expire within ten minutes and permit only approved external MCP
-server UUIDs and upstream tools. Ordinary REST, WebSocket, native control,
-builtin MCP tools and model gateway access remain denied. Tool calls require
-both MCP read and write scopes; read-only grants can list approved tools. Current
-policy generation, lifecycle, enrollment, key/session state and exact resource
-are rechecked before dispatch and after approval/connection waits. Async approval
-replay is unsupported for this credential mode.
-
-A session receives its secret once. Retries, expiry, revocation, upstream-token
-refresh and policy re-enabling never mint a replacement for that same session.
-The adapter must commit the complete exchange transaction before delivering the
-secret. A failed delivery therefore requires a new authorized upstream session.
-Revocation uses the same policy row lock and preserves its tombstone. The policy
-reference retains at most 1,024 session records; reaching that ceiling denies
-new sessions without pruning revocation history. Rotation and archival workflows
-are future work. This experimental server/resource boundary does not attest the
-runner's executable, host or network origin.
-
-Native runner flows and remote sessions support Devin CLI with managed MCP and native approval hooks. See [remote sessions](docs/guide/runners/remote-sessions.md) for setup and per-harness limits.
-
-Run host Ollama and other loopback OpenAI-compatible servers through the gateway
-with [runner-proxied local models](docs/guide/runner-local-models.md). Discover them
-with `preloop runner models` and approve registration with `--register`.
-
-Private runners also support explicit native host profiles for Codex, OpenCode
-and DeepSeek CLI (`dsh`) on Windows, macOS and Linux using locally authenticated
-CLIs. See [native profile configuration and acceptance limits](docs/guide/runners/quickstart-linux.md#codex-opencode-and-deepseek-native-profiles).
-
-
-Chat setup discovers bot identities and named workspaces for Mattermost, Slack
-and Discord. Mattermost defaults to direct messages without a slash-command token.
-See [Chat connections](docs/chat-connections.md) for worker setup and linking.
-Optional Cloud documentation support and human handoff use a separate EE service
-behind a console capability; self-hosted public pages do not load it by default.
+Release assets carry signed Sigstore build provenance and checksums ([verification](./docs/release-verification.md)). The [release SBOM audit gate](./docs/release-sbom-audit.md) checks both architectures of every release image and the tag's security workflows. Windows CLI notes: [windows-cli.md](./docs/windows-cli.md), [code signing policy](./docs/code-signing-policy.md). Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by [SignPath Foundation](https://signpath.org/).

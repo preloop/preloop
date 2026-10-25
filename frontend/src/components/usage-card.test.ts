@@ -793,3 +793,25 @@ describe('usage-card', () => {
     });
   });
 });
+
+describe('usage-card states the server total (#1955)', () => {
+  it('headlines the reported total even when rounding leaves cache above input', async () => {
+    const summary = summaryFixture({
+      token_usage: {
+        prompt_tokens: 1200,
+        completion_tokens: 300,
+        total_tokens: 1500,
+        input_tokens: 1200,
+        output_tokens: 300,
+        cache_read_tokens: 1000,
+        cache_write_tokens: 250,
+        uncached_input_tokens: 0,
+        cache_hit_ratio: 1,
+      },
+    });
+    const el = await renderCard({ summary });
+    const content = (el.shadowRoot!.textContent || '').replace(/\s+/g, ' ');
+    expect(content).to.contain('1.5K');
+    expect(content).to.not.contain('2.8K');
+  });
+});

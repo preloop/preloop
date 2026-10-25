@@ -5,6 +5,8 @@ import '@shoelace-style/shoelace/dist/components/button/button.js';
 import '@shoelace-style/shoelace/dist/components/button-group/button-group.js';
 import '@shoelace-style/shoelace/dist/components/icon/icon.js';
 import '@shoelace-style/shoelace/dist/components/input/input.js';
+import '@shoelace-style/shoelace/dist/components/dropdown/dropdown.js';
+import '@shoelace-style/shoelace/dist/components/icon-button/icon-button.js';
 
 import './list-bar-swap';
 import type { ListViewMode } from '../utils/view-mode';
@@ -63,11 +65,69 @@ export class ListToolbar extends LitElement {
    * giving up their height.
    */
   @property({ type: Boolean, reflect: true }) selecting = false;
+  /** Dense canvas controls use the same collection bar within a bounded host. */
+  @property({ type: Boolean, reflect: true }) compact = false;
+  /** Compact hosts fold filters into their own menu and search into a popup. */
+  @property({ type: Boolean, reflect: true }) condensed = false;
 
   static styles = css`
     :host {
       display: block;
       width: 100%;
+      min-width: 0;
+    }
+    :host([compact]) .list-toolbar {
+      flex-wrap: nowrap;
+      align-items: center;
+      gap: 8px;
+    }
+    :host([compact]) .filters {
+      flex: 1 1 auto;
+      align-items: center;
+      flex-wrap: nowrap;
+      gap: 6px;
+      overflow: visible;
+    }
+    /* A dense bar keeps the search at a reading width; spare room stays
+       between the filters and the count instead of stretching the input. */
+    :host([compact]) .filters sl-input {
+      flex: 0 1 240px;
+      min-width: 80px;
+      max-width: 240px;
+    }
+    :host([compact]) .filters ::slotted(sl-select) {
+      min-width: 0;
+      flex: 0 0 auto;
+    }
+    :host([compact]) .view-switcher-group {
+      width: auto;
+      flex: 0 0 auto;
+      gap: 6px;
+      margin-left: auto;
+    }
+    .filter-controls {
+      display: contents;
+    }
+    :host([compact]) .filter-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+    }
+    :host([compact][condensed]) .filters {
+      flex: 0 0 auto;
+    }
+    :host([compact][condensed]) .results-count {
+      display: none;
+    }
+    .search-popup {
+      padding: 8px;
+      background: var(--console-surface-raised, var(--console-surface));
+      border: 1px solid var(--console-hairline);
+      border-radius: 4px;
+    }
+    :host([compact]) .search-popup sl-input {
+      width: min(240px, calc(100vw - 64px));
     }
 
     /* Names the search field for assistive tech without a visible label. */
@@ -147,7 +207,7 @@ export class ListToolbar extends LitElement {
       .filters ::slotted(sl-input) {
         flex: 1 1 100%;
       }
-      .view-switcher-group sl-button-group {
+      :host(:not([compact])) .view-switcher-group sl-button-group {
         display: none;
       }
     }
@@ -208,6 +268,17 @@ export class ListToolbar extends LitElement {
   }
 
   private renderToolbarRow() {
+    const search = html`<sl-input
+      class="search-input"
+      size=${this.compact ? 'small' : 'medium'}
+      label=${this.searchLabel || this.searchPlaceholder}
+      placeholder=${this.searchPlaceholder}
+      clearable
+      .value=${this.search}
+      @sl-input=${this.handleSearchInput}
+      @sl-clear=${this.handleSearchClear}
+      ><sl-icon name="search" slot="prefix"></sl-icon
+    ></sl-input>`;
     return html`
       <div class="list-toolbar">
         <form
@@ -216,22 +287,28 @@ export class ListToolbar extends LitElement {
         >
           ${
             this.searchable
-              ? html`
-                  <sl-input
-                    class="search-input"
-                    label=${this.searchLabel || this.searchPlaceholder}
-                    placeholder=${this.searchPlaceholder}
-                    clearable
-                    .value=${this.search}
-                    @sl-input=${this.handleSearchInput}
-                    @sl-clear=${this.handleSearchClear}
+              ? this.compact && this.condensed
+                ? html`<sl-dropdown
+                    hoist
+                    placement="bottom-start"
+                    @sl-after-show=${(event: Event) => {
+                      (event.target as HTMLElement)
+                        .querySelector('sl-input')
+                        ?.focus();
+                    }}
                   >
-                    <sl-icon name="search" slot="prefix"></sl-icon>
-                  </sl-input>
-                `
+                    <sl-icon-button
+                      slot="trigger"
+                      name="search"
+                      data-testid="compact-search"
+                      label=${this.searchLabel || this.searchPlaceholder}
+                    ></sl-icon-button>
+                    <div class="search-popup">${search}</div>
+                  </sl-dropdown>`
+                : search
               : nothing
           }
-          <slot></slot>
+          <div class="filter-controls"><slot></slot></div>
         </form>
 
         <div class="view-switcher-group">
@@ -265,6 +342,7 @@ export class ListToolbar extends LitElement {
                 `
               : nothing
           }
+          <slot name="actions"></slot>
         </div>
       </div>
     `;

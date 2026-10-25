@@ -43,9 +43,12 @@ class AIModel(Base):
         index=True,
     )
     api_endpoint: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    api_key: Mapped[Optional[str]] = mapped_column(
-        String, nullable=True
-    )  # Stored unencrypted for now
+
+    @property
+    def api_key(self) -> None:
+        """Compatibility read: credentials live only in SecretReference."""
+        return None
+
     credentials_secret_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("secret_reference.id", ondelete="SET NULL"),
@@ -112,9 +115,7 @@ class AIModel(Base):
     @property
     def has_api_key(self) -> bool:
         """Whether this model has any configured credential source."""
-        return bool(
-            self.credentials_secret_id or self.api_key or self.uses_ambient_credentials
-        )
+        return bool(self.credentials_secret_id or self.uses_ambient_credentials)
 
     @property
     def credential_type(self) -> Optional[str]:
@@ -130,8 +131,6 @@ class AIModel(Base):
                 credential_type = secret_meta.get("credential_type")
                 if isinstance(credential_type, str) and credential_type.strip():
                     return credential_type.strip()
-            return "api_key"
-        if self.api_key:
             return "api_key"
         if self.uses_ambient_credentials:
             return "ambient_provider"
@@ -217,8 +216,6 @@ class AIModel(Base):
         """Return the backend type for the configured credentials."""
         if self.credentials_secret:
             return self.credentials_secret.backend_type
-        if self.api_key:
-            return "legacy_plaintext"
         if self.uses_ambient_credentials:
             return "ambient_provider"
         return None

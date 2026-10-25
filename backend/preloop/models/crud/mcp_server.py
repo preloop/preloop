@@ -117,8 +117,10 @@ class CRUDMCPServer(CRUDBase[models.MCPServer]):
 
         The account's own servers, then servers another account shares with
         it (account hook H3). Without a visibility provider this is exactly
-        ``get_active_by_account``. Only tool discovery and tool calls use
-        it: policy and configuration code stays on the own servers.
+        ``get_active_by_account``. Tool discovery and tool calls use it, and
+        so does the apply check of ``sensitive_data`` scope servers, which
+        match at call time. Other policy and configuration code stays on
+        the own servers.
         """
         from preloop.plugins.account_hooks import (
             VISIBLE_MCP_SERVER,

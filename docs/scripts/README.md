@@ -33,10 +33,10 @@ when you rerun it. For the landing stills it also writes the `-800.webp` and
 ## Which backend
 
 The Overview Activity panel, its Tool firewall counter and the landing
-`audit_page` read `/api/v1/audit-logs`, which only the EE audit plugin serves.
-On the open-source backend those panels stay empty however much traffic you
-send. The published images were captured on an EE backend built from this
-checkout: the preloop-ee Dockerfile with this repository as `preloop/`,
+`audit_page` read the core `/api/v1/audit-logs` API, available on both the
+open-source and EE backends. The open-source backend can capture these panels
+without an EE overlay. The existing published images were captured on an EE
+backend built from this checkout: the preloop-ee Dockerfile with this repository as `preloop/`,
 tagged `preloop-shots/preloop-ee:local`. To use it, export
 `PRELOOP_SHOTS_IMAGE=preloop-shots/preloop-ee:local` and add
 `-f docs/scripts/screenshot-stack/compose.ee.yml` after the screenshots
@@ -66,7 +66,7 @@ python -m pip install playwright pillow httpx
 python -m playwright install chromium
 python docs/scripts/capture_screenshots.py            # all captures
 python docs/scripts/capture_screenshots.py --only dashboard --headed
-python docs/scripts/capture_screenshots.py --only audit_page   # EE backend only
+python docs/scripts/capture_screenshots.py --only audit_page
 
 $COMPOSE down -v
 ```

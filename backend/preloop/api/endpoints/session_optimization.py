@@ -48,7 +48,7 @@ from preloop.services.session_optimization_jobs import (
     run_session_optimization,
     submit_session_optimization_job,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/billing/cost", tags=["Session Optimization"])
@@ -94,7 +94,7 @@ def get_example_runtime_session_optimization(
     "/runtime-sessions/{runtime_session_id}/optimizations",
     response_model=RuntimeSessionOptimizationResponse,
 )
-@require_permission("view_cost")
+@require_permission("run_session_optimizations")
 def optimize_account_runtime_session(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
@@ -109,6 +109,7 @@ def optimize_account_runtime_session(
     returns the results in this response — semantics identical to before the
     async job endpoints existed (no submit-then-poll behind the scenes).
     """
+    ensure_permission_in_oss(db, current_user, "run_session_optimizations")
     response = run_session_optimization(
         db,
         account=account,
@@ -164,7 +165,7 @@ class RuntimeSessionOptimizationJobStatusResponse(BaseModel):
     response_model=RuntimeSessionOptimizationJobSubmitResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-@require_permission("view_cost")
+@require_permission("run_session_optimizations")
 def submit_account_runtime_session_optimization_job(
     runtime_session_id: str,
     account: Annotated[Account, Depends(get_account_for_user)],
@@ -179,6 +180,7 @@ def submit_account_runtime_session_optimization_job(
     re-submitting returns THAT job instead of queuing a second model pass, so
     a double-click never spends the model budget twice.
     """
+    ensure_permission_in_oss(db, current_user, "run_session_optimizations")
     job = submit_session_optimization_job(
         db,
         account=account,
@@ -288,6 +290,7 @@ def apply_account_runtime_session_optimization(
     Applying writes governance/budget configuration only — it spends no model
     budget — so it is never gated behind an entitlement.
     """
+    ensure_permission_in_oss(db, current_user, "edit_ai_models")
     return SessionOptimizationService(db).apply_account_session_optimization_action(
         account=account,
         runtime_session_id=runtime_session_id,
@@ -352,6 +355,7 @@ def replay_account_runtime_session(
     under a hard spend cap, and records the exact deterministic input-token delta
     together with the noise-banded end-to-end delta. Requires explicit consent.
     """
+    ensure_permission_in_oss(db, current_user, "edit_ai_models")
     try:
         row = run_session_replay(
             db,

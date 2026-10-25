@@ -19,7 +19,7 @@ async def test_removal_records_actor_and_revocation_before_commit(
 ) -> None:
     """Deletion and its audit record share a transaction and retain identity."""
     account = SimpleNamespace(id=uuid4())
-    user = SimpleNamespace(id=uuid4())
+    user = SimpleNamespace(id=uuid4(), account_id=account.id, is_superuser=True)
     agent = SimpleNamespace(
         id=uuid4(),
         display_name="Example Agent",
@@ -116,7 +116,7 @@ async def test_removal_audit_failure_does_not_commit_deletion(
         await inspect.unwrap(endpoints.delete_account_managed_agent)(
             agent_id=str(agent.id),
             account=SimpleNamespace(id=uuid4()),
-            current_user=SimpleNamespace(id=uuid4()),
+            current_user=SimpleNamespace(id=uuid4(), is_superuser=True),
             request=Request({"type": "http", "headers": []}),
             db=db,
         )
@@ -154,7 +154,7 @@ async def test_lifecycle_change_persists_actor_and_previous_state(
     )
     db = MagicMock()
     account = SimpleNamespace(id=uuid4())
-    user = SimpleNamespace(id=uuid4())
+    user = SimpleNamespace(id=uuid4(), account_id=account.id, is_superuser=True)
     monkeypatch.setattr(
         endpoints.crud_managed_agent, "get_for_account", lambda *a, **k: agent
     )

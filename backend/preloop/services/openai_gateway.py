@@ -107,7 +107,10 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.account_governance_cache import get_cached_account_meta_data
-from preloop.services.usage_token_details import extract_token_details
+from preloop.services.usage_token_details import (
+    anthropic_cache_input_tokens,
+    extract_token_details,
+)
 from preloop.services.agent_session_headers import (
     normalize_session_id,
     runtime_principal_type,
@@ -9303,6 +9306,12 @@ class OpenAIGatewayService:
                 continue
 
             item_type = item.get("type")
+            if item_type == "reasoning":
+                # Responses reasoning is opaque protocol state, not a chat
+                # message or a tool result. Codex may replay it anywhere in a
+                # tool turn. DeepSeek's authenticated bridge restores its own
+                # reasoning separately from the original unfiltered input.
+                continue
             if item_type in ("function_call", "custom_tool_call"):
                 if pending_tool_call_ids:
                     raise tool_response_error(
@@ -10109,6 +10118,21 @@ class OpenAIGatewayService:
         return choices[0].get("finish_reason")
 
     @staticmethod
+    def _cache_inclusive_input_tokens(usage: Dict[str, Any]) -> int:
+        """Return a usage payload's input total, cache inclusive (#1955).
+
+        Args:
+            usage: Client-facing or raw upstream usage payload.
+
+        Returns:
+            ``prompt_tokens`` (or ``input_tokens``) plus, for a raw Anthropic
+            payload, the cache read and write it leaves out.
+        """
+        return int(
+            usage.get("prompt_tokens") or usage.get("input_tokens") or 0
+        ) + anthropic_cache_input_tokens(usage)
+
+    @staticmethod
     def _normalize_usage(
         usage: Optional[Dict[str, Any]],
         *,
@@ -10118,6 +10142,9 @@ class OpenAIGatewayService:
     ) -> Dict[str, Any]:
         usage = usage or {}
         prompt_tokens = int(usage.get(prompt_key, usage.get("input_tokens", 0)) or 0)
+        # Store input cache inclusive for every provider (#1955): raw
+        # Anthropic ``input_tokens`` leaves the cache read and write out.
+        prompt_tokens += anthropic_cache_input_tokens(usage)
         completion_tokens = 0
         for key in output_names:
             if usage.get(key) is not None:
@@ -10786,13 +10813,13 @@ class OpenAIGatewayService:
         # Prefer the client-facing usage payload, but fall back to the raw
         # upstream usage so records without a response body (e.g. client
         # disconnects) still carry the tokens captured before the abort.
-        prompt_tokens = (
-            usage.get("prompt_tokens")
-            or usage.get("input_tokens")
-            or usage_details.get("prompt_tokens")
-            or usage_details.get("input_tokens")
-            or 0
-        )
+        # Input is stored cache inclusive for every provider (#1955). A raw
+        # Anthropic payload reports ``input_tokens`` without the cache read
+        # and write, so those are added back from the same payload; the raw
+        # figures stay in ``meta_data.usage_details`` for audit.
+        prompt_tokens = self._cache_inclusive_input_tokens(
+            usage
+        ) or self._cache_inclusive_input_tokens(usage_details)
         completion_tokens = (
             usage.get("completion_tokens")
             or usage.get("output_tokens")

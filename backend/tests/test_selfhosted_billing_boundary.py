@@ -33,6 +33,7 @@ def test_explicit_false_plugin_features_survive_serialization() -> None:
         "basic_roles": True,
         "billing": False,
         "cost": True,
+        "audit_logs": True,
     }
 
 

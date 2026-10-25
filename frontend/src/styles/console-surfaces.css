@@ -40,6 +40,7 @@
     /* 13px gray on gray is unreadable in dark; light can afford 500. */
     --console-meta-color: var(--sl-color-neutral-500);
     --console-body-color: var(--sl-color-neutral-900);
+    --console-flow-icon-filter: none;
     /* primary-600 measured 3.9:1 on the page and 4.1:1 on a card, under the
        4.5 a 13px link needs. primary-700 is the same hue at 5.6:1 or more. */
     --console-link-color: var(--sl-color-primary-700);
@@ -87,6 +88,7 @@
        clears 4.5 on all three rungs and still sits well below body text. */
     --console-meta-color: var(--sl-color-neutral-700);
     --console-body-color: var(--sl-color-neutral-900);
+    --console-flow-icon-filter: invert(0.8) hue-rotate(180deg);
     /* The scale is inverted here too: primary-400 is a dim blue in dark and
        measures 4.0:1 on a card, under the 4.5 a 13px link needs. primary-600
        is the light end of the same hue and measures 7.0:1. */

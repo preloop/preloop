@@ -9,6 +9,8 @@ which is the normal shape of an agent doing parallel tool work.
 
 from __future__ import annotations
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -16,7 +18,6 @@ from uuid import uuid4
 
 import pytest
 
-from preloop.models import models
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
 
@@ -113,7 +114,7 @@ def test_completion_event_reuses_the_start_identity(service):
         upstream_request_id=None,
         meta_data={},
     )
-    model = models.AIModel(
+    model = ai_model_with_secret(
         name="probe-model",
         provider_name="openai",
         model_identifier="gpt-5",

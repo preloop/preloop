@@ -1,3 +1,5 @@
+import { REST_API_PREFIX } from '../api-path';
+import { randomUuid } from '../utils/random-uuid';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -184,8 +186,11 @@ export class SupportAssistant extends LitElement {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     };
     const response = await (localStorage.getItem('accessToken')
-      ? fetchWithAuth(`/api/v1/support${path}`, { ...options, passive: true })
-      : fetch(`/api/v1/support${path}`, options));
+      ? fetchWithAuth(`${REST_API_PREFIX}/support${path}`, {
+          ...options,
+          passive: true,
+        })
+      : fetch(`${REST_API_PREFIX}/support${path}`, options));
     if (!response.ok)
       throw new SupportRequestError(
         response.status === 404
@@ -336,7 +341,7 @@ export class SupportAssistant extends LitElement {
     )
       this.pending = {
         text,
-        event_id: crypto.randomUUID(),
+        event_id: randomUuid(),
         human_request: human,
         ...(contact ? { contact } : {}),
       };

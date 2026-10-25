@@ -18,3 +18,13 @@ AGENT_GATEWAY_PREDICATE = (
     + ", ".join(repr(purpose) for purpose in sorted(GATEWAY_USAGE_PURPOSES))
     + "))"
 )
+
+# Customer reports keep other purpose semantics, but exclude governance analysis
+# regardless of funding. Literal spellings also match generic prepared plans.
+CUSTOMER_GATEWAY_PREDICATE = (
+    "action_type = 'model_gateway' AND "
+    "((meta_data ->> 'purpose') IS NULL OR "
+    "(meta_data ->> 'purpose') <> 'replay_validation') AND "
+    "((meta_data ->> 'purpose') IS NULL OR "
+    "left(meta_data ->> 'purpose', 11) <> 'governance_')"
+)

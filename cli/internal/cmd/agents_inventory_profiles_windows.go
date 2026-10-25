@@ -21,10 +21,12 @@ func localInventoryProfiles() ([]inventoryProfile, bool, error) {
 	// Read one extra entry to detect the bounded enumeration limit. This
 	// includes service SIDs in the bound; excluded entries do not hide truncation.
 	names, err := key.ReadSubKeyNames(inventoryProfileLimit + 1)
-	if err != nil && err != io.EOF {
-		return nil, false, err
+	if err == io.EOF {
+		err = nil
 	}
-	return inventoryWindowsProfiles(names, func(sid string) (string, error) {
+	// Names read before a registry error are still scanned; the error marks
+	// the result partial.
+	return inventoryWindowsProfiles(names, err, func(sid string) (string, error) {
 		sub, err := registry.OpenKey(key, sid, registry.QUERY_VALUE)
 		if err != nil {
 			return "", err
@@ -46,7 +48,7 @@ func localInventoryProfiles() ([]inventoryProfile, bool, error) {
 
 // The reader and drive classifier are injected so native Windows CI tests
 // exercise ProfileList semantics using fixtures, never the host registry.
-func inventoryWindowsProfiles(names []string, read func(string) (string, error), localDrive func(string) bool) ([]inventoryProfile, bool, error) {
+func inventoryWindowsProfiles(names []string, enumErr error, read func(string) (string, error), localDrive func(string) bool) ([]inventoryProfile, bool, error) {
 	profiles := []inventoryProfile{}
 	truncated := len(names) > inventoryProfileLimit
 	if truncated {
@@ -59,20 +61,22 @@ func inventoryWindowsProfiles(names []string, read func(string) (string, error),
 		}
 		path, err := read(sid)
 		if err != nil {
-			return profiles, truncated, err
+			profiles = append(profiles, inventoryProfile{LocalRef: "ProfileList:" + sid, ErrorCode: "profile_unreadable"})
+			continue
 		}
 		volume := filepath.VolumeName(path)
-		if !filepath.IsAbs(path) || strings.HasPrefix(path, `\\`) || len(volume) != 2 || strings.ContainsAny(path[2:], ":\x00") || !localDrive(volume) {
-			return profiles, truncated, os.ErrPermission
+		if !filepath.IsAbs(path) || strings.HasPrefix(path, `\\`) || len(volume) != 2 || strings.ContainsAny(path[2:], ":\x00") || filepath.Clean(path) != path || !localDrive(volume) {
+			profiles = append(profiles, inventoryProfile{LocalRef: "ProfileList:" + sid, ErrorCode: "profile_unavailable"})
+			continue
 		}
 		path = filepath.Clean(path)
 		normalized := strings.ToLower(path)
 		if !seen[normalized] {
-			profiles = append(profiles, inventoryProfile{path})
+			profiles = append(profiles, inventoryProfile{Home: path})
 			seen[normalized] = true
 		}
 	}
-	return profiles, truncated, nil
+	return profiles, truncated, enumErr
 }
 
 // OBJ_DONT_REPARSE rejects links anywhere in the relative path atomically,
@@ -99,6 +103,15 @@ func openInventoryConfig(root *os.Root, path string) (*os.File, error) {
 	err = windows.NtCreateFile(&handle, windows.FILE_GENERIC_READ, &attributes, &windows.IO_STATUS_BLOCK{}, nil, windows.FILE_ATTRIBUTE_NORMAL, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE, windows.FILE_OPEN, windows.FILE_SYNCHRONOUS_IO_NONALERT|windows.FILE_NON_DIRECTORY_FILE, 0, 0)
 	if err != nil {
 		return nil, err
+	}
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(handle, &info); err != nil {
+		windows.CloseHandle(handle)
+		return nil, err
+	}
+	if info.NumberOfLinks != 1 {
+		windows.CloseHandle(handle)
+		return nil, os.ErrPermission
 	}
 	return os.NewFile(uintptr(handle), path), nil
 }

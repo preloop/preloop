@@ -153,7 +153,7 @@ export class ImproveComplianceModal extends LitElement {
   render() {
     return html`
       <sl-dialog
-        label="Improve Issue Compliance"
+        label="Improve issue compliance"
         class="dialog-overview large"
         .open=${this.open}
         @sl-hide=${this.handleClose}

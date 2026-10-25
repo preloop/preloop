@@ -16,7 +16,11 @@ The spend stays auditable: a purpose-TARGETED read still sees replay rows.
 from datetime import UTC, datetime, timedelta
 import uuid
 
+import pytest
 from sqlalchemy import func
+from sqlalchemy.orm import Session
+
+from preloop.models import models
 
 from preloop.models.crud import crud_ai_model, crud_flow, crud_flow_execution
 from preloop.models.crud.api_usage import REPLAY_VALIDATION_PURPOSE, crud_api_usage
@@ -260,3 +264,23 @@ def test_exclude_replay_usage_condition_expression():
     assert REPLAY_VALIDATION_PURPOSE in compiled
     # OR of IS NULL / != purpose — NULL-safe inclusion of untagged rows.
     assert "IS NULL" in compiled.upper() or "is null" in compiled.lower()
+
+
+@pytest.mark.parametrize(
+    "purpose", ["governance_session_digest", "governance_review", "governance_future"]
+)
+@pytest.mark.parametrize("funding", ["account", "platform"])
+def test_governance_rows_do_not_accumulate_customer_budget_spend(
+    db_session: Session, test_user: models.User, purpose: str, funding: str
+) -> None:
+    """Analysis has its own purpose-targeted allowance, outside customer budgets."""
+    _log_gateway_row(
+        db_session,
+        test_user,
+        estimated_cost=0.30,
+        total_tokens=999,
+        meta_data={"purpose": purpose, "funding": funding},
+    )
+    assert _total_budget_spend(db_session, test_user.account_id) == 0.0
+    _log_gateway_row(db_session, test_user, estimated_cost=0.05, total_tokens=20)
+    assert _total_budget_spend(db_session, test_user.account_id) > 0.0

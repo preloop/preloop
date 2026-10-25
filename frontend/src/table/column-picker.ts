@@ -23,9 +23,7 @@ export interface ColumnPickerItem {
 /**
  * Which columns a list shows.
  *
- * A dropdown of checkboxes, in the filter bar beside the list's own filters,
- * because choosing columns is choosing what the table says and belongs in the
- * bar that already decides which rows it says it about. It is a `sl-dropdown`
+ * A dropdown of checkboxes at the right of the table header. It is a `sl-dropdown`
  * of `sl-menu-item type="checkbox"`, which is the console's one menu recipe,
  * so it inherits the raised surface, the focus ring and the keyboard model
  * from Shoelace rather than inventing a popover.
@@ -46,6 +44,13 @@ export class ColumnPicker extends LitElement {
   @property({ type: String })
   label = 'Columns';
 
+  /**
+   * Icon-only trigger, for a header cell sized for one icon button. The
+   * label stays as the accessible name and the tooltip.
+   */
+  @property({ type: Boolean, reflect: true })
+  compact = false;
+
   /** Offers Reset only when something differs from the declared layout. */
   @property({ type: Boolean, attribute: 'can-reset' })
   canReset = false;
@@ -61,10 +66,17 @@ export class ColumnPicker extends LitElement {
     :host {
       display: inline-block;
     }
-    /* The bar aligns its controls on their bottom edge, and a bare button is
-       shorter than a labelled select. */
     sl-dropdown {
       display: block;
+    }
+    .compact-trigger::part(base) {
+      padding: 0;
+      min-width: 28px;
+    }
+    .compact-trigger::part(label) {
+      padding: 0 6px;
+      display: inline-flex;
+      align-items: center;
     }
     sl-menu {
       max-height: 60vh;
@@ -80,10 +92,22 @@ export class ColumnPicker extends LitElement {
            because Shoelace closes a dropdown on every selection. Reset is the
            one entry that ends the exchange, so it closes the menu itself. -->
       <sl-dropdown hoist stay-open-on-select placement="bottom-end">
-        <sl-button slot="trigger" size="small" caret>
-          <sl-icon slot="prefix" name="layout-three-columns"></sl-icon>
-          ${this.label}
-        </sl-button>
+        ${
+          this.compact
+            ? html`<sl-button
+                slot="trigger"
+                size="small"
+                class="compact-trigger"
+                aria-label=${this.label}
+                title=${this.label}
+              >
+                <sl-icon name="layout-three-columns"></sl-icon>
+              </sl-button>`
+            : html`<sl-button slot="trigger" size="small" caret>
+                <sl-icon slot="prefix" name="layout-three-columns"></sl-icon>
+                ${this.label}
+              </sl-button>`
+        }
         <sl-menu @sl-select=${this.handleSelect}>
           ${groups.map(
             (group) => html`

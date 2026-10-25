@@ -361,7 +361,7 @@ async def commit_issue_dependencies(
 
     # Commit all dependencies that were attempted, regardless of API call success
     updated_relationships = crud_issue_relationship.commit_relationships(
-        db, relationships=[dep.dict() for dep in request.dependencies]
+        db, relationships=[dep.model_dump() for dep in dependencies_to_commit]
     )
 
     # We need to map the SQLAlchemy models back to the Pydantic model.

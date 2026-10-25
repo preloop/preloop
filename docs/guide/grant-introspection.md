@@ -91,7 +91,7 @@ The introspection client secret follows the MCP authentication secret redaction 
 
 ## Audit evidence and consent searches
 
-The enterprise audit plugin records the delegated subject, scope list, client ID, consent reference, expiry and cache flag under the audit row's `details.grant`. Both tool-call rows and denied policy decisions retain this attribution. Token and introspection-secret fields are excluded before a write is queued.
+The core audit service records the delegated subject, scope list, client ID, consent reference, expiry and cache flag under the audit row's `details.grant`. Both tool-call rows and denied policy decisions retain this attribution. Token and introspection-secret fields are excluded before a write is queued.
 
 With permission to view audit logs, search a consent reference using `GET /api/v1/audit-logs?consent_ref=consent-example` or the grouped timeline at `GET /api/v1/audit-logs/grouped?consent_ref=consent-example`. Matching is exact and always scoped to your account. Pagination and the returned total use the same filter. A partial composite index on account and consent reference supports these lookups; its migration builds and removes the index concurrently to avoid blocking audit inserts.
 

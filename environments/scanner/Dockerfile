@@ -59,6 +59,7 @@ RUN case "${TARGETARCH:-amd64}" in \
     && printf '%s\n' 'django==2.2.0' 'requests==2.19.0' \
         > /out/opt/preloop-scanner/fixtures/vulnerable/requirements.txt \
     && chmod -R a+rX /out
+COPY --chmod=0644 environments/scanner/preloop-environment.json /out/opt/preloop-environment.json
 
 FROM ${CODEX_BASE_IMAGE}
 ARG CODEX_BASE_IMAGE
@@ -69,8 +70,9 @@ ARG TRIVY_DB_REPOSITORY
 # osv-scanner on every *requirements*.txt in the tree and follows transitives,
 # so a committed fixture was the whole Vulnerabilities finding list. Trivy
 # still scans /opt/preloop-scanner/fixtures/vulnerable inside this image.
+# Keep permission changes in fetch: BuildKit falls back to a normal copy
+# for --link combined with --chmod, unpacking the base and exhausting CI disk.
 COPY --link --from=fetch /out/ /
-COPY --link --chmod=0644 environments/scanner/preloop-environment.json /opt/preloop-environment.json
 ENV TRIVY_CACHE_DIR=/opt/trivy-cache
 LABEL org.opencontainers.image.title="preloop-codex-scanner" \
       org.opencontainers.image.description="Opt-in Codex-compatible image with Trivy and a digest-pinned advisory database" \

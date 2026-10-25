@@ -198,6 +198,27 @@ describe('FlowExecutionsView', () => {
     expect(cells[1].querySelectorAll('sl-badge').length).to.equal(1);
   });
 
+  it('states a stopped and cancelled run with one chip (U-14)', async () => {
+    fetchStub = stub([
+      {
+        id: 'exec-stopped',
+        flow_id: 'flow-1',
+        flow_name: 'Triage',
+        status: 'STOPPED',
+        failure_category: 'cancelled',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:01:00Z',
+      },
+    ]);
+    const el = (await fixture(
+      html`<flow-executions-view></flow-executions-view>`
+    )) as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+    const cell = el.shadowRoot!.querySelector('tbody tr .status-cell')!;
+    expect(cell.querySelectorAll('sl-badge').length).to.equal(1);
+  });
+
   it('labels a review resumption and links the publishing execution', async () => {
     const publisherId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     fetchStub = stub([
@@ -282,6 +303,44 @@ describe('FlowExecutionsView', () => {
     ).to.be.at.most(wrapperBox.left + wrapper.clientWidth + 1);
   });
 
+  it('lets the CI hint give way before the subject text at 1440 (B-09)', async () => {
+    // A webhook run dispatched from CI carries "via GitHub Actions" after the
+    // subject. The hint never shrank, so the subject collapsed to "p..".
+    fetchStub = stub([
+      {
+        id: 'exec-ci-1',
+        flow_id: 'flow-1',
+        flow_name: 'Pull request reviewer',
+        status: 'SUCCEEDED',
+        start_time: '2026-03-09T10:00:00Z',
+        end_time: '2026-03-09T10:05:00Z',
+        trigger_subject:
+          'example/example #1203 · Pull request synchronize · 949d625b',
+        trigger_subject_url: 'https://example.com/example/example/pull/1203',
+        trigger_subject_ci: 'GitHub Actions',
+        trigger_subject_ci_url: 'https://example.com/actions/runs/1',
+        model_alias: 'deepseek/deepseek-v4-pro',
+      },
+    ]);
+    const host = (await fixture(
+      html`<div style="width: 1125px;">
+        <flow-executions-view></flow-executions-view>
+      </div>`
+    )) as HTMLElement;
+    const el = host.querySelector('flow-executions-view') as FlowExecutionsView;
+    await tick();
+    await el.updateComplete;
+    const cell = el.shadowRoot!.querySelector('td.subject-cell') as HTMLElement;
+    const textBox = cell
+      .querySelector('.execution-subject-text')!
+      .getBoundingClientRect();
+    const cellWidth = cell.clientWidth;
+    expect(
+      textBox.width,
+      'the subject text keeps most of its cell'
+    ).to.be.at.least(cellWidth * 0.5);
+  });
+
   it('keeps the Subject column usable at the narrowest layout', async () => {
     // The table declares a 1080px min-width, which is the fixed columns
     // (954px) plus a ~120px floor for the flexible Subject column. At a
@@ -318,13 +377,15 @@ describe('FlowExecutionsView', () => {
     const subject = table.querySelector('td.subject-cell') as HTMLElement;
     expect(subject, 'subject cell').to.exist;
     expect(subject.clientWidth).to.be.at.least(120);
-    // The subject is the flexible column and still ellipsizes inside its
-    // floor rather than widening the table.
+    // The subject wraps inside its floor so the distinguishing reference
+    // remains readable without hovering or widening the table.
     const subjectText = subject.querySelector(
       '.execution-subject-text'
     ) as HTMLElement;
     expect(subjectText, 'subject text').to.exist;
-    expect(subjectText.scrollWidth).to.be.greaterThan(subjectText.clientWidth);
+    expect(subjectText.scrollWidth).to.be.at.most(subjectText.clientWidth + 1);
+    expect(getComputedStyle(subjectText).whiteSpace).to.equal('normal');
+    expect(subjectText.textContent).to.contain('#138');
 
     const durationText = table.querySelector(
       'td.duration-cell .duration-text'
@@ -973,7 +1034,7 @@ describe('FlowExecutionsView', () => {
       );
     });
 
-    it('shows an em dash for a terminal execution with no end time', async () => {
+    it('shows the missing-value mark for a terminal execution with no end time', async () => {
       const el = await renderRows([
         {
           id: 'exec-legacy',
@@ -984,10 +1045,10 @@ describe('FlowExecutionsView', () => {
         },
       ]);
 
-      expect(cellText(el, 0)).to.equal('—');
+      expect(cellText(el, 0)).to.equal('-');
     });
 
-    it('shows an em dash when the timestamps are unusable', async () => {
+    it('shows the missing-value mark when the timestamps are unusable', async () => {
       const el = await renderRows([
         {
           id: 'exec-skew',
@@ -999,7 +1060,7 @@ describe('FlowExecutionsView', () => {
         },
       ]);
 
-      expect(cellText(el, 0)).to.equal('—');
+      expect(cellText(el, 0)).to.equal('-');
     });
   });
 
@@ -1152,12 +1213,12 @@ describe('FlowExecutionsView', () => {
           el.shadowRoot?.querySelector('tbody .model-cell')?.textContent || ''
         ).trim();
       await waitUntil(
-        () => cellText() === '\u2014',
-        'model cell should render an em dash when the run has no model',
+        () => cellText() === '-',
+        'model cell should render the missing-value mark when the run has no model',
         { timeout: 4000 }
       );
       const cell = el.shadowRoot?.querySelector('tbody .model-cell');
-      expect((cell?.textContent || '').trim()).to.equal('\u2014');
+      expect((cell?.textContent || '').trim()).to.equal('-');
       expect(cell?.querySelector('.execution-model-more')).to.not.exist;
     });
 
@@ -1217,7 +1278,10 @@ describe('FlowExecutionsView', () => {
     it('turns the token parts on from the column picker, each sortable', async () => {
       const el = await renderRows([TOKEN_EXECUTION]);
       const picker = el.shadowRoot?.querySelector('column-picker');
-      expect(picker, 'the toolbar offers the columns').to.exist;
+      expect(picker?.closest('thead tr'), 'the header offers the columns').to
+        .exist;
+      expect(el.shadowRoot?.querySelector('list-toolbar column-picker')).to.be
+        .null;
 
       const items = Array.from(
         picker?.shadowRoot?.querySelectorAll('sl-menu-item') || []
@@ -1296,7 +1360,7 @@ describe('FlowExecutionsView', () => {
       const costCells = Array.from(
         el.shadowRoot?.querySelectorAll('tbody tr') || []
       ).map((row) => (row.querySelectorAll('td')[8]?.textContent || '').trim());
-      expect(costCells).to.eql(['$0.08', '\u2014']);
+      expect(costCells).to.eql(['$0.08', '-']);
     });
 
     it('anchors the flow name at the execution and makes the row clickable', async () => {

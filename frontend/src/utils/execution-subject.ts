@@ -232,10 +232,16 @@ export const executionSubjectCss = `
     font-size: 12px;
   }
   /* The CI provenance hint reads in the meta register: it answers "who
-     dispatched this", not "what is this about". */
+     dispatched this", not "what is this about". In a narrow cell it gives
+     way first: it used to keep its full width and squeeze the subject to
+     "p..", which is backwards. */
   .execution-subject-ci,
   a.execution-subject-ci-link {
     color: var(--console-meta-color);
+    flex: 0 1000 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
   a.execution-subject-ci-link {

@@ -1,3 +1,4 @@
+import { totalTokensOf } from './token-figures';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import { LitElement, css, html, nothing, svg } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
@@ -599,7 +600,7 @@ export class UsageCard extends LitElement {
       `;
     }
 
-    const tokens = this.summary?.token_usage?.total_tokens || 0;
+    const tokens = totalTokensOf(this.summary?.token_usage);
     const cost = this.summary?.estimated_cost || 0;
 
     if (this.unit === 'dollars') {
@@ -662,7 +663,28 @@ export class UsageCard extends LitElement {
     if (!summary) return 0;
     return this.unit === 'dollars'
       ? Number(summary.estimated_cost || 0)
-      : Number(summary.token_usage?.total_tokens || 0);
+      : totalTokensOf(summary.token_usage);
+  }
+
+  /**
+   * The daily rows carry a total but no cache split, so under cache-exclusive
+   * input they are scaled by the same factor as the headline: the line keeps
+   * its shape and ends where the number above it says (B-04).
+   */
+  private scaledSeries(values: Map<string, number>): Map<string, number> {
+    if (this.unit === 'dollars') return values;
+    const scale = this.tokenSeriesScale;
+    if (scale === 1) return values;
+    return new Map(
+      [...values].map(([key, value]) => [key, value * scale] as const)
+    );
+  }
+
+  private get tokenSeriesScale(): number {
+    const usage = this.summary?.token_usage;
+    const reported = Number(usage?.total_tokens || 0);
+    if (!usage || reported <= 0) return 1;
+    return totalTokensOf(usage) / reported;
   }
 
   /**
@@ -711,7 +733,7 @@ export class UsageCard extends LitElement {
     const requests = this.summary?.total_requests || 0;
     const parts =
       this.unit === 'dollars'
-        ? [`${this.formatCompactNumber(usage?.total_tokens || 0)} tokens`]
+        ? [`${this.formatCompactNumber(totalTokensOf(usage))} tokens`]
         : [];
     parts.push(`${this.formatCompactNumber(requests)} requests`);
     if (this.toolCallsCount > 0) {
@@ -770,7 +792,7 @@ export class UsageCard extends LitElement {
     const values = source.rows.map((day) =>
       this.unit === 'dollars'
         ? Number(day.estimated_cost || 0)
-        : Number(day.total_tokens || 0)
+        : Number(day.total_tokens || 0) * this.tokenSeriesScale
     );
     if (values.length < 3) {
       return nothing;
@@ -868,7 +890,7 @@ export class UsageCard extends LitElement {
     const projection = buildUsageProjection({
       range: this.timeRange,
       totalSoFar: this.valueFor(this.summary),
-      values: seriesValues(rows, granularity, this.unit),
+      values: this.scaledSeries(seriesValues(rows, granularity, this.unit)),
       granularity,
       now,
     });

@@ -106,7 +106,7 @@ describe('SecurityView', () => {
 
     const header = element.shadowRoot?.querySelector('view-header');
     expect(header?.getAttribute('headerText')).to.equal('Security');
-    expect(element.shadowRoot?.textContent).to.contain('Change Password');
+    expect(element.shadowRoot?.textContent).to.contain('Change password');
     const inputs = element.shadowRoot?.querySelectorAll('sl-input');
     expect(inputs?.length).to.equal(3);
   });

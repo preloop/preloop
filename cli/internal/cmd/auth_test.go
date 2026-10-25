@@ -322,6 +322,13 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 
+	// Codex onboarding installs the Agent Control sidecar service. Tests
+	// must never run launchctl or systemctl against the real user session.
+	agentControlSidecarServiceInstaller = func(agentControlSidecarSpec, io.Writer) error {
+		return errAgentControlSidecarServiceUnsupported
+	}
+	runSidecarServiceManager = func(string, ...string) error { return nil }
+
 	// GitHub CLI CI sets this; GitLab OSS did not. Successful login posts
 	// /api/v1/events/batch unless telemetry is off, which fails hermetic
 	// httptest servers that only expect the user-info path.

@@ -124,6 +124,9 @@ def send_note_from_agent(
     children: Optional[str] = None,
     author_session_ids: Optional[List[Any]] = None,
     author_principal: Optional[Tuple[str, str]] = None,
+    approval_granted: bool = False,
+    approved_workflow_id: Optional[str] = None,
+    prepare_only: bool = False,
 ) -> Dict[str, Any]:
     """Write one note authored by a managed agent, or refuse and write none.
 
@@ -210,6 +213,9 @@ def send_note_from_agent(
             children=children,
             author_session_ids=author_session_ids,
             author_principal=author_principal,
+            approval_granted=approval_granted,
+            approved_workflow_id=approved_workflow_id,
+            prepare_only=prepare_only,
         )
 
     # Parsed before any query: every target column is a UUID, and a malformed
@@ -277,6 +283,35 @@ def send_note_from_agent(
         subject_context=subject_context,
         author_session_ids=author_session_ids,
     )
+    if scope.reason_code == "note_scope_requires_approval":
+        if approval_granted and str(approved_workflow_id) != str(
+            scope.approval_workflow_id
+        ):
+            return _refusal(
+                "note_approval_changed",
+                "The note approval policy or sender's human changed; submit a new note request.",
+            )
+        if approval_granted:
+            scope.allowed = True
+            scope.scope = agent_note_scope.SCOPE_ACCOUNT
+        else:
+            return {
+                "ok": False,
+                "status": "requires_approval",
+                "approval": {
+                    "workflow_id": scope.approval_workflow_id,
+                    "rule_context": scope.rule_context,
+                    "facts": scope.facts,
+                    "arguments": {
+                        "text": body,
+                        **(
+                            {"runtime_session_id": str(target_session_id)}
+                            if target_session_id
+                            else {"agent_id": str(target_agent_id)}
+                        ),
+                    },
+                },
+            }
     if not scope.allowed:
         agent_note_scope.audit_refusal(
             db,
@@ -290,6 +325,25 @@ def send_note_from_agent(
             required_scope=scope.required_scope,
             target_relation=scope.relation,
         )
+
+    if prepare_only:
+        return {
+            "ok": True,
+            "status": "ready",
+            "approval": {
+                "workflow_id": None,
+                "rule_context": None,
+                "facts": scope.facts,
+                "arguments": {
+                    "text": body,
+                    **(
+                        {"runtime_session_id": str(target_session_id)}
+                        if target_session_id
+                        else {"agent_id": str(target_agent_id)}
+                    ),
+                },
+            },
+        }
 
     now = datetime.now(timezone.utc)
     recent = crud_agent_control_command.count_recent_notes_by_author(
@@ -424,6 +478,9 @@ def _send_to_alias(
     children: Optional[str],
     author_session_ids: Optional[List[Any]],
     author_principal: Optional[Tuple[str, str]],
+    approval_granted: bool,
+    approved_workflow_id: Optional[str],
+    prepare_only: bool,
 ) -> Dict[str, Any]:
     """Resolve ``external_session_id`` or ``children`` and send as usual.
 
@@ -443,6 +500,9 @@ def _send_to_alias(
             author_execution_id=author_execution_id,
             subject_context=subject_context,
             author_session_ids=author_session_ids,
+            approval_granted=approval_granted,
+            approved_workflow_id=approved_workflow_id,
+            prepare_only=prepare_only,
         )
 
     if alias not in (None, ""):
@@ -521,6 +581,12 @@ def _send_to_alias(
         )
     if children == CHILDREN_LATEST:
         return _send(live[0].id)
+    if prepare_only:
+        return {
+            "ok": True,
+            "status": "fanout",
+            "results": [_send(child.id) for child in live],
+        }
     notes: List[Dict[str, Any]] = []
     refused: List[Dict[str, Any]] = []
     for child in live:
@@ -528,7 +594,18 @@ def _send_to_alias(
         if result.get("ok"):
             notes.append(result["note"])
         else:
-            refused.append({"runtime_session_id": str(child.id), **result["error"]})
+            refused.append(
+                {
+                    "runtime_session_id": str(child.id),
+                    **result.get(
+                        "error",
+                        {
+                            "code": "note_scope_requires_approval",
+                            "message": "Use the MCP approval workflow for this target.",
+                        },
+                    ),
+                }
+            )
     if not notes:
         failure = _refusal(
             refused[0].get("code", ERROR_TARGET_NOT_FOUND),

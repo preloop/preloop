@@ -1,4 +1,6 @@
 import '../../components/runner-compliance';
+import { hasPermission, type UserPermissions } from '../../permissions';
+import { resolveAccountPoolLabel } from '../../utils/runner-pool';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { tableScrollStyles } from '../../styles/table-scroll';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
@@ -62,6 +64,7 @@ export class RunnersView extends LitElement {
 
   /** The signed-in user: only a runner's owner may change its flow consent. */
   @state() private currentUserId: string | null = null;
+  @state() private permissions: UserPermissions = undefined;
 
   @state() private consentError: { runnerId: string; message: string } | null =
     null;
@@ -732,6 +735,7 @@ export class RunnersView extends LitElement {
       ]);
       this.runners = runners;
       this.currentUserId = profile?.id ?? null;
+      this.permissions = profile?.permissions;
       this.defaultRunnerPool = account?.default_runner_pool ?? null;
       this.hostedMinutesLeft = account?.hosted_minutes_remaining ?? null;
     } catch (err) {
@@ -766,6 +770,25 @@ export class RunnersView extends LitElement {
   }
 
   private renderDefaultPoolControl() {
+    if (!hasPermission(this.permissions, 'manage_account')) {
+      return html`
+        <div class="default-pool" data-testid="default-pool-readonly">
+          <p>
+            Default runner pool:
+            <strong
+              >${resolveAccountPoolLabel(
+                this.defaultRunnerPool,
+                this.runners
+              )}</strong
+            >
+          </p>
+          <p class="muted">
+            Changing the default runner pool needs the manage account
+            permission.
+          </p>
+        </div>
+      `;
+    }
     return html`
       <div class="default-pool">
         <preloop-runner-pool-select

@@ -258,3 +258,16 @@ def test_quota_marker_without_all_numbers_is_unchanged(
         "PRELOOP_CHECKPOINT failed HTTPError status=422"
         " detail=artifact_quota_exceeded op=capture"
     )
+
+
+def test_server_failure_without_a_code_says_server_error() -> None:
+    """The API's generic 500 is a server failure, not an unknown operation."""
+    body = json.dumps({"detail": "Internal server error"}).encode()
+    suffix = cc.http_error_suffix(http_error(500, body), "capture")
+    assert suffix == " status=500 detail=server_error op=capture"
+
+
+def test_server_failure_keeps_a_coded_reason() -> None:
+    body = json.dumps({"detail": "artifact_storage_unavailable"}).encode()
+    suffix = cc.http_error_suffix(http_error(503, body), "capture")
+    assert suffix == " status=503 detail=artifact_storage_unavailable op=capture"

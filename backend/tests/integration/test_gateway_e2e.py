@@ -507,7 +507,20 @@ def test_anthropic_messages_stream_sse_accounts_usage(client, db_session, test_u
 def test_list_models_returns_gateway_aliases_for_subject(
     client, db_session, test_user, fake_upstream
 ):
-    """The models endpoint lists every gateway-enabled alias for the account."""
+    """List account aliases alongside deployment models, excluding other accounts."""
+    _, token = _mint_runtime_token(db_session, test_user)
+    headers = {"Authorization": f"Bearer {token}"}
+    # init_db can provide operator-configured global models. They legitimately
+    # remain visible after adding account models, regardless of vendor alias.
+    baseline = client.get("/openai/v1/models", headers=headers)
+    assert baseline.status_code == 200, baseline.text
+    baseline_ids = {entry["id"] for entry in baseline.json()["data"]}
+    assert not {"openai/list-a", "anthropic/list-b", "openai/foreign"} & baseline_ids
+    foreign_account = crud_account.create(
+        db_session,
+        obj_in={"organization_name": "Other Gateway Account", "is_active": True},
+    )
+    _seed_gateway_model(db_session, foreign_account.id, alias="openai/foreign")
     _seed_gateway_model(
         db_session,
         test_user.account_id,
@@ -532,8 +545,6 @@ def test_list_models_returns_gateway_aliases_for_subject(
         },
         account_id=test_user.account_id,
     )
-    _, token = _mint_runtime_token(db_session, test_user)
-
     response = client.get(
         "/openai/v1/models",
         headers={"Authorization": f"Bearer {token}"},
@@ -543,7 +554,7 @@ def test_list_models_returns_gateway_aliases_for_subject(
     body = response.json()
     assert body["object"] == "list"
     ids = {entry["id"] for entry in body["data"]}
-    assert ids == {"openai/list-a", "anthropic/list-b"}
+    assert ids == baseline_ids | {"openai/list-a", "anthropic/list-b"}
     # No upstream dispatch for a metadata listing.
     assert fake_upstream.request_count == 0
 

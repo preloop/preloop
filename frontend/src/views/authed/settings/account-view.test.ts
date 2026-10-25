@@ -58,6 +58,8 @@ describe('AccountView', () => {
       artifactSettings?: Record<string, unknown> | null;
       artifactSettingsPut?: (body: Record<string, unknown>) => Response;
       accountHierarchy?: boolean;
+      permissions?: string[] | null;
+      profileFails?: boolean;
     } = {}
   ) {
     return sinon
@@ -115,7 +117,14 @@ describe('AccountView', () => {
         }
 
         if (url.includes('/api/v1/auth/users/me')) {
-          return json({ id: 'user-1', account_id: 'acc-1', permissions: null });
+          if (opts.profileFails) {
+            return json({ detail: 'boom' }, 500);
+          }
+          return json({
+            id: 'user-1',
+            account_id: 'acc-1',
+            permissions: opts.permissions ?? null,
+          });
         }
 
         if (url.includes('/api/v1/me/memberships')) {
@@ -268,6 +277,54 @@ describe('AccountView', () => {
     fetchStub?.restore();
     localStorage.clear();
     invalidateApiCaches();
+  });
+
+  async function saveButton(
+    permissions: string[] | null,
+    profileFails = false
+  ): Promise<{ el: AccountView; button: HTMLElement & { disabled: boolean } }> {
+    fetchStub = createFetchStub({ permissions, profileFails });
+    const el = await fixture<AccountView>(html`<account-view></account-view>`);
+    await waitUntil(
+      () => el.shadowRoot?.querySelector('[data-testid="save-account-name"]'),
+      'save button did not render'
+    );
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((c) => String(c.args[0]).includes('/auth/users/me'))
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    await el.updateComplete;
+    const button = el.shadowRoot!.querySelector(
+      '[data-testid="save-account-name"]'
+    ) as HTMLElement & { disabled: boolean };
+    return { el, button };
+  }
+
+  it('disables the account name save for a user without manage_account', async () => {
+    const { el, button } = await saveButton(['view_flows', 'edit_ai_models']);
+    expect(button.disabled).to.equal(true);
+    expect(copy(el)).to.contain(
+      'Changing the account name needs the manage account permission.'
+    );
+  });
+
+  it('enables the account name save for an owner', async () => {
+    const { el, button } = await saveButton([
+      'view_flows',
+      'edit_ai_models',
+      'manage_account',
+      'manage_budgets',
+    ]);
+    expect(button.disabled).to.equal(false);
+    expect(copy(el)).not.to.contain('needs the manage account permission');
+  });
+
+  it('keeps the account name save usable when the profile fails to load', async () => {
+    const { el, button } = await saveButton(null, true);
+    expect(button.disabled).to.equal(false);
+    expect(copy(el)).not.to.contain('needs the manage account permission');
   });
 
   it('leaves the emergency controls to the page that owns them', async () => {

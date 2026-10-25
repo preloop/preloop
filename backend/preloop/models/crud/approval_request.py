@@ -13,6 +13,55 @@ from preloop.models import models
 from ..models.approval_request import ApprovalRequest
 from .base import CRUDBase
 
+NOTE_PENDING_APPROVAL_LIMIT = 3
+
+
+class NoteApprovalLimitError(ValueError):
+    """The sender already has enough live approvals queued for this target."""
+
+
+def ensure_note_approval_capacity(
+    db: Session,
+    *,
+    account_id: str,
+    author_agent_id: Any,
+    note_facts: dict[str, Any],
+) -> None:
+    """Bound pending requests without spending the note delivery allowance.
+
+    The caller must hold the account halt lock until the new request commits,
+    so concurrent creators cannot all pass the capacity check.
+    """
+    target_key = (
+        "note_target_runtime_session_id"
+        if note_facts.get("note_target_runtime_session_id")
+        else "note_target_managed_agent_id"
+    )
+    target_id = note_facts.get(target_key)
+    if not author_agent_id or not target_id:
+        raise ValueError("Note approvals require a resolved sender and target")
+    pending = (
+        db.query(models.ApprovalRequest.id)
+        .filter(
+            models.ApprovalRequest.account_id == account_id,
+            models.ApprovalRequest.managed_agent_id == author_agent_id,
+            models.ApprovalRequest.tool_name == "send_note",
+            models.ApprovalRequest.status == "pending",
+            or_(
+                models.ApprovalRequest.expires_at.is_(None),
+                models.ApprovalRequest.expires_at > datetime.utcnow(),
+            ),
+            models.ApprovalRequest.rule_context["note_facts"][target_key].as_string()
+            == str(target_id),
+        )
+        .limit(NOTE_PENDING_APPROVAL_LIMIT)
+        .all()
+    )
+    if len(pending) >= NOTE_PENDING_APPROVAL_LIMIT:
+        raise NoteApprovalLimitError(
+            "Resolve an existing note approval for this target before asking again."
+        )
+
 
 def _escape_like(text: str) -> str:
     """Escape LIKE wildcards so a search for ``50%`` matches literally."""
@@ -79,7 +128,10 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
                 strip_sealed_original,
             )
 
-            for row in pending.all():
+            from .runtime_session_turn_state import release_approval_wait
+
+            pending_rows = pending.all()
+            for row in pending_rows:
                 cleaned, removed = strip_sealed_original(
                     getattr(row, "tool_args", None)
                 )
@@ -89,6 +141,9 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
             expired += pending.update(
                 {"status": "expired", "resolved_at": self.model.expires_at},
                 synchronize_session="fetch",
+            )
+            release_approval_wait(
+                db, [getattr(row, "runtime_session_id", None) for row in pending_rows]
             )
         if commit:
             db.commit()
@@ -156,6 +211,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         """
         return (
             db.query(self.model)
+            .options(selectinload(self.model.approval_workflow))
             .filter(
                 self.model.id == request_id,
                 self.model.approval_token == token,
@@ -376,7 +432,19 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
         Returns:
             How many requests were cancelled.
         """
+        from .runtime_session_turn_state import release_approval_wait
+
         now = datetime.utcnow()
+        session_ids = [
+            row[0]
+            for row in db.query(self.model.runtime_session_id)
+            .filter(
+                self.model.execution_id == str(execution_id),
+                self.model.status == "pending",
+                self.model.runtime_session_id.isnot(None),
+            )
+            .all()
+        ]
         cancelled = (
             db.query(self.model)
             .filter(
@@ -392,6 +460,7 @@ class CRUDApprovalRequest(CRUDBase[ApprovalRequest]):
                 synchronize_session="fetch",
             )
         )
+        release_approval_wait(db, session_ids)
         if commit:
             db.commit()
         return int(cancelled)

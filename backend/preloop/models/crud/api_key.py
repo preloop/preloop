@@ -4,15 +4,17 @@ import hashlib
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import or_
+from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Query, Session
 
-from ..models.api_key import ApiKey
-from ..models.managed_agent_credential import ManagedAgentCredential
-from ..models.user import User
+from preloop.models import models
 from .base import CRUDBase
+
+ApiKey = models.ApiKey
+ManagedAgentCredential = models.ManagedAgentCredential
+User = models.User
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,41 @@ class CRUDApiKey(CRUDBase[ApiKey]):
     def build_key_prefix(key_value: str, prefix_len: int = 12) -> str:
         """Build a non-sensitive prefix used for key lookups."""
         return key_value[:prefix_len]
+
+    def issue(
+        self,
+        db: Session,
+        *,
+        obj_in: Dict[str, Any],
+        key_value: Optional[str] = None,
+        commit: bool = True,
+    ) -> tuple[ApiKey, str]:
+        """Persist a fingerprint and return the token once, separately from the row."""
+        token = key_value or secrets.token_urlsafe(32)
+        data = dict(obj_in)
+        data.pop("key", None)
+        data["key_hash"] = self.build_key_hash(token)
+        data["key_prefix"] = self.build_key_prefix(token)
+        return super().create(db, obj_in=data, commit=commit), token
+
+    def update(
+        self,
+        db: Session,
+        *,
+        db_obj: ApiKey,
+        obj_in: Dict[str, Any],
+        commit: bool = True,
+    ) -> ApiKey:
+        """Hash legacy rotation input before updating persisted columns."""
+        data = dict(obj_in)
+        token = data.pop("key", None)
+        # Already-hashed callers used None to clear the retired plaintext field.
+        if token is not None:
+            if not isinstance(token, str) or not token:
+                raise ValueError("API key must not be empty")
+            data["key_hash"] = self.build_key_hash(token)
+            data["key_prefix"] = self.build_key_prefix(token)
+        return super().update(db, db_obj=db_obj, obj_in=data, commit=commit)
 
     def create_with_owner(
         self,
@@ -183,12 +220,14 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         include_restricted_runtime: bool = False,
     ) -> Optional[ApiKey]:
         """Get API key by key string."""
+        if not key:
+            # A blank bearer must never match a legacy sha256('') fingerprint.
+            return None
         key_hash = self.build_key_hash(key)
         key_prefix = self.build_key_prefix(key)
 
         query = db.query(ApiKey).filter(
-            (ApiKey.key == key)
-            | ((ApiKey.key_prefix == key_prefix) & (ApiKey.key_hash == key_hash))
+            ApiKey.key_prefix == key_prefix, ApiKey.key_hash == key_hash
         )
         if account_id:
             query = query.filter(ApiKey.account_id == account_id)
@@ -612,6 +651,122 @@ class CRUDApiKey(CRUDBase[ApiKey]):
         if account_id:
             query = query.filter(User.account_id == account_id)
         return query.order_by(ApiKey.created_at.desc()).all()
+
+    #: Columns ``page_by_user`` may sort by, keyed by their public name.
+    PAGE_SORTS = ("name", "created", "expires")
+
+    def page_by_user(
+        self,
+        db: Session,
+        *,
+        username: str,
+        limit: int,
+        offset: int = 0,
+        account_id: Optional[str] = None,
+        search: Optional[str] = None,
+        include_retired: bool = True,
+        sort: str = "created",
+        descending: bool = True,
+    ) -> Tuple[List[ApiKey], int, int]:
+        """Read one page of a user's keys with the counts the list needs.
+
+        Settings > API keys used to read every key (242 KB on a busy
+        account) to show 25 of them (#1694).
+
+        Args:
+            db: Database session.
+            username: Owner of the keys.
+            limit: Page size.
+            offset: Rows to skip.
+            account_id: Optional account the owner must belong to.
+            search: Case-insensitive substring of the key name.
+            include_retired: Whether revoked and expired keys are listed.
+            sort: One of ``PAGE_SORTS``.
+            descending: Sort direction.
+
+        Returns:
+            The page, the number of rows matching the filters, and the number
+            of retired keys matching the search (listed or not).
+
+        Raises:
+            ValueError: If ``sort`` is not one of ``PAGE_SORTS``.
+        """
+        if sort not in self.PAGE_SORTS:
+            raise ValueError(f"Unsupported sort: {sort}")
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        retired = or_(
+            ApiKey.is_active.is_(False),
+            ApiKey.expires_at <= now_naive,
+        )
+        # Spelled out rather than ``~retired``: NOT over a NULL expiry is NULL.
+        usable = and_(
+            ApiKey.is_active.is_(True),
+            or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now_naive),
+        )
+        base = (
+            db.query(ApiKey)
+            .join(User, ApiKey.user_id == User.id)
+            .filter(User.username == username)
+        )
+        base = self._legacy_only(base)
+        if account_id:
+            base = base.filter(User.account_id == account_id)
+        if search:
+            escaped = (
+                search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            base = base.filter(ApiKey.name.ilike(f"%{escaped}%", escape="\\"))
+        retired_count = int(
+            base.filter(retired).with_entities(func.count(ApiKey.id)).scalar() or 0
+        )
+        listed = base if include_retired else base.filter(usable)
+        total = int(listed.with_entities(func.count(ApiKey.id)).scalar() or 0)
+        if sort == "name":
+            column: Any = func.lower(ApiKey.name)
+        elif sort == "expires":
+            column = ApiKey.expires_at
+        else:
+            column = ApiKey.created_at
+        # Postgres sorts NULL as the largest value, which is what "Never
+        # expires" means.
+        order = column.desc() if descending else column.asc()
+        rows = (
+            listed.order_by(order, ApiKey.id.desc())
+            .offset(max(0, offset))
+            .limit(max(1, limit))
+            .all()
+        )
+        return rows, total, retired_count
+
+    def count_usable_by_user(
+        self, db: Session, *, username: str, account_id: Optional[str] = None
+    ) -> int:
+        """Count a user's keys that still work: active and not past expiry.
+
+        The console Overview shows this number; reading the full key list for
+        it cost about two seconds on a busy account (#1694).
+
+        Args:
+            db: Database session.
+            username: Owner of the keys.
+            account_id: Optional account the owner must belong to.
+
+        Returns:
+            Number of usable keys.
+        """
+        # ``expires_at`` is naive UTC; compare against a naive UTC cutoff, not
+        # func.now(), which depends on the session TimeZone.
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        query = (
+            db.query(func.count(ApiKey.id))
+            .join(User, ApiKey.user_id == User.id)
+            .filter(User.username == username, ApiKey.is_active.is_(True))
+            .filter(or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > now_naive))
+        )
+        query = self._legacy_only(query)
+        if account_id:
+            query = query.filter(User.account_id == account_id)
+        return int(query.scalar() or 0)
 
     def get_by_id_and_user(
         self,

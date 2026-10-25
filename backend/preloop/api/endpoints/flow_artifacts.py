@@ -2,6 +2,7 @@
 
 import logging
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from uuid import UUID
@@ -9,6 +10,7 @@ from uuid import UUID
 import jwt
 from anyio import from_thread
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from preloop.config import settings
@@ -18,6 +20,7 @@ from preloop.models.crud import (
     crud_flow_execution,
     flow_artifact,
 )
+from preloop.models.crud.audit_chain import postgres_sqlstate
 from preloop.models.db.session import get_db_session
 from preloop.models.schemas.flow_artifact import ArtifactReference
 from preloop.services.flow_artifacts import (
@@ -36,6 +39,12 @@ _REJECTION_REASON = re.compile(r"[a-z0-9_]{1,64}")
 # Must cover the longest allowed execution (24h) plus a short buffer so the
 # final prepublication PUT is not rejected after a long coding run.
 ARTIFACT_CAPABILITY_TTL = timedelta(hours=24, minutes=5)
+
+# A PUT that loses a lock-order race is rolled back whole, so replaying the
+# same archive is safe. Bounded: a persistent conflict still surfaces.
+ARTIFACT_PUT_ATTEMPTS = 3
+ARTIFACT_PUT_RETRY_DELAY_SECONDS = 0.1
+_RETRYABLE_SQLSTATES = frozenset({"40P01", "40001"})  # deadlock, serialization
 
 CAPABILITY_AUDIENCE = "flow-artifact"
 # What a caller gets instead of a bare "invalid_artifact_capability". These
@@ -255,6 +264,39 @@ def record_artifact_rejection(
             pass
 
 
+def is_retryable_lock_conflict(exc: OperationalError) -> bool:
+    """True for a deadlock or serialization abort PostgreSQL rolled back."""
+    return postgres_sqlstate(exc) in _RETRYABLE_SQLSTATES
+
+
+def _put_with_retry(
+    db: Session, execution_id: UUID, claims: dict[str, Any], archive: bytes
+) -> ArtifactReference:
+    """Store the archive, replaying a PUT PostgreSQL aborted on a lock cycle."""
+    for attempt in range(1, ARTIFACT_PUT_ATTEMPTS + 1):
+        try:
+            return put_artifact(
+                db,
+                account_id=claims["account_id"],
+                flow_id=claims["flow_id"],
+                execution_id=execution_id,
+                thread_id=claims["thread_id"],
+                kind=claims["kind"],
+                archive=archive,
+            )
+        except OperationalError as exc:
+            if attempt == ARTIFACT_PUT_ATTEMPTS or not is_retryable_lock_conflict(exc):
+                raise
+            flow_artifact.rollback(db)
+            logger.warning(
+                "artifact PUT lock conflict, retrying execution_id=%s attempt=%s",
+                execution_id,
+                attempt,
+            )
+            time.sleep(ARTIFACT_PUT_RETRY_DELAY_SECONDS * attempt)
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
 def _upload_artifact(
     execution_id: UUID,
     request: Request,
@@ -274,17 +316,12 @@ def _upload_artifact(
             data.extend(chunk)
         return bytes(data)
 
+    # End the authorization read before the upload: a slow body must not
+    # keep a transaction open on the API's connection.
+    flow_artifact.end_read(db)
     archive = from_thread.run(read_archive)
     try:
-        return put_artifact(
-            db,
-            account_id=claims["account_id"],
-            flow_id=claims["flow_id"],
-            execution_id=execution_id,
-            thread_id=claims["thread_id"],
-            kind=claims["kind"],
-            archive=archive,
-        )
+        return _put_with_retry(db, execution_id, claims, archive)
     except flow_artifact.ArtifactQuotaExceeded as exc:
         flow_artifact.rollback(db)
         # Byte totals only: no artifact ids, names or contents (#1339).

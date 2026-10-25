@@ -182,7 +182,7 @@ async def test_register_tracker_rejects_a_pasted_gateway_url():
         await inspect.unwrap(register_tracker)(
             request,
             MagicMock(),
-            current_user=SimpleNamespace(account_id=uuid4()),
+            current_user=SimpleNamespace(account_id=uuid4(), is_superuser=True),
             db=MagicMock(),
         )
     assert caught.value.status_code == 400

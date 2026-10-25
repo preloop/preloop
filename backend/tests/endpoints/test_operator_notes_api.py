@@ -689,6 +689,20 @@ def test_session_end_marks_session_only_notes_undeliverable(
         db_session, account_id=test_user.account_id, note_id=agent_note_id
     )
     assert still_waiting.status == "pending"
+    # The board's session-end timestamp is recorded by this route too (#1889).
+    from preloop.models.models.runtime_session_activity import (
+        RuntimeSessionActivity,
+    )
+
+    ends = (
+        db_session.query(RuntimeSessionActivity)
+        .filter(
+            RuntimeSessionActivity.runtime_session_id == agent.runtime_session_id,
+            RuntimeSessionActivity.activity_type == "session_end",
+        )
+        .all()
+    )
+    assert len(ends) == 1 and ends[0].summary is None
 
 
 def test_session_end_requires_a_runtime_bearer(client):

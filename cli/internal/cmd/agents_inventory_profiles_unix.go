@@ -47,6 +47,17 @@ func openInventoryConfig(root *os.Root, path string) (*os.File, error) {
 		}
 		opened := os.NewFile(uintptr(fd), component)
 		if i == len(components)-1 {
+			var info unix.Stat_t
+			if err := unix.Fstat(fd, &info); err != nil {
+				opened.Close()
+				return nil, err
+			}
+			// A known config name must not alias another profile's config or a
+			// credential file through a hard link, or block on a special file.
+			if info.Mode&unix.S_IFMT != unix.S_IFREG || info.Nlink != 1 {
+				opened.Close()
+				return nil, os.ErrPermission
+			}
 			return opened, nil
 		}
 		directory.Close()

@@ -76,6 +76,29 @@ class TestPresetIdentity:
     def test_description_mentions_issue_coverage(self, preset: dict) -> None:
         assert "in full or in part" in _norm(preset["description"])
 
+    @pytest.mark.parametrize(
+        ("source", "event_type"),
+        [("github", "pull_request_updated"), ("gitlab", "merge_request_updated")],
+    )
+    def test_incremental_scope_accepts_native_update_events(
+        self, template: str, source: str, event_type: str
+    ) -> None:
+        rendered = _render_preset_prompt(
+            template,
+            {
+                "source": source,
+                "type": event_type,
+                "payload": {"object_attributes": {"url": "https://example.com/pr/1"}},
+            },
+        )
+        scope = rendered.split("**Step 1.2.2: Determine Review Scope", 1)[1].split(
+            "**Step 1.3:", 1
+        )[0]
+        assert f"Trigger: {event_type}" in rendered
+        assert f"`{event_type}`" in scope
+        assert "previous Preloop review exists" in _norm(scope)
+        assert "<!-- preloop-review:reviewed-sha:... -->" in scope
+
 
 class TestToolAllowlist:
     def test_exact_allowlist(self, preset: dict) -> None:

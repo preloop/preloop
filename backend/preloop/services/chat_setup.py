@@ -210,6 +210,7 @@ async def discover(
             teams = [row for row in teams if row["id"] == team_id]
         return {
             "bot_user_id": bot_id,
+            "bot_username": str(identity.get("username") or "")[:120],
             "name": str(
                 identity.get("first_name") or identity.get("username") or "Mattermost"
             )[:120],

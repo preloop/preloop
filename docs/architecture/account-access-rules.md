@@ -19,6 +19,11 @@ Recipient API responses use `SharedResourceRead`, a closed projection without
 credentials, authentication configuration, endpoints, or enrollment data. Mutations
 and credential exports remain scoped to the owning account.
 
+Flow definitions bind global or account-owned AI models. Shared model visibility
+and gateway invocation do not authorize a flow model binding. Tool configuration
+references to MCP servers and managed agents also remain owner-scoped; visibility
+of a shared resource does not grant ownership of its configuration.
+
 Shared model execution resolves owner credentials and tariffs server side while
 writing usage under the consuming account. Shared MCP owner restrictions can only
 tighten consumer policy, and mandatory approvals resolve the consumer's workflow.

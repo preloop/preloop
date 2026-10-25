@@ -361,6 +361,12 @@ class ApiKeyResponse(BaseModel):
     last_used_at: Optional[datetime] = None
 
 
+class ApiKeyCount(BaseModel):
+    """How many of the current user's API keys are usable."""
+
+    active: int = Field(..., description="Keys that are active and not expired.")
+
+
 class ApiKeySummary(BaseModel):
     """Summary model for API key data (without the key itself)."""
 

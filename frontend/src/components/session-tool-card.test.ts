@@ -169,3 +169,20 @@ describe('session-tool-card', () => {
     );
   });
 });
+
+describe('session-tool-card quiet facts (U-07)', () => {
+  it('says nothing for an unknown state, a zero duration or the default allow reason', async () => {
+    const el = await renderCard(
+      call({
+        state: 'unknown',
+        durationMs: 0,
+        summary: 'No central native rule requires approval',
+      })
+    );
+    const text = (el.shadowRoot!.textContent || '').replace(/\s+/g, ' ');
+    expect(text).to.not.contain('unknown');
+    expect(text).to.not.match(/\b0(\.0)?m?s\b/);
+    expect(text).to.not.contain('No central native rule');
+    expect(text).to.contain('terminal');
+  });
+});

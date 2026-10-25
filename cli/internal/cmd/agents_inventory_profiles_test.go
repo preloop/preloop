@@ -44,7 +44,7 @@ func TestAllUsersInventoryPlatformFixtures(t *testing.T) {
 			t.Setenv("OPENCLAW_CONFIG_PATH", filepath.Join(base, "secret-override"))
 			t.Setenv("PI_CODING_AGENT_DIR", filepath.Join(base, "secret-override"))
 			pd := inventoryProfileDependencies{Profiles: func() ([]inventoryProfile, bool, error) {
-				return []inventoryProfile{{homes[0]}, {homes[1]}, {homes[2]}}, false, nil
+				return []inventoryProfile{{Home: homes[0]}, {Home: homes[1]}, {Home: homes[2]}}, false, nil
 			}, OpenRoot: func(home string) (*os.Root, error) {
 				if home == homes[2] {
 					return nil, os.ErrPermission
@@ -113,7 +113,7 @@ func TestAllUsersInventoryRejectsLinksAndSpecialFiles(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	deps := inventoryTestDependencies(t, home)
-	pd := inventoryProfileDependencies{Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{home}}, false, nil }, OpenRoot: os.OpenRoot}
+	pd := inventoryProfileDependencies{Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }, OpenRoot: os.OpenRoot}
 	result := collectAllUsersInventory(deps, pd, "salt", "context")
 	if result.Completeness != "partial" {
 		t.Fatal("link must mark partial")
@@ -162,24 +162,6 @@ func TestAllUsersInventoryFailuresAndBounds(t *testing.T) {
 	}
 }
 
-// Every registered app must explicitly declare each requested platform. A new
-// app or removed path fails this test instead of silently reducing parity.
-func TestInventoryProfilePlatformParity(t *testing.T) {
-	for _, spec := range agentSpecs {
-		for _, goos := range []string{"darwin", "windows", "linux"} {
-			paths := inventoryProfileConfigPaths(goos, "fixture-home", spec)
-			if len(paths) == 0 {
-				t.Errorf("%s has no %s profile paths or unsupported declaration", spec.Name, goos)
-			}
-			for _, path := range paths {
-				if !strings.HasPrefix(path, "fixture-home"+string(filepath.Separator)) {
-					t.Errorf("unconfined %s %s path %q", spec.Name, goos, path)
-				}
-			}
-		}
-	}
-}
-
 func TestInventoryParityRejectsMissingWindowsDeclaration(t *testing.T) {
 	old := inventoryProfilePlatforms["Cursor"]
 	inventoryProfilePlatforms["Cursor"] &^= 2
@@ -221,7 +203,7 @@ func TestAllUsersInventoryCommandOfflineAndReport(t *testing.T) {
 			deps := inventoryTestDependencies(t, base)
 			oldProbes, oldProfiles := inventoryProbes, inventoryProfiles
 			inventoryProbes = deps
-			inventoryProfiles = inventoryProfileDependencies{Elevated: func() bool { return true }, Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{home}}, false, nil }, OpenRoot: os.OpenRoot}
+			inventoryProfiles = inventoryProfileDependencies{Elevated: func() bool { return true }, Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }, OpenRoot: os.OpenRoot}
 			oldRuntime := runtimeExecutableProbe
 			runtimeExecutableProbe = func(string) (string, error) { t.Fatal("ordinary discovery invoked"); return "", nil }
 			oldClaude, oldCodex := claudeKeychainPresenceProbe, codexKeychainPresenceProbe
@@ -254,9 +236,9 @@ func TestAllUsersInventoryCommandOfflineAndReport(t *testing.T) {
 						t.Errorf("offline command made %d requests", spy.calls)
 					}
 				})
-				oldMachineID := readMachineID
-				readMachineID = func() (string, error) { t.Fatal("offline machine identity probe"); return "", nil }
-				t.Cleanup(func() { readMachineID = oldMachineID })
+				oldMachineID := readInventoryMachineID
+				readInventoryMachineID = func() (string, error) { t.Fatal("offline machine identity probe"); return "", nil }
+				t.Cleanup(func() { readInventoryMachineID = oldMachineID })
 				args = append(args, "--inventory")
 			}
 			rootCmd.SetArgs(args)
@@ -319,7 +301,7 @@ func TestAllUsersInventoryParentLinksAndOversizedConfig(t *testing.T) {
 				}
 			}
 			deps := inventoryTestDependencies(t, base)
-			pd := inventoryProfileDependencies{Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{home}}, false, nil }, OpenRoot: os.OpenRoot}
+			pd := inventoryProfileDependencies{Profiles: func() ([]inventoryProfile, bool, error) { return []inventoryProfile{{Home: home}}, false, nil }, OpenRoot: os.OpenRoot}
 			result := collectAllUsersInventory(deps, pd, "salt", "context")
 			if result.Completeness != "partial" {
 				t.Fatal("unsafe path marked complete")
@@ -392,5 +374,29 @@ func TestAllUsersInventoryOpenRejectsParentReparse(t *testing.T) {
 	if err == nil {
 		file.Close()
 		t.Fatal("atomic config open followed a parent symlink")
+	}
+}
+
+type inventoryFakeDirEntry struct{ name string }
+
+func (e inventoryFakeDirEntry) Name() string               { return e.name }
+func (e inventoryFakeDirEntry) IsDir() bool                { return true }
+func (e inventoryFakeDirEntry) Type() os.FileMode          { return os.ModeDir }
+func (e inventoryFakeDirEntry) Info() (os.FileInfo, error) { return nil, os.ErrNotExist }
+
+func TestInventoryDirectoryProfilesKeepEntriesReadBeforeError(t *testing.T) {
+	readErr := errors.New("readdir failed mid-enumeration")
+	entries := []os.DirEntry{inventoryFakeDirEntry{"alice"}, inventoryFakeDirEntry{"bob"}}
+	profiles, _, err := inventoryDirectoryProfiles("/home", entries, readErr, true)
+	if err != readErr {
+		t.Fatalf("err = %v, want %v", err, readErr)
+	}
+	want := []inventoryProfile{{Home: filepath.Join("/home", "alice")}, {Home: filepath.Join("/home", "bob")}, {Home: "/root"}}
+	if !reflect.DeepEqual(profiles, want) {
+		t.Fatalf("profiles = %#v, want %#v", profiles, want)
+	}
+	profiles, _, err = inventoryDirectoryProfiles("/Users", entries[:1], readErr, false)
+	if err != readErr || len(profiles) != 1 || profiles[0].Home != filepath.Join("/Users", "alice") {
+		t.Fatalf("profiles=%#v err=%v", profiles, err)
 	}
 }

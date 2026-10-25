@@ -57,9 +57,12 @@ helm upgrade preloop ./helm/preloop \
   --set image.tag=<new-version>
 ```
 
-Database migrations run automatically: the chart ships a `post-upgrade` Job
-(`migration-job`) that executes `alembic upgrade head` against the configured
-database after each `helm upgrade`, so no manual migration step is needed.
+Database migrations run automatically: the chart ships a `pre-upgrade` Job
+(`migration-job`) that executes `python -m preloop.models.migrate` against the
+configured database before each `helm upgrade`. It commits each revision and
+retries transient lock contention; explicit concurrent-index statements have
+separate finite waits while blocking DDL retains its short lock timeout. No
+manual migration step is needed. See [schema migration diagnostics](schema-migrations.md).
 
 ## CLI
 
@@ -106,6 +109,13 @@ run the CLI, to disable it entirely: opted-out installs never phone home and
 never appear in instance tracking or adoption metrics. Update notices are
 suppressed too, since they ride on the check-in response. This is the standing
 rule for internal, CI, or throwaway test installs.
+
+## Rehearse before upgrading
+
+Use the [local upgrade acceptance harness](upgrade-acceptance.md) to test the
+latest published 0.17.x release against a candidate commit or published RC. It
+creates disposable Compose and kind/Helm stacks with synthetic data, preserves
+keys and database volumes across migration, and verifies logins and credentials.
 
 ## See also
 

@@ -46,7 +46,7 @@ from preloop.utils.bitbucket_dc_webhooks import (
     generate_webhook_secret,
     webhook_callback_path,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +217,7 @@ def rotate_bitbucket_dc_webhook_secret(
     Deliveries signed with the previous secret are rejected from now on, so
     update the hook (or call the register endpoint) right after rotating.
     """
+    ensure_permission_in_oss(db, current_user, "edit_trackers")
     tracker = _tracker(db, tracker_id, current_user)
     secret = generate_webhook_secret()
     # The tracker CRUD routes this field into an encrypted SecretReference
@@ -241,6 +242,7 @@ def register_bitbucket_dc_webhook(
     Idempotent: re-running updates Preloop's hook in place and never
     deletes or edits other hooks on the repository.
     """
+    ensure_permission_in_oss(db, current_user, "edit_trackers")
     tracker = _tracker(db, tracker_id, current_user)
     url = _callback_url(tracker)
     if url is None:

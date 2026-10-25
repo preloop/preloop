@@ -3,8 +3,7 @@
 This module provides a single ``log_config_change`` helper that endpoints
 can call after any configuration mutation (create, update, delete, toggle).
 
-The helper gracefully degrades to a no-op when the EE audit plugin is not
-installed, so OSS callers never need to guard the import.
+Collection uses the core audit service in every edition.
 """
 
 import logging
@@ -25,13 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 def _get_audit_service():
-    """Lazy-import the EE audit service singleton (returns None in OSS)."""
-    try:
-        from plugins.audit.service import get_audit_service
+    """Resolve the core audit singleton lazily to avoid circular imports."""
+    from preloop.services.audit import get_audit_service
 
-        return get_audit_service()
-    except ImportError:
-        return None
+    return get_audit_service()
 
 
 def log_config_change(
@@ -47,7 +43,7 @@ def log_config_change(
     """Log a configuration change to the audit trail.
 
     This is a thin wrapper around ``AuditService.log_configuration_change``
-    that silently skips logging when the audit plugin is absent.
+    available in every edition.
 
     Args:
         db: Active database session.
@@ -121,6 +117,9 @@ def log_model_gateway_request(
     ``gateway_subject`` names the developer a trusted upstream gateway
     identified (``id``, ``email``, ``external_subject``, ``api_key_id``).
     """
+    from preloop.services.audit.service import safe_gateway_subject
+
+    gateway_subject = safe_gateway_subject(gateway_subject)
     audit_service = _get_audit_service()
     if audit_service is None:
         _log_model_gateway_request_fallback(
@@ -256,6 +255,10 @@ def log_model_gateway_request(
             flow_id=flow_id,
             flow_execution_id=flow_execution_id,
             upstream_request_id=upstream_request_id,
+            request_fingerprint=request_fingerprint,
+            gateway_attempt=gateway_attempt,
+            is_retry=is_retry,
+            retry_of_api_usage_id=retry_of_api_usage_id,
             error_detail=error_detail,
             error_type=error_type,
             budget=budget,
@@ -330,7 +333,7 @@ def _log_model_gateway_request_fallback(
     estimated_cost: Optional[float] = None,
     gateway_subject: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Persist a compatible audit log when the EE audit service is unavailable."""
+    """Persist a compatible audit log when the audit service fails."""
     details = {
         "api_usage_id": api_usage_id,
         "endpoint": endpoint,

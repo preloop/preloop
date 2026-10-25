@@ -90,6 +90,7 @@ def upsert_copilot_connection(
     current_user: models.User = Depends(get_current_active_user),
 ) -> CopilotConnectionResponse:
     """Create or update the Copilot connection and its operator seat price."""
+    ensure_permission_in_oss(db, current_user, "manage_budgets")
     account = get_account_or_404(db, current_user)
     secrets = get_secret_service()
     connection = crud_copilot_import_connection.get_for_account(
@@ -162,6 +163,7 @@ def delete_copilot_connection(
     current_user: models.User = Depends(get_current_active_user),
 ) -> Response:
     """Remove the connection and its tokens; imported history is kept."""
+    ensure_permission_in_oss(db, current_user, "manage_budgets")
     account = get_account_or_404(db, current_user)
     connection = crud_copilot_import_connection.get_for_account(
         db, account_id=account.id
@@ -194,6 +196,7 @@ def sync_copilot_connection(
     A plain ``def`` handler runs on the threadpool, so the database lookup
     never blocks the event loop; only the publish hops back onto the loop.
     """
+    ensure_permission_in_oss(db, current_user, "manage_budgets")
     account = get_account_or_404(db, current_user)
     connection = crud_copilot_import_connection.get_for_account(
         db, account_id=account.id

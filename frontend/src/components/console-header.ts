@@ -1,3 +1,4 @@
+import { randomUuid } from '../utils/random-uuid';
 import { getBrandConfig } from '../brand-config';
 import { releaseBlogUrl } from '../release-blog';
 import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
@@ -922,7 +923,7 @@ export class ConsoleHeader extends LitElement {
           message.type === 'role_changed'
         ) {
           const notification: UserNotification = {
-            id: message.id || crypto.randomUUID(),
+            id: message.id || randomUuid(),
             type: this.mapMessageTypeToNotificationType(message.type),
             title: message.title || this.getNotificationTitle(message.type),
             message: message.message || '',

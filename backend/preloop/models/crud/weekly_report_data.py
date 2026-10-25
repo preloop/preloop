@@ -13,7 +13,7 @@ from preloop.models.crud import crud_api_usage
 from preloop.models.crud.api_usage import (
     cache_split_columns,
     cache_split_from_row,
-    exclude_replay_usage_condition,
+    exclude_customer_overhead_condition,
 )
 from preloop.models.crud.weekly_signals import approval_signals
 
@@ -59,7 +59,7 @@ def usage_snapshot(
         usage.action_type == "model_gateway",
         usage.timestamp >= start.astimezone(timezone.utc).replace(tzinfo=None),
         usage.timestamp < end.astimezone(timezone.utc).replace(tzinfo=None),
-        exclude_replay_usage_condition(),
+        exclude_customer_overhead_condition(),
     ]
     if user_id is not None:
         predicates.append(usage.user_id == user_id)
@@ -259,7 +259,7 @@ def team_usage(
                 usage.action_type == "model_gateway",
                 usage.timestamp >= start.replace(tzinfo=None),
                 usage.timestamp < end.replace(tzinfo=None),
-                exclude_replay_usage_condition(),
+                exclude_customer_overhead_condition(),
             ),
         )
         .filter(user.account_id == account_id, user.is_active.is_(True))

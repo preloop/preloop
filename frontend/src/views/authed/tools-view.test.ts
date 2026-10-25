@@ -11,11 +11,13 @@ describe('ToolsView (approvals + conditions)', () => {
   let fetchStub: sinon.SinonStub;
   let overrideAgentIds: string[];
   let accountAgents: { id: string; display_name: string }[];
+  let detailAgents: Record<string, { id: string; display_name: string }>;
   let failGovernanceGet: boolean;
   let failGovernancePut: boolean;
 
   beforeEach(() => {
     overrideAgentIds = ['agent-override-1'];
+    detailAgents = {};
     accountAgents = [
       { id: 'agent-override-1', display_name: 'Claude Code Workspace' },
     ];
@@ -94,7 +96,7 @@ describe('ToolsView (approvals + conditions)', () => {
           });
         }
 
-        if (url.endsWith('/api/v1/ai-models') && method === 'GET') {
+        if (url.includes('/api/v1/ai-models') && method === 'GET') {
           return new Response(JSON.stringify([]), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -144,6 +146,21 @@ describe('ToolsView (approvals + conditions)', () => {
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
+        }
+
+        const single = url.match(/\/api\/v1\/agents\/([^/?]+)(\?|$)/);
+        if (single && method === 'GET') {
+          const agent = detailAgents[decodeURIComponent(single[1])];
+          if (!agent) {
+            return new Response(JSON.stringify({ detail: 'Not found' }), {
+              status: 404,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify({ agent }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
         }
 
         if (url.includes('/api/v1/agents?') || url.endsWith('/api/v1/agents')) {
@@ -264,6 +281,42 @@ describe('ToolsView (approvals + conditions)', () => {
         .getCalls()
         .filter((call) => call.args[0].toString() === '/api/v1/tools')
     ).to.have.length(1);
+  });
+
+  it('asks tools/stats for per-tool totals only on first view (#1695)', async () => {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/api/v1/tools/stats')),
+      'tools/stats was not requested'
+    );
+    const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+    const stats = urls.find((url) => url.includes('/api/v1/tools/stats'))!;
+    expect(stats).to.contain('include_agents=false');
+    // Input schemas stay on the full catalogue until a tool is expanded.
+    expect(urls.some((url) => url.endsWith('/api/v1/tools'))).to.equal(false);
+    el.remove();
+  });
+
+  it('asks only for the default models on first view (#1695)', async () => {
+    const el = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/api/v1/ai-models')),
+      'ai-models was not requested'
+    );
+    const models = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/api/v1/ai-models'));
+    // The page reads "is there a default model"; the full catalog was 75 KB
+    // of a 206 KB first load on prod.
+    expect(models).to.deep.equal(['/api/v1/ai-models?default_only=true']);
+    el.remove();
   });
 
   it('hydrates same-name native and builtin tools from their own source', async () => {
@@ -620,6 +673,35 @@ describe('ToolsView (approvals + conditions)', () => {
     expect(element.shadowRoot?.querySelector('.governance-notice')).to.be.null;
   });
 
+  it('names an override agent the first list page did not return (B-14)', async () => {
+    overrideAgentIds = ['agent-1', 'agent-retired', 'agent-gone'];
+    accountAgents = [{ id: 'agent-1', display_name: 'Agent one' }];
+    detailAgents = {
+      'agent-retired': { id: 'agent-retired', display_name: 'Retired helper' },
+    };
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(
+      () =>
+        (
+          element.shadowRoot?.querySelector('#native-approvals-override-list')
+            ?.textContent || ''
+        ).includes('Retired helper'),
+      'override names did not resolve'
+    );
+    const overrides = element.shadowRoot!.querySelector(
+      '#native-approvals-override-list'
+    )!;
+    const text = overrides.textContent || '';
+    expect(text).to.include('Agent one');
+    expect(text).to.include('Unnamed agent');
+    expect(text).to.not.include('agent-gone');
+    const unnamed = Array.from(overrides.querySelectorAll('a')).find(
+      (link) => link.textContent?.trim() === 'Unnamed agent'
+    )!;
+    expect(unnamed.getAttribute('title')).to.equal('agent-gone');
+    expect(unnamed.getAttribute('href')).to.equal('/console/agents/agent-gone');
+  });
+
   it('caps the override list at 5 agents and links the remainder', async () => {
     overrideAgentIds = [
       'agent-1',
@@ -772,6 +854,31 @@ describe('ToolsView (approvals + conditions)', () => {
     expect(
       element.shadowRoot?.querySelector('#native-approvals-default-switch')
     ).to.exist;
+  });
+
+  it('does not write shared server configuration from tool events', async () => {
+    const element = await fixture<ToolsView>(html`<tools-view></tools-view>`);
+    await waitUntil(() => !(element as any).toolsContextLoading);
+    const view = element as any;
+    view.mcpServers = [
+      { id: 'shared-server', is_shared: true, read_only: true },
+    ];
+    const tool = {
+      ...view.tools[0],
+      source: 'mcp',
+      source_id: 'shared-server',
+    };
+    const reject = sinon.spy();
+    fetchStub.resetHistory();
+    await view._handleToggleEnabled(
+      new CustomEvent('toggle-enabled', { detail: { tool, isEnabled: false } })
+    );
+    await view._handleSaveRule(
+      new CustomEvent('save-rule', { detail: { tool, reject } })
+    );
+    expect(reject.calledOnce).to.equal(true);
+    expect(reject.firstCall.args[0]).to.include('read-only');
+    expect(fetchStub.called).to.equal(false);
   });
 
   it('does not create tool configuration twice when adding a rule immediately after toggling enabled', async () => {
@@ -952,7 +1059,7 @@ describe('ToolsView – tabs and toolbar', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         }
-        if (url.endsWith('/api/v1/ai-models') && method === 'GET') {
+        if (url.includes('/api/v1/ai-models') && method === 'GET') {
           return new Response(JSON.stringify([]), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -1538,6 +1645,36 @@ describe('ToolsView – tabs and toolbar', () => {
     expect(options).to.deep.equal(['command', 'description', 'timeout']);
   });
 
+  it('counts only enabled rules as "with rules", as the rows do (B-16)', async () => {
+    tools = [
+      makeNativeTool({
+        access_rules: [
+          {
+            id: 'rule-off',
+            action: 'deny',
+            is_enabled: false,
+            condition_expression: null,
+            priority: 0,
+          },
+        ],
+      }),
+      makeNativeTool({ name: 'Edit' }),
+    ];
+    window.history.replaceState(
+      {},
+      '',
+      `${window.location.pathname}?tab=native`
+    );
+    const el = (await fixture(html`<tools-view></tools-view>`)) as ToolsView;
+    await waitUntil(
+      () => !(el as any).loading && (el as any).governanceDefaults !== null,
+      'Governance defaults did not load'
+    );
+    await el.updateComplete;
+    const strip = el.shadowRoot?.querySelector('.native-summary-strip');
+    expect(strip?.textContent?.replace(/\s+/g, ' ')).to.include('0 with rules');
+  });
+
   it('native tab summary strip states the counts and the account default', async () => {
     // B-T2: the Native tab ran a different toolbar pattern from MCP and never
     // stated the default that governs a ruleless row.
@@ -1968,7 +2105,7 @@ describe('ToolsView – starter policy suggestions', () => {
             headers: { 'Content-Type': 'application/json' },
           });
         }
-        if (url.endsWith('/api/v1/ai-models') && method === 'GET') {
+        if (url.includes('/api/v1/ai-models') && method === 'GET') {
           return new Response(JSON.stringify(aiModels), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },

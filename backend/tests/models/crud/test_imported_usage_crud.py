@@ -12,6 +12,7 @@ Pins the cost-ledger contract for spend observed outside the model gateway:
 """
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from preloop.models.crud import crud_api_usage
 
@@ -529,3 +530,111 @@ def test_by_conversation_is_account_scoped_windowed_and_filterable(
         db_session, runtime_principal_id="ws-A", **window
     )
     assert [row["conversation_id"] for row in by_principal] == ["conv-in"]
+
+
+def test_reconciliation_key_set_preserves_scope_and_filtered_totals(
+    db_session: Any, create_account: Any
+) -> None:
+    """Reconciliation is account/provider/conversation scoped, across models.
+
+    Principal and source filters select reported rows, not the billing records
+    that supersede them. Multiple billing records must not multiply estimates.
+    """
+    account = create_account()
+    other = create_account()
+    start = datetime(2026, 8, 1)
+    end = start + timedelta(days=7)
+    base = dict(timestamp=start, runtime_principal_id="agent-a", source="example")
+    for conversation in ("billed", "unbilled", "other-account", "other-provider", None):
+        _log_imported(
+            db_session,
+            account_id=account.id,
+            **base,
+            conversation_id=conversation,
+            cost_basis="estimated",
+            cost_usd=2,
+        )
+    # NULL cost basis remains billable even when its conversation is reconciled.
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        **base,
+        conversation_id="billed",
+        cost_basis=None,
+        cost_usd=3,
+    )
+    for principal in ("agent-b", "agent-c"):
+        _log_imported(
+            db_session,
+            account_id=account.id,
+            timestamp=start,
+            source="example",
+            model_alias="another-model",
+            runtime_principal_id=principal,
+            conversation_id="billed",
+            cost_basis="reconciled",
+            cost_usd=0.5,
+        )
+    _log_imported(
+        db_session,
+        account_id=other.id,
+        **base,
+        conversation_id="other-account",
+        cost_basis="reconciled",
+        cost_usd=7,
+    )
+    _log_imported(
+        db_session,
+        account_id=account.id,
+        timestamp=start,
+        source="different",
+        conversation_id="other-provider",
+        cost_basis="reconciled",
+        cost_usd=11,
+    )
+    filters = dict(account_id=str(account.id), start_date=start, end_date=end)
+    totals = crud_api_usage.get_imported_usage_summary(
+        db_session, **filters, runtime_principal_id="agent-a", source="example"
+    )
+    assert totals == {"event_count": 6, "total_tokens": 900, "imported_cost": 11.0}
+    by_model = crud_api_usage.get_imported_usage_by_model(
+        db_session, **filters, runtime_principal_id="agent-a", source="example"
+    )
+    assert len(by_model) == 1
+    assert by_model[0]["imported_cost"] == 11.0
+    assert by_model[0]["request_count"] == 6
+    all_totals = crud_api_usage.get_imported_usage_summary(db_session, **filters)
+    assert all_totals["imported_cost"] == 23.0
+
+
+def test_null_provider_is_not_a_reconciliation_key(
+    db_session: Any, create_account: Any
+) -> None:
+    """SQL NULL provider names never match, including other NULL providers."""
+    account = create_account()
+    start = datetime(2026, 8, 1)
+    for basis in ("estimated", "reconciled"):
+        row = _log_imported(
+            db_session,
+            account_id=account.id,
+            timestamp=start,
+            conversation_id="same-conversation",
+            cost_basis=basis,
+            cost_usd=2,
+        )
+        crud_api_usage.update(db_session, db_obj=row, obj_in={"provider_name": None})
+    filters = dict(
+        account_id=str(account.id), start_date=start, end_date=start + timedelta(days=1)
+    )
+    assert (
+        crud_api_usage.get_imported_usage_summary(db_session, **filters)[
+            "imported_cost"
+        ]
+        == 4
+    )
+    assert (
+        crud_api_usage.get_imported_usage_by_model(db_session, **filters)[0][
+            "imported_cost"
+        ]
+        == 4
+    )

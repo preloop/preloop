@@ -77,7 +77,7 @@ server exports the last 30 days.
 | --- | --- | --- |
 | `execution_failure` | A flow execution that ended in a failure status | `flow_execution` |
 | `kill_switch_activation` | An account halt being turned on | `audit_log` |
-| `policy_deny` | A tool call refused by policy | `audit_log`, Enterprise only |
+| `policy_deny` | A tool call refused by policy | `audit_log` |
 | `budget_breach` | A gateway request refused because a budget was spent | `audit_log` |
 | `gateway_upstream_failure` | A gateway call that failed at, or on the way to, the provider | `api_usage` |
 
@@ -148,13 +148,12 @@ Fields the running deployment cannot fill are empty, and the manifest's
 `edition` block names each one with the reason:
 
 - `last_config_change_at` and `last_config_change_by` on asset rows come from
-  `configuration_change` audit records, which only the Enterprise audit plugin
-  writes. On other deployments they are empty.
-- `policy_deny` incident rows are only persisted by that same plugin. On other
-  deployments the count is zero and the manifest says the rows are unrecorded,
-  which is not the same statement as "no tool call was ever denied". Policy
-  denials still happen and are still enforced; they are simply not written to
-  the audit trail without the plugin.
+  `configuration_change` audit records collected by the core audit service in
+  every edition. They are empty when no matching record is available.
+- `policy_deny` incident rows come from the same core audit trail. A zero count
+  describes the retained records in the selected period; it does not establish
+  that no tool call was ever denied. The manifest identifies unavailable source
+  data on older servers that do not collect these events.
 
 The CLI prints these notes after every export.
 

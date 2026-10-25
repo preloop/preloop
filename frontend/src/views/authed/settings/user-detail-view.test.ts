@@ -170,19 +170,52 @@ function stubFetch(options: Options = {}): sinon.SinonStub {
             total: 1,
           });
         case 'usage':
+          // B-02: the page reads the per-agent section. The session list
+          // is capped at the most recent sessions and is a decoy here.
           return json({
             usage_by_session: [
               {
                 agent_id: 'agent-1',
+                token_usage: {
+                  prompt_tokens: 10,
+                  completion_tokens: 5,
+                  total_tokens: 15,
+                },
+                estimated_cost: 0.1,
+              },
+            ],
+            usage_by_agent: [
+              {
+                agent_id: 'agent-1',
+                session_count: 3,
+                request_count: 30,
+                successful_requests: 30,
+                failed_requests: 0,
                 token_usage: {
                   prompt_tokens: 1000,
                   completion_tokens: 500,
                   total_tokens: 1500,
                 },
                 estimated_cost: 1.25,
+                subscription_usage: {
+                  request_count: 2,
+                  prompt_tokens: 100,
+                  completion_tokens: 10,
+                  total_tokens: 110,
+                  api_equivalent_cost: 1,
+                  api_equivalent_cost_is_estimate: true,
+                  covered_requests: 1,
+                  coverage: 0.5,
+                  billed: null,
+                  billed_available: false,
+                },
               },
               {
                 agent_id: 'agent-2',
+                session_count: 1,
+                request_count: 1,
+                successful_requests: 1,
+                failed_requests: 0,
                 token_usage: {
                   prompt_tokens: 9,
                   completion_tokens: 9,
@@ -301,9 +334,28 @@ describe('user-detail-view', () => {
     const spend = root(el).querySelector('[data-testid="stat-spend"]')!;
     expect(spend.textContent).to.contain('$1.25');
     expect(spend.textContent).to.contain('$ est.');
+    // D-05: agent-1 has subscription traffic, partly priced.
+    const line = spend.querySelector('[data-testid="without-subscriptions"]');
+    expect(line?.querySelector('summary')?.textContent?.trim()).to.equal(
+      '≥ $2.25 w/o subs.'
+    );
+    expect(line?.textContent).to.contain('1 of 2 subscription requests');
+    expect(line?.getAttribute('title')).to.contain('1 of 2');
     expect(
       root(el).querySelector('[data-testid="stat-agents"]')!.textContent
     ).to.contain('1');
+  });
+
+  it('reads the owner spend from the per-agent section of the summary', async () => {
+    fetchStub = stubFetch();
+    const el = await mount();
+    await settled(el);
+    const call = fetchStub
+      .getCalls()
+      .map((c) => String(c.args[0]))
+      .find((url) => url.includes('/gateway-usage/summary'))!;
+    const params = new URL(call, location.origin).searchParams;
+    expect(params.getAll('breakdown')).to.deep.equal(['agents']);
   });
 
   it('asks the server for this owner’s sessions only', async () => {

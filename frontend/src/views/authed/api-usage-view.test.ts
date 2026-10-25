@@ -1086,4 +1086,25 @@ describe('ApiUsageView', () => {
     expect(API_USAGE_SESSION_PAGE).to.equal(5);
     expect(API_USAGE_BREAKDOWN_PAGE).to.equal(5);
   });
+
+  it('renders the subaccount rollup below the KPI row (#1696)', async () => {
+    const element = (await fixture(
+      html`<api-usage-view></api-usage-view>`
+    )) as ApiUsageView;
+    await waitUntil(
+      () => !(element as any).loading && (element as any).summary !== null,
+      'API usage view did not finish loading'
+    );
+    await element.updateComplete;
+    const root = element.shadowRoot!;
+    const kpis = root.querySelector('[aria-label="Gateway usage totals"]')!;
+    const rollup = root.querySelector(
+      'capability-extension[name="usage-rollup"]'
+    )!;
+    expect(kpis).to.exist;
+    expect(rollup).to.exist;
+    expect(
+      kpis.compareDocumentPosition(rollup) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).to.not.equal(0);
+  });
 });

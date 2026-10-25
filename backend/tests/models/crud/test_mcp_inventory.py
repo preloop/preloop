@@ -140,3 +140,174 @@ def test_reconciliation_reports_registry_beyond_its_bound(
         server_count > 1
     )
     assert "example.com" not in caplog.text
+
+
+@pytest.mark.parametrize("evidence_class", ["configured_route", "observed_call"])
+def test_digest_context_names_latest_actor_or_observed_member(
+    db_session: Session, test_user: models.User, evidence_class: str
+) -> None:
+    """A later config actor cannot replace an observed call's verified member."""
+    from uuid import uuid4
+    from preloop.models.crud import crud_audit_log, crud_managed_agent, crud_user
+
+    now = datetime.now(UTC)
+    email = f"observed-{uuid4()}@example.com"
+    person = models.Person(email=email, email_normalized=email)
+    db_session.add(person)
+    db_session.flush()
+    test_user.person_id = person.id
+    db_session.flush()
+    actor = crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "username": f"actor-{uuid4()}",
+            "email": f"actor-{uuid4()}@example.com",
+            "full_name": "Config actor",
+            "hashed_password": "synthetic",
+        },
+    )
+    agent = crud_managed_agent.create_custom_agent(
+        db_session,
+        account_id=test_user.account_id,
+        display_name="Observed agent",
+        owner_user_id=test_user.id,
+        commit=False,
+    )
+    server = crud_mcp_server.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "name": "Named route",
+            "url": "https://example.com/secret-route",
+        },
+    )
+    row = crud_mcp_inventory.observe(
+        db_session,
+        account_id=test_user.account_id,
+        server_id=server.id,
+        revision=server.updated_at.isoformat(),
+        evidence_class=evidence_class,
+        at=now,
+        agent_id=agent.id,
+        person_id=person.id,
+    )
+    for offset, action, actor_id in [
+        (-2, "created", test_user.id),
+        (-1, "updated", actor.id),
+    ]:
+        event = crud_audit_log.log_action(
+            db_session,
+            account_id=test_user.account_id,
+            user_id=actor_id,
+            action="configuration_change",
+            resource_type="configuration",
+            resource_id="mcp_server",
+            status="success",
+            details={
+                "action": action,
+                "new_value": {"id": str(server.id), "name": server.name},
+            },
+            commit=False,
+        )
+        event.timestamp = now + timedelta(minutes=offset)
+    db_session.flush()
+    context = crud_mcp_inventory.digest_context(
+        db_session,
+        account_id=test_user.account_id,
+        start=now - timedelta(days=7),
+        end=now + timedelta(minutes=1),
+    )
+    assert len(context) == 1
+    item = context[0]
+    assert item["MCPInventoryFinding"].id == row.id
+    assert item["server_name"] == "Named route"
+    assert item["agent_name"] == "Observed agent"
+    assert item["change_action"] == "updated"
+    expected = actor if evidence_class == "configured_route" else test_user
+    assert item["user_id"] == expected.id
+    assert item["user_name"] == expected.full_name
+    assert "secret-route" not in str(item)
+    other = crud_account.create(db_session, obj_in={"organization_name": "Other"})
+    assert (
+        crud_mcp_inventory.digest_context(
+            db_session,
+            account_id=other.id,
+            start=now - timedelta(days=7),
+            end=now + timedelta(minutes=1),
+        )
+        == []
+    )
+    # Malformed foreign references must not leak another account's identity.
+    row.account_id = other.id
+    db_session.flush()
+    foreign = crud_mcp_inventory.digest_context(
+        db_session,
+        account_id=other.id,
+        start=now - timedelta(days=7),
+        end=now + timedelta(minutes=1),
+    )[0]
+    assert foreign["server_name"] is None
+    assert foreign["agent_name"] is None
+    assert foreign["user_name"] is None
+
+
+def test_digest_context_dates_deleted_routes_and_omits_undated_absence(
+    db_session: Session, test_user: models.User
+) -> None:
+    """A removal this week includes older evidence using only safe audit fields."""
+    from preloop.models.crud import crud_audit_log
+
+    now = datetime.now(UTC)
+    server = crud_mcp_server.create(
+        db_session,
+        obj_in={
+            "account_id": test_user.account_id,
+            "name": "Removed route",
+            "url": "https://example.com/secret-route",
+        },
+    )
+    row = crud_mcp_inventory.observe(
+        db_session,
+        account_id=test_user.account_id,
+        server_id=server.id,
+        revision=server.updated_at.isoformat(),
+        evidence_class="configured_route",
+        at=now - timedelta(days=20),
+    )
+    identifier = server.id
+    db_session.delete(server)
+    db_session.flush()
+    bounds = dict(
+        account_id=test_user.account_id,
+        start=now - timedelta(days=7),
+        end=now + timedelta(minutes=1),
+    )
+    assert crud_mcp_inventory.digest_context(db_session, **bounds) == []
+    event = crud_audit_log.log_action(
+        db_session,
+        account_id=test_user.account_id,
+        user_id=test_user.id,
+        action="configuration_change",
+        resource_type="configuration",
+        resource_id="mcp_server",
+        status="success",
+        details={
+            "action": "deleted",
+            "old_value": {
+                "id": str(identifier),
+                "name": "Removed route",
+                "url": "secret-url",
+            },
+        },
+        commit=False,
+    )
+    event.timestamp = now
+    db_session.flush()
+    (item,) = crud_mcp_inventory.digest_context(db_session, **bounds)
+    assert item["MCPInventoryFinding"].id == row.id
+    assert item["server_name"] == "Removed route"
+    assert item["removed_at"].replace(tzinfo=UTC) == now
+    assert item["user_id"] == test_user.id
+    assert item["updated_at"] is None
+    assert "secret-url" not in str(item)

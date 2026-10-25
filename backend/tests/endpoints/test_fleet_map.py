@@ -32,3 +32,25 @@ def test_route_validates_bounds_and_returns_schema() -> None:
             assert response.json()["schema_version"] == 1
             assert response.json()["nodes"] == []
             assert build.call_args.kwargs["user"] is user
+
+
+def test_route_forwards_the_activity_window() -> None:
+    app = FastAPI()
+    app.include_router(router, prefix="/api/v1")
+    user = models.User(id=uuid4(), account_id=uuid4(), is_superuser=True)
+    app.dependency_overrides[get_current_active_user] = lambda: user
+    app.dependency_overrides[get_db_session] = lambda: MagicMock()
+    with patch(
+        "preloop.api.endpoints.fleet_map.build_fleet_map",
+        return_value=FleetMapResponse(),
+    ) as build:
+        with TestClient(app) as client:
+            assert (
+                client.get("/api/v1/fleet/map?active_within_minutes=0").status_code
+                == 422
+            )
+            assert client.get("/api/v1/fleet/map").status_code == 200
+            assert build.call_args.kwargs["active_within_minutes"] is None
+            response = client.get("/api/v1/fleet/map?active_within_minutes=168")
+            assert response.status_code == 200
+            assert build.call_args.kwargs["active_within_minutes"] == 168

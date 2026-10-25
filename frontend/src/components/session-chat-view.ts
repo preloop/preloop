@@ -1,3 +1,9 @@
+import type { RecordingSync } from '../types';
+import {
+  recordingCue,
+  recordingEventActivity,
+  recordingToolActivity,
+} from '../utils/recording-cue';
 import { parseUTCDate } from '../utils/date';
 import {
   renderSessionApproval,
@@ -44,6 +50,14 @@ import type {
 } from '../utils/transcript';
 import { buildConversation } from '../utils/transcript';
 import { noteAuthorLabel } from '../utils/note-author';
+import {
+  buildSessionTurns,
+  type SessionRuntime,
+  type SessionTurn,
+  type SessionTurnsResult,
+  type TurnItem,
+} from '../utils/session-turns';
+import { noteReadPointLabel } from '../utils/agent-control';
 
 /** "Note from <author> (<credential>)": a note is not an anonymous operator. */
 function noteRoleLabel(note: TranscriptNoteDelivery): string {
@@ -64,6 +78,7 @@ import {
   type ArtifactKindGroup,
 } from '../utils/session-artifacts';
 import { SESSION_EVENTS_PAGE_REQUESTED_EVENT } from '../utils/session-observer';
+import type { AgentTurnInfo } from '../utils/agent-status';
 
 const MESSAGE_PREVIEW_CHARS = 2000;
 const STEP_PREVIEW_CHARS = 600;
@@ -96,9 +111,31 @@ export interface PendingTalkMessage {
   id: string;
   text: string;
   at: string;
-  state: 'sending' | 'sent' | 'failed';
+  /**
+   * `sending` until the server answers. A command turn is then `sent`. A
+   * note is `waiting` until the session's hook reads it, then `read`.
+   */
+  state: 'sending' | 'sent' | 'waiting' | 'read' | 'failed';
   error?: string;
+  /** Operator note id, when the line went as a note. */
+  noteId?: string;
+  /** Where the note was read: "tool call", "turn end", "next prompt". */
+  readPoint?: string;
+  /** When the note was read (ISO). */
+  readAt?: string;
+  /** The note is still unread after the wait the window allows an idle session. */
+  stale?: boolean;
   inputMode?: 'text' | 'voice_transcript';
+  /**
+   * The session the turn was typed in, captured at send. Delivery and Retry
+   * use it, never the composer's current session, so a turn cannot land in a
+   * session the operator switched to afterwards. Null means "a new session".
+   */
+  targetSessionId?: string | null;
+  /** Whether the turn asked for a new session, captured with the target. */
+  startNewSession?: boolean;
+  /** Server command id, used to match the turn's echo in the thread. */
+  commandId?: string;
 }
 
 /** Bubbled by the Retry link under a failed turn. */
@@ -117,7 +154,17 @@ export class SessionChatView extends LitElement {
   private renderApproval(request: ApprovalRequest) {
     return renderSessionApproval(this, this.approvalState, request);
   }
+  @property({ attribute: false }) recordingSync: RecordingSync | undefined;
+  @property({ type: Boolean }) recordingEnabled = false;
+  @property({ attribute: false }) recordingActivityId: string | null = null;
+  @property({ type: Boolean }) syncedRecordingPlayer = false;
+
   @property({ type: Boolean }) liveEnabled = true;
+  /**
+   * Which CLI produced the session, for the row glyphs and the footer
+   * format. Empty means "infer from the hook metadata".
+   */
+  @property({ type: String }) runtime: SessionRuntime | '' = '';
   @property({ type: Boolean }) ended = false;
   private renderActivity() {
     if (!this.liveEnabled) return nothing;
@@ -133,7 +180,8 @@ export class SessionChatView extends LitElement {
       },
       this.hideLiveActivity
         ? null
-        : { state: this.liveState, now: this.now || Date.now() }
+        : { state: this.liveState, now: this.now || Date.now() },
+      this.turn
     );
   }
   private get displayItems(): Array<
@@ -323,6 +371,13 @@ export class SessionChatView extends LitElement {
   hideLiveActivity = false;
 
   /**
+   * The session's runtime and server turn facts, for the status line in the
+   * runtime's own words and the turn footer.
+   */
+  @property({ attribute: false })
+  turn: AgentTurnInfo | null = null;
+
+  /**
    * Derived live status, recomputed in `willUpdate` and read during render.
    *
    * Deliberately NOT reactive state: assigning a `@state` field from
@@ -395,6 +450,15 @@ export class SessionChatView extends LitElement {
   private liveAnnouncement = '';
 
   static styles = css`
+    .recording-current {
+      outline: 2px solid var(--sl-color-primary-500, #3b82f6);
+      outline-offset: 2px;
+    }
+    .recording-cue {
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
     :host {
       display: block;
       min-height: 0;
@@ -546,6 +610,8 @@ export class SessionChatView extends LitElement {
 
     .bubble-text {
       color: var(--sl-color-neutral-900);
+      /* Prose is body face; mono is for commands and telemetry only. */
+      font-family: inherit;
       font-size: var(--sl-font-size-small);
       line-height: 1.55;
       margin: 0;
@@ -620,6 +686,27 @@ export class SessionChatView extends LitElement {
     .artifact-item {
       margin: 0.25rem 0;
     }
+    .turn {
+      display: flex;
+      flex-direction: column;
+      gap: var(--sl-spacing-small);
+    }
+    .turn-footer {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
+      margin: 0 var(--sl-spacing-medium);
+    }
+    .turn-footer.interrupted {
+      color: var(--sl-color-warning-700);
+    }
+    .session-context {
+      align-self: stretch;
+      margin: 0 var(--sl-spacing-medium);
+    }
+    .session-context::part(summary) {
+      color: var(--sl-color-neutral-600);
+      font-size: var(--sl-font-size-x-small);
+    }
     .artifact-filter-note {
       font-size: 0.8rem;
       color: var(--sl-color-neutral-600);
@@ -651,8 +738,22 @@ export class SessionChatView extends LitElement {
       height: 1px;
     }
 
+    /* A one-line link, not a button row: it must not push the first turn
+       below the fold (#1689). */
     .load-earlier {
       align-self: center;
+      background: none;
+      border: none;
+      color: var(--sl-color-primary-600);
+      cursor: pointer;
+      font: inherit;
+      font-size: var(--sl-font-size-x-small);
+      line-height: 1.2;
+      padding: 0;
+    }
+    .load-earlier[disabled] {
+      color: var(--console-meta-color);
+      cursor: progress;
     }
 
     .inline-toggle {
@@ -675,6 +776,12 @@ export class SessionChatView extends LitElement {
         author: '',
         now: Date.now(),
       };
+    // Another session is another conversation: where the reader had scrolled
+    // to in the old one means nothing here, so it opens at the latest turn
+    // with no jump pill left over from before.
+    if (changed.has('sessionId') && changed.get('sessionId') !== undefined) {
+      this.atBottom = true;
+    }
     if (changed.has('events') || changed.has('activity')) {
       this.conversation = buildConversation(this.events, this.activity);
       // Screen readers get the agent's reply, not the whole thread: the last
@@ -737,7 +844,15 @@ export class SessionChatView extends LitElement {
     // switched on); a scrollTop write on every update would force a reflow
     // and yank the view each time the user expands a message they are
     // reading.
-    if (!contentChanged && !pendingGrew && !changed.has('followLive')) return;
+    const sessionChanged =
+      changed.has('sessionId') && changed.get('sessionId') !== undefined;
+    if (
+      !contentChanged &&
+      !pendingGrew &&
+      !sessionChanged &&
+      !changed.has('followLive')
+    )
+      return;
     // Someone who scrolled up to re-read is not interrupted; the pill takes
     // them back when they want it.
     if (this.scrollable && !this.atBottom && !pendingGrew) return;
@@ -969,6 +1084,7 @@ export class SessionChatView extends LitElement {
   }
 
   private renderMessage(item: TranscriptMessageItem) {
+    const recordingId = recordingEventActivity(item.event, this.recordingSync);
     const bubbleClass =
       item.kind === 'user_prompt'
         ? 'user'
@@ -984,6 +1100,7 @@ export class SessionChatView extends LitElement {
       <div
         class="bubble ${bubbleClass} ${item.failed ? 'failed' : ''}"
         data-kind=${item.kind}
+        data-recording-activity=${recordingId ?? nothing}
       >
         <div class="bubble-meta">
           <span class="bubble-role">
@@ -998,6 +1115,14 @@ export class SessionChatView extends LitElement {
             }
           </span>
           <span>${this.formatTime(item.timestamp)}</span>
+          ${recordingCue(this, recordingId, this.recordingSync, this.recordingEnabled)}
+          ${
+            item.note
+              ? html`<span data-testid="note-read-at"
+                  >Read at ${noteReadPointLabel(item.note.deliveryEvent)}</span
+                >`
+              : nothing
+          }
           ${
             typeof item.note?.turnIndex === 'number'
               ? html`<span data-testid="note-turn"
@@ -1140,7 +1265,7 @@ ${
       <sl-details class="steps">
         <span slot="summary" class="steps-summary">
           <sl-icon name="three-dots"></sl-icon>
-          ${item.steps.length} step${item.steps.length === 1 ? '' : 's'} —
+          ${item.steps.length} step${item.steps.length === 1 ? '' : 's'}:
           ${this.describeSteps(item.steps)}
         </span>
         ${item.steps.map((step) => this.renderStep(step))}
@@ -1183,6 +1308,7 @@ ${
       data-artifact-key=${artifactRowKey(meta.id)}
     >
       <session-artifact-row
+        .syncedRecordingPlayer=${this.syncedRecordingPlayer}
         .item=${activity}
         .artifact=${view}
         .sessionId=${this.sessionId}
@@ -1223,10 +1349,12 @@ ${
     if (item.type === 'steps') return this.renderStepGroup(item);
     if (item.type === 'browser_step') {
       return html`<div
-        class="browser-step-item"
+        class="browser-step-item ${item.activity.activity_id === this.recordingActivityId ? 'recording-current' : ''}"
+        data-recording-activity=${item.activity.activity_id ?? nothing}
         tabindex="-1"
         data-browser-step-key=${browserStepKey(item.activity)}
       >
+        ${recordingCue(this, item.activity.activity_id, this.recordingSync, this.recordingEnabled)}
         <browser-step-row
           .item=${item.activity}
           .sessionId=${this.sessionId}
@@ -1239,6 +1367,92 @@ ${
         ${item.timestamp ? html`· ${this.formatTime(item.timestamp)}` : nothing}
       </div>
     `;
+  }
+
+  /** Turn model, rebuilt only with the transcript (see willUpdate). */
+  private turnsCache: { source: unknown; result: SessionTurnsResult } | null =
+    null;
+
+  private get sessionTurns(): SessionTurnsResult {
+    const items = this.displayItems;
+    const signature = items.map((item) => item.key).join('|');
+    const source = `${signature}#${this.runtime}`;
+    if (
+      this.turnsCache &&
+      this.turnsCache.source === source &&
+      this.turnsBuiltFrom === this.conversation &&
+      this.turnsActivity === this.activity &&
+      this.turnsApprovals === this.approvalState
+    )
+      return this.turnsCache.result;
+    const result = buildSessionTurns(items, {
+      activity: this.activity,
+      runtime: this.runtime || undefined,
+    });
+    this.turnsCache = { source, result };
+    this.turnsBuiltFrom = this.conversation;
+    this.turnsActivity = this.activity;
+    this.turnsApprovals = this.approvalState;
+    return result;
+  }
+  private turnsBuiltFrom: unknown = null;
+  private turnsActivity: unknown = null;
+  private turnsApprovals: unknown = null;
+
+  private renderTurnItem(item: TurnItem) {
+    if (item.type === 'row') {
+      const activityId = recordingToolActivity(
+        item.key,
+        item.callId,
+        this.activity,
+        item.mergedKeys
+      );
+      return html`<div data-recording-activity=${activityId ?? nothing}>
+        ${recordingCue(this, activityId, this.recordingSync, this.recordingEnabled)}<session-tool-card
+          .row=${item}
+        ></session-tool-card>
+      </div>`;
+    }
+    return this.renderItem(item as (typeof this.displayItems)[number]);
+  }
+
+  private renderTurn(turn: SessionTurn) {
+    return html`<div class="turn" data-testid="session-turn">
+      ${turn.prompt ? this.renderMessage(turn.prompt) : nothing}
+      ${repeat(
+        turn.items,
+        (item) => item.key,
+        (item) => this.renderTurnItem(item)
+      )}
+      ${
+        turn.footer
+          ? html`<div
+              class="turn-footer ${turn.footer.interrupted ? 'interrupted' : ''}"
+              data-testid="turn-footer"
+              title=${parseUTCDate(turn.footer.endedAt).toLocaleString()}
+            >
+              ${turn.footer.text}
+            </div>`
+          : nothing
+      }
+    </div>`;
+  }
+
+  private renderSessionContext(context: TranscriptMessageItem[]) {
+    if (!context.length) return nothing;
+    return html`<sl-details
+      class="session-context"
+      data-testid="session-context"
+    >
+      <span slot="summary"
+        >Session context · ${context.length}
+        message${context.length === 1 ? '' : 's'}</span
+      >
+      ${context.map(
+        (item) =>
+          html`<pre class="step-text" data-role=${item.role}>${item.text}</pre>`
+      )}
+    </sl-details>`;
   }
 
   private renderPending(message: PendingTalkMessage) {
@@ -1261,8 +1475,36 @@ ${
               ? html`<sl-badge variant="danger" pill>Not sent</sl-badge>`
               : nothing
           }
+          ${
+            message.state === 'waiting'
+              ? html`<sl-badge
+                  variant="neutral"
+                  pill
+                  data-testid="pending-note-state"
+                  >Waiting for the agent</sl-badge
+                >`
+              : nothing
+          }
+          ${
+            message.state === 'read'
+              ? html`<span
+                  data-testid="pending-note-state"
+                  title=${message.readAt || ''}
+                  >Read at ${message.readPoint || 'model call'}
+                  ${message.readAt ? this.formatTime(message.readAt) : ''}</span
+                >`
+              : nothing
+          }
         </div>
         <pre class="bubble-text">${message.text}</pre>
+        ${
+          message.state === 'waiting' && message.stale
+            ? html`<div class="pending-error" data-testid="pending-note-stale">
+                Not read yet after 10 minutes. The session is idle: it reads
+                this with the next prompt typed in its terminal.
+              </div>`
+            : nothing
+        }
         ${
           message.state === 'failed'
             ? html`
@@ -1318,6 +1560,7 @@ ${
     if (this.liveEnabled || this.hideLiveActivity || !this.liveState)
       return nothing;
     return html`<session-live-activity
+      .turn=${this.turn}
       .state=${this.liveState}
       .now=${this.now || Date.now()}
     ></session-live-activity>`;
@@ -1339,6 +1582,7 @@ ${
 
     const { stats } = this.conversation;
     const items = this.displayItems;
+    const turns = this.sessionTurns;
     if (!items.length && !this.pending.length) {
       return html`${this.renderLiveRegion()} ${this.renderLiveActivity()}
         <div class="empty">${this.emptyText}</div>`;
@@ -1352,14 +1596,19 @@ ${
           ${
             this.hasMoreEvents
               ? html`
-                  <sl-button
+                  <button
+                    type="button"
                     class="load-earlier"
-                    size="small"
-                    ?loading=${this.loadingMoreEvents}
+                    data-testid="load-earlier"
+                    ?disabled=${this.loadingMoreEvents}
                     @click=${() => this.requestEarlierEvents()}
                   >
-                    Load earlier conversation
-                  </sl-button>
+                    ${
+                      this.loadingMoreEvents
+                        ? 'Loading earlier conversation…'
+                        : 'Load earlier conversation'
+                    }
+                  </button>
                 `
               : nothing
           }
@@ -1409,11 +1658,20 @@ ${
                 </div>`
               : nothing
           }
-          ${repeat(
-            items.filter((item) => this.passesArtifactFilter(item)),
-            (item) => item.key,
-            (item) => this.renderItem(item)
-          )}
+          ${
+            this.artifactKindFilter
+              ? repeat(
+                  items.filter((item) => this.passesArtifactFilter(item)),
+                  (item) => item.key,
+                  (item) => this.renderItem(item)
+                )
+              : html`${this.renderSessionContext(turns.context)}
+                ${repeat(
+                  turns.turns,
+                  (turn) => turn.key,
+                  (turn) => this.renderTurn(turn)
+                )}`
+          }
           ${repeat(
             this.pending,
             (message) => message.id,

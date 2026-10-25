@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from preloop.api.auth.jwt import get_current_active_user
 from preloop.api.common import get_account_for_user
+from preloop.api.loop_safety import run_db_off_loop
 from preloop.models.db.session import get_db_session
 from preloop.models.models.account import Account
 from preloop.models.models.user import User
@@ -80,7 +81,7 @@ from preloop.services.sensitive_data.policy_store import (
 from preloop.services.sensitive_data.redact import redact_text
 from preloop.tools.utils import run_async
 from preloop.utils.audit import log_config_change
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 
 POLICY_AUDIT_CONFIG_TYPE = "policy"
@@ -539,7 +540,8 @@ async def upload_policy(
         False,
         description=(
             "If true, skip tools that reference MCP servers not configured in your "
-            "account instead of failing. Skipped tools are reported as warnings."
+            "account instead of failing, and keep sensitive_data scopes that name "
+            "such servers. Both are reported as warnings."
         ),
     ),
     account: Account = Depends(get_account_for_user),
@@ -561,6 +563,10 @@ async def upload_policy(
     referenced server doesn't exist:
     - With `skip_missing_servers=false` (default): Returns an error
     - With `skip_missing_servers=true`: Skips the tool and adds a warning
+
+    A `sensitive_data` rule or reference_only entry whose tool scope names
+    such a server is an error too. With `skip_missing_servers=true` it is
+    kept and reported as a warning.
 
     Args:
         file: The policy file to apply (YAML or JSON).
@@ -864,6 +870,7 @@ def create_model_io_rule(
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Save one model I/O rule from the Policies console form."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     _reject_cel_syntax_declared_simple(rule)
     _reject_unknown_pii_types(db, account, rule)
     saved = upsert_model_io_rule(db, account.id, rule)
@@ -884,6 +891,7 @@ def update_model_io_rule(
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Replace an existing model I/O rule. The path id wins."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     if rule.id != rule_id:
         rule = rule.model_copy(update={"id": rule_id})
     _reject_cel_syntax_declared_simple(rule)
@@ -912,6 +920,7 @@ def patch_model_io_rule(
     db: Session = Depends(get_db_session),
 ) -> Dict[str, Any]:
     """Toggle enabled without rewriting the rest of the rule."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     rules = load_model_io_rules(db, account.id)
     updated: List[ModelIORule] = []
     found = False
@@ -947,6 +956,7 @@ def remove_model_io_rule(
     db: Session = Depends(get_db_session),
 ) -> Response:
     """Delete one model I/O rule."""
+    ensure_permission_in_oss(db, current_user, "manage_policies")
     if not delete_model_io_rule(db, account.id, rule_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1301,6 +1311,9 @@ async def create_policy_version(
     Returns:
         The created policy version.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_policies")
+    )
     service = PolicyVersionService(db, str(account.id))
     snapshot = service.create_snapshot(
         description=request.description,
@@ -1349,6 +1362,9 @@ async def update_version_tag(
     Raises:
         HTTPException: If version not found.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_policies")
+    )
     service = PolicyVersionService(db, str(account.id))
     snapshot, error = service.update_tag(version_id, request.tag)
 
@@ -1393,6 +1409,9 @@ async def remove_version_tag(
     Raises:
         HTTPException: If version not found.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_policies")
+    )
     service = PolicyVersionService(db, str(account.id))
     snapshot, error = service.remove_tag(version_id)
 
@@ -1442,6 +1461,9 @@ async def rollback_to_version(
     Raises:
         HTTPException: If version not found.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_policies")
+    )
     service = PolicyVersionService(db, str(account.id))
     diff, success, error = service.rollback_to_snapshot(
         version_id,
@@ -1499,6 +1521,9 @@ async def delete_policy_version(
     Raises:
         HTTPException: If version not found or is active.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_policies")
+    )
     service = PolicyVersionService(db, str(account.id))
     try:
         deleted_ref = _snapshot_audit_ref(service.get_snapshot(version_id))
@@ -1556,6 +1581,9 @@ async def prune_policy_versions(
     Returns:
         PruneResponse with count of deleted versions.
     """
+    await run_db_off_loop(
+        lambda: ensure_permission_in_oss(db, current_user, "manage_policies")
+    )
     service = PolicyVersionService(db, str(account.id))
     deleted_count = service.prune_snapshots(
         older_than_days=request.older_than_days,
@@ -1818,6 +1846,9 @@ async def generate_policy_from_audit(
         yaml_output = await asyncio.to_thread(
             service._call_llm, model, system_prompt, summary
         )
+        # The audit summary asks to remove nothing, so put back everything
+        # configured that the model left out.
+        yaml_output = service._merge_preserving_unrelated(yaml_output, "")
         warnings = service._validate_output(yaml_output)
         result = {"yaml": yaml_output, "warnings": warnings}
     except PolicyGenerationError as exc:

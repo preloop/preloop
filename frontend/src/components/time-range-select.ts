@@ -27,6 +27,11 @@ export class TimeRangeSelect extends LitElement {
   @property({ type: Array }) options: TimeRangeOption[] = [];
   @property({ type: String }) ariaLabel = 'Time range';
   /**
+   * `medium` in a collection filter bar, where every other control is
+   * medium and square; the default small pill suits a card header (U-15).
+   */
+  @property({ type: String, reflect: true }) size: 'small' | 'medium' = 'small';
+  /**
    * The range just chosen is still loading. The chevron turns into a
    * spinner, right where the operator just clicked, without taking any more
    * room in a tight card header.
@@ -98,8 +103,8 @@ export class TimeRangeSelect extends LitElement {
   render() {
     return html`
       <sl-select
-        size="small"
-        pill
+        size=${this.size}
+        ?pill=${this.size === 'small'}
         hoist
         label=${this.ariaLabel}
         aria-label=${this.ariaLabel}

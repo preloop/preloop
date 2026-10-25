@@ -85,6 +85,10 @@ SESSION_DIGEST_RETRY_PREDICATE = (
     "(digest ->> 'summary_status') IN "
     "('budget_limited', 'provider_failed', 'summarizing')"
 )
+SESSION_DIGEST_PARSE_RETRY_PREDICATE = "(digest ->> 'summary_status') = 'parse_failed'"
+SESSION_DIGEST_CAPTURE_RETRY_PREDICATE = (
+    "(digest ->> 'summary_status') = 'capture_incomplete'"
+)
 
 #: Structured digest JSON, serialized, from spec section 4.3.
 DIGEST_MAX_BYTES = 4 * 1024
@@ -311,6 +315,24 @@ class GovernanceSessionDigest(Base):
             "segment_index",
             "id",
             postgresql_where=text(SESSION_DIGEST_RETRY_PREDICATE),
+        ),
+        Index(
+            "ix_governance_session_digest_parse_retry",
+            "account_id",
+            "window_end",
+            "runtime_session_id",
+            "segment_index",
+            "id",
+            postgresql_where=text(SESSION_DIGEST_PARSE_RETRY_PREDICATE),
+        ),
+        Index(
+            "ix_governance_session_digest_capture_retry",
+            "account_id",
+            "window_end",
+            "runtime_session_id",
+            "segment_index",
+            "id",
+            postgresql_where=text(SESSION_DIGEST_CAPTURE_RETRY_PREDICATE),
         ),
         CheckConstraint(
             "segment_index >= 0",

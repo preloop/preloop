@@ -22,11 +22,22 @@ export class AuditIntegrityStrip extends LitElement {
     .strip {
       display: flex;
       flex-wrap: wrap;
-      gap: var(--sl-spacing-small);
+      gap: var(--sl-spacing-2x-small);
       align-items: baseline;
-      padding-bottom: var(--sl-spacing-small);
-      border-bottom: 1px solid var(--console-hairline);
       font-size: var(--sl-font-size-small);
+    }
+    .chip {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 2px 8px;
+      border-radius: var(--sl-border-radius-pill);
+      background: color-mix(
+        in srgb,
+        var(--sl-color-success-500) 16%,
+        transparent
+      );
+      color: var(--sl-color-success-800);
+      cursor: help;
     }
     .meta {
       color: var(--console-meta-color);
@@ -67,21 +78,28 @@ export class AuditIntegrityStrip extends LitElement {
       `;
     }
     const checkpoint = status.latest_checkpoint;
+    // One compact chip (#1693). The detail that used to take two lines
+    // stays one hover or focus away, and in full on Records.
+    const detail = [
+      `Sealed through seq ${status.head_seq}` +
+        (status.last_sealed_at ? ` at ${status.last_sealed_at}` : '') +
+        '.',
+      `${status.unsealed_rows} unsealed, seal lag ${status.seal_lag_seconds}s (the sealer runs behind the writes).`,
+      `Last checkpoint ${checkpoint ? `seq ${checkpoint.seq}` : 'none yet'}.`,
+      CHAIN_HONESTY,
+    ].join(' ');
     return html`
       <div class="strip" data-testid="audit-integrity-strip">
-        <span>
-          Sealed through seq ${status.head_seq}
-          ${status.last_sealed_at ? html`at ${status.last_sealed_at}` : nothing}.
-        </span>
-        <span class="meta">
-          ${status.unsealed_rows} unsealed, seal lag ${status.seal_lag_seconds}s
-          (the sealer runs behind the writes).
-        </span>
-        <span class="meta">
-          Last checkpoint ${checkpoint ? `seq ${checkpoint.seq}` : 'none yet'}.
-        </span>
+        <span
+          class="chip"
+          data-testid="audit-seal-chip"
+          title=${detail}
+          aria-label=${detail}
+          tabindex="0"
+          >Sealed</span
+        >
+        <span class="meta" aria-hidden="true">·</span>
         <a href="/console/settings/records#audit-integrity">Verify</a>
-        <span class="meta">${CHAIN_HONESTY}</span>
       </div>
     `;
   }

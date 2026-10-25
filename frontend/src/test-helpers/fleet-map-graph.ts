@@ -79,6 +79,7 @@ export function sampleFleetMap(): FleetMapGraph {
       }),
       node('agent:cursor', 'agent', 'Cursor', {
         gaps: ['discovered_agent'],
+        agent_state: 'discovered',
         owner_ids: ['user:sam'],
         provider_ids: ['provider:openai'],
       }),
@@ -93,6 +94,7 @@ export function sampleFleetMap(): FleetMapGraph {
       node('account:prod', 'provider_account', 'OpenAI prod', {
         owner_ids: ['user:maya'],
         provider_ids: ['provider:openai'],
+        parent_id: 'provider:openai',
         actions: [
           { label: 'Manage credentials', href: '/console/ai-models/example' },
         ],
@@ -100,11 +102,13 @@ export function sampleFleetMap(): FleetMapGraph {
       node('account:dev', 'provider_account', 'OpenAI dev', {
         owner_ids: ['user:sam'],
         provider_ids: ['provider:openai'],
+        parent_id: 'provider:openai',
         gaps: ['not_via_gateway'],
       }),
       node('account:anthropic', 'provider_account', 'Anthropic team', {
         owner_ids: ['user:maya'],
         provider_ids: ['provider:anthropic'],
+        parent_id: 'provider:anthropic',
       }),
       node('provider:openai', 'provider', 'OpenAI', {
         owner_ids: ['user:maya', 'user:sam'],
@@ -125,8 +129,6 @@ export function sampleFleetMap(): FleetMapGraph {
       edge('model:sonnet', 'runner:r2', 'runs_on'),
       edge('agent:claude', 'model:sonnet', 'uses_model', 'observed'),
       edge('agent:codex', 'model:gpt', 'uses_model'),
-      edge('model:sonnet', 'account:anthropic', 'uses_account'),
-      edge('model:gpt', 'account:prod', 'uses_account'),
       edge('agent:claude', 'account:anthropic', 'uses_account', 'observed'),
       edge('agent:codex', 'account:prod', 'uses_account', 'observed'),
       edge('agent:cursor', 'account:dev', 'uses_account', 'observed'),

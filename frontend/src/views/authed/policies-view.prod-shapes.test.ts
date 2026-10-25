@@ -83,7 +83,7 @@ function stubFetch(calls: Call[]) {
       if (url.includes('/api/v1/auth/users/me')) {
         return json({ permissions: ['view_policies', 'manage_policies'] });
       }
-      if (url.endsWith('/api/v1/tools')) {
+      if (url.endsWith('/api/v1/tools/rules')) {
         return json([]);
       }
       if (url.endsWith('/api/v1/approval-workflows')) {

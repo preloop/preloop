@@ -143,3 +143,49 @@ def test_returns_empty_when_no_invocations_or_schema(
     )
 
     assert rows == []
+
+
+def test_usage_by_tool_can_skip_the_per_agent_breakdown() -> None:
+    """The Tools list reads per-tool totals only (#1695).
+
+    The per-agent breakdown is most of the ``tools/stats`` payload and one of
+    its three queries, so a caller that does not render it can skip both.
+    """
+    service = ToolUsageStatsService(MagicMock())
+    invocations = [
+        {
+            "tool_name": "search",
+            "server_name": "web",
+            "call_count": 4,
+            "successful_calls": 3,
+            "failed_calls": 1,
+            "last_activity_at": None,
+        }
+    ]
+    agents = [
+        {
+            "tool_name": "search",
+            "runtime_principal_type": "managed_agent",
+            "runtime_principal_id": "agent-1",
+            "runtime_principal_name": "Agent",
+            "call_count": 4,
+        }
+    ]
+    with (
+        patch(
+            "preloop.services.tool_usage_stats.crud_runtime_session_activity"
+        ) as activity,
+        patch.object(service, "_aggregate_schema_costs", return_value={}),
+    ):
+        activity.get_tool_summary_for_account.return_value = invocations
+        activity.get_tool_invocations_by_agent_for_account.return_value = agents
+        full = service.get_account_usage_by_tool(account_id="acct")
+        lean = service.get_account_usage_by_tool(
+            account_id="acct", include_agents=False
+        )
+
+    assert len(full[0].usage_by_agent) == 1
+    assert activity.get_tool_invocations_by_agent_for_account.call_count == 1
+    assert lean[0].usage_by_agent == []
+    assert lean[0].invocation_count == 4
+    assert lean[0].failed_invocations == 1

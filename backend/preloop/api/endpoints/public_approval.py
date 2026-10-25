@@ -309,6 +309,19 @@ async def _decide_with_token(
         )  # base_url not needed for this operation
 
         try:
+            # A valid note request token is the bound human's decision
+            # credential, delivered through that request's notification links.
+            # Other token approvals still make no claim about human identity.
+            decision_user_id = None
+            if approval_request.tool_name == "send_note":
+                workflow = approval_request.approval_workflow
+                bound_user = (
+                    (workflow.approval_config or {}).get("note_caller_user_id")
+                    if workflow is not None
+                    else None
+                )
+                if bound_user:
+                    decision_user_id = uuid.UUID(str(bound_user))
             if decision.action == "approve":
                 logger.info(f"Approving request {request_id}")
                 # The same validation the console path runs. A token link proves
@@ -336,11 +349,15 @@ async def _decide_with_token(
                     comment,
                     channel=TOKEN_URL_DECISION_CHANNEL,
                     structured_answer=answer,
+                    user_id=decision_user_id,
                 )
             else:
                 logger.info(f"Declining request {request_id}")
                 updated_request = await approval_service.decline_request(
-                    request_id, decision.comment, channel=TOKEN_URL_DECISION_CHANNEL
+                    request_id,
+                    decision.comment,
+                    channel=TOKEN_URL_DECISION_CHANNEL,
+                    user_id=decision_user_id,
                 )
         except HTTPException:
             raise

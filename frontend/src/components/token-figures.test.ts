@@ -256,3 +256,72 @@ describe('token-figures', () => {
     expect(totalTokensOf(null)).to.equal(0);
   });
 });
+
+describe('token figures state the server figures as reported (#1955)', () => {
+  // The ledger stores input cache inclusive for every provider, so the
+  // figures are stated as the server sends them. Provider rounding can leave
+  // read + write a little above input; the server clamps the miss at zero and
+  // the figures must not rebuild a larger input from the cache counts.
+  const ROUNDED: GatewayTokenUsage = {
+    prompt_tokens: 100,
+    completion_tokens: 50,
+    total_tokens: 150,
+    input_tokens: 100,
+    output_tokens: 50,
+    cache_read_tokens: 90,
+    cache_write_tokens: 30,
+    uncached_input_tokens: 0,
+    cache_hit_ratio: 1,
+  };
+
+  it('does not inflate input from the cache counts', async () => {
+    const el = await fixture<TokenFigures>(
+      html`<token-figures .usage=${ROUNDED} expanded></token-figures>`
+    );
+    expect(text(el)).to.equal('100 in · 50 out 90 hit · 0 miss');
+  });
+
+  it('keeps the server miss, rate and total', async () => {
+    expect(cacheSplitOf(ROUNDED)).to.deep.equal({ hit: 90, miss: 0, ratio: 1 });
+    expect(tokenFiguresTitle(ROUNDED)).to.contain('100 input tokens');
+    expect(tokenFiguresTitle(ROUNDED)).to.contain('150 total');
+    const el = await fixture<TokenFigures>(
+      html`<token-figures .usage=${ROUNDED} total-only></token-figures>`
+    );
+    expect(text(el)).to.equal('150');
+  });
+
+  it('leaves cache-inclusive usage untouched', () => {
+    expect(cacheSplitOf(USAGE)).to.deep.equal({
+      hit: 8200,
+      miss: 3900,
+      ratio: 0.6777,
+    });
+    expect(tokenFiguresTitle(USAGE)).to.contain('12,400 input tokens');
+  });
+});
+
+describe('token figures that wrap (B-17)', () => {
+  it('wraps inside a narrow stat card instead of running over its edge', async () => {
+    const usage: GatewayTokenUsage = {
+      prompt_tokens: 12_500_000_000,
+      completion_tokens: 115_800_000,
+      total_tokens: 12_615_800_000,
+      input_tokens: 12_500_000_000,
+      output_tokens: 115_800_000,
+      cache_read_tokens: 9_000_000_000,
+      cache_write_tokens: 0,
+      uncached_input_tokens: 3_500_000_000,
+      cache_hit_ratio: 0.72,
+    };
+    const host = await fixture<HTMLElement>(
+      html`<div style="width: 160px">
+        <token-figures .usage=${usage} expanded wrap></token-figures>
+      </div>`
+    );
+    const el = host.querySelector('token-figures') as TokenFigures;
+    await el.updateComplete;
+    const figures = el.shadowRoot!.querySelector('.figures') as HTMLElement;
+    expect(figures.scrollWidth).to.be.at.most(host.clientWidth);
+  });
+});

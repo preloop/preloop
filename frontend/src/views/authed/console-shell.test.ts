@@ -854,9 +854,8 @@ describe('ConsoleShell', () => {
     const audit = approvals?.closest('details.nav-section');
     expect(audit?.textContent).to.contain('Audit');
     expect(sessions?.closest('details.nav-section')).to.equal(audit);
-    // Without audit_logs there is no All events entry.
-    expect(el.shadowRoot?.querySelector('a[href="/console/audit"]')).to.not
-      .exist;
+    // Core audit is available even without a proprietary capability flag.
+    expect(el.shadowRoot?.querySelector('a[href="/console/audit"]')).to.exist;
   });
 
   it('orders the top level as Overview, the product pages, Audit, Settings, Emergency', async () => {
@@ -908,7 +907,7 @@ describe('ConsoleShell', () => {
     ]);
   });
 
-  it('orders the Audit group Approvals, Sessions, All events, Artifacts, Records', async () => {
+  it('orders the Audit group Approvals, Sessions, Delivery reports, All events, Artifacts, Records', async () => {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.endsWith('/api/v1/features')) {
@@ -941,6 +940,7 @@ describe('ConsoleShell', () => {
     expect(hrefs).to.deep.equal([
       '/console/approvals',
       '/console/runtime-sessions',
+      '/console/delivery-reports',
       '/console/audit',
       '/console/artifacts',
       '/console/settings/records',

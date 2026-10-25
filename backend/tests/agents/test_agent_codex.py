@@ -696,7 +696,7 @@ class TestCodexCliSession:
 
     def test_run_command_expands_resume_args(self):
         script = CodexAgent({})._build_codex_script(self._context())
-        assert "codex exec $CODEX_RESUME_ARGS --skip-git-repo-check" in script
+        assert "codex exec $CODEX_RESUME_ARGS --json --skip-git-repo-check" in script
 
     def test_resume_metadata_uses_resume_subcommand(self):
         script = CodexAgent({})._build_codex_script(

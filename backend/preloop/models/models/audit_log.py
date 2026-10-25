@@ -47,6 +47,14 @@ class AuditLog(Base):
         # account". One composite index serves both; NULLs sort last in
         # Postgres, so the unsealed tail sits at the end of it.
         Index("ix_audit_log_account_chain_seq", "account_id", "chain_seq"),
+        # Chain status counts the unsealed tail on every Audit and Records
+        # load (#1693). The tail is small; a partial index keeps that count
+        # off the account's whole history.
+        Index(
+            "ix_audit_log_account_unsealed",
+            "account_id",
+            postgresql_where=text("chain_seq IS NULL"),
+        ),
         Index(
             "ix_audit_log_account_grant_consent",
             "account_id",

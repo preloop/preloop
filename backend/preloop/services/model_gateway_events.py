@@ -15,6 +15,7 @@ from preloop.models.crud.flow_execution import CRUDFlowExecution
 from preloop.models.models.api_key import ApiKey
 from preloop.models.models.api_usage import ApiUsage
 from preloop.models.models.runtime_session_activity import RuntimeSessionActivity
+from preloop.models.crud.runtime_session import crud_runtime_session
 from preloop.models.crud.runtime_session_activity import CRUDRuntimeSessionActivity
 from preloop.services.account_realtime import (
     ACCOUNT_TOPIC_BUDGET_HEALTH,
@@ -24,6 +25,7 @@ from preloop.services.account_realtime import (
     emit_account_event,
 )
 from preloop.services.cache_accounting import reported_cache_miss_tokens
+from preloop.services.gateway_activity_body import slim_gateway_payload
 from preloop.services.gateway_tool_activity import normalize_tool_activity
 from preloop.services.model_allowlist import is_model_not_allowed_detail
 from preloop.sync.services.event_bus import get_nats_client
@@ -74,6 +76,46 @@ class ModelGatewayEventEmitter:
     def __init__(self, db: Session) -> None:
         self.db = db
 
+    def _attribute_unscoped_call(self, usage: ApiUsage) -> Optional[str]:
+        """Pick the session an unscoped gateway call belongs to, if it is clear.
+
+        A call that names no session is attributed to the principal's latest
+        session only when the principal has exactly one active session. With
+        two or more running at once the latest is a guess, and a wrong guess
+        writes one session's model calls into another's history, so the call
+        is left unattributed instead.
+
+        Args:
+            usage: The gateway usage row, with a runtime principal set.
+
+        Returns:
+            Optional[str]: The runtime session id, or None when ambiguous.
+        """
+        account_id = str(usage.account_id)
+        principal_type = str(usage.runtime_principal_type)
+        principal_id = str(usage.runtime_principal_id)
+        active_count = crud_runtime_session.count_active_by_principal(
+            self.db,
+            account_id=account_id,
+            principal_type=principal_type,
+            principal_id=principal_id,
+        )
+        if active_count >= 2:
+            logger.debug(
+                "Leaving unscoped gateway call %s unattributed: principal has "
+                "%d active sessions",
+                usage.id,
+                active_count,
+            )
+            return None
+        latest_session = crud_runtime_session.get_latest_by_principal(
+            self.db,
+            account_id=account_id,
+            principal_type=principal_type,
+            principal_id=principal_id,
+        )
+        return str(latest_session.id) if latest_session else None
+
     def emit_for_usage(
         self,
         *,
@@ -105,14 +147,7 @@ class ModelGatewayEventEmitter:
             and usage.runtime_principal_type
             and usage.runtime_principal_id
         ):
-            latest_session = crud_runtime_session.get_latest_by_principal(
-                self.db,
-                account_id=str(usage.account_id),
-                principal_type=usage.runtime_principal_type,
-                principal_id=usage.runtime_principal_id,
-            )
-            if latest_session:
-                runtime_session_id = str(latest_session.id)
+            runtime_session_id = self._attribute_unscoped_call(usage)
 
         if runtime_session_id and not execution_id:
             crud_runtime_session_activity.log_model_gateway_call(
@@ -123,7 +158,12 @@ class ModelGatewayEventEmitter:
                 summary=None,
                 flow_execution_id=execution_id,
                 api_key_id=str(usage.api_key_id) if usage.api_key_id else None,
-                metadata=event["payload"],
+                # Stored slim: only what this call added, bounded in bytes.
+                # The live event below still carries the full payload.
+                metadata=slim_gateway_payload(
+                    event["payload"],
+                    max_bytes=settings.model_gateway_activity_max_stored_bytes,
+                ),
                 timestamp=usage.timestamp,
                 commit=True,
             )

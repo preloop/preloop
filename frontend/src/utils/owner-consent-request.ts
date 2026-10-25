@@ -1,3 +1,6 @@
+import { REST_API_PREFIX } from '../api-path';
+import { randomUuid } from './random-uuid';
+
 /** Retry one immutable start intent after its owner grants permission. */
 export async function ownerConsentRequest(
   fetcher: (path: string, init?: RequestInit) => Promise<Response>,
@@ -30,7 +33,7 @@ export async function ownerConsentRequest(
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     const statusResponse = await fetcher(
-      `/api/v1/approval-requests/${encodeURIComponent(pending.approval_id)}/consent-status`,
+      `${REST_API_PREFIX}/approval-requests/${encodeURIComponent(pending.approval_id)}/consent-status`,
       { signal, cache: 'no-store' }
     );
     if (!statusResponse.ok) return statusResponse;
@@ -75,14 +78,5 @@ function waitForConsentPoll(
 }
 
 function newConsentRequestId(): string {
-  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  // Self-hosted consoles on HTTP still have getRandomValues, while
-  // randomUUID is available only in a secure browser context.
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  bytes[6] = (bytes[6] & 15) | 64;
-  bytes[8] = (bytes[8] & 63) | 128;
-  const hex = Array.from(bytes, (byte) =>
-    byte.toString(16).padStart(2, '0')
-  ).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return randomUuid();
 }

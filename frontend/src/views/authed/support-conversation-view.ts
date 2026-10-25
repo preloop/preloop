@@ -1,3 +1,5 @@
+import { REST_API_PREFIX } from '../../api-path';
+import { randomUuid } from '../../utils/random-uuid';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -28,14 +30,14 @@ export class SupportConversationView extends LitElement {
   }
   private async request(action?: string) {
     const response = await fetchWithAuth(
-      `/api/v1/support/operator/conversations/${encodeURIComponent(this.conversationId)}${action ? '/actions' : ''}`,
+      `${REST_API_PREFIX}/support/operator/conversations/${encodeURIComponent(this.conversationId)}${action ? '/actions' : ''}`,
       {
         cache: 'no-store',
         method: action ? 'POST' : 'GET',
         ...(action
           ? {
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ action, event_id: crypto.randomUUID() }),
+              body: JSON.stringify({ action, event_id: randomUuid() }),
             }
           : {}),
       }
@@ -64,7 +66,7 @@ export class SupportConversationView extends LitElement {
   private async retryDelivery(jobId: string): Promise<void> {
     try {
       const response = await fetchWithAuth(
-        `/api/v1/support/operator/conversations/${encodeURIComponent(this.conversationId)}/deliveries/${encodeURIComponent(jobId)}/retry`,
+        `${REST_API_PREFIX}/support/operator/conversations/${encodeURIComponent(this.conversationId)}/deliveries/${encodeURIComponent(jobId)}/retry`,
         { method: 'POST' }
       );
       if (!response.ok)

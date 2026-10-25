@@ -1,4 +1,5 @@
-import { parseUTCDate } from './date';
+import { parseUTCDate, parseUtc } from './date';
+import { isHarnessSideRequestEvent } from './harness-side-request';
 import type { FlowGatewayEvent, RuntimeSessionActivityItem } from '../types';
 
 export type ToolPhase =
@@ -30,7 +31,7 @@ export function sessionTools(
 ): SessionTool[] {
   const tools = new Map<string, SessionTool>();
   for (const event of [...events].sort(
-    (a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || '')
+    (a, b) => (parseUtc(a.timestamp) ?? NaN) - (parseUtc(b.timestamp) ?? NaN)
   )) {
     const entries: Record<string, unknown>[] = [];
     if (Array.isArray(event.payload?.tools)) {
@@ -185,7 +186,7 @@ export function sessionWork(
   }
   const active = [...requests].filter(
     ([id, event]) =>
-      !finished.has(id) && now - Date.parse(event.timestamp || '') < 120000
+      !finished.has(id) && now - (parseUtc(event.timestamp) ?? 0) < 120000
   );
   if (active.length)
     return {
@@ -193,12 +194,52 @@ export function sessionWork(
       count: active.length,
       model: String(active[0][1].payload?.model_alias || ''),
       startedAt: Math.min(
-        ...active.map(([, event]) => Date.parse(event.timestamp || ''))
+        ...active.map(([, event]) => parseUtc(event.timestamp) ?? 0)
       ),
     };
   if ([...requests].some(([id]) => !finished.has(id)))
     return { label: 'Activity unavailable' };
+  // How the newest model call finished says whose turn it is: a reply that
+  // ended the turn waits for the operator, a reply asking for tools means
+  // the agent is running them. Older events without a reason keep the old
+  // neutral label rather than guessing.
+  const reason = lastFinishReason(events);
+  if (reason === 'turn_end') return { label: 'Your turn' };
+  if (reason === 'tool') return { label: 'Agent working' };
   return { label: events.length ? 'Waiting for agent' : 'Idle' };
+}
+
+const TURN_END_REASONS = new Set(['stop', 'end_turn', 'stop_sequence']);
+const TOOL_REASONS = new Set(['tool_calls', 'tool_use', 'function_call']);
+
+/**
+ * `turn_end` or `tool` for the newest finished model call that stated a
+ * finish reason, or null when none did.
+ */
+export function lastFinishReason(
+  events: FlowGatewayEvent[]
+): 'turn_end' | 'tool' | null {
+  let newest: { at: number; reason: string } | null = null;
+  for (const event of events) {
+    const type = event.type || '';
+    if (
+      !type.startsWith('model_gateway') ||
+      type === 'model_gateway_request_started'
+    )
+      continue;
+    // A harness side request (title or status summariser) ends with "stop"
+    // without the agent having finished anything.
+    if (isHarnessSideRequestEvent(event)) continue;
+    const reason = event.payload?.finish_reason;
+    if (typeof reason !== 'string' || !reason) continue;
+    const at = parseUtc(event.timestamp) ?? 0;
+    if (!newest || at >= newest.at) newest = { at, reason };
+  }
+  if (!newest) return null;
+  const reason = newest.reason.toLowerCase();
+  if (TURN_END_REASONS.has(reason)) return 'turn_end';
+  if (TOOL_REASONS.has(reason)) return 'tool';
+  return null;
 }
 
 export function readablePayload(value: string | undefined): string {

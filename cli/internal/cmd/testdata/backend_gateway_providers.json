@@ -1,0 +1,41 @@
+{
+  "ai_model_provider.py:DEFAULT_PROVIDER_ENDPOINTS": [
+    "openrouter"
+  ],
+  "ai_model_provider.py:OPENAI_COMPATIBLE_PROVIDERS": [
+    "custom",
+    "openai-compatible",
+    "openrouter"
+  ],
+  "azure_openai.py:AZURE_PROVIDERS": [
+    "azure"
+  ],
+  "litellm_routing.py:BEDROCK_PROVIDERS": [
+    "amazon-bedrock",
+    "aws",
+    "bedrock"
+  ],
+  "litellm_routing.py:OPENAI_COMPATIBLE_PROVIDERS": [
+    "custom",
+    "openai-compatible"
+  ],
+  "litellm_routing.py:PROVIDER_PREFIX": [
+    "amazon-bedrock",
+    "anthropic",
+    "aws",
+    "azure",
+    "bedrock",
+    "deepseek",
+    "gemini",
+    "google",
+    "mistral",
+    "moonshot",
+    "openai",
+    "openai-codex",
+    "openrouter",
+    "qwen",
+    "vertex",
+    "vertex_ai",
+    "zai"
+  ]
+}

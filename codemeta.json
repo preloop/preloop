@@ -1,0 +1,39 @@
+{
+  "@context": "https://w3id.org/codemeta/3.0",
+  "@type": "SoftwareSourceCode",
+  "name": "Preloop",
+  "description": "The open-source AI agent control plane and software factory: MCP firewall, model gateway with budgets, human approvals, runtime observability, and audit trails.",
+  "codeRepository": "https://github.com/preloop/preloop",
+  "url": "https://preloop.ai",
+  "license": "https://spdx.org/licenses/Apache-2.0",
+  "version": "0.17.1",
+  "dateCreated": "2026-01-09",
+  "programmingLanguage": [
+    "Python",
+    "Go",
+    "TypeScript"
+  ],
+  "operatingSystem": [
+    "Linux",
+    "macOS",
+    "Windows"
+  ],
+  "softwareHelp": "https://docs.preloop.ai",
+  "issueTracker": "https://github.com/preloop/preloop/issues",
+  "developmentStatus": "active",
+  "author": [
+    {
+      "@type": "Organization",
+      "name": "Spacecode AI Inc."
+    }
+  ],
+  "keywords": [
+    "ai-agents",
+    "mcp",
+    "ai-gateway",
+    "policy-as-code",
+    "human-in-the-loop",
+    "observability",
+    "self-hosted"
+  ]
+}

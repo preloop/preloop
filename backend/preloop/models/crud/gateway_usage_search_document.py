@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from sqlalchemy import String, and_, case, cast, func, or_, tuple_
-from sqlalchemy.orm import Session
+from sqlalchemy import String, and_, case, cast, func, or_, select, tuple_
+from sqlalchemy.orm import Session, defer
 
 from ..models.api_usage import ApiUsage
 from ..models.api_key import ApiKey
@@ -145,8 +145,14 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
         offset: int = 0,
         include_total: bool = True,
         api_usage_ids: Optional[List[Any]] = None,
+        usage_meta_keys: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Return account-scoped gateway interaction search hits.
+
+        ``usage_meta_keys`` limits each item's usage ``meta_data`` to those
+        keys, picked in SQL. A usage row's metadata holds the captured
+        request and response, about 114 KB a row on a long session: a
+        timeline of 50 rows read 5.8 MB to use seven scalar keys (#1689).
 
         ``include_total=False`` skips the count, which joins every document
         in the window (a whole-table hash join on a busy account, #1582), and
@@ -167,6 +173,32 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
             RuntimeSession.session_reference, FlowExecution.agent_session_reference
         )
 
+        slim_usage_meta = None
+        if usage_meta_keys:
+            # One pass over the value with jsonb_each: a ``meta_data -> key``
+            # per key detoasts the whole value once per key (~113 KB a row of
+            # ``usage_details`` on a long session), which made this slower
+            # than shipping it.
+            # Only objects: a row can hold a JSON null or scalar, and
+            # jsonb_each raises on those. NULL yields no entries.
+            meta_object = case(
+                (
+                    func.jsonb_typeof(ApiUsage.meta_data) == "object",
+                    ApiUsage.meta_data,
+                ),
+                else_=None,
+            )
+            entries = func.jsonb_each(meta_object).table_valued("key", "value")
+            slim_usage_meta = (
+                select(func.jsonb_object_agg(entries.c.key, entries.c.value))
+                .where(entries.c.key.in_(list(usage_meta_keys)))
+                .scalar_subquery()
+            )
+        extra_columns = (
+            [slim_usage_meta.label("usage_meta_data")]
+            if slim_usage_meta is not None
+            else []
+        )
         base_query = (
             db.query(
                 GatewayUsageSearchDocument.id.label("document_id"),
@@ -181,6 +213,7 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
                 resolved_session_source_type.label("resolved_session_source_type"),
                 resolved_session_source_id.label("resolved_session_source_id"),
                 resolved_session_reference.label("resolved_session_reference"),
+                *extra_columns,
             )
             .join(ApiUsage, GatewayUsageSearchDocument.api_usage_id == ApiUsage.id)
             .outerjoin(Flow, ApiUsage.flow_id == Flow.id)
@@ -193,6 +226,8 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
             )
         )
 
+        if slim_usage_meta is not None:
+            base_query = base_query.options(defer(ApiUsage.meta_data))
         if start_date:
             base_query = base_query.filter(ApiUsage.timestamp >= start_date)
         if end_date:
@@ -314,7 +349,13 @@ class CRUDGatewayUsageSearchDocument(CRUDBase[GatewayUsageSearchDocument]):
                     ),
                     "meta_data": {
                         **(row.document_meta_data or {}),
-                        **(usage.meta_data or {}),
+                        # Never touch the deferred column: it would load
+                        # the whole capture back, one query per row.
+                        **(
+                            (row.usage_meta_data or {})
+                            if slim_usage_meta is not None
+                            else (usage.meta_data or {})
+                        ),
                     },
                 }
             )

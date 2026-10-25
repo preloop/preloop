@@ -1,3 +1,4 @@
+import { resetSessionArtifactCache } from '../utils/session-artifacts';
 import { expect, fixture, html, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import './session-chat-view';
@@ -113,6 +114,7 @@ describe('browser steps in the session timeline', () => {
   let fetchStub: sinon.SinonStub;
 
   beforeEach(() => {
+    resetSessionArtifactCache();
     localStorage.setItem('accessToken', 'test-access-token');
     fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
       const url = String(input instanceof Request ? input.url : input);
@@ -758,5 +760,69 @@ describe('browser steps in the session timeline', () => {
     viewer.close();
     expect(thumb.shadowRoot!.activeElement).to.equal(trigger);
     viewer.remove();
+  });
+});
+
+describe('browser-step thumbnails share the eager preview budget (#1690)', () => {
+  it('strip and row thumbnails count against the 2-preview limit', async () => {
+    const strip = await fixture<BrowserStepStrip>(html`
+      <browser-step-strip
+        .steps=${STEPS}
+        .sessionId=${SESSION_ID}
+      ></browser-step-strip>
+    `);
+    const thumbs = Array.from(
+      strip.shadowRoot!.querySelectorAll('browser-step-thumbnail')
+    ) as Array<HTMLElement & { budgeted: boolean }>;
+    expect(thumbs.length).to.be.greaterThan(0);
+    for (const thumb of thumbs) expect(thumb.budgeted).to.equal(true);
+
+    const row = await fixture<HTMLElement>(html`
+      <browser-step-row
+        .item=${STEPS[0]}
+        .sessionId=${SESSION_ID}
+      ></browser-step-row>
+    `);
+    const rowThumb = row.shadowRoot!.querySelector(
+      'browser-step-thumbnail'
+    ) as BrowserStepThumbnail & { budgeted: boolean };
+    expect(rowThumb).to.exist;
+    expect(rowThumb.budgeted).to.equal(true);
+  });
+});
+
+describe('compact thumbnails waiting for a click (#1690)', () => {
+  it('render no nested control inside the strip step button', async () => {
+    // The strip wraps each thumbnail in its step button and turns off
+    // pointer events on it: a "Load preview" button there could never take
+    // a mouse click, and a keyboard press would also scrub.
+    const thumb = await fixture<BrowserStepThumbnail>(html`
+      <browser-step-thumbnail
+        compact
+        deferred
+        .sessionId=${SESSION_ID}
+        .artifactId=${'00000000-0000-4000-8000-0000000000aa'}
+      ></browser-step-thumbnail>
+    `);
+    await thumb.updateComplete;
+    const placeholder = thumb.shadowRoot!.querySelector(
+      '[data-testid="preview-on-demand"]'
+    );
+    expect(placeholder).to.exist;
+    expect(placeholder!.tagName).to.equal('DIV');
+    expect(thumb.shadowRoot!.querySelector('button')).to.equal(null);
+
+    const full = await fixture<BrowserStepThumbnail>(html`
+      <browser-step-thumbnail
+        deferred
+        .sessionId=${SESSION_ID}
+        .artifactId=${'00000000-0000-4000-8000-0000000000ab'}
+      ></browser-step-thumbnail>
+    `);
+    await full.updateComplete;
+    expect(
+      full.shadowRoot!.querySelector('[data-testid="preview-on-demand"]')!
+        .tagName
+    ).to.equal('BUTTON');
   });
 });

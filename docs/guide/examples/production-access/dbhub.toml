@@ -1,0 +1,32 @@
+# DBHub v1.5.0 settings for the postgres-readonly profile.
+#
+#   export AGENT_DB_PASSWORD=...   # password of the agent_readonly role
+#   npx @bytebase/dbhub@1.5.0 --transport http --port 8080 --config dbhub.toml
+#
+# Keep one source per DBHub process: with one source the tools are named
+# execute_sql and search_objects, as readonly-policy.yaml expects. With more
+# than one, DBHub appends the source id to each tool name. DBHub leaves an
+# unset ${VAR} in place without an error, so check the variable is exported.
+
+[[sources]]
+id = "app_db"
+description = "Production database, read-only role"
+dsn = "postgres://agent_readonly:${AGENT_DB_PASSWORD}@db.example.com:5432/app_db?sslmode=require"
+# Seconds. DBHub applies it as statement_timeout on PostgreSQL.
+query_timeout = 15
+# Matches CONNECTION LIMIT in postgres-readonly-role.sql. Without it the pool
+# opens up to 10 connections and calls beyond the role's limit fail.
+pool_max_connections = 5
+
+# readonly refuses statements other than reads before they reach the
+# database. max_rows caps the rows returned to the agent; Postgres has no
+# per-role row cap, so this is where the cap lives.
+[[tools]]
+name = "execute_sql"
+source = "app_db"
+readonly = true
+max_rows = 500
+
+[[tools]]
+name = "search_objects"
+source = "app_db"

@@ -1,12 +1,12 @@
-import { expect, fixture, html, waitUntil } from '@open-wc/testing';
-import sinon from 'sinon';
-import { sendKeys, sendMouse } from '@web/test-runner-commands';
+import { expect, fixture, html, oneEvent, waitUntil } from '@open-wc/testing';
+import { mockApi, type MockApi } from '../test-helpers/capability-api';
 import { sampleFleetMap } from '../test-helpers/fleet-map-graph';
 import './inventory-card.ts';
+import { INVENTORY_TAB_STORAGE_KEY } from './inventory-card';
 import {
-  INVENTORY_TAB_STORAGE_KEY,
-  INVENTORY_VIEW_STORAGE_KEY,
-} from './inventory-card';
+  clearTablePreferences,
+  readTablePreferences,
+} from '../table/table-preferences';
 import type {
   InventoryAgentRow,
   InventoryCard,
@@ -115,7 +115,6 @@ async function card(
     deviceRows: InventoryDeviceRow[];
     devicesTotal: number;
     showDevices: boolean;
-    showMap: boolean;
     loadingDevices: boolean | null;
     unavailableTabs: string[];
     agentRows: InventoryAgentRow[];
@@ -132,6 +131,7 @@ async function card(
     usageLoadingModels: boolean;
     usageLoadingTools: boolean;
     flowRunsCapped: boolean;
+    timeRange: string;
   }> = {}
 ): Promise<InventoryCard> {
   const el = await fixture<InventoryCard>(html`
@@ -147,7 +147,6 @@ async function card(
       .deviceRows=${props.deviceRows ?? []}
       .devicesTotal=${props.devicesTotal ?? 0}
       ?showDevices=${props.showDevices ?? false}
-      ?showMap=${props.showMap ?? false}
       .loadingDevices=${props.loadingDevices ?? null}
       .unavailableTabs=${props.unavailableTabs ?? []}
       .agentsTotal=${10}
@@ -161,6 +160,7 @@ async function card(
       .usageLoadingModels=${props.usageLoadingModels ?? null}
       .usageLoadingTools=${props.usageLoadingTools ?? null}
       rangeLabel="30d"
+      timeRange=${props.timeRange ?? 'this-month'}
     ></inventory-card>
   `);
   await el.updateComplete;
@@ -487,11 +487,10 @@ describe('inventory-card', () => {
       el.shadowRoot!.querySelectorAll('tbody tr')[0].querySelectorAll('td')
     );
     expect(cells[0].textContent).to.contain('Hermes');
-    expect(cells[2].querySelector('sl-skeleton'), 'Requests').to.exist;
-    expect(cells[3].querySelector('sl-skeleton'), 'Tokens').to.exist;
-    expect(cells[4].querySelector('sl-skeleton'), '$ est.').to.exist;
+    expect(cells[2].querySelector('sl-skeleton'), 'Tokens').to.exist;
+    expect(cells[3].querySelector('sl-skeleton'), '$ est.').to.exist;
     // Last seen comes off the agent itself, so it is never a skeleton.
-    expect(cells[5].textContent!.trim()).to.not.equal('');
+    expect(cells[4].textContent!.trim()).to.not.equal('');
 
     (el as any).setSort('spend');
     await el.updateComplete;
@@ -712,7 +711,7 @@ describe('inventory-card', () => {
     ).map((cell) => cell.getAttribute('data-label'));
     // Spend and last seen used to arrive as two bare numbers with no word
     // saying what they were.
-    expect(labels).to.deep.equal(['Requests', 'Tokens', 'Spend', 'Seen']);
+    expect(labels).to.deep.equal(['Tokens', 'Spend', 'Seen']);
 
     // Read from the stylesheet, not the DOM: the separator is a ::before on
     // a media query, and a pseudo element has no node to query. The cost is
@@ -809,12 +808,68 @@ describe('inventory-card', () => {
     expect(footer?.getAttribute('href')).to.equal('/console/agents');
   });
 
-  it('states the page range without offering a second one', async () => {
+  it('offers the page range as a period select, next to the sort', async () => {
+    const el = await card({ timeRange: 'this-week' });
+    const select = el.shadowRoot?.querySelector('time-range-select') as
+      (HTMLElement & { value: string; options: { value: string }[] }) | null;
+    expect(select, 'period select').to.exist;
+    expect(select!.value).to.equal('this-week');
+    expect(select!.options.map((option) => option.value)).to.include.members([
+      'today',
+      'this-week',
+      'this-month',
+    ]);
+    expect(el.shadowRoot?.querySelector('.range-label')).to.not.exist;
+    expect(el.shadowRoot?.querySelector('.sort-select')).to.exist;
+  });
+
+  it('ends the header controls at the period select, with no gap', async () => {
     const el = await card();
-    expect(
-      (el.shadowRoot?.querySelector('.range-label')?.textContent || '').trim()
-    ).to.equal('30d');
-    expect(el.shadowRoot?.querySelector('time-range-select')).to.not.exist;
+    const controls = el.shadowRoot!.querySelector('.header-controls')!;
+    const period = el.shadowRoot!.querySelector('time-range-select')!;
+    const gap =
+      controls.getBoundingClientRect().right -
+      period.getBoundingClientRect().right;
+    expect(gap).to.be.lessThan(1);
+  });
+
+  it('keeps the header controls inside the card on a phone', async () => {
+    const el = await card();
+    el.style.display = 'block';
+    el.style.width = '320px';
+    await el.updateComplete;
+    const head = el.shadowRoot!.querySelector('.card-head')!;
+    for (const control of el.shadowRoot!.querySelectorAll(
+      '.header-controls > *'
+    )) {
+      expect(control.getBoundingClientRect().right).to.be.at.most(
+        head.getBoundingClientRect().right + 1
+      );
+    }
+  });
+
+  it('hands a period change to the page, which owns the range', async () => {
+    const el = await card();
+    const select = el.shadowRoot!.querySelector('time-range-select')!;
+    setTimeout(() =>
+      select.dispatchEvent(
+        new CustomEvent('range-change', {
+          detail: { value: 'today' },
+          bubbles: true,
+          composed: true,
+        })
+      )
+    );
+    const event = (await oneEvent(el, 'range-change')) as CustomEvent<{
+      value: string;
+    }>;
+    expect(event.detail.value).to.equal('today');
+  });
+
+  it('has no Map view: the fleet map lives on its own page', async () => {
+    const el = await card({ showDevices: true, devicesTotal: 1 });
+    expect(el.shadowRoot?.querySelector('.view-switch')).to.not.exist;
+    expect(el.shadowRoot?.querySelector('fleet-map')).to.not.exist;
   });
   describe('users tab', () => {
     const withUsers = (props = {}) =>
@@ -969,9 +1024,25 @@ describe('inventory-card', () => {
         .false;
     });
 
-    it('sits next to Agents with its count', async () => {
+    it('comes last, after Users, with its count', async () => {
+      const el = await withDevices({ showUsers: true, usersTotal: 3 });
+      const labels = tabText(el);
+      expect(labels.at(-1)).to.equal('Devices 3');
+      expect(labels.at(-2)).to.match(/^Users/);
+    });
+
+    it('keeps the period select and the Last seen column', async () => {
       const el = await withDevices();
-      expect(tabText(el).slice(0, 2)).to.eql(['Agents 10', 'Devices 3']);
+      await showTab(el, 'devices');
+      const root = el.shadowRoot!;
+      expect(root.querySelector('time-range-select')).to.exist;
+      const headers = Array.from(root.querySelectorAll('th')).map((th) =>
+        th.textContent?.trim()
+      );
+      expect(headers).to.include('Last seen');
+      expect(
+        root.querySelectorAll('tbody td[data-label="Last seen"]').length
+      ).to.equal(2);
     });
 
     it('links each device to its fleet page and each person to theirs', async () => {
@@ -1064,206 +1135,322 @@ describe('inventory-card', () => {
       )?.textContent
     ).to.equal('Ada Lovelace');
   });
+});
 
-  describe('map view', () => {
-    let fetchStub: sinon.SinonStub;
-    let mapStatus: number;
+describe('inventory-card Agents columns', () => {
+  const LIST = 'overview-inventory-agents';
+  afterEach(() => clearTablePreferences(LIST));
 
-    beforeEach(() => {
-      localStorage.removeItem(INVENTORY_VIEW_STORAGE_KEY);
-      localStorage.setItem('accessToken', 'test-access-token');
-      mapStatus = 200;
-      fetchStub = sinon.stub(window, 'fetch').callsFake(async (input) => {
-        const url = typeof input === 'string' ? input : input.toString();
-        if (url.startsWith('/api/v1/fleet/map')) {
-          return mapStatus === 200
-            ? new Response(JSON.stringify(sampleFleetMap()), {
-                status: 200,
-                headers: { 'Content-Type': 'application/json' },
-              })
-            : new Response('', { status: mapStatus });
-        }
-        return new Response('{}', { status: 404 });
-      });
+  const headers = (el: HTMLElement) =>
+    Array.from(el.shadowRoot!.querySelectorAll('table thead th')).map((th) =>
+      (th.textContent || '').trim()
+    );
+
+  it('keeps long model aliases readable in a constrained inventory card', async () => {
+    const el = await card({
+      agentRows: [
+        agentRow({
+          modelAlias:
+            'provider/research-model-with-a-long-distinguishing-suffix',
+        }),
+      ],
     });
+    el.style.width = '735px';
+    await el.updateComplete;
+    const model = el.shadowRoot!.querySelector(
+      '.inventory-model'
+    ) as HTMLElement;
+    expect(model.getBoundingClientRect().width).to.be.at.least(100);
+    expect(model.textContent).to.contain('distinguishing-suffix');
+    const text = model.querySelector('span')!;
+    expect(getComputedStyle(text).whiteSpace).to.equal('normal');
+    expect(model.scrollWidth).to.be.at.most(model.clientWidth + 1);
+  });
 
-    afterEach(() => {
-      fetchStub.restore();
-      localStorage.removeItem(INVENTORY_VIEW_STORAGE_KEY);
-    });
-
-    const mapCalls = () =>
-      fetchStub
-        .getCalls()
-        .filter((call) => String(call.args[0]).startsWith('/api/v1/fleet/map'))
-        .length;
-
-    const switchTo = async (el: InventoryCard, label: string) => {
-      const button = Array.from(
-        el.shadowRoot!.querySelectorAll<HTMLButtonElement>(
-          '.view-switch button'
-        )
-      ).find((candidate) => candidate.textContent?.trim() === label)!;
-      button.click();
-      await el.updateComplete;
+  it('lets the column picker switch a column off, and remembers it', async () => {
+    const el = await card({ agentRows: [agentRow()] });
+    expect(headers(el)).to.include('Tokens');
+    const picker = el.shadowRoot!.querySelector(
+      'thead tr th:last-child column-picker'
+    ) as HTMLElement & {
+      columns: Array<{ id: string; hideable?: boolean }>;
     };
+    expect(picker).to.exist;
+    expect(
+      el.shadowRoot!.querySelector(
+        'list-toolbar column-picker, .toolbar column-picker'
+      )
+    ).to.be.null;
+    // The name identifies the row; the picker may not take it away.
+    expect(picker.columns.find((c) => c.id === 'name')?.hideable).to.be.false;
+    picker.dispatchEvent(
+      new CustomEvent('column-toggle', {
+        detail: { id: 'tokens', visible: false },
+        bubbles: true,
+        composed: true,
+      })
+    );
+    await el.updateComplete;
+    expect(headers(el)).to.not.include('Tokens');
+    expect(readTablePreferences(LIST)?.columnVisibility?.tokens).to.equal(
+      false
+    );
+  });
 
-    it('offers no map without fleet access, even when one was remembered', async () => {
-      localStorage.setItem(INVENTORY_VIEW_STORAGE_KEY, 'map');
-      const el = await card();
-      expect(el.shadowRoot!.querySelector('.view-switch')).to.not.exist;
-      expect(el.shadowRoot!.querySelector('sl-tab-group')).to.exist;
-      expect(mapCalls()).to.equal(0);
-    });
+  it('keeps the last heading readable beside the column picker', async () => {
+    const el = await card({ agentRows: [agentRow()] });
+    const cell = el.shadowRoot!.querySelector(
+      'table thead th:last-child'
+    ) as HTMLElement;
+    const label = cell.querySelector('.header-label') as HTMLElement;
+    const picker = cell.querySelector('column-picker') as HTMLElement;
+    const trigger = picker.shadowRoot!.querySelector(
+      'sl-button[slot="trigger"]'
+    ) as HTMLElement;
+    expect(label.textContent!.trim()).to.equal('Last seen');
+    expect(label.scrollWidth).to.be.at.most(label.clientWidth + 1);
+    const cellBox = cell.getBoundingClientRect();
+    const labelBox = label.getBoundingClientRect();
+    const triggerBox = trigger.getBoundingClientRect();
+    expect(labelBox.left).to.be.at.least(cellBox.left - 0.5);
+    expect(labelBox.right).to.be.at.most(triggerBox.left + 0.5);
+    expect(triggerBox.right).to.be.at.most(cellBox.right + 0.5);
+  });
 
-    it('replaces the tabs and tables with the map, read once and remembered', async () => {
-      const el = await card({ showMap: true });
-      expect(mapCalls(), 'no map read while the table shows').to.equal(0);
+  it('gives a numeric header the same narrow gutter as its numbers', async () => {
+    const el = await card({ agentRows: [agentRow()] });
+    const header = el.shadowRoot!.querySelector(
+      'table thead th.numeric'
+    ) as HTMLElement;
+    const cell = el.shadowRoot!.querySelector('tbody td.num') as HTMLElement;
+    expect(header).to.exist;
+    expect(getComputedStyle(header).textAlign).to.equal('right');
+    expect(getComputedStyle(header).paddingLeft).to.equal(
+      getComputedStyle(cell).paddingLeft
+    );
+  });
 
-      await switchTo(el, 'Map');
-      await waitUntil(
-        () => el.shadowRoot!.querySelector('fleet-map'),
-        'map never rendered'
-      );
-      const root = el.shadowRoot!;
-      expect(root.querySelector('sl-tab-group')).to.not.exist;
-      expect(root.querySelector('table')).to.not.exist;
-      expect(root.querySelector('.sort-select')).to.not.exist;
-      expect(
-        (root.querySelector('fleet-map') as any).graph.nodes.length
-      ).to.be.greaterThan(0);
-      expect(localStorage.getItem(INVENTORY_VIEW_STORAGE_KEY)).to.equal('map');
-      expect(root.querySelector('.footer a')?.getAttribute('href')).to.equal(
-        '/console/settings/device-fleet'
-      );
-
-      await switchTo(el, 'Table');
-      await switchTo(el, 'Map');
-      expect(mapCalls(), 'the graph is kept between toggles').to.equal(1);
-      expect(
-        root.querySelector('.view-switch button[aria-pressed="true"]')
-          ?.textContent
-      ).to.contain('Map');
-    });
-
-    it('says the map could not load and retries on request', async () => {
-      mapStatus = 500;
-      const el = await card({ showMap: true });
-      await switchTo(el, 'Map');
-      await waitUntil(
-        () => el.shadowRoot!.querySelector('.map-error'),
-        'no error line'
-      );
-      expect(
-        el.shadowRoot!.querySelector('.map-error')?.textContent
-      ).to.contain('could not be loaded');
-      mapStatus = 200;
-      (
-        el.shadowRoot!.querySelector('.map-error button') as HTMLElement
-      ).click();
-      await waitUntil(
-        () => el.shadowRoot!.querySelector('fleet-map'),
-        'retry never rendered the map'
-      );
-      expect(mapCalls()).to.equal(2);
-    });
-
-    const openFullscreen = async (el: InventoryCard) => {
-      await switchTo(el, 'Map');
-      await waitUntil(() => el.shadowRoot!.querySelector('fleet-map'));
-      (
-        el.shadowRoot!.querySelector(
-          '.card-head .fullscreen-toggle'
-        ) as HTMLElement
-      ).click();
-      await waitUntil(() =>
-        el.shadowRoot!.querySelector('dialog.map-overlay fleet-map')
-      );
-      await el.updateComplete;
-      return el.shadowRoot!.querySelector(
-        'dialog.map-overlay'
-      ) as HTMLDialogElement;
+  it('gives the agent name the widest column and a floor', async () => {
+    const el = (await card({
+      agentRows: [agentRow({ name: 'a-very-long-agent-name-on-a-build-host' })],
+    })) as HTMLElement & {
+      agentTable: {
+        widthOfColumn(id: string): number;
+        resizeBy(id: string, d: number): void;
+      };
     };
+    const table = el.agentTable;
+    expect(table.widthOfColumn('name')).to.equal(180);
+    table.resizeBy('name', -1000);
+    await el.updateComplete;
+    expect(table.widthOfColumn('name')).to.equal(160);
+    const link = el.shadowRoot!.querySelector('a.row-name') as HTMLElement;
+    expect(link.getAttribute('title')).to.equal(
+      'a-very-long-agent-name-on-a-build-host'
+    );
+  });
 
-    afterEach(() => {
-      document.documentElement.style.overflow = '';
+  it('keeps a resized width across reloads', async () => {
+    const el = await card({ agentRows: [agentRow()] });
+    const handle = el.shadowRoot!.querySelector(
+      'th.col-name .col-resize'
+    ) as HTMLElement;
+    expect(handle).to.exist;
+    handle.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+    );
+    await el.updateComplete;
+    expect(readTablePreferences(LIST)?.columnSizing?.name).to.equal(196);
+
+    const again = (await card({ agentRows: [agentRow()] })) as HTMLElement & {
+      agentTable: { widthOfColumn(id: string): number };
+    };
+    expect(again.agentTable.widthOfColumn('name')).to.equal(196);
+  });
+});
+
+describe('inventory-card spatial map', () => {
+  let api: MockApi;
+  afterEach(() => {
+    api?.restore();
+    localStorage.removeItem('accessToken');
+    for (const key of Object.keys(localStorage))
+      if (
+        key.startsWith('preloop:inventory:') ||
+        key.startsWith('preloop:fleet-map:')
+      )
+        localStorage.removeItem(key);
+  });
+
+  beforeEach(() => localStorage.removeItem('preloop:fleet-map:window'));
+
+  it('offers no map to anyone but an instance administrator', async () => {
+    localStorage.setItem('preloop:inventory:view:u1', 'map');
+    const el = await fixture<InventoryCard>(
+      html`<inventory-card userId="u1"></inventory-card>`
+    );
+    expect(el.shadowRoot!.querySelector('[data-inventory-view]')).to.not.exist;
+    expect(el.shadowRoot!.querySelector('fleet-map')).to.not.exist;
+  });
+
+  it('swaps the table for the spatial fleet map and remembers it', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    api = mockApi({
+      routes: [
+        {
+          path: '/api/v1/fleet/map',
+          body: { ...sampleFleetMap(), active_within_minutes: 43200 },
+        },
+      ],
     });
+    const el = await fixture<InventoryCard>(
+      html`<inventory-card instanceAdmin userId="u1"></inventory-card>`
+    );
+    el.shadowRoot!.querySelector<HTMLButtonElement>(
+      '[data-inventory-view="map"]'
+    )!.click();
+    await waitUntil(() => el.shadowRoot!.querySelector('fleet-map')?.graph);
+    const map = el.shadowRoot!.querySelector('fleet-map')!;
+    await map.updateComplete;
+    expect(map.positionsScope).to.equal('inventory');
+    expect(map.shadowRoot!.querySelector('[data-node="agent:codex"]')).to.exist;
+    // The live spatial canvas is the default; the columns are one click away.
+    expect(map.shadowRoot!.querySelector('.column-title')).to.not.exist;
+    map
+      .shadowRoot!.querySelector<HTMLButtonElement>(
+        '[data-arrangement="columns"]'
+      )!
+      .click();
+    await map.updateComplete;
+    expect(map.shadowRoot!.querySelector('.column-title')).to.exist;
+    expect(
+      localStorage.getItem('preloop:fleet-map:arrangement:inventory:u1')
+    ).to.equal('columns');
+    expect(el.shadowRoot!.querySelector('table')).to.not.exist;
+    expect(localStorage.getItem('preloop:inventory:view:u1')).to.equal('map');
+    expect(api.callsTo('/api/v1/fleet/map').length).to.equal(1);
+  });
 
-    it('opens full screen as a modal and leaves it with the toggle or Esc', async () => {
-      const el = await card({ showMap: true });
-      const root = el.shadowRoot!;
-      const overlay = await openFullscreen(el);
-      // A native modal: top layer, inert page behind, focus kept inside.
-      expect(overlay.open).to.be.true;
-      expect(overlay.matches(':modal')).to.be.true;
-      expect(overlay.getAttribute('aria-label')).to.equal('Fleet map');
-      expect(root.querySelector('.map-body'), 'one map at a time').to.not.exist;
-      expect(document.documentElement.style.overflow).to.equal('hidden');
-      expect(root.activeElement?.closest('dialog')).to.equal(overlay);
-
-      await sendKeys({ press: 'Escape' });
-      await waitUntil(() => !root.querySelector('dialog.map-overlay'));
-      expect(root.querySelector('.map-body fleet-map')).to.exist;
-      expect(document.documentElement.style.overflow).to.equal('');
-      expect(
-        root.activeElement?.matches('.card-head .fullscreen-toggle'),
-        'focus returns to the control that opened it'
-      ).to.be.true;
-
-      const again = await openFullscreen(el);
-      (again.querySelector('.fullscreen-toggle') as HTMLElement).click();
-      await waitUntil(() => !root.querySelector('dialog.map-overlay'));
+  it('refetches the map scoped to the users chosen on it', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    api = mockApi({
+      routes: [{ path: '/api/v1/fleet/map', body: sampleFleetMap() }],
     });
+    const el = await fixture<InventoryCard>(
+      html`<inventory-card instanceAdmin userId="u9"></inventory-card>`
+    );
+    el.shadowRoot!.querySelector<HTMLButtonElement>(
+      '[data-inventory-view="map"]'
+    )!.click();
+    await waitUntil(() => el.shadowRoot!.querySelector('fleet-map')?.graph);
+    const map = el.shadowRoot!.querySelector('fleet-map')!;
+    await map.updateComplete;
+    map
+      .shadowRoot!.querySelector<HTMLElement>('[data-user="user:sam"]')!
+      .click();
+    await waitUntil(() => api.callsTo('/api/v1/fleet/map').length === 2);
+    expect(api.callsTo('/api/v1/fleet/map')[1].search).to.contain('users=sam');
+    await el.updateComplete;
+    expect(map.users).to.deep.equal(['user:sam']);
+    localStorage.removeItem('preloop:inventory:view:u9');
+  });
 
-    it('lets Esc clear a map selection before it leaves full screen, wherever focus is', async () => {
-      const el = await card({ showMap: true });
-      const root = el.shadowRoot!;
-      const overlay = await openFullscreen(el);
-      const map = overlay.querySelector('fleet-map') as any;
-      await map.updateComplete;
-      // A real click on a node, as a person selects one (and the browser
-      // counts it as the activation a cancellable Esc needs).
-      const node = map.shadowRoot.querySelector(
-        'button[data-node]'
-      ) as HTMLElement;
-      node.scrollIntoView({ block: 'center', inline: 'center' });
-      const box = node.getBoundingClientRect();
-      await sendMouse({
-        type: 'click',
-        position: [
-          Math.round(box.left + box.width / 2),
-          Math.round(box.top + box.height / 2),
-        ],
-      });
-      await map.updateComplete;
-      expect(map.hasSelection(), 'the click selected the node').to.be.true;
-      // Focus on the overlay's own toggle, outside the canvas.
-      (overlay.querySelector('.fullscreen-toggle') as HTMLElement).focus();
+  it('keeps the table the default for an administrator', async () => {
+    const el = await fixture<InventoryCard>(
+      html`<inventory-card instanceAdmin userId="u2"></inventory-card>`
+    );
+    expect(
+      el
+        .shadowRoot!.querySelector('[data-inventory-view="table"]')!
+        .getAttribute('aria-pressed')
+    ).to.equal('true');
+    expect(el.shadowRoot!.querySelector('fleet-map')).to.not.exist;
+  });
 
-      await sendKeys({ press: 'Escape' });
-      await el.updateComplete;
-      expect(map.hasSelection(), 'the selection is what Esc undid').to.be.false;
-      expect(root.querySelector('dialog.map-overlay'), 'still full screen').to
-        .exist;
-
-      await sendKeys({ press: 'Escape' });
-      await waitUntil(() => !root.querySelector('dialog.map-overlay'));
+  it('shows the live map with pull request counters from the endpoint', async () => {
+    localStorage.setItem('accessToken', 'test-token');
+    localStorage.setItem('preloop:inventory:view:u1', 'map');
+    api = mockApi({
+      routes: [
+        {
+          path: '/api/v1/fleet/map',
+          body: { ...sampleFleetMap(), active_within_minutes: 43200 },
+        },
+        {
+          path: '/api/v1/fleet/code-activity',
+          body: {
+            active_within_minutes: 43200,
+            since: new Date().toISOString(),
+            truncated: false,
+            counts: {
+              'agent:codex': {
+                opened: 3,
+                commented: 0,
+                reviewed: 0,
+                merged: 1,
+              },
+            },
+            flows: [],
+            events: [],
+          },
+        },
+      ],
     });
+    const el = await fixture<InventoryCard>(
+      html`<inventory-card instanceAdmin userId="u1"></inventory-card>`
+    );
+    await waitUntil(() => el.shadowRoot!.querySelector('fleet-map')?.graph);
+    const map = el.shadowRoot!.querySelector('fleet-map')!;
+    expect(map.live).to.equal(true);
+    await waitUntil(
+      () => map.shadowRoot!.querySelector('[data-code="agent:codex"]'),
+      'code counters render',
+      { timeout: 3000 }
+    );
+    const badges = [
+      ...map.shadowRoot!.querySelectorAll<HTMLElement>(
+        '[data-code="agent:codex"] .code-badge'
+      ),
+    ].map((b) => `${b.dataset.action}:${b.textContent!.trim()}`);
+    expect(badges).to.deep.equal(['opened:3', 'merged:1']);
+    expect(
+      api.callsTo('/api/v1/fleet/code-activity')[0]?.search ?? ''
+    ).to.contain('active_within_minutes=43200');
+  });
+});
 
-    it('returns focus to the card when the modal is left through Table', async () => {
-      const el = await card({ showMap: true });
-      const root = el.shadowRoot!;
-      const overlay = await openFullscreen(el);
-      const table = Array.from(
-        overlay.querySelectorAll<HTMLButtonElement>('.view-switch button')
-      ).find((button) => button.textContent?.trim() === 'Table')!;
-      table.click();
-      await waitUntil(() => !root.querySelector('dialog.map-overlay'));
-      await el.updateComplete;
-      await el.updateComplete;
-      expect(root.querySelector('sl-tab-group')).to.exist;
-      expect(document.documentElement.style.overflow).to.equal('');
-      expect(root.activeElement?.textContent?.trim()).to.equal('Table');
-    });
+describe('inventory-card agents table at 1440 (B-07)', () => {
+  beforeEach(() => {
+    localStorage.removeItem(INVENTORY_TAB_STORAGE_KEY);
+  });
+
+  it('fits the card with Last seen and Model visible', async () => {
+    // The Overview main column is 735px wide at a 1440 viewport.
+    const host = await fixture<HTMLElement>(
+      html`<div style="width: 735px">
+        <inventory-card
+          .agentRows=${[
+            agentRow({
+              name: 'A coding agent with a long display name',
+              lastSeenAt: new Date(Date.now() - 26 * 3600_000).toISOString(),
+            }),
+          ]}
+          .agentsTotal=${1}
+          rangeLabel="30d"
+        ></inventory-card>
+      </div>`
+    );
+    const el = host.querySelector('inventory-card') as InventoryCard;
+    await el.updateComplete;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const table = el.shadowRoot!.querySelector(
+      'table.inventory-table'
+    ) as HTMLElement;
+    const scroll = table.parentElement as HTMLElement;
+    expect(table.scrollWidth, 'the table fits its card').to.be.at.most(
+      scroll.clientWidth + 1
+    );
+    const model = table.querySelector('thead th.col-model') as HTMLElement;
+    expect(model.getBoundingClientRect().width).to.be.at.least(56);
   });
 });

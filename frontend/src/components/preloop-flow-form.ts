@@ -1968,7 +1968,10 @@ export class PreloopFlowForm extends LitElement {
         agent_config: this.composedAgentConfig(),
         allowed_mcp_servers: this.flow.allowed_mcp_servers || ['preloop-mcp'],
         allowed_mcp_tools: this.flow.allowed_mcp_tools || [],
-        ai_model_id: this.flow.ai_model_id || undefined,
+        ai_model_id:
+          this.flow.ai_model_id === null
+            ? null
+            : this.flow.ai_model_id || undefined,
         trigger_event_source: this.flow.trigger_event_source || fallbackSource,
         trigger_event_types:
           this.flow.trigger_event_types ||
@@ -2018,6 +2021,13 @@ export class PreloopFlowForm extends LitElement {
         // clearEventFilters) is forwarded so the backend clears saved filters.
         ...(this.flow.trigger_config !== undefined
           ? { trigger_config: this.flow.trigger_config }
+          : {}),
+        ...(this.flow.webhook_config !== undefined
+          ? {
+              webhook_config: this.supportedWebhookConfig(
+                this.flow.webhook_config
+              ),
+            }
           : {}),
         // The delegation allowlist is sent only when this form edits it: the
         // section is hidden while the delegation tool is off, and an update
@@ -3474,6 +3484,20 @@ export class PreloopFlowForm extends LitElement {
     });
   }
 
+  /** Keep only editable webhook settings; secrets belong to the server. */
+  private supportedWebhookConfig(
+    config: unknown
+  ): Record<string, unknown> | null | undefined {
+    if (config === null || config === undefined) return config;
+    if (typeof config !== 'object' || Array.isArray(config)) return undefined;
+    const source = config as Record<string, unknown>;
+    const supported: Record<string, unknown> = {};
+    for (const key of ['supersede_on_update', 'dedupe_path']) {
+      if (key in source) supported[key] = source[key];
+    }
+    return supported;
+  }
+
   private capturePresetSnapshot() {
     this.presetSnapshot = {
       prompt_template: this.flow.prompt_template || '',
@@ -3638,6 +3662,7 @@ export class PreloopFlowForm extends LitElement {
         ? [...preset.trigger_event_types]
         : undefined,
       trigger_config: preset.trigger_config ?? undefined,
+      webhook_config: this.supportedWebhookConfig(preset.webhook_config),
       allowed_mcp_servers: servers,
       allowed_mcp_tools: this.mapPresetTools(preset.allowed_mcp_tools),
       agent_type: preset.agent_type,
@@ -3698,7 +3723,7 @@ export class PreloopFlowForm extends LitElement {
 
     if (!this.flow.ai_model_id && !this.hostExecAgentType()) {
       let selectableModels = this.models.filter(
-        (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
+        (m) => !m.is_shared && m.model_kind !== 'stt' && m.model_kind !== 'tts'
       );
       if (this.flowExecutionPath === 'persistent' && this.targetAgentId) {
         const agent = this.longRunningAgents.find(
@@ -3719,6 +3744,38 @@ export class PreloopFlowForm extends LitElement {
     }
 
     this.requestUpdate();
+  }
+
+  private renderSharedModelBindingNotice() {
+    const sharedIds = new Set(
+      this.models.filter((model) => model.is_shared).map((model) => model.id)
+    );
+    const boundIds = [
+      this.flow.ai_model_id,
+      ...this.routingRules.map((rule) => rule.ai_model_id),
+      ...this.labelRules.map((rule) => rule.ai_model_id),
+    ];
+    if (!boundIds.some((id) => sharedIds.has(id))) return nothing;
+    return html`<sl-alert variant="warning" open data-shared-binding-warning>
+      Replace shared models with account or built-in models, or remove their
+      bindings before saving or running this flow.
+      <sl-button
+        size="small"
+        data-clear-shared-bindings
+        @click=${() => {
+          if (sharedIds.has(this.flow.ai_model_id))
+            this.flow.ai_model_id = null;
+          this.routingRules = this.routingRules.filter(
+            (rule) => !sharedIds.has(rule.ai_model_id)
+          );
+          this.labelRules = this.labelRules.filter(
+            (rule) => !sharedIds.has(rule.ai_model_id)
+          );
+          this.requestUpdate();
+        }}
+        >Remove shared model bindings</sl-button
+      >
+    </sl-alert>`;
   }
 
   /** One picker row: the flow, and its two ceilings once it is selected. */
@@ -4490,7 +4547,7 @@ export class PreloopFlowForm extends LitElement {
     }
 
     let selectableModels = this.models.filter(
-      (m) => m.model_kind !== 'stt' && m.model_kind !== 'tts'
+      (m) => !m.is_shared && m.model_kind !== 'stt' && m.model_kind !== 'tts'
     );
     if (this.flowExecutionPath === 'persistent' && this.targetAgentId) {
       const agent = this.longRunningAgents.find(
@@ -4899,6 +4956,7 @@ export class PreloopFlowForm extends LitElement {
                   </sl-select>
                 `
           }
+          ${this.renderSharedModelBindingNotice()}
           ${
             this.flow.agent_type === 'cursor'
               ? html`
@@ -4933,6 +4991,7 @@ export class PreloopFlowForm extends LitElement {
                           <sl-select
                             label="AI model"
                             placeholder="Select an AI model"
+                            help-text="Choose an account model or a built-in model. Shared models cannot be bound to flows."
                             .value=${this.flow.ai_model_id || ''}
                             @sl-change=${(e: any) => {
                               this.flow.ai_model_id = e.target.value;

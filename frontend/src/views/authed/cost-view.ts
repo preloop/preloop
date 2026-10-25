@@ -77,6 +77,7 @@ import '../../components/budget-policy-editor.ts';
 import '../../components/budget-health-card.ts';
 import '../../components/tool-cost-flags-panel.ts';
 import '../../components/copilot-usage-panel.ts';
+import '../../components/copilot-activity-panel.ts';
 import '../../components/anthropic-usage-panel.ts';
 import '../../components/token-figures.ts';
 import { sumTokenUsage } from '../../components/token-figures';
@@ -556,6 +557,18 @@ export class CostView extends AuthedElement {
           color: var(--sl-color-neutral-700);
           font-size: var(--sl-font-size-small);
           font-weight: 600;
+        }
+
+        .accounting-findings {
+          color: var(--sl-color-warning-700);
+          font-size: var(--sl-font-size-small);
+        }
+
+        .accounting-findings summary {
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: var(--sl-spacing-2x-small);
         }
 
         .accounting-findings ul {
@@ -2032,24 +2045,28 @@ export class CostView extends AuthedElement {
     `;
   }
 
+  // A compact inline notice (#1696): one line that does not push the chart
+  // down; the individual findings sit behind a disclosure.
   private renderAccountingFindings() {
     if (!this.accountingFindings.length) return nothing;
+    const count = this.accountingFindings.length;
     return html`
-      <sl-alert
+      <details
         class="accounting-findings"
-        variant="warning"
-        open
         role="status"
         aria-label="Accounting health"
       >
-        <sl-icon slot="icon" name="exclamation-triangle"></sl-icon>
-        Accounting health (last 24 hours, not the selected range)
+        <summary>
+          <sl-icon name="exclamation-triangle"></sl-icon>
+          ${count} accounting ${count === 1 ? 'check needs' : 'checks need'}
+          attention (last 24 hours, not the selected range)
+        </summary>
         <ul>
           ${this.accountingFindings.map(
             (check) => html`<li data-check=${check.key}>${check.detail}</li>`
           )}
         </ul>
-      </sl-alert>
+      </details>
     `;
   }
 
@@ -3079,6 +3096,15 @@ export class CostView extends AuthedElement {
         .startDate=${this.currentPeriod?.startDate}
         .endDate=${this.currentPeriod?.endDate}
       ></copilot-usage-panel>
+      ${
+        this.featureFlags.copilot_seat_activity === true
+          ? html`<copilot-activity-panel
+              enabled
+              .startDate=${this.currentPeriod?.startDate}
+              .endDate=${this.currentPeriod?.endDate}
+            ></copilot-activity-panel>`
+          : nothing
+      }
       <anthropic-usage-panel
         .startDate=${this.currentPeriod?.startDate}
         .endDate=${this.currentPeriod?.endDate}
@@ -4369,10 +4395,11 @@ export class CostView extends AuthedElement {
                     class="results ${updating ? 'is-updating' : ''}"
                     aria-busy=${updating ? 'true' : 'false'}
                   >
-                    ${this.renderMetrics()} ${this.renderSubscriptionUsage()}
-                    ${this.renderCatalogInfo()} ${this.renderUnpricedNotice()}
+                    ${this.renderMetrics()} ${this.renderUnpricedNotice()}
                     ${this.renderAccountingFindings()}
                     <spend-chart .period=${this.currentPeriod}></spend-chart>
+                    ${this.renderSubscriptionUsage()}
+                    ${this.renderCatalogInfo()}
                     <div class="column-layout dashboard extra-wide">
                       <div class="main-column">
                         ${this.renderBreakdown()} ${this.renderImportedUsage()}

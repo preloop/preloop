@@ -18,12 +18,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 os.environ["PRELOOP_DISABLE_TELEMETRY"] = "true"
 
 from preloop.api.auth.jwt import create_access_token, get_current_user
 from preloop.api.endpoints import approval_requests
+from preloop.models import crud, models
 from preloop.models.crud import (
     crud_api_key,
     crud_approval_request,
@@ -47,8 +49,27 @@ from tests.services.test_supported_publication_approval import (
     _call_request_approval,
     _candidate,
     _drop,
-    _seed,
+    _seed as _seed_publication,
 )
+
+
+def _seed(db_engine: Engine) -> SimpleNamespace:
+    """Give the publication approver the global decision permission."""
+    seed = _seed_publication(db_engine)
+    with Session(db_engine) as db:
+        permission = crud.crud_permission.get_by_name(db, name="decide_approvals")
+        assert permission is not None
+        role = models.Role(name="example_approver", account_id=seed.account_id)
+        db.add(role)
+        db.flush()
+        db.add_all(
+            [
+                models.RolePermission(role_id=role.id, permission_id=permission.id),
+                models.UserRole(role_id=role.id, user_id=seed.user_id),
+            ]
+        )
+        db.commit()
+    return seed
 
 
 def _http_request() -> MagicMock:

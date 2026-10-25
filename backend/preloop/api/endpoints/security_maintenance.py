@@ -30,7 +30,7 @@ from preloop.services.security_maintenance_refs import (
     StaleCompletionError,
     UnsupportedReleaseError,
 )
-from preloop.utils.permissions import require_permission
+from preloop.utils.permissions import ensure_permission_in_oss, require_permission
 
 router = APIRouter(prefix="/security-maintenance")
 
@@ -78,6 +78,8 @@ def create_release(
 ) -> dict[str, Any]:
     """Create an explicit opt-in inventory row."""
 
+    ensure_permission_in_oss(db, current_user, "edit_flows")
+
     async def operation() -> dict[str, Any]:
         try:
             return await _service(db, current_user).create_release(body)
@@ -115,6 +117,8 @@ def update_release(
 ) -> dict[str, Any]:
     """Update mutable inventory fields. Identity stays fixed."""
 
+    ensure_permission_in_oss(db, current_user, "edit_flows")
+
     async def operation() -> dict[str, Any]:
         try:
             return await _service(db, current_user).update_release(release_id, body)
@@ -133,6 +137,8 @@ def schedule_baseline_audit(
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     """Schedule the initial-baseline audit and dispatch it after commit."""
+
+    ensure_permission_in_oss(db, current_user, "edit_flows")
 
     async def operation() -> dict[str, Any]:
         try:
@@ -159,6 +165,8 @@ def accept_baseline(
 ) -> dict[str, Any]:
     """Accept a baseline from a bound audit execution with stored evidence."""
 
+    ensure_permission_in_oss(db, current_user, "edit_flows")
+
     async def operation() -> dict[str, Any]:
         try:
             return await _service(db, current_user).accept_baseline(release_id, body)
@@ -180,6 +188,8 @@ def ingest_scan(
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     """Ingest a trusted scan. Unsupported product/release names fail closed."""
+
+    ensure_permission_in_oss(db, current_user, "edit_flows")
 
     async def operation() -> dict[str, Any]:
         try:
@@ -245,6 +255,8 @@ def approve_item(
 ) -> dict[str, Any]:
     """Record a human approval through the platform approval workflow."""
 
+    ensure_permission_in_oss(db, current_user, "decide_approvals")
+
     async def operation() -> dict[str, Any]:
         try:
             _reject_managed_credentials(current_user)
@@ -274,6 +286,8 @@ def deny_item(
 ) -> dict[str, Any]:
     """Hold the item after a human denial. History is preserved."""
 
+    ensure_permission_in_oss(db, current_user, "decide_approvals")
+
     async def operation() -> dict[str, Any]:
         try:
             _reject_managed_credentials(current_user)
@@ -299,6 +313,8 @@ def escalate_item(
 ) -> dict[str, Any]:
     """Escalate a held or expired approval. Never auto-releases."""
 
+    ensure_permission_in_oss(db, current_user, "decide_approvals")
+
     async def operation() -> dict[str, Any]:
         try:
             _reject_managed_credentials(current_user)
@@ -320,6 +336,8 @@ def resume_item(
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     """Human retry. Prior decisions stay append-only."""
+
+    ensure_permission_in_oss(db, current_user, "edit_flows")
 
     async def operation() -> dict[str, Any]:
         try:
@@ -346,6 +364,8 @@ def submit_rebuilt_inputs(
     current_user: models.User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     """Submit a rebuilt SBOM for the published commit. The controller does not rebuild."""
+
+    ensure_permission_in_oss(db, current_user, "edit_flows")
 
     async def operation() -> dict[str, Any]:
         try:

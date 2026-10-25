@@ -460,6 +460,28 @@ describe('inFlightGatewayRequests', () => {
 describe('deriveLiveSessionState', () => {
   const now = Date.parse('2026-10-02T09:00:30Z');
 
+  it('says a tool is running after the agent asked for one (B-06)', () => {
+    const state = deriveLiveSessionState({
+      events: [
+        gatewayEvent('e1', '2026-10-02T09:00:22Z', {
+          finish_reason: 'tool_calls',
+        }),
+      ],
+      now,
+    });
+    expect(state.status).to.equal('running_tool');
+  });
+
+  it('stays idle after the agent finished its turn (B-06)', () => {
+    const state = deriveLiveSessionState({
+      events: [
+        gatewayEvent('e1', '2026-10-02T09:00:22Z', { finish_reason: 'stop' }),
+      ],
+      now,
+    });
+    expect(state.status).to.equal('idle');
+  });
+
   it('says nothing rather than guessing when nothing was observed', () => {
     expect(deriveLiveSessionState({ events: [], now }).status).to.equal(
       'unavailable'

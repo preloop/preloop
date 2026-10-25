@@ -441,6 +441,61 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     }
     verification = script.get_revision("20261028_obs_verification")
     assert verification.down_revision == "20261028_chat_admin_merge"
-    member = script.get_revision("20261029_basic_member_role")
-    assert member.down_revision == "20261028_obs_verification"
+    governance_spend = script.get_revision("20261018_gov_spend_idx")
+    assert governance_spend.down_revision == "20261028_obs_verification"
+    unsealed = script.get_revision("20261029_audit_unsealed_idx")
+    assert unsealed.down_revision == "20261018_gov_spend_idx"
+    model_totals = script.get_revision("20261030_gateway_model_idx")
+    assert model_totals.down_revision == "20261029_audit_unsealed_idx"
+    live_activity = script.get_revision("20261031_live_activity")
+    assert live_activity.down_revision == "20261030_gateway_model_idx"
+    code_tools = script.get_revision("20261031_code_tool_idx")
+    assert code_tools.down_revision == "20261030_gateway_model_idx"
+    activity_merge = script.get_revision("20261031_activity_merge")
+    assert set(activity_merge.down_revision) == {
+        "20261031_live_activity",
+        "20261031_code_tool_idx",
+    }
+    customer_usage = script.get_revision("20261101_customer_usage_idx")
+    assert customer_usage.down_revision == "20261031_activity_merge"
+    agent_usage = script.get_revision("20261102_agent_usage_idx")
+    assert agent_usage.down_revision == "20261101_customer_usage_idx"
+    restore_usage = script.get_revision("20261102_restore_usage_action")
+    assert restore_usage.down_revision == "20261102_agent_usage_idx"
+    parse_retry = script.get_revision("20261103_gov_parse_retry")
+    assert parse_retry.down_revision == "20261102_restore_usage_action"
+    session_permissions = script.get_revision("20261104_session_write_perms")
+    assert session_permissions.down_revision == "20261103_gov_parse_retry"
+    work_tools = script.get_revision("20261105_fleet_work_tools")
+    assert work_tools.down_revision == "20261104_session_write_perms"
+    cache_input = script.get_revision("20261106_anthropic_cache_input")
+    assert cache_input.down_revision == "20261105_fleet_work_tools"
+    command_lookup = script.get_revision("20261106_control_command_idx")
+    assert command_lookup.down_revision == "20261106_anthropic_cache_input"
+    work_ref = script.get_revision("20261106_fleet_work_ref_idx")
+    assert work_ref.down_revision == "20261106_control_command_idx"
+    annotations = script.get_revision("20261107_mcp_tool_annotations")
+    assert annotations.down_revision == "20261106_fleet_work_ref_idx"
+    capture_retry = script.get_revision("20261107_gov_capture_retry")
+    assert capture_retry.down_revision == "20261107_mcp_tool_annotations"
+    subscription_principal = script.get_revision("20261108_agent_sub_principal")
+    assert subscription_principal.down_revision == "20261107_gov_capture_retry"
+    turn_state = script.get_revision("20261107_session_turn_state")
+    assert turn_state.down_revision == "20261108_agent_sub_principal"
+    reachable = script.get_revision("20261108_control_reachable")
+    assert reachable.down_revision == "20261107_session_turn_state"
+    totals = script.get_revision("20261109_agent_usage_totals")
+    assert totals.down_revision == "20261108_control_reachable"
+    assessment = script.get_revision("20261110_assessment_pr_identity")
+    assert assessment.down_revision == "20261109_agent_usage_totals"
+    prune = script.get_revision("20261110_prune_api_usage_idx")
+    assert prune.down_revision == "20261110_assessment_pr_identity"
+    credential_backfill = script.get_revision("20261110_credential_backfill")
+    assert credential_backfill.down_revision == "20261110_prune_api_usage_idx"
+    credential_columns = script.get_revision("20261111_credential_columns")
+    assert credential_columns.down_revision == "20261110_credential_backfill"
+    media_timing = script.get_revision("20261110_media_timing")
+    assert media_timing.down_revision == "20261111_credential_columns"
+    basic_member_role = script.get_revision("20261029_basic_member_role")
+    assert basic_member_role.down_revision == "20261110_media_timing"
     assert script.get_heads() == ["20261029_basic_member_role"]

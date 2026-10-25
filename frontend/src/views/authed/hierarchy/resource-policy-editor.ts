@@ -1,3 +1,4 @@
+import { randomUuid } from '../../../utils/random-uuid';
 import { LitElement, html, css, nothing, type PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import {
@@ -202,7 +203,7 @@ export class ResourcePolicyEditor extends LitElement {
     event.stopPropagation();
     this.changed();
     const value = ruleDefinition(event.detail);
-    value.id = this.edit?.id || crypto.randomUUID();
+    value.id = this.edit?.id || randomUuid();
     const existed = this.draft.rules.some((r) => r.id === value.id);
     this.draft = {
       rules: [...this.draft.rules.filter((r) => r.id !== value.id), value],

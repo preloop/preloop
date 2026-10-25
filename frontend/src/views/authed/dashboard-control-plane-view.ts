@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 
 import { editionOf } from '../../capabilities';
@@ -43,7 +44,7 @@ import {
   getAccountGatewayUsageSummary,
   getAccountRateLimitReport,
   getAccountRuntimeSessions,
-  getApiKeys,
+  getApiKeyCount,
   getBudgetPolicies,
   getCostTimeseries,
   BudgetPolicy,
@@ -99,7 +100,11 @@ import { parseUTCDate } from '../../utils/date';
 import { formatRelativeTime } from '../../components/relative-time-label';
 import { sumTokenUsage } from '../../components/token-figures';
 import { executionSubjectCss } from '../../utils/execution-subject';
-import { mergeGatewaySummaryPreservingBreakdown } from '../../utils/gateway-summary';
+import { usageForOwner } from '../../utils/user-usage';
+import {
+  agentUsageById,
+  mergeGatewaySummaryPreservingBreakdown,
+} from '../../utils/gateway-summary';
 import {
   pickDefaultModel,
   selectableModels,
@@ -176,6 +181,8 @@ interface GroupedAuditResponse {
 /** `GET /audit-logs/overview`: the four audit reads of this page in one. */
 interface AuditOverviewResponse {
   events_total: number | null;
+  /** True when the server stopped counting at its cap and more match. */
+  events_total_capped?: boolean;
   tool_calls_total: number;
   tool_calls_failed: number;
   exceptions: GroupedAuditResponse;
@@ -521,6 +528,7 @@ export class DashboardView extends AuthedElement {
   @state() private computeFeatureEnabled = false;
   @state() private edition: Edition = 'oss';
   @state() private isAdmin = false;
+  @state() private profileUserId = '';
 
   @state() private budgetPolicies: BudgetPolicy[] = [];
   /**
@@ -552,6 +560,7 @@ export class DashboardView extends AuthedElement {
    * or the ask failed. Never rendered as a zero when it is unknown.
    */
   @state() private auditEventCount: number | null = null;
+  @state() private auditEventCountCapped = false;
   /**
    * True while the figures on the Audit trail line are being measured for
    * the range on screen. It covers a range change too, which keeps the
@@ -606,6 +615,16 @@ export class DashboardView extends AuthedElement {
   }
 
   static styles = [
+    css`
+      .welcome-badge {
+        display: block;
+        width: 56px;
+        height: 56px;
+        margin: var(--sl-spacing-small) 0;
+        background-color: var(--console-body-color);
+        mask: url('/assets/preloop-badge.svg') center / contain no-repeat;
+      }
+    `,
     reducedMotionStyles,
     css`
       /* One row per plane: name, endpoint, what it did. */
@@ -1200,6 +1219,41 @@ export class DashboardView extends AuthedElement {
       .side-column {
         gap: var(--sl-spacing-medium);
       }
+      /* Keep Inventory mounted while its view changes. Reparenting it
+         dropped its map, requests, selection and fullscreen host. */
+      .column-layout.dashboard {
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .dashboard > .main-column {
+        grid-column: 1;
+        grid-row: 1;
+      }
+      .dashboard > .inventory-stack {
+        grid-column: 1;
+        grid-row: 2;
+        min-width: 0;
+      }
+      .dashboard > .side-column {
+        grid-column: 1;
+        grid-row: 3;
+      }
+      @media (min-width: 1200px) {
+        /* Inventory sits under the main column (Gateway, and Next steps
+           when shown) in Table and Map alike. Row 1 is sized by that
+           column alone and row 2 takes what the spanning
+           side column needs beyond it. With two auto rows the long Activity
+           feed stretched row 1 (a gap above Inventory), and a full-width
+           Map row pushed Inventory below the whole side column. */
+        .column-layout.dashboard {
+          grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+          grid-template-rows: auto 1fr;
+          align-items: start;
+        }
+        .dashboard > .side-column {
+          grid-column: 2;
+          grid-row: 1 / span 2;
+        }
+      }
 
       /* Usage and Activity sit beside the main column and scroll with it.
          The shell's .main-content is the only page scroller. A sticky
@@ -1481,11 +1535,6 @@ export class DashboardView extends AuthedElement {
       /* One centered line in a 72px box. An empty card used to take as much
          vertical space as a full one, so a quiet account looked like a broken
          one. */
-      @media (max-width: 1200px) {
-        .column-layout.dashboard {
-          grid-template-columns: 1fr;
-        }
-      }
       @media (max-width: 800px) {
         .card-header,
         .card-header-with-action,
@@ -1577,6 +1626,7 @@ export class DashboardView extends AuthedElement {
     try {
       const user = await getUserProfile();
       this.isAdmin = user?.is_superuser || false;
+      this.profileUserId = String(user?.id ?? '');
       this.permissions = user?.permissions ?? null;
     } catch (error) {
       console.error('Failed to fetch user profile:', error);
@@ -2885,18 +2935,22 @@ export class DashboardView extends AuthedElement {
     params.set('start_date', startDateStr);
     try {
       const count = await this.catchWith403Handling(
-        fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`).then(
+        fetchWithAuth(`${REST_API_PREFIX}/audit-logs/grouped?${params}`).then(
           (response) => {
             if (!response.ok) {
               throw new Error('Failed to count audit events');
             }
-            return response.json() as Promise<{ total?: number }>;
+            return response.json() as Promise<{
+              total?: number;
+              total_capped?: boolean;
+            }>;
           }
         ),
         null
       );
       this.auditEventCount =
         count && typeof count.total === 'number' ? count.total : null;
+      this.auditEventCountCapped = count?.total_capped === true;
     } finally {
       // This is the last figure the line waits on: the sessions count landed
       // with the fold, above.
@@ -3148,6 +3202,7 @@ export class DashboardView extends AuthedElement {
             this.auditGroups = overview.exceptions.groups || [];
             this.auditExceptionsTotal = overview.exceptions.total || 0;
             this.auditEventCount = overview.events_total;
+            this.auditEventCountCapped = overview.events_total_capped === true;
             this.toolCallsCount = overview.tool_calls_total || 0;
             this.failedToolCallsCount = overview.tool_calls_failed || 0;
           })
@@ -3184,18 +3239,12 @@ export class DashboardView extends AuthedElement {
         // pass is only the companions the Gateway card reads.
         const [mcpServers, apiKeys] = await Promise.all([
           this.catchWith403Handling(getMCPServers(), [] as MCPServer[]),
-          // Already the api-keys page's endpoint; here it is only a count.
-          this.catchWith403Handling(getApiKeys(), null),
+          // Only a count is shown, so ask for one: the key list with its
+          // activity stats took about two seconds on a busy account (#1694).
+          // "Active" means usable: not revoked, not past its expiry.
+          this.catchWith403Handling(getApiKeyCount(), null),
         ]);
-        // "Active" means usable: not revoked, not past its expiry.
-        this.apiKeysCount = apiKeys
-          ? apiKeys.filter(
-              (key) =>
-                key.activity_status !== 'revoked' &&
-                (!key.expires_at ||
-                  parseUTCDate(key.expires_at).getTime() > Date.now())
-            ).length
-          : null;
+        this.apiKeysCount = apiKeys ? apiKeys.active : null;
         this.mcpServers = mcpServers;
       } catch (error) {
         console.error('Failed to load MCP and tools data', error);
@@ -3237,6 +3286,16 @@ export class DashboardView extends AuthedElement {
         getAccountGatewayUsageSummary({
           startDate: gatewayStartDate,
           includeBreakdown: true,
+          // Every historical section plus the per-agent totals the
+          // Inventory's Agents and Users tabs read.
+          breakdowns: [
+            'models',
+            'flows',
+            'sessions',
+            'tools',
+            'days',
+            'agents',
+          ],
         }),
         null
       );
@@ -3291,7 +3350,7 @@ export class DashboardView extends AuthedElement {
     params.set('start_date', startDateStr);
     params.set('exceptions_limit', '12');
     const response = await fetchWithAuth(
-      `/api/v1/audit-logs/overview?${params}`
+      `${REST_API_PREFIX}/audit-logs/overview?${params}`
     );
     if (response.ok) return response.json();
     if (response.status !== 404) {
@@ -3322,10 +3381,13 @@ export class DashboardView extends AuthedElement {
           groups: [],
           total: 0,
         }),
-        total(`/api/v1/audit-logs/grouped?${countParams}`),
-        total('/api/v1/audit-logs/grouped?event_type=tool_call&limit=1'),
+        total(`${REST_API_PREFIX}/audit-logs/grouped?${countParams}`),
         total(
-          '/api/v1/audit-logs/grouped?event_type=tool_call&outcome=failed&limit=1'
+          REST_API_PREFIX + '/audit-logs/grouped?event_type=tool_call&limit=1'
+        ),
+        total(
+          REST_API_PREFIX +
+            '/audit-logs/grouped?event_type=tool_call&outcome=failed&limit=1'
         ),
       ]);
     return {
@@ -3350,7 +3412,7 @@ export class DashboardView extends AuthedElement {
     params.set('outcome_match', 'any');
     params.set('start_date', startDateStr);
     const response = await fetchWithAuth(
-      `/api/v1/audit-logs/grouped?${params}`
+      `${REST_API_PREFIX}/audit-logs/grouped?${params}`
     );
     if (!response.ok) {
       throw new Error('Failed to fetch audit exceptions');
@@ -3368,7 +3430,7 @@ export class DashboardView extends AuthedElement {
       params.set('status', status);
     }
     const response = await fetchWithAuth(
-      `/api/v1/approval-requests?${params.toString()}`
+      `${REST_API_PREFIX}/approval-requests?${params.toString()}`
     );
     if (!response.ok) {
       throw new Error('Failed to fetch approval requests');
@@ -3623,6 +3685,7 @@ export class DashboardView extends AuthedElement {
     this.auditGroups = overview.exceptions.groups || [];
     this.auditExceptionsTotal = overview.exceptions.total || 0;
     this.auditEventCount = overview.events_total;
+    this.auditEventCountCapped = overview.events_total_capped === true;
     this.toolCallsCount = overview.tool_calls_total || 0;
     this.failedToolCallsCount = overview.tool_calls_failed || 0;
   }
@@ -3700,60 +3763,6 @@ export class DashboardView extends AuthedElement {
     return this.tools.filter((tool) => tool.is_enabled).length;
   }
 
-  private getManagedAgentBySourceId(
-    sourceId: string | null | undefined
-  ): ManagedAgentSummary | undefined {
-    if (!sourceId) {
-      return undefined;
-    }
-    const agents = [...this.managedAgents, ...this.budgetAgents];
-    const exact = agents.find(
-      (agent) =>
-        agent.id === sourceId ||
-        agent.session_source_id === sourceId ||
-        agent.runtime_session_id === sourceId
-    );
-    if (exact) {
-      return exact;
-    }
-    // Per-run sessions append a suffix to the agent's base source id, e.g.
-    // "custom_ABC:demo-123" (custom) or "hermes-0161afa5e616-<timestamp|uuid>"
-    // (runtime-token agents). Match the agent whose base source id the session
-    // id starts with (delimited by ':' or '-'); prefer the longest match so a
-    // more specific agent wins over a shorter prefix.
-    return agents
-      .filter(
-        (agent) =>
-          Boolean(agent.session_source_id) &&
-          (sourceId.startsWith(`${agent.session_source_id}:`) ||
-            sourceId.startsWith(`${agent.session_source_id}-`))
-      )
-      .sort(
-        (a, b) =>
-          (b.session_source_id?.length ?? 0) -
-          (a.session_source_id?.length ?? 0)
-      )[0];
-  }
-
-  private getManagedAgentForUsageSession(
-    session: GatewayUsageBySession
-  ): ManagedAgentSummary | undefined {
-    const lookupIds = [
-      session.agent_id,
-      session.runtime_session_id,
-      session.session_source_id,
-      session.runtime_principal_id,
-    ].filter((value): value is string => Boolean(value));
-
-    for (const sourceId of lookupIds) {
-      const agent = this.getManagedAgentBySourceId(sourceId);
-      if (agent) {
-        return agent;
-      }
-    }
-    return undefined;
-  }
-
   private handleDeployAgentSuccess(event: CustomEvent): void {
     const mockAgent = event.detail.agent;
     this.managedAgents = [mockAgent, ...(this.managedAgents || [])];
@@ -3792,11 +3801,7 @@ export class DashboardView extends AuthedElement {
           <sl-icon name="x-lg" label="Dismiss get started"></sl-icon>
         </sl-button>
 
-        <img
-          src="/assets/preloop-badge.svg"
-          alt=""
-          style="width: 56px; height: 56px; margin-bottom: var(--sl-spacing-small); margin-top: var(--sl-spacing-small); border-radius: var(--sl-border-radius-medium);"
-        />
+        <span class="welcome-badge" aria-hidden="true"></span>
 
         <h2
           style="font-size: var(--console-text-h1); font-weight: 600; letter-spacing: -0.01em; color: var(--sl-color-neutral-900); margin: 0 0 var(--sl-spacing-medium) 0; text-align: center;"
@@ -3892,6 +3897,19 @@ export class DashboardView extends AuthedElement {
       </sl-card>
     `;
   }
+  /** The page range, from the Usage card or the Inventory: one range. */
+  private onRangeChange = (event: CustomEvent<{ value: string }>) => {
+    event.stopPropagation();
+    this.gatewayTimeRange =
+      normalizeTimeRangeKey(event.detail.value) ?? DEFAULT_USAGE_RANGE;
+    try {
+      localStorage.setItem(USAGE_RANGE_STORAGE_KEY, this.gatewayTimeRange);
+    } catch {
+      // Non-fatal: the range still applies for this session.
+    }
+    this.changeUsageRange();
+  };
+
   private renderUsageCard() {
     return html`
       <usage-card
@@ -3910,20 +3928,7 @@ export class DashboardView extends AuthedElement {
         .seriesGranularity=${this.usageSeriesGranularity}
         ?seriesLoading=${this.usageSeriesRange !== this.gatewayTimeRange}
         .toolCallsCount=${this.toolCallsCount}
-        @range-change=${(event: CustomEvent<{ value: string }>) => {
-          event.stopPropagation();
-          this.gatewayTimeRange =
-            normalizeTimeRangeKey(event.detail.value) ?? DEFAULT_USAGE_RANGE;
-          try {
-            localStorage.setItem(
-              USAGE_RANGE_STORAGE_KEY,
-              this.gatewayTimeRange
-            );
-          } catch {
-            // Non-fatal: the range still applies for this session.
-          }
-          this.changeUsageRange();
-        }}
+        @range-change=${this.onRangeChange}
         @configure-limits=${() => (this.showBudgetDialog = true)}
       ></usage-card>
     `;
@@ -4409,40 +4414,14 @@ export class DashboardView extends AuthedElement {
    * tools) that paints the row, then a usage request that fills the number
    * cells. None of them adds a request the page did not already make. Agents
    * come from the agents list, their numbers from the gateway summary's
-   * per-session breakdown (the agents list totals are lifetime, the Inventory
-   * shows the page range). Flows come from the flows list joined to the
+   * per-agent breakdown (`usage_by_agent`, the page range, by the same
+   * attribution as the agents list and the agent page). Flows come from the flows list joined to the
    * executions the page already fetches. Models come from the AI models list
    * joined to `ai-models/overview`. Tools come from the tool catalogue joined
    * to `usage_by_tool`.
    */
   private get inventoryAgentRows(): InventoryAgentRow[] {
-    const totals = new Map<
-      string,
-      {
-        requests: number;
-        tokens: number;
-        tokenUsage: GatewayTokenUsage | null;
-        cost: number;
-      }
-    >();
-    for (const session of this.gatewaySummary?.usage_by_session || []) {
-      const agent = this.getManagedAgentForUsageSession(session);
-      if (!agent) continue;
-      const running = totals.get(agent.id) || {
-        requests: 0,
-        tokens: 0,
-        tokenUsage: null,
-        cost: 0,
-      };
-      running.requests += session.request_count || 0;
-      running.tokens += session.token_usage?.total_tokens || 0;
-      running.tokenUsage = sumTokenUsage([
-        running.tokenUsage,
-        session.token_usage,
-      ]);
-      running.cost += session.estimated_cost || 0;
-      totals.set(agent.id, running);
-    }
+    const totals = agentUsageById(this.gatewaySummary);
     return this.managedAgents.map((agent) => {
       const usage = totals.get(agent.id);
       return {
@@ -4455,6 +4434,8 @@ export class DashboardView extends AuthedElement {
         tokens: usage?.tokens ?? 0,
         tokenUsage: usage?.tokenUsage ?? null,
         cost: usage?.cost ?? 0,
+        withoutSubscriptions: usage?.withoutSubscriptions ?? null,
+        subscriptionRequests: usage?.subscriptionRequests ?? 0,
         lastSeenAt: agent.last_seen_at || agent.last_activity_at || null,
       };
     });
@@ -4664,58 +4645,10 @@ export class DashboardView extends AuthedElement {
   }
 
   private get inventoryUserRows(): InventoryUserRow[] {
-    const perAgent = new Map<
-      string,
-      { tokens: number; tokenUsage: GatewayTokenUsage | null; cost: number }
-    >();
-    for (const session of this.gatewaySummary?.usage_by_session || []) {
-      const agent = this.getManagedAgentForUsageSession(session);
-      if (!agent) continue;
-      const running = perAgent.get(agent.id) || {
-        tokens: 0,
-        tokenUsage: null,
-        cost: 0,
-      };
-      running.tokens += session.token_usage?.total_tokens || 0;
-      running.tokenUsage = sumTokenUsage([
-        running.tokenUsage,
-        session.token_usage,
-      ]);
-      running.cost += session.estimated_cost || 0;
-      perAgent.set(agent.id, running);
-    }
-
-    const byOwner = new Map<
-      string,
-      {
-        agents: number;
-        tokens: number;
-        tokenUsage: GatewayTokenUsage | null;
-        cost: number;
-      }
-    >();
-    for (const agent of this.managedAgents) {
-      const ownerId = agent.owner_user_id;
-      if (!ownerId) continue;
-      const running = byOwner.get(ownerId) || {
-        agents: 0,
-        tokens: 0,
-        tokenUsage: null,
-        cost: 0,
-      };
-      running.agents += 1;
-      const usage = perAgent.get(agent.id);
-      running.tokens += usage?.tokens || 0;
-      running.tokenUsage = sumTokenUsage([
-        running.tokenUsage,
-        usage?.tokenUsage ?? null,
-      ]);
-      running.cost += usage?.cost || 0;
-      byOwner.set(ownerId, running);
-    }
-
+    // The same per-person sum as the user page (B-02, D-05).
+    const usage = this.gatewaySummary?.usage_by_agent || [];
     return this.accountUsers.map((user) => {
-      const owned = byOwner.get(user.id);
+      const owned = usageForOwner(user.id, usage, this.managedAgents);
       const roles = [...(user.roles || []), ...(user.inherited_roles || [])]
         .map((role) => role?.name)
         .filter((name): name is string => Boolean(name));
@@ -4724,10 +4657,12 @@ export class DashboardView extends AuthedElement {
         name: user.full_name || user.username || user.email || 'Unknown',
         role: [...new Set(roles)].join(', '),
         lastLoginAt: user.last_login || null,
-        agentsOwned: owned?.agents ?? 0,
-        tokens: owned?.tokens ?? 0,
-        tokenUsage: owned?.tokenUsage ?? null,
-        cost: owned?.cost ?? 0,
+        agentsOwned: owned.agents,
+        tokens: owned.tokens,
+        tokenUsage: owned.tokenUsage,
+        cost: owned.cost,
+        withoutSubscriptions: owned.withoutSubscriptions,
+        subscriptionRequests: owned.subscription?.request_count ?? 0,
       };
     });
   }
@@ -4792,7 +4727,8 @@ export class DashboardView extends AuthedElement {
         .deviceRows=${this.inventoryDeviceRows}
         .devicesTotal=${this.fleetDevicesTotal}
         ?showDevices=${this.canViewFleet}
-        ?showMap=${this.canViewFleet}
+        ?instanceAdmin=${this.isAdmin}
+        .userId=${this.profileUserId}
         .unavailableTabs=${this.unavailableInventoryTabs}
         .agentsTotal=${this.totalAgentsCount}
         .flowsTotal=${this.totalFlowsCount}
@@ -4801,6 +4737,8 @@ export class DashboardView extends AuthedElement {
         .usersTotal=${this.enabledUsersCount}
         ?showUsers=${this.canViewUsers}
         .rangeLabel=${this.gatewayRangeLabel}
+        .timeRange=${this.gatewayTimeRange}
+        @range-change=${this.onRangeChange}
         .flowRunsCapped=${this.flowRunsCapped}
         ?loading=${this.loading}
         .loadingAgents=${this.fetchingAgents}
@@ -4894,11 +4832,19 @@ export class DashboardView extends AuthedElement {
           >`
         : nothing,
       // A figure we could not measure is omitted, never rendered as a zero.
+      // A count that stopped at the server's cap is a floor: "10K+", with
+      // the exact floor in the title, never "10,000" as if it were exact.
       events
-        ? html`<a href="/console/audit"
-            >${this.formatNumber(events)} audit
-            event${events === 1 ? '' : 's'}</a
-          >`
+        ? this.auditEventCountCapped
+          ? html`<a
+              href="/console/audit"
+              title=${`At least ${this.formatNumber(events)} audit events`}
+              >${this.formatCompactNumber(events)}+ audit events</a
+            >`
+          : html`<a href="/console/audit"
+              >${this.formatNumber(events)} audit
+              event${events === 1 ? '' : 's'}</a
+            >`
         : nothing,
     ].filter((item) => item !== nothing);
 
@@ -4974,19 +4920,14 @@ export class DashboardView extends AuthedElement {
         <div class="main-column">
           <div class="dashboard-stack">
             ${this.renderGatewayCard()} ${this.renderNextStepsCard()}
-            ${this.renderInventoryCard()} ${this.renderAuditTrail()}
-
-            <div
-              style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"
-            >
-              ${this.renderGatewayFailuresCard()}
-              ${this.renderAuditExceptionsCard()}
-            </div>
           </div>
         </div>
 
         <div class="side-column">
           ${this.renderUsageCard()} ${this.renderActivityFeed()}
+        </div>
+        <div class="dashboard-stack inventory-stack">
+          ${this.renderInventoryStack()}
         </div>
         <mcp-setup-dialog
           ?open=${this.showSetupDialog}
@@ -5004,6 +4945,21 @@ export class DashboardView extends AuthedElement {
             this.isInviteDialogOpen = false;
           }}
         ></preloop-invite-dialog>
+      </div>
+    `;
+  }
+
+  /**
+   * The Inventory, the audit trail line and the two exception cards, under
+   * the main column and beside Usage and Activity in Table and Map alike.
+   */
+  private renderInventoryStack() {
+    return html`
+      ${this.renderInventoryCard()} ${this.renderAuditTrail()}
+      <div
+        style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--sl-spacing-medium);"
+      >
+        ${this.renderGatewayFailuresCard()} ${this.renderAuditExceptionsCard()}
       </div>
     `;
   }

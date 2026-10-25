@@ -2,6 +2,7 @@ import { aTimeout, html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
 import { setViewport } from '@web/test-runner-commands';
 
+import { Router } from '../../router/router';
 import { invalidateApiCaches } from '../../api';
 import './approval-view';
 import { resetConfirmDialogForTests } from '../../components/confirm-dialog';
@@ -42,6 +43,211 @@ describe('ApprovalView', () => {
       webhook_error: null,
       ...overrides,
     };
+  }
+
+  it('ignores a detached load and reloads when returning to the same approval', async () => {
+    fetchStub = createFetchStub();
+    let resolveOld!: (response: Response) => void;
+    fetchStub.withArgs('/api/v1/approval-requests/req-1').returns(
+      new Promise<Response>((resolve) => {
+        resolveOld = resolve;
+      })
+    );
+    const element = await fixture<ApprovalView>(
+      html`<approval-view requestId="req-1"></approval-view>`
+    );
+    await waitUntil(() => !!resolveOld);
+    element.remove();
+    resolveOld(json(pendingRequest({ tool_name: 'detached_tool' })));
+    await aTimeout(0);
+    expect((element as any).approvalRequest).to.equal(null);
+    expect((element as any).tickTimer).to.equal(undefined);
+
+    fetchStub
+      .withArgs('/api/v1/approval-requests/req-1')
+      .resolves(json(pendingRequest({ tool_name: 'current_tool' })));
+    document.body.append(element);
+    element.onAfterEnter({ params: { requestId: 'req-1' } });
+    await waitUntil(
+      () => (element as any).approvalRequest?.tool_name === 'current_tool'
+    );
+    element.remove();
+  });
+
+  for (const id of [
+    '..%2F..%2Fusers',
+    'req%3Fadmin=true',
+    'req%23hash',
+    'req%5Cusers',
+  ]) {
+    it(`rejects an unsafe decoded router request ID: ${id}`, async () => {
+      fetchStub = createFetchStub();
+      const outlet = await fixture<HTMLElement>(html`<div></div>`);
+      const router = new Router(outlet);
+      await router.setRoutes(
+        [{ path: '/console/approval/:requestId', component: 'approval-view' }],
+        true
+      );
+      await router.render('/console/approval/req-1');
+      const element = outlet.querySelector('approval-view') as ApprovalView;
+      await waitUntil(() => !(element as any).loading);
+      fetchStub.resetHistory();
+      await router.render(`/console/approval/${id}`);
+      router.unsubscribe();
+      await element.updateComplete;
+      await aTimeout(20);
+      expect(
+        fetchStub
+          .getCalls()
+          .map((call) => String(call.args[0]))
+          .filter((url) => !url.startsWith('/assets/'))
+      ).to.deep.equal([]);
+      expect((element as any).approvalRequest).to.equal(null);
+      expect((element as any).loadFailure?.kind).to.equal('not_found');
+    });
+  }
+
+  for (const id of ['.', '..']) {
+    it(`rejects a dot path segment supplied to the view: ${id}`, async () => {
+      fetchStub = createFetchStub();
+      const element = await fixture<ApprovalView>(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      );
+      await waitUntil(() => !(element as any).loading);
+      fetchStub.resetHistory();
+      element.onAfterEnter({ params: { requestId: id } });
+      await element.updateComplete;
+      expect(
+        fetchStub
+          .getCalls()
+          .filter((call) => !String(call.args[0]).startsWith('/assets/'))
+      ).to.deep.equal([]);
+      expect((element as any).approvalRequest).to.equal(null);
+    });
+  }
+
+  it('loads another approval on the same element after a decision', async () => {
+    fetchStub = createFetchStub();
+    fetchStub
+      .withArgs('/api/v1/approval-requests/req-2')
+      .resolves(json(pendingRequest({ id: 'req-2', tool_name: 'next_tool' })));
+    const outlet = await fixture<HTMLElement>(html`<div></div>`);
+    const router = new Router(outlet);
+    await router.setRoutes(
+      [{ path: '/console/approval/:requestId', component: 'approval-view' }],
+      true
+    );
+    await router.render('/console/approval/req-1');
+    const element = outlet.querySelector('approval-view') as ApprovalView;
+    const view = element as any;
+    await waitUntil(() => !view.loading);
+    await view.submitDecision('approve', {}, 'Approved');
+    expect(view.decisionTaken).to.equal(true);
+    view.comment = 'old comment';
+    view.alwaysAllow = true;
+    view.publicOnly = true;
+    view.loadFailure = { kind: 'error', message: 'old error' };
+    await router.render('/console/approval/req-2');
+    expect(outlet.querySelector('approval-view')).to.equal(element);
+    router.unsubscribe();
+    await waitUntil(
+      () => view.approvalRequest?.id === 'req-2' && !view.loading
+    );
+    await element.updateComplete;
+    expect(view.decisionTaken).to.equal(false);
+    expect(view.comment).to.equal('');
+    expect(view.alwaysAllow).to.equal(false);
+    expect(view.publicOnly).to.equal(false);
+    expect(view.loadFailure).to.equal(null);
+    expect(view.submitting).to.equal(false);
+    expect(view.waitingNext).to.deep.equal([]);
+    expect(view.waitingNextFetched).to.equal(0);
+    expect(element.shadowRoot!.textContent).to.contain('next_tool');
+    expect(
+      element.shadowRoot!.querySelectorAll('.decision-bar sl-button').length
+    ).to.equal(2);
+    await view.submitDecision('approve', {}, 'Approved');
+    expect(
+      fetchStub
+        .getCalls()
+        .some((call) => String(call.args[0]).endsWith('/req-2/approve'))
+    ).to.equal(true);
+  });
+
+  it('ignores a previous request response after navigation', async () => {
+    fetchStub = createFetchStub();
+    let resolveOld!: (response: Response) => void;
+    fetchStub.withArgs('/api/v1/approval-requests/req-1').returns(
+      new Promise<Response>((resolve) => {
+        resolveOld = resolve;
+      })
+    );
+    fetchStub
+      .withArgs('/api/v1/approval-requests/req-2')
+      .resolves(json(pendingRequest({ id: 'req-2' })));
+    const element = await fixture<ApprovalView>(
+      html`<approval-view .requestId=${'req-1'}></approval-view>`
+    );
+    const view = element as any;
+    element.onAfterEnter({ params: { requestId: 'req-2' } });
+    await waitUntil(
+      () => view.approvalRequest?.id === 'req-2' && !view.loading
+    );
+    resolveOld(json(pendingRequest()));
+    await aTimeout(20);
+    expect(view.approvalRequest.id).to.equal('req-2');
+    expect(view.loading).to.equal(false);
+  });
+
+  for (const resource of ['decision', 'history', 'queue']) {
+    it(`ignores a delayed ${resource} response from the previous route`, async () => {
+      fetchStub = createFetchStub();
+      fetchStub
+        .withArgs('/api/v1/approval-requests/req-2')
+        .resolves(json(pendingRequest({ id: 'req-2' })));
+      const element = await fixture<ApprovalView>(
+        html`<approval-view .requestId=${'req-1'}></approval-view>`
+      );
+      const view = element as any;
+      await waitUntil(() => !view.loading);
+      let finish!: (response: Response) => void;
+      const endpoint =
+        resource === 'decision'
+          ? '/api/v1/approval-requests/req-1/approve'
+          : resource === 'history'
+            ? '/api/v1/approval-requests/req-1/history'
+            : '/api/v1/approval-requests?status=pending&limit=100';
+      fetchStub.withArgs(endpoint).returns(
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        })
+      );
+      const pending =
+        resource === 'decision'
+          ? view.submitDecision('approve', {}, 'Approved')
+          : resource === 'history'
+            ? view.loadHistory()
+            : view.loadWaitingNext();
+      element.onAfterEnter({ params: { requestId: 'req-2' } });
+      await waitUntil(
+        () => view.approvalRequest?.id === 'req-2' && !view.loading
+      );
+      const history = view.history;
+      finish(
+        json(
+          resource === 'decision'
+            ? pendingRequest({ status: 'approved' })
+            : [{ id: 'stale' }]
+        )
+      );
+      await pending;
+      expect(view.approvalRequest.id).to.equal('req-2');
+      expect(view.approvalRequest.status).to.equal('pending');
+      expect(view.history).to.equal(history);
+      expect(view.decisionTaken).to.equal(false);
+      expect(view.submitting).to.equal(false);
+      expect(view.waitingNext).to.deep.equal([]);
+    });
   }
 
   function questionRequest(overrides: Record<string, unknown> = {}) {
@@ -257,13 +463,22 @@ describe('ApprovalView', () => {
       .returns(() => {});
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     invalidateApiCaches();
     fetchStub?.restore();
     wsSubscribeStub.restore();
     wsStateStub.restore();
     resetConfirmDialogForTests();
-    document.querySelectorAll('sl-alert[open]').forEach((a) => a.remove());
+    // Let toast() attach its show callback, then let Shoelace remove the
+    // alerts itself. Removing them directly leaves delayed hide callbacks.
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => resolve())
+    );
+    await Promise.all(
+      Array.from(document.querySelectorAll('sl-alert')).map((alert) =>
+        alert.hide()
+      )
+    );
     localStorage.clear();
   });
 
@@ -617,6 +832,26 @@ describe('ApprovalView', () => {
     expect(element.shadowRoot?.textContent).to.contain('git status');
     expect(element.shadowRoot?.textContent).to.not.contain(
       '_preloop_repository'
+    );
+  });
+
+  it('puts reasoning above a collapsed heavy diff', async () => {
+    const content = Array.from({ length: 2000 }, (_, i) => `l${i}`).join('\n');
+    const element = await renderRequest({
+      ...pendingRequest(),
+      tool_name: 'Write',
+      tool_args: { file_path: '/srv/big.txt', content },
+    });
+    const root = element.shadowRoot!;
+    const reasoning = Array.from(root.querySelectorAll('h2')).find(
+      (h) => h.textContent === 'Why the agent wants this'
+    )!;
+    const diff = root.querySelector('args-diff')!;
+    expect(
+      reasoning.compareDocumentPosition(diff) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).to.not.equal(0);
+    expect(element.getBoundingClientRect().height).to.be.below(
+      3 * window.innerHeight
     );
   });
 
@@ -1108,7 +1343,7 @@ describe('ApprovalView', () => {
 
     const timeline = element.shadowRoot?.querySelector('.timeline');
     expect(timeline).to.exist;
-    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    expect(element.shadowRoot?.textContent).to.contain('Workflow history');
     expect(element.shadowRoot?.textContent).to.contain(
       "Approval requested for tool 'shell_command'"
     );
@@ -1157,7 +1392,7 @@ describe('ApprovalView', () => {
 
     expect((element as any).publicOnly).to.be.true;
     expect(element.shadowRoot?.textContent).to.contain('Timed out');
-    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    expect(element.shadowRoot?.textContent).to.contain('Workflow history');
     expect(element.shadowRoot?.textContent).to.contain(
       'Expired: no response within the approval window'
     );
@@ -1315,12 +1550,12 @@ describe('ApprovalView', () => {
     );
     await element.updateComplete;
 
-    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    expect(element.shadowRoot?.textContent).to.contain('Workflow history');
     await (element as any).handleApprove();
     await element.updateComplete;
 
     expect((element as any).history.length).to.equal(2);
-    expect(element.shadowRoot?.textContent).to.contain('Workflow History');
+    expect(element.shadowRoot?.textContent).to.contain('Workflow history');
     expect(element.shadowRoot?.textContent).to.contain(
       "Approval requested for tool 'shell_command'"
     );

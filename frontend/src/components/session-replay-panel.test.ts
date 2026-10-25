@@ -114,6 +114,72 @@ describe('SessionReplayPanel', () => {
     expect(element.shadowRoot!.textContent).not.to.include('Captured result');
     expect(element.shadowRoot!.textContent).to.include('Legacy result');
   });
+  it('marks mapped model turns and tool rows as recording scroll targets', async () => {
+    const tool: RuntimeSessionActivityItem = {
+      activity_id: 'tool-activity',
+      activity_type: 'tool_call',
+      timestamp: '2026-06-07T12:02:00Z',
+      title: 'read_file',
+      summary: null,
+      status: 'success',
+      api_usage_id: null,
+      tool_name: 'read_file',
+      server_name: null,
+      auth_subject_type: null,
+      api_key_id: null,
+      api_key_name: null,
+      estimated_cost: null,
+      total_tokens: null,
+      metadata: { tool_call_id: 'call-1' },
+    };
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${[
+          previewEvent('usage-1', '2026-06-07T12:01:00Z', [
+            { role: 'assistant', text: 'MAPPED_REPLY' },
+          ]),
+        ]}
+        .activity=${[tool]}
+        .recordingSync=${{
+          artifact_id: 'recording',
+          skew_ms: 0,
+          unmapped_activity_ids: [],
+          mappings: [
+            {
+              activity_id: 'model-activity',
+              activity_type: 'model_gateway_call',
+              api_usage_id: 'usage-1',
+              offset_ms: 1000,
+              rule: 'server_skew',
+              approximate: false,
+            },
+            {
+              activity_id: 'tool-activity',
+              activity_type: 'tool_call',
+              offset_ms: 2000,
+              rule: 'server_skew',
+              approximate: false,
+            },
+          ],
+        }}
+        .recordingActivityId=${'tool-activity'}
+        recordingEnabled
+      ></session-replay-panel>
+    `);
+
+    const root = element.shadowRoot!;
+    const turn = root.querySelector(
+      '[data-recording-activity="model-activity"]'
+    );
+    expect(turn?.classList.contains('chat-turn')).to.equal(true);
+    expect(turn?.classList.contains('recording-current')).to.equal(false);
+    const row = root.querySelector('[data-recording-activity="tool-activity"]');
+    expect(row?.querySelector('session-tool-card')).to.exist;
+    expect(row?.classList.contains('recording-current')).to.equal(true);
+  });
+
   it('renders agent control messages in chat mode', async () => {
     const element = await fixture<SessionReplayPanel>(html`
       <session-replay-panel
@@ -1481,5 +1547,126 @@ describe('SessionReplayPanel', () => {
     expect(
       element.shadowRoot?.querySelector('[data-testid="focus-jump-hint"]')
     ).to.equal(null);
+  });
+});
+
+describe('SessionReplayPanel Requests summary and replay start', () => {
+  function summaryText(element: SessionReplayPanel): string {
+    return (
+      element.shadowRoot?.querySelector('.chat-summary-bar')?.textContent || ''
+    ).replace(/\s+/g, ' ');
+  }
+
+  it('token total equals the session header total', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .sessionTotalTokens=${21631}
+        .events=${[
+          previewEvent(
+            'e1',
+            '2026-06-07T12:00:00Z',
+            [{ role: 'user', text: 'go' }],
+            {
+              total_tokens: 500,
+              prompt_tokens: 100,
+              completion_tokens: 400,
+              usage_details: { prompt_tokens_details: { cached_tokens: 9000 } },
+            }
+          ),
+        ]}
+      ></session-replay-panel>
+    `);
+    const text = summaryText(element);
+    expect(text).to.match(/Tokens\s*21,631/);
+    // A cached share above 100% is impossible.
+    const pct = /(\d+)%/.exec(text);
+    expect(pct).to.not.equal(null);
+    expect(Number(pct![1])).to.be.at.most(100);
+  });
+
+  it('tools count comes from tool rows', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="chat"
+        .session=${SESSION}
+        .events=${[
+          previewEvent(
+            'e1',
+            '2026-06-07T12:00:00Z',
+            [{ role: 'user', text: 'run it' }],
+            {
+              tools: [
+                {
+                  kind: 'call',
+                  call_id: 'c1',
+                  name: 'exec_command',
+                  text: '{"cmd": "ls"}',
+                },
+                { kind: 'result', call_id: 'c1', text: 'a' },
+                {
+                  kind: 'call',
+                  call_id: 'c2',
+                  name: 'exec_command',
+                  text: '{"cmd": "pwd"}',
+                },
+              ],
+            }
+          ),
+        ]}
+        .activity=${[
+          {
+            activity_type: 'tool_call',
+            timestamp: '2026-06-07T12:00:01Z',
+            title: 'Bash',
+            summary: 'ls',
+            status: 'completed',
+            api_usage_id: null,
+            tool_name: 'Bash',
+            server_name: null,
+            auth_subject_type: null,
+            api_key_id: null,
+            api_key_name: null,
+            estimated_cost: null,
+            total_tokens: null,
+          } as RuntimeSessionActivityItem,
+        ]}
+      ></session-replay-panel>
+    `);
+    // Two calls; the hook row for `ls` merges into its gateway row.
+    expect(summaryText(element)).to.match(/Tools\s*2\b/);
+  });
+
+  it('replay starts at the first real prompt', async () => {
+    const element = await fixture<SessionReplayPanel>(html`
+      <session-replay-panel
+        replayMode="replay"
+        .session=${SESSION}
+        .events=${[
+          previewEvent('e1', '2026-06-07T12:00:00Z', [
+            { role: 'system', text: 'You are Codex, a coding agent.' },
+            {
+              role: 'user',
+              text: '# AGENTS.md instructions for /repo\nUse ruff.',
+            },
+            { role: 'user', text: 'Move the Columns button' },
+            { role: 'assistant', text: 'Looking' },
+          ]),
+          previewEvent('e2', '2026-06-07T12:01:00Z', [
+            { role: 'assistant', text: 'Done' },
+          ]),
+        ]}
+      ></session-replay-panel>
+    `);
+    await element.updateComplete;
+    const internals = element as unknown as {
+      replayIndex: number;
+      getVisibleReplayMessages(): Array<{ text: string | null }>;
+    };
+    const messages = internals.getVisibleReplayMessages();
+    expect(messages[internals.replayIndex]?.text).to.equal(
+      'Move the Columns button'
+    );
   });
 });

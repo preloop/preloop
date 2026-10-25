@@ -33,7 +33,7 @@ describe('AuditView', () => {
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
 
-      if (url === '/api/v1/users') {
+      if (url === '/api/v1/audit-logs/actors') {
         return new Response(
           JSON.stringify([
             {
@@ -482,7 +482,7 @@ describe('AuditView', () => {
       element.shadowRoot
         ?.querySelector('view-header')
         ?.getAttribute('headerText')
-    ).to.equal('Audit Timeline');
+    ).to.equal('Audit timeline');
     expect(content).to.contain('Runtime session started');
     expect(content).to.contain('search');
     expect(content).to.contain('Alice Example via Claude Workspace Token');
@@ -557,7 +557,7 @@ describe('AuditView', () => {
     const executionId = '99999999-8888-4777-8666-555555555555';
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
-      if (url === '/api/v1/users') {
+      if (url === '/api/v1/audit-logs/actors') {
         return new Response(JSON.stringify([]), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -755,7 +755,7 @@ describe('AuditView', () => {
       await element.updateComplete;
 
       const header = element.shadowRoot?.querySelector('view-header');
-      expect(header?.getAttribute('headerText')).to.equal('Audit Timeline');
+      expect(header?.getAttribute('headerText')).to.equal('Audit timeline');
       // Nothing precedes the title any more: the count and LIVE are meta.
       expect(header?.querySelector('[slot="title-prefix"]')).to.equal(null);
 
@@ -980,7 +980,7 @@ describe('AuditView', () => {
       };
       fetchStub.callsFake(async (input: RequestInfo | URL) => {
         const url = typeof input === 'string' ? input : input.toString();
-        if (url === '/api/v1/users') {
+        if (url === '/api/v1/audit-logs/actors') {
           return new Response('[]', { status: 200 });
         }
         const body = (groups: unknown[]) =>
@@ -993,8 +993,12 @@ describe('AuditView', () => {
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
-        // The walk back through the timeline finds when it happened.
-        if (url.includes('limit=200')) return body([older]);
+        if (url === '/api/v1/audit-logs/audit-old') {
+          return new Response(JSON.stringify(older.primary_event), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         // The reload, once the day is known, puts it on the first page.
         if (url.includes('start_date=')) return body([older]);
         return body([]);
@@ -1013,8 +1017,101 @@ describe('AuditView', () => {
         '[data-group-key="audit-old"]'
       ) as HTMLElement;
       expect(group.classList.contains('linked')).to.equal(true);
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('limit=200')),
+        'the focused endpoint should avoid the bounded page walk'
+      ).to.equal(false);
       element.remove();
     });
+
+    it('falls back to the grouped timeline when an older core returns 404', async () => {
+      fetchStub.resetHistory();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === '/api/v1/audit-logs/old-event') {
+          return new Response('{}', { status: 404 });
+        }
+        return new Response(
+          JSON.stringify({
+            groups: [
+              {
+                correlation_id: null,
+                primary_event: {
+                  id: 'old-event',
+                  timestamp: '2025-01-02T03:04:05Z',
+                },
+                sub_events: [],
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      });
+      const element = document.createElement('audit-view') as AuditView;
+      expect(await (element as any)._findEventTime('old-event')).to.equal(
+        '2025-01-02T03:04:05Z'
+      );
+      expect(fetchStub.callCount).to.equal(2);
+      expect(String(fetchStub.secondCall.args[0])).to.contain(
+        '/audit-logs/grouped?'
+      );
+    });
+
+    it('finds a non-UUID correlation id after detail validation returns 422', async () => {
+      fetchStub.resetHistory();
+      fetchStub.callsFake(async (input: RequestInfo | URL) => {
+        if (String(input) === '/api/v1/audit-logs/correlation-example') {
+          return new Response('{}', { status: 422 });
+        }
+        return new Response(
+          JSON.stringify({
+            groups: [
+              {
+                correlation_id: 'correlation-example',
+                primary_event: {
+                  id: '11111111-1111-4111-8111-111111111111',
+                  timestamp: '2025-01-02T03:04:05Z',
+                },
+                sub_events: [],
+              },
+            ],
+          }),
+          { status: 200 }
+        );
+      });
+      const element = document.createElement('audit-view') as AuditView;
+      expect(
+        await (element as any)._findEventTime('correlation-example')
+      ).to.equal('2025-01-02T03:04:05Z');
+      expect(fetchStub.callCount).to.equal(2);
+      expect(String(fetchStub.secondCall.args[0])).to.contain(
+        '/audit-logs/grouped?'
+      );
+    });
+
+    for (const status of [401, 403, 422]) {
+      it(`does not walk the timeline after detail status ${status} for a UUID`, async () => {
+        fetchStub.resetHistory();
+        fetchStub.resolves(new Response('{}', { status }));
+        const element = document.createElement('audit-view') as AuditView;
+        expect(
+          await (element as any)._findEventTime(
+            '11111111-1111-4111-8111-111111111111'
+          )
+        ).to.equal(null);
+        expect(
+          fetchStub
+            .getCalls()
+            .some((call) =>
+              String(call.args[0]).startsWith('/api/v1/audit-logs/grouped?')
+            )
+        ).to.equal(false);
+        // A 401 can attempt token refresh; neither refresh nor denial walks the corpus.
+        if (status !== 401) expect(fetchStub.callCount).to.equal(1);
+      });
+    }
 
     it('says so, once, when the event is nowhere in range', async () => {
       const element = openWith('?event=audit-missing');
@@ -1227,6 +1324,20 @@ describe('AuditView', () => {
       },
     });
     expect(label).to.equal('Policy version deleted: v2');
+    element.remove();
+  });
+
+  it('humanises an event type it has no title for (U-13)', async () => {
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => !(element as any)._loading,
+      'Audit view did not finish loading'
+    );
+    const label = (action: string) =>
+      (element as any)._getPrimaryLabel({ action, details: {} });
+    expect(label('api_key_created')).to.equal('API key created');
+    expect(label('user.switch_account.in')).to.equal('User switch account in');
     element.remove();
   });
 
@@ -1757,6 +1868,44 @@ describe('AuditView', () => {
     expect(marks).to.deep.equal(['Sealed 12', 'Unsealed']);
     element.remove();
   });
+  it('mounts the chain status chip only after the timeline answers', async () => {
+    let releaseGrouped: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      releaseGrouped = resolve;
+    });
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.startsWith('/api/v1/audit-logs/grouped?')) {
+        await gate;
+        return new Response(
+          JSON.stringify({ groups: [], total: 0, skip: 0, limit: 50 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+
+    const element = document.createElement('audit-view') as AuditView;
+    document.body.appendChild(element);
+    await waitUntil(
+      () => (element as any)._loading,
+      'Audit view did not start loading'
+    );
+    await element.updateComplete;
+    expect(element.shadowRoot?.querySelector('audit-integrity-strip')).to.equal(
+      null
+    );
+    releaseGrouped!();
+    await waitUntil(
+      () => element.shadowRoot?.querySelector('audit-integrity-strip'),
+      'chain chip did not mount after the timeline'
+    );
+    element.remove();
+  });
+
   it('shows upstream error code and reason in the expanded story', async () => {
     const element = document.createElement('audit-view') as AuditView;
     document.body.appendChild(element);

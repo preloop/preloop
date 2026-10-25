@@ -201,3 +201,22 @@ describe('talk-window', () => {
     );
   });
 });
+
+describe('talkWindowTitle (F-08)', () => {
+  it('names the agent and a short subject without local paths', async () => {
+    const { talkWindowTitle } = await import('./talk-window');
+    expect(
+      talkWindowTitle(
+        'Codex CLI',
+        'You are a backend worker. Read /Users/jane/work/app/brief.md and /home/jane/notes.txt first, then fix the failing tests in the payments module'
+      )
+    ).to.equal('Codex CLI · You are a backend worker. Read … and … first…');
+    expect(talkWindowTitle('Claude Code', 'Fix the login bug')).to.equal(
+      'Claude Code · Fix the login bug'
+    );
+    expect(talkWindowTitle('Claude Code', null)).to.equal('Claude Code · Talk');
+    expect(talkWindowTitle('Claude Code', 'C:\\Users\\jane\\repo')).to.equal(
+      'Claude Code · …'
+    );
+  });
+});

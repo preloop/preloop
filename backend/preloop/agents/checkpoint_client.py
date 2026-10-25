@@ -878,11 +878,17 @@ def http_error_details(exc: urllib.error.HTTPError) -> tuple[str, str]:
 def http_error_suffix(exc: Exception, operation: str) -> str:
     """`` status=<code> detail=<reason> op=<operation>`` for HTTP errors, else ''.
 
-    A quota refusal appends `` retained=<n> quota=<n> incoming=<n>``.
+    A quota refusal appends `` retained=<n> quota=<n> incoming=<n>``. A 5xx
+    JSON body that names no reason code (the API's generic "Internal server
+    error") reports ``server_error``: ``detail=unrecognized op=capture`` read
+    as an unknown operation. ``not_json``/``empty`` stay, since they say a
+    proxy rather than the API answered.
     """
     if not isinstance(exc, urllib.error.HTTPError):
         return ""
     reason, extra = http_error_details(exc)
+    if int(exc.code) >= 500 and reason == "unrecognized":
+        reason = "server_error"
     return (
         " status="
         + str(int(exc.code))

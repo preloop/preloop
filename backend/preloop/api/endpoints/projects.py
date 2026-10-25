@@ -120,6 +120,7 @@ def create_project(
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
     """Create a new project, ensuring user has access to the organization."""
+    ensure_permission_in_oss(db, current_user, "create_projects")
     # Check the organization exists and belongs to the caller's account
     organization = _get_organization_in_account(
         db, project.organization_id, current_user.account_id
@@ -396,6 +397,7 @@ def update_project(
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
     """Update a project, ensuring user has access."""
+    ensure_permission_in_oss(db, current_user, "edit_projects")
     project = _get_project_in_account(db, project_id, current_user.account_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -432,6 +434,7 @@ def delete_project(
     current_user: User = Depends(get_current_active_user),
 ) -> None:
     """Delete a project, ensuring user has access."""
+    ensure_permission_in_oss(db, current_user, "delete_projects")
     project = _get_project_in_account(db, project_id, current_user.account_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -948,6 +951,7 @@ def put_readiness_policy(
     current_user: User = Depends(get_current_active_user),
 ) -> ReadinessPolicy:
     """Authorize and audit a new policy series; old observations stay unchanged."""
+    ensure_permission_in_oss(db, current_user, "edit_projects")
     from preloop.config import settings
     from preloop.models.crud import readiness
 
@@ -986,6 +990,7 @@ def disable_readiness_policy(
     current_user: User = Depends(get_current_active_user),
 ) -> dict[str, bool]:
     """Unconfigure current observation while retaining audit policy series."""
+    ensure_permission_in_oss(db, current_user, "edit_projects")
     from preloop.config import settings
     from preloop.models.crud import readiness
 

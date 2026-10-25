@@ -248,7 +248,7 @@ export interface BrandLanding {
  * - 'saas': Full marketing landing page, pricing page, signup CTAs
  * - 'selfhosted': Minimal UI, redirects to login, no public pricing
  *
- * Enterprise features (RBAC, audit, etc.) are controlled by backend
+ * Enterprise organizational features (RBAC, teams, etc.) are controlled by backend
  * plugins and the /api/v1/features endpoint, not by edition.
  *
  * Enterprise self-hosted deployments use edition: 'selfhosted'
