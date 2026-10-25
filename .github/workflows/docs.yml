@@ -61,6 +61,20 @@ jobs:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
+      # A self-hosted runner may carry ubuntu-latest without its image tools.
+      - name: Set up ShellCheck
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/shellcheck-v0.11.0.linux.x86_64.tar.xz"
+          curl --fail --silent --show-error --location \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 \
+            "$archive" | sha256sum --check
+          tar -xJf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/shellcheck-v0.11.0" >> "$GITHUB_PATH"
+
       - name: Check MDM templates against the CLI
         run: |
           (cd cli && go build -o ../build/preloop ./cmd/preloop)
