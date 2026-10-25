@@ -1,6 +1,7 @@
 """Stored usage bootstrap is resumable and transactional with source writes."""
 
 import importlib.util
+import time
 from collections.abc import Generator
 from types import ModuleType
 from concurrent.futures import ThreadPoolExecutor
@@ -482,3 +483,51 @@ def test_runner_produces_the_same_totals_as_live_capture(db_engine: Engine) -> N
         with db_engine.begin() as connection:
             for schema in (live, backfilled):
                 connection.execute(text(f"DROP SCHEMA IF EXISTS {schema} CASCADE"))
+
+
+def test_overlapping_pass_cannot_rewind_completed_cursor(
+    db_engine: Engine, totals_schema: MigrationFixture
+) -> None:
+    """A stale batch waiting on source locks cannot undo committed progress."""
+    schema, _, _ = totals_schema
+    with db_engine.connect() as first, db_engine.connect() as second:
+        first.execute(text(f"SET LOCAL search_path TO {schema}"))
+        second.execute(text(f"SET LOCAL search_path TO {schema}"))
+        second.execute(text("SET LOCAL statement_timeout = '10s'"))
+        pid = second.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        while not first.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one():
+            pass
+        expected = first.execute(
+            text("SELECT last_usage_id FROM agent_usage_backfill")
+        ).scalar_one()
+
+        def stale_pass() -> bool:
+            ready = second.execute(text(AGENT_USAGE_TOTALS_BATCH)).scalar_one()
+            second.commit()
+            return ready
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            stale = pool.submit(stale_pass)
+            try:
+                deadline = time.monotonic() + 5
+                while not first.execute(
+                    text("SELECT cardinality(pg_blocking_pids(:pid)) > 0"),
+                    {"pid": pid},
+                ).scalar_one():
+                    assert not stale.done(), "second pass must wait for the first"
+                    assert time.monotonic() < deadline, "second pass did not block"
+                    time.sleep(0.01)
+            finally:
+                first.commit()
+            assert stale.result(timeout=10) is True
+        with db_engine.begin() as check:
+            check.execute(text(f"SET LOCAL search_path TO {schema}"))
+            assert check.execute(
+                text("SELECT last_usage_id, ready FROM agent_usage_backfill")
+            ).one() == (expected, True)
+            assert (
+                check.execute(
+                    text("SELECT sum(request_count) FROM agent_usage_total")
+                ).scalar_one()
+                == 501
+            )

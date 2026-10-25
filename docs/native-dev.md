@@ -61,7 +61,9 @@ re-migrate.
 
 Optional workers (`preloop-sync scheduler`, `preloop-sync worker`) are only
 needed for issue-tracker sync or flow execution, not for login, MCP, or
-gateway smoke tests.
+gateway smoke tests. Post-deploy data backfills need both processes; if you
+skip them, run `python -m preloop.models.backfills` to complete pending backfills
+and enable readers such as the stored agent-usage totals.
 
 ## `.env`
 

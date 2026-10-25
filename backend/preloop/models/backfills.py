@@ -37,7 +37,9 @@ REGISTRY_TABLE = "agent_usage_backfill"
 # to 500 historical gateway requests per call, records the cursor, and returns
 # ``ready`` (true once a call finds nothing left). The ``agent_usage_counted``
 # ledger makes a replayed batch a no-op; source row locks serialize the batch
-# with concurrent updates and deletes, which the triggers count.
+# with concurrent updates and deletes, which the triggers count. Cursor and
+# readiness updates are monotonic: an overlapping pass with a stale snapshot
+# must not rewind progress or undo completion when it finally acquires locks.
 AGENT_USAGE_TOTALS_BATCH = """
 WITH batch AS MATERIALIZED (
  SELECT u AS usage, u.id FROM api_usage u
@@ -51,8 +53,8 @@ WITH batch AS MATERIALIZED (
  SELECT agent_usage_apply(batch.usage,1) FROM batch JOIN claimed ON claimed.usage_id=batch.id
 )
 UPDATE agent_usage_backfill SET
- last_usage_id=COALESCE((SELECT id FROM batch ORDER BY id DESC LIMIT 1),last_usage_id),
- ready=NOT EXISTS(SELECT 1 FROM batch)
+ last_usage_id=GREATEST(last_usage_id,(SELECT id FROM batch ORDER BY id DESC LIMIT 1)),
+ ready=ready OR NOT EXISTS(SELECT 1 FROM batch)
 WHERE name='agents' AND (SELECT count(*) FROM applied)>=0
 RETURNING ready
 """

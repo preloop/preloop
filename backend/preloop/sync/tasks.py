@@ -924,6 +924,9 @@ async def run_data_backfills() -> list[dict[str, object]]:
     db = next(get_db_session())
     try:
         results = await run_db_off_loop(lambda: run_pending_backfills(db))
+        failed = [result.name for result in results if result.errors]
+        if failed:
+            raise RuntimeError(f"Data backfills failed: {', '.join(failed)}")
         return [
             {
                 "name": result.name,

@@ -110,11 +110,14 @@ So revisions do not backfill data. A revision that needs one:
 3. leaves readers on their previous query path until `ready` is true.
 
 The batch statement lives in `preloop.models.backfills`. The sync scheduler
-publishes `run_data_backfills` one minute after it starts and then every two
-minutes; a worker runs each pending backfill in committed batches for at most
-60 seconds per pass (inside the worker's three-minute acknowledgement window)
-and the next pass resumes from the cursor. A pass with nothing pending reads
-the small registry table and returns.
+publishes `run_data_backfills` one minute after it starts and then every 15
+minutes; a worker runs pending backfills in committed batches with
+a 60-second budget per pass; a batch already running can extend this by its
+statement timeout. Each pass occupies a shared worker slot, so the 15-minute
+interval limits delays to webhooks, polling and reconciliation while history
+catches up. The next pass resumes from the cursor. A pass with nothing pending
+reads the small registry table and returns. Failed batches are logged and the
+task raises so the worker reports the failure and redelivers the message.
 
 Operators can also drive it by hand, for example to finish a backfill before
 scaling the sync role down:

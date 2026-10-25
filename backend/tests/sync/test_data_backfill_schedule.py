@@ -55,9 +55,23 @@ async def test_scheduler_registers_an_early_bounded_job(
     jobs = {c.kwargs.get("id"): c for c in scheduler.add_job.call_args_list}
 
     job = jobs["data_backfill_job"]
+    assert scheduler_commands.DATA_BACKFILL_INTERVAL_MINUTES == 15
     assert job.kwargs["max_instances"] == 1
     assert job.kwargs["trigger"].interval == timedelta(
         minutes=scheduler_commands.DATA_BACKFILL_INTERVAL_MINUTES
     )
     first = job.kwargs["next_run_time"] - datetime.now(timezone.utc)
     assert timedelta(0) < first <= timedelta(minutes=1)
+
+
+@pytest.mark.asyncio
+async def test_failed_pass_raises_and_closes_session(mocker: MockerFixture) -> None:
+    db = MagicMock()
+    mocker.patch.object(tasks, "get_db_session", return_value=iter([db]))
+    mocker.patch(
+        "preloop.models.backfills.run_pending_backfills",
+        return_value=[BackfillResult("agents", errors=["batch failed"])],
+    )
+    with pytest.raises(RuntimeError, match="Data backfills failed: agents"):
+        await tasks.run_data_backfills()
+    db.close.assert_called_once()

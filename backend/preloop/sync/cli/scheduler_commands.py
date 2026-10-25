@@ -67,7 +67,8 @@ SPEND_OUTLIER_SESSION_CHECK_MINUTES = 15
 
 #: Minutes between post-deploy backfill passes. Each pass is bounded by
 #: ``preloop.models.backfills.run_pending_backfills`` (60 s by default).
-DATA_BACKFILL_INTERVAL_MINUTES = 2
+# Keep long backfill passes from dominating the shared worker slot.
+DATA_BACKFILL_INTERVAL_MINUTES = 15
 
 
 def shutdown_scheduler():
