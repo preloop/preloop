@@ -1,6 +1,6 @@
 import { parseUTCDate } from '../utils/date';
 import { agentStateChip } from '../utils/agent-status';
-import { LitElement, css, html, unsafeCSS } from 'lit';
+import { LitElement, css, html, nothing, unsafeCSS } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 import '@shoelace-style/shoelace/dist/components/badge/badge.js';
@@ -47,6 +47,7 @@ export function artifactGroupCounts(
   );
 }
 import './token-figures.ts';
+import { totalTokensOf } from './token-figures';
 
 @customElement('session-list-panel')
 export class SessionListPanel extends LitElement {
@@ -502,18 +503,24 @@ export class SessionListPanel extends LitElement {
                 </div>
                 <div class="metric-row">
                   <div class="metric">
-                    ${formatNumber(session.totalRequests)} requests ·
+                    ${formatNumber(session.totalRequests)} requests
                   </div>
                   <!-- Tokens before cost: the split says whether a session is
                      expensive because it reads a lot or writes a lot. The
                      cache rate is in the figures' tooltip, so the row stays
-                     one line in the list column. -->
-                  <div class="metric tokens">
-                    <token-figures
-                      hide-cache
-                      .usage=${session.tokenUsage}
-                    ></token-figures>
-                  </div>
+                     one line in the list column. No tokens recorded drops
+                     the segment instead of leaving an empty slot. -->
+                  ${
+                    totalTokensOf(session.tokenUsage) > 0
+                      ? html`<div class="metric tokens">
+                          ·
+                          <token-figures
+                            hide-cache
+                            .usage=${session.tokenUsage}
+                          ></token-figures>
+                        </div>`
+                      : nothing
+                  }
                   <div class="metric cost">
                     · ${formatCost(session.estimatedCost)}
                   </div>

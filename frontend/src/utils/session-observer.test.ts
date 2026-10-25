@@ -192,3 +192,25 @@ describe('session owner links', () => {
     expect(legacy.agentHref).to.equal('/console/agents/agent-2');
   });
 });
+
+describe('session-observer subject hygiene', () => {
+  it('cleans harness preambles out of a derived title', () => {
+    const session = normalizeObservedSession({
+      id: 'rs-hygiene-1',
+      session_source_type: 'claude_code',
+      title:
+        'x-anthropic-billing-header: cc_version=2.1.310.b2b; cc_entrypoint=cli;\nRead /Users/alex/git/acme/prompt.md',
+    });
+    expect(session.title).to.equal('Read ~/git/acme/prompt.md');
+  });
+
+  it('skips a title that is only harness text and uses the next field', () => {
+    const session = normalizeObservedSession({
+      id: 'rs-hygiene-2',
+      session_source_type: 'claude_code',
+      title: '<system-reminder>Background task finished</system-reminder>',
+      runtime_session_name: 'Claude Code',
+    });
+    expect(session.title).to.equal('Claude Code');
+  });
+});

@@ -1,3 +1,4 @@
+import { cleanSessionSubject } from './session-subject';
 import type {
   FlowGatewayConversationPreviewMessage,
   FlowGatewayEvent,
@@ -242,13 +243,18 @@ function buildSessionTitleFallback(row: Record<string, unknown>): string {
   return 'Standalone API calls';
 }
 
+/** A subject field with harness plumbing stripped, or null when empty. */
+function asSubject(value: unknown): string | null {
+  return cleanSessionSubject(asString(value));
+}
+
 function buildTitle(row: Record<string, unknown>): string {
   return (
-    asString(row.alias) ||
-    asString(row.title) ||
-    asString(row.summary) ||
-    asString(row.session_summary) ||
-    asString(row.session_alias) ||
+    asSubject(row.alias) ||
+    asSubject(row.title) ||
+    asSubject(row.summary) ||
+    asSubject(row.session_summary) ||
+    asSubject(row.session_alias) ||
     asString(row.runtime_session_name) ||
     asString(row.runtime_principal_name) ||
     asString(row.flow_name) ||

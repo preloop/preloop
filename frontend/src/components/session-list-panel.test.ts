@@ -146,6 +146,18 @@ describe('session-list-panel figures', () => {
   });
 });
 
+describe('session-list-panel empty figures', () => {
+  it('drops the token segment when no tokens were recorded', async () => {
+    const el = await renderPanel([
+      makeSession({ totalRequests: 0, estimatedCost: 0 }),
+    ]);
+    const row = el.shadowRoot?.querySelector('.metric-row') as HTMLElement;
+    const rowText = (row.textContent || '').replace(/\s+/g, ' ').trim();
+    expect(rowText).to.equal('0 requests · $0.00');
+    expect(row.querySelector('token-figures')).to.not.exist;
+  });
+});
+
 describe('session-list-panel note indicator', () => {
   it('shows the count and the most recent author on a noted session', async () => {
     const el = await renderPanel([

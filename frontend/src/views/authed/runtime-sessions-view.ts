@@ -1,3 +1,4 @@
+import { stripBillingHeader } from '../../utils/session-subject';
 import { randomUuid } from '../../utils/random-uuid';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { parseUTCDate } from '../../utils/date';
@@ -2464,7 +2465,7 @@ export class RuntimeSessionsView extends LitElement {
     message: FlowGatewayConversationPreviewMessage
   ) {
     const previewText = message.text
-      ? message.text
+      ? stripBillingHeader(message.text)
       : message.redacted
         ? 'Content redacted by capture policy.'
         : 'No text content captured.';

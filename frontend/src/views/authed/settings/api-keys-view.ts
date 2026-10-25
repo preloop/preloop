@@ -1,3 +1,4 @@
+import { apiKeyDisplayName } from '../../../utils/api-key-name';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -409,7 +410,9 @@ export class ApiKeysView extends LitElement {
         value: (key) => key.name,
         cell: (key) =>
           html`<div class="key-name">
-            <a href="/console/settings/api-keys/${key.id}">${key.name}</a>
+            <a href="/console/settings/api-keys/${key.id}"
+              >${apiKeyDisplayName(key.name).name}</a
+            >
             ${
               key.managed_agent_id
                 ? html`<sl-badge class="chip" pill variant="neutral"
@@ -908,7 +911,7 @@ export class ApiKeysView extends LitElement {
             .selection=${this.selection}
             .rowSelectable=${(key: ApiKey) => !this.isRetired(key)}
             .rowActions=${(key: ApiKey) => this.rowActionsFor(key)}
-            .rowLabel=${(key: ApiKey) => key.name}
+            .rowLabel=${(key: ApiKey) => apiKeyDisplayName(key.name).name}
             .loading=${this.isLoading}
             .error=${this.error}
             .empty=${{
