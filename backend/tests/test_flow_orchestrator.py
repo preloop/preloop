@@ -322,7 +322,13 @@ class TestFlowExecutionOrchestrator:
             # The prompt should contain the resolved template
             # (plus the success sentinel instruction appended by the orchestrator)
             resolved_prompt = orchestrator.execution_log.resolved_input_prompt
-            assert resolved_prompt.startswith("Commit: Fixed bug #123")
+            # Commit message text is trigger prose: the template keeps a
+            # reference and the value travels in the data block.
+            assert resolved_prompt.startswith(
+                'Commit: [see field "payload.message" in the trigger_data block'
+            )
+            assert "<trigger_data>" in resolved_prompt
+            assert "\nFixed bug #123\n</field>" in resolved_prompt
             # Verify the success sentinel instruction is appended
             assert "FLOW_EXECUTION_SUCCESS" in resolved_prompt
             assert resolved_prompt.endswith(FLOW_SUCCESS_INSTRUCTION)
@@ -484,9 +490,10 @@ class TestFlowExecutionOrchestrator:
         resolved_prompt = await orchestrator._resolve_prompt()
 
         # The cut marker is set off by a blank line, so each capped value
-        # ends its own line.
-        assert "Short: " + "X" * 10 + "\n\n[truncated by Preloop" in resolved_prompt
-        assert "Long: " + "X" * 2000 + "\n\n[truncated by Preloop" in resolved_prompt
+        # ends its own line. Both live in the data block, one entry each.
+        assert "\n" + "X" * 10 + "\n\n[truncated by Preloop" in resolved_prompt
+        assert "\n" + "X" * 2000 + "\n\n[truncated by Preloop" in resolved_prompt
+        assert resolved_prompt.count('<field name="payload.description">') == 2
         assert "X" * 2001 not in resolved_prompt
         assert resolved_prompt.count("[truncated by Preloop") == 2
 

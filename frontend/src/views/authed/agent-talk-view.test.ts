@@ -110,6 +110,177 @@ describe('agent-talk-view', () => {
     return el;
   }
 
+  it('bounds history on the initial and older transcript pages', async () => {
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events'))
+        return jsonResponse({
+          logs: [],
+          pagination: { has_more: true, next_offset: 50 },
+        });
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      if (url.includes('/approval-requests')) return jsonResponse([]);
+      if (url.includes('/api/v1/agents/agent-1'))
+        return jsonResponse({ agent: AGENT, sessions: [SESSION] });
+      return jsonResponse({});
+    });
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    await (el as any).loadMoreEvents();
+    const reads = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/gateway-events'));
+    expect(reads).to.have.length(2);
+    for (const read of reads) {
+      const params = new URL(read, location.origin).searchParams;
+      expect(params.get('history')).to.equal('delta');
+      expect(params.get('history_window')).to.equal('40');
+    }
+    expect(
+      new URL(reads[1], location.origin).searchParams.get('offset')
+    ).to.equal('50');
+    el.remove();
+  });
+
+  it('uses the refreshed server offset instead of retained row count after a burst', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    (el as any).events = Array.from({ length: 100 }, (_, i) => ({
+      id: `old-${i}`,
+      timestamp: '2026-01-01T00:00:00Z',
+      payload: {},
+    }));
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/gateway-events'))
+        return jsonResponse({
+          logs: [{ id: 'new', timestamp: '2026-02-01T00:00:00Z', payload: {} }],
+          pagination: { has_more: true, next_offset: 50 },
+        });
+      if (String(input).includes('/activity'))
+        return jsonResponse({ items: [] });
+      return jsonResponse([]);
+    });
+    await (el as any).loadEvents('sess-1');
+    expect((el as any).events).to.have.length(101);
+    expect((el as any).nextEventOffset).to.equal(50);
+    await (el as any).loadMoreEvents();
+    const last = fetchStub
+      .getCalls()
+      .map((call) => String(call.args[0]))
+      .filter((url) => url.includes('/gateway-events'))
+      .at(-1)!;
+    expect(new URL(last, location.origin).searchParams.get('offset')).to.equal(
+      '50'
+    );
+    expect((el as any).events).to.have.length(101);
+    el.remove();
+  });
+
+  it('coalesces in-flight refresh bursts into one trailing transcript read', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    let finish!: (response: Response) => void;
+    let reads = 0;
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events')) {
+        reads += 1;
+        if (reads === 1)
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        return jsonResponse({ logs: [], pagination: { has_more: false } });
+      }
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      return jsonResponse([]);
+    });
+    const first = (el as any).loadEvents('sess-1');
+    await waitUntil(() => Boolean(finish));
+    for (let i = 0; i < 100; i++) void (el as any).loadEvents('sess-1');
+    await aTimeout(20);
+    expect(reads).to.equal(1);
+    finish(jsonResponse({ logs: [], pagination: { has_more: false } }));
+    await first;
+    await waitUntil(() => reads === 2);
+    await aTimeout(20);
+    expect(reads).to.equal(2);
+    el.remove();
+  });
+
+  it('queues an older-page click behind a live read and keeps the button busy', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    (el as any).hasMoreEvents = true;
+    (el as any).nextEventOffset = 50;
+    let finish!: (response: Response) => void;
+    const offsets: string[] = [];
+    fetchStub.callsFake(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/gateway-events')) {
+        offsets.push(new URL(url, location.origin).searchParams.get('offset')!);
+        if (offsets.length === 1)
+          return new Promise<Response>((resolve) => {
+            finish = resolve;
+          });
+        return jsonResponse({ logs: [], pagination: { has_more: false } });
+      }
+      if (url.includes('/activity')) return jsonResponse({ items: [] });
+      return jsonResponse([]);
+    });
+    try {
+      const live = (el as any).loadEvents('sess-1');
+      await waitUntil(() => !!finish);
+      void (el as any).loadEvents('sess-1');
+      await (el as any).loadMoreEvents();
+      await el.updateComplete;
+      expect(
+        (el.shadowRoot!.querySelector('session-chat-view') as any)
+          .loadingMoreEvents
+      ).to.equal(true);
+      expect(offsets).to.deep.equal(['0']);
+      finish(
+        jsonResponse({
+          logs: [],
+          pagination: { has_more: true, next_offset: 75 },
+        })
+      );
+      await live;
+      await waitUntil(() => offsets.length === 3);
+      expect(offsets).to.deep.equal(['0', '75', '0']);
+    } finally {
+      el.remove();
+    }
+  });
+
+  it('routes top-level-only control acknowledgements to the composer and refreshes', async () => {
+    const el = await mount('?session=sess-1');
+    await waitUntil(() => !(el as any).loadingEvents);
+    const composer = el.shadowRoot!.querySelector('talk-composer')!;
+    const realtime = sinon.stub(composer as any, 'handleRealtime');
+    const refresh = sinon.stub(el as any, 'scheduleReload');
+    const turn = sinon.stub(el as any, 'noteAgentTurn');
+    try {
+      const message = {
+        type: 'agent_control_ack',
+        managed_agent_id: 'agent-1',
+        runtime_session_id: 'sess-1',
+        payload: { name: 'ack', message_id: 'command-1', agent_payload: {} },
+      };
+      (el as any).handleActivity(message);
+      expect(realtime.calledOnceWithExactly(message)).to.equal(true);
+      expect(refresh.callCount).to.equal(1);
+      expect(turn.callCount).to.equal(1);
+      (el as any).handleActivity({
+        ...message,
+        managed_agent_id: 'other-agent',
+      });
+      expect(refresh.callCount).to.equal(1);
+    } finally {
+      el.remove();
+    }
+  });
+
   it('fills the viewport and never scrolls the page', async () => {
     const el = await mount();
     const styles = getComputedStyle(el);
@@ -800,13 +971,19 @@ describe('agent-talk-view session integrity', () => {
     el.remove();
   });
 
-  it('only fetches the sessions section of the agent detail', async () => {
+  it('fetches independent lightweight identity and sessions', async () => {
     const el = await mount();
-    const agentCall = fetchStub
+    const agentCalls = fetchStub
       .getCalls()
       .map((call) => String(call.args[0]))
-      .find((url) => url.includes('/api/v1/agents/agent-1'));
-    expect(agentCall).to.contain('include=sessions');
+      .filter((url) => url.includes('/api/v1/agents/agent-1'));
+    expect(agentCalls).to.have.length(2);
+    expect(
+      agentCalls.every((url) => url.includes('lightweight=true'))
+    ).to.equal(true);
+    expect(agentCalls.some((url) => url.includes('include=sessions'))).to.equal(
+      true
+    );
     el.remove();
   });
 

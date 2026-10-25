@@ -10,7 +10,7 @@
 
 **The open-source AI agent control plane and software factory.**
 
-Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see spend by model, agent, session, API key and flow, including imported Copilot usage, and cap it with budgets.
+Preloop is one self-hostable service that sits between your AI agents and everything they reach, and runs agents for you when work arrives. Every tool call and every model call is governed, attributed and visible, whether a person started the agent or a ticket did. You see gateway spend by model, agent, session, API key and flow, and cap it with budgets. Imported Copilot usage is displayed separately as vendor-reported data.
 
 It has two halves, and the same policies, budgets and session timeline apply to both:
 
@@ -86,10 +86,11 @@ AI Agent → Preloop → [Policy]  → Allow / Deny / Require Approval → Execu
 
 One loop, end to end: an issue event arrives from GitHub, GitLab, Bitbucket Cloud or Jira. A flow starts an agent in a hosted container or on your own runner. Every tool call it makes passes the same firewall and approvals as your own agents, and every model call is charged to the flow's budget. The agent opens a pull request; the [Pull Request Reviewer](docs/guide/flows/pull-request-review.md) reviews it; review or CI feedback resumes [the implementation](docs/guide/flows/durable-implementation-feedback.md) on the same branch, and the result is a pull request you can review. You can steer the run with an operator note at any point, and the whole run is one timeline.
 
-[20 presets](backend/presets/README.md) ship in this repository, including:
+[21 presets](backend/presets/README.md) ship in this repository, including:
 
 - [Issue Triage Assistant](docs/guide/flows/issue-triage.md) and issue refinement
 - [Pull Request Reviewer](docs/guide/flows/pull-request-review.md)
+- [Delivery Report](docs/guide/flows/delivery-report.md): a weekly, read-only report of what shipped, whether it did what its issues asked, and what is still open
 - [Automated issue implementation](docs/guide/flows/automated-issue-implementation.md)
 - [Security audit presets](docs/guide/flows/security-audit-presets.md): SBOM verify, exploit check, release audit. They collect machine evidence for CRA- and EU AI Act-style reviews. That is not a conformity assessment, certification, or legal advice.
 - [Observe / Eval](./backend/presets/003-observe-eval.yaml)
