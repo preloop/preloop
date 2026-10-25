@@ -229,12 +229,16 @@ class CRUDMCPInventory:
         return [dict(row) for row in db.execute(query).mappings()]
 
     def lock(self, db: Session, *, account_id: UUID) -> None:
-        """Serialize observations and decisions for one account."""
+        """Serialize observations and decisions for one account.
+
+        NO KEY UPDATE keeps holders exclusive without blocking child-row
+        foreign-key checks on the account.
+        """
         if (
             db.scalar(
                 select(models.Account.id)
                 .where(models.Account.id == account_id)
-                .with_for_update()
+                .with_for_update(key_share=True)
             )
             is None
         ):
