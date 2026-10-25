@@ -58,6 +58,38 @@ describe('cleanSessionSubject', () => {
     ).to.equal(null);
   });
 
+  it('keeps a closed wrapper block quoted mid-sentence', () => {
+    expect(
+      cleanSessionSubject(
+        'Explain why <system-reminder>Background task finished</system-reminder> appears'
+      )
+    ).to.equal(
+      'Explain why <system-reminder>Background task finished</system-reminder> appears'
+    );
+  });
+
+  it('removes stacked leading and trailing wrapper blocks', () => {
+    expect(
+      cleanSessionSubject(
+        '<system-reminder>a</system-reminder><system-reminder>b</system-reminder>Ship it<system-reminder>c</system-reminder>'
+      )
+    ).to.equal('Ship it');
+  });
+
+  it('keeps a key=value line that follows the billing header', () => {
+    expect(
+      stripBillingHeader(
+        'x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=cli;\nUSER=alex\nwhy did login break?'
+      )
+    ).to.equal('USER=alex\nwhy did login break?');
+  });
+
+  it('shortens backtick-wrapped home paths', () => {
+    expect(shortenHomePaths('see `/Users/alex/project`')).to.equal(
+      'see `~/project`'
+    );
+  });
+
   it('keeps delimiters around a home path', () => {
     expect(shortenHomePaths('Read "/Users/alex"')).to.equal('Read "~"');
     expect(shortenHomePaths('see (/Users/alex)')).to.equal('see (~)');

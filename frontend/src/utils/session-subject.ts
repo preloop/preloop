@@ -19,10 +19,10 @@ const WRAPPER_TAGS = [
 ] as const;
 
 const BILLING_HEADER =
-  /^\s*x-anthropic-billing-header:(?:\s*[\w.-]+=[^;\n]*;?)*/i;
+  /^[ \t]*x-anthropic-billing-header:(?:[ \t]+[\w.-]+=[^;\s]+;?)*/i;
 
 const HOME_PATH =
-  /(^|[\s"'(=])(?:\/Users|\/home)\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/g;
+  /(^|[\s"'`(=])(?:\/Users|\/home)\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/g;
 
 /** Replace `/Users/<name>` and `/home/<name>` prefixes with `~`. */
 export function shortenHomePaths(text: string): string {
@@ -42,13 +42,20 @@ export function cleanSessionSubject(
   // The billing header goes first so a wrapper right after it counts as the
   // start of the text.
   let out = text.replace(BILLING_HEADER, ' ');
-  for (const tag of WRAPPER_TAGS) {
-    // A closed block goes whole. An unclosed opener at the very start means
-    // a truncated harness block, so the rest is harness text too; one later
-    // in the text is a prompt mentioning the tag and stays.
-    out = out.replace(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`, 'gi'), ' ');
-    out = out.replace(new RegExp(`^\\s*<${tag}>[\\s\\S]*$`, 'i'), ' ');
-  }
+  // Harness blocks lead or trail the prompt. A closed block at either end
+  // goes whole (repeatedly, for stacked blocks), and an unclosed opener at the
+  // start is a truncated block, so the rest goes too. A tag in the middle of
+  // the text is a prompt quoting it and stays as typed.
+  const alternation = WRAPPER_TAGS.join('|');
+  const leading = new RegExp(`^\\s*<(${alternation})>[\\s\\S]*?</\\1>`, 'i');
+  const trailing = new RegExp(`<(${alternation})>[^<]*?</\\1>\\s*$`, 'i');
+  const unclosed = new RegExp(`^\\s*<(?:${alternation})>[\\s\\S]*$`, 'i');
+  let previous: string;
+  do {
+    previous = out;
+    out = out.replace(leading, ' ').replace(trailing, ' ');
+  } while (out !== previous);
+  out = out.replace(unclosed, ' ');
   out = shortenHomePaths(out).replace(/\s+/g, ' ').trim();
   return out || null;
 }
