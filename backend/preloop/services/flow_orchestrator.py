@@ -82,14 +82,18 @@ from preloop.services.flow_execution_notifications import (
 )
 from preloop.config import settings
 from preloop.services.flow_pr_binding import (
+    DECISION_MARKER,
     PR_OPENED_MARKER,
     MAX_PUBLISHED_PRS,
+    brief_from_result,
     find_bound_execution,
     max_resumes_per_pr,
     merge_result_preserving_pr_binding,
     note_resume_started,
+    parse_decision_marker,
     parse_pr_opened_marker,
     record_cli_session,
+    record_decision,
     record_opened_pr,
     record_published_pr,
     resume_cli_session_of,
@@ -1330,6 +1334,58 @@ class FlowExecutionOrchestrator:
             return str(project_path)
 
         return "the triggering repository"
+
+    def _describe_incomplete_review(
+        self, stored_status: str, merged_result: Any
+    ) -> Optional[str]:
+        """Describe a review this run submitted before ending unsuccessfully.
+
+        Args:
+            stored_status: The execution's terminal status.
+            merged_result: The result document the run stored.
+
+        Returns:
+            The commit status description, or None when the run submitted no
+            review (or its tool calls cannot be read).
+        """
+        if not self.execution_log or not self.flow:
+            return None
+        try:
+            from preloop.models.crud import crud_runtime_session_activity
+            from preloop.services.review_completion import (
+                describe_incomplete_review,
+                summarize_review_progress,
+            )
+
+            activities = (
+                crud_runtime_session_activity.list_tool_calls_for_flow_execution(
+                    self.db,
+                    account_id=self.flow.account_id,
+                    flow_execution_id=self.execution_log.id,
+                )
+            )
+            confirmed = (
+                isinstance(merged_result, dict)
+                and str(merged_result.get("status") or "").lower() == "success"
+            )
+            progress = summarize_review_progress(activities, result_confirmed=confirmed)
+        except Exception:
+            logger.warning(
+                "Could not read the review progress of execution %s",
+                self.execution_log.id,
+                exc_info=True,
+            )
+            return None
+        if progress is None:
+            return None
+        logger.info(
+            "Execution %s ended %s after submitting a review (%s); remaining: %s",
+            self.execution_log.id,
+            stored_status,
+            progress.review_state,
+            ", ".join(progress.remaining) or "none",
+        )
+        return describe_incomplete_review(progress, stored_status)
 
     async def _update_commit_status(
         self,
@@ -3822,6 +3878,10 @@ class FlowExecutionOrchestrator:
         if PR_OPENED_MARKER in stripped_line:
             self._note_opened_pr(stripped_line)
 
+        # A non-trivial choice the agent reported about its own work.
+        if DECISION_MARKER in stripped_line:
+            self._note_decision(stripped_line)
+
         # Native CLI session id reported by the agent script, so a
         # later PR-comment resume can invoke the CLI resume flag.
         if any(
@@ -5084,6 +5144,21 @@ class FlowExecutionOrchestrator:
             return []
         return [line for line in logs if isinstance(line, str)]
 
+    def _note_decision(self, line: str) -> None:
+        """Record an agent decision marker on this execution's result once."""
+        decision = parse_decision_marker(line)
+        if decision is None or self.execution_log is None:
+            return
+        seen = getattr(self, "_recorded_decisions", None)
+        if seen is None:
+            seen = []
+            self._recorded_decisions = seen
+        if decision in seen:
+            return
+        # Remember only stored decisions, so the rescan retries a failed write.
+        if record_decision(self.db, self.execution_log.id, decision):
+            seen.append(decision)
+
     def _note_opened_pr(self, line: str) -> None:
         """Remember each wrapper publication; retain the first as the follow-up binding."""
         if getattr(self, "_isolated_publication_policy", None) is not None:
@@ -5597,6 +5672,8 @@ class FlowExecutionOrchestrator:
             for line in output_summary.splitlines():
                 if PR_OPENED_MARKER in line:
                     self._note_opened_pr(line)
+                if DECISION_MARKER in line:
+                    self._note_decision(line)
         if getattr(self, "_opened_pr_bound", False):
             return
         if self._opened_pr is None or self.execution_log is None:
@@ -9631,6 +9708,10 @@ class FlowExecutionOrchestrator:
                 getattr(self.execution_log, "result", None),
                 agent_result.get("result"),
             )
+            # The change brief the agent wrote into the PR body it published.
+            brief = brief_from_result(agent_result.get("result"))
+            if brief is not None and isinstance(merged_result, dict):
+                merged_result["brief"] = brief
 
             # Only the executor's runtime observation owns this key. Agent
             # result.json claims cannot overwrite or fabricate termination.
@@ -9776,6 +9857,15 @@ class FlowExecutionOrchestrator:
             elif stored_status != "SUCCEEDED":
                 detail = agent_result.get("error_message") or "Unknown error"
                 status_description = f"Preloop review failed: {str(detail)[:80]}"
+            if stored_status != "SUCCEEDED":
+                # A run that already submitted its review says so, and names
+                # the post-review step it never completed (#1683). It still
+                # fails: the review alone is not a completed run.
+                incomplete = self._describe_incomplete_review(
+                    stored_status, merged_result
+                )
+                if incomplete:
+                    status_description = incomplete
             await self._update_commit_status(
                 state=status_state,
                 description=status_description,

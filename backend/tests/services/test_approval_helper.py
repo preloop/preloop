@@ -27,7 +27,7 @@ def mock_context():
     ctx.request_id = "test_request_id"
     ctx.request_context = MagicMock()
     ctx.request_context.meta = MagicMock()
-    ctx.request_context.meta.progressToken = "test_token"
+    ctx.request_context.meta = {"progressToken": "test_token"}
     return ctx
 
 
@@ -1141,9 +1141,7 @@ class TestRequireApprovalProgressReporting:
         mock_db = create_mock_db_session()
         # Make progressToken access raise error
         mock_context.request_context.meta = MagicMock()
-        type(mock_context.request_context.meta).progressToken = property(
-            lambda self: (_ for _ in ()).throw(Exception("Token error"))
-        )
+        mock_context.request_context.meta.get.side_effect = RuntimeError("Token error")
 
         approval_request.status = "approved"
 

@@ -106,11 +106,12 @@ prompt_template: |
 
   FLATTENED RESULTS. Tools reached through the Preloop gateway may arrive
   as one text block that spells out the original blocks (for example
-  "type='audio' data='...' mimeType='audio/wav'" or
-  "type='resource' resource=TextResourceContents(... mimeType='text/vtt',
+  "type='audio' data='...' mime_type='audio/wav'" or
+  "type='resource' resource=TextResourceContents(... mime_type='text/vtt',
   text='WEBVTT ...')"); preloop/preloop#1151 tracks returning them intact.
   Rebuild the block from those fields before depositing: copy data,
-  mimeType, uri and text exactly, never paraphrase or shorten them.
+  mimeType, uri and text exactly, never paraphrase or shorten them. Map the
+  Python field mime_type (or older mimeType) to the JSON field mimeType.
 
   STEP 3. DEPOSIT THE TRANSCRIPT
   Call deposit_artifact with:

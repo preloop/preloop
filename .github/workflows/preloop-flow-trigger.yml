@@ -280,8 +280,56 @@ jobs:
             }' "$pr_json" > "$payload"
           jq '{type, pr: .payload.pull_request | {number, html_url, head, base}}' "$payload"
           # Keep the CLI output so the cleanup step can find the execution id.
+          log="${RUNNER_TEMP}/preloop-trigger.log"
+          deadline=$(( $(date +%s) + 40 * 60 ))
+          set +e
           "${RUNNER_TEMP}/preloop-bin/preloop" flow trigger "$PRELOOP_FLOW" --payload - --timeout 40m \
-            < "$payload" 2>&1 | tee "${RUNNER_TEMP}/preloop-trigger.log"
+            < "$payload" 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          fi
+          # A non-zero exit is the verdict only when the execution ended. A
+          # failed read while polling (a reset HTTP/2 stream, a proxy 5xx)
+          # also exits non-zero with the run still going, and the cleanup
+          # step would then stop a healthy review (#1683). Read the
+          # execution itself and keep waiting on it until it is terminal or
+          # the same 40 minute deadline passes.
+          exec_id=$(sed -n 's/^Triggered flow .* (execution \([0-9a-f-]\{36\}\), status .*/\1/p' "$log" | head -n1)
+          if [ -z "$exec_id" ]; then
+            exit "$rc"
+          fi
+          api="${PRELOOP_URL}/api/v1/flows/executions/${exec_id}"
+          failures=0
+          while :; do
+            if status=$(curl -fsS --max-time 30 -H "Authorization: Bearer ${PRELOOP_TOKEN}" "$api" | jq -er .status); then
+              failures=0
+              case "$status" in
+                SUCCEEDED)
+                  echo "Execution ${exec_id} SUCCEEDED (the CLI exited ${rc} while polling)."
+                  exit 0
+                  ;;
+                FAILED|STOPPED|TIMEOUT|TIMED_OUT|ABORTED|CANCELLED)
+                  echo "Execution ${exec_id} ended ${status}." >&2
+                  exit 1
+                  ;;
+                *) ;;
+              esac
+            else
+              failures=$((failures + 1))
+              if [ "$failures" -gt 10 ]; then
+                echo "Could not read execution ${exec_id} ${failures} times in a row." >&2
+                exit 1
+              fi
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Execution ${exec_id} timed out after 40m (last status ${status:-unknown})." >&2
+              exit 1
+            fi
+            echo "Execution ${exec_id} is ${status:-unreadable}; still waiting."
+            sleep 15
+          done
 
       # A cancelled job (superseded by a newer push) or a CLI wait timeout
       # leaves the prod execution running. Stop it if, and only if, it is

@@ -111,6 +111,37 @@ def is_single_purpose_api_key(api_key: Any) -> bool:
     )
 
 
+def mcp_scope_allowed(scopes: Any, required_scope: str) -> bool:
+    """Check an API key's exact MCP capability, independently of user roles.
+
+    Empty scopes are legacy personal keys. Notification device metadata is
+    also legacy key metadata, not an authorization scope. The existing ``*``
+    grant remains unrestricted; ``mcp:write`` does not imply ``mcp:read``.
+    Session and OAuth identities pass None and retain their own authorization.
+    """
+    if scopes is None or scopes == [] or scopes == ():
+        return True
+    if not isinstance(scopes, (list, tuple)):
+        return False
+    if all(
+        isinstance(scope, dict) and set(scope) == {"device_token"} for scope in scopes
+    ):
+        return True
+    return required_scope in scopes or "*" in scopes
+
+
+def enforce_runtime_api_key_scope(api_key: Any) -> None:
+    """Keep discovery, telemetry and enrollment authority off runtime routes."""
+    if is_single_purpose_api_key(api_key):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": API_KEY_SCOPE_DENIED,
+                "message": "This API key cannot authenticate a runtime channel.",
+            },
+        )
+
+
 def is_device_scoped_api_key(api_key: Any) -> bool:
     """Return True when the key's scopes are exactly the discovery scope.
 

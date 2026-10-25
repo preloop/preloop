@@ -300,6 +300,7 @@ nav:
       - Schema migrations: operations/schema-migrations.md
       - Database credentials: operations/database-credentials.md
       - Gateway memory: operations/gateway-memory.md
+      - Gateway activity storage: operations/gateway-activity-storage.md
       - Reference sizing on AKS: operations/sizing-aks.md
       - Session embedding worker: operations/session-embedding.md
       - Session search: operations/session-search.md

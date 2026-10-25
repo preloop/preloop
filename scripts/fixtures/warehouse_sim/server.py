@@ -10,8 +10,8 @@ from __future__ import annotations
 import json
 from typing import List, Union
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import (
     AudioContent,
     EmbeddedResource,
@@ -137,12 +137,10 @@ TOOLS = (
 )
 
 
-def build_server(host: str = "127.0.0.1", port: int = 8765) -> FastMCP:
-    server = FastMCP(
+def build_server() -> MCPServer:
+    server = MCPServer(
         "warehouse-sim",
         instructions=INSTRUCTIONS,
-        host=host,
-        port=port,
     )
     for fn in TOOLS:
         server.tool(structured_output=False)(fn)

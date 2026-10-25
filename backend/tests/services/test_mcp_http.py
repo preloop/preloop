@@ -333,7 +333,7 @@ class TestMCPHTTPStreamingEndpoint:
         mock_tool = MagicMock()
         mock_tool.name = "test_tool"
         mock_tool.description = "Test Tool"
-        mock_tool.inputSchema = {"properties": {}}
+        mock_tool.input_schema = {"properties": {}}
         mock_server._get_tools_for_user = MagicMock(return_value=[mock_tool])
 
         with patch(

@@ -491,7 +491,7 @@ async def test_gateway_hides_disabled_builtin_after_apply(
     from unittest.mock import AsyncMock
 
     from fastmcp import FastMCP
-    from fastmcp.tools.tool import Tool, ToolResult
+    from fastmcp.tools import Tool, ToolResult
 
     from preloop.services.dynamic_fastmcp import DynamicFastMCP
 

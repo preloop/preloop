@@ -118,6 +118,13 @@ LTS contract with synthetic fixtures; Jira remains the issue host. OAuth,
 webhooks and execution/publication routing are separate integrations. See the
 [deployment and validation guide](docs/guide/bitbucket-data-center.md).
 
+API-key scopes are retained in MCP request context: `mcp:read` permits
+discovery and resource/prompt reads, while `mcp:write` permits tool invocation.
+These checks precede dispatch and preserve the independent account, runtime,
+tool-list and policy limits. REST and console channels confine MCP-only keys;
+discovery, telemetry and enrollment credentials retain their narrow surfaces.
+See [agent credential boundaries](docs/security/agent-isolation.md).
+
 MCP calls with delegated-grant introspection resolve the prefix/first-wins server
 through CRUD once and copy its dispatch configuration before releasing the DB.
 The exact forwarded bearer/OAuth token is checked with RFC 7662 before access
@@ -202,6 +209,7 @@ graph LR
 | [Sync](docs/architecture/sync.md) | Tracker polling, NATS scheduler/worker, issue tracker clients, and tracker scope rules. |
 | [Data model](docs/architecture/data-model.md) | `preloop.models`, PostgreSQL + PGVector, schema, and backend project layout. |
 | [MCP](docs/architecture/mcp.md) | FastMCP integration, dynamic tool filtering, and the HTTP MCP request path. |
+| [MCP protocol compatibility](docs/architecture/mcp-protocol-compatibility.md) | SDK 2 / FastMCP 4 APIs, modern and legacy transport matrix, validation and no-replay boundary. |
 | [Realtime](docs/architecture/realtime.md) | Unified WebSocket, MessageRouter topics, and account-scoped pub/sub. |
 | [Security](docs/architecture/security.md) | Auth and tenancy, restricted CI machine identities, owned review execution admission, principal-bound completion callbacks and default-deny HTTP boundary, per-user JWT `auth_generation` / revoke-all, redaction, secret custody, audit hash chain, record signing, security-screen scoring, and `preloop.security`. |
 | [Decisions](docs/architecture/decisions.md) | Why FastAPI, Python, and PostgreSQL, and how the stack is deployed (Compose, Helm, service roles). |

@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -25,6 +27,10 @@ const (
 	flowLogMaxPages        = 100
 	flowListPageSize       = 1000
 	flowListMaxPages       = 10
+	// flowPollMaxTransient bounds consecutive transient read failures (a
+	// dropped HTTP/2 stream, a 5xx from a proxy) a wait rides out before it
+	// gives up. One failed read says nothing about the execution (#1683).
+	flowPollMaxTransient = 10
 )
 
 // Interrupt handling budget. CI runners escalate a cancelled job to SIGKILL
@@ -334,6 +340,7 @@ func waitForExecutionUntil(
 ) error {
 	deadline := flowNow().Add(timeout)
 	printed := 0
+	transient := 0
 	backoff := flowPollInitial
 
 	for {
@@ -342,15 +349,32 @@ func waitForExecutionUntil(
 		}
 
 		var exec flowExecutionStatus
-		if err := client.Get(api.RESTPrefix+"/flows/executions/"+executionID, &exec); err != nil {
-			return fmt.Errorf("failed to read execution: %w", err)
-		}
-
-		nextPrinted, err := drainExecutionLogs(client, executionID, printed, out)
+		err := client.Get("/api/v1/flows/executions/"+executionID, &exec)
 		if err != nil {
-			return err
+			err = fmt.Errorf("failed to read execution: %w", err)
+		} else {
+			var nextPrinted int
+			nextPrinted, err = drainExecutionLogs(client, executionID, printed, out)
+			printed = nextPrinted
 		}
-		printed = nextPrinted
+		if err != nil {
+			if !isTransientPollError(err) {
+				return err
+			}
+			transient++
+			if transient > flowPollMaxTransient {
+				return fmt.Errorf("%w (after %d consecutive read failures)", err, transient)
+			}
+			if flowNow().After(deadline) {
+				return fmt.Errorf("execution %s timed out after %s (last read failed: %v)", executionID, timeout, err)
+			}
+			fmt.Fprintf(out, "warning: %v; retrying (%d/%d)\n", err, transient, flowPollMaxTransient)
+			if sig := sleepOrInterrupt(backoff, interrupts); sig != nil {
+				return stopInterruptedExecution(client, executionID, sig, out)
+			}
+			continue
+		}
+		transient = 0
 
 		status := strings.ToUpper(strings.TrimSpace(exec.Status))
 		if status == "SUCCEEDED" {
@@ -373,6 +397,17 @@ func waitForExecutionUntil(
 			}
 		}
 	}
+}
+
+// isTransientPollError reports whether a failed status or log read may
+// succeed when repeated: a transport failure, a 429, or a 5xx. A 4xx such as
+// 401 or 404 will not change and ends the wait.
+func isTransientPollError(err error) bool {
+	var apiErr *api.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
+	}
+	return true
 }
 
 func pendingInterrupt(interrupts <-chan os.Signal) os.Signal {

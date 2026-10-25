@@ -33,7 +33,7 @@ def upstream():
     client = MagicMock()
     client.list_tools = AsyncMock(
         return_value=[
-            SimpleNamespace(name="read_scope", description="d", inputSchema={})
+            SimpleNamespace(name="read_scope", description="d", input_schema={})
         ]
     )
     pool = MagicMock(
@@ -210,7 +210,7 @@ def test_tools_summary_shows_invalid_name_warning_without_shadowing(
     client: TestClient, db_session, test_user, upstream
 ):
     upstream.list_tools.return_value = [
-        SimpleNamespace(name="t" * 121, description="d", inputSchema={})
+        SimpleNamespace(name="t" * 121, description="d", input_schema={})
     ]
     _create(client, "long", tool_prefix="toolong")
     rows = [

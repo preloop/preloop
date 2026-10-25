@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.http:
         host, port = args.http
-        build_server(host, port).run(transport="streamable-http")
+        build_server().run(transport="streamable-http", host=host, port=port)
     else:
         build_server().run(transport="stdio")
     return 0
