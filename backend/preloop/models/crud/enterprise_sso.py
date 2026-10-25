@@ -7,13 +7,14 @@ on it, so an id from another account behaves exactly like an unknown id.
 from __future__ import annotations
 
 import hashlib
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Query, Session
 
 from ..models.enterprise_sso import (
     AccountSsoConnection,
@@ -25,7 +26,7 @@ from ..models.enterprise_sso import (
 )
 from ..models.secret_reference import SecretReference
 from ..models.team import Team
-from .base import CRUDBase
+from .base import CRUDBase, ModelType
 
 #: Connection fields an update may set directly.
 CONNECTION_UPDATABLE_FIELDS = frozenset(
@@ -68,6 +69,47 @@ def hash_scim_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+class _AccountScopedCRUD(CRUDBase[ModelType]):
+    """Deletion by id is always scoped to an account.
+
+    The inherited ``delete`` would remove another account's row given its
+    id; here ``account_id`` is required and filters through
+    ``_scope_to_account``.
+    """
+
+    def delete(  # type: ignore[override]
+        self, db: Session, *, id: Any, account_id: Any = None
+    ) -> Optional[ModelType]:
+        """Delete one row of ``account_id`` by id; commits.
+
+        Raises:
+            TypeError: ``account_id`` was not given.
+        """
+        if account_id is None:
+            raise TypeError(f"{type(self).__name__}.delete requires account_id")
+        query = self._scope_to_account(
+            db.query(self.model).filter(self.model.id == id), account_id
+        )
+        obj = query.first()
+        if obj is not None:
+            db.delete(obj)
+            db.commit()
+        return obj
+
+
+class _ThroughConnection:
+    """Scope rows that reach their account through ``connection_id``."""
+
+    model: Any
+
+    def _scope_to_account(self, query: Query, account_id: Any) -> Query:
+        """Join the owning connection and filter on its account."""
+        return query.join(
+            AccountSsoConnection,
+            AccountSsoConnection.id == self.model.connection_id,
+        ).filter(AccountSsoConnection.account_id == account_id)
+
+
 def _check_secret_refs(db: Session, account_id: Any, fields: dict[str, Any]) -> None:
     """Secret references set on a connection must belong to its account.
 
@@ -83,7 +125,7 @@ def _check_secret_refs(db: Session, account_id: Any, fields: dict[str, Any]) -> 
             raise CrossAccountReferenceError(key)
 
 
-class CRUDAccountSsoConnection(CRUDBase[AccountSsoConnection]):
+class CRUDAccountSsoConnection(_AccountScopedCRUD[AccountSsoConnection]):
     """Account-scoped connection reads and writes."""
 
     def list_for_account(
@@ -158,7 +200,7 @@ class CRUDAccountSsoConnection(CRUDBase[AccountSsoConnection]):
         return connection
 
 
-class CRUDAccountVerifiedDomain(CRUDBase[AccountVerifiedDomain]):
+class CRUDAccountVerifiedDomain(_AccountScopedCRUD[AccountVerifiedDomain]):
     """Domain claims; a verified domain belongs to exactly one account."""
 
     def list_for_account(
@@ -253,7 +295,7 @@ class CRUDAccountVerifiedDomain(CRUDBase[AccountVerifiedDomain]):
         return claim
 
 
-class CRUDAccountSsoPolicy(CRUDBase[AccountSsoPolicy]):
+class CRUDAccountSsoPolicy(_AccountScopedCRUD[AccountSsoPolicy]):
     """One policy row per account, created on first write."""
 
     def get_for_account(
@@ -272,20 +314,33 @@ class CRUDAccountSsoPolicy(CRUDBase[AccountSsoPolicy]):
         fields: dict[str, Any],
         user_id: Any = None,
     ) -> AccountSsoPolicy:
-        """Create or update the policy; the caller commits."""
+        """Create or update the policy atomically; the caller commits.
+
+        A single ``INSERT ... ON CONFLICT (account_id) DO UPDATE`` so two
+        concurrent first writes cannot both insert.
+        """
+        values: dict[str, Any] = {
+            key: fields[key]
+            for key in ("enforce", "break_glass_owner_ids", "session_max_age_seconds")
+            if key in fields
+        }
+        values["updated_by_user_id"] = user_id
+        stmt = insert(AccountSsoPolicy).values(
+            id=uuid.uuid4(), account_id=account_id, **values
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[AccountSsoPolicy.account_id],
+            set_={**values, "updated_at": func.now()},
+        )
+        db.execute(stmt)
         row = self.get_for_account(db, account_id=account_id)
-        if row is None:
-            row = AccountSsoPolicy(account_id=account_id)
-            db.add(row)
-        for key in ("enforce", "break_glass_owner_ids", "session_max_age_seconds"):
-            if key in fields:
-                setattr(row, key, fields[key])
-        row.updated_by_user_id = user_id
-        db.flush()
+        if row is None:  # pragma: no cover - the upsert just wrote it
+            raise RuntimeError("SSO policy upsert returned no row")
+        db.refresh(row)
         return row
 
 
-class CRUDSsoGroupMapping(CRUDBase[SsoGroupMapping]):
+class CRUDSsoGroupMapping(_ThroughConnection, _AccountScopedCRUD[SsoGroupMapping]):
     """Group mappings, always reached through a connection of the account."""
 
     def list_for_connection(
@@ -355,7 +410,7 @@ class CRUDSsoGroupMapping(CRUDBase[SsoGroupMapping]):
         return row
 
 
-class CRUDScimToken(CRUDBase[ScimToken]):
+class CRUDScimToken(_AccountScopedCRUD[ScimToken]):
     """SCIM tokens; plaintext is never stored."""
 
     def list_for_account(self, db: Session, *, account_id: Any) -> list[ScimToken]:
@@ -417,7 +472,7 @@ class CRUDScimToken(CRUDBase[ScimToken]):
         return token
 
 
-class CRUDSsoReplayGuard(CRUDBase[SsoReplayGuard]):
+class CRUDSsoReplayGuard(_ThroughConnection, CRUDBase[SsoReplayGuard]):
     """Single-use protocol ids."""
 
     def claim(
@@ -450,4 +505,4 @@ class CRUDSsoReplayGuard(CRUDBase[SsoReplayGuard]):
         result = db.execute(
             delete(SsoReplayGuard).where(SsoReplayGuard.expires_at < (now or utc_now()))
         )
-        return int(result.rowcount or 0)
+        return int(getattr(result, "rowcount", 0) or 0)

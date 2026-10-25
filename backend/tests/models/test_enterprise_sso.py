@@ -406,3 +406,48 @@ def test_connection_secret_refs_must_belong_to_the_account(db_session, test_user
             connection=connection,
             fields={"saml_sp_signing_key_ref_id": their_secret.id},
         )
+
+
+def test_inherited_get_and_delete_cannot_cross_accounts(db_session, test_user):
+    other = _other_account(db_session)
+    theirs = _connection(db_session, other.id)
+    mapping = crud_sso_group_mapping.create_mapping(
+        db_session,
+        account_id=other.id,
+        connection_id=theirs.id,
+        idp_group="eng",
+        role="viewer",
+    )
+    mine = test_user.account_id
+    assert crud_sso_group_mapping.get(db_session, mapping.id, account_id=mine) is None
+    assert crud_sso_group_mapping.get(db_session, mapping.id, account_id=other.id)
+    assert crud_sso_group_mapping.get_multi(db_session, account_id=mine) == []
+    for crud, row_id in (
+        (crud_sso_group_mapping, mapping.id),
+        (crud_account_sso_connection, theirs.id),
+    ):
+        with pytest.raises(TypeError):
+            crud.delete(db_session, id=row_id)
+        assert crud.delete(db_session, id=row_id, account_id=mine) is None
+    assert crud_account_sso_connection.get(db_session, theirs.id) is not None
+    assert (
+        crud_sso_group_mapping.delete(db_session, id=mapping.id, account_id=other.id)
+        is not None
+    )
+
+
+def test_policy_upsert_survives_a_concurrent_first_write(db_session, test_user):
+    """The insert that loses the race updates instead of failing."""
+    account_id = test_user.account_id
+    db_session.execute(
+        models.AccountSsoPolicy.__table__.insert().values(
+            id=uuid.uuid4(), account_id=account_id, enforce=False
+        )
+    )
+    # Simulates a writer whose existence check ran before that insert.
+    row = crud_account_sso_policy.upsert(
+        db_session, account_id=account_id, fields={"enforce": True}
+    )
+    assert row.enforce is True
+    rows = db_session.query(models.AccountSsoPolicy).filter_by(account_id=account_id)
+    assert rows.count() == 1
