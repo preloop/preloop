@@ -7,6 +7,7 @@ import json
 import unittest
 from pathlib import Path
 
+import yaml
 from jsonschema import Draft202012Validator
 from jsonschema import FormatChecker
 
@@ -130,7 +131,32 @@ class FrontendOpenVexTest(unittest.TestCase):
     def test_release_workflow_attaches_every_vex_document(self) -> None:
         workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("cp security/vex/*.openvex.json sbom/", workflow)
-        self.assertIn("cp security/vex/*.openvex.json release-assets/", workflow)
+        jobs = yaml.safe_load(workflow)["jobs"]
+        # Release assets now come from the audited bundle. Verify that VEX
+        # documents survive both artifact handoffs before being published.
+        audit_steps = jobs["release-audit"]["steps"]
+        self.assertTrue(
+            any(
+                step.get("with", {}).get("name") == "sbom"
+                and step["with"].get("path") == "audited-sbom/"
+                and step.get("uses", "").startswith("actions/download-artifact@")
+                for step in audit_steps
+            )
+        )
+        self.assertTrue(
+            any(
+                step.get("with", {}).get("name") == "audited-sbom"
+                and step["with"].get("path") == "audited-sbom/"
+                and step.get("uses", "").startswith("actions/upload-artifact@")
+                for step in audit_steps
+            )
+        )
+        release = jobs["create-release"]
+        self.assertIn("release-audit", release["needs"])
+        release_commands = "\n".join(step.get("run", "") for step in release["steps"])
+        self.assertIn(
+            "cp artifacts/audited-sbom/*.json release-assets/", release_commands
+        )
 
 
 if __name__ == "__main__":
