@@ -1,5 +1,6 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
 import sinon from 'sinon';
+import { setViewport } from '@web/test-runner-commands';
 
 import './delivery-report-view';
 import './delivery-reports-view';
@@ -353,6 +354,9 @@ describe('delivery-reports-view', () => {
         );
         return json({ items, total });
       }
+      if (url.pathname === '/api/v1/delivery-reports/run-1') {
+        return json(detail());
+      }
       return json({});
     });
   });
@@ -405,6 +409,25 @@ describe('delivery-reports-view', () => {
       '/console/delivery-reports/run-0'
     );
     expect(link.textContent).to.contain('Run of 24 Oct');
+  });
+
+  it('folds the table to cards on a 375px phone', async () => {
+    await setViewport({ width: 375, height: 800 });
+    try {
+      const el = await mount();
+      const root = el.shadowRoot!;
+      expect(root.querySelector('[data-testid="reports-cards"]')).to.exist;
+      expect(root.querySelector('[data-testid="reports-table"]')).to.not.exist;
+      const report = await fixture<DeliveryReportView>(
+        html`<delivery-report-view reportId="run-1"></delivery-report-view>`
+      );
+      await waitUntil(() =>
+        report.shadowRoot?.querySelector('[data-testid="summary-strip"]')
+      );
+      expect(report.scrollWidth).to.be.at.most(375);
+    } finally {
+      await setViewport({ width: 1280, height: 800 });
+    }
   });
 
   it('passes an axe check', async () => {
