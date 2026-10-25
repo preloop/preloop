@@ -1684,6 +1684,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
         name: str,
         kind: str | None = None,
         labels: dict | None = None,
+        media_timing: dict | None = None,
         parent_artifact_id: str | None = None,
         activity_id: str | None = None,
         ctx: Optional[Context] = None,
@@ -1711,6 +1712,7 @@ def initialize_mcp_with_tools() -> DynamicFastMCP:
                 "name": name,
                 "kind": kind,
                 "labels": labels,
+                "media_timing": media_timing,
                 "parent_artifact_id": parent_artifact_id,
                 "activity_id": activity_id,
             }

@@ -3,7 +3,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, Iterator, List, Optional
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from sqlalchemy import (
     ColumnElement,
@@ -1132,6 +1132,69 @@ class CRUDFlowExecution(CRUDBase[FlowExecution]):
         if since is not None:
             query = query.filter(FlowExecution.start_time >= since)
         return query.order_by(FlowExecution.start_time.desc()).limit(limit).all()
+
+    def list_delivery_reports(
+        self,
+        db: Session,
+        *,
+        account_id: str,
+        skip: int = 0,
+        limit: int = 25,
+        since: Optional[datetime] = None,
+    ) -> Tuple[List[FlowExecution], int]:
+        """Runs of this account's Delivery Report flows that stored a result.
+
+        A Delivery Report flow is one whose ``agent_config.report_kind`` is
+        ``delivery_report`` (preset 022). ``agent_config`` is plain JSON, so
+        the flows are picked in Python, as for merge audits. Newest first.
+
+        Returns:
+            The page of executions and the total that matched the filter.
+        """
+        if not account_id:
+            return [], 0
+        flow_ids = [
+            flow.id
+            for flow in db.query(Flow).filter(Flow.account_id == account_id).all()
+            if isinstance(flow.agent_config, dict)
+            and flow.agent_config.get("report_kind") == "delivery_report"
+        ]
+        if not flow_ids:
+            return [], 0
+        query = db.query(FlowExecution).filter(
+            FlowExecution.flow_id.in_(flow_ids),
+            FlowExecution.result.isnot(None),
+            func.jsonb_typeof(FlowExecution.result) == "object",
+        )
+        if since is not None:
+            query = query.filter(FlowExecution.start_time >= since)
+        total = query.count()
+        rows = (
+            query.order_by(FlowExecution.start_time.desc(), FlowExecution.id.desc())
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+        return rows, total
+
+    def get_delivery_report(
+        self, db: Session, *, execution_id: Any, account_id: str
+    ) -> Optional[FlowExecution]:
+        """One Delivery Report run of this account, or None."""
+        row = (
+            db.query(FlowExecution)
+            .join(Flow)
+            .filter(FlowExecution.id == execution_id, Flow.account_id == account_id)
+            .first()
+        )
+        if row is None:
+            return None
+        config = row.flow.agent_config if row.flow is not None else None
+        if not (
+            isinstance(config, dict) and config.get("report_kind") == "delivery_report"
+        ):
+            return None
+        return row
 
     def last_successful_scheduled_at(
         self, db: Session, *, flow_id: Any

@@ -21,7 +21,7 @@ func (c *Client) CIAdminRequest(method, suffix string, payload interface{}, resu
 	transport := *c.httpClient
 	transport.CheckRedirect = func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }
 	client.httpClient = &transport
-	err := client.do(method, "/api/v1/ci-identities"+suffix, payload, result)
+	err := client.do(method, RESTPrefix+"/ci-identities"+suffix, payload, result)
 	if err == nil {
 		return nil
 	}

@@ -1152,6 +1152,8 @@ export interface BrowserStepScreenshotRef {
  * what the agent says it did, never an approval or proof of page state.
  */
 export interface BrowserStepMetadata {
+  occurred_at?: string | null;
+  recorded_at?: string | null;
   source?: 'api' | 'browser_use' | 'skyvern' | 'playwright_mcp' | string;
   source_step_id?: string | null;
   step_index?: number | null;
@@ -1203,6 +1205,7 @@ export interface McpResourceLink {
 
 /** One item of `GET /runtime-sessions/{id}/artifacts`. */
 export interface RuntimeSessionArtifactDescriptor {
+  media_timing?: MediaTiming | null;
   id: string;
   runtime_session_id: string;
   activity_id?: string | null;
@@ -2935,4 +2938,29 @@ export interface AnthropicUsageSummary {
   by_actor: AnthropicActorUsage[];
   by_model: { model: string; estimated_cost: number; tokens: number }[];
   not_attributable: string[];
+}
+
+/** Timing is a separate typed field, independent of user labels. */
+export interface MediaTiming {
+  started_at: string;
+  duration_ms?: number | null;
+  clock: 'agent' | 'server';
+  step_offsets?: { source_step_id: string; offset_ms: number }[] | null;
+}
+export interface MediaSyncMapping {
+  activity_id: string;
+  activity_type: string;
+  api_usage_id?: string | null;
+  offset_ms: number;
+  rule: 'exact' | 'occurred_at' | 'server_skew';
+  approximate: boolean;
+}
+export interface RecordingSync {
+  artifact_id: string;
+  skew_ms: number;
+  mappings: MediaSyncMapping[];
+  unmapped_activity_ids: string[];
+}
+export interface MediaSyncResponse {
+  recordings: RecordingSync[];
 }

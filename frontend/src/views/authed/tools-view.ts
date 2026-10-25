@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { replaceListFilters } from '../../utils/list-filter-url';
 import { LitElement, html, css, unsafeCSS, nothing } from 'lit';
@@ -1148,7 +1149,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         })
       );
 
-      const response = await fetchWithAuth('/api/v1/policies/diff', {
+      const response = await fetchWithAuth(REST_API_PREFIX + '/policies/diff', {
         method: 'POST',
         body: formData,
       });
@@ -1264,10 +1265,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
         })
       );
 
-      const response = await fetchWithAuth('/api/v1/policies/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/upload',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
@@ -1547,7 +1551,7 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
     this.isExporting = true;
     try {
       const response = await fetchWithAuth(
-        '/api/v1/policies/export?format=yaml'
+        REST_API_PREFIX + '/policies/export?format=yaml'
       );
       if (!response.ok) {
         const error = await response.json();
@@ -1607,10 +1611,13 @@ ${this._formatStarterPolicyDiffValue(change.new_value)}</pre>
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await fetchWithAuth('/api/v1/policies/upload', {
-        method: 'POST',
-        body: formData,
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/policies/upload',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       if (!response.ok) {
         const error = await response.json();

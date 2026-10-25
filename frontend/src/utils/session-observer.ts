@@ -75,6 +75,8 @@ export interface ObservedSession {
 }
 
 export interface SessionObserverFeatures {
+  /** Dock finished recordings and resolve seeks through media-sync. */
+  syncedRecordingPlayer?: boolean;
   summaries?: boolean;
   optimization?: boolean;
   auditLinks?: boolean;

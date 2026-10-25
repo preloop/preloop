@@ -96,7 +96,7 @@ func currentAccountID(client *api.Client) (string, error) {
 	var me struct {
 		AccountID string `json:"account_id"`
 	}
-	if err := client.Get("/api/v1/auth/users/me", &me); err != nil {
+	if err := client.Get(api.RESTPrefix+"/auth/users/me", &me); err != nil {
 		return "", err
 	}
 	if me.AccountID == "" {
@@ -118,7 +118,7 @@ func hierarchyClient() (*api.Client, string, error) {
 }
 
 func accountPath(accountID, rest string) string {
-	return "/api/v1/accounts/" + url.PathEscape(accountID) + rest
+	return api.RESTPrefix + "/accounts/" + url.PathEscape(accountID) + rest
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +409,7 @@ func formatTagMap(tags map[string]string) string {
 }
 
 func tagsPath(kind, id string) string {
-	return "/api/v1/tags/" + url.PathEscape(kind) + "/" + url.PathEscape(id)
+	return api.RESTPrefix + "/tags/" + url.PathEscape(kind) + "/" + url.PathEscape(id)
 }
 
 // updateTags reads the tags of a resource, applies change and writes the
@@ -587,7 +587,7 @@ func newAccessCmd() *cobra.Command {
 				Inherited []accessRule      `json:"inherited"`
 				Modes     map[string]string `json:"modes"`
 			}
-			if err := client.Get("/api/v1/access/rules", &set); err != nil {
+			if err := client.Get(api.RESTPrefix+"/access/rules", &set); err != nil {
 				return err
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
@@ -633,7 +633,7 @@ func newAccessCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := client.Post("/api/v1/access/rules/apply", map[string]string{"yaml": string(data)}, nil); err != nil {
+			if err := client.Post(api.RESTPrefix+"/access/rules/apply", map[string]string{"yaml": string(data)}, nil); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "Applied access rules")
@@ -662,7 +662,7 @@ func newAccessCmd() *cobra.Command {
 				RuleIDs []string `json:"rule_ids"`
 			}
 			body := map[string]string{"subject": explainSubject, "action": explainAction, "resource": explainResource}
-			if err := client.Post("/api/v1/access/explain", body, &result); err != nil {
+			if err := client.Post(api.RESTPrefix+"/access/explain", body, &result); err != nil {
 				return err
 			}
 			out := cmd.OutOrStdout()

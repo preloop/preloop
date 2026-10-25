@@ -126,7 +126,7 @@ func syncClaudeSiblingFamilyAIModels(
 	}
 
 	var existing []aiModelResponse
-	if err := client.Get("/api/v1/ai-models", &existing); err != nil {
+	if err := client.Get(api.RESTPrefix+"/ai-models", &existing); err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to list AI models: %w", err)
 	}
 
@@ -224,7 +224,7 @@ func ensureClaudeFamilyAIModel(
 			update["credentials_secret_id"] = primarySecret
 		}
 		var updated aiModelResponse
-		if err := client.Put("/api/v1/ai-models/"+target.ID, update, &updated); err != nil {
+		if err := client.Put(api.RESTPrefix+"/ai-models/"+target.ID, update, &updated); err != nil {
 			return nil, fmt.Errorf(
 				"failed to update AI model %q: %w",
 				target.Name,
@@ -251,7 +251,7 @@ func ensureClaudeFamilyAIModel(
 		MetaData:            metaData,
 	}
 	var created aiModelResponse
-	if err := client.Post("/api/v1/ai-models", create, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/ai-models", create, &created); err != nil {
 		return nil, fmt.Errorf(
 			"failed to create AI model for %s: %w",
 			siblingUpstream.ManagedModelAlias,

@@ -407,7 +407,7 @@ func loadOrRegisterRunner(
 	if existing, err := readRunnerState(); err == nil && existing.ID != "" && existing.Token != "" {
 		req["runner_id"] = existing.ID
 		var resumed runnerAPIRecord
-		if err := client.Post("/api/v1/runners/register", req, &resumed); err == nil && resumed.ID != "" {
+		if err := client.Post(api.RESTPrefix+"/runners/register", req, &resumed); err == nil && resumed.ID != "" {
 			// Re-read under the lock: a `dirs add` during the register
 			// request must survive this write.
 			_ = updateRunnerState(func(current *runnerState) error {
@@ -432,7 +432,7 @@ func loadOrRegisterRunner(
 
 	req["flow_execution_consent"] = consent
 	var created runnerAPIRecord
-	if err := client.Post("/api/v1/runners/register", req, &created); err != nil {
+	if err := client.Post(api.RESTPrefix+"/runners/register", req, &created); err != nil {
 		return nil, fmt.Errorf("register runner: %w", err)
 	}
 	var state *runnerState
@@ -1371,7 +1371,7 @@ func runnerWebsocketURL(runnerID string) (string, error) {
 	default:
 		u.Scheme = "ws"
 	}
-	u.Path = "/api/v1/runners/" + runnerID + "/ws"
+	u.Path = api.RESTPrefix + "/runners/" + runnerID + "/ws"
 	u.RawQuery = ""
 	return u.String(), nil
 }
@@ -1636,7 +1636,7 @@ func deleteRegisteredRunner(client *api.Client, force bool, out io.Writer) error
 	if state.ID == "" {
 		return errors.New("runner state has no runner id")
 	}
-	path := "/api/v1/runners/" + url.PathEscape(state.ID)
+	path := api.RESTPrefix + "/runners/" + url.PathEscape(state.ID)
 	if force {
 		path += "?force=true"
 	}
@@ -1692,7 +1692,7 @@ func rotateRunnerToken(client *api.Client, out io.Writer) error {
 	}
 	var rotated runnerAPIRecord
 	if err := client.Post(
-		"/api/v1/runners/"+url.PathEscape(state.ID)+"/token", nil, &rotated,
+		api.RESTPrefix+"/runners/"+url.PathEscape(state.ID)+"/token", nil, &rotated,
 	); err != nil {
 		return fmt.Errorf("rotate runner token: %w", err)
 	}
@@ -1738,7 +1738,7 @@ func runRunnerStatus(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	var runners []runnerAPIRecord
-	if err := client.Get("/api/v1/runners", &runners); err != nil {
+	if err := client.Get(api.RESTPrefix+"/runners", &runners); err != nil {
 		return nil
 	}
 	state, _ := readRunnerState()

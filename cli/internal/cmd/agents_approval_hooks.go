@@ -498,7 +498,7 @@ func enablePermissionPromptBuiltin(client *api.Client, managedAgentID string, ou
 		"managed_agent_id": managedAgentID,
 	}
 	var response map[string]interface{}
-	err := client.Post("/api/v1/tool-configurations", payload, &response)
+	err := client.Post(api.RESTPrefix+"/tool-configurations", payload, &response)
 	alreadyConfigured := err != nil && api.IsStatus(err, http.StatusBadRequest)
 	if err != nil && !alreadyConfigured {
 		return false, fmt.Errorf("failed to enable the permission_prompt builtin: %w", err)

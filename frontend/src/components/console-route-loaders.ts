@@ -48,6 +48,9 @@ export const consoleRouteLoaders = {
   'runtime-sessions-view': () =>
     import('../views/authed/runtime-sessions-view'),
   'artifacts-view': () => import('../views/authed/artifacts-view'),
+  'delivery-reports-view': () =>
+    import('../views/authed/delivery-reports-view'),
+  'delivery-report-view': () => import('../views/authed/delivery-report-view'),
   'approval-view': () => import('../views/authed/approval-view'),
   'approvals-view': () => import('../views/authed/approvals-view'),
   'policies-view': () => import('../views/authed/policies-view'),

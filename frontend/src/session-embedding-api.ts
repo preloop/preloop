@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from './api-path';
 /**
  * Console client for one account's session embedding opt in (#791).
  *
@@ -70,7 +71,7 @@ export class SessionEmbeddingError extends Error {
 }
 
 export const SESSION_EMBEDDING_SETTING_URL =
-  '/api/v1/runtime-sessions/settings/embedding';
+  REST_API_PREFIX + '/runtime-sessions/settings/embedding';
 
 async function refusal(
   response: Response,

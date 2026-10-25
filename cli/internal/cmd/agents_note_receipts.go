@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/preloop/preloop/cli/internal/api"
 )
 
 // IDs come from server-rendered elements, never from the operator's escaped body.
@@ -44,7 +46,7 @@ func sendNoteReceipt(source, sessionID, block, reason string) {
 	if err != nil {
 		return
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cred.BaseURL, "/")+"/api/v1/agents/notes/ack", bytes.NewReader(data))
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(cred.BaseURL, "/")+api.RESTPrefix+"/agents/notes/ack", bytes.NewReader(data))
 	if err != nil {
 		return
 	}

@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { LitElement, css, html, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '@shoelace-style/shoelace/dist/components/button/button.js';
@@ -57,16 +58,19 @@ export class ChatSetupWizard extends LitElement {
   }
 
   private async request(path: string, body?: unknown, method = 'POST') {
-    const response = await fetchWithAuth(`/api/v1/chat/setup${path}`, {
-      method: body === undefined && method === 'POST' ? 'GET' : method,
-      cache: 'no-store',
-      ...(body === undefined
-        ? {}
-        : {
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          }),
-    });
+    const response = await fetchWithAuth(
+      `${REST_API_PREFIX}/chat/setup${path}`,
+      {
+        method: body === undefined && method === 'POST' ? 'GET' : method,
+        cache: 'no-store',
+        ...(body === undefined
+          ? {}
+          : {
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(body),
+            }),
+      }
+    );
     const data = await response.json();
     if (!response.ok)
       throw new Error(

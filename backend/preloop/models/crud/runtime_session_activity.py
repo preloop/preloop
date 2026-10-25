@@ -384,6 +384,7 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         runtime_session_id: Any,
         api_key_id: Optional[Any],
         step: BrowserStepIn,
+        recorded_at: datetime | None = None,
         commit: bool = True,
     ) -> tuple[RuntimeSessionActivity, bool]:
         """Persist one browser step, or return the existing row.
@@ -418,6 +419,12 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
 
         # Field names, credentials, then the account's redact rules (#1123).
         metadata = apply_storage_redaction(account_id, _browser_step_metadata(step))
+        metadata["recorded_at"] = (
+            recorded_at or datetime.now(timezone.utc)
+        ).isoformat()
+        metadata["occurred_at"] = (
+            step.occurred_at.isoformat() if step.occurred_at else None
+        )
         locator = metadata.get("url") or metadata.get("target") or ""
         summary = apply_storage_redaction(
             account_id, _redact_browser_text(f"{step.action} {locator}")[0]
