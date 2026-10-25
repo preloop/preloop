@@ -20,6 +20,7 @@ from preloop.models.crud import (
     crud_pull_request_refresh,
 )
 from preloop.services import pull_request_refresh as refresh
+from preloop.services.flow_trigger_service import FlowTriggerService
 from preloop.sync.exceptions import TrackerRateLimitError, TrackerResponseError
 from preloop.sync.trackers.utils import ConditionalResponse
 
@@ -180,6 +181,7 @@ async def test_a_closed_pull_request_reopened_is_seen_after_its_webhook(
 
     event = {
         "account_id": str(test_user.account_id),
+        "type": "pull_request_reopened",
         "payload": {"pull_request": {"html_url": github_key(3)}},
     }
     assert refresh.accelerate(db_session, event)
@@ -199,6 +201,7 @@ async def test_webhook_for_an_unknown_pull_request_creates_nothing(
 ) -> None:
     event = {
         "account_id": str(test_user.account_id),
+        "type": "pull_request_updated",
         "payload": {"pull_request": {"html_url": github_key(99)}},
     }
     assert refresh.accelerate(db_session, event) is False
@@ -355,7 +358,13 @@ async def test_ingress_queues_a_forge_delivery_once_and_releases_on_failure(
     monkeypatch.setattr(
         webhooks,
         "crud_forge_webhook_delivery",
-        SimpleNamespace(claim=claim, release=release),
+        SimpleNamespace(
+            claim=claim,
+            release=release,
+            mark_published=lambda db, **kwargs: order.append(
+                f"published:{kwargs['delivery_id']}"
+            ),
+        ),
     )
 
     def prepared(
@@ -413,11 +422,189 @@ async def test_ingress_queues_a_forge_delivery_once_and_releases_on_failure(
     await webhooks.receive_webhook("github", "org", request("d-2"), MagicMock(), bus)
 
     assert published == ["d-1", "d-1", "d-2"]
-    assert order[:6] == [
+    assert order[:7] == [
         "claim:d-1",
         "publish:d-1",
         "release:d-1",
         "claim:d-1",
         "publish:d-1",
+        "published:d-1",
         "claim:d-1",
     ]
+
+
+# --- review follow-ups -------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "event_type", "payload", "pr_key"),
+    [
+        (
+            "github",
+            "pull_request_reopened",
+            {"pull_request": {"html_url": "https://github.com/acme/widgets/pull/8"}},
+            "https://github.com/acme/widgets/pull/8",
+        ),
+        (
+            "gitlab",
+            "merge_request_reopened",
+            {
+                "object_attributes": {
+                    "url": "https://gitlab.com/acme/app/-/merge_requests/8"
+                }
+            },
+            "https://gitlab.com/acme/app/-/merge_requests/8",
+        ),
+    ],
+)
+async def test_reopen_event_through_the_trigger_service_makes_a_closed_record_due(
+    db_session: Session,
+    test_user: Any,
+    source: str,
+    event_type: str,
+    payload: dict[str, Any],
+    pr_key: str,
+) -> None:
+    row = make_pr(db_session, test_user.account_id, pr_key, state="closed")
+    assert row.refresh_due_at is None
+
+    await FlowTriggerService(db_session).process_event(
+        {
+            "source": source,
+            "type": event_type,
+            "account_id": str(test_user.account_id),
+            "tracker_id": str(uuid.uuid4()),
+            "payload": payload,
+        }
+    )
+
+    db_session.refresh(row)
+    assert row.refresh_due_at is not None
+    assert row.refresh_due_at <= datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_a_webhook_mark_during_the_read_survives_the_record(
+    db_session: Session, test_user: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    row = make_pr(db_session, test_user.account_id, github_key(9), state="closed")
+    crud_pull_request_refresh.request(
+        db_session, account_id=test_user.account_id, pr_key=github_key(9), now=NOW
+    )
+    marked = NOW + timedelta(seconds=30)
+
+    class MarkingForge(FakeForge):
+        async def conditional_get(self, path: str, etag: str | None) -> Any:
+            # The reopen webhook lands while the stale read is in flight.
+            crud_pull_request_refresh.request(
+                db_session,
+                account_id=test_user.account_id,
+                pr_key=github_key(9),
+                now=marked,
+            )
+            return ConditionalResponse(
+                200, {"state": "closed", "merged": False, "head": {"sha": HEAD}}, None
+            )
+
+    tracker = SimpleNamespace(
+        id=uuid.uuid4(),
+        tracker_type="github",
+        is_active=True,
+        connection_details={},
+        url=None,
+    )
+    monkeypatch.setattr(
+        refresh.crud_tracker, "get_for_account", lambda db, **kwargs: [tracker]
+    )
+    monkeypatch.setattr(
+        refresh, "feedback_tracker_client", AsyncMock(return_value=MarkingForge())
+    )
+
+    await refresh.refresh_pull_requests(db_session, now=NOW + timedelta(seconds=1))
+
+    db_session.refresh(row)
+    assert row.state == "closed"
+    # The webhook's mark is kept, so the next tick reads the reopen.
+    assert row.refresh_due_at == marked
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_bitbucket_short_head_keeps_the_full_hash(
+    db_session: Session, test_user: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    full = "e" * 40
+    key = "https://bitbucket.org/ws/repo/pull-requests/4"
+    row = make_pr(db_session, test_user.account_id, key)
+    client = FakeForge(
+        {
+            "/repositories/ws/repo/pullrequests/4": {
+                "state": "OPEN",
+                "source": {"commit": {"hash": full[:12]}},
+            }
+        }
+    )
+    resolved: list[str] = []
+
+    async def canonical(client: Any, repository: str, sha: str) -> str:
+        resolved.append(sha)
+        return full
+
+    tracker = SimpleNamespace(
+        id=uuid.uuid4(),
+        tracker_type="bitbucket",
+        is_active=True,
+        connection_details={},
+        url=None,
+    )
+    monkeypatch.setattr(
+        refresh.crud_tracker, "get_for_account", lambda db, **kwargs: [tracker]
+    )
+    monkeypatch.setattr(
+        refresh, "feedback_tracker_client", AsyncMock(return_value=client)
+    )
+    monkeypatch.setattr(refresh, "canonical_bitbucket_head", canonical)
+
+    await refresh.refresh_pull_requests(db_session, now=NOW)
+    db_session.refresh(row)
+    assert row.head_sha == full
+    second = await refresh.refresh_pull_requests(
+        db_session, now=NOW + timedelta(minutes=5)
+    )
+
+    db_session.refresh(row)
+    assert second["updated"] == 1
+    assert row.head_sha == full
+    # The unchanged head cost no second commit lookup.
+    assert resolved == [full[:12]]
+
+
+def test_an_unpublished_claim_is_taken_over_after_the_grace_period(
+    db_session: Session, test_user: Any
+) -> None:
+    tracker = models.Tracker(
+        name="forge",
+        tracker_type="github",
+        account_id=test_user.account_id,
+        connection_details={},
+    )
+    db_session.add(tracker)
+    db_session.commit()
+    key = dict(tracker_id=tracker.id, delivery_id="delivery-2")
+
+    assert crud_forge_webhook_delivery.claim(db_session, now=NOW, **key)
+    # A concurrent duplicate inside the grace period is still a duplicate.
+    assert not crud_forge_webhook_delivery.claim(
+        db_session, now=NOW + timedelta(seconds=30), **key
+    )
+    # The first holder died before publishing: the forge retry is queued.
+    assert crud_forge_webhook_delivery.claim(
+        db_session, now=NOW + timedelta(minutes=3), **key
+    )
+    crud_forge_webhook_delivery.mark_published(
+        db_session, now=NOW + timedelta(minutes=3), **key
+    )
+    # Once published, a redelivery is a duplicate however late it comes.
+    assert not crud_forge_webhook_delivery.claim(
+        db_session, now=NOW + timedelta(days=1), **key
+    )

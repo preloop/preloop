@@ -129,10 +129,7 @@ def _forge_delivery_id(tracker_type: str, plan: _WebhookPlan) -> Optional[str]:
     """The forge delivery id of the queued event task, if it has one."""
     if tracker_type.lower() not in FORGE_DEDUPE_TRACKER_TYPES or not plan.tracker_id:
         return None
-    for name, _args, kwargs in plan.tasks:
-        if name == "process_webhook_event" and kwargs.get("delivery_id"):
-            return str(kwargs["delivery_id"])
-    return None
+    return _queued_delivery_id(plan)
 
 
 async def _claim_forge_delivery(
@@ -166,9 +163,9 @@ async def _claim_forge_delivery(
         return None
 
 
-async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
-    """Drop the claim of a delivery whose task was not acknowledged."""
-    delivery_id = next(
+def _queued_delivery_id(plan: _WebhookPlan) -> Optional[str]:
+    """The delivery id carried by the queued event task, if any."""
+    return next(
         (
             str(kwargs["delivery_id"])
             for name, _args, kwargs in plan.tasks
@@ -176,6 +173,39 @@ async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
         ),
         None,
     )
+
+
+async def _mark_forge_delivery_published(db: Session, plan: _WebhookPlan) -> None:
+    """Record the acknowledgement so the claim is never taken over.
+
+    A failure here only leaves the claim open to a takeover by a forge retry
+    after the grace period; that retry would be queued again, which the
+    execution-level delivery dedupe absorbs.
+    """
+    delivery_id = _queued_delivery_id(plan)
+    if delivery_id is None:
+        return
+
+    def mark() -> None:
+        try:
+            crud_forge_webhook_delivery.mark_published(
+                db,
+                tracker_id=uuid.UUID(str(plan.tracker_id)),
+                delivery_id=delivery_id,
+                now=datetime.now(timezone.utc),
+            )
+        finally:
+            _safe_close_db_session(db)
+
+    try:
+        await run_db_off_loop(mark)
+    except Exception:
+        logger.exception("Webhook delivery publication mark failed")
+
+
+async def _release_forge_delivery(db: Session, plan: _WebhookPlan) -> None:
+    """Drop the claim of a delivery whose task was not acknowledged."""
+    delivery_id = _queued_delivery_id(plan)
     if delivery_id is None:
         return
 
@@ -273,6 +303,8 @@ async def receive_webhook(
     if publish_failed and claimed_delivery:
         # Nothing was acknowledged, so the forge's redelivery must be queued.
         await _release_forge_delivery(db, plan)
+    elif claimed_delivery:
+        await _mark_forge_delivery_published(db, plan)
     if publish_failed:
         # Returning 200 would stop tracker redelivery even though no task was
         # acknowledged. Inline issue changes are idempotent on a delivery retry.

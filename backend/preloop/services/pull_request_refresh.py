@@ -25,7 +25,11 @@ from preloop.models.crud import (
     crud_pull_request_refresh,
     crud_tracker,
 )
-from preloop.models.crud.forge_reconciliation import UNREADABLE_BACKOFF
+from preloop.models.crud.forge_reconciliation import (
+    REFRESH_REARM,
+    UNREADABLE_BACKOFF,
+)
+from preloop.services.flow_feedback import FEEDBACK_TYPES
 from preloop.services.flow_feedback_provider import (
     bitbucket_terminal,
     canonical_bitbucket_head,
@@ -48,6 +52,20 @@ RETRY_CEILING = timedelta(hours=1)
 #: Forge delivery claims kept for dedupe; forges redeliver within days.
 DELIVERY_RETENTION = timedelta(days=7)
 DELIVERY_PRUNE_BATCH = 1000
+
+#: Normalized events that make a known pull request's record due: every
+#: feedback event plus the lifecycle events the feedback loop does not read.
+#: A reopen is the one that matters most, because a closed record is not
+#: otherwise scheduled again.
+REFRESH_EVENT_TYPES = FEEDBACK_TYPES | frozenset(
+    {
+        "pull_request_opened",
+        "pull_request_reopened",
+        "pull_request_ready_for_review",
+        "merge_request_opened",
+        "merge_request_reopened",
+    }
+)
 
 _GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
 _BITBUCKET_HOSTS = frozenset({"bitbucket.org", "www.bitbucket.org"})
@@ -215,19 +233,29 @@ async def refresh_pull_requests(
         (row.id, row.account_id, row.pr_key, row.refresh_etag, row.head_sha)
         for row in rows
     ]
+    # ``claim_due`` stamped every claimed row with this due time. A row whose
+    # due time differs by the time it is recorded was marked by a webhook
+    # mid-read, and keeps that mark.
+    claim = now + REFRESH_REARM
     readers = _Readers(db)
     throttled: dict[str, datetime] = {}
     for pull_request_id, account_id, pr_key, etag, known_head in claimed:
         ref = parse_pr_key(pr_key)
         if ref is None:
             crud_pull_request_refresh.defer(
-                db, pull_request_ids=[pull_request_id], until=now + UNREADABLE_BACKOFF
+                db,
+                pull_request_ids=[pull_request_id],
+                until=now + UNREADABLE_BACKOFF,
+                claimed_due=claim,
             )
             counts["unreadable"] += 1
             continue
         if ref.host in throttled:
             crud_pull_request_refresh.defer(
-                db, pull_request_ids=[pull_request_id], until=throttled[ref.host]
+                db,
+                pull_request_ids=[pull_request_id],
+                until=throttled[ref.host],
+                claimed_due=claim,
             )
             counts["deferred"] += 1
             continue
@@ -266,13 +294,14 @@ async def refresh_pull_requests(
             else:
                 until, key = now + UNREADABLE_BACKOFF, "unreadable"
             crud_pull_request_refresh.defer(
-                db, pull_request_ids=[pull_request_id], until=until
+                db, pull_request_ids=[pull_request_id], until=until, claimed_due=claim
             )
             counts[key] += 1
             continue
         if response.not_modified:
             crud_pull_request_refresh.record(
                 db,
+                claimed_due=claim,
                 pull_request_id=pull_request_id,
                 now=now,
                 etag=response.etag,
@@ -286,8 +315,12 @@ async def refresh_pull_requests(
             ref.provider == "bitbucket"
             and head
             and len(head) < 40
-            and not (known_head or "").startswith(head.lower())
+            and known_head
+            and known_head.startswith(head.lower())
         ):
+            # Unchanged head: keep the full hash already recorded.
+            facts["head_sha"] = known_head
+        elif ref.provider == "bitbucket" and head and len(head) < 40:
             # Bitbucket reports a prefix; resolve a changed head once so the
             # record holds the full hash the feedback loop also stores.
             counts["read"] += 1
@@ -299,6 +332,7 @@ async def refresh_pull_requests(
                 facts["head_sha"] = None
         crud_pull_request_refresh.record(
             db,
+            claimed_due=claim,
             pull_request_id=pull_request_id,
             now=now,
             etag=response.etag,
@@ -332,11 +366,14 @@ def accelerate(db: Session, event: Mapping[str, Any]) -> bool:
 
     Args:
         db: Database session; the mark is committed.
-        event: Flow trigger event data with ``account_id`` and ``payload``.
+        event: Flow trigger event data with ``type``, ``account_id`` and
+            ``payload``; only ``REFRESH_EVENT_TYPES`` accelerate.
 
     Returns:
         Whether a known pull request was marked due.
     """
+    if event.get("type") not in REFRESH_EVENT_TYPES:
+        return False
     account_id = event.get("account_id")
     payload = event.get("payload")
     if not account_id or not isinstance(payload, Mapping):

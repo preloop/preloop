@@ -322,3 +322,9 @@ class ForgeWebhookDelivery(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
+    # Set once the queue acknowledged the task. A claim left unpublished (the
+    # process died before the acknowledgement) can be taken over by a later
+    # delivery of the same id after a short grace period.
+    published_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )

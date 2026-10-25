@@ -26,6 +26,9 @@ REFRESH_REARM = timedelta(minutes=5)
 #: A pull request first seen this long ago and never observed open is not
 #: worth a forge read: four weekly reports look no further back.
 REFRESH_LOOKBACK = timedelta(days=28)
+#: An unpublished delivery claim younger than this belongs to a request that
+#: may still publish; an older one is taken over by the next delivery.
+UNPUBLISHED_CLAIM_GRACE = timedelta(minutes=2)
 #: Wait before retrying a pull request no configured tracker can read.
 UNREADABLE_BACKOFF = timedelta(days=1)
 
@@ -94,6 +97,7 @@ class CRUDPullRequestRefresh:
         head_sha: Optional[str] = None,
         merged_at: Optional[datetime] = None,
         not_modified: bool = False,
+        claimed_due: Optional[datetime] = None,
     ) -> Optional[models.IssueCostPullRequest]:
         """Record one forge read and re-arm the row.
 
@@ -113,41 +117,66 @@ class CRUDPullRequestRefresh:
             head_sha: Current head commit.
             merged_at: Forge merge time.
             not_modified: The forge answered 304; only bookkeeping changes.
+            claimed_due: The due time ``claim_due`` stamped on the row. When
+                the row now holds another one, a webhook marked it during the
+                read; that mark is kept so the next tick reads it again.
 
         Returns:
             The updated row, or None when it no longer exists.
         """
-        row = db.get(models.IssueCostPullRequest, pull_request_id)
+        row = db.get(
+            models.IssueCostPullRequest,
+            pull_request_id,
+            with_for_update=True,
+            populate_existing=True,
+        )
         if row is None:
             return None
+        marked_mid_read = claimed_due is not None and row.refresh_due_at != claimed_due
         if not not_modified:
             # The read that observes the merge still records the merged head.
             final = row.state == "merged"
             if state is not None and not final:
                 row.state = state
-            if head_sha and (not final or not row.head_sha):
+            if (
+                head_sha
+                and (not final or not row.head_sha)
+                # A prefix of the stored hash is the same commit, less exact.
+                and not (row.head_sha or "").startswith(head_sha)
+            ):
                 row.head_sha = head_sha
             if merged_at is not None and row.merged_at is None:
                 row.merged_at = merged_at
         if etag:
             row.refresh_etag = etag[:255]
         row.refreshed_at = now
-        row.refresh_due_at = (
-            None if row.state in {"merged", "closed"} else now + REFRESH_REARM
-        )
+        if not marked_mid_read:
+            row.refresh_due_at = (
+                None if row.state in {"merged", "closed"} else now + REFRESH_REARM
+            )
         db.commit()
         return row
 
     def defer(
-        self, db: Session, *, pull_request_ids: list[uuid.UUID], until: datetime
+        self,
+        db: Session,
+        *,
+        pull_request_ids: list[uuid.UUID],
+        until: datetime,
+        claimed_due: Optional[datetime] = None,
     ) -> None:
-        """Push claimed rows to ``until``: a throttled or unreadable forge."""
+        """Push claimed rows to ``until``: a throttled or unreadable forge.
+
+        With ``claimed_due``, a row a webhook marked since the claim keeps its
+        mark.
+        """
         if not pull_request_ids:
             return
         p = models.IssueCostPullRequest
-        db.execute(
-            update(p).where(p.id.in_(pull_request_ids)).values(refresh_due_at=until)
-        )
+        query = update(p).where(p.id.in_(pull_request_ids))
+        if claimed_due is not None:
+            query = query.where(p.refresh_due_at == claimed_due)
+        db.execute(query.values(refresh_due_at=until))
         db.commit()
 
     def request(
@@ -180,23 +209,45 @@ class CRUDForgeWebhookDelivery:
     ) -> bool:
         """Claim a delivery id for queueing and commit.
 
+        A claim that was never published and is older than
+        ``UNPUBLISHED_CLAIM_GRACE`` is taken over: its holder died between
+        the claim and the queue acknowledgement, so this delivery is queued.
+
         Returns:
-            True for the first claim, False when the id was already claimed:
-            the delivery is a redelivery or a concurrent duplicate.
+            True when this delivery should be queued, False when the id is
+            published already or claimed moments ago by a concurrent request.
         """
-        inserted = db.scalar(
-            pg_insert(models.ForgeWebhookDelivery)
-            .values(
-                id=uuid.uuid4(),
-                tracker_id=tracker_id,
-                delivery_id=delivery_id[:255],
-                received_at=now,
-            )
-            .on_conflict_do_nothing(constraint="uq_forge_webhook_delivery")
-            .returning(models.ForgeWebhookDelivery.id)
+        d = models.ForgeWebhookDelivery
+        statement = pg_insert(d).values(
+            id=uuid.uuid4(),
+            tracker_id=tracker_id,
+            delivery_id=delivery_id[:255],
+            received_at=now,
+        )
+        claimed = db.scalar(
+            statement.on_conflict_do_update(
+                constraint="uq_forge_webhook_delivery",
+                set_={"received_at": now, "published_at": None},
+                where=and_(
+                    d.published_at.is_(None),
+                    d.received_at < now - UNPUBLISHED_CLAIM_GRACE,
+                ),
+            ).returning(d.id)
         )
         db.commit()
-        return inserted is not None
+        return claimed is not None
+
+    def mark_published(
+        self, db: Session, *, tracker_id: uuid.UUID, delivery_id: str, now: datetime
+    ) -> None:
+        """Record that the claimed delivery's task was acknowledged."""
+        d = models.ForgeWebhookDelivery
+        db.execute(
+            update(d)
+            .where(d.tracker_id == tracker_id, d.delivery_id == delivery_id[:255])
+            .values(published_at=now)
+        )
+        db.commit()
 
     def release(self, db: Session, *, tracker_id: uuid.UUID, delivery_id: str) -> None:
         """Drop a claim whose task was never queued, so a redelivery is."""

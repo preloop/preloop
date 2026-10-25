@@ -2397,16 +2397,16 @@ class FlowTriggerService:
         )
 
         ingest_feedback(self.db, event_data)
-        if event_type in FEEDBACK_TYPES:
-            # A pull request event only says something changed; the record
-            # refresh reads the forge for what, on its next tick.
-            from preloop.services.pull_request_refresh import accelerate
+        # A pull request event only says something changed; the record refresh
+        # reads the forge for what, on its next tick. Lifecycle events such as
+        # a reopen count too, so ``accelerate`` keeps its own event set.
+        from preloop.services.pull_request_refresh import accelerate
 
-            try:
-                accelerate(self.db, event_data)
-            except Exception:
-                self.db.rollback()
-                logger.exception("Pull request refresh acceleration failed")
+        try:
+            accelerate(self.db, event_data)
+        except Exception:
+            self.db.rollback()
+            logger.exception("Pull request refresh acceleration failed")
 
         # A merged or closed pull request ends every run still working on it
         # (#1032), before anything else: the flow lookup below returns early
