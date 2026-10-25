@@ -73,7 +73,18 @@ def seed(conn: Connection) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
     return account, model_id, key_id
 
 
-def test_backfill_then_removal_preserves_credentials_and_is_idempotent(legacy) -> None:
+def legacy_columns(conn: Connection) -> set[tuple[str, str]]:
+    """Return which legacy credential columns still exist."""
+    return {
+        (table, column)
+        for table, column in contract._COLUMNS
+        if column in {c["name"] for c in inspect(conn).get_columns(table)}
+    }
+
+
+def test_backfill_then_contract_preserves_credentials_and_is_idempotent(
+    legacy,
+) -> None:
     seed(legacy)
     backfill.upgrade()
     secrets = legacy.execute(
@@ -95,9 +106,10 @@ def test_backfill_then_removal_preserves_credentials_and_is_idempotent(legacy) -
         legacy.execute(text("SELECT count(*) FROM secret_reference")).scalar_one() == 3
     )
     contract.upgrade()
-    for table, column in contract._COLUMNS:
-        assert column not in {c["name"] for c in inspect(legacy).get_columns(table)}
+    # The previous release still maps these columns during a rolling upgrade.
+    assert legacy_columns(legacy) == set(contract._COLUMNS)
     contract.downgrade()
+    assert legacy_columns(legacy) == set(contract._COLUMNS)
     for table, column in contract._COLUMNS:
         assert (
             legacy.execute(
@@ -190,13 +202,29 @@ def test_backfill_failure_rolls_back_without_losing_legacy_values(
     )
 
 
-def test_contract_refuses_reintroduced_plaintext(legacy) -> None:
+def test_plaintext_from_an_old_writer_is_kept_for_the_next_backfill(legacy) -> None:
     seed(legacy)
     backfill.upgrade()
-    legacy.execute(text("UPDATE api_key SET key = 'old-writer-token'"))
-    with pytest.raises(RuntimeError, match="Legacy credentials remain"):
-        contract.upgrade()
-    assert "key" in {c["name"] for c in inspect(legacy).get_columns("api_key")}
+    # A pod of the previous release keeps serving while the hook runs.
+    key_id = uuid.uuid4()
+    legacy.execute(
+        text("INSERT INTO api_key VALUES (:id, 'old-writer-token', NULL, NULL)"),
+        {"id": key_id},
+    )
+    contract.upgrade()
+    by_id = text("SELECT key, key_hash FROM api_key WHERE id = :id")
+    assert legacy.execute(by_id, {"id": key_id}).one().key == "old-writer-token"
+    backfill.upgrade()
+    row = legacy.execute(by_id, {"id": key_id}).one()
+    assert row.key is None
+    assert row.key_hash == crud_api_key.build_key_hash("old-writer-token")
+
+
+def test_downgrade_restores_columns_removed_by_an_earlier_version(legacy) -> None:
+    for table, column in contract._COLUMNS:
+        legacy.execute(text(f'ALTER TABLE {table} DROP COLUMN "{column}"'))
+    contract.downgrade()
+    assert legacy_columns(legacy) == set(contract._COLUMNS)
 
 
 def test_empty_legacy_values_do_not_create_credentials(legacy) -> None:

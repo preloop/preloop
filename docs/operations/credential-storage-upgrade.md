@@ -1,7 +1,9 @@
 # Credential storage upgrade
 
-This upgrade removes `ai_model.api_key`, `api_key.key`, and
-`tracker.jira_webhook_secret`. Model and webhook credentials use the existing
+This upgrade moves `ai_model.api_key`, `api_key.key`, and
+`tracker.jira_webhook_secret` into encrypted references and fingerprints and
+clears the legacy columns. The columns themselves stay in this release and are
+removed in a later one (see "Column removal"). Model and webhook credentials use the existing
 `SecretReference` service. All Preloop API keys, including user and mobile keys,
 use SHA-256 fingerprints and a lookup prefix. A generated token is returned only
 in its issuance response; listing or retrieving a key cannot recover it.
@@ -23,12 +25,12 @@ If using the existing derived-key fallback, retain the same `SECRET_KEY`. Do not
 generate a new key during this upgrade. The backfill rejects the built-in
 development key when legacy encrypted credentials need migration.
 
-Stop API, gateway, worker, scheduled job and script processes that can write
-credentials. Old versions reference the removed columns and cannot run after
-removal. This upgrade requires a maintenance window; mixed versions are not
-supported across the removal step. Use the new release's migration code with
-the deployment's database and encryption configuration. Do not put secrets on
-the command line or enable SQL parameter logging.
+A rolling upgrade is supported. Helm runs the migration in its pre-upgrade hook
+while the previous release still serves; that release already authenticates by
+fingerprint and reads model credentials from references, and the columns it
+maps stay in place. Use the new release's migration code with the deployment's
+database and encryption configuration. Do not put secrets on the command line
+or enable SQL parameter logging.
 
 ## Backfill, then remove
 
@@ -55,23 +57,25 @@ SELECT count(*) FROM api_key WHERE key IS NOT NULL;
 SELECT count(*) FROM tracker WHERE jira_webhook_secret IS NOT NULL;
 ```
 
-All three must be zero. Then run:
-
-```sh
-alembic upgrade head
-```
-
-Revision `20261111_credential_columns` takes an exclusive lock, refuses any
-reintroduced plaintext, and removes the columns. If its guard fails, keep writers
-stopped, investigate the old writer, downgrade to `20261110_prune_api_usage_idx`,
-and rerun both stages. The backfill downgrade never restores plaintext and the
-upgrade is idempotent. Do not stamp past checks or discard populated columns.
+All three are zero after the backfill. A pod of the previous release can still
+write a plaintext value until the rollout finishes; the next release reruns the
+backfill before it removes the columns, so such a value is migrated then.
 
 Start the new application and verify synthetic key issuance/authentication,
 provider access and webhook signature verification. An ordinary `alembic upgrade
-head` also runs both stages in order; splitting them provides the inspection
-point. Empty fresh installs need no credential backfill, but still require the
-normal production security settings.
+head` runs the backfill and the (now empty) `20261111_credential_columns`
+revision in order. Empty fresh installs need no credential backfill, but still
+require the normal production security settings.
+
+## Column removal
+
+`20261111_credential_columns` no longer drops the columns. Dropping them in the
+same release broke every API key and model lookup on pods of the previous
+release for the length of the rollout. A later release drops them after it
+reruns the backfill; by then no pod maps the columns. Databases that already
+applied the earlier version of `20261111_credential_columns` have no legacy
+columns and need nothing; its downgrade restores empty nullable columns either
+way.
 
 ## Compatibility and rollback
 
@@ -86,8 +90,8 @@ must retain their supplied `key_value` or use `issue`. The AI model and tracker
 legacy ORM properties return `None`; direct constructor writes are unsupported.
 Use the CRUD credential methods.
 
-Downgrading the removal revision restores empty nullable columns while keeping
-references and hashes. It cannot reconstruct API keys. Rollback code must support
+Downgrading `20261111_credential_columns` restores empty nullable columns if
+they are missing, keeping references and hashes. It cannot reconstruct API keys. Rollback code must support
 secret references and hashed authentication; plaintext-only code is incompatible.
 Restoring a pre-upgrade backup is a separate recovery operation and reintroduces
 that backup's credentials and state. Retain encryption keys with their backups.

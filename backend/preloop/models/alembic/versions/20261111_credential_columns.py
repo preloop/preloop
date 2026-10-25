@@ -1,11 +1,19 @@
-"""Remove the legacy credential columns after the backfill stopping point.
+"""Keep the legacy credential columns until no old writer can run.
 
 Revision ID: 20261111_credential_columns
 Revises: 20261110_credential_backfill
+
+This revision originally removed ``ai_model.api_key``, ``api_key.key`` and
+``tracker.jira_webhook_secret``. Helm runs migrations in a pre-upgrade hook
+while the previous release still serves traffic, and that release maps these
+columns on every API key and model lookup, so removing them in the same
+release fails those requests until the rollout finishes. The removal moves to
+a later release, which must rerun the credential backfill first because the
+previous release can still write plaintext during the rollout. The revision id
+stays so databases that already applied it keep a valid history.
 """
 
 from alembic import op
-import sqlalchemy as sa
 
 revision = "20261111_credential_columns"
 down_revision = "20261110_credential_backfill"
@@ -20,29 +28,14 @@ _COLUMNS = (
 
 
 def upgrade() -> None:
-    """Refuse removal if an old writer reintroduced any legacy material."""
-    bind = op.get_bind()
-    bind.execute(
-        sa.text("LOCK TABLE ai_model, api_key, tracker IN ACCESS EXCLUSIVE MODE")
-    )
-    for table, column in _COLUMNS:
-        if bind.execute(
-            sa.text(
-                f'SELECT EXISTS (SELECT 1 FROM {table} WHERE "{column}" IS NOT NULL)'
-            )
-        ).scalar():
-            raise RuntimeError(
-                "Legacy credentials remain; stop old writers and rerun the credential backfill"
-            )
-    for table, column in _COLUMNS:
-        op.drop_column(table, column)
+    """Leave the legacy columns in place; the application no longer maps them."""
 
 
 def downgrade() -> None:
-    """Restore nullable schema only; hashes and encrypted references stay intact."""
-    op.add_column("ai_model", sa.Column("api_key", sa.String(), nullable=True))
-    op.add_column("api_key", sa.Column("key", sa.String(100), nullable=True))
-    op.create_index("ix_api_key_key", "api_key", ["key"], unique=True)
-    op.add_column(
-        "tracker", sa.Column("jira_webhook_secret", sa.String(255), nullable=True)
+    """Restore the nullable columns where an earlier version of this revision ran."""
+    op.execute("ALTER TABLE ai_model ADD COLUMN IF NOT EXISTS api_key varchar")
+    op.execute("ALTER TABLE api_key ADD COLUMN IF NOT EXISTS key varchar(100)")
+    op.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_api_key_key ON api_key (key)")
+    op.execute(
+        "ALTER TABLE tracker ADD COLUMN IF NOT EXISTS jira_webhook_secret varchar(255)"
     )
