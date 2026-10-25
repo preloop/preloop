@@ -290,8 +290,10 @@ async def run_scheduler_async(
         except Exception:
             logger.exception("Failed to publish gateway activity maintenance task")
 
-    if settings.gateway_activity_compaction_enabled or (
-        settings.gateway_activity_body_retention_enabled
+    if (
+        settings.gateway_activity_compaction_enabled
+        or settings.gateway_activity_body_retention_enabled
+        or settings.flow_log_gateway_compaction_enabled
     ):
         scheduler.add_job(
             _publish_gateway_activity_maintenance,

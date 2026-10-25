@@ -2476,12 +2476,16 @@ describe('DashboardView', () => {
       ).to.equal('—');
     });
 
-    it('lets the Inventory period select change the page range', async () => {
+    it('restates the Usage card range on the Inventory, which has no select', async () => {
       const element = await mountLoaded();
       const inventory = element.shadowRoot!.querySelector(
         'inventory-card'
       ) as any;
-      inventory.shadowRoot!.querySelector('time-range-select')!.dispatchEvent(
+      // One range control on the page (DESIGN.md): the Usage card's.
+      expect(inventory.shadowRoot!.querySelector('time-range-select')).to.not
+        .exist;
+      const usage = element.shadowRoot!.querySelector('usage-card') as any;
+      usage.dispatchEvent(
         new CustomEvent('range-change', {
           detail: { value: 'today' },
           bubbles: true,
@@ -2493,9 +2497,8 @@ describe('DashboardView', () => {
       expect(element['gatewayTimeRange']).to.equal('today');
       expect(inventory.timeRange).to.equal('today');
       expect(
-        (element.shadowRoot!.querySelector('usage-card') as any).timeRange,
-        'the Usage card follows: one range on the page'
-      ).to.equal('today');
+        inventory.shadowRoot!.querySelector('.range-label')!.textContent.trim()
+      ).to.equal('Today');
     });
 
     it('ignores a breakdown and model overview completed after the range changes', async () => {

@@ -34,6 +34,8 @@ describe('CostView', () => {
   // Holds the list GET open, so a test can choose when an in-flight re-read
   // lands relative to what the reader does next.
   let holdOverrideList: Promise<void> | null = null;
+  // Holds the headline summary open, to see what paints before it lands.
+  let holdSummary: Promise<void> | null = null;
 
   // One override per shape worth reading: a live negotiated rate on a model
   // the console knows, and a switched-off interim $0 row on one it does not.
@@ -165,6 +167,7 @@ describe('CostView', () => {
     overrideWrites = [];
     overrideWriteFailure = null;
     holdOverrideList = null;
+    holdSummary = null;
     onReprice = null;
     jobStatus = {
       id: 'job-1',
@@ -259,6 +262,7 @@ describe('CostView', () => {
           });
         }
         if (url.includes('/api/v1/cost/summary')) {
+          if (holdSummary) await holdSummary;
           return new Response(JSON.stringify(summaryPayload), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -745,6 +749,37 @@ describe('CostView', () => {
       '[role="status"][aria-busy="true"]'
     );
     expect(loading).to.exist;
+  });
+
+  it('paints the spend chart while the headline summary is still loading', async () => {
+    let release!: () => void;
+    holdSummary = new Promise<void>((resolve) => (release = resolve));
+    const element = (await fixture(html`<cost-view></cost-view>`)) as CostView;
+    // The chart asks its own endpoint for the page window; it does not wait
+    // behind the slowest request on the page.
+    await waitUntil(
+      () =>
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/cost/timeseries')),
+      'the chart never asked for its series'
+    );
+    const chart = element.shadowRoot!.querySelector('spend-chart');
+    expect(chart, 'the chart is on the page before the summary').to.exist;
+    expect(
+      element.shadowRoot!.querySelector('[role="status"][aria-busy="true"]'),
+      'the metrics say they are still loading'
+    ).to.exist;
+    release();
+    await waitUntil(
+      () => (element as unknown as { loading: boolean }).loading === false
+    );
+    await element.updateComplete;
+    // Same element, not a second one that asks again.
+    expect(element.shadowRoot!.querySelector('spend-chart')).to.equal(chart);
+    expect(
+      element.shadowRoot!.querySelector('[aria-label="Cost summary metrics"]')
+    ).to.exist;
   });
 
   it('keeps the previous numbers on screen while a range change loads', async () => {
@@ -2602,6 +2637,22 @@ describe('CostView', () => {
         fetchStub
           .getCalls()
           .some((call) => String(call.args[0]).includes('/me/memberships'))
+      ).to.equal(false);
+    });
+
+    it('starts no chart read for a digest window it is about to block', async () => {
+      accountPayload.id = otherAccount;
+      featuresPayload = {};
+      window.history.replaceState({}, '', digestUrl);
+      const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+      await settled(element);
+      await waitUntil(() => notice(element));
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('spend-chart')).to.not.exist;
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/cost/timeseries'))
       ).to.equal(false);
     });
 

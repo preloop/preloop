@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 
+from preloop.services.gateway_activity_body import payload_bytes
 from preloop.services.model_gateway_events import ModelGatewayEventEmitter
 from uuid import uuid4
 
@@ -701,3 +702,47 @@ def test_emit_for_usage_stores_slim_row_but_publishes_full_event():
     assert stored["body_compaction"]["stored_bytes"] < 4096
     live_payload = live.call_args_list[0].args[0]
     assert "body_compaction" not in str(live_payload)
+
+
+def test_emit_for_usage_stores_slim_flow_log_but_publishes_full_event():
+    """The flow log row keeps only this call's messages; the live event all."""
+    emitter = ModelGatewayEventEmitter(MagicMock())
+    usage = _build_usage()
+    history = []
+    for turn in range(40):
+        history.append({"role": "user", "content": f"question {turn} " + "q" * 2000})
+        history.append({"role": "assistant", "content": f"answer {turn}"})
+    history.append({"role": "user", "content": "latest question"})
+    published: list[dict] = []
+
+    def capture(event: dict) -> None:
+        published.append(event)
+
+    with (
+        patch(
+            "preloop.services.model_gateway_events.crud_flow_execution.append_log"
+        ) as mock_append_log,
+        patch.object(emitter, "_publish_to_nats", side_effect=capture),
+        patch.object(settings, "model_gateway_capture_content", True),
+        patch.object(settings, "model_gateway_activity_max_stored_bytes", 32768),
+    ):
+        emitter.emit_for_usage(
+            usage=usage,
+            request_payload={"model": "m", "messages": history},
+            response_payload={
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+            },
+        )
+
+    stored = mock_append_log.call_args.args[2]
+    assert stored["type"] == "model_gateway_call"
+    payload = stored["payload"]
+    assert payload["body_compaction"]["version"] == 1
+    assert payload_bytes(payload) <= 32768
+    stored_texts = [m.get("content") for m in payload["request"]["messages"]]
+    assert stored_texts == ["latest question"]
+    # The token and cost accounting stays on the stored row.
+    assert payload.get("outcome") == published[0]["payload"].get("outcome")
+    # The live event still carries the whole replayed conversation.
+    assert len(published) == 1
+    assert len(published[0]["payload"]["request"]["messages"]) == len(history)

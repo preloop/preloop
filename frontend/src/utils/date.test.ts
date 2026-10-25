@@ -2,7 +2,9 @@ import { expect } from '@open-wc/testing';
 import {
   calculateDuration,
   formatDurationBetween,
+  formatAbsoluteTime,
   formatFutureRelativeTime,
+  formatRelativeOrFuture,
   formatRelativeTime,
   parseUTCDate,
 } from './date';
@@ -20,13 +22,12 @@ describe('date utilities', () => {
     expect(formatRelativeTime('2026-07-12T20:00:00', now)).to.equal('3h ago');
   });
 
-  it('keeps the 7 day relative window by default', () => {
-    const now = new Date('2026-07-12T20:00:00Z');
+  it('stays relative however old the timestamp is by default', () => {
+    const now = new Date('2026-10-07T20:00:00Z');
 
-    expect(formatRelativeTime('2026-07-06T20:00:00', now)).to.equal('6d ago');
-    expect(formatRelativeTime('2026-07-05T20:00:00', now)).to.equal(
-      new Date('2026-07-05T20:00:00Z').toLocaleDateString()
-    );
+    expect(formatRelativeTime('2026-10-01T20:00:00', now)).to.equal('6d ago');
+    expect(formatRelativeTime('2026-08-26T20:00:00', now)).to.equal('6w ago');
+    expect(formatRelativeTime('2024-10-01T20:00:00', now)).to.equal('2y ago');
   });
 
   it('stays relative up to the caller window and then shows the date', () => {
@@ -70,6 +71,61 @@ describe('date utilities', () => {
     expect(formatFutureRelativeTime('2026-07-12T19:59:00', now)).to.equal(
       'expired'
     );
+  });
+
+  it('keeps far future times relative in weeks and years', () => {
+    const now = new Date('2026-07-12T20:00:00Z');
+
+    expect(formatFutureRelativeTime('2026-07-22T20:00:00', now)).to.equal(
+      'in 10d'
+    );
+    expect(formatFutureRelativeTime('2026-09-12T20:00:00', now)).to.equal(
+      'in 8w'
+    );
+    expect(formatFutureRelativeTime('2027-07-12T20:00:00', now)).to.equal(
+      'in 1y'
+    );
+  });
+});
+
+describe('year boundary', () => {
+  const now = new Date('2026-10-07T20:00:00Z');
+
+  it('never renders zero years at 364 days', () => {
+    expect(formatRelativeTime('2025-10-08T20:00:00Z', now)).to.equal('1y ago');
+    expect(formatFutureRelativeTime('2027-10-06T20:00:00Z', now)).to.equal(
+      'in 1y'
+    );
+  });
+});
+
+describe('formatRelativeOrFuture', () => {
+  const now = new Date('2026-07-12T20:00:00Z');
+
+  it('reads past times as ages and future times as time remaining', () => {
+    expect(formatRelativeOrFuture('2026-07-12T17:00:00', now)).to.equal(
+      '3h ago'
+    );
+    expect(formatRelativeOrFuture('2026-07-15T20:00:00', now)).to.equal(
+      'in 3d'
+    );
+  });
+});
+
+describe('formatAbsoluteTime', () => {
+  it('renders one absolute format with date and minutes', () => {
+    const value = '2026-07-12T20:05:00Z';
+    expect(formatAbsoluteTime(value)).to.equal(
+      new Date(value).toLocaleString(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      })
+    );
+  });
+
+  it('returns an empty string for missing or invalid values', () => {
+    expect(formatAbsoluteTime(null)).to.equal('');
+    expect(formatAbsoluteTime('not a date')).to.equal('');
   });
 });
 

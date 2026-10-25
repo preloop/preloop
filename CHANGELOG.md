@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking or behavior changes
 
+- **Flow runs store model calls slim too.** The `model_gateway_call` rows a
+  flow run writes to `flow_execution_log` carried the whole replayed
+  conversation on every call, like session activity rows did. They are now
+  stored in the same slim form, under the same
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` cap; the live event is unchanged
+  and the flow Transcript tab rebuilds the conversation by message position.
+  Rows from older releases are compacted by the existing maintenance task
+  when `FLOW_LOG_GATEWAY_COMPACTION_ENABLED` is set (off by default), or by
+  hand with `python -m preloop.services.gateway_activity_maintenance
+  --flow-logs`.
+
 - **Stored model gateway calls keep only what each call added.** A
   `model_gateway_call` row in `runtime_session_activity` used to store the
   whole conversation the call replayed, so storage grew with the square of

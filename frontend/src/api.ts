@@ -3519,6 +3519,11 @@ export async function getRuntimeSessionGatewayEvents(
         tail?: number;
         limit?: number;
         offset?: number;
+        /**
+         * Keyset cursor: only events older than this event id. The page does
+         * not shift when new events land at the head, as an offset does.
+         */
+        before?: string;
         metadataOnly?: boolean;
         /**
          * `delta` leaves out history an older event on the same page already
@@ -3544,6 +3549,7 @@ export async function getRuntimeSessionGatewayEvents(
       searchParams.set('limit', String(options.limit));
     if (options.offset !== undefined)
       searchParams.set('offset', String(options.offset));
+    if (options.before) searchParams.set('before', options.before);
     if (options.metadataOnly) searchParams.set('metadata_only', 'true');
     if (options.history === 'delta') searchParams.set('history', 'delta');
     if (options.historyWindow !== undefined)
@@ -9438,7 +9444,7 @@ export async function getRuntimeSessionMediaSync(
   sessionId: string
 ): Promise<import('./types').MediaSyncResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${encodeURIComponent(sessionId)}/media-sync`
+    `${REST_API_PREFIX}/runtime-sessions/${encodeURIComponent(sessionId)}/media-sync`
   );
   if (!response.ok)
     throw new Error(`Could not load recording timing (${response.status})`);

@@ -268,6 +268,56 @@ class CRUDFlowExecutionLog(CRUDBase[models.FlowExecutionLog]):
         )
         return db.execute(query).scalar_one_or_none()
 
+    def gateway_call_batch(
+        self,
+        db: Session,
+        *,
+        min_stored_bytes: int,
+        limit: int,
+        after: Optional[tuple[datetime, Any]] = None,
+    ) -> list[models.FlowExecutionLog]:
+        """Return one keyset page of uncompacted model gateway call rows.
+
+        Used by the gateway activity maintenance pass. Rows are walked oldest
+        first on ``(timestamp, id)`` so a caller can resume from the last row
+        it saw. ``pg_column_size`` reads the stored (compressed) size without
+        detoasting, so rows that are already small are skipped cheaply. Rows
+        that already carry a ``body_compaction`` marker, and rows of an
+        execution under legal hold, are never returned.
+
+        Args:
+            db: Database session.
+            min_stored_bytes: Only rows whose stored metadata is larger.
+            limit: Page size.
+            after: ``(timestamp, id)`` of the last row of the previous page.
+
+        Returns:
+            Up to ``limit`` rows, oldest first.
+        """
+        model = self.model
+        filters: list[Any] = [
+            model.log_type == "model_gateway_call",
+            func.pg_column_size(model.metadata_) > min_stored_bytes,
+            ~model.metadata_.has_key("body_compaction"),
+            ~model.execution_id.in_(
+                select(models.FlowExecution.id).where(
+                    models.FlowExecution.legal_hold.is_(True)
+                )
+            ),
+        ]
+        if after is not None:
+            filters.append(tuple_(model.timestamp, model.id) > tuple_(*after))
+        return list(
+            db.execute(
+                select(model)
+                .where(*filters)
+                .order_by(model.timestamp.asc(), model.id.asc())
+                .limit(max(1, int(limit)))
+            )
+            .scalars()
+            .all()
+        )
+
     def append_logs(self, db: Session, batch: list[tuple[str, dict]]) -> None:
         """Insert a scrubbed batch atomically with stable IDs for safe retries.
 

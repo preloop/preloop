@@ -130,10 +130,19 @@ class ModelGatewayEventEmitter:
         )
         execution_id = str(usage.flow_execution_id) if usage.flow_execution_id else None
         if execution_id:
+            # Stored slim, like the session activity row below: only what
+            # this call added, bounded in bytes. The live event published to
+            # NATS further down still carries the full payload.
             crud_flow_execution.append_log(
                 self.db,
                 execution_id,
-                event,
+                {
+                    **event,
+                    "payload": slim_gateway_payload(
+                        event["payload"],
+                        max_bytes=settings.model_gateway_activity_max_stored_bytes,
+                    ),
+                },
                 commit=True,
             )
 
