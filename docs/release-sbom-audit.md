@@ -127,7 +127,10 @@ remote execution. Expected evidence on that run:
   `Release SBOM audit passed`.
 
 Any other outcome blocks publication of that candidate; fix it before the
-final tag.
+final tag. To repeat the remote checks for an existing tag without the release
+workflow, dispatch **Release validation (nonpublishing)** with the `tag` input.
+Its read-only remote audit job downloads that tag's release-run artifacts and
+runs `collect` and `validate --verify-registry --require-workflows`.
 
 Offline validation omits the last two flags and reports both verification modes
 as false when `--report` is requested, and the command prints that it is not a

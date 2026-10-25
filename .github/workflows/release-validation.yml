@@ -11,6 +11,11 @@ on:
       - 'backend/tests/scripts/test_image_sbom.py'
       - 'backend/tests/scripts/test_release_audit.py'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v* tag to re-audit read-only (blank runs only the fixture job)
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -42,3 +47,52 @@ jobs:
           python3 scripts/image_sbom.py --name backend \
             --oci-archive "$RUNNER_TEMP/sbom-fixture.tar" --tag v0.0.0-fixture \
             --source-sha "$GITHUB_SHA" --output "$RUNNER_TEMP/sbom-fixture"
+
+  # Manual, read-only rerun of the remote gate against an existing tag (for
+  # example a release candidate): collect, tag code-scanning analysis and
+  # registry verification. It downloads that tag's release-run artifacts and
+  # publishes nothing.
+  remote-audit:
+    name: Remote release audit (read-only)
+    if: github.event_name == 'workflow_dispatch' && inputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      security-events: read
+    env:
+      AUDIT_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Download the tag's release-run SBOM artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$AUDIT_TAG" =~ ^v[0-9A-Za-z.+-]+$ ]] || { echo "invalid tag"; exit 1; }
+          sha="$(git rev-parse HEAD)"
+          echo "AUDIT_SHA=$sha" >> "$GITHUB_ENV"
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml \
+            --event push --branch "$AUDIT_TAG" --commit "$sha" --limit 1 \
+            --json databaseId --jq '.[0].databaseId')"
+          [ -n "$run_id" ] || { echo "no release run for $AUDIT_TAG@$sha"; exit 1; }
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name sbom --dir audited-sbom
+          gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --pattern 'image-sbom-*' --dir image-sbom
+          find image-sbom -type f -exec cp {} audited-sbom/ \;
+      - name: Require tag image and security workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release_audit.py collect --directory audited-sbom \
+            --repo "$GITHUB_REPOSITORY" --tag "$AUDIT_TAG" --source-sha "$AUDIT_SHA" \
+            --wait-seconds 0
+      - name: Validate inventory against registries
+        run: |
+          python3 scripts/release_audit.py validate --directory audited-sbom \
+            --tag "$AUDIT_TAG" --source-sha "$AUDIT_SHA" \
+            --verify-registry --require-workflows --report audited-sbom/release-audit.json

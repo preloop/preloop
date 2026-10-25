@@ -181,6 +181,23 @@ def test_manual_validation_cannot_publish_images_or_releases() -> None:
         assert "docker/login-action" not in step.get("uses", "")
 
 
+def test_manual_remote_audit_is_read_only_and_runs_the_full_gate() -> None:
+    workflow = yaml.safe_load(
+        (REPO_ROOT / ".github/workflows/release-validation.yml").read_text()
+    )
+    job = workflow["jobs"]["remote-audit"]
+    assert "workflow_dispatch" in job["if"]
+    assert set(job["permissions"].values()) == {"read"}
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert "release_audit.py collect" in commands
+    assert "--verify-registry --require-workflows" in commands
+    for forbidden in ("--push", "docker push", "gh release", "secrets."):
+        assert forbidden not in commands
+    for step in job["steps"]:
+        assert "docker/login-action" not in step.get("uses", "")
+        assert "${{" not in step.get("run", "")
+
+
 def test_every_image_evidence_job_checks_out_its_validator() -> None:
     for filename in (
         "release.yml",
