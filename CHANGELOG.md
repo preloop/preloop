@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking or behavior changes
 
+- **Flow runs store model calls slim too.** The `model_gateway_call` rows a
+  flow run writes to `flow_execution_log` carried the whole replayed
+  conversation on every call, like session activity rows did. They are now
+  stored in the same slim form, under the same
+  `MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES` cap; the live event is unchanged
+  and the flow Transcript tab rebuilds the conversation by message position.
+  Rows from older releases are compacted by the existing maintenance task
+  when `FLOW_LOG_GATEWAY_COMPACTION_ENABLED` is set (off by default), or by
+  hand with `python -m preloop.services.gateway_activity_maintenance
+  --flow-logs`.
+
 - **Stored model gateway calls keep only what each call added.** A
   `model_gateway_call` row in `runtime_session_activity` used to store the
   whole conversation the call replayed, so storage grew with the square of
@@ -31,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (#1426).
 
 ### Fixed
+
+- **Paging stored gateway payloads no longer serialises every row to measure
+  it.** The byte-budgeted payload reader computed
+  `octet_length(metadata::text)` per candidate row, which detoasts and
+  serialises the whole value. `runtime_session_activity` now has a nullable
+  `metadata_bytes` column, set on every write, and the reader uses it, falling
+  back to the old measurement only for rows not yet filled in. The migration
+  adds the column only; the hourly `maintain_gateway_activity` task fills
+  older gateway call rows in bounded batches
+  (`GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED`, on by default).
 
 - **Generated policies no longer set `defaults` that `apply` rejects.** The
   policy-generation prompts asked for `unknown_tools: deny` or

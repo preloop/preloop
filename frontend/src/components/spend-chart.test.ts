@@ -128,9 +128,15 @@ describe('spend-chart', () => {
     expect(last().searchParams.get('end_date')).to.equal(
       '2026-03-31T15:00:00.000Z'
     );
+    // One range per page: the page's range select drives the chart, which
+    // offers no range of its own, only the bucket size.
+    expect(el.shadowRoot!.querySelector('sl-select')).to.not.exist;
+    expect(el.shadowRoot!.querySelector('.step-back')).to.not.exist;
+    expect(el.shadowRoot!.querySelector('sl-button-group[label="Bucket size"]'))
+      .to.exist;
     expect(
-      el.shadowRoot!.querySelector('sl-select')!.getAttribute('value')
-    ).to.equal('page');
+      el.shadowRoot!.querySelector('.meta')!.textContent!.trim()
+    ).to.not.equal('');
     el.period = {
       startDate: '2026-03-24T15:00:00Z',
       endDate: '2026-03-31T15:00:00Z',
@@ -138,6 +144,33 @@ describe('spend-chart', () => {
     await waitUntil(
       () => last().searchParams.get('start_date') === '2026-03-24T15:00:00.000Z'
     );
+  });
+
+  it('does not ask again when the page restates the same window', async () => {
+    const el = await fixture<SpendChart>(
+      html`<spend-chart
+        .now=${() => NOW}
+        .period=${{
+          startDate: '2026-03-01T15:00:00Z',
+          endDate: '2026-03-31T15:00:00Z',
+        }}
+      ></spend-chart>`
+    );
+    await waitUntil(() => el.shadowRoot!.querySelector('svg'));
+    // The page first hands the window it asked for, then the one the server
+    // echoed back, spelled differently. Same instants, one request.
+    el.period = {
+      startDate: '2026-03-01T15:00:00.000+00:00',
+      endDate: '2026-03-31T15:00:00.000+00:00',
+    };
+    await el.updateComplete;
+    expect(urls).to.have.length(1);
+  });
+
+  it('keeps its own range and stepping when no page range is given', async () => {
+    const el = await chart();
+    expect(el.shadowRoot!.querySelector('sl-select')).to.exist;
+    expect(el.shadowRoot!.querySelector('.step-back')).to.exist;
   });
 
   it('builds ISO-week and month bucket starts', () => {

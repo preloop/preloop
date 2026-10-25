@@ -1,10 +1,21 @@
 """Normalized runtime-session activity records."""
 
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    event,
+    inspect,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -122,6 +133,11 @@ class RuntimeSessionActivity(Base):
     status: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     metadata_: Mapped[Optional[dict]] = mapped_column("metadata", JSONB, nullable=True)
+    # UTF-8 length of ``metadata`` serialised as JSON, kept next to the value
+    # so readers can budget payloads without detoasting it. Set on every ORM
+    # insert or update of ``metadata``; NULL on rows written before the column
+    # existed until the gateway activity maintenance pass fills them in.
+    metadata_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     timestamp: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -141,3 +157,37 @@ class RuntimeSessionActivity(Base):
             f"<RuntimeSessionActivity(id={self.id}, runtime_session_id="
             f"{self.runtime_session_id}, activity_type={self.activity_type})>"
         )
+
+
+def metadata_byte_length(value: Any) -> Optional[int]:
+    """Return the UTF-8 length of ``value`` serialised as JSON.
+
+    Matches PostgreSQL's ``octet_length(metadata::text)`` for the JSON this
+    application stores (same ``", "``/``": "`` separators, raw UTF-8); key
+    order differs but not length. Float formatting can differ by a few bytes,
+    which is fine for a transfer budget.
+
+    Args:
+        value: The metadata value, or None.
+
+    Returns:
+        Byte length, or None for a NULL value.
+    """
+    if value is None:
+        return None
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+
+
+@event.listens_for(RuntimeSessionActivity, "before_insert")
+def _set_metadata_bytes_on_insert(
+    _mapper: Any, _connection: Any, target: RuntimeSessionActivity
+) -> None:
+    target.metadata_bytes = metadata_byte_length(target.metadata_)
+
+
+@event.listens_for(RuntimeSessionActivity, "before_update")
+def _set_metadata_bytes_on_update(
+    _mapper: Any, _connection: Any, target: RuntimeSessionActivity
+) -> None:
+    if inspect(target).attrs.metadata_.history.has_changes():
+        target.metadata_bytes = metadata_byte_length(target.metadata_)

@@ -1,4 +1,5 @@
 import { html, fixture, expect, waitUntil } from '@open-wc/testing';
+import { formatRelativeOrFuture } from '../../../utils/date';
 import sinon from 'sinon';
 
 import '../../../components/view-header.ts';
@@ -383,6 +384,22 @@ describe('RecordsView', () => {
       () => calls.some((call) => call.url.includes('/release')),
       'hold was not released'
     );
+  });
+
+  it('keeps the exact UTC instant beside the age of a hold', async () => {
+    install({ holds: [HOLD] });
+    const listed = await fixture<RecordsView>(
+      html`<records-view></records-view>`
+    );
+    await waitUntil(
+      () => listed.shadowRoot?.querySelector('[data-testid="holds-table"]'),
+      'holds table did not render'
+    );
+    const text =
+      listed.shadowRoot!.querySelector('[data-testid="holds-table"]')
+        ?.textContent ?? '';
+    expect(text).to.contain('2026-09-20 00:00:00 UTC');
+    expect(text).to.contain(formatRelativeOrFuture(HOLD.placed_at));
   });
 
   it('downloads a period export once', async () => {

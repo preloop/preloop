@@ -523,7 +523,16 @@ def read_flow_summaries(
         ),
     )
     if include_stats:
-        _attach_flow_stats(db, rows, current_user=current_user, stats_since=stats_since)
+        # The list prints the window's spend and tokens, never the lifetime
+        # ones, so a windowed read skips the lifetime usage scan. The full
+        # ``/flows`` contract keeps both.
+        _attach_flow_stats(
+            db,
+            rows,
+            current_user=current_user,
+            stats_since=stats_since,
+            lifetime_usage=stats_since is None,
+        )
     summaries = []
     for row in rows:
         summary = FlowSummaryResponse.model_validate(row)
@@ -544,14 +553,27 @@ def _attach_flow_stats(
     *,
     current_user: User,
     stats_since: Optional[datetime],
+    lifetime_usage: bool = True,
 ) -> None:
-    """Project the same owned-flow statistics into both catalogue contracts."""
+    """Project the same owned-flow statistics into both catalogue contracts.
+
+    Args:
+        db: Database session.
+        flows: Rows to decorate with ``execution_stats``.
+        current_user: The caller; stats cover their account's flows only.
+        stats_since: Start of the window the list states, if any.
+        lifetime_usage: Also sum the lifetime spend and tokens. When False,
+            ``estimated_cost`` is None.
+    """
     if flows:
         # Execution stats cover own flows only: the runs of a flow another
         # account shares here (account hook H3) belong to that account.
         flow_ids = [f.id for f in flows if f.account_id == current_user.account_id]
         stats = crud_flow_execution.get_execution_stats_for_flows(
-            db, flow_ids, start_date=stats_since
+            db,
+            flow_ids,
+            start_date=stats_since,
+            include_lifetime_usage=lifetime_usage,
         )
         # The list's Last run cell links the run and prints its outcome;
         # without these it could only say when, from the window counts.
@@ -581,7 +603,11 @@ def _attach_flow_stats(
                 "total_execs": s.total_execs,
                 "running_execs": int(s.running_execs or 0),
                 "last_seen_at": s.last_seen_at.isoformat() if s.last_seen_at else None,
-                "estimated_cost": float(s.estimated_cost or 0.0),
+                "estimated_cost": (
+                    float(s.estimated_cost or 0.0)
+                    if s.estimated_cost is not None
+                    else None
+                ),
                 # All-time tokens beside the all-time spend. A row that
                 # states money and no volume reads as unmeasured traffic.
                 "token_usage": getattr(s, "token_usage", None),

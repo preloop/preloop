@@ -1394,7 +1394,8 @@ class Settings(BaseSettings):
         32768,
         description=(
             "Upper bound, in bytes of JSON, for the metadata stored on one "
-            "model_gateway_call row in runtime_session_activity. Each row "
+            "model_gateway_call row in runtime_session_activity or "
+            "flow_execution_log. Each row "
             "keeps only the messages new to that call (replayed history is "
             "already on the session's earlier rows); a call still larger than "
             "this has its tool definitions reduced to names, then its raw "
@@ -1410,6 +1411,15 @@ class Settings(BaseSettings):
             "(GATEWAY_ACTIVITY_COMPACTION_ENABLED)."
         ),
     )
+    flow_log_gateway_compaction_enabled: bool = Field(
+        False,
+        description=(
+            "Also rewrite model_gateway_call rows of flow_execution_log stored "
+            "before slim storage, in the same hourly maintenance pass. Off by "
+            "default because it drops replayed history from existing rows "
+            "(FLOW_LOG_GATEWAY_COMPACTION_ENABLED)."
+        ),
+    )
     gateway_activity_body_retention_enabled: bool = Field(
         False,
         description=(
@@ -1417,6 +1427,14 @@ class Settings(BaseSettings):
             "the account's plan history window, in the same hourly pass. "
             "Token counts, cost and timing are kept. Off by default because "
             "it is irreversible (GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED)."
+        ),
+    )
+    gateway_activity_size_backfill_enabled: bool = Field(
+        True,
+        description=(
+            "Fill runtime_session_activity.metadata_bytes for model_gateway_call "
+            "rows written before the column existed, in the same hourly pass "
+            "(GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED)."
         ),
     )
     gateway_activity_maintenance_batch_size: int = Field(
@@ -2094,8 +2112,16 @@ class Settings(BaseSettings):
                 "GATEWAY_ACTIVITY_COMPACTION_ENABLED", "true"
             ).lower()
             in ("true", "1", "t", "yes"),
+            flow_log_gateway_compaction_enabled=os.getenv(
+                "FLOW_LOG_GATEWAY_COMPACTION_ENABLED", "false"
+            ).lower()
+            in ("true", "1", "t", "yes"),
             gateway_activity_body_retention_enabled=os.getenv(
                 "GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED", "false"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            gateway_activity_size_backfill_enabled=os.getenv(
+                "GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED", "true"
             ).lower()
             in ("true", "1", "t", "yes"),
             gateway_activity_maintenance_batch_size=int(

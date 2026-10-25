@@ -496,4 +496,10 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert credential_columns.down_revision == "20261110_credential_backfill"
     media_timing = script.get_revision("20261110_media_timing")
     assert media_timing.down_revision == "20261111_credential_columns"
-    assert script.get_heads() == ["20261110_media_timing"]
+    flow_log_gateway_idx = script.get_revision("20261112_flow_log_gateway_idx")
+    assert flow_log_gateway_idx.down_revision == "20261110_media_timing"
+    delivery_report_policy = script.get_revision("20261112_delivery_report_policy")
+    assert delivery_report_policy.down_revision == "20261112_flow_log_gateway_idx"
+    activity_meta_bytes = script.get_revision("20261112_activity_meta_bytes")
+    assert activity_meta_bytes.down_revision == "20261112_delivery_report_policy"
+    assert script.get_heads() == ["20261112_activity_meta_bytes"]

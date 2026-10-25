@@ -977,6 +977,10 @@ export class FlowsView extends LitElement {
             this.activeExecutions = executions;
         })
         .catch(() => undefined);
+      // Tracker names only label the Trigger column. Asked with the
+      // summary, not after it, so the column does not wait a second round
+      // trip behind the slowest read on the page.
+      void this.loadTrackerNames();
       let failure = '';
       const flows = await getFlowSummaries({
         includeStats: true,
@@ -1024,7 +1028,6 @@ export class FlowsView extends LitElement {
           })
           .catch(() => undefined);
       }
-      void this.loadTrackerNames();
     } finally {
       if (
         generation === this.flowsLoadGeneration &&
@@ -2017,10 +2020,7 @@ export class FlowsView extends LitElement {
         return html`<span
           class="muted-cell"
           title=${formatLocalDateTime(row.lastRunAt)}
-          >Ran
-          ${formatRelativeTime(row.lastRunAt, undefined, {
-            maxRelativeDays: 30,
-          })}</span
+          >Ran ${formatRelativeTime(row.lastRunAt)}</span
         >`;
       }
       return html`<span class="muted-cell"
@@ -2041,9 +2041,7 @@ export class FlowsView extends LitElement {
           ${this.renderRunStatusChip(run.status)} ${renderExecutionSubject(run)}
         </span>
         <span class="meta" title=${formatLocalDateTime(run.start_time)}
-          >${formatRelativeTime(run.start_time, undefined, {
-            maxRelativeDays: 30,
-          })}${duration ? ` · ${duration}` : ''}</span
+          >${formatRelativeTime(run.start_time)}${duration ? ` · ${duration}` : ''}</span
         >
       </a>
     `;
@@ -2222,10 +2220,7 @@ export class FlowsView extends LitElement {
       return html`<span class="card-last-run muted-cell"
         >${
           row.lastRunAt
-            ? html`Ran
-              ${formatRelativeTime(row.lastRunAt, undefined, {
-                maxRelativeDays: 30,
-              })}`
+            ? html`Ran ${formatRelativeTime(row.lastRunAt)}`
             : 'No run yet'
         }</span
       >`;
@@ -2238,11 +2233,7 @@ export class FlowsView extends LitElement {
         @click=${(event: Event) => event.stopPropagation()}
       >
         ${this.renderRunStatusChip(run.status)} ${renderExecutionSubject(run)}
-        <span class="meta"
-          >${formatRelativeTime(run.start_time, undefined, {
-            maxRelativeDays: 30,
-          })}</span
-        >
+        <span class="meta">${formatRelativeTime(run.start_time)}</span>
       </a>
     `;
   }
