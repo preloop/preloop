@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 from preloop.config import settings
 from preloop.models import models
 from preloop.models.crud import crud_assessment, crud_issue_lifecycle
-from preloop.schemas.issue_lifecycle import AuditResult, ReadinessContract
+from preloop.schemas.issue_lifecycle import (
+    AuditResult,
+    Criterion,
+    CriterionEvidence,
+    ReadinessContract,
+)
 from preloop.services.issue_lifecycle_provider import (
     LifecycleProvider,
     publication_budget,
@@ -35,6 +40,53 @@ def runtime_evidence_ids(bundle: Any) -> set[str]:
         for item in bundle.get(section) or []
         if isinstance(item, dict) and item.get("id")
     }
+
+
+def checked_criterion(
+    item: CriterionEvidence,
+    criterion: Criterion,
+    *,
+    kind: str,
+    supplied: set[str],
+) -> CriterionEvidence:
+    """Apply the controller's evidence rules to one audited criterion.
+
+    Drops runtime ids the controller did not supply, then downgrades a
+    verdict the remaining evidence does not carry and appends the reason.
+    The Delivery Report applies the same rule to the stored result.
+
+    Args:
+        item: The audit's evidence for the criterion; updated in place.
+        criterion: The contract criterion it answers.
+        kind: ``merge_audit`` or ``deployment_audit``.
+        supplied: Ids from :func:`runtime_evidence_ids` of the envelope.
+
+    Returns:
+        ``item``, checked.
+    """
+    # An invented id is dropped rather than trusted.
+    item.runtime = [ref for ref in item.runtime if ref in supplied]
+    verdict, why = item.verdict, ""
+    if verdict == "complete" and (
+        criterion.deployment_required and kind != "deployment_audit"
+    ):
+        verdict, why = "unknown", _DEPLOYMENT_REASON
+    elif verdict == "complete" and (
+        not item.observations or not ((item.code and item.tests) or item.runtime)
+    ):
+        verdict, why = "unknown", _NO_EVIDENCE_REASON
+    if (
+        verdict == "gap"
+        and not item.code
+        and not item.tests
+        and not item.observations
+        and not item.runtime
+    ):
+        verdict, why = "unknown", _NO_EVIDENCE_REASON
+    if why:
+        item.reason = f"{item.reason} {why}".strip()
+    item.verdict = verdict
+    return item
 
 
 def assessment_verdict(criteria: list[dict[str, Any]]) -> str:
@@ -591,33 +643,12 @@ class IssueLifecycleService:
             if len(evidence) != len(result.criteria) or set(evidence) != set(criteria):
                 raise ValueError("audit_acceptance_coverage_mismatch")
             supplied = runtime_evidence_ids(row.data.get("runtime_evidence"))
-            verdicts = []
-            for key, item in evidence.items():
-                # Only evidence the controller supplied counts; an invented id
-                # is dropped rather than trusted.
-                item.runtime = [ref for ref in item.runtime if ref in supplied]
-                verdict, why = item.verdict, ""
-                if verdict == "complete" and (
-                    criteria[key].deployment_required and kind != "deployment_audit"
-                ):
-                    verdict, why = "unknown", _DEPLOYMENT_REASON
-                elif verdict == "complete" and (
-                    not item.observations
-                    or not ((item.code and item.tests) or item.runtime)
-                ):
-                    verdict, why = "unknown", _NO_EVIDENCE_REASON
-                if (
-                    verdict == "gap"
-                    and not item.code
-                    and not item.tests
-                    and not item.observations
-                    and not item.runtime
-                ):
-                    verdict, why = "unknown", _NO_EVIDENCE_REASON
-                if why:
-                    item.reason = f"{item.reason} {why}".strip()
-                item.verdict = verdict
-                verdicts.append(verdict)
+            verdicts = [
+                checked_criterion(
+                    item, criteria[key], kind=kind, supplied=supplied
+                ).verdict
+                for key, item in evidence.items()
+            ]
             verdict = (
                 "gap"
                 if "gap" in verdicts

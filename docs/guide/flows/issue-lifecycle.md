@@ -143,6 +143,14 @@ observation plus either code and tests or supplied runtime evidence. A source
 GitHub refuses (for example, a token without Actions read access) is listed
 under `unavailable` and the audit still runs. When the controller downgrades a
 verdict, it appends the reason to the criterion.
+Collection has its own 3-second deadline, and a source that does not answer
+in time is listed as `timed out`. A preview URL that is not public http(s)
+(loopback, private, link-local or metadata addresses, other schemes) is refused
+before it reaches the prompt. The bundle is a snapshot taken when the audit is
+scheduled. Checks, artifacts or deployments that finish later are not in it, and
+`/audit/reconcile` reuses it. The Delivery Report applies the same rule when it
+reads a stored audit result, so it never counts a citation the controller
+dropped.
 
 Each published audit also appends one assessment through the CRUD layer
 (`source="audit"`, pinned to the merge SHA or the deployed revision). The

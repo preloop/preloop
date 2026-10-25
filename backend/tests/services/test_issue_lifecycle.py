@@ -1,5 +1,6 @@
 """Disposable-Postgres lifecycle integration through real provider/controller hooks."""
 
+import asyncio
 from copy import deepcopy
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -61,6 +62,7 @@ class FakeGitHub:
         self.deployments: list[dict[str, Any]] = []
         self.deployment_statuses: dict[int, list[dict[str, Any]]] = {}
         self.unreadable: set[str] = set()
+        self.slow: set[str] = set()
 
     def merge(self, *, manual: bool = False, multiple: bool = False) -> None:
         self.issues[1]["state"] = "closed"
@@ -107,6 +109,8 @@ class FakeGitHub:
     ) -> Any:
         self.calls.append((method, endpoint))
         root = f"/repos/{REPO}"
+        if any(part in endpoint for part in self.slow):
+            await asyncio.sleep(1)
         if any(part in endpoint for part in self.unreadable):
             raise PermissionError("403 Resource not accessible by integration")
         if endpoint == f"{root}/commits/{SHA}/check-runs":
@@ -1868,3 +1872,51 @@ async def test_unreadable_evidence_source_is_recorded_not_fatal(rig: tuple) -> N
     await service.finish_audit(execution)
     assert "Runtime evidence unavailable: checks" in transport.comments[0]["body"]
     assert audit_assessments(service)[0].purpose_verdict == "unverified"
+
+
+
+@pytest.mark.asyncio
+async def test_slow_evidence_source_times_out_into_unavailable(
+    rig: tuple, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.slow = {"/actions/runs"}
+    monkeypatch.setattr(
+        "preloop.services.issue_lifecycle_provider.EVIDENCE_TIMEOUT_SECONDS", 0.05
+    )
+    await service.refine(await contract_for(service))
+    execution = await service.schedule_audit(flow, AsyncMock())
+    assert execution is not None
+    runtime = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert runtime["unavailable"] == [
+        {"source": "artifacts", "reason": "timed out"},
+        {"source": "previews", "reason": "timed out"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://169.254.169.254/latest/meta-data",
+        "http://127.0.0.1:8080/",
+        "http://10.0.0.5/",
+        "http://localhost/",
+        "file:///etc/passwd",
+    ],
+)
+async def test_local_or_private_preview_url_is_refused(rig: tuple, url: str) -> None:
+    service, transport, _, flow = rig
+    transport.merge()
+    transport.deployments = [{"id": 9, "environment": "preview"}]
+    transport.deployment_statuses = {9: [{"state": "success", "environment_url": url}]}
+    await service.refine(await contract_for(service))
+    execution = await service.schedule_audit(flow, AsyncMock())
+    runtime = execution.trigger_event_details["payload"]["lifecycle"][
+        "runtime_evidence"
+    ]
+    assert runtime["previews"] == []
+    assert runtime["unavailable"][0]["reason"].startswith("refused preview:9")

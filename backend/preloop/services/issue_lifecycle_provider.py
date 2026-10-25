@@ -6,6 +6,7 @@ from contextvars import ContextVar
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from hashlib import sha256
+import ipaddress
 import json
 import re
 from typing import Any, Protocol
@@ -18,6 +19,28 @@ PUBLICATION_MAX_REQUESTS = 128
 EVIDENCE_MAX_WORKFLOW_RUNS = 3
 EVIDENCE_MAX_DEPLOYMENTS = 5
 EVIDENCE_TEXT_LIMIT = 500
+# Own deadline inside the publication deadline, so a slow source is recorded
+# as unavailable instead of cancelling audit scheduling.
+EVIDENCE_TIMEOUT_SECONDS = 3.0
+_EVIDENCE_SOURCES = ("checks", "artifacts", "previews")
+
+
+def preview_url_allowed(url: Any) -> bool:
+    """Accept only http(s) URLs whose host is not a local or private literal.
+
+    Hostnames are resolved later in the sandbox, whose prompt applies the
+    same rule; this drops what is refusable before it reaches the prompt.
+    """
+    parsed = urlparse(str(url or ""))
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in {"http", "https"} or not host:
+        return False
+    if host == "localhost" or host.endswith((".localhost", ".internal")):
+        return False
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return True
 
 
 @dataclass
@@ -341,7 +364,7 @@ class GitHubLifecycleProvider:
         def text(value: Any) -> str:
             return str(value or "")[:EVIDENCE_TEXT_LIMIT]
 
-        try:
+        async def checks() -> None:
             raw = await self._request(
                 "GET", f"{self.root}/commits/{sha}/check-runs", params={"per_page": 100}
             )
@@ -357,9 +380,8 @@ class GitHubLifecycleProvider:
                         "summary": text(output.get("title") or output.get("summary")),
                     }
                 )
-        except Exception as exc:  # noqa: BLE001 - evidence is best-effort
-            bundle["unavailable"].append({"source": "checks", "reason": repr(exc)})
-        try:
+
+        async def artifacts() -> None:
             raw = await self._request(
                 "GET",
                 f"{self.root}/actions/runs",
@@ -384,9 +406,8 @@ class GitHubLifecycleProvider:
                             "url": artifact.get("archive_download_url"),
                         }
                     )
-        except Exception as exc:  # noqa: BLE001 - evidence is best-effort
-            bundle["unavailable"].append({"source": "artifacts", "reason": repr(exc)})
-        try:
+
+        async def previews() -> None:
             deployments = await self._request(
                 "GET",
                 f"{self.root}/deployments",
@@ -408,6 +429,15 @@ class GitHubLifecycleProvider:
                 )
                 if status is None:
                     continue
+                if not preview_url_allowed(status["environment_url"]):
+                    bundle["unavailable"].append(
+                        {
+                            "source": "previews",
+                            "reason": f"refused preview:{deployment['id']}: "
+                            "not a public http(s) URL",
+                        }
+                    )
+                    continue
                 bundle["previews"].append(
                     {
                         "id": f"preview:{deployment['id']}",
@@ -416,6 +446,23 @@ class GitHubLifecycleProvider:
                         "log_url": status.get("log_url"),
                     }
                 )
-        except Exception as exc:  # noqa: BLE001 - evidence is best-effort
-            bundle["unavailable"].append({"source": "previews", "reason": repr(exc)})
+
+        pending = dict(zip(_EVIDENCE_SOURCES, (checks, artifacts, previews)))
+        deadline = asyncio.timeout(EVIDENCE_TIMEOUT_SECONDS)
+        try:
+            async with deadline:
+                for source, collect in list(pending.items()):
+                    try:
+                        await collect()
+                    except Exception as exc:  # noqa: BLE001 - best-effort
+                        bundle["unavailable"].append(
+                            {"source": source, "reason": repr(exc)}
+                        )
+                    del pending[source]
+        except TimeoutError:
+            if not deadline.expired():
+                raise
+            bundle["unavailable"].extend(
+                {"source": source, "reason": "timed out"} for source in pending
+            )
         return bundle

@@ -495,23 +495,26 @@ class TestMergeAuditReuse:
         assert [c["met"] for c in audit["purpose"]["criteria"]] == [True, True]
         assert audit["purpose"]["criteria"][0]["text"] == "CSV export includes headers"
 
-    def test_runtime_evidence_counts_as_cited_evidence(self) -> None:
+    def test_only_supplied_runtime_evidence_counts(self) -> None:
         execution = _executions()[0]
+        lifecycle = execution.trigger_event_details["payload"]["lifecycle"]
+        lifecycle["runtime_evidence"] = {"artifacts": [{"id": "artifact:55"}]}
+        first, second = execution.result["criteria"]
         execution.result = {
             **execution.result,
             "criteria": [
-                {
-                    "criterion_id": item["criterion_id"],
-                    "verdict": "complete",
-                    "runtime": ["artifact:55"],
-                    "reason": "Checked the build artifact",
-                }
-                for item in execution.result["criteria"]
+                {**first, "code": [], "tests": [], "runtime": ["artifact:55"]},
+                # The controller dropped this invented id and the verdict.
+                {**second, "code": [], "tests": [], "runtime": ["preview:404"]},
             ],
         }
         record = dr.merge_audit_record(execution)
         assert record is not None
-        assert record["purpose"]["criteria"][0]["evidence"] == ["artifact:55"]
+        headers, date_filter = record["purpose"]["criteria"]
+        assert headers["met"] is True
+        assert headers["evidence"] == ["export output inspected", "artifact:55"]
+        assert date_filter["met"] is None
+        assert "preview:404" not in date_filter["evidence"]
 
     def test_audited_closed_issue_takes_the_audit(self) -> None:
         report = _window_report(merge_audits=_audits())
