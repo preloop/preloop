@@ -98,7 +98,7 @@ class CRUDPullRequestRefresh:
         merged_at: Optional[datetime] = None,
         not_modified: bool = False,
         claimed_due: Optional[datetime] = None,
-    ) -> Optional[models.IssueCostPullRequest]:
+    ) -> tuple[Optional[models.IssueCostPullRequest], bool]:
         """Record one forge read and re-arm the row.
 
         A merge is final: a later read that reports another state (a stale
@@ -122,7 +122,7 @@ class CRUDPullRequestRefresh:
                 read; that mark is kept so the next tick reads it again.
 
         Returns:
-            The updated row, or None when it no longer exists.
+            The updated row (or None) and whether this locked write first recorded a merge.
         """
         row = db.get(
             models.IssueCostPullRequest,
@@ -131,7 +131,7 @@ class CRUDPullRequestRefresh:
             populate_existing=True,
         )
         if row is None:
-            return None
+            return None, False
         previous_merged_at = row.merged_at
         marked_mid_read = claimed_due is not None and row.refresh_due_at != claimed_due
         if not not_modified:
@@ -155,7 +155,8 @@ class CRUDPullRequestRefresh:
             row.refresh_due_at = (
                 None if row.state in {"merged", "closed"} else now + REFRESH_REARM
             )
-        if row.merged_at is not None and previous_merged_at is None and row.rollup_id:
+        merged_now = row.merged_at is not None and previous_merged_at is None
+        if merged_now and row.rollup_id:
             # Persist the derived cycle-time fact with the merge itself. A
             # terminal row will not be retried by the normal refresh cadence.
             from .issue_cost import crud_issue_cost
@@ -163,7 +164,7 @@ class CRUDPullRequestRefresh:
             db.flush()
             crud_issue_cost.recompute_rollup(db, rollup_id=row.rollup_id)
         db.commit()
-        return row
+        return row, merged_now
 
     def defer(
         self,

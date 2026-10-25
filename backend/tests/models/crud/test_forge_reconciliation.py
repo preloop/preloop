@@ -661,3 +661,53 @@ async def test_refresh_only_merge_updates_rollup_and_readiness(
         await refresh.refresh_pull_requests(db_session, now=NOW + timedelta(minutes=5))
     )["read"] == 0
     assert emit.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_merge_webhook_during_refresh_emits_only_once(
+    db_session: Session,
+    test_user: Any,
+    forge: FakeForge,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from preloop.services import fleet_code_activity, issue_cost_rollup
+    from preloop.services.readiness import scheduler
+
+    row = make_pr(db_session, test_user.account_id, github_key(43))
+    emit = MagicMock()
+    schedule = MagicMock()
+    monkeypatch.setattr(fleet_code_activity, "emit_merge_event", emit)
+    monkeypatch.setattr(scheduler, "schedule_pull_request", schedule)
+
+    async def merge_during_read(path: str, etag: str | None) -> ConditionalResponse:
+        payload = {
+            "number": 43,
+            "html_url": github_key(43),
+            "state": "closed",
+            "merged": True,
+            "merged_at": NOW.isoformat(),
+            "head": {"sha": HEAD},
+        }
+        recorded = issue_cost_rollup.record_pull_request_event(
+            db_session,
+            {
+                "source": "github",
+                "type": "pull_request_merged",
+                "account_id": str(test_user.account_id),
+                "payload": {
+                    "pull_request": payload,
+                    "repository": {"full_name": "acme/widgets"},
+                },
+            },
+            now=NOW,
+        )
+        assert recorded is not None
+        db_session.commit()
+        return ConditionalResponse(200, payload, None)
+
+    monkeypatch.setattr(forge, "conditional_get", merge_during_read)
+    await refresh.refresh_pull_requests(db_session, now=NOW)
+    db_session.refresh(row)
+    assert row.merged_at == NOW
+    emit.assert_called_once()
+    schedule.assert_called_once()

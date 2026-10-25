@@ -236,7 +236,6 @@ async def refresh_pull_requests(
             row.pr_key,
             row.refresh_etag,
             row.head_sha,
-            row.merged_at,
         )
         for row in rows
     ]
@@ -246,7 +245,7 @@ async def refresh_pull_requests(
     claim = now + REFRESH_REARM
     readers = _Readers(db)
     throttled: dict[str, datetime] = {}
-    for pull_request_id, account_id, pr_key, etag, known_head, known_merge in claimed:
+    for pull_request_id, account_id, pr_key, etag, known_head in claimed:
         ref = parse_pr_key(pr_key)
         if ref is None:
             crud_pull_request_refresh.defer(
@@ -337,7 +336,7 @@ async def refresh_pull_requests(
                 )
             except (TrackerError, ValueError):
                 facts["head_sha"] = None
-        recorded = crud_pull_request_refresh.record(
+        recorded, merged_now = crud_pull_request_refresh.record(
             db,
             claimed_due=claim,
             pull_request_id=pull_request_id,
@@ -345,11 +344,7 @@ async def refresh_pull_requests(
             etag=response.etag,
             **facts,
         )
-        if (
-            recorded is not None
-            and known_merge is None
-            and recorded.merged_at is not None
-        ):
+        if recorded is not None and merged_now:
             from preloop.services.fleet_code_activity import emit_merge_event
             from preloop.services.readiness.scheduler import schedule_pull_request
 
