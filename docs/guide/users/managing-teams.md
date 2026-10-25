@@ -2,7 +2,7 @@
 
 Editions: Preloop (OSS), Preloop Cloud, Preloop Enterprise.
 
-Create teams and assign members in Preloop (OSS). Preloop Cloud and Preloop Enterprise also support inherited team roles and team-based approval routing.
+Create teams and assign members in Preloop (OSS), where any user of the account can manage them. Preloop Cloud and Preloop Enterprise also support inherited team roles, permission checks and team-based approval routing.
 
 !!! info "Editions"
     Basic team creation, editing, deletion and membership are included in Preloop (OSS). Team role inheritance, team budgets and advanced approval routing require Preloop Cloud or Preloop Enterprise.

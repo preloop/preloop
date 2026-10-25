@@ -108,7 +108,7 @@ Re-running the installer upgrades in place and preserves your configuration, see
 
 !!! info "Editions"
     **Preloop** (open source, this page) is free forever. **Preloop Cloud** is
-    the hosted service at preloop.ai. Users, invites, basic roles and teams are
-    included in **Preloop (OSS)**. **Preloop Enterprise** adds fine-grained
-    RBAC/ABAC, team budgets and advanced FinOps workflows for self-hosted
+    the hosted service at preloop.ai. Users, invites and teams are included in
+    **Preloop (OSS)**, without access controls between users. **Preloop
+    Enterprise** adds roles, RBAC/ABAC, team budgets and advanced FinOps workflows for self-hosted
     deployments, contact [sales@preloop.ai](mailto:sales@preloop.ai).

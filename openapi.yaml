@@ -22874,9 +22874,9 @@ paths:
       tags:
       - Users
       summary: Update User
-      description: "Update a user's profile (admin only).\n\nArgs:\n    user_id: User\
-        \ ID to update\n    update_data: User update data\n    current_user: Current\
-        \ authenticated user\n    db: Database session\n\nReturns:\n    UserResponse:\
+      description: "Update a user's membership, or the caller's own profile.\n\nArgs:\n\
+        \    user_id: User ID to update\n    update_data: User update data\n    current_user:\
+        \ Current authenticated user\n    db: Database session\n\nReturns:\n    UserResponse:\
         \ Updated user data\n\nRaises:\n    HTTPException: If user not found or not\
         \ in same account"
       operationId: update_user_api_v1_users__user_id__patch
@@ -22921,10 +22921,10 @@ paths:
       tags:
       - Users
       summary: Deactivate User
-      description: "Deactivate a user (admin only).\n\nArgs:\n    user_id: User ID\
-        \ to deactivate\n    current_user: Current authenticated user\n    db: Database\
-        \ session\n\nRaises:\n    HTTPException: If user not found, not in same account,\
-        \ or trying to deactivate self"
+      description: "Deactivate another user in the account.\n\nArgs:\n    user_id:\
+        \ User ID to deactivate\n    current_user: Current authenticated user\n  \
+        \  db: Database session\n\nRaises:\n    HTTPException: If user not found,\
+        \ not in same account, or trying to deactivate self"
       operationId: deactivate_user_api_v1_users__user_id__deactivate_post
       security:
       - bearerAuth: []
@@ -23034,138 +23034,6 @@ paths:
                 items:
                   $ref: '#/components/schemas/UserSummary'
                 title: Response Search Users By Username Api V1 Users Search  Username  Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '401':
-          description: Invalid or expired credential
-        '403':
-          description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
-      x-restricted-ci: deny
-  /api/v1/users/{user_id}/roles:
-    get:
-      tags:
-      - Users
-      summary: Get User Roles
-      description: "Get roles assigned to a user.\n\nArgs:\n    user_id: User ID\n\
-        \    current_user: Current authenticated user\n    db: Database session\n\n\
-        Returns:\n    List[dict]: List of roles assigned to the user\n\nRaises:\n\
-        \    HTTPException: If user not found or not in same account"
-      operationId: get_user_roles_api_v1_users__user_id__roles_get
-      security:
-      - bearerAuth: []
-      parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: User Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: true
-                title: Response Get User Roles Api V1 Users  User Id  Roles Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '401':
-          description: Invalid or expired credential
-        '403':
-          description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
-      x-restricted-ci: deny
-    post:
-      tags:
-      - Users
-      summary: Assign User Role
-      description: "Assign a role to a user.\n\nArgs:\n    user_id: User ID\n    role_data:\
-        \ Dict with role_id\n    current_user: Current authenticated user\n    db:\
-        \ Database session\n\nReturns:\n    dict: Success message\n\nRaises:\n   \
-        \ HTTPException: If user not found, role not found, or not in same account"
-      operationId: assign_user_role_api_v1_users__user_id__roles_post
-      security:
-      - bearerAuth: []
-      parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: User Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UserRoleAssignment'
-      responses:
-        '201':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                title: Response Assign User Role Api V1 Users  User Id  Roles Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-        '401':
-          description: Invalid or expired credential
-        '403':
-          description: Operation or resource denied for restricted CI credentials
-        '503':
-          description: Credential verification unavailable
-      x-restricted-ci: deny
-  /api/v1/users/{user_id}/roles/{role_id}:
-    delete:
-      tags:
-      - Users
-      summary: Remove User Role
-      description: "Remove a role from a user.\n\nArgs:\n    user_id: User ID\n  \
-        \  role_id: Role ID to remove\n    current_user: Current authenticated user\n\
-        \    db: Database session\n\nRaises:\n    HTTPException: If user not found,\
-        \ role not found, or not in same account"
-      operationId: remove_user_role_api_v1_users__user_id__roles__role_id__delete
-      security:
-      - bearerAuth: []
-      parameters:
-      - name: user_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: User Id
-      - name: role_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Role Id
-      responses:
-        '204':
-          description: Successful Response
         '422':
           description: Validation Error
           content:
@@ -52273,7 +52141,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;
@@ -52528,17 +52395,6 @@ components:
       - new_password
       title: UserPasswordUpdate
       description: Schema for updating user password.
-    UserRoleAssignment:
-      properties:
-        role_id:
-          anyOf:
-          - type: string
-            format: uuid
-          - type: 'null'
-          title: Role Id
-      type: object
-      title: UserRoleAssignment
-      description: A role identifier validated before querying account roles.
     UserSummary:
       properties:
         id:

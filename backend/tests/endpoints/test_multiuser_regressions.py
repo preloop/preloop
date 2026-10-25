@@ -1,4 +1,4 @@
-"""Regression coverage for ownership, destructive batches and tenant metadata."""
+"""Regression coverage for removals, destructive batches and tenant metadata."""
 
 import logging
 from typing import Any
@@ -23,7 +23,7 @@ from preloop.models.crud import (
 
 @pytest.fixture(autouse=True)
 def enabled_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exercise real basic permissions on every regression request."""
+    """Run every regression request with permission checks enabled."""
     from preloop.config import settings
     from preloop.utils import permissions
 
@@ -81,7 +81,7 @@ def remove_request(client: TestClient, target: models.User, action: str) -> Any:
 
 @pytest.mark.parametrize("kind", ["primary", "owner"])
 @pytest.mark.parametrize("action", ["patch", "deactivate", "soft", "hard"])
-def test_admin_cannot_remove_account_owners(
+def test_any_member_can_remove_owners_in_core(
     client: TestClient,
     app: Any,
     db_session: Session,
@@ -89,7 +89,7 @@ def test_admin_cannot_remove_account_owners(
     kind: str,
     action: str,
 ) -> None:
-    """Managing colleagues never lets a non-owner lock the account owner out."""
+    """Core has no owner protection; only the account's own integrity rules."""
     target = colleague(
         db_session, test_user, "protected", "owner" if kind == "owner" else None
     )
@@ -98,32 +98,18 @@ def test_admin_cannot_remove_account_owners(
         crud_account.update(
             db_session, db_obj=account, obj_in={"primary_user_id": target.id}
         )
-    admin = colleague(db_session, test_user, "administrator", "admin")
-    app.dependency_overrides[get_current_active_user] = lambda: admin
-    response = remove_request(client, target, action)
-    if action in {"soft", "hard"}:
-        assert response.status_code == 200, response.text
-        result = response.json()["results"][0]
-        assert result["status"] == "skipped", response.text
-        assert "owner" in result["reason"].lower()
-    else:
-        assert response.status_code == 403, response.text
-    retained = crud_user.get(db_session, id=target.id)
-    assert retained is not None and retained.is_active
-
-
-@pytest.mark.parametrize("action", ["patch", "deactivate", "soft", "hard"])
-def test_existing_owner_can_remove_another_owner(
-    client: TestClient, db_session: Session, test_user: models.User, action: str
-) -> None:
-    """Intentional membership changes by a direct owner remain available."""
-    target = colleague(db_session, test_user, "departing_owner", "owner")
+    peer = colleague(db_session, test_user, "peer")
+    app.dependency_overrides[get_current_active_user] = lambda: peer
     response = remove_request(client, target, action)
     assert response.status_code == (204 if action == "deactivate" else 200), (
         response.text
     )
     retained = crud_user.get(db_session, id=target.id)
-    if action == "hard":
+    if kind == "primary" and action == "hard":
+        # An account cannot lose its primary user while others remain.
+        assert response.json()["results"][0]["status"] == "skipped"
+        assert retained is not None and retained.is_active
+    elif action == "hard":
         assert retained is None
     else:
         assert retained is not None and not retained.is_active
@@ -255,26 +241,6 @@ def test_bulk_delete_rolls_back_one_error_and_continues(
     assert "Synthetic deletion failure" in response.json()["results"][0]["reason"]
     rollback.assert_called_once()
     assert crud_user.get(db_session, id=bad.id).is_active
-
-
-@pytest.mark.parametrize("role_id", ["not-a-uuid", 123, [], {}, True])
-def test_role_assignment_rejects_invalid_uuid(
-    client: TestClient, test_user: models.User, role_id: Any
-) -> None:
-    """Invalid role ids fail validation before reaching a UUID database bind."""
-    response = client.post(
-        f"/api/v1/users/{test_user.id}/roles", json={"role_id": role_id}
-    )
-    assert response.status_code == 422, response.text
-
-
-@pytest.mark.parametrize("payload", [{}, {"role_id": None}])
-def test_role_assignment_preserves_missing_id_error(
-    client: TestClient, test_user: models.User, payload: dict[str, Any]
-) -> None:
-    """A missing id retains the established client-facing 400 response."""
-    response = client.post(f"/api/v1/users/{test_user.id}/roles", json=payload)
-    assert response.status_code == 400, response.text
 
 
 def test_public_invitation_details_hide_foreign_metadata(

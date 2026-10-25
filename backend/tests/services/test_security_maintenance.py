@@ -2210,9 +2210,10 @@ class TestBaselineAuditEntry:
             assert still_pending.status_code == 409
 
             app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
+            # Both users belong to other accounts. The core edition has no
+            # role checks, so the release is simply not visible to them.
             foreign = client.post(path, json={"sbom_content_base64": SBOM_B64})
-            assert foreign.status_code == 403
-            assert "edit_flows" in foreign.json()["detail"]
+            assert foreign.status_code == 404
 
             app.dependency_overrides[get_current_active_user] = lambda: test_editor_user
             hidden = client.post(path, json={"sbom_content_base64": SBOM_B64})

@@ -17,8 +17,12 @@ paths = app.openapi()["paths"]
 for path in ("/api/v1/users", "/api/v1/teams", "/api/v1/invitations", "/api/v1/invitations/public/{token}", "/api/v1/invitations/accept"):
     assert path in paths, path
 assert "/api/v1/teams/{team_id}/roles" not in paths
+assert "/api/v1/users/{user_id}/roles" not in paths
+assert "/api/v1/users/{user_id}/roles/{role_id}" not in paths
 features = get_plugin_manager().get_enabled_features()["features"]
-assert features["user_management"] and features["team_management"] and features["basic_roles"]
+assert features["user_management"] and features["team_management"]
+assert "basic_roles" not in features
+assert not features.get("role_management")
 assert not features.get("rbac")
 assert not features.get("advanced_approvals")
 assert not features.get("team_budgets")

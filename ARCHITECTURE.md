@@ -702,38 +702,43 @@ Preloop (OSS) owns user, invitation and team CRUD in
 CRUD remain in `preloop.models`. Core registers these routers once, including
 the unauthenticated invitation inspection/acceptance routes. Blocking CRUD
 handlers use FastAPI's synchronous thread-pool dispatch. User and team
-management and basic role capability flags are present without commercial
-plugins, including with `DISABLE_PROPRIETARY_PLUGINS=true`.
+management capability flags are present without commercial plugins, including
+with `DISABLE_PROPRIETARY_PLUGINS=true`.
 
-The system `admin` and `member` roles are available in Preloop (OSS). Existing
-`owner` assignments retain account ownership and only owners can grant that
-role. Removing an owner or primary user also requires ownership; bulk operations
-report denied targets as skipped. New OSS colleagues default to member. The core permission decorator
-checks the seeded permission matrix when advanced RBAC is absent; member
-permissions exclude user, role and team administration and the administrative
-user directory. Invitation token lists require administrative user visibility.
-Controllers validate account ownership before reading or mutating users, teams, invitations or role assignments. The role
-selector includes only basic system roles in OSS and never another account's
-custom roles.
+Core applies no access control between users of the same account: there are
+no roles, no role assignment and no owner protection, and every active member
+can do everything in the account. Without the RBAC plugin
+`preloop.utils.permissions.members_have_full_access()` is true, so
+`user_holds_permission` grants every permission, `ensure_permission_in_oss`
+and the kill-switch toggle admit every member, and `/auth/users/me` reports a
+null permission list. Endpoints keep their `@require_permission` decorators;
+they are no-ops in core and enforced by the RBAC plugin. Tenant isolation is
+not an access control between users and stays: controllers validate account
+ownership before reading or mutating users, teams or invitations. Invitations
+that request roles answer 402 `upgrade_required` in core, and roles stored on
+an invitation by a commercial edition are not granted on acceptance. Bulk hard
+deletion still skips the primary user of an account with other members,
+because an account needs a primary user.
 
 `preloop.services.multiuser` resolves optional services through PluginManager:
 `multiuser_seat_gate`, `multiuser_billing_service`, `multiuser_membership` and
-`multiuser_advanced_roles`. Moved controllers import no proprietary packages.
+`multiuser_access_control`. The last implements the `AccessControl` protocol
+(`validate_invitation_roles`, `apply_invitation_roles`,
+`ensure_can_remove_member`). Moved controllers import no proprietary packages.
 The RBAC and account hierarchy plugins in Preloop Cloud and Preloop Enterprise
 supply seat policies, subscription housekeeping, canonical membership linking
-and advanced role validation. Invitation context includes the invitee email so
-the overlay can recognize an existing seat across its account tree. They
-register only their additional routes,
-including team role inheritance. Basic team CRUD is independent of advanced
-RBAC entitlements.
+and all access control: roles and role assignment (`/users/{id}/roles`,
+`/teams/{id}/roles`), owner protection, RBAC/ABAC and permission enforcement
+on the core endpoints. They register only their additional routes, never a
+second copy of a core route. Invitation context includes the invitee email so
+the overlay can recognize an existing seat across its account tree.
 
-Preloop Cloud and Preloop Enterprise retain custom roles, fine-grained
-RBAC/ABAC, resource rules and sharing, team budgets, subaccount hierarchy,
-pooled billing, SSO/SAML/SCIM, fleet findings, multi-approver/escalation
-workflows, weekly governance review, advanced reporting and audit
-export/retention. The existing console capability and upgrade affordances
-continue to gate those features. Per-user devices/runners/agents, basic
-approvals and basic usage views remain in core.
+Preloop Cloud and Preloop Enterprise also retain resource rules and sharing,
+team budgets, subaccount hierarchy, pooled billing, SSO/SAML/SCIM, fleet
+findings, multi-approver/escalation workflows, weekly governance review,
+advanced reporting and audit export/retention. The console shows no role
+controls in core; role actions open the upgrade affordance. Per-user
+devices/runners/agents, basic approvals and basic usage views remain in core.
 
 ### Cache-inclusive input tokens
 
@@ -769,8 +774,8 @@ token counts.
 ### Console edit permissions
 
 Edit controls use the cached user profile with three distinct states: a null
-permission list represents explicitly disabled permission checks, a role
-permission list grants only named actions in every edition,
+permission list means no access control applies (core, or disabled checks),
+an RBAC list grants only named actions,
 and an unresolved or failed profile disables edits. Budget components also accept
 `readOnly` to display limits without add/edit/delete actions. Models use separate
 create/edit/delete grants; user actions use `manage_users`, invitations use

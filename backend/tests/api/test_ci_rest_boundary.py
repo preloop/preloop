@@ -251,7 +251,6 @@ def test_real_routes_deny_valid_requests_without_side_effects(
         ),
         ("POST", "/api/v1/invitations", {"email": "forbidden@example.com"}),
         ("POST", "/api/v1/teams", {"name": "Forbidden team"}),
-        ("POST", f"/api/v1/users/{owner.id}/roles", {"role_id": str(owner.id)}),
         ("POST", "/api/v1/auth/api-keys", {"name": "Forbidden issuance", "scopes": []}),
         ("DELETE", f"/api/v1/auth/api-keys/{key.id}", None),
         ("PUT", f"/api/v1/projects/{project.id}", {"name": "Forbidden edit"}),

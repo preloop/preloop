@@ -135,10 +135,10 @@ def test_the_change_is_bound_to_the_calling_account(client, db_session, test_use
     assert theirs.scope == EMBEDDING_SCOPE_SUMMARIES_ONLY
 
 
-def test_a_user_without_the_budget_permission_cannot_widen_the_scope(
+def test_a_core_member_without_the_budget_role_can_widen_the_scope(
     db_session, test_viewer_user
 ):
-    """Widening the scope spends money, so a viewer is refused."""
+    """Core has no role checks: a viewer-role member may widen the scope."""
     app: FastAPI = create_app()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
@@ -146,12 +146,11 @@ def test_a_user_without_the_budget_permission_cannot_widen_the_scope(
     with TestClient(app) as viewer_client:
         response = viewer_client.put(SETTING_URL, json={"scope": EMBEDDING_SCOPE_FULL})
 
-    assert response.status_code == 403
-    assert "manage_budgets" in response.json()["detail"]
+    assert response.status_code == 200, response.text
     stored = crud_session_embedding_setting.get_for_account(
         db_session, account_id=test_viewer_user.account_id
     )
-    assert stored is None or stored.scope == EMBEDDING_SCOPE_SUMMARIES_ONLY
+    assert stored is not None and stored.scope == EMBEDDING_SCOPE_FULL
 
 
 # --- Opting in from the console (#791) -------------------------------------
@@ -353,8 +352,8 @@ def test_the_read_carries_the_deployment_cap_and_corpus_progress(client):
     }
 
 
-def test_a_viewer_cannot_opt_the_account_in(db_session, test_viewer_user):
-    """Opting in spends money, so it takes manage_budgets like the scope."""
+def test_a_core_viewer_can_opt_the_account_in(db_session, test_viewer_user):
+    """Core has no role checks: a viewer-role member may opt the account in."""
     app: FastAPI = create_app()
     app.dependency_overrides[get_db] = lambda: db_session
     app.dependency_overrides[get_current_active_user] = lambda: test_viewer_user
@@ -362,11 +361,11 @@ def test_a_viewer_cannot_opt_the_account_in(db_session, test_viewer_user):
     with TestClient(app) as viewer_client:
         response = viewer_client.put(SETTING_URL, json=LOCAL_OPT_IN)
 
-    assert response.status_code == 403
+    assert response.status_code == 200, response.text
     stored = crud_session_embedding_setting.get_for_account(
         db_session, account_id=test_viewer_user.account_id
     )
-    assert stored is None or stored.enabled is False
+    assert stored is not None and stored.enabled is True
 
 
 def test_an_explicit_null_enabled_leaves_the_opt_in_alone(

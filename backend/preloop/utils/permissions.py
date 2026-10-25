@@ -1,9 +1,11 @@
-"""Permission utilities with basic OSS enforcement.
+"""Permission utilities with OSS fallback.
 
-When the proprietary RBAC plugin is unavailable, this module enforces the
-seeded account role permissions. When it is available, the exported decorator
-preserves the wrapped function's sync/async nature so FastAPI can dispatch
-sync handlers via its threadpool.
+When the proprietary RBAC plugin is unavailable, this module exposes a no-op
+decorator and the role helpers grant every member every permission: core
+applies no access control between users of the same account. When the plugin
+is available, the exported decorator preserves the wrapped function's
+sync/async nature so FastAPI can keep dispatching sync handlers via its
+threadpool.
 """
 
 from __future__ import annotations
@@ -11,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
-import os
 import threading
 from contextvars import ContextVar, copy_context
 from typing import TYPE_CHECKING, Any, Callable
@@ -26,12 +27,6 @@ if TYPE_CHECKING:
     from preloop.models.models.user import User
 
 try:
-    if os.getenv("DISABLE_PROPRIETARY_PLUGINS", "false").lower() in {
-        "true",
-        "1",
-        "yes",
-    }:
-        raise ImportError("Proprietary plugins disabled")
     from preloop.plugins.proprietary.rbac.permissions import (
         require_permission as _plugin_require_permission,
     )
@@ -58,6 +53,15 @@ def _rbac_checks_enabled() -> bool:
     if settings.disable_rbac:
         return False
     return os.getenv("DISABLE_RBAC", "false").lower() != "true"
+
+
+def members_have_full_access() -> bool:
+    """Return True when no access control applies between account members.
+
+    Core has no roles: every active user of an account can do everything in
+    it. Roles and permission enforcement belong to the RBAC plugin.
+    """
+    return _plugin_require_permission is None
 
 
 def _ensure_permission_dependencies(**kwargs: object) -> None:
@@ -149,55 +153,17 @@ def _with_authorizer(func, permission_name: str):
     return authorized_sync
 
 
-def _with_core_permission(
-    func: Callable[..., Any], permission_name: str
-) -> Callable[..., Any]:
-    """Enforce basic account permissions when the advanced RBAC overlay is absent."""
-    signature = inspect.signature(func)
-
-    def check(args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        if not _rbac_checks_enabled():
-            return
-        bound = signature.bind_partial(*args, **kwargs)
-        dependencies = dict(bound.arguments)
-        _ensure_permission_dependencies(**dependencies)
-        user = dependencies["current_user"]
-        if not getattr(user, "is_active", False):
-            raise HTTPException(403, "Inactive membership")
-        ensure_permission_in_oss(dependencies["db"], user, permission_name)
-
-    if inspect.iscoroutinefunction(func):
-
-        @functools.wraps(func)
-        async def asynchronous(*args: Any, **kwargs: Any) -> Any:
-            from preloop.api.loop_safety import run_db_off_loop
-
-            await run_db_off_loop(lambda: check(args, kwargs))
-            return await func(*args, **kwargs)
-
-        return asynchronous
-
-    @functools.wraps(func)
-    def synchronous(*args: Any, **kwargs: Any) -> Any:
-        check(args, kwargs)
-        return func(*args, **kwargs)
-
-    return synchronous
-
-
 def _require_human_permission(permission_name: str):
     """Return a decorator that preserves sync/async behavior.
 
-    Core role checks run before the account authorizer (H4). With the RBAC
-    overlay, its advanced checks replace the core check before the authorizer
-    and endpoint run.
+    Without the RBAC plugin the endpoint is only wrapped for the account
+    authorizer (H4). With it, RBAC runs first as the ceiling, then the
+    authorizer, then the endpoint.
     """
 
     def decorator(func):
         if _plugin_require_permission is None:
-            return _with_core_permission(
-                _with_authorizer(func, permission_name), permission_name
-            )
+            return _with_authorizer(func, permission_name)
 
         plugin_wrapped = _plugin_require_permission(permission_name)(
             _with_authorizer(func, permission_name)
@@ -411,8 +377,11 @@ def user_holds_permission(db, current_user, permission_name: str) -> bool:
     that merely happens to be named ``owner`` gets no special treatment.
 
     Resolved in one SQL round trip because the fallback runs on every
-    decorated request.
+    decorated request. Without the RBAC plugin every member holds every
+    permission (see :func:`members_have_full_access`).
     """
+    if members_have_full_access():
+        return True
     from sqlalchemy import and_, or_, select, true
 
     from preloop.models.models.permission import Permission, Role, RolePermission
@@ -446,7 +415,7 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
     roles granted through teams in the user's account. Roles scoped to
     another account never count. Holding the system ``owner`` role expands
     to every permission name. A custom role that is merely named ``owner``
-    does not.
+    does not. Without the RBAC plugin every member holds every permission.
 
     Args:
         db: Database session.
@@ -458,6 +427,9 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
     from sqlalchemy import or_, select, true
 
     from preloop.models.models.permission import Permission, Role, RolePermission
+
+    if members_have_full_access():
+        return list(db.scalars(select(Permission.name)).all())
 
     user_id = current_user.id
     account_id = current_user.account_id
@@ -483,13 +455,12 @@ def user_permission_names(db: Session, current_user: User) -> list[str]:
 
 
 def ensure_permission_in_oss(db, current_user, permission_name: str) -> None:
-    """Enforce ``permission_name`` on builds where the RBAC plugin is absent.
+    """Check ``permission_name`` on paths the decorator does not cover.
 
-    The core decorator and controls that steer or stop a running agent use
-    this fallback. EE returns immediately because its decorator already
-    enforced the permission, and OSS falls back to the
-    seeded role matrix, with the superuser and the account's primary user
-    always allowed so nobody can be locked out of their own account.
+    EE returns immediately because the decorator already enforced the
+    permission. Core applies no access control between users of the same
+    account, so every member passes. The role checks below run only when the
+    plugin is installed with its permission checks disabled.
 
     Raises:
         HTTPException: 403 when the user does not hold the permission.
@@ -497,6 +468,8 @@ def ensure_permission_in_oss(db, current_user, permission_name: str) -> None:
     from preloop.models.crud import crud_account
 
     if _plugin_require_permission is not None and _rbac_checks_enabled():
+        return
+    if members_have_full_access():
         return
     if getattr(current_user, "is_superuser", False):
         return

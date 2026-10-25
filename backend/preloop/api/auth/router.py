@@ -230,25 +230,26 @@ def _is_account_owner(user: UserModel, db: Session) -> bool:
 
 
 def _resolve_user_permissions(user: UserModel, db: Session) -> Optional[List[str]]:
-    """Expose enforced permissions for both basic and advanced account roles.
+    """Return RBAC permissions, or None when RBAC is disabled/unavailable.
 
-    A failed lookup returns no grants, keeping console edit controls closed.
-    Explicitly disabling permission checks preserves the administrative bypass.
+    Soft-fails on missing proprietary RBAC deps or DB errors so ``/users/me``
+    still returns the core profile when optional permissions cannot be loaded.
     """
     if settings.disable_rbac:
         return None
 
-    from preloop.plugins.base import get_plugin_manager
-    from preloop.utils.permissions import user_permission_names
+    try:
+        from preloop.plugins.proprietary.rbac.permissions import get_user_permissions
+    except ImportError:
+        # Covers ModuleNotFoundError and broken/partial RBAC dependency imports.
+        return None
 
     try:
-        resolver = get_plugin_manager().get_service("get_user_permissions")
-        if resolver is not None:
-            return resolver(user, db)
-        return user_permission_names(db, user) if user.is_active else []
+        return get_user_permissions(user, db)
     except Exception:
-        logger.exception("Failed to resolve user permissions")
-        return []
+        # RBAC is optional on this path; never 500 /users/me for permission lookup.
+        logger.exception("Failed to resolve user permissions; returning None")
+        return None
 
 
 def _resolve_team_ids(user: UserModel, db: Session) -> List[UUID]:

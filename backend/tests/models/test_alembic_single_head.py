@@ -496,6 +496,4 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert credential_columns.down_revision == "20261110_credential_backfill"
     media_timing = script.get_revision("20261110_media_timing")
     assert media_timing.down_revision == "20261111_credential_columns"
-    basic_member_role = script.get_revision("20261029_basic_member_role")
-    assert basic_member_role.down_revision == "20261110_media_timing"
-    assert script.get_heads() == ["20261029_basic_member_role"]
+    assert script.get_heads() == ["20261110_media_timing"]

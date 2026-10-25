@@ -1,9 +1,15 @@
-"""Real OSS authorization checks with RBAC enabled and no proprietary plugins."""
+"""OSS multi-user boundaries with RBAC enabled and no proprietary plugins.
+
+Core applies no access control between users of the same account: every
+member can do everything in it. Accounts stay isolated from each other, roles
+are a commercial overlay, and the overlay hooks are honoured when registered.
+"""
 
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -17,12 +23,13 @@ from preloop.models.crud import (
     crud_user_invitation,
     crud_user_role,
 )
+from preloop.services import multiuser
 
 
 @pytest.fixture
 def member(db_session: Session, test_user: models.User) -> models.User:
-    """Persist an ordinary colleague with no administrative role."""
-    user = crud_user.create(
+    """Persist an ordinary colleague who holds no role at all."""
+    return crud_user.create(
         db_session,
         obj_in={
             "account_id": test_user.account_id,
@@ -33,15 +40,11 @@ def member(db_session: Session, test_user: models.User) -> models.User:
             "email_verified": True,
         },
     )
-    role = crud_role.get_by_name(db_session, name="member")
-    assert role is not None
-    crud_user_role.assign_role(db_session, user_id=user.id, role_id=role.id)
-    return user
 
 
 @pytest.fixture
 def secured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Undo the suite's permission bypass for security-sensitive requests."""
+    """Undo the suite's permission bypass so the core edition runs as shipped."""
     from preloop.config import settings
     from preloop.utils import permissions
 
@@ -51,68 +54,69 @@ def secured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(permissions, "_plugin_require_permission", None)
 
 
-@pytest.mark.parametrize(
-    "method,path,payload",
-    [
-        (
-            "post",
-            "/users",
-            {
-                "username": "new_member",
-                "email": "new@example.com",
-                "password": "password123",
-            },
-        ),
-        ("patch", "/users/{user}", {"is_active": False}),
-        ("post", "/users/{user}/deactivate", None),
-        ("post", "/users/bulk-delete", {"user_ids": []}),
-        ("post", "/users/{user}/roles", {"role_id": "{role}"}),
-        ("delete", "/users/{user}/roles/{role}", None),
-        ("post", "/invitations", {"email": "new@example.com"}),
-        ("delete", "/invitations/{invitation}", None),
-        ("post", "/invitations/{invitation}/resend", None),
-        ("post", "/teams", {"name": "Escalated team"}),
-        ("patch", "/teams/{team}", {"name": "Escalated"}),
-        ("delete", "/teams/{team}", None),
-        ("post", "/teams/{team}/members", {"user_id": "{user}", "role": "admin"}),
-        ("patch", "/teams/{team}/members/{user}", {"role": "admin"}),
-        ("delete", "/teams/{team}/members/{user}", None),
-    ],
-)
-def test_member_cannot_administer_account(
+@pytest.fixture
+def no_email(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep invitation emails off the network."""
+    from preloop.api.endpoints import invitations
+
+    monkeypatch.setattr(invitations, "send_invitation_email", lambda **kwargs: None)
+
+
+def test_any_member_can_administer_the_account(
     client: TestClient,
     app: Any,
     db_session: Session,
     test_user: models.User,
     member: models.User,
     secured: None,
-    method: str,
-    path: str,
-    payload: Any,
+    no_email: None,
 ) -> None:
-    """Members cannot escalate directly, by invite or through team membership."""
+    """A colleague without roles manages users, invitations and teams."""
     app.dependency_overrides[get_current_active_user] = lambda: member
-    admin = crud_role.get_by_name(db_session, name="admin")
-    ids = {
-        "user": str(test_user.id),
-        "role": str(admin.id),
-        "team": str(uuid4()),
-        "invitation": str(uuid4()),
-    }
-    data = (
-        {
-            key: value.format(**ids) if isinstance(value, str) else value
-            for key, value in payload.items()
-        }
-        if payload is not None
-        else None
+
+    created = client.post(
+        "/api/v1/users",
+        json={
+            "username": "added_by_member",
+            "email": "added@example.com",
+            "password": "password123",
+        },
     )
-    response = client.request(method.upper(), "/api/v1" + path.format(**ids), json=data)
-    assert response.status_code == 403, response.text
+    assert created.status_code == 201, created.text
     assert (
-        not crud_user_role.get_by_user(db_session, user_id=member.id)[0].role_id
-        == admin.id
+        crud_user_role.get_by_user(db_session, user_id=UUID(created.json()["id"])) == []
     )
+    assert created.json()["roles"] == []
+    assert client.get("/api/v1/users").status_code == 200
+
+    invited = client.post("/api/v1/invitations", json={"email": "new@example.com"})
+    assert invited.status_code == 201, invited.text
+    assert client.get("/api/v1/invitations").status_code == 200
+    resent = client.post(f"/api/v1/invitations/{invited.json()['id']}/resend")
+    assert resent.status_code in (200, 204), resent.text
+    cancelled = client.delete(f"/api/v1/invitations/{invited.json()['id']}")
+    assert cancelled.status_code == 204, cancelled.text
+
+    team = client.post("/api/v1/teams", json={"name": "Member team"})
+    assert team.status_code == 201, team.text
+    team_id = team.json()["id"]
+    added = client.post(
+        f"/api/v1/teams/{team_id}/members",
+        json={"user_id": created.json()["id"], "role": "lead"},
+    )
+    assert added.status_code == 201, added.text
+    relabelled = client.patch(
+        f"/api/v1/teams/{team_id}/members/{created.json()['id']}",
+        json={"role": "member"},
+    )
+    assert relabelled.status_code == 200, relabelled.text
+    renamed = client.patch(f"/api/v1/teams/{team_id}", json={"name": "Renamed"})
+    assert renamed.status_code == 200, renamed.text
+    assert client.delete(f"/api/v1/teams/{team_id}").status_code == 204
+
+    # No owner protection in core: the primary user is an ordinary member.
+    deactivated = client.post(f"/api/v1/users/{test_user.id}/deactivate")
+    assert deactivated.status_code == 204, deactivated.text
 
 
 @pytest.mark.parametrize("resource", ["users", "teams", "invitations"])
@@ -153,142 +157,93 @@ def test_member_cannot_read_other_account(
     response = client.get(f"/api/v1/{resource}/{target.id}")
     assert response.status_code in (403, 404), response.text
     listing = client.get(f"/api/v1/{resource}")
-    if resource in {"users", "invitations"}:
-        # Tokens grant membership, so ordinary colleagues cannot enumerate them.
-        assert listing.status_code == 403, listing.text
-        return
     assert listing.status_code == 200, listing.text
-    assert str(target.id) not in [row["id"] for row in listing.json()[resource]]
+    body = listing.json()
+    rows = body[resource] if isinstance(body, dict) else body
+    assert str(target.id) not in [row["id"] for row in rows]
 
 
-def test_admin_can_assign_basic_roles_but_not_custom_roles(
+def test_member_cannot_remove_another_accounts_user(
     client: TestClient,
-    db_session: Session,
-    test_user: models.User,
-    member: models.User,
-    secured: None,
-) -> None:
-    """OSS supports its basic roles and rejects advanced grant requests."""
-    admin = crud_role.get_by_name(db_session, name="admin")
-    response = client.post(
-        f"/api/v1/users/{member.id}/roles", json={"role_id": str(admin.id)}
-    )
-    assert response.status_code == 201, response.text
-    custom = crud_role.create(
-        db_session,
-        obj_in={
-            "account_id": test_user.account_id,
-            "name": "custom",
-            "is_system_role": False,
-        },
-    )
-    denied = client.post(
-        f"/api/v1/users/{member.id}/roles", json={"role_id": str(custom.id)}
-    )
-    assert denied.status_code == 402, denied.text
-    assert denied.json()["detail"]["code"] == "upgrade_required"
-
-
-def test_role_listing_cannot_leak_other_accounts(
-    client: TestClient,
-    db_session: Session,
-    secured: None,
-) -> None:
-    """The role selector never exposes another tenant's custom roles."""
-    account = crud_account.create(
-        db_session, obj_in={"organization_name": "Private account"}
-    )
-    role = crud_role.create(
-        db_session, obj_in={"account_id": account.id, "name": "private_role"}
-    )
-    response = client.get("/api/v1/roles")
-    assert response.status_code == 200, response.text
-    assert str(role.id) not in [item["id"] for item in response.json()["roles"]]
-    assert {item["name"] for item in response.json()["roles"]} <= {
-        "owner",
-        "admin",
-        "member",
-    }
-
-
-def test_admin_cannot_bind_another_accounts_role(
-    client: TestClient,
+    app: Any,
     db_session: Session,
     member: models.User,
     secured: None,
 ) -> None:
-    """Even an administrator cannot attach a foreign account's role."""
+    """Full access inside an account never reaches into another account."""
     other = crud_account.create(
         db_session, obj_in={"organization_name": "Other account"}
     )
-    role = crud_role.create(
-        db_session, obj_in={"account_id": other.id, "name": "Foreign administrator"}
-    )
-    response = client.post(
-        f"/api/v1/users/{member.id}/roles", json={"role_id": str(role.id)}
-    )
-    assert response.status_code == 404, response.text
-    invite = client.post(
-        "/api/v1/invitations",
-        json={"email": "foreign_role@example.com", "role_ids": [str(role.id)]},
-    )
-    assert invite.status_code == 403, invite.text
-
-
-def test_new_oss_user_defaults_to_member(
-    client: TestClient,
-    db_session: Session,
-    secured: None,
-) -> None:
-    """Directly added colleagues get an effective basic role."""
-    response = client.post(
-        "/api/v1/users",
-        json={
-            "username": "default_member",
-            "email": "default@example.com",
-            "password": "password123",
+    foreign = crud_user.create(
+        db_session,
+        obj_in={
+            "account_id": other.id,
+            "username": "foreign_member",
+            "email": "foreign@example.com",
+            "is_active": True,
         },
     )
-    assert response.status_code == 201, response.text
-    assert [role["name"] for role in response.json()["roles"]] == ["member"]
+    app.dependency_overrides[get_current_active_user] = lambda: member
+    response = client.post(f"/api/v1/users/{foreign.id}/deactivate")
+    assert response.status_code == 403, response.text
+    db_session.refresh(foreign)
+    assert foreign.is_active
 
 
-def test_member_profile_exposes_enforced_permissions(
+def test_role_assignment_routes_are_not_part_of_core(
     client: TestClient,
-    app: Any,
+    db_session: Session,
     member: models.User,
     secured: None,
 ) -> None:
-    """The console sees explicit grants instead of treating OSS as unrestricted."""
-    app.dependency_overrides[get_current_active_user] = lambda: member
-    response = client.get("/api/v1/auth/users/me")
-    assert response.status_code == 200, response.text
-    grants = response.json()["permissions"]
-    assert isinstance(grants, list)
-    assert "view_teams" in grants
-    assert not set(grants) & {
-        "view_users",
-        "manage_users",
-        "invite_users",
-        "assign_roles",
-        "manage_teams",
-        "create_teams",
-        "edit_teams",
-        "delete_teams",
+    """Role grants are served by the commercial overlay only."""
+    admin = crud_role.get_by_name(db_session, name="admin")
+    assert admin is not None
+    assigned = client.post(
+        f"/api/v1/users/{member.id}/roles", json={"role_id": str(admin.id)}
+    )
+    assert assigned.status_code in (404, 405), assigned.text
+    removed = client.delete(f"/api/v1/users/{member.id}/roles/{admin.id}")
+    assert removed.status_code in (404, 405), removed.text
+    assert crud_user_role.get_by_user(db_session, user_id=member.id) == []
+
+
+def test_invitation_roles_require_an_upgrade(
+    client: TestClient,
+    db_session: Session,
+    test_user: models.User,
+    secured: None,
+    no_email: None,
+) -> None:
+    """Asking core to grant a role answers 402 and stores nothing."""
+    admin = crud_role.get_by_name(db_session, name="admin")
+    assert admin is not None
+    response = client.post(
+        "/api/v1/invitations",
+        json={"email": "role@example.com", "role_ids": [str(admin.id)]},
+    )
+    assert response.status_code == 402, response.text
+    assert response.json()["detail"] == {
+        "code": "upgrade_required",
+        "feature": "rbac",
     }
+    assert (
+        crud_user_invitation.get_by_email(
+            db_session, email="role@example.com", account_id=test_user.account_id
+        )
+        is None
+    )
 
 
-def test_stored_advanced_invitation_cannot_grant_roles_in_oss(
+def test_stored_invitation_roles_are_not_granted_in_oss(
     client: TestClient,
     db_session: Session,
     test_user: models.User,
     secured: None,
 ) -> None:
-    """An invitation issued by an advanced edition cannot enable custom OSS roles."""
-    role = crud_role.create(
-        db_session,
-        obj_in={"account_id": test_user.account_id, "name": "Stored custom role"},
-    )
+    """An invitation issued by a commercial edition still joins, without roles."""
+    role = crud_role.get_by_name(db_session, name="admin")
+    assert role is not None
     invitation = crud_user_invitation.create(
         db_session,
         obj_in={
@@ -306,56 +261,122 @@ def test_stored_advanced_invitation_cannot_grant_roles_in_oss(
             "password": "password123",
         },
     )
-    assert response.status_code == 402, response.text
-    assert crud_user.get_by_username(db_session, username="stored_invitee") is None
-    db_session.refresh(invitation)
-    assert invitation.status == models.UserInvitationStatus.PENDING
+    assert response.status_code == 201, response.text
+    user = crud_user.get_by_username(db_session, username="stored_invitee")
+    assert user is not None
+    assert crud_user_role.get_by_user(db_session, user_id=user.id) == []
 
 
-def test_basic_admin_can_manage_colleagues_but_cannot_grant_ownership(
+def test_member_profile_reports_unrestricted_access(
     client: TestClient,
     app: Any,
+    member: models.User,
+    secured: None,
+) -> None:
+    """The console receives no permission list, so it shows every control."""
+    app.dependency_overrides[get_current_active_user] = lambda: member
+    response = client.get("/api/v1/auth/users/me")
+    assert response.status_code == 200, response.text
+    assert response.json()["permissions"] is None
+
+
+def test_role_helpers_grant_every_member_everything(
+    db_session: Session, member: models.User, secured: None
+) -> None:
+    """Shared role helpers treat a roleless colleague as fully permitted."""
+    from preloop.utils.permissions import (
+        ensure_permission_in_oss,
+        members_have_full_access,
+        user_holds_permission,
+        user_permission_names,
+    )
+
+    assert members_have_full_access()
+    assert user_holds_permission(db_session, member, "manage_kill_switch")
+    assert "manage_users" in user_permission_names(db_session, member)
+    ensure_permission_in_oss(db_session, member, "decide_approvals")
+
+
+def test_role_listing_cannot_leak_other_accounts(
+    client: TestClient,
+    db_session: Session,
+    secured: None,
+) -> None:
+    """The role catalogue never exposes another tenant's custom roles."""
+    account = crud_account.create(
+        db_session, obj_in={"organization_name": "Private account"}
+    )
+    role = crud_role.create(
+        db_session, obj_in={"account_id": account.id, "name": "private_role"}
+    )
+    response = client.get("/api/v1/roles")
+    assert response.status_code == 200, response.text
+    assert str(role.id) not in [item["id"] for item in response.json()["roles"]]
+
+
+class _RecordingAccessControl:
+    """Stand-in for the commercial overlay registered through PluginManager."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def validate_invitation_roles(
+        self, db: Session, current_user: models.User, role_ids: list[UUID]
+    ) -> list[UUID]:
+        self.calls.append("validate")
+        return role_ids
+
+    def apply_invitation_roles(
+        self, db: Session, user: models.User, invitation: models.UserInvitation
+    ) -> None:
+        self.calls.append("apply")
+
+    def ensure_can_remove_member(
+        self, db: Session, current_user: models.User, user: models.User
+    ) -> None:
+        self.calls.append("remove")
+        raise HTTPException(403, "Only an account owner can remove an owner")
+
+
+def test_access_control_overlay_is_consulted(
+    client: TestClient,
     db_session: Session,
     test_user: models.User,
     member: models.User,
     secured: None,
+    no_email: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-owner administrator can manage basic teams and invitations."""
-    from preloop.api.endpoints import invitations
+    """An installed overlay validates roles, grants them and guards removals."""
+    overlay = _RecordingAccessControl()
+    monkeypatch.setattr(multiuser, "access_control", lambda: overlay)
+    role_id = str(uuid4())
 
-    monkeypatch.setattr(invitations, "send_invitation_email", lambda **kwargs: None)
-    admin = crud_user.create(
-        db_session,
-        obj_in={
-            "account_id": test_user.account_id,
-            "username": "basic_admin",
-            "email": "admin@example.com",
-            "is_active": True,
-        },
-    )
-    admin_role = crud_role.get_by_name(db_session, name="admin")
-    owner_role = crud_role.get_by_name(db_session, name="owner")
-    crud_user_role.assign_role(db_session, user_id=admin.id, role_id=admin_role.id)
-    app.dependency_overrides[get_current_active_user] = lambda: admin
-    team = client.post("/api/v1/teams", json={"name": "Admin managed team"})
-    assert team.status_code == 201, team.text
-    added = client.post(
-        f"/api/v1/teams/{team.json()['id']}/members",
-        json={"user_id": str(member.id), "role": "member"},
-    )
-    assert added.status_code == 201, added.text
     invited = client.post(
         "/api/v1/invitations",
-        json={"email": "colleague@example.com", "role_ids": [str(admin_role.id)]},
+        json={"email": "overlay@example.com", "role_ids": [role_id]},
     )
     assert invited.status_code == 201, invited.text
-    denied = client.post(
-        f"/api/v1/users/{admin.id}/roles", json={"role_id": str(owner_role.id)}
+    assert invited.json()["role_ids"] == role_id
+    invitation = crud_user_invitation.get(db_session, id=invited.json()["id"])
+    accepted = client.post(
+        "/api/v1/invitations/accept",
+        json={
+            "token": invitation.token,
+            "username": "overlay_invitee",
+            "password": "password123",
+        },
     )
-    assert denied.status_code == 403, denied.text
-    proxy = client.post(
-        "/api/v1/invitations",
-        json={"email": "proxy@example.com", "role_ids": [str(owner_role.id)]},
-    )
-    assert proxy.status_code == 403, proxy.text
+    assert accepted.status_code == 201, accepted.text
+
+    for method, path, payload in (
+        ("POST", f"/api/v1/users/{member.id}/deactivate", None),
+        ("PATCH", f"/api/v1/users/{member.id}", {"is_active": False}),
+    ):
+        blocked = client.request(method, path, json=payload)
+        assert blocked.status_code == 403, blocked.text
+    bulk = client.post("/api/v1/users/bulk-delete", json={"user_ids": [str(member.id)]})
+    assert bulk.json()["results"][0]["status"] == "skipped"
+    db_session.refresh(member)
+    assert member.is_active
+    assert overlay.calls == ["validate", "apply", "remove", "remove", "remove"]

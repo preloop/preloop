@@ -25,7 +25,6 @@ from preloop.api.common import get_account_for_user
 from preloop.cra.evidence_pack import canonical_manifest_json
 from preloop.models import models
 from preloop.models.db.session import get_db_session
-from preloop.utils.permissions import require_permission
 from preloop.services.dora_exports import (
     AUDIT_ACTION_ASSET_EXPORT,
     AUDIT_ACTION_INCIDENT_EXPORT,
@@ -54,6 +53,11 @@ DEFAULT_PERIOD_DAYS = 30
 #: How far a single incident export may reach. Wider than any quarterly
 #: review; past this, ask for the period you actually want.
 MAX_PERIOD_DAYS = 400
+
+try:  # pragma: no cover - depends on the proprietary plugin being installed
+    from preloop.plugins.proprietary.rbac.permissions import require_permission
+except ImportError:  # pragma: no cover - OSS build
+    from preloop.utils.permissions import require_permission
 
 
 def _parse_bound(value: Optional[str], name: str) -> Optional[datetime]:

@@ -30,7 +30,6 @@ def test_explicit_false_plugin_features_survive_serialization() -> None:
     assert manager.get_enabled_features()["features"] == {
         "user_management": True,
         "team_management": True,
-        "basic_roles": True,
         "billing": False,
         "cost": True,
         "audit_logs": True,

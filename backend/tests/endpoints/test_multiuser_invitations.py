@@ -442,9 +442,9 @@ def test_create_invitation_with_cross_account_role_fails(
 
     response = client.post("/api/v1/invitations", json=invitation_data)
 
-    # Should fail with 403 Forbidden
-    assert response.status_code == 403
-    assert "does not belong to your account" in response.json()["detail"]
+    # Core grants no roles, so any role request is refused before a lookup.
+    assert response.status_code == 402
+    assert response.json()["detail"]["code"] == "upgrade_required"
 
     # Email should not be sent for failed invitation
     mock_send_email.assert_not_called()
@@ -626,34 +626,26 @@ def test_create_invitation_with_own_account_team_succeeds(
 
 
 @patch("preloop.api.endpoints.invitations.send_invitation_email")
-def test_create_invitation_with_system_role_succeeds(
+def test_create_invitation_with_system_role_requires_upgrade(
     mock_send_email, client: TestClient, test_user: User, db_session: Session
 ):
-    """Test that creating invitation with system role succeeds.
-
-    Basic system roles (account_id = NULL) are available to all accounts.
-    """
+    """Even seeded system roles are an access control overlay feature."""
     from preloop.models.crud import crud_role
 
-    # Basic system roles are available to every OSS account.
-    system_role = crud_role.get_by_name(db_session, name="member")
+    system_role = crud_role.get_by_name(db_session, name="admin")
     assert system_role is not None
 
-    # Create invitation with system role
-    invitation_data = {
-        "email": "system_role_user@example.com",
-        "role_ids": [str(system_role.id)],
-    }
+    response = client.post(
+        "/api/v1/invitations",
+        json={
+            "email": "system_role_user@example.com",
+            "role_ids": [str(system_role.id)],
+        },
+    )
 
-    response = client.post("/api/v1/invitations", json=invitation_data)
-
-    # Should succeed - returns 201 Created
-    assert response.status_code == 201
-    data = response.json()
-    assert data["email"] == "system_role_user@example.com"
-
-    # Email should be sent for successful invitation
-    mock_send_email.assert_called_once()
+    assert response.status_code == 402
+    assert response.json()["detail"]["code"] == "upgrade_required"
+    mock_send_email.assert_not_called()
 
 
 def _rbac_enabled_client(db_session: Session, user: User) -> TestClient:
@@ -710,24 +702,24 @@ def _restore_rbac_env(client: TestClient) -> None:
     reset_plugin_manager()
 
 
-def test_create_invitation_requires_invite_users(
-    db_session: Session, test_viewer_user: User
+@patch("preloop.api.endpoints.invitations.send_invitation_email")
+def test_viewer_can_create_invitations_in_core(
+    mock_send_email, db_session: Session, test_viewer_user: User
 ):
-    """Viewers lack invite_users and must receive 403 when creating invitations."""
+    """Core applies no access control between members of one account."""
     client = _rbac_enabled_client(db_session, test_viewer_user)
     try:
         response = client.post(
             "/api/v1/invitations",
-            json={"email": "denied@example.com"},
+            json={"email": "allowed@example.com"},
         )
-        assert response.status_code == 403
-        assert "invite_users" in response.json()["detail"]
+        assert response.status_code == 201, response.text
     finally:
         _restore_rbac_env(client)
 
 
-def test_list_invitations_requires_view_users(db_session: Session):
-    """Users with no roles must receive 403 when listing invitations."""
+def test_roleless_member_can_list_invitations_in_core(db_session: Session):
+    """A user with no roles still lists the invitations of their account."""
     account = crud_account.create(
         db_session,
         obj_in={"organization_name": "No Roles Org", "is_active": True},
@@ -750,34 +742,31 @@ def test_list_invitations_requires_view_users(db_session: Session):
     client = _rbac_enabled_client(db_session, user)
     try:
         response = client.get("/api/v1/invitations")
-        assert response.status_code == 403
-        assert "view_users" in response.json()["detail"]
+        assert response.status_code == 200, response.text
     finally:
         _restore_rbac_env(client)
 
 
-def test_cancel_invitation_requires_invite_users(
+def test_viewer_can_cancel_invitation_in_core(
     db_session: Session, test_user: User, test_viewer_user: User
 ):
-    """Canceling an invitation requires invite_users even if the invite exists."""
+    """Any member of the account can cancel its invitations."""
     invitation = crud_user_invitation.create(
         db_session,
         obj_in={
             "account_id": test_user.account_id,
-            "email": "cancel-denied@example.com",
+            "email": "cancel-allowed@example.com",
             "invited_by": test_user.id,
         },
     )
     db_session.flush()
 
-    # Put the viewer in the same account so the 403 is from RBAC, not account isolation.
     test_viewer_user.account_id = test_user.account_id
     db_session.flush()
 
     client = _rbac_enabled_client(db_session, test_viewer_user)
     try:
         response = client.delete(f"/api/v1/invitations/{invitation.id}")
-        assert response.status_code == 403
-        assert "invite_users" in response.json()["detail"]
+        assert response.status_code == 204, response.text
     finally:
         _restore_rbac_env(client)

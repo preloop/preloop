@@ -342,7 +342,6 @@ class PluginManager:
             "features": {
                 "user_management": True,
                 "team_management": True,
-                "basic_roles": True,
             },
         }
 

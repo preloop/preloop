@@ -32,6 +32,10 @@ from preloop.utils.permissions import require_permission
 
 from preloop.services.multiuser import membership_module
 from preloop.services.multiuser import enforce_seat_available
+from preloop.services.multiuser import (
+    apply_invitation_roles,
+    validate_invitation_roles,
+)
 
 User = models.User
 UserInvitationStatus = models.UserInvitationStatus
@@ -94,28 +98,13 @@ def create_invitation(
             detail="A pending invitation already exists for this email",
         )
 
-    # Validate that all role_ids belong to the current account
-    # Security: Prevent cross-account role assignment
-    validated_role_ids = []
-    if invitation_data.role_ids:
-        from preloop.models.crud import crud_role
-
-        from preloop.api.endpoints.users import _ensure_can_grant_role
-
-        for role_id in invitation_data.role_ids:
-            role = crud_role.get(db=db, id=role_id, account_id=current_user.account_id)
-            if not role:
-                # Check if it's a system role (account_id is None)
-                role = crud_role.get(db=db, id=role_id)
-                if not role or role.account_id is not None:
-                    raise HTTPException(
-                        status_code=status.HTTP_403_FORBIDDEN,
-                        detail=f"Role {role_id} does not exist or does not belong to your account",
-                    )
-            # Security: prevent escalation-by-proxy ; a non-owner must not be
-            # able to invite a user carrying the owner role.
-            _ensure_can_grant_role(db=db, current_user=current_user, role=role)
-            validated_role_ids.append(str(role_id))
+    # Roles are an access control overlay; core rejects them with 402.
+    validated_role_ids = [
+        str(role_id)
+        for role_id in validate_invitation_roles(
+            db, current_user, invitation_data.role_ids
+        )
+    ]
 
     # Validate that all team_ids belong to the current account
     # Security: Prevent cross-account team assignment
@@ -610,10 +599,6 @@ def accept_invitation(
             detail=f"This invitation has status: {invitation.status}",
         )
 
-    from preloop.services.multiuser import ensure_invitation_roles_available
-
-    ensure_invitation_roles_available(db, invitation)
-
     # Check if username is already taken
     existing_user = crud_user.get_by_username(db=db, username=accept_data.username)
     if existing_user:
@@ -680,38 +665,8 @@ def accept_invitation(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    # Assign roles if specified (with strict account validation)
-    # Security: Prevent cross-account role assignment during invitation acceptance
-    if invitation.role_ids:
-        from preloop.models.crud import crud_user_role, crud_role
-
-        role_ids = [
-            UUID(rid.strip()) for rid in invitation.role_ids.split(",") if rid.strip()
-        ]
-        for role_id in role_ids:
-            # Validate role belongs to the invitation's account or is a system role
-            role = crud_role.get(db=db, id=role_id, account_id=invitation.account_id)
-            if not role:
-                # Check if it's a system role
-                role = crud_role.get(db=db, id=role_id)
-                if not role or role.account_id is not None:
-                    # Role doesn't exist or belongs to a different account
-                    logger.error(
-                        f"Security: Skipping role {role_id} during invitation acceptance - "
-                        f"not found or belongs to different account. Invitation ID: {invitation.id}"
-                    )
-                    continue
-
-            user_role_dict = {
-                "user_id": user.id,
-                "role_id": role_id,
-                "granted_by": invitation.invited_by,
-            }
-            crud_user_role.create(db=db, obj_in=user_role_dict)
-
-    from preloop.services.multiuser import assign_default_member_role
-
-    assign_default_member_role(db, user, granted_by=invitation.invited_by)
+    # Stored roles are granted by the access control overlay, if any.
+    apply_invitation_roles(db, user, invitation)
 
     # Assign teams if specified (with strict account validation)
     # Security: Prevent cross-account team assignment during invitation acceptance

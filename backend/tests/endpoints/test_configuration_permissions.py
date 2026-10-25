@@ -438,6 +438,32 @@ def oss_permissions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(account_hooks, "_authorizer", None)
 
 
+def _identity_plugin(permission_name: str) -> Any:
+    """Stand in for the RBAC plugin decorator without enforcing anything."""
+
+    def decorate(func: Any) -> Any:
+        return func
+
+    return decorate
+
+
+def _use_ee_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install the RBAC plugin stand-in with its checks disabled.
+
+    This is the only configuration in which the role-matrix fallback still
+    runs; in the core edition (no plugin) every account member is admitted.
+    """
+    monkeypatch.setenv("DISABLE_RBAC", "true")
+    monkeypatch.setattr(settings, "disable_rbac", True)
+    monkeypatch.setattr(permissions, "_plugin_require_permission", _identity_plugin)
+
+
+@pytest.fixture
+def ee_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run the role-matrix fallback behind an RBAC plugin stand-in."""
+    _use_ee_fallback(monkeypatch)
+
+
 @pytest.fixture
 def permission_actor(db_session: Session, test_user: models.User) -> models.User:
     """A second authenticated user with no roles in the current account."""
@@ -513,19 +539,24 @@ def route_client(
 
 @pytest.mark.parametrize("case", ROUTES, ids=lambda case: case.handler)
 @pytest.mark.parametrize("grant", ["none", "foreign", "holder", "primary", "superuser"])
+@pytest.mark.parametrize("edition", ["core", "ee_fallback"])
 def test_route_permission_boundary(
     case: RouteCase,
     grant: str,
+    edition: str,
     permission_actor: models.User,
     db_session: Session,
     route_client: TestClient,
     mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Deny non-holders before work; authorized users reach the handler operation.
+    """Core admits every member; the EE fallback denies non-holders before work.
 
     Downstream work stops at a marker response so this test isolates the
     permission boundary from each service's existing behavior tests.
     """
+    if edition == "ee_fallback":
+        _use_ee_fallback(monkeypatch)
     if grant in {"holder", "foreign"}:
         _grant_permission(
             db_session, permission_actor, case.permission, foreign=grant == "foreign"
@@ -548,7 +579,7 @@ def test_route_permission_boundary(
     writes = [mocker.spy(db_session, name) for name in ("add", "delete", "commit")]
     response = route_client.request(case.method, case.path, json=case.body)
 
-    if grant in {"none", "foreign"}:
+    if edition == "ee_fallback" and grant in {"none", "foreign"}:
         assert response.status_code == 403, response.text
         assert case.permission in response.json()["detail"]
         downstream.assert_not_called()
@@ -561,13 +592,34 @@ def test_route_permission_boundary(
 
 
 @pytest.mark.parametrize("bound_owner", [False, True])
-def test_single_decision_preserves_private_owner_consent(
+def test_single_decision_admits_any_member_in_core(
     bound_owner: bool,
     permission_actor: models.User,
     db_session: Session,
     mocker: MockerFixture,
 ) -> None:
-    """Only a bound human owner may use the private-consent exception."""
+    """Core admits every member without consulting the private-consent rule."""
+    belongs = mocker.patch(
+        "preloop.models.crud.owner_consent.belongs_to_owner", return_value=bound_owner
+    )
+    approval_requests._check_approval_permission(
+        "decide_approvals",
+        request_id=uuid4(),
+        current_user=permission_actor,
+        db=db_session,
+    )
+    belongs.assert_not_called()
+
+
+@pytest.mark.parametrize("bound_owner", [False, True])
+def test_single_decision_preserves_private_owner_consent(
+    bound_owner: bool,
+    permission_actor: models.User,
+    db_session: Session,
+    mocker: MockerFixture,
+    ee_fallback: None,
+) -> None:
+    """With RBAC, only a bound human owner may use the private-consent exception."""
     request_id = uuid4()
     belongs = mocker.patch(
         "preloop.models.crud.owner_consent.belongs_to_owner", return_value=bound_owner
@@ -587,11 +639,30 @@ def test_single_decision_preserves_private_owner_consent(
     )
 
 
+def test_batch_admits_any_member_in_core(
+    route_client: TestClient,
+    mocker: MockerFixture,
+) -> None:
+    """Core admits a roleless member to the batch decision endpoint."""
+    service = mocker.patch.object(
+        approval_requests,
+        "ApprovalService",
+        side_effect=HTTPException(409, "Handler operation reached"),
+    )
+    response = route_client.post(
+        "/api/v1/approval-requests/decide-batch",
+        json={"ids": [str(UUID(int=1))], "approved": True},
+    )
+    assert response.status_code in {409, 500}, response.text
+    service.assert_called_once()
+
+
 def test_batch_requires_global_permission_even_for_private_owner(
     permission_actor: models.User,
     db_session: Session,
     route_client: TestClient,
     mocker: MockerFixture,
+    ee_fallback: None,
 ) -> None:
     """The batch dependency never uses the single-resource owner exception."""
     belongs = mocker.patch(
@@ -620,6 +691,7 @@ def test_async_route_permission_check_runs_off_event_loop(
     case: RouteCase,
     route_client: TestClient,
     mocker: MockerFixture,
+    ee_fallback: None,
 ) -> None:
     """Synchronous permission queries must not block the request event loop."""
     real_holds_permission = permissions.user_holds_permission
@@ -646,10 +718,22 @@ def test_async_route_permission_check_runs_off_event_loop(
     assert query_on_loop == [False]
 
 
-def test_approval_read_checks_enforce_view_permission_in_oss(
+def test_approval_read_checks_admit_any_member_in_core(
     db_session: Session, permission_actor: models.User
 ) -> None:
-    """Approval reads use the same OSS fallback as decisions."""
+    """Core admits a roleless member to approval reads."""
+    approval_requests._check_approval_permission(
+        "view_approvals",
+        request_id=uuid4(),
+        current_user=permission_actor,
+        db=db_session,
+    )
+
+
+def test_approval_read_checks_enforce_view_permission_in_ee_fallback(
+    db_session: Session, permission_actor: models.User, ee_fallback: None
+) -> None:
+    """Approval reads use the same role fallback as decisions."""
     with pytest.raises(HTTPException) as denied:
         approval_requests._check_approval_permission(
             "view_approvals",

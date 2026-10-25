@@ -20,7 +20,7 @@ from preloop.schemas.user import (
     AdminUserUpdate,
 )
 from preloop.models import models
-from preloop.models.crud import crud_account, crud_person, crud_user, crud_user_role
+from preloop.models.crud import crud_account, crud_person, crud_user
 from preloop.models.crud.identity_directory import (
     IdentityPresentation,
     identity_directory,
@@ -33,70 +33,14 @@ from preloop.utils.permissions import require_permission
 
 from preloop.services.multiuser import membership_module
 from preloop.services.multiuser import enforce_seat_available
+from preloop.services.multiuser import ensure_can_remove_member
 
 User = models.User
-Role = models.Role
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# System role that grants unrestricted access (billing + account closure). Only
-# an existing owner may grant it ; otherwise `assign_roles`/`invite_users`
-# holders (e.g. admins) could self-promote to owner.
-_OWNER_ROLE_NAME = "owner"
-
-
-def caller_has_owner_role(db: Session, user: User) -> bool:
-    """Return True if ``user`` directly holds the system ``owner`` role."""
-    from preloop.models.crud import crud_role
-
-    for user_role in crud_user_role.get_by_user(db, user_id=user.id):
-        role = crud_role.get(db, id=user_role.role_id)
-        if (
-            role
-            and role.name == _OWNER_ROLE_NAME
-            and role.account_id is None
-            and role.is_system_role
-        ):
-            return True
-    return False
-
-
-def _ensure_can_remove_user(db: Session, current_user: User, user: User) -> None:
-    """Require ownership before removing a primary user or another owner."""
-    if current_user.is_superuser:
-        return
-    account = crud_account.get(db, id=user.account_id)
-    protected = (
-        account is not None and account.primary_user_id == user.id
-    ) or caller_has_owner_role(db, user)
-    if protected and not caller_has_owner_role(db, current_user):
-        raise HTTPException(
-            status_code=403,
-            detail="Only an account owner can remove an owner or primary user; transfer ownership first",
-        )
-
-
-def _ensure_can_grant_role(db: Session, current_user: User, role: Role) -> None:
-    """Block privilege escalation when granting a role.
-
-    Currently guards the ``owner`` role: a caller may only grant it if they are
-    themselves an owner. Raises HTTP 403 otherwise.
-    """
-    from preloop.services.multiuser import ensure_role_available
-
-    ensure_role_available(db, current_user, role)
-    if (
-        role.name == _OWNER_ROLE_NAME
-        and role.account_id is None
-        and not caller_has_owner_role(db, current_user)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only an account owner can grant the owner role.",
-        )
 
 
 def _build_admin_user_response(
@@ -314,10 +258,6 @@ def create_user(
     db.commit()
     db.refresh(user)
 
-    from preloop.services.multiuser import assign_default_member_role
-
-    assign_default_member_role(db, user, granted_by=current_user.id)
-
     logger.info(f"User {user.username} created by {current_user.username}")
 
     # Update Stripe subscription quantity to reflect new user count
@@ -408,7 +348,7 @@ def update_user(
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
 ) -> Any:
-    """Update a user's profile (admin only).
+    """Update a user's membership, or the caller's own profile.
 
     Args:
         user_id: User ID to update
@@ -464,7 +404,7 @@ def update_user(
     if update_fields.get("is_active") is False:
         if user.id == current_user.id:
             raise HTTPException(400, "Cannot deactivate your own account")
-        _ensure_can_remove_user(db, current_user, user)
+        ensure_can_remove_member(db, current_user, user)
         if user.is_active:
             _release_membership(db, user)
 
@@ -489,7 +429,7 @@ def deactivate_user(
     current_user: Annotated[User, Depends(get_current_active_user)],
     db: Session = Depends(get_db_session),
 ) -> Response:
-    """Deactivate a user (admin only).
+    """Deactivate another user in the account.
 
     Args:
         user_id: User ID to deactivate
@@ -520,7 +460,7 @@ def deactivate_user(
             detail="Cannot deactivate user from different account",
         )
 
-    _ensure_can_remove_user(db, current_user, user)
+    ensure_can_remove_member(db, current_user, user)
     _release_membership(db, user)
     crud_user.deactivate(db=db, user_id=user_id)
     db.commit()
@@ -655,7 +595,7 @@ def bulk_delete_users(
         account_id = str(user.account_id)
         try:
             try:
-                _ensure_can_remove_user(db, current_user, user)
+                ensure_can_remove_member(db, current_user, user)
             except HTTPException as exc:
                 results.append(
                     BulkDeleteUserResult(
@@ -762,207 +702,3 @@ def search_users_by_username(
         UserSummary.model_validate(response.model_dump())
         for response in _build_member_page(db, users)
     ]
-
-
-@router.get("/users/{user_id}/roles", response_model=List[dict])
-@require_permission("view_users")
-def get_user_roles(
-    user_id: UUID,
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    db: Session = Depends(get_db_session),
-) -> Any:
-    """Get roles assigned to a user.
-
-    Args:
-        user_id: User ID
-        current_user: Current authenticated user
-        db: Database session
-
-    Returns:
-        List[dict]: List of roles assigned to the user
-
-    Raises:
-        HTTPException: If user not found or not in same account
-    """
-    # Verify user exists and is in the same account
-    user = crud_user.get(db=db, id=user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    if user.account_id != current_user.account_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot access user from different account",
-        )
-
-    # Get user roles
-    from preloop.models.crud import crud_role
-
-    user_roles = crud_user_role.get_by_user(db=db, user_id=user_id)
-
-    roles = []
-    for user_role in user_roles:
-        role = crud_role.get(db=db, id=user_role.role_id)
-        if role:
-            roles.append(
-                {
-                    "id": str(role.id),
-                    "name": role.name,
-                    "description": role.description,
-                    "granted_at": user_role.granted_at.isoformat()
-                    if user_role.granted_at
-                    else None,
-                }
-            )
-
-    return roles
-
-
-class UserRoleAssignment(BaseModel):
-    """A role identifier validated before querying account roles."""
-
-    role_id: UUID | None = None
-
-
-@router.post("/users/{user_id}/roles", status_code=status.HTTP_201_CREATED)
-@require_permission("assign_roles")
-def assign_user_role(
-    user_id: UUID,
-    role_data: UserRoleAssignment,
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    db: Session = Depends(get_db_session),
-) -> Any:
-    """Assign a role to a user.
-
-    Args:
-        user_id: User ID
-        role_data: Dict with role_id
-        current_user: Current authenticated user
-        db: Database session
-
-    Returns:
-        dict: Success message
-
-    Raises:
-        HTTPException: If user not found, role not found, or not in same account
-    """
-    # Verify user exists and is in the same account
-    user = crud_user.get(db=db, id=user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    if user.account_id != current_user.account_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot modify user from different account",
-        )
-
-    # Verify role exists
-    from preloop.models.crud import crud_role
-
-    role_id = role_data.role_id
-    if not role_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="role_id is required",
-        )
-
-    # Security: the role must belong to the caller's account or be a system
-    # role. Without this scope check, a user with `assign_roles` could bind an
-    # arbitrary other-account role ; or the global `owner` role ; to a user and
-    # escalate privileges (see also invitations.py).
-    role = crud_role.get(db=db, id=role_id, account_id=current_user.account_id)
-    if not role:
-        system_role = crud_role.get(db=db, id=role_id)
-        if not system_role or system_role.account_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Role not found",
-            )
-        role = system_role
-
-    _ensure_can_grant_role(db=db, current_user=current_user, role=role)
-
-    # Membership-bound assignments remain account resources.
-    existing = next(
-        (
-            assignment
-            for assignment in crud_user_role.get_by_user(db, user_id=user_id)
-            if str(assignment.role_id) == str(role_id)
-        ),
-        None,
-    )
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User already has this role",
-        )
-
-    # Assign role using the CRUD method
-    crud_user_role.assign_role(
-        db=db, user_id=user_id, role_id=role_id, granted_by=current_user.id
-    )
-
-    logger.info(f"Role {role_id} assigned to user {user_id} by {current_user.username}")
-
-    return {"message": "Role assigned successfully"}
-
-
-@router.delete(
-    "/users/{user_id}/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT
-)
-@require_permission("assign_roles")
-def remove_user_role(
-    user_id: UUID,
-    role_id: UUID,
-    current_user: Annotated[User, Depends(get_current_active_user)],
-    db: Session = Depends(get_db_session),
-) -> None:
-    """Remove a role from a user.
-
-    Args:
-        user_id: User ID
-        role_id: Role ID to remove
-        current_user: Current authenticated user
-        db: Database session
-
-    Raises:
-        HTTPException: If user not found, role not found, or not in same account
-    """
-    # Verify user exists and is in the same account
-    user = crud_user.get(db=db, id=user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    if user.account_id != current_user.account_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot modify user from different account",
-        )
-
-    from preloop.models.crud import crud_role
-
-    role = crud_role.get(db, id=role_id)
-    if role is not None and role.account_id is None and role.name == _OWNER_ROLE_NAME:
-        _ensure_can_grant_role(db, current_user, role)
-
-    # Remove role using CRUD method
-    success = crud_user_role.remove_role(db=db, user_id=user_id, role_id=role_id)
-    if not success:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User does not have this role",
-        )
-
-    logger.info(
-        f"Role {role_id} removed from user {user_id} by {current_user.username}"
-    )

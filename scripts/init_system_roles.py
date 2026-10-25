@@ -366,25 +366,6 @@ SYSTEM_ROLES: Dict[str, Dict[str, any]] = {
             if name not in {"close_account", "manage_billing"}
         ],
     },
-    "member": {
-        "description": "Account member with basic operation and usage access",
-        "permissions": sorted(
-            set(
-                [name for name in _READ_CORE if name != "view_users"]
-                + [
-                    "view_teams",
-                    "view_cost",
-                    "view_approvals",
-                    "decide_approvals",
-                    "execute_tools",
-                    "execute_flows",
-                    "manage_agents",
-                    "control_managed_agent",
-                    "manage_runtime_sessions",
-                ]
-            )
-        ),
-    },
     "editor": {
         "description": (
             "Configure agents, tools, policies, models, flows, and trackers; "

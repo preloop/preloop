@@ -1,4 +1,9 @@
-"""Flow and issue writes enforce their declared permissions in OSS builds."""
+"""Flow and issue writes and their declared permissions in OSS builds.
+
+The core edition has no access controls, so a member without any grant reaches
+the operation. With the RBAC plugin installed but its checks disabled, the role
+fallback still stops a missing grant before any work.
+"""
 
 import asyncio
 import importlib
@@ -124,6 +129,23 @@ ROUTES = [
 ]
 
 
+def _install_plugin_with_rbac_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install an RBAC plugin stand-in with its checks disabled.
+
+    That is the only configuration in which the in-handler role fallback runs;
+    the core edition admits every member.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture.
+    """
+    from preloop.config import settings
+
+    monkeypatch.setattr(
+        permissions, "_plugin_require_permission", lambda name: lambda func: func
+    )
+    monkeypatch.setattr(settings, "disable_rbac", True)
+
+
 class OperationReached(BaseException):
     """Stop an allowed call at its first downstream boundary."""
 
@@ -133,7 +155,7 @@ class OperationReached(BaseException):
     ROUTES,
     ids=[f"{module}.{handler}" for module, handler, _, _ in ROUTES],
 )
-@pytest.mark.parametrize("actor_kind", ["non_holder", "primary", "holder"])
+@pytest.mark.parametrize("actor_kind", ["non_holder", "denied", "primary", "holder"])
 @pytest.mark.asyncio
 async def test_write_permission_before_operation(
     monkeypatch: pytest.MonkeyPatch,
@@ -143,7 +165,12 @@ async def test_write_permission_before_operation(
     boundary: str,
     actor_kind: str,
 ) -> None:
-    """Non-holders stop before work; primary users and holders reach work."""
+    """Core members reach work; a reported missing grant stops before work.
+
+    ``non_holder`` runs in the core edition (no plugin, no roles) and must reach
+    the operation. ``denied``, ``primary`` and ``holder`` install an RBAC plugin
+    stand-in with its checks disabled, where the role fallback still applies.
+    """
     module = importlib.import_module(f"preloop.api.endpoints.{module_name}")
     endpoint = getattr(module, handler)
     actor = models.User(
@@ -160,7 +187,11 @@ async def test_write_permission_before_operation(
     monkeypatch.setattr(permissions, "_plugin_require_permission", None)
     monkeypatch.setattr("preloop.models.crud.crud_account.get", lambda *a, **k: account)
     held = MagicMock(return_value=actor_kind == "holder")
-    monkeypatch.setattr(permissions, "user_holds_permission", held)
+    if actor_kind == "non_holder":
+        assert permissions.members_have_full_access()
+    else:
+        _install_plugin_with_rbac_disabled(monkeypatch)
+        monkeypatch.setattr(permissions, "user_holds_permission", held)
 
     target = (
         boundary if boundary.startswith("preloop.") else f"{module.__name__}.{boundary}"
@@ -202,7 +233,7 @@ async def test_write_permission_before_operation(
         else:
             await asyncio.to_thread(endpoint, **kwargs)
 
-    if actor_kind == "non_holder":
+    if actor_kind == "denied":
         with pytest.raises(HTTPException) as exc:
             await call()
         assert exc.value.status_code == 403
@@ -213,20 +244,21 @@ async def test_write_permission_before_operation(
         with pytest.raises(OperationReached):
             await call()
         operation.assert_called_once()
-        assert [call.args[2] for call in held.call_args_list] == (
-            list(required) if actor_kind == "holder" else []
-        )
+        if actor_kind != "non_holder":
+            assert [call.args[2] for call in held.call_args_list] == (
+                list(required) if actor_kind == "holder" else []
+            )
 
 
 @pytest.mark.parametrize("missing", ["edit_issues", "execute_flows"])
 def test_pickup_requires_each_permission(
     monkeypatch: pytest.MonkeyPatch, missing: str
 ) -> None:
-    """Holding either pickup permission alone does not start reconciliation."""
+    """With the RBAC plugin's checks off, each missing pickup grant stops work."""
     from preloop.api.endpoints import issue_lifecycle
 
     actor = models.User(id=uuid4(), account_id=uuid4(), is_superuser=False)
-    monkeypatch.setattr(permissions, "_plugin_require_permission", None)
+    _install_plugin_with_rbac_disabled(monkeypatch)
     monkeypatch.setattr("preloop.models.crud.crud_account.get", lambda *a, **k: None)
     monkeypatch.setattr(
         permissions, "user_holds_permission", lambda db, user, name: name != missing

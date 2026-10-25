@@ -1,11 +1,11 @@
 # Roles & Permissions
 
-Editions: Preloop (OSS), Preloop Cloud, Preloop Enterprise.
+Editions: Preloop Cloud, Preloop Enterprise.
 
-Assign roles to users and teams to control what they can do in your Preloop account. Preloop (OSS) includes admin/member assignments and preserves existing account ownership. The additional system roles and permission composition below are advanced controls in Preloop Cloud and Preloop Enterprise.
+Assign roles to users and teams to control what they can do in your Preloop account. Roles and every other access control between users of an account are part of Preloop Cloud and Preloop Enterprise.
 
 !!! info "Editions"
-    Preloop (OSS) includes users, invitations, admin/member roles and team membership. Members can operate their agents, use basic approvals and view usage; they cannot administer users, roles or teams. New colleagues default to member. Custom roles, fine-grained permissions and team role inheritance require Preloop Cloud or Preloop Enterprise.
+    Preloop (OSS) includes multiple users, invitations, teams and team membership, with no roles and no access controls between users: every user of an account can do everything in that account. Accounts stay isolated from each other. Roles, role assignment, owner protection and RBAC/ABAC require Preloop Cloud or Preloop Enterprise; in Preloop (OSS) the console offers an upgrade instead of role controls.
 
 ---
 
@@ -31,7 +31,7 @@ Assign roles to users and teams to control what they can do in your Preloop acco
 
 ## System Roles
 
-Preloop (OSS) exposes **admin** and **member**, together with the existing **owner** role for account ownership. Members have basic operation and usage access without administrative user visibility or user/role/team management. Preloop Cloud and Preloop Enterprise additionally expose the advanced system roles below and account-specific custom roles.
+Preloop Cloud and Preloop Enterprise provide the system roles below, plus account-specific custom roles. These roles are available to all accounts and cannot be modified.
 
 ### 1. Owner
 

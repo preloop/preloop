@@ -48,6 +48,10 @@ export class UserManagementView extends LitElement {
   @state()
   private roles: Role[] = [];
 
+  /** Roles are an RBAC capability of Preloop Cloud and Preloop Enterprise. */
+  @state()
+  private advancedRolesEnabled = false;
+
   @state()
   private isLoading = true;
 
@@ -259,6 +263,7 @@ export class UserManagementView extends LitElement {
         this.isLoading = false;
         return;
       }
+      this.advancedRolesEnabled = featuresResponse.features?.['rbac'] === true;
       if (hasCapability(featuresResponse.features, 'account_hierarchy')) {
         // Loaded on demand, so the gated hierarchy code stays out of this
         // chunk where the capability is off.
@@ -270,7 +275,10 @@ export class UserManagementView extends LitElement {
     } catch {
       // If features endpoint fails, proceed optimistically
     }
-    await Promise.all([this.fetchUsers(), this.fetchRoles()]);
+    await Promise.all([
+      this.fetchUsers(),
+      this.advancedRolesEnabled ? this.fetchRoles() : Promise.resolve(),
+    ]);
   }
 
   async fetchUsers() {
@@ -361,6 +369,16 @@ export class UserManagementView extends LitElement {
   }
 
   async openRoleModal(user: User) {
+    if (!this.advancedRolesEnabled) {
+      window.dispatchEvent(
+        new CustomEvent('show-upgrade-modal', {
+          detail: { code: 'upgrade_required', feature: 'rbac' },
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
     if (!this.editPermissions.allows('assign_roles')) return;
     this.selectedUser = user;
     this.dialogError = null;
@@ -577,9 +595,18 @@ export class UserManagementView extends LitElement {
                 </div>
                 <div class="user-actions">
                   <sl-tooltip
-                    content=${!this.editPermissions.allows('assign_roles') ? 'Requires assign_roles' : ''}
+                    content=${
+                      !this.advancedRolesEnabled
+                        ? 'Roles are available in Preloop Cloud and Preloop Enterprise'
+                        : !this.editPermissions.allows('assign_roles')
+                          ? 'Requires assign_roles'
+                          : ''
+                    }
                     ><sl-button
-                      ?disabled=${!this.editPermissions.allows('assign_roles')}
+                      ?disabled=${
+                        this.advancedRolesEnabled &&
+                        !this.editPermissions.allows('assign_roles')
+                      }
                       size="small"
                       title="Manage roles"
                       @click=${() => this.openRoleModal(user)}

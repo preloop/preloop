@@ -1,25 +1,58 @@
 """Core user management extension points for commercial account controls.
 
-Core owns basic controllers. Installed plugins supply optional services through
-PluginManager, so disabling proprietary plugins leaves no dependency on them.
+Core owns the basic controllers for users, invitations and teams. Core applies
+no access control between users of the same account: every active member can
+do everything in it. Installed plugins supply optional services through
+PluginManager, so disabling proprietary plugins leaves no dependency on them:
+
+- ``multiuser_seat_gate``: hosted seat policy before a membership is added.
+- ``multiuser_billing_service``: subscription housekeeping after changes.
+- ``multiuser_membership``: canonical identity membership linking.
+- ``multiuser_access_control``: roles, owner protection and other access
+  rules, implementing :class:`AccessControl`.
 """
 
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from preloop.models import models
-from preloop.models.crud import crud_role, crud_user, crud_user_role
+from preloop.models.crud import crud_user
 from preloop.plugins.base import get_plugin_manager
 
-BASIC_ROLE_NAMES = frozenset({"admin", "member"})
+
+class AccessControl(Protocol):
+    """Access rules a commercial overlay layers over the core controllers."""
+
+    def validate_invitation_roles(
+        self, db: Session, current_user: models.User, role_ids: list[UUID]
+    ) -> list[UUID]:
+        """Validate roles an invitation will grant and return the accepted ids."""
+        ...
+
+    def apply_invitation_roles(
+        self, db: Session, user: models.User, invitation: models.UserInvitation
+    ) -> None:
+        """Grant the stored invitation roles to the membership it created."""
+        ...
+
+    def ensure_can_remove_member(
+        self, db: Session, current_user: models.User, user: models.User
+    ) -> None:
+        """Raise when ``current_user`` may not deactivate or delete ``user``."""
+        ...
 
 
 def membership_module() -> Any:
     """Return the optional identity membership overlay."""
     return get_plugin_manager().get_service("multiuser_membership")
+
+
+def access_control() -> AccessControl | None:
+    """Return the optional access control overlay."""
+    return get_plugin_manager().get_service("multiuser_access_control")
 
 
 def email_exists(db: Session, *, email: str, account_id: UUID) -> bool:
@@ -65,70 +98,39 @@ def sync_subscription_quantity(db: Session, account_id: str) -> None:
         billing.update_subscription_quantity(account_id)
 
 
-def advanced_roles_enabled() -> bool:
-    """Whether an installed overlay supports advanced role assignments."""
-    return get_plugin_manager().get_service("multiuser_advanced_roles") is not None
+def validate_invitation_roles(
+    db: Session, current_user: models.User, role_ids: list[UUID] | None
+) -> list[UUID]:
+    """Accept invitation roles only when an access control overlay is installed.
 
-
-def is_basic_role(role: models.Role) -> bool:
-    """Recognize real basic system roles, including compatible account ownership."""
-    return (
-        role.account_id is None
-        and role.is_system_role
-        and role.name in BASIC_ROLE_NAMES | {"owner"}
-    )
-
-
-def ensure_invitation_roles_available(
-    db: Session, invitation: models.UserInvitation
-) -> None:
-    """Reject stored advanced invitations before creating an OSS membership."""
-    if advanced_roles_enabled():
-        return
-    for role_id in (invitation.role_ids or "").split(","):
-        if not role_id.strip():
-            continue
-        role = crud_role.get(db, id=UUID(role_id.strip()))
-        if (
-            role is not None
-            and role.account_id in (None, invitation.account_id)
-            and not is_basic_role(role)
-        ):
-            raise HTTPException(
-                402, detail={"code": "upgrade_required", "feature": "rbac"}
-            )
-
-
-def ensure_role_available(
-    db: Session, current_user: models.User, role: models.Role
-) -> None:
-    """Allow basic system roles or delegate advanced grants to the overlay.
-
-    Account scoping is checked by the caller before this edition boundary.
-    The existing owner role remains available for ownership compatibility;
-    the controller separately requires an existing owner to grant or revoke it.
+    Raises:
+        HTTPException: 402 ``upgrade_required`` when roles are requested
+            without an overlay, since roles are not part of the core edition.
     """
-    if is_basic_role(role):
-        return
-    validator = get_plugin_manager().get_service("multiuser_advanced_roles")
-    if validator is not None:
-        validator(db, current_user, role)
-        return
-    raise HTTPException(
-        status_code=402,
-        detail={"code": "upgrade_required", "feature": "rbac"},
-    )
+    if not role_ids:
+        return []
+    overlay = access_control()
+    if overlay is None:
+        raise HTTPException(
+            status_code=402,
+            detail={"code": "upgrade_required", "feature": "rbac"},
+        )
+    return overlay.validate_invitation_roles(db, current_user, list(role_ids))
 
 
-def assign_default_member_role(
-    db: Session, user: models.User, *, granted_by: UUID
+def apply_invitation_roles(
+    db: Session, user: models.User, invitation: models.UserInvitation
 ) -> None:
-    """Give an OSS colleague the member role when no role was supplied."""
-    if advanced_roles_enabled() or crud_user_role.get_by_user(db, user_id=user.id):
-        return
-    role = crud_role.get_by_name(db, name="member")
-    if role is None:
-        raise HTTPException(503, "Basic roles are not initialized")
-    crud_user_role.assign_role(
-        db, user_id=user.id, role_id=role.id, granted_by=granted_by
-    )
+    """Let the overlay grant stored invitation roles; core grants none."""
+    overlay = access_control()
+    if overlay is not None and invitation.role_ids:
+        overlay.apply_invitation_roles(db, user, invitation)
+
+
+def ensure_can_remove_member(
+    db: Session, current_user: models.User, user: models.User
+) -> None:
+    """Apply overlay removal rules; core lets any member remove another."""
+    overlay = access_control()
+    if overlay is not None:
+        overlay.ensure_can_remove_member(db, current_user, user)

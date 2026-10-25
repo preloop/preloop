@@ -171,7 +171,10 @@ def test_connection_test_failure_reports_without_raising(client) -> None:
     assert ADMIN_KEY not in response.text
 
 
-def test_non_admin_cannot_write_or_sync(db_session, test_viewer_user) -> None:
+def test_viewer_role_does_not_block_write_or_sync_in_core(
+    db_session, test_viewer_user
+) -> None:
+    """Core has no role checks: a viewer-role member manages the connection."""
     with _client_as(db_session, test_viewer_user) as viewer:
         put = viewer.put(CONNECTION_URL, json={"admin_key": ADMIN_KEY})
         delete = viewer.delete(CONNECTION_URL)
@@ -181,9 +184,13 @@ def test_non_admin_cannot_write_or_sync(db_session, test_viewer_user) -> None:
             MAPPINGS_URL,
             json={"actor": "a@b.example", "user_id": str(test_viewer_user.id)},
         )
-    for response in (put, delete, sync, test, mapping):
-        assert response.status_code == 403
-        assert "manage_budgets" in response.json()["detail"]
+    assert put.status_code == 200, put.text
+    assert delete.status_code == 204, delete.text
+    # The connection was just deleted, so the handlers answer 404 rather
+    # than a permission refusal.
+    for response in (sync, test, mapping):
+        assert response.status_code == 404, response.text
+        assert response.json()["detail"] == "No Anthropic connection"
     assert (
         crud_anthropic_import_connection.get_for_account(
             db_session, account_id=test_viewer_user.account_id
