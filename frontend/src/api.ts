@@ -9444,7 +9444,7 @@ export async function getRuntimeSessionMediaSync(
   sessionId: string
 ): Promise<import('./types').MediaSyncResponse> {
   const response = await fetchWithAuth(
-    `/api/v1/runtime-sessions/${encodeURIComponent(sessionId)}/media-sync`
+    `${REST_API_PREFIX}/runtime-sessions/${encodeURIComponent(sessionId)}/media-sync`
   );
   if (!response.ok)
     throw new Error(`Could not load recording timing (${response.status})`);
