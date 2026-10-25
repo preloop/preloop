@@ -1375,10 +1375,11 @@ Local inference pricing defaults to zero after explicit prices; unknown remote
 models remain unpriced. See [local model operations](docs/guide/runner-local-models.md).
 
 Residual credential storage uses the existing SecretReference backend for model
-and webhook values, and hash-only storage for all Preloop API keys. Separate
-backfill and removal revisions retire the three legacy columns; see the
+and webhook values, and hash-only storage for all Preloop API keys. A backfill
+revision clears the three legacy columns; a later release removes them once no
+pod of the previous release can still map them. See the
 [credential storage upgrade guide](docs/operations/credential-storage-upgrade.md)
-for the maintenance window, encryption-key continuity and rollback limits.
+for rolling-upgrade behaviour, encryption-key continuity and rollback limits.
 
 ## API diagnostics
 

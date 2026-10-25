@@ -7,17 +7,20 @@ from preloop.models.crud import crud_ai_model, crud_api_key, crud_tracker
 from preloop.services.secret_service import get_secret_service
 
 
-def test_legacy_columns_are_absent_from_database_and_orm(db_session) -> None:
+def test_legacy_columns_are_unmapped_and_optional_in_database(db_session) -> None:
+    # The columns stay in the database until a later release removes them,
+    # because the previous release still maps them during a rolling upgrade.
     for model, column in (
         (models.AIModel, "api_key"),
         (models.ApiKey, "key"),
         (models.Tracker, "jira_webhook_secret"),
     ):
         assert column not in model.__table__.columns
-        assert column not in {
-            col["name"]
+        database_columns = {
+            col["name"]: col
             for col in inspect(db_session.bind).get_columns(model.__tablename__)
         }
+        assert database_columns[column]["nullable"] is True
 
 
 def test_issue_reload_rotate_and_validate_user_key(
