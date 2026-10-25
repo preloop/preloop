@@ -1071,8 +1071,31 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         limit: int = 25,
         offset: int = 0,
         metadata_only: bool = False,
+        before: Optional[tuple[datetime, Any]] = None,
+        extra: int = 0,
     ) -> list[Any]:
-        """Return latest-first model gateway call activities for one session."""
+        """Return latest-first model gateway call activities for one session.
+
+        Args:
+            db: Database session.
+            account_id: Owning account id.
+            runtime_session_id: Runtime session id.
+            start_date: Retention cutoff; older rows are not returned.
+            tail: Legacy alias for a latest-first page size (capped at 200).
+            limit: Page size (capped at 100, or 5000 with ``metadata_only``).
+            offset: Rows to skip. Ignored when ``before`` is given.
+            metadata_only: Return only compact metadata fields.
+            before: Keyset cursor ``(timestamp, id)``. Only rows strictly
+                older than it are returned, so a page does not shift when
+                new calls land at the head while an operator reads back.
+            extra: Rows to read past the page size. A caller asks for one to
+                learn whether an older page exists without counting the
+                session.
+
+        Returns:
+            Rows of ``(id, timestamp, activity_type, metadata_)``, newest
+            first, ties broken by id.
+        """
         metadata_column = (
             self.model.metadata_.op("-")("request")
             .op("-")("response")
@@ -1133,12 +1156,17 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
                 self.model.timestamp >= start_date if start_date is not None else True,
                 self.model.activity_type == "model_gateway_call",
             )
-            .order_by(self.model.timestamp.desc())
+            .order_by(self.model.timestamp.desc(), self.model.id.desc())
         )
         limit = min(tail, 200) if tail else min(max(limit, 1), 100)
         if metadata_only:
             limit = min(max(limit, 1), 5000)
-        query = query.limit(limit).offset(max(offset, 0))
+        if before is not None:
+            query = query.filter(
+                tuple_(self.model.timestamp, self.model.id) < tuple_(*before)
+            )
+            return query.limit(limit + max(extra, 0)).all()
+        query = query.limit(limit + max(extra, 0)).offset(max(offset, 0))
         return query.all()
 
     def list_full_model_gateway_call_payloads_for_session(
@@ -1315,6 +1343,31 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             )
             .count()
         )
+
+    def get_model_gateway_call_cursor(
+        self,
+        db: Session,
+        *,
+        account_id: Any,
+        runtime_session_id: Any,
+        activity_id: Any,
+    ) -> Optional[tuple[datetime, Any]]:
+        """Return ``(timestamp, id)`` of one session's gateway call, or None.
+
+        Reads two columns only: the cursor of a Talk "load older" request
+        must not pull the event's stored payload just to learn its position.
+        """
+        row = (
+            db.query(self.model.timestamp, self.model.id)
+            .filter(
+                self.model.id == activity_id,
+                self.model.account_id == account_id,
+                self.model.runtime_session_id == runtime_session_id,
+                self.model.activity_type == "model_gateway_call",
+            )
+            .first()
+        )
+        return (row.timestamp, row.id) if row is not None else None
 
     def get_model_gateway_call_for_session(
         self,

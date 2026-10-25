@@ -4161,6 +4161,22 @@ paths:
         description: With `history=delta`, each event keeps at most its last N messages
           and tool entries, so the oldest event on a page of a long session does not
           carry the whole conversation (#1689).
+      - name: before
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: 'Keyset cursor: return only events older than the event with
+            this id. Pass `pagination.next_cursor` from the previous page. Unlike
+            `offset`, the page does not shift when new events arrive while older ones
+            are read. `offset` is ignored when this is set.'
+          title: Before
+        description: 'Keyset cursor: return only events older than the event with
+          this id. Pass `pagination.next_cursor` from the previous page. Unlike `offset`,
+          the page does not shift when new events arrive while older ones are read.
+          `offset` is ignored when this is set.'
       responses:
         '200':
           description: Successful Response
@@ -49784,7 +49800,6 @@ components:
           - type: number
             minimum: 0.0
           - type: string
-            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Charged Cost
           description: Amount the source vendor charged, in USD. The billing truth;

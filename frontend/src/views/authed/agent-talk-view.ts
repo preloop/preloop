@@ -45,6 +45,7 @@ import consoleStyles from '../../styles/console-styles.css?inline';
 import type {
   AgentControlCommandResponse,
   FlowGatewayEvent,
+  FlowGatewayEventsResponse,
   ManagedAgentSummary,
   RuntimeSessionActivityItem,
   RuntimeSessionSummary,
@@ -91,7 +92,12 @@ import {
   TALK_SWITCH_SESSION_EVENT,
 } from '../../components/talk-composer';
 
-const EVENT_PAGE_SIZE = 50;
+/**
+ * Turns per page. The first page is what the thread opens on, so it stays
+ * small; older turns load by cursor on request. 50 turns of a long session
+ * came to several megabytes in one response.
+ */
+const EVENT_PAGE_SIZE = 20;
 const TURN_HISTORY_WINDOW = 40;
 
 @customElement('agent-talk-view')
@@ -146,7 +152,8 @@ export class AgentTalkView extends LitElement {
   @query('talk-composer') private composer!: TalkComposer;
 
   private previousDocumentTitle = document.title;
-  private nextEventOffset: number | null = null;
+  /** The oldest event of the last page read; `before` for the next one. */
+  private nextEventCursor: string | null = null;
   private unsubscribeRealtime: (() => void) | null = null;
   private unsubscribeRealtimeState: (() => void) | null = null;
   private channel: BroadcastChannel | null = null;
@@ -644,8 +651,7 @@ export class AgentTalkView extends LitElement {
       // Resume from the fresh page's cursor even when older pages remain
       // mounted. A burst can add more than one page; retained row count is
       // not an offset and would skip the gap between new and retained rows.
-      this.nextEventOffset =
-        events.pagination?.next_offset ?? (events.logs || []).length;
+      this.nextEventCursor = this.pageCursor(events);
       // Anything the server has now echoed back is in the thread already.
       this.composer?.clearSentPending(this.echoedCommandIds(this.activity));
       this.sessionLoadFailed = false;
@@ -673,7 +679,7 @@ export class AgentTalkView extends LitElement {
       !this.sessionId ||
       this.loadingMoreEvents ||
       !this.hasMoreEvents ||
-      this.nextEventOffset === null
+      this.nextEventCursor === null
     ) {
       return;
     }
@@ -683,7 +689,7 @@ export class AgentTalkView extends LitElement {
     try {
       const page = await getRuntimeSessionGatewayEvents(sessionId, {
         limit: EVENT_PAGE_SIZE,
-        offset: this.nextEventOffset,
+        before: this.nextEventCursor,
         history: 'delta',
         historyWindow: TURN_HISTORY_WINDOW,
         signal: this.eventsAbort?.signal,
@@ -699,7 +705,7 @@ export class AgentTalkView extends LitElement {
       for (const event of page.logs || []) byId.set(event.id, event);
       this.events = this.sortEvents(Array.from(byId.values()));
       this.hasMoreEvents = page.pagination?.has_more ?? false;
-      this.nextEventOffset = page.pagination?.next_offset ?? null;
+      this.nextEventCursor = this.hasMoreEvents ? this.pageCursor(page) : null;
     } catch (error) {
       if (generation !== this.sessionGeneration) return;
       this.error =
@@ -707,6 +713,15 @@ export class AgentTalkView extends LitElement {
     } finally {
       if (generation === this.sessionGeneration) this.loadingMoreEvents = false;
     }
+  }
+
+  /**
+   * The cursor for the page after `page`: the server's, or the page's oldest
+   * event for a server that predates `next_cursor`.
+   */
+  private pageCursor(page: FlowGatewayEventsResponse): string | null {
+    const logs = page.logs || [];
+    return page.pagination?.next_cursor ?? logs[logs.length - 1]?.id ?? null;
   }
 
   private sortEvents(events: FlowGatewayEvent[]): FlowGatewayEvent[] {
@@ -889,7 +904,7 @@ export class AgentTalkView extends LitElement {
     this.activity = [];
     this.pendingApprovals = [];
     this.hasMoreEvents = false;
-    this.nextEventOffset = null;
+    this.nextEventCursor = null;
     this.loadingEvents = false;
     this.loadingMoreEvents = false;
     this.browserStepViewerIndex = -1;

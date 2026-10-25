@@ -132,7 +132,7 @@ describe('agent-talk-view', () => {
       if (url.includes('/gateway-events'))
         return jsonResponse({
           logs: [],
-          pagination: { has_more: true, next_offset: 50 },
+          pagination: { has_more: true, next_offset: 20, next_cursor: 'ev-20' },
         });
       if (url.includes('/activity')) return jsonResponse({ items: [] });
       if (url.includes('/approval-requests')) return jsonResponse([]);
@@ -152,14 +152,17 @@ describe('agent-talk-view', () => {
       const params = new URL(read, location.origin).searchParams;
       expect(params.get('history')).to.equal('delta');
       expect(params.get('history_window')).to.equal('40');
+      // The first page is small: 50 turns of a long session came to
+      // megabytes in one response.
+      expect(params.get('limit')).to.equal('20');
     }
-    expect(
-      new URL(reads[1], location.origin).searchParams.get('offset')
-    ).to.equal('50');
+    const older = new URL(reads[1], location.origin).searchParams;
+    expect(older.get('before')).to.equal('ev-20');
+    expect(older.has('offset')).to.equal(false);
     el.remove();
   });
 
-  it('uses the refreshed server offset instead of retained row count after a burst', async () => {
+  it('uses the refreshed page cursor instead of the oldest retained row after a burst', async () => {
     const el = await mount('?session=sess-1');
     await waitUntil(() => !(el as any).loadingEvents);
     (el as any).events = Array.from({ length: 100 }, (_, i) => ({
@@ -171,7 +174,7 @@ describe('agent-talk-view', () => {
       if (String(input).includes('/gateway-events'))
         return jsonResponse({
           logs: [{ id: 'new', timestamp: '2026-02-01T00:00:00Z', payload: {} }],
-          pagination: { has_more: true, next_offset: 50 },
+          pagination: { has_more: true, next_offset: 20, next_cursor: 'new' },
         });
       if (String(input).includes('/activity'))
         return jsonResponse({ items: [] });
@@ -179,15 +182,17 @@ describe('agent-talk-view', () => {
     });
     await (el as any).loadEvents('sess-1');
     expect((el as any).events).to.have.length(101);
-    expect((el as any).nextEventOffset).to.equal(50);
+    // Not old-99: a burst can add more than a page, and resuming below the
+    // retained rows would skip the gap between them and the fresh page.
+    expect((el as any).nextEventCursor).to.equal('new');
     await (el as any).loadMoreEvents();
     const last = fetchStub
       .getCalls()
       .map((call) => String(call.args[0]))
       .filter((url) => url.includes('/gateway-events'))
       .at(-1)!;
-    expect(new URL(last, location.origin).searchParams.get('offset')).to.equal(
-      '50'
+    expect(new URL(last, location.origin).searchParams.get('before')).to.equal(
+      'new'
     );
     expect((el as any).events).to.have.length(101);
     el.remove();
@@ -228,13 +233,14 @@ describe('agent-talk-view', () => {
     const el = await mount('?session=sess-1');
     await waitUntil(() => !(el as any).loadingEvents);
     (el as any).hasMoreEvents = true;
-    (el as any).nextEventOffset = 50;
+    (el as any).nextEventCursor = 'ev-50';
     let finish!: (response: Response) => void;
     const offsets: string[] = [];
     fetchStub.callsFake(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.includes('/gateway-events')) {
-        offsets.push(new URL(url, location.origin).searchParams.get('offset')!);
+        const params = new URL(url, location.origin).searchParams;
+        offsets.push(params.get('before') ?? params.get('offset')!);
         if (offsets.length === 1)
           return new Promise<Response>((resolve) => {
             finish = resolve;
@@ -258,12 +264,12 @@ describe('agent-talk-view', () => {
       finish(
         jsonResponse({
           logs: [],
-          pagination: { has_more: true, next_offset: 75 },
+          pagination: { has_more: true, next_offset: 20, next_cursor: 'ev-20' },
         })
       );
       await live;
       await waitUntil(() => offsets.length === 3);
-      expect(offsets).to.deep.equal(['0', '75', '0']);
+      expect(offsets).to.deep.equal(['0', 'ev-20', '0']);
     } finally {
       el.remove();
     }
@@ -640,8 +646,10 @@ describe('agent-talk-view session integrity', () => {
       const match = url.match(/runtime-sessions\/([^/]+)\/gateway-events/);
       if (match || url.includes('/gateway-events')) {
         const sessionId = match?.[1] ?? 'unknown';
-        const offset = new URL(url, 'http://x').searchParams.get('offset');
-        const custom = eventPages.get(`${sessionId}:${offset}`);
+        const params = new URL(url, 'http://x').searchParams;
+        // Older pages are read by cursor, the first page at offset 0.
+        const page = params.get('before') ?? params.get('offset');
+        const custom = eventPages.get(`${sessionId}:${page}`);
         if (custom) return custom();
         return eventsFor(sessionId, [`${sessionId}-e1`]);
       }
@@ -852,7 +860,7 @@ describe('agent-talk-view session integrity', () => {
       eventsFor('sess-1', ['sess-1-e1'], true)
     );
     eventPages.set(
-      'sess-1:1',
+      'sess-1:sess-1-e1',
       () => new Promise<Response>((resolve) => (releasePage = resolve))
     );
     const el = await mount();
@@ -862,7 +870,7 @@ describe('agent-talk-view session integrity', () => {
     await waitUntil(() =>
       fetchStub
         .getCalls()
-        .some((call) => String(call.args[0]).includes('offset=1'))
+        .some((call) => String(call.args[0]).includes('before=sess-1-e1'))
     );
     (
       el
@@ -883,7 +891,7 @@ describe('agent-talk-view session integrity', () => {
       eventsFor('sess-1', ['sess-1-e1'], true)
     );
     eventPages.set(
-      'sess-1:1',
+      'sess-1:sess-1-e1',
       async () => new Response('down', { status: 500 })
     );
     const el = await mount();
@@ -893,7 +901,7 @@ describe('agent-talk-view session integrity', () => {
     await waitUntil(() =>
       fetchStub
         .getCalls()
-        .some((call) => String(call.args[0]).includes('offset=1'))
+        .some((call) => String(call.args[0]).includes('before=sess-1-e1'))
     );
     await aTimeout(50);
     await el.updateComplete;

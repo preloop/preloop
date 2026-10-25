@@ -373,8 +373,14 @@ export interface FlowGatewayEventsResponse {
   source: 'container' | 'database';
   pagination?: {
     limit: number;
-    offset: number;
+    /** Null on a page read by `before` cursor. */
+    offset: number | null;
     next_offset: number | null;
+    /**
+     * Session reads only: the oldest event id on this page, to pass as
+     * `before` for the next older page. Null when there is none.
+     */
+    next_cursor?: string | null;
     total: number;
     has_more: boolean;
   } | null;
