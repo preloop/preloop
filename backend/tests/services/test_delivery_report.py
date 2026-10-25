@@ -146,7 +146,15 @@ class TestFixtureWindow:
         closed = {i["ref"]: i for i in report["closed_issues"]}
         assert set(closed) == {"acme/app#11", "acme/app#12"}
         assert closed["acme/app#11"]["purpose"]["verdict"] == dr.PURPOSE_COVERED
-        assert closed["acme/app#12"]["purpose"]["verdict"] == dr.PURPOSE_UNVERIFIED
+        assert closed["acme/app#12"]["purpose"]["verdict"] == dr.PURPOSE_PARTIAL
+        criterion = next(
+            c
+            for c in closed["acme/app#12"]["purpose"]["criteria"]
+            if c["text"] == "Exports respect the date filter"
+        )
+        assert criterion["met"] is False
+        assert criterion["evidence"]
+        assert "Closed, partly covered" in report["report_markdown"]
         needs = [i for i in report["needs_you"] if i["kind"] == "closed_unverified"]
         assert [i["ref"] for i in needs] == ["acme/app#12"]
         assert needs[0]["unmet_criteria"] == ["Exports respect the date filter"]
@@ -930,11 +938,11 @@ class TestDenominators:
         summary = _window_report()["summary"]
         assert summary["linkage"] == {"linked": 3, "total": 4}
         assert summary["criteria_availability"] == {"with_criteria": 2, "total": 2}
-        assert summary["evidence_availability"] == {"with_evidence": 2, "total": 3}
+        assert summary["evidence_availability"] == {"with_evidence": 3, "total": 3}
         assert summary["closed_verdicts"] == {
             "covered": 1,
-            "partial": 0,
-            "unverified": 1,
+            "partial": 1,
+            "unverified": 0,
             "no_criteria": 0,
         }
         assert "score" not in json.dumps(summary)
@@ -945,7 +953,7 @@ class TestDenominators:
         text = report["report_markdown"]
         assert f"Linkage: {summary['linkage']['linked']} of 4 shipped" in text
         assert "Criteria available: 2 of 2 closed issues" in text
-        assert "Evidence available: 2 of 3 of their criteria" in text
+        assert "Evidence available: 3 of 3 of their criteria" in text
         verdicts = summary["closed_verdicts"]
         assert (
             f"{verdicts['covered']} covered, {verdicts['partial']} partial, "
@@ -1349,3 +1357,40 @@ def test_reopen_requests_keep_whether_the_run_applied_them() -> None:
         [{**base, "applied": True}, {**base, "ref": "example/app#8", "applied": "yes"}]
     )
     assert [r["applied"] for r in kept] == [True, False]
+
+
+@pytest.mark.parametrize("miss_first", [True, False])
+def test_closed_issue_miss_wins_over_met_duplicate(miss_first: bool) -> None:
+    prs = _load("pull_requests.json")
+    first, second = (101, 102) if miss_first else (102, 101)
+    for pr in prs:
+        if pr["number"] in (101, 102):
+            pr["description"] = "Closes #12"
+    assessments = {
+        f"acme/app#{number}": {
+            "purpose": {
+                "criteria": [
+                    {
+                        "text": "Exports respect the date filter",
+                        "met": met,
+                        "evidence": ["backend/app/export.py:22"],
+                    }
+                ]
+            }
+        }
+        for number, met in ((first, False), (second, True))
+    }
+    report = dr.assemble_report(
+        window=WINDOW,
+        pull_requests=prs,
+        issues=_load("issues.json"),
+        assessments=assessments,
+    )
+    issue = next(i for i in report["closed_issues"] if i["ref"] == "acme/app#12")
+    assert issue["purpose"]["verdict"] == dr.PURPOSE_PARTIAL
+    criterion = next(
+        c
+        for c in issue["purpose"]["criteria"]
+        if c["text"] == "Exports respect the date filter"
+    )
+    assert criterion["met"] is False

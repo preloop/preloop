@@ -1547,7 +1547,11 @@ def assemble_report(
             if change["ref"] not in prs:
                 continue
             for c in normalize_purpose(change["purpose"])["criteria"]:
-                if c["met"] is True:
+                # A shown miss must survive aggregation, even when another
+                # linked PR marks the same criterion met.
+                if c["met"] is False:
+                    met[c["text"]] = c
+                elif c["met"] is True:
                     met.setdefault(c["text"], c)
         closing = [c for c in shipped if c["ref"] in prs]
         closing_pr = closing[-1] if closing else {}
