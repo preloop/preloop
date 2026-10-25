@@ -1473,15 +1473,37 @@ def record_publication_safely(
 
 
 def record_pull_request_event_safely(db: Session, event_data: dict[str, Any]) -> None:
-    """Webhook hook for approval and merge events; commits its own write."""
+    """Webhook hook for approval, merge and Copilot pull request events.
+
+    Commits its own write.
+    """
     event_type = _str(_dict(event_data).get("type")) or ""
     from preloop.config import settings
+    from preloop.services.copilot_pull_requests import (
+        copilot_author_id,
+        record_copilot_pull_request,
+    )
 
+    copilot = copilot_author_id(_dict(event_data)) is not None
+    if copilot:
+        # Before the approval and merge pass, so its "opened" correction
+        # finds the row this creates.
+        _savepoint(
+            db,
+            "copilot pull request",
+            lambda: record_copilot_pull_request(db, event_data),
+        )
     if (
         not settings.ticket_readiness_enabled
         and event_type
         not in APPROVAL_EVENT_TYPES | MERGE_EVENT_TYPES | {REVIEW_EVENT_TYPE}
     ):
+        if copilot:
+            try:
+                db.commit()
+            except Exception:
+                logger.warning("Could not commit the issue cost rollup", exc_info=True)
+                db.rollback()
         return
     if settings.ticket_readiness_enabled:
         from preloop.models.crud import readiness
