@@ -17,7 +17,14 @@ ISSUE_URL = "https://github.com/example/app/issues/7"
 
 def _report() -> dict[str, Any]:
     return {
-        "shipped": [{"ref": "example/app#10", "url": PR_URL, "project": "example/app"}],
+        "shipped": [
+            {
+                "ref": "example/app#10",
+                "url": PR_URL,
+                "project": "example/app",
+                "head_sha": "aaa111",
+            }
+        ],
         "closed_issues": [
             {
                 "ref": "example/app#7",
@@ -91,3 +98,28 @@ def test_row_tolerates_a_report_without_summary_or_spend() -> None:
     assert row.shipped == 0
     assert row.cost_usd is None
     assert row.report_status == "error"
+
+
+def test_second_closing_pr_is_not_compared_to_another_prs_head(
+    state: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = _report()
+    report["shipped"].insert(
+        0,
+        {
+            "ref": "example/app#9",
+            "url": "https://github.com/example/app/pull/9",
+            "head_sha": "zzz999",
+        },
+    )
+    report["closed_issues"][0]["closed_by"] = ["example/app#9", "example/app#10"]
+    pulls = {
+        "https://github.com/example/app/pull/9": SimpleNamespace(head_sha="zzz999"),
+        PR_URL: SimpleNamespace(head_sha="aaa111"),
+    }
+    monkeypatch.setattr(
+        views.crud_issue_cost,
+        "get_pull_request",
+        lambda db, *, account_id, pr_key: pulls.get(pr_key),
+    )
+    assert views.stale_reopen_requests(None, account_id="a", report=report) == {}

@@ -140,6 +140,8 @@
   "GET /api/v1/cost/health": "deny",
   "GET /api/v1/cost/summary": "deny",
   "GET /api/v1/cost/timeseries": "deny",
+  "GET /api/v1/delivery-reports": "deny",
+  "GET /api/v1/delivery-reports/{execution_id}": "deny",
   "GET /api/v1/desktop/endpoints": "deny",
   "GET /api/v1/desktop/views/{view_id}": "deny",
   "GET /api/v1/embeddings": "deny",

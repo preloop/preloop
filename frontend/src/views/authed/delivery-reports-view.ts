@@ -254,9 +254,10 @@ export class DeliveryReportsView extends LitElement {
   private countLabel(visible: number): string {
     const noun = this.total === 1 ? 'report' : 'reports';
     const filtered = Boolean(this.search.trim() || this.project);
-    return filtered
-      ? `${visible} of ${this.total} ${noun}`
-      : `${this.total} ${noun}`;
+    if (!filtered) return `${this.total} ${noun}`;
+    // Search and the project filter narrow the page in view, not the
+    // whole range, so the count names both.
+    return `${visible} of ${this.rows.length} on this page · ${this.total} ${noun}`;
   }
 
   private renderTime(value: string | null) {

@@ -21,6 +21,7 @@ import {
   verdictChip,
   verdictCounts,
 } from '../../utils/delivery-report';
+import { isSafeSubjectUrl } from '../../utils/execution-subject';
 import { spendLabel } from './delivery-reports-view';
 import '../../components/view-header';
 import '../../components/permission-denied';
@@ -313,7 +314,11 @@ export class DeliveryReportView extends LitElement {
   }
 
   private external(url: string | null | undefined, label: string) {
-    if (!url) return html`<span class="ref">${label}</span>`;
+    // Report URLs come from the run's agent: only http(s) and console paths
+    // become links, anything else (a javascript: URL) is plain text.
+    if (!url || !isSafeSubjectUrl(url)) {
+      return html`<span class="ref">${label}</span>`;
+    }
     return html`<a
       class="ref"
       href=${url}
@@ -423,6 +428,18 @@ export class DeliveryReportView extends LitElement {
       ${
         count === 0
           ? html`<div class="empty">Nothing proposed in this period.</div>`
+          : nothing
+      }
+      ${
+        count > 0 &&
+        !(
+          detail.actions.open_issue &&
+          detail.actions.reopen &&
+          detail.actions.dismiss
+        )
+          ? html`<p class="empty" data-testid="actions-note">
+              ${ACTIONS_UNAVAILABLE}
+            </p>`
           : nothing
       }
       ${

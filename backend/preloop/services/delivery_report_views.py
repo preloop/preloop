@@ -126,6 +126,10 @@ def _stale_reason(
     }
     for pr_ref in closed.get("closed_by") or []:
         change = shipped.get(pr_ref) or {}
+        # The assessed head belongs to one closing PR; another PR linked to
+        # the same issue has its own head and is not compared against it.
+        if change.get("head_sha") != assessed_head:
+            continue
         key = normalize_pr_url(change.get("url"))
         if not key:
             continue

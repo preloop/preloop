@@ -316,6 +316,24 @@ describe('delivery-report-view', () => {
     expect(body.textContent).to.contain('p95 not measured');
   });
 
+  it('renders an unsafe report URL as plain text, never as a link', async () => {
+    payload = detail();
+    payload.report.reopen_requests![0].url = 'javascript:alert(1)';
+    const el = await mount();
+    const request = el.shadowRoot!.querySelector(
+      '[data-testid="reopen-request"]'
+    )!;
+    expect(request.querySelector('a')).to.not.exist;
+    expect(request.textContent).to.contain('example/app#7');
+    expect(el.shadowRoot!.querySelector('a[href^="javascript:"]')).to.not.exist;
+  });
+
+  it('states why proposal actions are disabled in text, not only a tooltip', async () => {
+    const el = await mount();
+    const note = el.shadowRoot!.querySelector('[data-testid="actions-note"]');
+    expect(note?.textContent?.trim()).to.equal(ACTIONS_UNAVAILABLE);
+  });
+
   it('says when assessments were skipped for budget', async () => {
     payload = detail();
     payload.report.summary!.assessments_skipped_for_budget = true;
@@ -398,6 +416,18 @@ describe('delivery-reports-view', () => {
     await waitUntil(
       () => root.querySelectorAll('[data-testid="report-row"]').length === 5
     );
+  });
+
+  it('says a filter narrows only the page in view', async () => {
+    const el = await mount();
+    const root = el.shadowRoot!;
+    const input = root.querySelector('sl-input')!;
+    (input as unknown as { value: string }).value = 'example/api';
+    input.dispatchEvent(new Event('sl-input'));
+    await el.updateComplete;
+    expect(
+      root.querySelector('[data-testid="report-count"]')!.textContent
+    ).to.equal('1 of 25 on this page · 30 reports');
   });
 
   it('links each row to its report and shows unknown spend as a dash', async () => {
