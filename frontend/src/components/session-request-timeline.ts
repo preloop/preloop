@@ -63,14 +63,6 @@ export class SessionRequestTimeline extends LitElement {
   @state()
   private thresholdMode: ThresholdMode = 'usd';
 
-  @state()
-  private searchQuery = '';
-
-  @state()
-  private copied = false;
-
-  private copiedTimer?: ReturnType<typeof setTimeout>;
-
   static styles = css`
     :host {
       display: block;
@@ -97,8 +89,7 @@ export class SessionRequestTimeline extends LitElement {
     }
 
     select,
-    input[type='number'],
-    input[type='search'] {
+    input[type='number'] {
       border: 1px solid var(--sl-color-neutral-300);
       border-radius: var(--sl-border-radius-medium);
       font-size: var(--sl-font-size-small);
@@ -109,22 +100,6 @@ export class SessionRequestTimeline extends LitElement {
       color: var(--sl-color-neutral-600);
       font-size: var(--sl-font-size-small);
       margin-left: auto;
-    }
-
-    .search-control {
-      min-width: min(100%, 12rem);
-    }
-
-    .search-count {
-      align-self: center;
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-small);
-    }
-
-    .preview {
-      color: var(--sl-color-neutral-600);
-      font-size: var(--sl-font-size-x-small);
-      overflow-wrap: anywhere;
     }
 
     .stream {
@@ -299,55 +274,6 @@ export class SessionRequestTimeline extends LitElement {
     return rows;
   }
 
-  private get visibleRows(): RuntimeSessionRequestItem[] {
-    const rows = this.filteredSorted;
-    const query = this.searchQuery.trim().toLocaleLowerCase();
-    if (!query) return rows;
-    return rows.filter((row) =>
-      [
-        row.model_alias || row.provider_name || 'request',
-        row.prompt_preview,
-        row.response_preview,
-        ...row.tools.map((tool) => tool.name || 'tool'),
-      ]
-        .filter((value): value is string => Boolean(value))
-        .some((value) => value.toLocaleLowerCase().includes(query))
-    );
-  }
-
-  private requestText(row: RuntimeSessionRequestItem): string {
-    const lines = [
-      `Time: ${row.timestamp ? parseUTCDate(row.timestamp).toLocaleString() : 'no timestamp'}`,
-      `Model: ${row.model_alias || row.provider_name || 'request'}`,
-      `Tokens: ${formatNumber(row.total_tokens)}`,
-    ];
-    if (row.prompt_preview) lines.push(`Prompt: ${row.prompt_preview}`);
-    if (row.response_preview) lines.push(`Response: ${row.response_preview}`);
-    if (row.tools.length)
-      lines.push(
-        `Tools: ${row.tools.map((tool) => tool.name || 'tool').join(', ')}`
-      );
-    return lines.join('\n');
-  }
-
-  private async copyVisibleRows(): Promise<void> {
-    try {
-      await navigator.clipboard.writeText(
-        this.visibleRows.map((row) => this.requestText(row)).join('\n\n')
-      );
-      this.copied = true;
-      clearTimeout(this.copiedTimer);
-      this.copiedTimer = setTimeout(() => (this.copied = false), 2000);
-    } catch {
-      this.copied = false;
-    }
-  }
-
-  disconnectedCallback(): void {
-    super.disconnectedCallback();
-    clearTimeout(this.copiedTimer);
-  }
-
   private emitFailedOnly(failedOnly: boolean): void {
     this.dispatchEvent(
       new CustomEvent('request-timeline-failed-only', {
@@ -417,18 +343,6 @@ export class SessionRequestTimeline extends LitElement {
             ${formatNumber(row.total_tokens)} tokens
             ${row.finish_reason ? html` · ${row.finish_reason}` : nothing}
           </div>
-          ${
-            row.prompt_preview
-              ? html`<div class="preview">Prompt: ${row.prompt_preview}</div>`
-              : nothing
-          }
-          ${
-            row.response_preview
-              ? html`<div class="preview">
-                  Response: ${row.response_preview}
-                </div>`
-              : nothing
-          }
           ${
             row.tools.length
               ? html`
@@ -570,9 +484,7 @@ export class SessionRequestTimeline extends LitElement {
   }
 
   render() {
-    const rows = this.visibleRows;
-    const searchableCount = this.filteredSorted.length;
-    const queryActive = Boolean(this.searchQuery.trim());
+    const rows = this.filteredSorted;
     return html`
       <div class="toolbar">
         <label class="control">
@@ -624,33 +536,6 @@ export class SessionRequestTimeline extends LitElement {
           ${this.failedOnly ? 'Showing failed only' : 'Failed requests only'}
           (${formatNumber(this.failedCount)})
         </sl-button>
-        <label class="control search-control">
-          <span class="control-label">Search requests</span>
-          <input
-            type="search"
-            .value=${this.searchQuery}
-            @input=${(event: Event) => {
-              this.searchQuery = (event.target as HTMLInputElement).value;
-              this.copied = false;
-            }}
-          />
-        </label>
-        ${
-          queryActive
-            ? html`<span class="search-count" aria-live="polite"
-                >${formatNumber(rows.length)} of
-                ${formatNumber(searchableCount)}</span
-              >`
-            : nothing
-        }
-        <sl-button size="small" @click=${this.copyVisibleRows}
-          >Copy as text</sl-button
-        >
-        ${
-          this.copied
-            ? html`<span class="search-count" role="status">Copied</span>`
-            : nothing
-        }
         <span class="count">
           ${formatNumber(rows.length)} shown · ${formatNumber(this.total)} total
           requests
@@ -665,11 +550,7 @@ export class SessionRequestTimeline extends LitElement {
                 ${rows.map((row) => this.renderRequest(row))}
               </div>`
             : html`<div class="empty">
-                ${
-                  queryActive
-                    ? 'No requests match'
-                    : 'No requests match the current filter.'
-                }
+                No requests match the current filter.
               </div>`
       }
       ${

@@ -161,6 +161,14 @@ type ChatTurnIdleExpiry = {
   rewrittenTokens: number;
 };
 
+type ChatRow = {
+  id: string;
+  timestamp: string | null;
+  turn?: ChatTurn;
+  tool?: SessionTool;
+  request?: ApprovalRequest;
+};
+
 type ChatTurn = {
   id: string;
   index: number;
@@ -460,6 +468,15 @@ export class SessionReplayPanel extends LitElement {
   // most recent turn answers that without scrolling past the whole history.
   @state()
   private chatSort: ChatSort = 'newest';
+
+  // Requests tab text search and "Copy as text" confirmation.
+  @state()
+  private chatSearch = '';
+
+  @state()
+  private chatCopied = false;
+
+  private chatCopiedTimer?: ReturnType<typeof setTimeout>;
 
   @state()
   private chatTypeFilter: ChatTypeFilter = 'all';
@@ -1131,6 +1148,17 @@ export class SessionReplayPanel extends LitElement {
       font-size: var(--sl-font-size-x-small);
     }
 
+    .chat-search-input {
+      background: var(--sl-color-neutral-0);
+      border: 1px solid var(--sl-color-neutral-300);
+      border-radius: var(--sl-border-radius-small);
+      color: var(--sl-color-neutral-800);
+      font: inherit;
+      height: 30px;
+      min-width: min(100%, 12rem);
+      padding: 0 6px;
+    }
+
     .chat-select {
       background: var(--sl-color-neutral-0);
       border: 1px solid var(--sl-color-neutral-300);
@@ -1653,6 +1681,7 @@ export class SessionReplayPanel extends LitElement {
 
   disconnectedCallback(): void {
     super.disconnectedCallback();
+    clearTimeout(this.chatCopiedTimer);
     this.removeEventListener(
       'optimization-inspect-events',
       this.handleOptimizationInspectEvents
@@ -5741,7 +5770,10 @@ export class SessionReplayPanel extends LitElement {
     `;
   }
 
-  private renderChatControlBar(turnCount: number) {
+  private renderChatControlBar(
+    turnCount: number,
+    search: { shown: number; total: number } | null = null
+  ) {
     const thresholdMax = this.getChatThresholdMax();
     const isTokens = this.chatThresholdMode === 'tokens';
     // Token thresholds are integers (step 1 keeps slider + number input exactly
@@ -5851,21 +5883,116 @@ export class SessionReplayPanel extends LitElement {
             ${formatNumber(turnCount)} turn${turnCount === 1 ? '' : 's'}
           </span>
         </div>
+        <div class="chat-control-cluster">
+          <input
+            class="chat-search-input"
+            type="search"
+            placeholder="Search requests"
+            aria-label="Search requests"
+            .value=${this.chatSearch}
+            @input=${(event: Event) => {
+              this.chatSearch = (event.target as HTMLInputElement).value;
+              this.chatCopied = false;
+            }}
+          />
+          ${
+            search
+              ? html`<span class="event-meta chat-search-count"
+                  >${formatNumber(search.shown)} of
+                  ${formatNumber(search.total)}</span
+                >`
+              : nothing
+          }
+          <sl-button size="small" @click=${() => void this.copyChatRows()}>
+            <sl-icon slot="prefix" name="clipboard"></sl-icon>
+            Copy as text
+          </sl-button>
+          ${
+            this.chatCopied
+              ? html`<span class="event-meta" role="status">Copied</span>`
+              : nothing
+          }
+        </div>
       </div>
     `;
   }
 
-  private renderChatView() {
-    const turns = this.getVisibleChatTurns();
-    const mostExpensiveTurnId = this.getMostExpensiveTurnId();
-    const rows: Array<{
-      id: string;
-      timestamp: string | null;
-      turn?: ChatTurn;
-      tool?: SessionTool;
-      request?: ApprovalRequest;
-    }> = [
-      ...turns.map((turn) => ({
+  // The plain text a Requests row shows, used both for search and for
+  // "Copy as text": a header line set (time, model, tokens) then the body.
+  private chatRowText(row: ChatRow): { header: string[]; body: string[] } {
+    const time = `Time: ${this.formatDateTime(row.timestamp)}`;
+    if (row.turn) {
+      const turn = row.turn;
+      const header = turn.isActivity
+        ? [time, turn.title]
+        : [
+            time,
+            `Model: ${turn.title}`,
+            `Tokens: ${formatNumber(turn.totalTokens)}`,
+          ];
+      const item = turn.artifact || turn.browserStep;
+      const body = item
+        ? [item.summary || ''].filter(Boolean)
+        : turn.deltaMessages.map((message) => {
+            const role = message.role || message.source || 'message';
+            const text =
+              this.normalizeMessageText(message) ||
+              (message.redacted
+                ? 'Content redacted by capture policy.'
+                : 'No text content captured.');
+            return `${role}: ${text}`;
+          });
+      return { header, body };
+    }
+    if (row.tool) {
+      const tool = row.tool;
+      return {
+        header: [time, `Tool: ${tool.name}`],
+        body: [
+          tool.arguments ? `Arguments: ${tool.arguments}` : '',
+          tool.result ? `Result: ${tool.result}` : '',
+        ].filter(Boolean),
+      };
+    }
+    const request = row.request!;
+    return {
+      header: [time, `Approval: ${request.tool_name}`],
+      body: [String(request.status || '')].filter(Boolean),
+    };
+  }
+
+  private chatRowMatches(row: ChatRow, query: string): boolean {
+    const { header, body } = this.chatRowText(row);
+    // Search the row's content, not the "Time:" label it adds for copying.
+    return [...header.slice(1), ...body]
+      .join('\n')
+      .toLocaleLowerCase()
+      .includes(query);
+  }
+
+  private async copyChatRows(): Promise<void> {
+    const text = this.chatRows.shown
+      .map((row) => {
+        const { header, body } = this.chatRowText(row);
+        return [...header, ...body].join('\n');
+      })
+      .join('\n\n');
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      this.chatCopied = false;
+      return;
+    }
+    this.chatCopied = true;
+    clearTimeout(this.chatCopiedTimer);
+    this.chatCopiedTimer = setTimeout(() => (this.chatCopied = false), 2000);
+  }
+
+  // Rows of the Requests tab after the type/threshold filters (total) and the
+  // text search (shown), in display order.
+  private get chatRows(): { shown: ChatRow[]; total: number } {
+    const rows: ChatRow[] = [
+      ...this.getVisibleChatTurns().map((turn) => ({
         id: turn.id,
         timestamp: turn.timestamp,
         turn,
@@ -5888,10 +6015,27 @@ export class SessionReplayPanel extends LitElement {
             sessionTimelineTime(b.timestamp)) *
           (this.chatSort === 'newest' ? -1 : 1)
       );
+    const query = this.chatSearch.trim().toLocaleLowerCase();
+    return {
+      shown: query
+        ? rows.filter((row) => this.chatRowMatches(row, query))
+        : rows,
+      total: rows.length,
+    };
+  }
+
+  private renderChatView() {
+    const turnCount = this.getVisibleChatTurns().length;
+    const mostExpensiveTurnId = this.getMostExpensiveTurnId();
+    const { shown: rows, total } = this.chatRows;
+    const searching = Boolean(this.chatSearch.trim());
     return html`
       <div class="panel">
         ${this.renderFocusJumpHint()} ${this.renderChatSummaryBar()}
-        ${this.renderChatControlBar(turns.length)}
+        ${this.renderChatControlBar(
+          turnCount,
+          searching ? { shown: rows.length, total } : null
+        )}
         ${
           rows.length
             ? html`
@@ -5911,7 +6055,13 @@ export class SessionReplayPanel extends LitElement {
                   )}
                 </div>
               `
-            : html`<div class="empty">No turns match the current filters.</div>`
+            : html`<div class="empty">
+                ${
+                  searching
+                    ? 'No requests match'
+                    : 'No turns match the current filters.'
+                }
+              </div>`
         }
         ${this.renderEventPageSentinel()}
       </div>
