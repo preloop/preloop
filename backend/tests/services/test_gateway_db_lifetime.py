@@ -1,5 +1,7 @@
 """Real local pool checks for gateway policy, retry and bookkeeping boundaries."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import threading
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
@@ -53,7 +55,7 @@ def local_gateway() -> Iterator[tuple[OpenAIGatewayService, Engine]]:
 
 
 def _model() -> models.AIModel:
-    return models.AIModel(
+    return ai_model_with_secret(
         name="Synthetic",
         provider_name="openai",
         model_identifier="synthetic",

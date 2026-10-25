@@ -322,9 +322,9 @@ def test_jira_tracker_sync(preloop_client, jira_client):
             # Try structuredContent first (most reliable) - FastMCP puts Pydantic model fields here
             if (
                 hasattr(create_result, "structuredContent")
-                and create_result.structuredContent
+                and create_result.structured_content
             ):
-                url = create_result.structuredContent.get("url")
+                url = create_result.structured_content.get("url")
                 if url:
                     # Parse Jira URL: https://example.atlassian.net/browse/PROJECT-123
                     url_match = re.search(r"/browse/([A-Z]+-\d+)", url)

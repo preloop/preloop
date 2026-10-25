@@ -606,14 +606,14 @@ async def test_both_tools_over_mcp(app, test_user, shared_db):  # noqa: F811
                 "since": (TODAY - timedelta(minutes=1)).isoformat(),
             },
         )
-        assert not found.isError, found.content
+        assert not found.is_error, found.content
         # MCP: a tool returning structuredContent should also return it
         # serialized as text, which is all some clients (OpenCode) show.
         assert [b.type for b in found.content] == ["text", "resource_link"]
-        assert json.loads(found.content[0].text) == found.structuredContent
-        assert found.structuredContent["items"][0]["id"] == str(row.id)
+        assert json.loads(found.content[0].text) == found.structured_content
+        assert found.structured_content["items"][0]["id"] == str(row.id)
         read = await mcp.call_tool("get_artifact", {"artifact_id": str(row.id)})
-        assert not read.isError, read.content
+        assert not read.is_error, read.content
         assert [b.type for b in read.content] == ["text", "resource"]
         assert json.loads(read.content[0].text)["id"] == str(row.id)
         block = read.content[1]
@@ -621,7 +621,7 @@ async def test_both_tools_over_mcp(app, test_user, shared_db):  # noqa: F811
         assert block.resource.text.startswith("WEBVTT")
         assert block.meta[shapes.META_KEY]["truncated"] is False
         refused = await mcp.call_tool("search_artifacts", {"scope": "account"})
-        assert refused.isError
+        assert refused.is_error
         assert [b.type for b in refused.content] == ["text"]
         assert GRANT in refused.content[0].text
 

@@ -71,10 +71,9 @@ dependencies = [
     "pyinstrument>=4.6.2",
     "nats-py>=2.6.0", # Added for NATS integration
     "stripe>=12.4.0",
-    "fastmcp>=3.2.0,<4.0.0",  # v4 requires mcp>=2; see the mcp pin below
-    # 1.30.0 reclaims idle Streamable HTTP sessions (GHSA-84m7-p3x7-pcfv).
-    # 2.x dropped streamablehttp_client, which mcp_client_pool imports.
-    "mcp>=1.30.0,<2",
+    "fastmcp>=4.1.3,<5",
+    "mcp>=2.3.0,<3",  # Modern metadata/discovery and legacy initialization.
+    "httpx2>=2.10.0,<3",  # MCP SDK v2 transport; other services still use httpx.
     "aiodocker>=0.21.0", # Added for agent container execution
     "kubernetes_asyncio>=30.5.0", # Added for Kubernetes agent execution
     "cel-python>=0.1.0", # Added for CEL expression evaluation in approval rules
@@ -96,8 +95,6 @@ dependencies = [
     # register_model semantics the gateway accounting relies on, plus Bedrock
     # bearer authentication without ambient IAM lookup (verified on 1.101.x).
     # The ceiling guards those internals; bump with gateway streaming tests.
-    # 1.106.x imports mcp.types.CacheableResult (mcp>=2.2) on every
-    # Responses call, which the mcp<2 pin above cannot satisfy.
     "litellm>=1.101.0,<1.106",
     "boto3>=1.34.0",  # For AWS Bedrock support through litellm
     "azure-identity>=1.17.0",  # Entra ID / managed identity for Azure OpenAI
@@ -148,7 +145,7 @@ dev = [
     "httpx>=0.24.1",
     "playwright>=1.30.0",
     "pytest-playwright>=0.4.0",
-    # mcp itself is a [project] dependency (pinned <2 there); tests import it
+    # mcp itself is a [project] dependency; tests import it
     # directly, but a second copy of the same range is what drifted last time.
     "PyYAML>=6.0",  # test_nginx_route_parity imports yaml
     "jsonschema>=4.0",  # test_cra_result_json_contract validates fixtures

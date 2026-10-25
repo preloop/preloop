@@ -125,9 +125,9 @@ def resolve_model_call_credentials(
     """
     Resolve AI model credentials and return litellm/openai kwargs fragment.
 
-    This helper resolves credentials via the secret service, falling back to the
-    legacy plaintext api_key column if needed. It handles different credential types
-    (API key, OAuth, ambient) and only injects an api_key when credential_type == "api_key".
+    This helper resolves credentials through the model's secret reference. It
+    handles different credential types (API key, OAuth, ambient) and only injects
+    an api_key when credential_type == "api_key".
 
     Args:
         model: The AI model whose credentials to resolve.

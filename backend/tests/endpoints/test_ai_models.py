@@ -1,3 +1,5 @@
+from tests.credential_fixtures import ai_model_with_secret
+
 import uuid
 from unittest.mock import MagicMock
 
@@ -1155,7 +1157,7 @@ def test_put_ai_model_rejects_codex_ws_override_on_non_codex_model(
 def built_in_model() -> models.AIModel:
     """A system model with private operator routing metadata."""
 
-    return models.AIModel(
+    return ai_model_with_secret(
         endpoint_type="direct",
         id=uuid.uuid4(),
         name="DeepSeek V4.1 Flash",

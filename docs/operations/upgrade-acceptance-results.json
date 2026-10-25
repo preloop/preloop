@@ -1,0 +1,564 @@
+{
+  "recorded_on": "2026-10-22",
+  "scope": "Candidate rehearsals only; final published RC gate pending.",
+  "host": "macOS arm64 with Linux Docker containers",
+  "tools": {
+    "docker_server": "28.0.1",
+    "compose": "2.33.1-desktop.1",
+    "helm": "v3.18.4",
+    "kind": "v0.30.0",
+    "kubectl": "v1.37.1"
+  },
+  "runs": {
+    "main-both": {
+      "schema_version": 1,
+      "started_at": "2026-10-22T20:27:45.708188+00:00",
+      "finished_at": "2026-10-22T20:31:02.842220+00:00",
+      "mode": "candidate-rehearsal",
+      "status": "passed",
+      "final_rc_gate": "pending",
+      "baseline": {
+        "tag": "v0.17.1",
+        "published_at": "2026-10-21T10:41:22Z",
+        "commit": "b46315580acb3b45cfad7590ca6829d0cef9374d",
+        "image": "ghcr.io/preloop/preloop:0.17.1",
+        "image_id": "sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578",
+        "repo_digests": [
+          "ghcr.io/preloop/preloop@sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "b46315580acb3b45cfad7590ca6829d0cef9374d"
+      },
+      "candidate": {
+        "commit": "726d71a3899af476b1170d9e45a64f7fd544ce26",
+        "ref": "726d71a3899af476b1170d9e45a64f7fd544ce26",
+        "image": "preloop-ua-0e4344148d-candidate:726d71a3899a",
+        "image_id": "sha256:07dcdde7bfda7856f486a36f19a61658d71211e35902a8d56dde82654ebc7bdb",
+        "repo_digests": [
+          "preloop-ua-0e4344148d-candidate@sha256:07dcdde7bfda7856f486a36f19a61658d71211e35902a8d56dde82654ebc7bdb"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "726d71a3899af476b1170d9e45a64f7fd544ce26"
+      },
+      "postgres": {
+        "image": "pgvector/pgvector:pg16",
+        "image_id": "sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a",
+        "repo_digests": [
+          "pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a"
+        ],
+        "platform": "linux/arm64"
+      },
+      "nats": {
+        "image": "nats:2.11-alpine",
+        "image_id": "sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00",
+        "repo_digests": [
+          "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+        ],
+        "platform": "linux/arm64"
+      },
+      "runtimes": {
+        "compose": {
+          "status": "passed",
+          "before": {
+            "digest": "d161580b716a3b439fd77dc2b5130ab5acbd63b9fa49a523a55ef08efeccb2df",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261105_fleet_work_tools",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          },
+          "after": {
+            "digest": "d161580b716a3b439fd77dc2b5130ab5acbd63b9fa49a523a55ef08efeccb2df",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261109_agent_usage_totals",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          },
+          "retry": {
+            "digest": "d161580b716a3b439fd77dc2b5130ab5acbd63b9fa49a523a55ef08efeccb2df",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261109_agent_usage_totals",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          }
+        },
+        "helm": {
+          "status": "passed",
+          "before": {
+            "digest": "2a2995aab270afba82f0d796c82b6322356cc5a720768cc732bcf9867c92d19f",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261105_fleet_work_tools",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          },
+          "after": {
+            "digest": "2a2995aab270afba82f0d796c82b6322356cc5a720768cc732bcf9867c92d19f",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261109_agent_usage_totals",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          }
+        }
+      },
+      "cleanup": {
+        "compose": "removed",
+        "kind": "removed"
+      }
+    },
+    "credentials-compose": {
+      "schema_version": 1,
+      "started_at": "2026-10-22T20:20:55.264258+00:00",
+      "finished_at": "2026-10-22T20:22:33.122182+00:00",
+      "mode": "candidate-rehearsal",
+      "status": "passed",
+      "final_rc_gate": "pending",
+      "baseline": {
+        "tag": "v0.17.1",
+        "published_at": "2026-10-21T10:41:22Z",
+        "commit": "b46315580acb3b45cfad7590ca6829d0cef9374d",
+        "image": "ghcr.io/preloop/preloop:0.17.1",
+        "image_id": "sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578",
+        "repo_digests": [
+          "ghcr.io/preloop/preloop@sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "b46315580acb3b45cfad7590ca6829d0cef9374d"
+      },
+      "candidate": {
+        "commit": "151731bbc672af330bc36991c148a465da769dc5",
+        "ref": "151731bbc672af330bc36991c148a465da769dc5",
+        "image": "preloop-ua-b42790081d-candidate:151731bbc672",
+        "image_id": "sha256:d53b9bdb266bc367f5a1b0062e28439a0536449ecb852ede9c7e011fe0b022df",
+        "repo_digests": [
+          "preloop-ua-b42790081d-candidate@sha256:d53b9bdb266bc367f5a1b0062e28439a0536449ecb852ede9c7e011fe0b022df"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "151731bbc672af330bc36991c148a465da769dc5"
+      },
+      "postgres": {
+        "image": "pgvector/pgvector:pg16",
+        "image_id": "sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a",
+        "repo_digests": [
+          "pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a"
+        ],
+        "platform": "linux/arm64"
+      },
+      "nats": {
+        "image": "nats:2.11-alpine",
+        "image_id": "sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00",
+        "repo_digests": [
+          "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+        ],
+        "platform": "linux/arm64"
+      },
+      "runtimes": {
+        "compose": {
+          "status": "passed",
+          "before": {
+            "digest": "dc7319c02379da0b7261813e37e7d06d0834762652cc8a76fc368ba1f9c5c1ad",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261105_fleet_work_tools",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          },
+          "after": {
+            "digest": "dc7319c02379da0b7261813e37e7d06d0834762652cc8a76fc368ba1f9c5c1ad",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261111_credential_columns",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          },
+          "retry": {
+            "digest": "dc7319c02379da0b7261813e37e7d06d0834762652cc8a76fc368ba1f9c5c1ad",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261111_credential_columns",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          }
+        }
+      },
+      "cleanup": {
+        "compose": "removed"
+      }
+    },
+    "credentials-helm": {
+      "schema_version": 1,
+      "started_at": "2026-10-22T20:26:18.220230+00:00",
+      "finished_at": "2026-10-22T20:28:35.133579+00:00",
+      "mode": "candidate-rehearsal",
+      "status": "passed",
+      "final_rc_gate": "pending",
+      "baseline": {
+        "tag": "v0.17.1",
+        "published_at": "2026-10-21T10:41:22Z",
+        "commit": "b46315580acb3b45cfad7590ca6829d0cef9374d",
+        "image": "ghcr.io/preloop/preloop:0.17.1",
+        "image_id": "sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578",
+        "repo_digests": [
+          "ghcr.io/preloop/preloop@sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "b46315580acb3b45cfad7590ca6829d0cef9374d"
+      },
+      "candidate": {
+        "commit": "151731bbc672af330bc36991c148a465da769dc5",
+        "ref": "151731bbc672af330bc36991c148a465da769dc5",
+        "image": "preloop-ua-b9dfc92440-candidate:151731bbc672",
+        "image_id": "sha256:6c7699e5a2f6d8ac6860ba1bedd893addb77dfefdb3f54dc68c0b38fef9ba11b",
+        "repo_digests": [
+          "preloop-ua-b9dfc92440-candidate@sha256:6c7699e5a2f6d8ac6860ba1bedd893addb77dfefdb3f54dc68c0b38fef9ba11b"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "151731bbc672af330bc36991c148a465da769dc5"
+      },
+      "postgres": {
+        "image": "pgvector/pgvector:pg16",
+        "image_id": "sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a",
+        "repo_digests": [
+          "pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a"
+        ],
+        "platform": "linux/arm64"
+      },
+      "nats": {
+        "image": "nats:2.11-alpine",
+        "image_id": "sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00",
+        "repo_digests": [
+          "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+        ],
+        "platform": "linux/arm64"
+      },
+      "runtimes": {
+        "helm": {
+          "status": "passed",
+          "before": {
+            "digest": "a168f0336604f83cbc1317b73020475a437f3b39029c242a584b9cd153d72694",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261105_fleet_work_tools",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          },
+          "after": {
+            "digest": "a168f0336604f83cbc1317b73020475a437f3b39029c242a584b9cd153d72694",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": true,
+            "migration_head": "20261111_credential_columns",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          }
+        }
+      },
+      "cleanup": {
+        "kind": "removed"
+      }
+    },
+    "combined-migrations-compose": {
+      "schema_version": 1,
+      "started_at": "2026-10-22T20:25:35.814605+00:00",
+      "finished_at": "2026-10-22T20:26:39.250097+00:00",
+      "mode": "candidate-rehearsal",
+      "status": "failed",
+      "final_rc_gate": "pending",
+      "baseline": {
+        "tag": "v0.17.1",
+        "published_at": "2026-10-21T10:41:22Z",
+        "commit": "b46315580acb3b45cfad7590ca6829d0cef9374d",
+        "image": "ghcr.io/preloop/preloop:0.17.1",
+        "image_id": "sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578",
+        "repo_digests": [
+          "ghcr.io/preloop/preloop@sha256:a954c650041989148fedfd5895205f4439f719aa1213f579aa6a70e648628578"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "b46315580acb3b45cfad7590ca6829d0cef9374d"
+      },
+      "candidate": {
+        "commit": "9a6420db08d05c31b2afdcb88f79c8a0462e1c3d",
+        "ref": "9a6420db08d05c31b2afdcb88f79c8a0462e1c3d",
+        "image": "preloop-ua-64fd9fd894-candidate:9a6420db08d0",
+        "image_id": "sha256:b1661afb3dfa97bc0356fbdb65a4332a22d5bd63c2c063c95d2c09a4165173e9",
+        "repo_digests": [
+          "preloop-ua-64fd9fd894-candidate@sha256:b1661afb3dfa97bc0356fbdb65a4332a22d5bd63c2c063c95d2c09a4165173e9"
+        ],
+        "platform": "linux/arm64",
+        "image_revision": "9a6420db08d05c31b2afdcb88f79c8a0462e1c3d"
+      },
+      "postgres": {
+        "image": "pgvector/pgvector:pg16",
+        "image_id": "sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a",
+        "repo_digests": [
+          "pgvector/pgvector@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a"
+        ],
+        "platform": "linux/arm64"
+      },
+      "nats": {
+        "image": "nats:2.11-alpine",
+        "image_id": "sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00",
+        "repo_digests": [
+          "nats@sha256:e4bf19f15fd3218814a4e3c9e0064e1334bd8aa20d5984b9f1a0afd084f8cc00"
+        ],
+        "platform": "linux/arm64"
+      },
+      "runtimes": {
+        "compose": {
+          "status": "failed",
+          "before": {
+            "digest": "b029b70388e8ea4d3a61bc9e671fd5bd214e63a6c2386363647703cc43c6ca7a",
+            "counts": {
+              "Account": 2,
+              "User": 2,
+              "Tracker": 2,
+              "Organization": 2,
+              "Project": 2,
+              "Issue": 6,
+              "AIModel": 4,
+              "ManagedAgent": 4,
+              "ApiKey": 3,
+              "ManagedAgentCredential": 1
+            },
+            "credential_backfill": false,
+            "migration_head": "20261105_fleet_work_tools",
+            "checks": [
+              "stable_data",
+              "password_logins",
+              "existing_user_key",
+              "agent_key",
+              "existing_session",
+              "revoked_key_denied",
+              "local_model_secret",
+              "local_tracker_secret",
+              "local_webhook_secret",
+              "single_migration_head"
+            ]
+          },
+          "error": "compose-candidate-migrate failed (exit 1)"
+        }
+      },
+      "cleanup": {
+        "compose": "removed"
+      },
+      "error": "Failed runtimes: compose",
+      "integration_parents": [
+        "151731bbc672af330bc36991c148a465da769dc5",
+        "dce0e1e963a26e4999a083f2e98f079130b7b7e9"
+      ],
+      "failure_reason": "Alembic upgrade head refused two heads: 20261110_upstream_mcp_oauth and 20261111_credential_columns. No migration files were modified to hide the conflict."
+    }
+  }
+}

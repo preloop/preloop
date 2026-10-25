@@ -1390,6 +1390,50 @@ class Settings(BaseSettings):
             "of encoding. Tune via MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS."
         ),
     )
+    model_gateway_activity_max_stored_bytes: int = Field(
+        32768,
+        description=(
+            "Upper bound, in bytes of JSON, for the metadata stored on one "
+            "model_gateway_call row in runtime_session_activity. Each row "
+            "keeps only the messages new to that call (replayed history is "
+            "already on the session's earlier rows); a call still larger than "
+            "this has its tool definitions reduced to names, then its raw "
+            "message arrays dropped, then long strings cut. 0 disables the "
+            "byte cap. Tune via MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES."
+        ),
+    )
+    gateway_activity_compaction_enabled: bool = Field(
+        True,
+        description=(
+            "Run the hourly maintenance pass that rewrites model_gateway_call "
+            "rows stored before slim storage into the slim form "
+            "(GATEWAY_ACTIVITY_COMPACTION_ENABLED)."
+        ),
+    )
+    gateway_activity_body_retention_enabled: bool = Field(
+        False,
+        description=(
+            "Strip message content from model_gateway_call rows older than "
+            "the account's plan history window, in the same hourly pass. "
+            "Token counts, cost and timing are kept. Off by default because "
+            "it is irreversible (GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED)."
+        ),
+    )
+    gateway_activity_maintenance_batch_size: int = Field(
+        200,
+        description=(
+            "Rows per transaction in the gateway activity maintenance pass "
+            "(GATEWAY_ACTIVITY_MAINTENANCE_BATCH_SIZE)."
+        ),
+    )
+    gateway_activity_maintenance_max_batches: int = Field(
+        50,
+        description=(
+            "Batches per scheduled gateway activity maintenance pass; a "
+            "backlog drains across passes "
+            "(GATEWAY_ACTIVITY_MAINTENANCE_MAX_BATCHES)."
+        ),
+    )
     flow_execution_max_wait_seconds: int = Field(
         3600,
         description="Maximum wall-clock time to wait for one flow execution before failing it",
@@ -2042,6 +2086,23 @@ class Settings(BaseSettings):
             ),
             model_gateway_activity_max_body_chars=int(
                 os.getenv("MODEL_GATEWAY_ACTIVITY_MAX_BODY_CHARS", "8192")
+            ),
+            model_gateway_activity_max_stored_bytes=int(
+                os.getenv("MODEL_GATEWAY_ACTIVITY_MAX_STORED_BYTES", "32768")
+            ),
+            gateway_activity_compaction_enabled=os.getenv(
+                "GATEWAY_ACTIVITY_COMPACTION_ENABLED", "true"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            gateway_activity_body_retention_enabled=os.getenv(
+                "GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED", "false"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            gateway_activity_maintenance_batch_size=int(
+                os.getenv("GATEWAY_ACTIVITY_MAINTENANCE_BATCH_SIZE", "200")
+            ),
+            gateway_activity_maintenance_max_batches=int(
+                os.getenv("GATEWAY_ACTIVITY_MAINTENANCE_MAX_BATCHES", "50")
             ),
             flow_execution_max_wait_seconds=int(
                 os.getenv("FLOW_EXECUTION_MAX_WAIT_SECONDS", "3600")

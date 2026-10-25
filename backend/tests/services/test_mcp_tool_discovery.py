@@ -144,7 +144,7 @@ class TestScanMCPServerTools:
         mock_tool_obj = MagicMock()
         mock_tool_obj.name = "test_tool"
         mock_tool_obj.description = "Test tool description"
-        mock_tool_obj.inputSchema = {"type": "object"}
+        mock_tool_obj.input_schema = {"type": "object"}
 
         mock_client = AsyncMock()
         mock_client.list_tools.return_value = [mock_tool_obj]
@@ -228,7 +228,7 @@ class TestScanMCPServerTools:
         mock_tool_obj = MagicMock()
         mock_tool_obj.name = "test_tool"
         mock_tool_obj.description = "Updated description"
-        mock_tool_obj.inputSchema = {"type": "object", "properties": {}}
+        mock_tool_obj.input_schema = {"type": "object", "properties": {}}
 
         mock_client = AsyncMock()
         mock_client.list_tools.return_value = [mock_tool_obj]

@@ -22,10 +22,13 @@ from contextvars import ContextVar
 from typing import Any, Callable, Dict, Iterable, List, Optional, Union
 
 import httpx
+import httpx2
 from fastmcp import FastMCP
 from fastmcp.tools import Tool
-from fastmcp.tools.tool import ToolResult
+from fastmcp.tools import ToolResult
 from mcp.types import TextContent, ToolAnnotations
+
+from preloop.api.auth.key_scopes import mcp_scope_allowed
 
 from preloop.services.dynamic_mcp_server import (
     UserContext,
@@ -62,6 +65,13 @@ from preloop.services.sensitive_data.storage import (
 from preloop.utils.redaction import redact_dict
 
 logger = logging.getLogger(__name__)
+
+# Invocation uses the same account/tool catalogue as discovery, but does not
+# grant the caller discovery authority. Keep this internal lookup local to the
+# current task and reset it before dispatching any tool implementation.
+_invocation_catalogue: ContextVar[bool] = ContextVar(
+    "invocation_catalogue", default=False
+)
 
 
 def with_builtin_annotations(tool: Tool) -> Tool:
@@ -672,7 +682,9 @@ def _proxied_exception_outcome(
     """
     status_code = getattr(getattr(cause, "response", None), "status_code", None)
     reason = _short_reason(cause) or type(cause).__name__
-    if isinstance(cause, httpx.HTTPStatusError) and isinstance(status_code, int):
+    if isinstance(
+        cause, (httpx.HTTPStatusError, httpx2.HTTPStatusError)
+    ) and isinstance(status_code, int):
         outcome = _WRAPPER_OUTCOME_UPSTREAM_ERROR
         code = f"http_{status_code}"
     else:
@@ -1352,22 +1364,28 @@ class DynamicFastMCP(FastMCP):
         context = self._get_current_user_context()
         return getattr(context, "credential_type", "legacy") == "restricted_runtime"
 
+    def _api_key_scope_allowed(self, required_scope: str) -> bool:
+        context = self._get_current_user_context()
+        return mcp_scope_allowed(
+            getattr(context, "api_key_scopes", None), required_scope
+        )
+
     async def list_resources(self, *, run_middleware: bool = True) -> list[Any]:
-        if self._restricted_protocol():
+        if self._restricted_protocol() or not self._api_key_scope_allowed("mcp:read"):
             return []
         return list(await super().list_resources(run_middleware=run_middleware))
 
     async def list_resource_templates(
         self, *, run_middleware: bool = True
     ) -> list[Any]:
-        if self._restricted_protocol():
+        if self._restricted_protocol() or not self._api_key_scope_allowed("mcp:read"):
             return []
         return list(
             await super().list_resource_templates(run_middleware=run_middleware)
         )
 
     async def list_prompts(self, *, run_middleware: bool = True) -> list[Any]:
-        if self._restricted_protocol():
+        if self._restricted_protocol() or not self._api_key_scope_allowed("mcp:read"):
             return []
         return list(await super().list_prompts(run_middleware=run_middleware))
 
@@ -1377,17 +1395,20 @@ class DynamicFastMCP(FastMCP):
         *,
         version: Any = None,
         run_middleware: bool = True,
-        task_meta: Any = None,
     ) -> Any:
+        if not self._api_key_scope_allowed("mcp:read"):
+            raise PermissionError("Access denied: API key requires mcp:read")
         if self._restricted_protocol():
             raise PermissionError(
                 "Access denied: restricted runtime resource unsupported"
             )
         return await super().read_resource(
-            uri, version=version, run_middleware=run_middleware, task_meta=task_meta
+            uri, version=version, run_middleware=run_middleware
         )
 
     async def get_prompt(self, name: str, version: Any = None) -> Any:
+        if not self._api_key_scope_allowed("mcp:read"):
+            raise PermissionError("Access denied: API key requires mcp:read")
         if self._restricted_protocol():
             raise PermissionError(
                 "Access denied: restricted runtime prompt unsupported"
@@ -1409,6 +1430,10 @@ class DynamicFastMCP(FastMCP):
         Returns:
             List of tools available to the current user
         """
+        if not _invocation_catalogue.get() and not self._api_key_scope_allowed(
+            "mcp:read"
+        ):
+            return []
         if run_middleware and self._restricted_protocol():
             # FastMCP re-enters this override with run_middleware=False. Start
             # the batch there so one request checks one authority snapshot.
@@ -2213,7 +2238,6 @@ async def {internal_name}({params_str}):
         *,
         version=None,
         run_middleware: bool = True,
-        task_meta=None,
     ):
         """Override tool execution for access validation and name translation.
 
@@ -2229,12 +2253,18 @@ async def {internal_name}({params_str}):
             arguments: Arguments derived from FastMCP
             version: Optional Tool Version
             run_middleware: Whether to run middleware
-            task_meta: Optional Background Task Metadata
 
         Returns:
             ToolResult from tool execution
         """
         arguments = arguments or {}
+
+        # Check even on FastMCP re-entry and approval replay. Scope grants do
+        # not replace the account, tool, runtime or policy checks below.
+        if not self._api_key_scope_allowed("mcp:write"):
+            denial = "Access denied: API key requires mcp:write"
+            self._record_attributed_refusal(name, arguments, denial)
+            return _tool_error_result(denial)
 
         # FastMCP's middleware re-enters this override with
         # run_middleware=False after the outer call has already authorized
@@ -2252,7 +2282,6 @@ async def {internal_name}({params_str}):
                 dispatch_arguments,
                 version=version,
                 run_middleware=False,
-                task_meta=task_meta,
             )
 
         # Extract justification from arguments before it reaches the tool function.
@@ -2292,7 +2321,6 @@ async def {internal_name}({params_str}):
                 self._remap_wrapper_arguments(name, arguments),
                 version=version,
                 run_middleware=run_middleware,
-                task_meta=task_meta,
             )
 
         _grant_dispatch_var.set(None)
@@ -2540,7 +2568,11 @@ async def {internal_name}({params_str}):
                 )
 
         # Check if user has access to this tool
-        available_tools = await self.list_tools(run_middleware=run_middleware)
+        catalogue_token = _invocation_catalogue.set(True)
+        try:
+            available_tools = await self.list_tools(run_middleware=run_middleware)
+        finally:
+            _invocation_catalogue.reset(catalogue_token)
         if not any(tool.name == name for tool in available_tools):
             logger.warning(
                 f"User {user_context.username} attempted to call "
@@ -2876,7 +2908,6 @@ async def {internal_name}({params_str}):
                 dispatch_arguments,
                 version=version,
                 run_middleware=run_middleware,
-                task_meta=task_meta,
             )
             if sensitive_config is not None:
                 result = await self._enforce_sensitive_result_policy(
@@ -3951,6 +3982,7 @@ def create_user_context_from_scope(scope: dict) -> Optional[UserContext]:
             runtime_principal_name=runtime_principal_name,
             api_key_id=api_key_id,
             api_key_name=api_key_name,
+            api_key_scopes=tuple(api_key.scopes) if api_key else None,
             managed_agent_id=(
                 str(managed_agent_id) if managed_agent_id is not None else None
             ),

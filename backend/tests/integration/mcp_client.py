@@ -10,9 +10,9 @@ import asyncio
 from contextlib import AsyncExitStack
 from typing import Any, Dict, List, Optional
 
-import httpx
+import httpx2 as httpx
 from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
 
 from tests.integration.mcp_http_client import create_streamable_mcp_http_client
 
@@ -100,12 +100,11 @@ class MCPTestClient:
         self._stack = AsyncExitStack()
         await self._stack.__aenter__()
 
-        read_stream, write_stream, _ = await self._stack.enter_async_context(
-            streamablehttp_client(
-                url=self.mcp_url,
-                headers=headers,
-                httpx_client_factory=create_streamable_mcp_http_client,
-            )
+        http_client = await self._stack.enter_async_context(
+            create_streamable_mcp_http_client(headers=headers)
+        )
+        read_stream, write_stream = await self._stack.enter_async_context(
+            streamable_http_client(url=self.mcp_url, http_client=http_client)
         )
 
         self.session = await self._stack.enter_async_context(

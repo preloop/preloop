@@ -10,12 +10,13 @@ wiring on the recording path.
 
 from __future__ import annotations
 
+from tests.credential_fixtures import ai_model_with_secret
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from preloop.models import models
 from preloop.services.model_gateway_auth import ModelGatewayAuthContext
 from preloop.services.openai_gateway import OpenAIGatewayService
 
@@ -55,7 +56,7 @@ def _record(
         upstream_request_id=None,
         meta_data={},
     )
-    model = models.AIModel(
+    model = ai_model_with_secret(
         id=uuid4(),
         account_id=None if hosted else user.account_id,
         meta_data={"hosted": hosted},

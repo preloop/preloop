@@ -16,7 +16,10 @@ from jwt import PyJWTError
 from sqlalchemy.exc import SQLAlchemyError, TimeoutError as SQLAlchemyPoolTimeout
 from sqlalchemy.orm import Session
 
-from preloop.api.auth.key_scopes import enforce_api_key_route_scope
+from preloop.api.auth.key_scopes import (
+    enforce_api_key_route_scope,
+    enforce_runtime_api_key_scope,
+)
 
 # Configuration
 from preloop.config import settings
@@ -349,6 +352,7 @@ def authenticate_runtime_bearer_token(
     user = _authenticate_with_api_key(
         session, api_key, allow_stale_runtime_session=True
     )
+    enforce_runtime_api_key_scope(api_key)
 
     context_data = (
         api_key.context_data if isinstance(api_key.context_data, dict) else {}

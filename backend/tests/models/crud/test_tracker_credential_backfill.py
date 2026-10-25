@@ -22,7 +22,6 @@ def _insert_plaintext_tracker(
         name=name,
         tracker_type="github",
         api_key="plaintext-api-key",
-        jira_webhook_secret=None,
         credentials_secret_id=None,
         webhook_secret_id=None,
         is_active=True,

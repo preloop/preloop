@@ -1,5 +1,7 @@
 """Ordered per-flow model/harness routing from current issue labels."""
 
+from tests.credential_fixtures import ai_model_with_secret
+
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -221,7 +223,7 @@ class TestNativeHandoff:
 def _usable_model(
     db_session: Session, account_id, *, name="Fast", provider="openai"
 ) -> AIModel:
-    model = AIModel(
+    model = ai_model_with_secret(
         name=name,
         provider_name=provider,
         model_identifier="gpt-4o",
@@ -870,7 +872,7 @@ class TestPrepareAndTrigger:
     def test_codex_incompatible_model_rejected_on_save(
         self, client: TestClient, db_session: Session, test_user: User
     ):
-        other_provider = AIModel(
+        other_provider = ai_model_with_secret(
             name="Other provider",
             provider_name="anthropic",
             model_identifier="claude-sonnet",
@@ -1412,7 +1414,8 @@ def test_private_cursor_default_pins_owned_model_without_cloud_credentials(
     db_session: Session, test_user: User, empty_policy: bool
 ) -> None:
     model = _usable_model(db_session, test_user.account_id)
-    model.api_key = None
+    model.credentials_secret = None
+    model.credentials_secret_id = None
     flow = _flow(
         db_session,
         test_user,
@@ -1458,7 +1461,8 @@ def test_cursor_default_honors_account_private_pool(
     db_session: Session, test_user: User
 ) -> None:
     model = _usable_model(db_session, test_user.account_id)
-    model.api_key = None
+    model.credentials_secret = None
+    model.credentials_secret_id = None
     account = crud_account.get(db_session, id=test_user.account_id)
     assert account is not None
     crud_account.update(
@@ -1529,7 +1533,8 @@ def test_private_copilot_default_pins_owned_model_without_cloud_credentials(
     db_session: Session, test_user: User
 ) -> None:
     model = _usable_model(db_session, test_user.account_id)
-    model.api_key = None
+    model.credentials_secret = None
+    model.credentials_secret_id = None
     flow = _flow(
         db_session,
         test_user,

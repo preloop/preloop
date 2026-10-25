@@ -9,14 +9,19 @@ import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-import httpx
-from mcp import types
+import httpx as legacy_httpx
+import httpx2 as httpx
+from mcp import MCPError, types
 from mcp.client.session import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.types.version import MODERN_PROTOCOL_VERSIONS
 
-from preloop.services.mcp_httpx_client import create_streamable_mcp_http_client
+from preloop.services.mcp_httpx_client import (
+    MCPResponsePolicy,
+    create_streamable_mcp_http_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +53,7 @@ def _unwrap_exception_group(exc: BaseException) -> BaseException:
 def describe_mcp_connection_error(exc: BaseException) -> str:
     """Explain the failure without exposing request URLs, headers or credentials."""
     cause = _unwrap_exception_group(exc)
-    if isinstance(cause, httpx.HTTPStatusError):
+    if isinstance(cause, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)):
         code = cause.response.status_code
         if code in {401, 403}:
             return (
@@ -64,9 +69,13 @@ def describe_mcp_connection_error(exc: BaseException) -> str:
             f"MCP server returned HTTP {code}. "
             "Check the server endpoint and availability, then rescan."
         )
-    if isinstance(cause, (httpx.TimeoutException, TimeoutError)):
+    if isinstance(
+        cause, (httpx.TimeoutException, legacy_httpx.TimeoutException, TimeoutError)
+    ):
         return "MCP server timed out. Check server availability and rescan."
-    if isinstance(cause, (httpx.ConnectError, ConnectionError)):
+    if isinstance(
+        cause, (httpx.ConnectError, legacy_httpx.ConnectError, ConnectionError)
+    ):
         return (
             "Could not connect to the MCP server. Check its address and network "
             "reachability from Preloop. A localhost endpoint must run where Preloop "
@@ -113,9 +122,9 @@ def is_mcp_unavailable_error(exc: BaseException) -> bool:
     exc = _unwrap_exception_group(exc)
     if isinstance(exc, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
         return True
-    if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
+    if isinstance(exc, (httpx.TransportError, legacy_httpx.TransportError)):
         return True
-    if isinstance(exc, httpx.HTTPStatusError):
+    if isinstance(exc, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)):
         response = getattr(exc, "response", None)
         return getattr(response, "status_code", 0) in (429, 500, 502, 503, 504)
     message = str(exc).lower()
@@ -197,6 +206,8 @@ class MCPClient:
         self._session: Optional[ClientSession] = None
         self._exit_stack: Optional[AsyncExitStack] = None
         self._connected = False
+        self._protocol_version: str | None = None
+        self._protocol_url: str | None = None
         self.config_fingerprint = mcp_client_config_fingerprint(
             url, auth_type, auth_config, transport
         )
@@ -237,25 +248,47 @@ class MCPClient:
         return headers, auth
 
     @asynccontextmanager
-    async def _session_context(self, *, sse_read_timeout: float = 60.0):
+    async def _session_context(
+        self, *, sse_read_timeout: float = 60.0
+    ) -> AsyncIterator[tuple[ClientSession, ClientSession]]:
         """Create a short-lived MCP session in the current task."""
+        if self.url != self._protocol_url:
+            self._protocol_version = None
         headers, auth = self._build_auth()
 
-        async with streamablehttp_client(
-            url=self.url,
+        response_policy = MCPResponsePolicy()
+        async with create_streamable_mcp_http_client(
             headers=headers if not auth else {},  # Use auth param if bearer
-            timeout=30.0,
-            sse_read_timeout=sse_read_timeout,
+            timeout=httpx.Timeout(30.0, read=sse_read_timeout),
             auth=auth,
-            httpx_client_factory=create_streamable_mcp_http_client,
-        ) as (read_stream, write_stream, _):
-            session = ClientSession(
-                read_stream=read_stream,
-                write_stream=write_stream,
-            )
-            async with session:
-                init_result = await session.initialize()
-                yield session, init_result
+            response_policy=response_policy,
+        ) as http_client:
+            async with streamable_http_client(
+                url=self.url, http_client=http_client
+            ) as (read_stream, write_stream):
+                async with ClientSession(
+                    read_stream=read_stream,
+                    write_stream=write_stream,
+                    read_timeout_seconds=sse_read_timeout,
+                ) as session:
+                    if (
+                        self._protocol_version in MODERN_PROTOCOL_VERSIONS
+                        or self._protocol_version is None
+                    ):
+                        try:
+                            await session.discover()
+                        except MCPError:
+                            # Only a read-only probe with an unrecognized HTTP
+                            # 400 permits fallback. Never downgrade recognized
+                            # modern errors or retry a dispatched tools/call.
+                            if not response_policy.legacy_probe_rejected:
+                                raise
+                            await session.initialize()
+                    else:
+                        await session.initialize()
+                    self._protocol_version = session.protocol_version
+                    self._protocol_url = self.url
+                    yield session, session
 
     async def connect(self):
         """Verify the MCP server is reachable.
@@ -277,8 +310,7 @@ class MCPClient:
             self._exit_stack = None
             logger.info(
                 f"Connected to MCP server at {self.url} "
-                f"(protocol: {init_result.protocolVersion}, "
-                f"server: {init_result.serverInfo.name})"
+                f"(protocol: {init_result.protocol_version})"
             )
         except BaseException as e:
             target_exc = _unwrap_exception_group(e)
@@ -381,6 +413,27 @@ class MCPClient:
                 session,
                 _init_result,
             ):
+                # Each operation owns a fresh session. Learn x-mcp-header
+                # annotations before the one and only tools/call dispatch.
+                if session.protocol_version in MODERN_PROTOCOL_VERSIONS:
+                    cursor = None
+                    seen: set[str] = set()
+                    for _ in range(100):
+                        page = await session.list_tools(
+                            params=types.PaginatedRequestParams(cursor=cursor)
+                        )
+                        if any(tool.name == tool_name for tool in page.tools):
+                            break
+                        cursor = page.next_cursor
+                        if cursor is None:
+                            raise ValueError("MCP tool is not advertised by the server")
+                        if cursor in seen:
+                            raise ValueError(
+                                "MCP server returned a repeated tools cursor"
+                            )
+                        seen.add(cursor)
+                    else:
+                        raise ValueError("MCP tool listing exceeded the page limit")
                 # Execute tool call
                 result = await session.call_tool(name=tool_name, arguments=arguments)
 
@@ -396,7 +449,7 @@ class MCPClient:
                             types.ImageContent(
                                 type="image",
                                 data=item.data,
-                                mimeType=getattr(item, "mimeType", "image/png"),
+                                mimeType=getattr(item, "mime_type", "image/png"),
                             )
                         )
                     elif hasattr(item, "resource"):
@@ -406,10 +459,10 @@ class MCPClient:
                             )
                         )
 
-                structured = getattr(result, "structuredContent", None)
+                structured = getattr(result, "structured_content", None)
                 return UpstreamToolContent(
                     content_list,
-                    is_error=getattr(result, "isError", False) is True,
+                    is_error=getattr(result, "is_error", False) is True,
                     structured_content=(
                         structured if isinstance(structured, dict) else None
                     ),
