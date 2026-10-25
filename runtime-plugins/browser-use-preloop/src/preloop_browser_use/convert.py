@@ -182,6 +182,8 @@ def history_item_to_step(
     number = step_number if isinstance(step_number, int) else index + 1
 
     extra: dict[str, Any] = {"browser_use_actions": names[:20]}
+    if action == "type" and isinstance(first_params.get("text"), str):
+        extra["typed_chars"] = len(first_params["text"])
     if isinstance(step_number, int):
         extra["browser_use_step_number"] = step_number
     if errors:
@@ -222,3 +224,22 @@ def history_to_steps(history: Any, *, run_id: str) -> list[dict[str, Any]]:
         history_item_to_step(item, run_id=run_id, index=i)
         for i, item in enumerate(items)
     ]
+
+
+def history_started_at(item: Any, observed_end: datetime) -> datetime | None:
+    """Read Browser Use 0.7.10's step start/end metadata in one boundary."""
+    metadata = _get(item, "metadata")
+    start, end = _get(metadata, "step_start_time"), _get(metadata, "step_end_time")
+    if isinstance(start, (int, float)):
+        return datetime.fromtimestamp(start, tz=timezone.utc)
+    duration = _get(metadata, "step_duration")
+    if isinstance(duration, (int, float)) and duration >= 0:
+        from datetime import timedelta
+
+        ended = (
+            datetime.fromtimestamp(end, tz=timezone.utc)
+            if isinstance(end, (int, float))
+            else observed_end
+        )
+        return ended - timedelta(seconds=duration)
+    return None

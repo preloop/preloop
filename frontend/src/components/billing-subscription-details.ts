@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { formatCount, formatCountExact } from '../utils/count-format';
 import { formatUsd, formatUsdExact } from '../utils/money';
 import { parseUTCDate } from '../utils/date';
@@ -33,10 +34,10 @@ export class BillingSubscriptionDetails extends LitElement {
     try {
       if ((await getFeatures()).features.billing !== true) return;
       const paths = [
-        '/api/v1/billing/summary',
-        '/api/v1/billing/plans',
-        '/api/v1/billing/custom-plans',
-        '/api/v1/billing/plan-change-options',
+        REST_API_PREFIX + '/billing/summary',
+        REST_API_PREFIX + '/billing/plans',
+        REST_API_PREFIX + '/billing/custom-plans',
+        REST_API_PREFIX + '/billing/plan-change-options',
       ];
       const responses = await Promise.all(
         paths.map((path) => fetchWithAuth(path))
@@ -253,7 +254,7 @@ export class BillingSubscriptionDetails extends LitElement {
     this._error = null;
     try {
       const response = await fetchWithAuth(
-        '/api/v1/billing/create-portal-session',
+        REST_API_PREFIX + '/billing/create-portal-session',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

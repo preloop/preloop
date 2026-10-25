@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { fetchWithAuth } from '../api';
 import type {
   ArtifactRowMetadata,
@@ -116,7 +117,7 @@ export function sessionArtifactPath(
   sessionId: string,
   artifactId: string
 ): string {
-  return `/api/v1/runtime-sessions/${encodeURIComponent(
+  return `${REST_API_PREFIX}/runtime-sessions/${encodeURIComponent(
     sessionId
   )}/artifacts/${encodeURIComponent(artifactId)}`;
 }

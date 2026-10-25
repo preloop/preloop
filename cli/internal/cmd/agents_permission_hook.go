@@ -20,6 +20,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/config"
 	"github.com/preloop/preloop/cli/internal/version"
 )
@@ -58,7 +59,7 @@ const approvalHookProcessHeadroomSeconds = 30
 const claudeCodeHookHostTimeoutCapSeconds = 600
 
 // approvalHookExpirePathFormat expires an approval whose hook stopped waiting.
-const approvalHookExpirePathFormat = "/api/v1/approvals/%s/expire"
+const approvalHookExpirePathFormat = api.RESTPrefix + "/approvals/%s/expire"
 
 // approvalHookWaitBudgetSeconds is how long the hook waits for a decision,
 // before the HTTP headroom. The hook's own deadline is this plus
@@ -92,7 +93,7 @@ const permissionCheckHTTPHeadroom = 15 * time.Second
 // permissionCheckPath is the validated backend endpoint that resolves a native
 // tool-permission prompt into an allow/deny decision (blocking for human
 // approval when required).
-const permissionCheckPath = "/api/v1/agents/permission-check"
+const permissionCheckPath = api.RESTPrefix + "/agents/permission-check"
 
 // permissionCheckRequest is the request body for permissionCheckPath. Only
 // tool_name is required by the backend; everything else is optional context.

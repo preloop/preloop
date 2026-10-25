@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { AuthedElement } from '../api';
@@ -34,7 +35,7 @@ export class ReadinessPolicySettings extends AuthedElement {
     if (!project) return;
     try {
       const policy = (await this.fetchData(
-        `/api/v1/projects/${encodeURIComponent(project)}/readiness-policy`
+        `${REST_API_PREFIX}/projects/${encodeURIComponent(project)}/readiness-policy`
       )) as ReadinessPolicy | null;
       if (project !== this.projectId || !policy) return;
       this.version = policy.version;
@@ -73,7 +74,7 @@ export class ReadinessPolicySettings extends AuthedElement {
     this.saving = true;
     try {
       const policy = await this.fetchData(
-        `/api/v1/projects/${encodeURIComponent(project)}/readiness-policy`,
+        `${REST_API_PREFIX}/projects/${encodeURIComponent(project)}/readiness-policy`,
         {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -108,7 +109,7 @@ export class ReadinessPolicySettings extends AuthedElement {
     this.error = '';
     try {
       const result = await this.fetchData(
-        `/api/v1/projects/${encodeURIComponent(project)}/readiness-policy`,
+        `${REST_API_PREFIX}/projects/${encodeURIComponent(project)}/readiness-policy`,
         { method: 'DELETE' }
       );
       if (!result) throw new Error('Unavailable');

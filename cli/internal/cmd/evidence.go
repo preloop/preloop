@@ -27,7 +27,7 @@ import (
 	"github.com/preloop/preloop/cli/internal/verify"
 )
 
-const evidenceStatusPathFormat = "/api/v1/flows/executions/%s/evidence-status"
+const evidenceStatusPathFormat = api.RESTPrefix + "/flows/executions/%s/evidence-status"
 
 var (
 	evidenceExecutionID string

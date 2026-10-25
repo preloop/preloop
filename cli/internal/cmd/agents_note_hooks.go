@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
@@ -44,8 +45,8 @@ import (
 // not pull it: the cap is checked before the pull, not after.
 
 const (
-	agentNotesPendingPath = "/api/v1/agents/notes/pending"
-	agentSessionEndPath   = "/api/v1/agents/session-end"
+	agentNotesPendingPath = api.RESTPrefix + "/agents/notes/pending"
+	agentSessionEndPath   = api.RESTPrefix + "/agents/session-end"
 
 	// notePullChannelHook is the transport these hooks carry notes on.
 	notePullChannelHook = "hook"

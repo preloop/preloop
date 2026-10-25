@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../api-path';
 import { formatCurrencyCents, formatCurrencyCentsExact } from '../utils/money';
 import { parseUTCDate } from '../utils/date';
 import { LitElement, css, html, nothing } from 'lit';
@@ -278,8 +279,8 @@ export class BillingPlanComparison extends LitElement {
       } else {
         const response = await fetchWithAuth(
           intent?.reconcile
-            ? '/api/v1/billing/plan-change-options?reconcile=true'
-            : '/api/v1/billing/plan-change-options',
+            ? REST_API_PREFIX + '/billing/plan-change-options?reconcile=true'
+            : REST_API_PREFIX + '/billing/plan-change-options',
           { cache: 'no-store' }
         );
         if (!response.ok) throw new Error(await this.responseError(response));
@@ -621,7 +622,7 @@ export class BillingPlanComparison extends LitElement {
     this.result = null;
     try {
       const response = await fetchWithAuth(
-        '/api/v1/billing/plan-change-preview',
+        REST_API_PREFIX + '/billing/plan-change-preview',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -704,7 +705,7 @@ export class BillingPlanComparison extends LitElement {
     this.error = '';
     try {
       const response = await fetchWithAuth(
-        '/api/v1/billing/plan-change-confirm',
+        REST_API_PREFIX + '/billing/plan-change-confirm',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -768,7 +769,7 @@ export class BillingPlanComparison extends LitElement {
     this.error = '';
     try {
       const response = await fetchWithAuth(
-        '/api/v1/billing/create-checkout-session',
+        REST_API_PREFIX + '/billing/create-checkout-session',
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

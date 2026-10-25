@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/preloop/preloop/cli/internal/api"
 	"github.com/preloop/preloop/cli/internal/version"
 )
 
@@ -23,7 +24,7 @@ import (
 // "Working" versus "Your turn" without guessing from recency. It fails open:
 // any error is logged to stderr and the hook exits 0 within its 5 s budget.
 
-const agentSessionEventPath = "/api/v1/agents/session-event"
+const agentSessionEventPath = api.RESTPrefix + "/agents/session-event"
 
 // activityHookTimeoutSeconds is the host-side timeout written into settings.
 const activityHookTimeoutSeconds = 5

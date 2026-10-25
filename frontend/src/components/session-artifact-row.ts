@@ -46,6 +46,7 @@ export class SessionArtifactRow extends LitElement {
     null;
   @property({ attribute: false }) artifact: ArtifactView | null = null;
   @property({ type: String }) sessionId = '';
+  @property({ type: Boolean }) syncedRecordingPlayer = false;
   /** Name of the parent artifact when it is in this session. */
   @property({ type: String }) parentName = '';
   @property({ type: Boolean, reflect: true }) highlighted = false;
@@ -551,6 +552,7 @@ ${shown}${more ? '\n...' : ''}</pre>
         ></sl-icon>
         <div class="main">
           <div class="headline">
+            ${this.syncedRecordingPlayer && (this.artifact?.kind === 'recording' || this.artifact?.kind === 'screencast') ? html`<button type="button" class="link" @click=${() => this.dispatchEvent(new CustomEvent('recording-open', { detail: { artifactId: this.artifact?.id }, bubbles: true, composed: true }))}>Open in synced player</button>` : nothing}
             <span class="name">${artifact.name}</span>
             <span class="kind">${artifact.kind}</span>
           </div>

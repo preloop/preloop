@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
@@ -142,19 +143,23 @@ export class OAuthConsentView extends LitElement {
     this.loading = true;
 
     try {
-      const response = await fetchWithAuth('/api/v1/auth/oauth-consent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_id: this.clientId,
-          redirect_uri: this.redirectUri,
-          code_challenge: this.codeChallenge,
-          state: this.stateParam,
-          scopes: this.scopes,
-          redirect_uri_provided_explicitly: this.redirectUriProvidedExplicitly,
-          resource: this.resource,
-        }),
-      });
+      const response = await fetchWithAuth(
+        REST_API_PREFIX + '/auth/oauth-consent',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: this.clientId,
+            redirect_uri: this.redirectUri,
+            code_challenge: this.codeChallenge,
+            state: this.stateParam,
+            scopes: this.scopes,
+            redirect_uri_provided_explicitly:
+              this.redirectUriProvidedExplicitly,
+            resource: this.resource,
+          }),
+        }
+      );
 
       if (!response.ok) {
         let errorMessage = 'Failed to authorize client.';

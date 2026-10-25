@@ -1,3 +1,4 @@
+import { REST_API_PREFIX } from '../../api-path';
 import { humaniseAction } from '../../utils/outcome-label';
 import { ConsoleStatus } from '../../controllers/console-status';
 import { formatUsd, formatUsdExact } from '../../utils/money';
@@ -443,7 +444,7 @@ export class AuditView extends AuthedElement {
 
   private async _loadUsers() {
     try {
-      const res = await fetchWithAuth('/api/v1/audit-logs/actors');
+      const res = await fetchWithAuth(REST_API_PREFIX + '/audit-logs/actors');
       if (res.ok) {
         const data = await res.json();
         this._users = data.users || data || [];
@@ -512,7 +513,7 @@ export class AuditView extends AuthedElement {
       params.set('count_limit', String(AUDIT_COUNT_LIMIT));
       const startedAt = Date.now();
       const res = await fetchWithAuth(
-        `/api/v1/audit-logs/grouped?${params}`,
+        `${REST_API_PREFIX}/audit-logs/grouped?${params}`,
         background ? { passive: true } : {}
       );
       this._lastLoadMs = Date.now() - startedAt;
@@ -616,7 +617,7 @@ export class AuditView extends AuthedElement {
   private async _findEventTime(id: string): Promise<string | null> {
     try {
       const res = await fetchWithAuth(
-        `/api/v1/audit-logs/${encodeURIComponent(id)}`
+        `${REST_API_PREFIX}/audit-logs/${encodeURIComponent(id)}`
       );
       if (res.ok) {
         const entry: AuditLog = await res.json();
@@ -637,7 +638,9 @@ export class AuditView extends AuthedElement {
           DEEP_LINK_PAGE_SIZE
         );
         params.set('count_limit', String(AUDIT_COUNT_LIMIT));
-        const res = await fetchWithAuth(`/api/v1/audit-logs/grouped?${params}`);
+        const res = await fetchWithAuth(
+          `${REST_API_PREFIX}/audit-logs/grouped?${params}`
+        );
         if (!res.ok) return null;
         const data: GroupedResponse = await res.json();
         const groups = data.groups || [];
@@ -1618,9 +1621,9 @@ export class AuditView extends AuthedElement {
     this._exporting = kind;
     try {
       const params = new URLSearchParams({ format: 'csv' });
-      let path = '/api/v1/exports/asset-register';
+      let path = REST_API_PREFIX + '/exports/asset-register';
       if (kind === 'incidents') {
-        path = '/api/v1/exports/incident-candidates';
+        path = REST_API_PREFIX + '/exports/incident-candidates';
         if (this._startDate) params.set('from', this._startDate);
         if (this._endDate) params.set('to', this._endDate);
       }

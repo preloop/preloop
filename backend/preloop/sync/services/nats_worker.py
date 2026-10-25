@@ -453,6 +453,12 @@ class PreloopSyncNatsWorker:
                         stats = await run_db_off_loop(
                             lambda: func(*payload.get("args", []), **call_kwargs)
                         )
+                elif task_name == "maintain_gateway_activity":
+                    # A pass over a large backlog can outlast ack_wait; without
+                    # renewal the message is redelivered and a second worker
+                    # repeats the same rewrite from the oldest row.
+                    async with _webhook_progress(msg):
+                        stats = await func(*payload.get("args", []), **call_kwargs)
                 elif inspect.iscoroutinefunction(func):
                     stats = await func(*payload.get("args", []), **call_kwargs)
                 else:

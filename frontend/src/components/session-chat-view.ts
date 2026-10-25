@@ -1,3 +1,9 @@
+import type { RecordingSync } from '../types';
+import {
+  recordingCue,
+  recordingEventActivity,
+  recordingToolActivity,
+} from '../utils/recording-cue';
 import { parseUTCDate } from '../utils/date';
 import {
   renderSessionApproval,
@@ -148,6 +154,11 @@ export class SessionChatView extends LitElement {
   private renderApproval(request: ApprovalRequest) {
     return renderSessionApproval(this, this.approvalState, request);
   }
+  @property({ attribute: false }) recordingSync: RecordingSync | undefined;
+  @property({ type: Boolean }) recordingEnabled = false;
+  @property({ attribute: false }) recordingActivityId: string | null = null;
+  @property({ type: Boolean }) syncedRecordingPlayer = false;
+
   @property({ type: Boolean }) liveEnabled = true;
   /**
    * Which CLI produced the session, for the row glyphs and the footer
@@ -439,6 +450,15 @@ export class SessionChatView extends LitElement {
   private liveAnnouncement = '';
 
   static styles = css`
+    .recording-current {
+      outline: 2px solid var(--sl-color-primary-500, #3b82f6);
+      outline-offset: 2px;
+    }
+    .recording-cue {
+      font: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
     :host {
       display: block;
       min-height: 0;
@@ -1064,6 +1084,7 @@ export class SessionChatView extends LitElement {
   }
 
   private renderMessage(item: TranscriptMessageItem) {
+    const recordingId = recordingEventActivity(item.event, this.recordingSync);
     const bubbleClass =
       item.kind === 'user_prompt'
         ? 'user'
@@ -1079,6 +1100,7 @@ export class SessionChatView extends LitElement {
       <div
         class="bubble ${bubbleClass} ${item.failed ? 'failed' : ''}"
         data-kind=${item.kind}
+        data-recording-activity=${recordingId ?? nothing}
       >
         <div class="bubble-meta">
           <span class="bubble-role">
@@ -1093,6 +1115,7 @@ export class SessionChatView extends LitElement {
             }
           </span>
           <span>${this.formatTime(item.timestamp)}</span>
+          ${recordingCue(this, recordingId, this.recordingSync, this.recordingEnabled)}
           ${
             item.note
               ? html`<span data-testid="note-read-at"
@@ -1285,6 +1308,7 @@ ${
       data-artifact-key=${artifactRowKey(meta.id)}
     >
       <session-artifact-row
+        .syncedRecordingPlayer=${this.syncedRecordingPlayer}
         .item=${activity}
         .artifact=${view}
         .sessionId=${this.sessionId}
@@ -1325,10 +1349,12 @@ ${
     if (item.type === 'steps') return this.renderStepGroup(item);
     if (item.type === 'browser_step') {
       return html`<div
-        class="browser-step-item"
+        class="browser-step-item ${item.activity.activity_id === this.recordingActivityId ? 'recording-current' : ''}"
+        data-recording-activity=${item.activity.activity_id ?? nothing}
         tabindex="-1"
         data-browser-step-key=${browserStepKey(item.activity)}
       >
+        ${recordingCue(this, item.activity.activity_id, this.recordingSync, this.recordingEnabled)}
         <browser-step-row
           .item=${item.activity}
           .sessionId=${this.sessionId}
@@ -1375,7 +1401,17 @@ ${
 
   private renderTurnItem(item: TurnItem) {
     if (item.type === 'row') {
-      return html`<session-tool-card .row=${item}></session-tool-card>`;
+      const activityId = recordingToolActivity(
+        item.key,
+        item.callId,
+        this.activity,
+        item.mergedKeys
+      );
+      return html`<div data-recording-activity=${activityId ?? nothing}>
+        ${recordingCue(this, activityId, this.recordingSync, this.recordingEnabled)}<session-tool-card
+          .row=${item}
+        ></session-tool-card>
+      </div>`;
     }
     return this.renderItem(item as (typeof this.displayItems)[number]);
   }

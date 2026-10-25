@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+from datetime import datetime, timezone
 from typing import Any, get_args
 from uuid import UUID
 
@@ -319,6 +320,7 @@ def ingest_batch(
         BrowserStepsError: 403 when the credential is pinned to a different
             session, 404 when the session is not in the credential's account.
     """
+    recorded_at = datetime.now(timezone.utc)
     _require_session(db, auth=auth, runtime_session_id=runtime_session_id)
     session_uuid = UUID(str(runtime_session_id).strip())
 
@@ -345,6 +347,7 @@ def ingest_batch(
                 runtime_session_id=runtime_session_id,
                 api_key_id=auth.api_key_id,
                 step=step,
+                recorded_at=recorded_at,
                 commit=False,
             )
         else:
@@ -358,6 +361,7 @@ def ingest_batch(
                         runtime_session_id=runtime_session_id,
                         api_key_id=auth.api_key_id,
                         step=step,
+                        recorded_at=recorded_at,
                         commit=False,
                     )
                     if created:
