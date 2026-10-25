@@ -26,3 +26,24 @@ def test_docs_install_pinned_shellcheck_before_mdm_recipes() -> None:
         for index, step in enumerate(steps)
         if step.get("name") == "Check MDM templates against the CLI"
     )
+
+
+def test_docs_install_pinned_powershell_before_inventory_parse() -> None:
+    """The PowerShell parser runs even when a self-hosted image omits pwsh."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    steps = workflow["jobs"]["build"]["steps"]
+    setup_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Set up PowerShell"
+    )
+    setup = steps[setup_index]["run"]
+    assert "powershell-7.5.3-linux-x64.tar.gz" in setup
+    assert "5c74e0bbafd8be59e72267f05700fd6615344d9cf4d30460d9b6d12cd4a88a8c" in setup
+    assert "sha256sum --check" in setup
+    assert '>> "$GITHUB_PATH"' in setup
+    assert setup_index < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Parse Windows inventory template (no execution)"
+    )
