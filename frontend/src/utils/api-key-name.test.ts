@@ -1,6 +1,6 @@
 import { expect } from '@open-wc/testing';
 
-import { apiKeyDisplayName } from './api-key-name';
+import { apiKeyDisplayName, apiKeySearchQuery } from './api-key-name';
 
 describe('apiKeyDisplayName', () => {
   it('names auto-created flow keys by run with a short id', () => {
@@ -21,5 +21,19 @@ describe('apiKeyDisplayName', () => {
       name: 'Flow Execution notes',
       fullId: null,
     });
+  });
+});
+
+describe('apiKeySearchQuery', () => {
+  it('maps the displayed flow key name to the stored one', () => {
+    expect(apiKeySearchQuery('Flow run 9910dacd')).to.equal(
+      'Flow Execution 9910dacd'
+    );
+    expect(apiKeySearchQuery('flow run')).to.equal('Flow Execution');
+  });
+
+  it('passes other searches through', () => {
+    expect(apiKeySearchQuery('deploy')).to.equal('deploy');
+    expect(apiKeySearchQuery('Flow runner')).to.equal('Flow runner');
   });
 });

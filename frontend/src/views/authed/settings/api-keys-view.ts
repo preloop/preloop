@@ -1,4 +1,7 @@
-import { apiKeyDisplayName } from '../../../utils/api-key-name';
+import {
+  apiKeyDisplayName,
+  apiKeySearchQuery,
+} from '../../../utils/api-key-name';
 import { ConsoleStatus } from '../../../controllers/console-status';
 import { tableScrollStyles } from '../../../styles/table-scroll';
 import { LitElement, html, css, nothing, unsafeCSS } from 'lit';
@@ -225,7 +228,7 @@ export class ApiKeysView extends LitElement {
       const page = await getApiKeysPage({
         limit: query.pageSize || 25,
         offset: query.offset,
-        search: query.search || undefined,
+        search: query.search ? apiKeySearchQuery(query.search) : undefined,
         includeRetired: this.showAllKeys,
         sort: sortKey ? `${sorted!.desc ? '-' : ''}${sortKey}` : '-created',
       });

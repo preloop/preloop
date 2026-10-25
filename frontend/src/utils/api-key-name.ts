@@ -21,3 +21,11 @@ export function apiKeyDisplayName(name: string): ApiKeyDisplayName {
     fullId: name.trim().slice('Flow Execution '.length).toLowerCase(),
   };
 }
+
+/**
+ * Server search matches the stored name, so a search typed from the displayed
+ * "Flow run <id>" is mapped back to "Flow Execution <id>".
+ */
+export function apiKeySearchQuery(search: string): string {
+  return search.replace(/^(\s*)flow run(?=\s|$)/i, '$1Flow Execution');
+}

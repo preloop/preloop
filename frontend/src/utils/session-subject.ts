@@ -21,7 +21,8 @@ const WRAPPER_TAGS = [
 const BILLING_HEADER =
   /^\s*x-anthropic-billing-header:(?:\s*[\w.-]+=[^;\n]*;?)*/i;
 
-const HOME_PATH = /(^|[\s"'(=])(?:\/Users|\/home)\/[^/\s]+(?=\/|\s|$)/g;
+const HOME_PATH =
+  /(^|[\s"'(=])(?:\/Users|\/home)\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*/g;
 
 /** Replace `/Users/<name>` and `/home/<name>` prefixes with `~`. */
 export function shortenHomePaths(text: string): string {
@@ -38,14 +39,16 @@ export function cleanSessionSubject(
   text: string | null | undefined
 ): string | null {
   if (!text) return null;
-  let out = text;
+  // The billing header goes first so a wrapper right after it counts as the
+  // start of the text.
+  let out = text.replace(BILLING_HEADER, ' ');
   for (const tag of WRAPPER_TAGS) {
-    // A closed block goes whole; an opener with no closer means the block was
-    // truncated, so everything after it is harness text too.
+    // A closed block goes whole. An unclosed opener at the very start means
+    // a truncated harness block, so the rest is harness text too; one later
+    // in the text is a prompt mentioning the tag and stays.
     out = out.replace(new RegExp(`<${tag}>[\\s\\S]*?</${tag}>`, 'gi'), ' ');
-    out = out.replace(new RegExp(`<${tag}>[\\s\\S]*$`, 'i'), ' ');
+    out = out.replace(new RegExp(`^\\s*<${tag}>[\\s\\S]*$`, 'i'), ' ');
   }
-  out = out.replace(BILLING_HEADER, ' ');
   out = shortenHomePaths(out).replace(/\s+/g, ' ').trim();
   return out || null;
 }

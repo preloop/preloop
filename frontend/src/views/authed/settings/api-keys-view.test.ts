@@ -765,6 +765,24 @@ describe('ApiKeysView', () => {
     window.history.replaceState(null, '', window.location.pathname);
   });
 
+  it('searches flow keys by the name the list shows', async () => {
+    const element = await fixture<ApiKeysView>(
+      html`<api-keys-view></api-keys-view>`
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    element.table.setSearch('Flow run 9910dacd');
+    await waitUntil(() =>
+      fetchStub
+        .getCalls()
+        .some((call) =>
+          String(call.args[0]).includes('q=Flow+Execution+9910dacd')
+        )
+    );
+    await waitUntil(() => !(element as any).isLoading);
+    element.table.clearFilters();
+    window.history.replaceState(null, '', window.location.pathname);
+  });
+
   it('renders Agent badge when managed_agent_id is present', async () => {
     fetchStub.restore();
     fetchStub = sinon.stub(window, 'fetch');

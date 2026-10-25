@@ -50,6 +50,30 @@ describe('cleanSessionSubject', () => {
     );
   });
 
+  it('treats a truncated wrapper after the billing header as harness text', () => {
+    expect(
+      cleanSessionSubject(
+        'x-anthropic-billing-header: cc_version=2.1; cc_entrypoint=cli;\n<system-reminder> background notice'
+      )
+    ).to.equal(null);
+  });
+
+  it('keeps delimiters around a home path', () => {
+    expect(shortenHomePaths('Read "/Users/alex"')).to.equal('Read "~"');
+    expect(shortenHomePaths('see (/Users/alex)')).to.equal('see (~)');
+    expect(shortenHomePaths('at /Users/alex, then')).to.equal('at ~, then');
+    expect(shortenHomePaths('at /Users/alex.')).to.equal('at ~.');
+    expect(shortenHomePaths('in /Users/alex.smith/src')).to.equal('in ~/src');
+  });
+
+  it('keeps a prompt that mentions a wrapper tag mid-sentence', () => {
+    expect(
+      cleanSessionSubject(
+        'Explain why <system-reminder> appears in my transcript'
+      )
+    ).to.equal('Explain why <system-reminder> appears in my transcript');
+  });
+
   it('leaves ordinary prompts and unknown tags alone', () => {
     expect(cleanSessionSubject('Render <my-widget> in the header')).to.equal(
       'Render <my-widget> in the header'
