@@ -39,6 +39,7 @@ def test_javascript_codeql_sets_up_node_before_extraction() -> None:
         "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"
     )
     assert setup["with"]["node-version"] == "22"
+    assert setup["with"]["package-manager-cache"] is False
     assert setup_index < next(
         index
         for index, step in enumerate(steps)
