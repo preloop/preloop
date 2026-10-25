@@ -1,7 +1,7 @@
 """Add durable upstream MCP authorization and refresh coordination.
 
 Revision ID: 20261110_upstream_mcp_oauth
-Revises: 20261109_agent_usage_totals
+Revises: 20261112_agent_usage_replan
 """
 
 from alembic import op
@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
 revision = "20261110_upstream_mcp_oauth"
-down_revision = "20261109_agent_usage_totals"
+down_revision = "20261112_agent_usage_replan"
 branch_labels = None
 depends_on = None
 

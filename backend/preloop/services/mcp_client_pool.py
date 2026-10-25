@@ -216,11 +216,11 @@ class MCPClient:
         self._session: Optional[ClientSession] = None
         self._exit_stack: Optional[AsyncExitStack] = None
         self._connected = False
-        self._protocol_version: str | None = None
-        self._protocol_url: str | None = None
         self.oauth_server_id: UUID | None = None
         self.oauth_version: int | None = None
         self._oauth_recovery_version: int | None = None
+        self._protocol_version: str | None = None
+        self._protocol_url: str | None = None
         self.config_fingerprint = mcp_client_config_fingerprint(
             url, auth_type, auth_config, transport
         )
@@ -352,7 +352,9 @@ class MCPClient:
                     not yielded
                     and attempt == 0
                     and self.oauth_server_id is not None
-                    and isinstance(cause, httpx.HTTPStatusError)
+                    and isinstance(
+                        cause, (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError)
+                    )
                     and cause.response.status_code == 401
                 ):
                     await self._load_oauth(force_version=self.oauth_version)
@@ -556,7 +558,10 @@ class MCPClient:
             target_exc = _unwrap_exception_group(e)
 
             if (
-                isinstance(target_exc, httpx.HTTPStatusError)
+                isinstance(
+                    target_exc,
+                    (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError),
+                )
                 and target_exc.response.status_code == 401
             ):
                 self._oauth_recovery_version = self.oauth_version
@@ -565,7 +570,10 @@ class MCPClient:
             message = describe_mcp_connection_error(target_exc)
             logger.warning("Upstream MCP tool request failed: %s", message)
             if dispatched and not (
-                isinstance(target_exc, httpx.HTTPStatusError)
+                isinstance(
+                    target_exc,
+                    (httpx.HTTPStatusError, legacy_httpx.HTTPStatusError),
+                )
                 and target_exc.response.status_code in {401, 403}
             ):
                 raise MCPToolOutcomeUnknownError(

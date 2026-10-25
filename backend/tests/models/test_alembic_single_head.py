@@ -504,4 +504,6 @@ def test_flow_runners_revision_chains_onto_approval_rule_context() -> None:
     assert activity_meta_bytes.down_revision == "20261112_delivery_report_policy"
     agent_usage_replan = script.get_revision("20261112_agent_usage_replan")
     assert agent_usage_replan.down_revision == "20261112_activity_meta_bytes"
-    assert script.get_heads() == ["20261112_agent_usage_replan"]
+    upstream_mcp_oauth = script.get_revision("20261110_upstream_mcp_oauth")
+    assert upstream_mcp_oauth.down_revision == "20261112_agent_usage_replan"
+    assert script.get_heads() == ["20261110_upstream_mcp_oauth"]

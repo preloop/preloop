@@ -1015,9 +1015,9 @@ async def test_explicit_setup_auth_rejection_recovers_once_before_dispatch():
 
 @pytest.mark.asyncio
 async def test_real_sdk_transport_never_replays_a_mutation_after_lost_response():
-    """Exercise MCP 1.x itself against a synthetic HTTP provider, not a session mock."""
+    """Exercise the MCP SDK itself against a synthetic HTTP provider, not a session mock."""
     import json
-    import httpx
+    import httpx2 as httpx
     from preloop.services.mcp_client_pool import MCPToolOutcomeUnknownError
 
     mutations = []
@@ -1026,6 +1026,9 @@ async def test_real_sdk_transport_never_replays_a_mutation_after_lost_response()
         if request.method != "POST":
             return httpx.Response(405)
         message = json.loads(request.content)
+        if message["method"] == "server/discover":
+            # A legacy provider rejects the modern probe with a plain HTTP 400.
+            return httpx.Response(400, text="unsupported")
         if message["method"] == "initialize":
             return httpx.Response(
                 200,
@@ -1047,8 +1050,12 @@ async def test_real_sdk_transport_never_replays_a_mutation_after_lost_response()
             raise httpx.ReadTimeout("Synthetic lost response", request=request)
         return httpx.Response(400)
 
-    def factory(**kwargs):
-        return httpx.AsyncClient(transport=httpx.MockTransport(provider), **kwargs)
+    def factory(*, response_policy, **kwargs):
+        return httpx.AsyncClient(
+            transport=httpx.MockTransport(provider),
+            event_hooks={"response": [response_policy.on_response]},
+            **kwargs,
+        )
 
     client = MCPClient(
         "https://resource.example.com/mcp",

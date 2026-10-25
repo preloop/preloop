@@ -8,6 +8,7 @@ import secrets
 from typing import Any, Dict, List
 from uuid import UUID
 
+from anyio import from_thread
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -930,24 +931,19 @@ async def mcp_server_oauth_callback(
     "/mcp-servers/{server_id}/oauth/disconnect", response_model=MCPServerResponse
 )
 @require_permission("edit_mcp_servers")
-async def disconnect_mcp_oauth(
+def disconnect_mcp_oauth(
     server_id: UUID,
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db_session),
 ) -> MCPServerResponse:
     """Remove local grants and pending transactions. No upstream revocation."""
-    await run_db_off_loop(
-        lambda: ensure_permission_in_oss(db, current_user, "edit_mcp_servers")
-    )
+    # A sync handler, so the session is only used on the worker thread.
+    ensure_permission_in_oss(db, current_user, "edit_mcp_servers")
     try:
-        await run_db_off_loop(
-            lambda: crud_upstream_mcp_oauth.disconnect(
-                db, server_id, current_user.account_id
-            )
-        )
+        crud_upstream_mcp_oauth.disconnect(db, server_id, current_user.account_id)
     except OAuthContextError:
         raise HTTPException(404, "OAuth server not found or unavailable") from None
-    await _evict_mcp_client(server_id)
+    from_thread.run(_evict_mcp_client, server_id)
     server = crud_mcp_server.get(
         db, id=server_id, account_id=str(current_user.account_id)
     )

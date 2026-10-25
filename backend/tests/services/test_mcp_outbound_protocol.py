@@ -11,7 +11,7 @@ import pytest
 from mcp import MCPError, types
 
 from preloop.services import mcp_client_pool
-from preloop.services.mcp_client_pool import MCPClient
+from preloop.services.mcp_client_pool import MCPClient, MCPToolOutcomeUnknownError
 
 MODERN = "2026-07-28"
 LEGACY = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25")
@@ -238,8 +238,14 @@ async def test_dispatched_tool_is_never_replayed(
     peer = Peer(call_status=status, call_error=code)
     client = install_peer(monkeypatch, peer)
     await client.connect()
-    with pytest.raises((httpx.HTTPStatusError, MCPError)):
-        await client.call_tool("echo", {})
+    if status == 401:
+        # An auth rejection is reported as such so the user can reconnect.
+        with pytest.raises(ConnectionError, match="HTTP 401") as raised:
+            await client.call_tool("echo", {})
+        assert not isinstance(raised.value, MCPToolOutcomeUnknownError)
+    else:
+        with pytest.raises(MCPToolOutcomeUnknownError, match="may have executed"):
+            await client.call_tool("echo", {})
     assert peer.methods.count("tools/call") == 1
     assert "initialize" not in peer.methods
 
