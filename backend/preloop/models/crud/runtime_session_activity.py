@@ -6,7 +6,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 from uuid import UUID
 
-from sqlalchemy import Integer, Text, and_, case, cast, func, select, text, tuple_
+from sqlalchemy import (
+    Integer,
+    Text,
+    and_,
+    case,
+    cast,
+    func,
+    select,
+    text,
+    true,
+    tuple_,
+    update,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -1251,8 +1263,11 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
         Callers must record skipped IDs as incomplete evidence.
         Metadata is measured in PostgreSQL before it crosses the DB connection;
         the fetch repeats the size predicate to protect against concurrent edits.
+        The size comes from the stored ``metadata_bytes`` column; only rows
+        written before that column existed (and not yet backfilled) fall back
+        to serialising the value, which detoasts it.
         """
-        size = func.coalesce(func.octet_length(cast(self.model.metadata_, Text)), 0)
+        size = self.metadata_size_expression()
         query = db.query(self.model.id, self.model.timestamp, size).filter(
             self.model.account_id == account_id,
             self.model.runtime_session_id == runtime_session_id,
@@ -1746,6 +1761,67 @@ class CRUDRuntimeSessionActivity(CRUDBase[RuntimeSessionActivity]):
             .limit(limit)
             .all()
         )
+
+    def metadata_size_expression(self) -> Any:
+        """Return a SQL expression for a row's metadata size in bytes.
+
+        Reads ``metadata_bytes`` and only falls back to
+        ``octet_length(metadata::text)`` (which detoasts and serialises the
+        whole value) for rows the size backfill has not reached yet.
+        """
+        return func.coalesce(
+            self.model.metadata_bytes,
+            func.octet_length(cast(self.model.metadata_, Text)),
+            0,
+        )
+
+    def backfill_metadata_bytes_batch(
+        self,
+        db: Session,
+        *,
+        limit: int,
+        after: Optional[Any] = None,
+    ) -> tuple[int, Optional[Any]]:
+        """Fill ``metadata_bytes`` on one primary-key window of rows.
+
+        Takes the next ``limit`` ids after ``after`` from the primary-key
+        index, whatever their type, and sets the size on the
+        ``model_gateway_call`` rows among them that still have none. The work
+        per call is bounded by ``limit`` even when no row in the window needs
+        filling, so a walk over an already-filled table never turns into an
+        open-ended scan. Does not commit.
+
+        Args:
+            db: Database session.
+            limit: Rows per window.
+            after: Last id of the previous window, or None to start.
+
+        Returns:
+            ``(rows_updated, last_id_in_window)``; ``last_id_in_window`` is
+            None when the walk has reached the end of the table.
+        """
+        model = self.model
+        window = (
+            select(model.id)
+            .where(model.id > after if after is not None else true())
+            .order_by(model.id.asc())
+            .limit(max(1, int(limit)))
+        )
+        ids = list(db.execute(window).scalars())
+        if not ids:
+            return 0, None
+        updated = db.execute(
+            update(model)
+            .where(
+                model.id.in_(ids),
+                model.activity_type == "model_gateway_call",
+                model.metadata_bytes.is_(None),
+                model.metadata_.is_not(None),
+            )
+            .values(metadata_bytes=func.octet_length(cast(model.metadata_, Text)))
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        return int(updated or 0), ids[-1]
 
     def gateway_call_batch(
         self,

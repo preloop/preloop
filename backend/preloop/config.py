@@ -1429,6 +1429,14 @@ class Settings(BaseSettings):
             "it is irreversible (GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED)."
         ),
     )
+    gateway_activity_size_backfill_enabled: bool = Field(
+        True,
+        description=(
+            "Fill runtime_session_activity.metadata_bytes for model_gateway_call "
+            "rows written before the column existed, in the same hourly pass "
+            "(GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED)."
+        ),
+    )
     gateway_activity_maintenance_batch_size: int = Field(
         200,
         description=(
@@ -2110,6 +2118,10 @@ class Settings(BaseSettings):
             in ("true", "1", "t", "yes"),
             gateway_activity_body_retention_enabled=os.getenv(
                 "GATEWAY_ACTIVITY_BODY_RETENTION_ENABLED", "false"
+            ).lower()
+            in ("true", "1", "t", "yes"),
+            gateway_activity_size_backfill_enabled=os.getenv(
+                "GATEWAY_ACTIVITY_SIZE_BACKFILL_ENABLED", "true"
             ).lower()
             in ("true", "1", "t", "yes"),
             gateway_activity_maintenance_batch_size=int(

@@ -15,10 +15,15 @@ resumable:
   than the account's plan history window, keeping tokens, cost and timing.
   Rows are never deleted here; deleting whole sessions is the retention
   purge's job (``RETENTION_PURGE_ENABLED``).
+* **Size backfill** (on by default) fills ``metadata_bytes`` on gateway call
+  rows written before that column existed, so payload readers stop
+  detoasting them to measure their size. It writes only the size column.
 
-Sessions and flow executions under legal hold are skipped by every pass.
-Each batch is its own transaction, so stopping a pass at any point loses at
-most one batch of work and the next pass carries on. The pass runs hourly from the sync scheduler
+Sessions and flow executions under legal hold are skipped by compaction and
+retention; the size backfill does not need to, since it only records a size
+derived from the stored value. Each batch is its own transaction, so stopping
+a pass at any point loses at most one batch of work and the next pass carries
+on. The pass runs hourly from the sync scheduler
 (task ``maintain_gateway_activity``) and can be run by hand::
 
     python -m preloop.services.gateway_activity_maintenance --max-batches 100
@@ -68,10 +73,19 @@ _flow_log_cursor: dict[str, Any] = {}
 _CURSOR_MAX_AGE_S = 24 * 3600
 
 
+# Size backfill walk. Every write sets the size, so no row becomes unsized
+# behind the walk: one complete walk finishes the backlog, after which
+# ``done`` makes later passes return at once. In memory on purpose, like the
+# compaction cursor: a restarted worker walks once more, in bounded windows
+# that find nothing to fill.
+_size_backfill_cursor: dict[str, Any] = {}
+
+
 def reset_compaction_cursor() -> None:
-    """Forget the in-process compaction cursors (tests and operators)."""
+    """Forget the in-process walk cursors (tests and operators)."""
     _compaction_cursor.clear()
     _flow_log_cursor.clear()
+    _size_backfill_cursor.clear()
 
 
 @dataclass
@@ -80,6 +94,7 @@ class MaintenanceResult:
 
     compacted_rows: int = 0
     stripped_rows: int = 0
+    sized_rows: int = 0
     batches: int = 0
     bytes_before: int = 0
     bytes_after: int = 0
@@ -300,6 +315,58 @@ def strip_expired_bodies(
     return result
 
 
+def backfill_metadata_sizes(
+    db: Session,
+    *,
+    batch_size: int,
+    max_batches: int,
+    dry_run: bool = False,
+    result: Optional[MaintenanceResult] = None,
+) -> MaintenanceResult:
+    """Fill ``metadata_bytes`` on gateway call rows that predate the column.
+
+    Walks the table in primary-key windows of ``batch_size`` rows; each
+    window is one UPDATE and its own transaction, so the work per batch is
+    bounded however many rows still need a size. Measuring a legacy row
+    reads it once; afterwards readers use the stored size.
+
+    Args:
+        db: Database session. Committed once per batch.
+        batch_size: Rows per batch.
+        max_batches: Batches before returning; the rest waits for next pass.
+        dry_run: Skip the pass entirely (sizing writes no payload data, so
+            there is nothing useful to preview).
+        result: Accumulator to add to.
+
+    Returns:
+        The accumulated counts. ``exhausted`` is True once a complete walk
+        has finished.
+    """
+    result = result or MaintenanceResult(dry_run=dry_run)
+    if dry_run:
+        return result
+    if _size_backfill_cursor.get("done"):
+        result.exhausted = True
+        return result
+    after: Optional[Any] = _size_backfill_cursor.get("after")
+    for _ in range(max(0, max_batches)):
+        updated, last_id = crud_runtime_session_activity.backfill_metadata_bytes_batch(
+            db, limit=batch_size, after=after
+        )
+        if last_id is None:
+            db.rollback()
+            result.exhausted = True
+            _size_backfill_cursor["done"] = True
+            break
+        db.commit()
+        after = last_id
+        _size_backfill_cursor["after"] = after
+        result.sized_rows += updated
+        result.batches += 1
+        logger.info("Gateway activity size backfill batch: %d rows sized", updated)
+    return result
+
+
 def run_gateway_activity_maintenance(
     db: Session,
     *,
@@ -308,14 +375,15 @@ def run_gateway_activity_maintenance(
     compaction: Optional[bool] = None,
     retention: Optional[bool] = None,
     flow_logs: Optional[bool] = None,
+    size_backfill: Optional[bool] = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run one bounded maintenance pass with settings as defaults.
 
     Returns:
         ``{"compaction": {...}, "flow_log_compaction": {...},
-        "retention": {...}, "elapsed_s": float}``; a disabled part reports
-        ``None``.
+        "retention": {...}, "size_backfill": {...}, "elapsed_s": float}``; a
+        disabled part reports ``None``.
     """
     size = batch_size or settings.gateway_activity_maintenance_batch_size
     batches = (
@@ -336,11 +404,17 @@ def run_gateway_activity_maintenance(
     do_flow_logs = (
         settings.flow_log_gateway_compaction_enabled if flow_logs is None else flow_logs
     )
+    do_size = (
+        settings.gateway_activity_size_backfill_enabled
+        if size_backfill is None
+        else size_backfill
+    )
     started = time.monotonic()
     summary: dict[str, Any] = {
         "compaction": None,
         "flow_log_compaction": None,
         "retention": None,
+        "size_backfill": None,
     }
     if do_compact:
         summary["compaction"] = compact_existing_rows(
@@ -352,6 +426,10 @@ def run_gateway_activity_maintenance(
         ).as_dict()
     if do_retain:
         summary["retention"] = strip_expired_bodies(
+            db, batch_size=size, max_batches=batches, dry_run=dry_run
+        ).as_dict()
+    if do_size:
+        summary["size_backfill"] = backfill_metadata_sizes(
             db, batch_size=size, max_batches=batches, dry_run=dry_run
         ).as_dict()
     summary["elapsed_s"] = round(time.monotonic() - started, 3)
@@ -378,6 +456,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Also compact model call rows of flow execution logs.",
     )
+    parser.add_argument(
+        "--no-size-backfill",
+        action="store_true",
+        help="Skip filling metadata_bytes on older rows.",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     from preloop.models.db.session import get_db_session
@@ -391,6 +474,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             compaction=not args.no_compaction,
             retention=True if args.retention else None,
             flow_logs=True if args.flow_logs else None,
+            size_backfill=False if args.no_size_backfill else None,
             dry_run=args.dry_run,
         )
     finally:
