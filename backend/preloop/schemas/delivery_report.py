@@ -49,13 +49,14 @@ class DeliveryReportList(BaseModel):
 class DeliveryReportActions(BaseModel):
     """Which report actions this server can carry out.
 
-    Opening a proposed follow-up and reopening an issue are tracker writes
-    that are not implemented yet; the console renders them disabled.
+    All three are served by ``POST /delivery-reports/{id}/actions``. A
+    server that reports one as false (an older build) gets it rendered
+    disabled in the console.
     """
 
-    open_issue: bool = False
-    reopen: bool = False
-    dismiss: bool = False
+    open_issue: bool = True
+    reopen: bool = True
+    dismiss: bool = True
 
 
 class DeliveryReportDetail(DeliveryReportRow):

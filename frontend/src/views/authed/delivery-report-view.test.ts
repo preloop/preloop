@@ -300,6 +300,141 @@ describe('delivery-report-view', () => {
     ).to.be.true;
   });
 
+  function enabled(): DeliveryReportDetail {
+    return detail({ actions: { open_issue: true, reopen: true, dismiss: true } });
+  }
+
+  function stubActions(
+    answer: (body: Record<string, unknown>) => Response
+  ): Record<string, unknown>[] {
+    const posted: Record<string, unknown>[] = [];
+    fetchStub.callsFake(async (input, init) => {
+      const url = new URL(String(input), window.location.origin);
+      if (url.pathname === '/api/v1/delivery-reports/run-1/actions') {
+        const body = JSON.parse(String(init?.body));
+        posted.push(body);
+        return answer(body);
+      }
+      if (url.pathname === '/api/v1/delivery-reports/run-1')
+        return json(payload);
+      return json({});
+    });
+    return posted;
+  }
+
+  it('opens a follow-up in one click and shows the decision', async () => {
+    payload = enabled();
+    const posted = stubActions(() => {
+      payload = enabled();
+      payload.report.proposal_actions = {
+        'follow_up:0': {
+          kind: 'open_issue',
+          status: 'applied',
+          issue_url: 'https://example.com/example/app/issues/99',
+        },
+      };
+      return json({ key: 'follow_up:0', decision: {} });
+    });
+    const el = await mount();
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-testid="action-open-issue"]'
+    )!.click();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector(
+        '[data-testid="follow-up"] [data-testid="decision"]'
+      )
+    );
+    expect(posted).to.deep.equal([{ kind: 'open_issue', index: 0 }]);
+    const row = el.shadowRoot!.querySelector('[data-testid="follow-up"]')!;
+    expect(row.textContent).to.contain('Issue opened');
+    expect(row.querySelector('a')!.getAttribute('href')).to.equal(
+      'https://example.com/example/app/issues/99'
+    );
+    expect(row.querySelector('[data-testid="action-open-issue"]')).to.not.exist;
+    expect(el.shadowRoot!.querySelector('[data-testid="actions-note"]')).to.not
+      .exist;
+  });
+
+  it('shows the server refusal of a reopen', async () => {
+    payload = enabled();
+    const posted = stubActions(() =>
+      json(
+        {
+          detail: {
+            code: 'stale',
+            message: 'The issue was edited after this assessment.',
+          },
+        },
+        409
+      )
+    );
+    const el = await mount();
+    el.shadowRoot!.querySelector<HTMLElement>(
+      '[data-testid="action-reopen"]'
+    )!.click();
+    await waitUntil(() =>
+      el.shadowRoot!.querySelector('[data-testid="action-error"]')
+    );
+    expect(posted).to.deep.equal([{ kind: 'reopen', ref: 'example/app#7' }]);
+    expect(
+      el.shadowRoot!.querySelector('[data-testid="action-error"]')!.textContent
+    ).to.contain('edited after this assessment');
+  });
+
+  it('dismisses only with a reason', async () => {
+    payload = enabled();
+    const posted = stubActions(() => {
+      payload = enabled();
+      payload.report.proposal_actions = {
+        'reopen:example/app#7': {
+          kind: 'dismiss',
+          status: 'dismissed',
+          reason: 'Measured on a cold cache',
+        },
+      };
+      return json({ key: 'reopen:example/app#7', decision: {} });
+    });
+    const el = await mount();
+    const request = () =>
+      el.shadowRoot!.querySelector('[data-testid="reopen-request"]')!;
+    request()
+      .querySelector<HTMLElement>('[data-testid="action-dismiss"]')!
+      .click();
+    await el.updateComplete;
+    const confirm = request().querySelector('[data-testid="dismiss-confirm"]')!;
+    expect(confirm.hasAttribute('disabled')).to.be.true;
+    const input = request().querySelector<HTMLInputElement>(
+      '[data-testid="dismiss-form"] input'
+    )!;
+    input.value = 'Measured on a cold cache';
+    input.dispatchEvent(new Event('input'));
+    await el.updateComplete;
+    request()
+      .querySelector<HTMLFormElement>('[data-testid="dismiss-form"]')!
+      .requestSubmit();
+    await waitUntil(() => request().querySelector('[data-testid="decision"]'));
+    expect(posted).to.deep.equal([
+      {
+        kind: 'dismiss',
+        key: 'reopen:example/app#7',
+        reason: 'Measured on a cold cache',
+      },
+    ]);
+    expect(request().textContent).to.contain(
+      'Dismissed: Measured on a cold cache'
+    );
+  });
+
+  it('shows a follow-up the run opened itself as decided', async () => {
+    payload = enabled();
+    payload.report.follow_ups![0].issue_url =
+      'https://example.com/example/app/issues/50';
+    const el = await mount();
+    const row = el.shadowRoot!.querySelector('[data-testid="follow-up"]')!;
+    expect(row.textContent).to.contain('Issue opened');
+    expect(row.querySelector('[data-testid="action-open-issue"]')).to.not.exist;
+  });
+
   it('expands evidence in place', async () => {
     const el = await mount();
     const root = el.shadowRoot!;

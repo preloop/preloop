@@ -101,6 +101,18 @@ export interface FollowUp {
   ref?: string | null;
   reason?: string | null;
   evidence?: string[];
+  /** Set when the run opened the issue itself under the report policy. */
+  issue_url?: string | null;
+}
+
+/** A decision stored on the run for one proposal (`proposal_actions`). */
+export interface ProposalDecision {
+  kind: 'open_issue' | 'reopen' | 'dismiss';
+  status: 'pending' | 'applied' | 'dismissed';
+  issue_url?: string | null;
+  reason?: string | null;
+  revision?: string | null;
+  at?: string | null;
 }
 
 export interface Ratio {
@@ -136,6 +148,8 @@ export interface DeliveryReportDocument {
   open_past_window?: OpenItem[];
   follow_ups?: FollowUp[];
   reopen_requests?: ReopenRequest[];
+  /** Decisions by proposal key: `follow_up:<index>` or `reopen:<ref>`. */
+  proposal_actions?: Record<string, ProposalDecision>;
   open_questions?: { question: string; ref?: string | null }[];
   delta?: {
     previous_report?: Record<string, unknown> | null;
@@ -189,5 +203,54 @@ export function listDeliveryReports(params: {
 export function getDeliveryReport(id: string): Promise<DeliveryReportDetail> {
   return getJson(
     `${REST_API_PREFIX}/delivery-reports/${encodeURIComponent(id)}`
+  );
+}
+
+export type DeliveryReportAction =
+  | { kind: 'open_issue'; index: number }
+  | { kind: 'reopen'; ref: string }
+  | { kind: 'dismiss'; key: string; reason: string };
+
+/** Why the server refused an action, from its `{code, message}` detail. */
+export class DeliveryReportActionError extends Error {
+  constructor(
+    message: string,
+    readonly code: string | null
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * Act on a proposal: open the follow-up, reopen the issue, or dismiss.
+ * The click is the approval; the server refuses a stale reopen request and
+ * a proposal that was already decided.
+ */
+export async function actOnDeliveryReport(
+  id: string,
+  action: DeliveryReportAction
+): Promise<{ key: string; decision: ProposalDecision }> {
+  const response = await fetchWithAuth(
+    `/api/v1/delivery-reports/${encodeURIComponent(id)}/actions`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(action),
+    }
+  );
+  if (response.ok) return response.json();
+  let detail: unknown = null;
+  try {
+    detail = (await response.json())?.detail;
+  } catch {
+    // A body that is not JSON keeps the generic message below.
+  }
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const d = detail as { message: string; code?: string };
+    throw new DeliveryReportActionError(d.message, d.code ?? null);
+  }
+  throw new DeliveryReportActionError(
+    typeof detail === 'string' ? detail : `HTTP ${response.status}`,
+    null
   );
 }
