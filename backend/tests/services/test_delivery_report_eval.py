@@ -145,7 +145,7 @@ class TestScore:
         assert out["per_verdict"]["covered"] == {"expected": 15, "correct": 15}
         assert out["criteria"] == {"known": 185, "stated": 185, "met_correct": 181}
 
-    def test_a_parent_check_record_fixes_the_baseline_miss(
+    def test_parent_evidence_without_a_matching_criterion_does_not_clear_a_miss(
         self, evaluation: Dict[str, List[Dict[str, Any]]]
     ) -> None:
         run = _baseline()
@@ -167,7 +167,7 @@ class TestScore:
         out = ev.score(run, evaluation)
         assert (
             "preloop/preloop#1957: expected unverified, got partial"
-            not in (out["mismatches"])
+            in (out["mismatches"])
         )
 
     def test_a_missing_issue_is_counted_as_missing(

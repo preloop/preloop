@@ -1315,6 +1315,33 @@ def _parent_check_usable(record: Any, merge_sha: Optional[str]) -> bool:
     return isinstance(paths, list) and bool(paths)
 
 
+def _parent_check_matches_criterion(record: Mapping[str, Any], text: str) -> bool:
+    """Only explicit dependent-file criteria can be cleared by parent evidence."""
+    if not _ACCORDINGLY_RE.search(text):
+        return False
+    paths = record.get("paths") or []
+    terms = _strs(record.get("terms"))
+    if (
+        not paths
+        or not terms
+        or any(
+            not isinstance(p, Mapping)
+            or not isinstance(p.get("path"), str)
+            or not p["path"]
+            for p in paths
+        )
+    ):
+        return False
+    # Require the criterion itself to name both the checked files and the
+    # references they should follow. Generic wording remains unverified.
+    return all(
+        re.search(
+            r"(?<![\w./-])" + re.escape(name) + r"(?![\w./-])", text, re.IGNORECASE
+        )
+        for name in [*(p["path"] for p in paths), *terms]
+    )
+
+
 def _parent_check_clears(record: Any, merge_sha: Optional[str]) -> bool:
     """Whether a usable parent-check record shows no named file needed a change."""
     if not _parent_check_usable(record, merge_sha):
@@ -1330,7 +1357,8 @@ def apply_parent_checks(
 ) -> Dict[str, Any]:
     """Apply the parent-commit rule to the run's own criterion verdicts.
 
-    * A criterion marked not met that carries a ``parent_check`` record
+    * An explicit "accordingly" criterion naming the checked paths and terms,
+      marked not met and carrying a ``parent_check`` record
       showing no named file referenced the changed thing at ``<merge>^1``
       is met: nothing needed changing. The record becomes its evidence.
     * An "update X accordingly" criterion marked not met with no usable
@@ -1351,7 +1379,10 @@ def apply_parent_checks(
             continue
         criterion = dict(item)
         record = criterion.get("parent_check")
-        usable = _parent_check_usable(record, merge_sha)
+        text = str(criterion.get("text") or "")
+        usable = _parent_check_usable(
+            record, merge_sha
+        ) and _parent_check_matches_criterion(record, text)
         if usable and _parent_check_clears(record, merge_sha):
             names = ", ".join(str(p.get("path")) for p in record["paths"])
             terms = ", ".join(_strs(record.get("terms")))

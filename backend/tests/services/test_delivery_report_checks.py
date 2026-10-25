@@ -350,7 +350,7 @@ def _record(**overrides: Any) -> Dict[str, Any]:
     return record
 
 
-ACCORDINGLY = "Update the route tests (router.ts) accordingly"
+ACCORDINGLY = "Update the route tests (router.ts) accordingly for removed stub-view"
 
 
 class TestApplyParentChecks:
@@ -504,3 +504,37 @@ def test_parent_check_requires_the_known_closing_merge(closing_sha: str | None) 
     criterion = report["closed_issues"][0]["purpose"]["criteria"][0]
     assert criterion["met"] is None
     assert criterion["unchecked"] == "parent-commit check not run"
+
+
+@pytest.mark.parametrize(
+    "text, met",
+    [
+        ("p95 under 1.5 s", False),
+        ("Update unrelated.ts accordingly for removed stub-view", None),
+        ("Update router.ts accordingly for removed different-view", None),
+    ],
+)
+def test_parent_evidence_must_match_the_criterion(text: str, met: bool | None) -> None:
+    purpose = dr.apply_parent_checks(
+        {"criteria": [{"text": text, "met": False, "parent_check": _record()}]},
+        merge_sha=MERGE,
+    )
+    assert purpose["criteria"][0]["met"] is met
+
+
+def test_diff_hunks_have_a_total_item_budget() -> None:
+    files = [
+        {
+            "filename": f"app/file{i}.py",
+            "patch": "\n".join("+changed" for _ in range(checks.MAX_HUNK_LINES)),
+        }
+        for i in range(20)
+    ]
+    item = checks.bounded_pr_input(
+        _pr(changes={"changed_files": files}), criteria=["Latency stays below target"]
+    )
+    assert (
+        sum(len(lines) for lines in item["diff_hunks"].values())
+        == checks.MAX_ITEM_HUNK_LINES
+    )
+    assert item["diff_hunks_truncated"] is True

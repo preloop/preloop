@@ -66,6 +66,8 @@ _STOP_WORDS = frozenset(
 )
 #: Changed lines kept per file when diff hunks are in scope.
 MAX_HUNK_LINES = 200
+#: Total changed lines exposed for one PR, independent of its file count.
+MAX_ITEM_HUNK_LINES = 400
 
 
 def _author(item: Mapping[str, Any]) -> str:
@@ -287,11 +289,19 @@ def bounded_pr_input(
             if isinstance(c, Mapping)
         ]
     if scope["diff_hunks_for"]:
-        item["diff_hunks"] = {
-            _name(f): _hunk_lines(_patch(f))
-            for f in files
-            if _patch(f) and not _TEST_PATH_RE.search(_name(f))
-        }
+        item["diff_hunks"] = {}
+        remaining = MAX_ITEM_HUNK_LINES
+        for f in files:
+            if not _patch(f) or _TEST_PATH_RE.search(_name(f)):
+                continue
+            if remaining == 0:
+                item["diff_hunks_truncated"] = True
+                break
+            lines = _hunk_lines(_patch(f))
+            item["diff_hunks"][_name(f)] = lines[:remaining]
+            if len(lines) > remaining:
+                item["diff_hunks_truncated"] = True
+            remaining -= min(len(lines), remaining)
     return item
 
 

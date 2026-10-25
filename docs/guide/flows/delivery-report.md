@@ -65,14 +65,16 @@ only), and calls it instead of following prose rules:
   the check conclusion. Review threads are included only when the PR closes
   an issue that states criteria, or a code-scanning alert or a HIGH or
   CRITICAL finding is present. Source diff hunks are included only for
-  criteria that no added test name matches.
+  criteria that no added test name matches, capped at 200 lines per file
+  and 400 lines across the PR. Truncation is marked in the scope output.
 - `parent-check --repo <clone> --merge <sha> --path <file> --term <name>`
   looks for the removed or changed name in each file at `<merge>^1`. The
   run puts the output on the criterion as `parent_check`. When the platform
-  finalizes the report, a criterion marked not met whose record shows no
-  reference becomes met, with the record as evidence. An "update X
-  accordingly" criterion marked not met without a record becomes an
-  evidence gap.
+  finalizes the report, only an explicit "update X accordingly" criterion
+  naming the checked paths and search terms can become met from a matching
+  record showing no references at the known closing merge. Other misses
+  remain misses. An "accordingly" criterion without usable, matching evidence
+  becomes an evidence gap; never rewrite the source criterion to fit a record.
 
 ## Measuring prompt changes
 
