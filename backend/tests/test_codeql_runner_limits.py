@@ -22,3 +22,25 @@ def test_codeql_limits_shared_runners_without_constraining_hosted() -> None:
     )
     assert "ram" not in analyze["with"]
     assert "threads" not in analyze["with"]
+
+
+def test_javascript_codeql_sets_up_node_before_extraction() -> None:
+    """The JavaScript extractor has Node on self-hosted ubuntu-latest runners."""
+    workflow = yaml.safe_load(WORKFLOW.read_text())
+    steps = workflow["jobs"]["analyze"]["steps"]
+    setup_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Set up Node.js for CodeQL"
+    )
+    setup = steps[setup_index]
+    assert setup["if"] == "matrix.language == 'javascript-typescript'"
+    assert setup["uses"] == (
+        "actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1"
+    )
+    assert setup["with"]["node-version"] == "22"
+    assert setup_index < next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Initialize CodeQL"
+    )
