@@ -371,6 +371,13 @@ export class UserDetailView extends LitElement {
 
   private async load(): Promise<void> {
     const generation = ++this.generation;
+    // Nothing watches the sessions card until this load has confirmed the
+    // page is available: an earlier reveal would read sessions twice, or on
+    // an edition without user management.
+    this.sessionsGateOpen = false;
+    this.sessionsRequested = false;
+    this.sessionsObserver?.disconnect();
+    this.sessionsObserver = null;
     if (!this.userId) return;
     try {
       const features = await getFeatures();
@@ -384,9 +391,8 @@ export class UserDetailView extends LitElement {
       // requests below say for themselves whether they are allowed.
     }
     this.featureEnabled = true;
-    this.sessionsRequested = false;
-    this.sessionsObserver?.disconnect();
-    this.sessionsObserver = null;
+    this.sessionsGateOpen = true;
+    this.requestUpdate();
     // Recent sessions sit at the bottom of the page and are its heaviest
     // read; they wait for the sections above, or for the card to scroll into
     // view, whichever comes first (UX3-20).
@@ -404,10 +410,12 @@ export class UserDetailView extends LitElement {
 
   /** Whether this load has asked for the recent sessions yet. */
   private sessionsRequested = false;
+  /** Set once this load may read sessions at all. */
+  private sessionsGateOpen = false;
   private sessionsObserver: IntersectionObserver | null = null;
 
   private requestSessions(): void {
-    if (this.sessionsRequested) return;
+    if (!this.sessionsGateOpen || this.sessionsRequested) return;
     this.sessionsRequested = true;
     this.sessionsObserver?.disconnect();
     this.sessionsObserver = null;
@@ -415,7 +423,12 @@ export class UserDetailView extends LitElement {
   }
 
   protected updated(): void {
-    if (this.sessionsRequested || this.sessionsObserver) return;
+    if (
+      !this.sessionsGateOpen ||
+      this.sessionsRequested ||
+      this.sessionsObserver
+    )
+      return;
     const target = this.renderRoot.querySelector(
       '[data-testid="user-sessions"]'
     );

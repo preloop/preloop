@@ -209,6 +209,8 @@ describe('PlanView', () => {
       unpricedPlan?: boolean;
       /** Holds the account's plan state, the slow provider-backed reads. */
       holdAccount?: Promise<void>;
+      /** Fails the plan-change options read. */
+      failOptions?: boolean;
     } = {}
   ) {
     const billing = opts.billing !== false;
@@ -282,6 +284,11 @@ describe('PlanView', () => {
           });
         }
 
+        if (
+          opts.failOptions &&
+          url.includes('/api/v1/billing/plan-change-options')
+        )
+          return json({ detail: 'provider down' }, 503);
         if (url.includes('/api/v1/billing/plan-change-options')) {
           const catalog = opts.unpricedPlan
             ? [...CATALOG, UNPRICED_CATALOG]
@@ -442,6 +449,23 @@ describe('PlanView', () => {
     const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
     expect(
       urls.filter((url) => url.includes('/billing/summary'))
+    ).to.have.length(1);
+  });
+
+  it('says the buttons are unavailable when the plan state fails, and asks once', async () => {
+    const element = await mount({ failOptions: true });
+    expect(element.shadowRoot?.querySelector('[data-testid="plan-error"]')).to
+      .exist;
+    const labels = Object.values(ctas(element));
+    expect(labels).to.have.length(4);
+    expect(labels).to.not.include('Loading');
+    expect(labels.every((label) => label === 'Unavailable')).to.equal(true);
+    // No second component goes to ask the read that just failed.
+    expect(element.shadowRoot?.querySelector('billing-plan-comparison')).to.not
+      .exist;
+    const urls = fetchStub.getCalls().map((call) => String(call.args[0]));
+    expect(
+      urls.filter((url) => url.includes('/billing/plan-change-options'))
     ).to.have.length(1);
   });
 

@@ -1088,7 +1088,12 @@ export class CostView extends AuthedElement {
     this.error = null;
     this.previousRangeSummary = null;
     this.currentPeriod = null;
-    this.requestedPeriod = this.digestBlocked ? null : { ...period };
+    // A digest link waits for the account check below: a window it is
+    // about to block starts no read.
+    this.requestedPeriod =
+      this.digestBlocked || this.digestAccountId || this.digestPeriod
+        ? null
+        : { ...period };
     this.loadedTabs = new Set();
     this.sectionStates = {};
     this.sectionErrors = {};
@@ -1123,6 +1128,7 @@ export class CostView extends AuthedElement {
           return;
         }
       }
+      if (!this.requestedPeriod) this.requestedPeriod = { ...period };
       void this.loadContext(generation);
       void this.loadAccountingFindings(generation);
       // Share the first answer with the visible tab and imported usage. Separate

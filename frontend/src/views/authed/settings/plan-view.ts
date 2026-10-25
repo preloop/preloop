@@ -203,16 +203,25 @@ export class PlanView extends LitElement {
     }
   }
 
-  /** Options and summary together; a failure is said once, at the top. */
+  /**
+   * Options and summary together. Settles only when both have answered, and
+   * a failure is said once, at the top.
+   */
   private async _loadAccount(): Promise<void> {
-    try {
-      await Promise.all([this._loadOptions(), this._loadSummary()]);
-    } catch (error) {
+    const results = await Promise.allSettled([
+      this._loadOptions(),
+      this._loadSummary(),
+    ]);
+    const failed = results.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected'
+    );
+    if (failed) {
       this._error =
-        error instanceof Error ? error.message : 'Could not load the plans.';
-    } finally {
-      this._accountSettled = true;
+        failed.reason instanceof Error
+          ? failed.reason.message
+          : 'Could not load the plans.';
     }
+    this._accountSettled = true;
   }
 
   private async _loadSummary(): Promise<void> {
@@ -346,7 +355,14 @@ export class PlanView extends LitElement {
    */
   private _ctaFor = (plan: PricingPlan): PlanCta | null => {
     const options = this._options;
-    if (!options) return { label: 'Loading', disabled: true };
+    if (!options)
+      return this._accountSettled
+        ? {
+            label: 'Unavailable',
+            disabled: true,
+            note: 'Your current plan could not be read. Reload to try again.',
+          }
+        : { label: 'Loading', disabled: true };
     const catalog = this._catalogPlan(plan.id);
     const currentId = this._currentPlanId();
     const verdict = options.plan_eligibility?.find(
@@ -604,7 +620,7 @@ export class PlanView extends LitElement {
                     and a stale renewal date until a manual reload.
                   -->
                   ${
-                    this._accountSettled
+                    this._accountSettled && this._options
                       ? html`<billing-plan-comparison
                           .initialOptions=${this._options}
                           @billing-subscription-changed=${() =>

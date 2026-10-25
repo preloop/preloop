@@ -57,6 +57,8 @@ interface Options {
   fleet?: boolean;
   features?: Record<string, unknown>;
   hang?: boolean;
+  /** Holds the features answer until this settles. */
+  holdFeatures?: Promise<void>;
 }
 
 function json(data: unknown, status = 200): Response {
@@ -84,6 +86,8 @@ function stubFetch(options: Options = {}): sinon.SinonStub {
     .stub(window, 'fetch')
     .callsFake(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/v1/features') && options.holdFeatures)
+        await options.holdFeatures;
       if (url.includes('/api/v1/features'))
         return json({
           plugins: [],
@@ -342,6 +346,22 @@ describe('user-detail-view', () => {
       reveal();
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(sessionCalls()).to.equal(1);
+    });
+
+    it('does not watch the card before user management is confirmed', async () => {
+      let release!: () => void;
+      const holdFeatures = new Promise<void>((resolve) => (release = resolve));
+      fetchStub = stubFetch({ hang: true, holdFeatures });
+      const el = await mount();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      reveal();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(sessionCalls()).to.equal(0);
+      release();
+      await waitUntil(() => observed.length > 0, 'the card was not observed');
+      expect(observed.at(-1)).to.equal(card(el, 'sessions'));
+      reveal();
+      await waitUntil(() => sessionCalls() === 1);
     });
 
     it('asks once the other sections have answered', async () => {

@@ -2640,6 +2640,22 @@ describe('CostView', () => {
       ).to.equal(false);
     });
 
+    it('starts no chart read for a digest window it is about to block', async () => {
+      accountPayload.id = otherAccount;
+      featuresPayload = {};
+      window.history.replaceState({}, '', digestUrl);
+      const element = await fixture<CostView>(html`<cost-view></cost-view>`);
+      await settled(element);
+      await waitUntil(() => notice(element));
+      await element.updateComplete;
+      expect(element.shadowRoot!.querySelector('spend-chart')).to.not.exist;
+      expect(
+        fetchStub
+          .getCalls()
+          .some((call) => String(call.args[0]).includes('/cost/timeseries'))
+      ).to.equal(false);
+    });
+
     it('offers to switch when the person is a member of that account', async () => {
       accountPayload.id = otherAccount;
       featuresPayload = { multi_account: true };
